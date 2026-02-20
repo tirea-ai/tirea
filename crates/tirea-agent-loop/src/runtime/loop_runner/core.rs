@@ -1,7 +1,7 @@
 use super::AgentLoopError;
 use crate::contracts::plugin::phase::StepContext;
 use crate::contracts::{FrontendToolInvocation, Interaction, InteractionResponse};
-use crate::contracts::thread::{Message, MessageMetadata};
+use crate::contracts::thread::{Message, MessageMetadata, Role};
 use crate::contracts::tool::Tool;
 use crate::contracts::RunContext;
 use crate::runtime::control::{InferenceError, LoopControlState};
@@ -14,7 +14,7 @@ const SKILLS_STATE_PATH: &str = "skills";
 const INTERACTION_OUTBOX_PATH: &str = "interaction_outbox";
 
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 pub(super) fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec<Message> {
@@ -34,7 +34,26 @@ pub(super) fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec
         messages.push(Message::system(ctx.clone()));
     }
 
+    // Collect all tool_call IDs issued by the assistant so we can filter
+    // orphaned tool results (e.g. from intercepted pseudo-tool invocations
+    // like PermissionConfirm whose call IDs the LLM never issued).
+    let known_tool_call_ids: HashSet<&str> = step
+        .messages()
+        .iter()
+        .filter(|m| m.role == Role::Assistant)
+        .filter_map(|m| m.tool_calls.as_ref())
+        .flatten()
+        .map(|tc| tc.id.as_str())
+        .collect();
+
     for msg in step.messages() {
+        if msg.role == Role::Tool {
+            if let Some(ref tc_id) = msg.tool_call_id {
+                if !known_tool_call_ids.contains(tc_id.as_str()) {
+                    continue;
+                }
+            }
+        }
         messages.push((**msg).clone());
     }
 

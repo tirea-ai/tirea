@@ -5,7 +5,7 @@ use crate::contracts::runtime::LlmExecutor;
 use crate::contracts::TerminationReason;
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::thread::CheckpointReason;
-use crate::contracts::thread::Thread;
+use crate::contracts::thread::{Message, Role, Thread, ToolCall};
 use crate::contracts::storage::VersionPrecondition;
 use crate::contracts::event::interaction::ResponseRouting;
 use crate::contracts::tool::{ToolDescriptor, ToolError, ToolResult};
@@ -6830,4 +6830,60 @@ fn test_sequential_error_preserves_prior_patches() {
     let state = run_ctx.snapshot().unwrap();
     assert_eq!(state["a"], 200, "sequential overwrites are allowed");
     assert_eq!(run_ctx.thread_patches().len(), 2);
+}
+
+#[test]
+fn build_messages_filters_orphaned_tool_results() {
+    let mut fix = TestFixture::new();
+    fix.messages = vec![
+        Arc::new(Message::user("hello")),
+        Arc::new(Message::assistant_with_tool_calls(
+            "",
+            vec![ToolCall::new("call_1", "serverInfo", json!({}))],
+        )),
+        // Matching tool result — should be kept
+        Arc::new(Message::tool("call_1", "ok")),
+        // Orphaned tool result (e.g. from PermissionConfirm interception) — should be filtered
+        Arc::new(Message::tool("fc_xyz", "approved")),
+    ];
+    let step = fix.step(vec![]);
+    let msgs = build_messages(&step, "sys");
+
+    // System prompt + user + assistant + matching tool = 4
+    assert_eq!(msgs.len(), 4);
+    // The orphaned fc_xyz tool result must not appear
+    assert!(
+        !msgs.iter().any(|m| m.role == Role::Tool
+            && m.tool_call_id.as_deref() == Some("fc_xyz")),
+        "orphaned tool result should be filtered"
+    );
+    // The matching tool result must still be present
+    assert!(
+        msgs.iter().any(|m| m.role == Role::Tool
+            && m.tool_call_id.as_deref() == Some("call_1")),
+        "matching tool result should be kept"
+    );
+}
+
+#[test]
+fn build_messages_keeps_tool_results_with_matching_call() {
+    let mut fix = TestFixture::new();
+    fix.messages = vec![
+        Arc::new(Message::user("hi")),
+        Arc::new(Message::assistant_with_tool_calls(
+            "",
+            vec![
+                ToolCall::new("call_1", "readFile", json!({})),
+                ToolCall::new("call_2", "deleteTask", json!({})),
+            ],
+        )),
+        Arc::new(Message::tool("call_1", "file contents")),
+        Arc::new(Message::tool("call_2", "deleted")),
+    ];
+    let step = fix.step(vec![]);
+    let msgs = build_messages(&step, "");
+
+    // System prompt is empty so not added, user + assistant + 2 tool results = 4
+    let tool_msgs: Vec<_> = msgs.iter().filter(|m| m.role == Role::Tool).collect();
+    assert_eq!(tool_msgs.len(), 2, "both matching tool results should be kept");
 }
