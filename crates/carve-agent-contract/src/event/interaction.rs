@@ -1,3 +1,4 @@
+use carve_state::Op;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -123,4 +124,96 @@ impl InteractionResponse {
     pub fn denied(&self) -> bool {
         Self::is_denied(&self.result)
     }
+}
+
+// ============================================================================
+// Frontend Tool Invocation (first-class citizen model)
+// ============================================================================
+
+/// A frontend tool invocation record persisted to thread state.
+///
+/// Replaces the `Interaction` struct for frontend tool call tracking. Each
+/// invocation captures the frontend tool being called, its origin context
+/// (which plugin/tool triggered it), and the routing strategy for handling
+/// the frontend's response.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FrontendToolInvocation {
+    /// Unique ID for this frontend tool call (sent to frontend as `toolCallId`).
+    pub call_id: String,
+    /// Frontend tool name (e.g. "copyToClipboard", "AskUserQuestion").
+    pub tool_name: String,
+    /// Frontend tool arguments.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub arguments: Value,
+    /// Where this invocation originated from.
+    pub origin: InvocationOrigin,
+    /// How to route the frontend's response.
+    pub routing: ResponseRouting,
+}
+
+impl FrontendToolInvocation {
+    /// Create a new frontend tool invocation.
+    pub fn new(
+        call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        arguments: Value,
+        origin: InvocationOrigin,
+        routing: ResponseRouting,
+    ) -> Self {
+        Self {
+            call_id: call_id.into(),
+            tool_name: tool_name.into(),
+            arguments,
+            origin,
+            routing,
+        }
+    }
+
+    /// Convert to an `Interaction` for backward compatibility with the
+    /// existing event system during the transition period.
+    pub fn to_interaction(&self) -> Interaction {
+        Interaction::new(&self.call_id, format!("tool:{}", self.tool_name))
+            .with_parameters(self.arguments.clone())
+    }
+}
+
+/// Where a frontend tool invocation originated from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum InvocationOrigin {
+    /// A backend tool call was intercepted (e.g. permission check).
+    ToolCallIntercepted {
+        /// The intercepted backend tool call ID.
+        backend_call_id: String,
+        /// The intercepted backend tool name.
+        backend_tool_name: String,
+        /// The intercepted backend tool arguments.
+        backend_arguments: Value,
+    },
+    /// A plugin directly initiated the frontend tool call (no backend tool context).
+    PluginInitiated {
+        /// The plugin that initiated this call.
+        plugin_id: String,
+    },
+}
+
+/// How to route the frontend's response after it completes execution.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "strategy", rename_all = "snake_case")]
+pub enum ResponseRouting {
+    /// Replay the original backend tool after applying state patches.
+    /// Used for permission prompts: the frontend result (approved/denied)
+    /// determines whether to replay, and `state_patches` are applied first
+    /// (e.g. setting `permissions.tools.<name> = "allow"`).
+    ReplayOriginalTool {
+        /// State patches to apply before replaying the original tool.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        state_patches: Vec<Op>,
+    },
+    /// The frontend result IS the tool result — inject it directly into
+    /// the LLM message history as the tool call response.
+    /// Used for direct frontend tools (e.g. copyToClipboard).
+    UseAsToolResult,
+    /// Pass the frontend result to the LLM as an independent message.
+    PassToLLM,
 }

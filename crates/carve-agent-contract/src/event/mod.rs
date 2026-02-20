@@ -4,7 +4,9 @@ pub mod interaction;
 pub mod stream;
 pub mod termination;
 
-pub use interaction::{Interaction, InteractionResponse};
+pub use interaction::{
+    FrontendToolInvocation, Interaction, InteractionResponse, InvocationOrigin, ResponseRouting,
+};
 pub use stream::{
     clear_runtime_event_envelope_meta, register_runtime_event_envelope_meta, AgentEvent,
 };
