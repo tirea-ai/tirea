@@ -3,7 +3,7 @@
 //! These types define durable loop-control state for cross-step and cross-run
 //! flow control (pending interactions, inference error envelope).
 
-use crate::event::interaction::Interaction;
+use crate::event::interaction::{FrontendToolInvocation, Interaction};
 use crate::thread::Thread;
 use carve_state::State;
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,10 @@ pub struct LoopControlState {
     /// Pending interaction that must be resolved by the client before the run can continue.
     #[carve(default = "None")]
     pub pending_interaction: Option<Interaction>,
+    /// Structured frontend tool invocation (first-class model).
+    /// When present, takes precedence over `pending_interaction` for routing decisions.
+    #[carve(default = "None")]
+    pub pending_frontend_invocation: Option<FrontendToolInvocation>,
     /// Inference error envelope for AfterInference cleanup flow.
     #[carve(default = "None")]
     pub inference_error: Option<InferenceError>,

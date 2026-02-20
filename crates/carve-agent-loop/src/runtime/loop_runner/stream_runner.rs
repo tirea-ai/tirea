@@ -89,13 +89,15 @@ async fn drain_run_start_outbox_and_replay(
         // Multi-round: replayed tool produced a new pending interaction.
         // Persist it and return early so the run terminates with PendingInteraction.
         if let Some(new_interaction) = replay_result.pending_interaction {
+            let new_frontend_invocation = replay_result.pending_frontend_invocation.clone();
             let state = run_ctx.snapshot().map_err(|e| {
                 format!(
                     "failed to rebuild state for multi-round pending on tool '{}': {e}",
                     tool_call.id
                 )
             })?;
-            let patch = set_agent_pending_interaction(&state, new_interaction.clone());
+            let patch =
+                set_agent_pending_interaction(&state, new_interaction.clone(), new_frontend_invocation);
             if !patch.patch().is_empty() {
                 run_ctx.add_thread_patch(patch);
             }

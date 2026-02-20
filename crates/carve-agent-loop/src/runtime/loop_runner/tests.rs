@@ -172,6 +172,7 @@ fn tool_execution_result(call_id: &str, patch: Option<TrackedPatch>) -> ToolExec
         },
         reminders: Vec::new(),
         pending_interaction: None,
+        pending_frontend_invocation: None,
         pending_patches: Vec::new(),
     }
 }
@@ -202,6 +203,7 @@ fn skill_activation_result(
         },
         reminders: Vec::new(),
         pending_interaction: None,
+        pending_frontend_invocation: None,
         pending_patches: Vec::new(),
     }
 }
@@ -1585,6 +1587,7 @@ fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
         },
         reminders: Vec::new(),
         pending_interaction: None,
+        pending_frontend_invocation: None,
         pending_patches: Vec::new(),
     };
 
@@ -1628,6 +1631,7 @@ fn test_apply_tool_results_ignores_blank_agent_state_outbox_messages() {
         },
         reminders: Vec::new(),
         pending_interaction: None,
+        pending_frontend_invocation: None,
         pending_patches: Vec::new(),
     };
 
@@ -1967,6 +1971,7 @@ fn test_execute_tools_with_config_clears_persisted_pending_interaction_on_succes
         let pending_patch = set_agent_pending_interaction(
             &base_state,
             Interaction::new("confirm_1", "confirm").with_message("ok"),
+            None,
         );
         let thread = Thread::with_initial_state("test", base_state).with_patch(pending_patch);
 
@@ -2198,6 +2203,7 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
                 &state,
                 Interaction::new("agent_recovery_run-1", "recover_agent_run")
                     .with_message("resume?"),
+                None,
             );
             step.pending_patches.push(patch);
             step.skip_inference = true;
@@ -2577,6 +2583,7 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
                 &state,
                 Interaction::new("agent_recovery_run-1", "recover_agent_run")
                     .with_message("resume?"),
+                None,
             );
             step.pending_patches.push(patch);
             step.skip_inference = true;
@@ -3404,6 +3411,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
             let patch = set_agent_pending_interaction(
                 &state,
                 Interaction::new("golden_resume_1", "recover_agent_run").with_message("resume me"),
+                None,
             );
             step.pending_patches.push(patch);
             step.skip_inference = true;
@@ -5673,6 +5681,7 @@ async fn test_run_step_skip_inference_with_pending_state_returns_pending_interac
                 &state,
                 Interaction::new("agent_recovery_step-1", "recover_agent_run")
                     .with_message("resume step?"),
+                None,
             );
             step.pending_patches.push(patch);
             step.skip_inference = true;

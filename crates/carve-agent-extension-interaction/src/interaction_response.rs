@@ -10,6 +10,9 @@ use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
 use carve_agent_contract::plugin::phase::{Phase, StepContext};
 use carve_state::{Op, Patch, Path, State, TrackedPatch};
+use carve_agent_contract::event::interaction::{
+    FrontendToolInvocation, InvocationOrigin, ResponseRouting,
+};
 use carve_agent_contract::{Interaction, InteractionResponse};
 use serde_json::json;
 use std::collections::HashMap;
@@ -113,6 +116,15 @@ impl InteractionResponsePlugin {
         })
     }
 
+    fn persisted_frontend_invocation(step: &StepContext<'_>) -> Option<FrontendToolInvocation> {
+        let state = step.snapshot();
+        state
+            .get(LoopControlState::PATH)
+            .and_then(|lc| lc.get("pending_frontend_invocation"))
+            .cloned()
+            .and_then(|v| serde_json::from_value::<FrontendToolInvocation>(v).ok())
+    }
+
     fn push_resolution(step: &StepContext<'_>, interaction_id: String, result: serde_json::Value) {
         let outbox = step.ctx().state_of::<InteractionOutbox>();
         outbox.interaction_resolutions_push(InteractionResponse::new(interaction_id, result));
@@ -128,11 +140,20 @@ impl InteractionResponsePlugin {
         let Some(pending) = Self::persisted_pending_interaction(step) else {
             return;
         };
-        let pending_id_owned = pending.id.clone();
+
+        // Try the first-class FrontendToolInvocation path first.
+        let invocation = Self::persisted_frontend_invocation(step);
+        let pending_id_owned = if let Some(ref inv) = invocation {
+            inv.call_id.clone()
+        } else {
+            pending.id.clone()
+        };
         let pending_id = pending_id_owned.as_str();
 
         if self.is_denied(pending_id) {
             step.state_of::<LoopControlState>().pending_interaction_none();
+            step.state_of::<LoopControlState>()
+                .pending_frontend_invocation_none();
             Self::push_resolution(
                 step,
                 pending_id_owned.clone(),
@@ -156,16 +177,95 @@ impl InteractionResponsePlugin {
                 .unwrap_or(serde_json::Value::Bool(true)),
         );
 
+        // Route based on FrontendToolInvocation if available.
+        if let Some(inv) = invocation {
+            self.route_frontend_invocation(step, &inv);
+            return;
+        }
+
+        // Legacy fallback: route based on Interaction parameters.
+        self.route_legacy_interaction(step, &pending, pending_id);
+    }
+
+    /// Route an approved response using the first-class `FrontendToolInvocation` model.
+    fn route_frontend_invocation(
+        &self,
+        step: &mut StepContext<'_>,
+        inv: &FrontendToolInvocation,
+    ) {
+        match &inv.routing {
+            ResponseRouting::ReplayOriginalTool { state_patches } => {
+                // Apply pre-replay state patches (e.g. permission → allow).
+                if !state_patches.is_empty() {
+                    let patch =
+                        TrackedPatch::new(Patch::with_ops(state_patches.clone()))
+                            .with_source("interaction_response");
+                    step.pending_patches.push(patch);
+                }
+                // Queue replay of the original backend tool.
+                match &inv.origin {
+                    InvocationOrigin::ToolCallIntercepted {
+                        backend_call_id,
+                        backend_tool_name,
+                        backend_arguments,
+                    } => {
+                        let replay_call = carve_agent_contract::thread::ToolCall::new(
+                            backend_call_id.clone(),
+                            backend_tool_name.clone(),
+                            backend_arguments.clone(),
+                        );
+                        Self::queue_replay_call(step, replay_call);
+                    }
+                    InvocationOrigin::PluginInitiated { .. } => {
+                        // PluginInitiated with ReplayOriginalTool is unusual but
+                        // fallback to replaying the frontend tool itself.
+                        let replay_call = carve_agent_contract::thread::ToolCall::new(
+                            inv.call_id.clone(),
+                            inv.tool_name.clone(),
+                            inv.arguments.clone(),
+                        );
+                        Self::queue_replay_call(step, replay_call);
+                    }
+                }
+            }
+            ResponseRouting::UseAsToolResult => {
+                // The frontend result is the tool result. Replay the tool call
+                // so the result enters LLM message history.
+                let replay_call = carve_agent_contract::thread::ToolCall::new(
+                    inv.call_id.clone(),
+                    inv.tool_name.clone(),
+                    inv.arguments.clone(),
+                );
+                Self::queue_replay_call(step, replay_call);
+            }
+            ResponseRouting::PassToLLM => {
+                // Future: pass the result to LLM as an independent message.
+                // For now, fallback to replay.
+                let replay_call = carve_agent_contract::thread::ToolCall::new(
+                    inv.call_id.clone(),
+                    inv.tool_name.clone(),
+                    inv.arguments.clone(),
+                );
+                Self::queue_replay_call(step, replay_call);
+            }
+        }
+    }
+
+    /// Legacy routing based on `Interaction` parameters (backward compat).
+    fn route_legacy_interaction(
+        &self,
+        step: &mut StepContext<'_>,
+        pending: &Interaction,
+        pending_id: &str,
+    ) {
         // When a permission interaction is approved, update the permission state
         // so that the replayed tool execution sees Allow and doesn't re-trigger Ask.
         if pending.parameters.get("source").and_then(|v| v.as_str()) == Some("permission") {
             if let Some(tool_name) = pending.action.strip_prefix("tool:") {
-                let patch = TrackedPatch::new(Patch::with_ops(vec![
-                    Op::set(
-                        Path::root().key("permissions").key("tools").key(tool_name),
-                        json!("allow"),
-                    ),
-                ]))
+                let patch = TrackedPatch::new(Patch::with_ops(vec![Op::set(
+                    Path::root().key("permissions").key("tools").key(tool_name),
+                    json!("allow"),
+                )]))
                 .with_source("interaction_response");
                 step.pending_patches.push(patch);
             }
@@ -203,7 +303,9 @@ impl InteractionResponsePlugin {
             .parameters
             .get("origin_tool_call")
             .cloned()
-            .and_then(|v| serde_json::from_value::<carve_agent_contract::thread::ToolCall>(v).ok())
+            .and_then(|v| {
+                serde_json::from_value::<carve_agent_contract::thread::ToolCall>(v).ok()
+            })
         {
             Self::queue_replay_call(step, replay_call);
             return;
@@ -222,7 +324,7 @@ impl InteractionResponsePlugin {
         // as interaction id and "tool:<name>" as action.
         if let Some(tool_name) = pending.action.strip_prefix("tool:") {
             let replay_call = carve_agent_contract::thread::ToolCall::new(
-                pending_id_owned.clone(),
+                pending_id.to_string(),
                 tool_name,
                 pending.parameters.clone(),
             );
@@ -236,13 +338,14 @@ impl InteractionResponsePlugin {
             .iter()
             .rev()
             .find(|m| {
-                m.role == carve_agent_contract::thread::Role::Assistant && m.tool_calls.is_some()
+                m.role == carve_agent_contract::thread::Role::Assistant
+                    && m.tool_calls.is_some()
             })
             .and_then(|m| m.tool_calls.as_ref())
             .and_then(|calls| {
                 calls
                     .iter()
-                    .find(|c| c.id.as_str() == pending_id_owned.as_str())
+                    .find(|c| c.id.as_str() == pending_id)
                     .cloned()
             });
 
@@ -273,11 +376,26 @@ impl AgentPlugin for InteractionResponsePlugin {
             return;
         };
 
-        // Both FrontendTool and Permission interactions use tool_call_id as interaction id.
+        // Check both the tool call ID and the frontend invocation call_id.
+        // For direct frontend tools, interaction_id == tool.id.
+        // For indirect (permission), the frontend invocation has a different call_id.
         let interaction_id = tool.id.clone();
+        let frontend_call_id = Self::persisted_frontend_invocation(step)
+            .map(|inv| inv.call_id);
 
-        let is_approved = self.is_approved(&interaction_id);
-        let is_denied = self.is_denied(&interaction_id);
+        // The client may respond with either the tool call ID or the frontend call ID.
+        let effective_id = if let Some(ref fc_id) = frontend_call_id {
+            if self.is_approved(fc_id) || self.is_denied(fc_id) {
+                fc_id.clone()
+            } else {
+                interaction_id.clone()
+            }
+        } else {
+            interaction_id.clone()
+        };
+
+        let is_approved = self.is_approved(&effective_id);
+        let is_denied = self.is_denied(&effective_id);
 
         if !is_approved && !is_denied {
             return;
@@ -291,7 +409,7 @@ impl AgentPlugin for InteractionResponsePlugin {
 
         let id_matches = persisted_id
             .as_deref()
-            .is_some_and(|id| id == interaction_id);
+            .is_some_and(|id| id == interaction_id || Some(id) == frontend_call_id.as_deref());
 
         if !id_matches {
             return;
@@ -301,12 +419,16 @@ impl AgentPlugin for InteractionResponsePlugin {
             step.confirm();
             step.block("User denied the action".to_string());
             step.state_of::<LoopControlState>().pending_interaction_none();
-            let resolved_id = persisted_id.unwrap_or(interaction_id);
+            step.state_of::<LoopControlState>()
+                .pending_frontend_invocation_none();
+            let resolved_id = persisted_id.unwrap_or(effective_id);
             Self::push_resolution(step, resolved_id, serde_json::Value::Bool(false));
         } else if is_approved {
             step.confirm();
             step.state_of::<LoopControlState>().pending_interaction_none();
-            let resolved_id = persisted_id.unwrap_or(interaction_id);
+            step.state_of::<LoopControlState>()
+                .pending_frontend_invocation_none();
+            let resolved_id = persisted_id.unwrap_or(effective_id);
             Self::push_resolution(step, resolved_id, serde_json::Value::Bool(true));
         }
     }
@@ -543,6 +665,99 @@ mod tests {
         assert_eq!(replay_after[0].id, "call_write");
         assert_eq!(replay_after[0].name, "write_file");
         assert_eq!(replay_after[0].arguments["path"], "b.txt");
+    }
+
+    #[tokio::test]
+    async fn run_start_routes_via_frontend_invocation_replay_original_tool() {
+        use carve_agent_contract::event::interaction::{
+            FrontendToolInvocation, InvocationOrigin, ResponseRouting,
+        };
+
+        let state = json!({
+            "loop_control": {
+                "pending_interaction": {
+                    "id": "call_write",
+                    "action": "tool:write_file",
+                    "parameters": {}
+                },
+                "pending_frontend_invocation": {
+                    "call_id": "fc_ask_1",
+                    "tool_name": "AskUserQuestion",
+                    "arguments": { "question": "Allow write?" },
+                    "origin": {
+                        "type": "tool_call_intercepted",
+                        "backend_call_id": "call_write",
+                        "backend_tool_name": "write_file",
+                        "backend_arguments": { "path": "a.txt" }
+                    },
+                    "routing": {
+                        "strategy": "replay_original_tool",
+                        "state_patches": [{
+                            "op": "set",
+                            "path": ["permissions", "tools", "write_file"],
+                            "value": "allow"
+                        }]
+                    }
+                }
+            }
+        });
+        let fixture = TestFixture::new_with_state(state);
+        // Client responds with the frontend call_id
+        let plugin = InteractionResponsePlugin::new(vec!["fc_ask_1".to_string()], vec![]);
+
+        let mut step = fixture.step(vec![]);
+        plugin.on_phase(Phase::RunStart, &mut step).await;
+
+        let updated = fixture.updated_state();
+        let replay_calls = replay_calls_from_state(&updated);
+        assert_eq!(replay_calls.len(), 1);
+        // Should replay the original backend tool, not the frontend tool
+        assert_eq!(replay_calls[0].id, "call_write");
+        assert_eq!(replay_calls[0].name, "write_file");
+        assert_eq!(replay_calls[0].arguments["path"], "a.txt");
+
+        // State patches should be applied
+        assert!(!step.pending_patches.is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_start_routes_via_frontend_invocation_use_as_tool_result() {
+        let state = json!({
+            "loop_control": {
+                "pending_interaction": {
+                    "id": "call_copy",
+                    "action": "tool:copyToClipboard",
+                    "parameters": { "text": "hello" }
+                },
+                "pending_frontend_invocation": {
+                    "call_id": "call_copy",
+                    "tool_name": "copyToClipboard",
+                    "arguments": { "text": "hello" },
+                    "origin": {
+                        "type": "plugin_initiated",
+                        "plugin_id": "agui_frontend_tools"
+                    },
+                    "routing": {
+                        "strategy": "use_as_tool_result"
+                    }
+                }
+            }
+        });
+        let fixture = TestFixture::new_with_state(state);
+        let plugin = InteractionResponsePlugin::new(vec!["call_copy".to_string()], vec![]);
+
+        let mut step = fixture.step(vec![]);
+        plugin.on_phase(Phase::RunStart, &mut step).await;
+
+        let updated = fixture.updated_state();
+        let replay_calls = replay_calls_from_state(&updated);
+        assert_eq!(replay_calls.len(), 1);
+        assert_eq!(replay_calls[0].id, "call_copy");
+        assert_eq!(replay_calls[0].name, "copyToClipboard");
+        assert_eq!(replay_calls[0].arguments["text"], "hello");
+
+        // No state patches for UseAsToolResult
+        assert!(step.pending_patches.is_empty());
     }
 
     #[tokio::test]

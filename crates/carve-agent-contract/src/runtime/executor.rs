@@ -1,5 +1,5 @@
+use crate::event::interaction::{FrontendToolInvocation, Interaction};
 use crate::plugin::contract::AgentPlugin;
-use crate::event::interaction::Interaction;
 use crate::runtime::activity::ActivityManager;
 use crate::thread::{Message, ToolCall};
 use crate::tool::contract::{Tool, ToolDescriptor, ToolResult};
@@ -72,6 +72,7 @@ pub struct ToolExecutionResult {
     pub execution: ToolExecution,
     pub reminders: Vec<String>,
     pub pending_interaction: Option<Interaction>,
+    pub pending_frontend_invocation: Option<FrontendToolInvocation>,
     pub pending_patches: Vec<TrackedPatch>,
 }
 

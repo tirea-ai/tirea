@@ -254,10 +254,13 @@ pub(super) fn apply_tool_results_impl(
     }
 
     if let Some(interaction) = pending_interaction.clone() {
+        let frontend_invocation = results
+            .iter()
+            .find_map(|r| r.pending_frontend_invocation.clone());
         let state = run_ctx
             .snapshot()
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-        let patch = set_agent_pending_interaction(&state, interaction.clone());
+        let patch = set_agent_pending_interaction(&state, interaction.clone(), frontend_invocation);
         if !patch.patch().is_empty() {
             state_changed = true;
             run_ctx.add_thread_patch(patch);
@@ -708,42 +711,49 @@ pub(super) async fn execute_single_tool_with_phases(
     emit_phase_checked(Phase::BeforeToolExecute, &mut step, plugins).await?;
 
     // Check if blocked or pending
-    let (execution, pending_interaction) = if !crate::engine::tool_filter::is_scope_allowed(
-        scope,
-        &call.name,
-        SCOPE_ALLOWED_TOOLS_KEY,
-        SCOPE_EXCLUDED_TOOLS_KEY,
-    ) {
-        (
-            ToolExecution {
-                call: call.clone(),
-                result: ToolResult::error(
-                    &call.name,
-                    format!("Tool '{}' is not allowed by current policy", call.name),
-                ),
-                patch: None,
-            },
-            None,
-        )
-    } else if step.tool_blocked() {
-        let reason = step
-            .tool
-            .as_ref()
-            .and_then(|t| t.block_reason.clone())
-            .unwrap_or_else(|| "Blocked by plugin".to_string());
-        (
-            ToolExecution {
-                call: call.clone(),
-                result: ToolResult::error(&call.name, reason),
-                patch: None,
-            },
-            None,
-        )
+    let (execution, pending_interaction, pending_frontend_invocation) =
+        if !crate::engine::tool_filter::is_scope_allowed(
+            scope,
+            &call.name,
+            SCOPE_ALLOWED_TOOLS_KEY,
+            SCOPE_EXCLUDED_TOOLS_KEY,
+        ) {
+            (
+                ToolExecution {
+                    call: call.clone(),
+                    result: ToolResult::error(
+                        &call.name,
+                        format!("Tool '{}' is not allowed by current policy", call.name),
+                    ),
+                    patch: None,
+                },
+                None,
+                None,
+            )
+        } else if step.tool_blocked() {
+            let reason = step
+                .tool
+                .as_ref()
+                .and_then(|t| t.block_reason.clone())
+                .unwrap_or_else(|| "Blocked by plugin".to_string());
+            (
+                ToolExecution {
+                    call: call.clone(),
+                    result: ToolResult::error(&call.name, reason),
+                    patch: None,
+                },
+                None,
+                None,
+            )
     } else if step.tool_pending() {
         let interaction = step
             .tool
             .as_ref()
             .and_then(|t| t.pending_interaction.clone());
+        let frontend_invocation = step
+            .tool
+            .as_ref()
+            .and_then(|t| t.pending_frontend_invocation.clone());
         (
             ToolExecution {
                 call: call.clone(),
@@ -751,6 +761,7 @@ pub(super) async fn execute_single_tool_with_phases(
                 patch: None,
             },
             interaction,
+            frontend_invocation,
         )
     } else if tool.is_none() {
         (
@@ -759,6 +770,7 @@ pub(super) async fn execute_single_tool_with_phases(
                 result: ToolResult::error(&call.name, format!("Tool '{}' not found", call.name)),
                 patch: None,
             },
+            None,
             None,
         )
     } else {
@@ -798,6 +810,7 @@ pub(super) async fn execute_single_tool_with_phases(
                 patch,
             },
             None,
+            None,
         )
     };
 
@@ -819,6 +832,7 @@ pub(super) async fn execute_single_tool_with_phases(
         execution,
         reminders: step.system_reminders.clone(),
         pending_interaction,
+        pending_frontend_invocation,
         pending_patches,
     })
 }

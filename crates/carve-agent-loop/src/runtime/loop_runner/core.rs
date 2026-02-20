@@ -1,6 +1,6 @@
 use super::AgentLoopError;
 use crate::contracts::plugin::phase::StepContext;
-use crate::contracts::{Interaction, InteractionResponse};
+use crate::contracts::{FrontendToolInvocation, Interaction, InteractionResponse};
 use crate::contracts::thread::{Message, MessageMetadata};
 use crate::contracts::tool::Tool;
 use crate::contracts::RunContext;
@@ -73,11 +73,13 @@ pub(super) fn build_request_for_filtered_tools(
 pub(super) fn set_agent_pending_interaction(
     state: &Value,
     interaction: Interaction,
+    frontend_invocation: Option<FrontendToolInvocation>,
 ) -> TrackedPatch {
     let doc = DocCell::new(state.clone());
     let ctx = StateContext::new(&doc);
     let lc = ctx.state_of::<LoopControlState>();
     lc.set_pending_interaction(Some(interaction));
+    lc.set_pending_frontend_invocation(frontend_invocation);
     ctx.take_tracked_patch("agent_loop")
 }
 
@@ -86,6 +88,7 @@ pub(super) fn clear_agent_pending_interaction(state: &Value) -> TrackedPatch {
     let ctx = StateContext::new(&doc);
     let lc = ctx.state_of::<LoopControlState>();
     lc.pending_interaction_none();
+    lc.pending_frontend_invocation_none();
     ctx.take_tracked_patch("agent_loop")
 }
 
