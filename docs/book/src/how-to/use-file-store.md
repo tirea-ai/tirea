@@ -1,0 +1,51 @@
+# Use File Store
+
+Use `FileStore` for local development and small single-node deployments.
+
+## Prerequisites
+
+- Writable local directory for thread files.
+- Single-writer assumptions or low write contention.
+
+## Steps
+
+1. Create file store.
+
+```rust,ignore
+use std::sync::Arc;
+use tirea_store_adapters::FileStore;
+
+let store = Arc::new(FileStore::new("./threads"));
+```
+
+2. Inject into `AgentOsBuilder`.
+
+```rust,ignore
+use tirea::orchestrator::{AgentDefinition, AgentOsBuilder};
+use tirea::runtime::loop_runner::tool_map;
+
+let os = AgentOsBuilder::new()
+    .with_tools(tool_map([MyTool]))
+    .with_agent("assistant", AgentDefinition::with_id("assistant", "gpt-4o-mini"))
+    .with_agent_state_store(store.clone())
+    .build()?;
+```
+
+3. Run once, then inspect persisted files under `./threads`.
+
+## Verify
+
+- After one run, a thread JSON file exists.
+- Reloading the same thread id returns persisted messages and state.
+- Version preconditions reject conflicting concurrent appends.
+
+## Common Errors
+
+- Directory permission denied.
+- Multiple writers on same files causing frequent conflicts.
+- Assuming file store is suitable for horizontally scaled production.
+
+## Related
+
+- [Use Postgres Store](./use-postgres-store.md)
+- [Thread Model](../reference/thread-model.md)

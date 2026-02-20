@@ -1,6 +1,6 @@
 # Introduction
 
-**Tirea** is an immutable state-driven agent framework built in Rust. It combines typed JSON state management with an AI agent loop, providing full traceability of state changes, replay capability, and component isolation.
+**Tirea** is an immutable state-driven agent framework built in Rust. It combines typed JSON state management with an agent loop, providing full traceability of state changes, replay capability, and component isolation.
 
 ## Crate Overview
 
@@ -8,27 +8,31 @@
 |-------|-------------|
 | `tirea-state` | Core library: typed state, JSON patches, apply, conflict detection |
 | `tirea-state-derive` | Proc-macro for `#[derive(State)]` |
-| `tirea` | Agent framework: tools, sessions, streaming, plugins |
+| `tirea-contract` | Shared contracts: thread/events/tools/plugins/runtime/storage/protocol |
+| `tirea-agent-loop` | Loop runtime: inference, tool execution, stop policies, streaming |
+| `tirea-agentos` | Orchestration layer: registry wiring, run preparation, persistence integration |
+| `tirea-store-adapters` | Storage adapters: memory/file/postgres/nats-buffered |
+| `tirea` | Umbrella crate that re-exports core modules |
 | `tirea-agentos-server` | HTTP/SSE/NATS gateway server |
 
 ## Architecture
 
 ```text
 ┌─────────────────────────────────────────────────────┐
-│  Application Layer                                   │
-│  - Register tools, run agent loop, persist sessions  │
+│  Application Layer                                    │
+│  - Register tools, define agents, call run_stream    │
 └─────────────────────────────────────────────────────┘
                          │
                          ▼
 ┌─────────────────────────────────────────────────────┐
-│  Pure Functions                                      │
-│  - build_request, StreamCollector, Session::with_*  │
+│  AgentOs + Agent Loop                                │
+│  - Prepare run, execute phases, emit events          │
 └─────────────────────────────────────────────────────┘
                          │
                          ▼
 ┌─────────────────────────────────────────────────────┐
-│  Tool Layer                                          │
-│  - Tool trait, Context, automatic patch collection   │
+│  Thread + State Engine                               │
+│  - Thread history, RunContext delta, apply_patch     │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -46,8 +50,9 @@ State' = apply_patch(State, Patch)
 
 ## What's in This Book
 
-- **Concepts** — Understand the core ideas: immutable state, typed access, the agent loop
-- **Guides** — Step-by-step tutorials for common tasks
-- **Reference** — Detailed information on error types, operations, and the API
+- **Tutorials** — Learn by building a first agent and first tool
+- **How-to** — Task-focused implementation guides for integration and operations
+- **Reference** — API, protocol, config, and schema lookup pages
+- **Explanation** — Architecture and design rationale
 
 For the full Rust API documentation, see the [API Reference](./reference/api.md).

@@ -13,5 +13,5 @@ mdbook build "$WORKSPACE_ROOT/docs/book"
 if [ -d "$WORKSPACE_ROOT/target/book" ] && [ -d "$WORKSPACE_ROOT/target/doc" ]; then
     cp -r "$WORKSPACE_ROOT/target/doc" "$WORKSPACE_ROOT/target/book/doc"
     echo "==> Unified docs at: target/book/index.html"
-    echo "    API docs at:     target/book/doc/carve_state/index.html"
+    echo "    API docs at:     target/book/doc/tirea_state/index.html"
 fi
