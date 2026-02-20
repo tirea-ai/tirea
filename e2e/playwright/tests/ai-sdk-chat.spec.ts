@@ -6,7 +6,7 @@ test.describe("AI SDK Chat", () => {
   }) => {
     await page.goto("/");
 
-    await expect(page.locator("h1")).toHaveText("Uncarve Chat", {
+    await expect(page.locator("h1")).toHaveText("Tirea Chat", {
       timeout: 15_000,
     });
 
@@ -18,7 +18,7 @@ test.describe("AI SDK Chat", () => {
   test("send message and receive streaming response", async ({ page }) => {
     await page.goto("/");
 
-    await expect(page.locator("h1")).toHaveText("Uncarve Chat", {
+    await expect(page.locator("h1")).toHaveText("Tirea Chat", {
       timeout: 15_000,
     });
 
@@ -46,7 +46,7 @@ test.describe("AI SDK Chat", () => {
   test("multi-turn conversation preserves history", async ({ page }) => {
     await page.goto("/");
 
-    await expect(page.locator("h1")).toHaveText("Uncarve Chat", {
+    await expect(page.locator("h1")).toHaveText("Tirea Chat", {
       timeout: 15_000,
     });
 
@@ -78,7 +78,7 @@ test.describe("AI SDK Chat", () => {
   test("history messages survive page reload", async ({ page }) => {
     await page.goto("/");
 
-    await expect(page.locator("h1")).toHaveText("Uncarve Chat", {
+    await expect(page.locator("h1")).toHaveText("Tirea Chat", {
       timeout: 15_000,
     });
 
@@ -109,7 +109,7 @@ test.describe("AI SDK Chat", () => {
     // Reload the page — history should be restored from the backend.
     await page.reload();
 
-    await expect(page.locator("h1")).toHaveText("Uncarve Chat", {
+    await expect(page.locator("h1")).toHaveText("Tirea Chat", {
       timeout: 15_000,
     });
 
@@ -133,7 +133,7 @@ test.describe("AI SDK Chat", () => {
   test("displays token usage metrics after response", async ({ page }) => {
     await page.goto("/");
 
-    await expect(page.locator("h1")).toHaveText("Uncarve Chat", {
+    await expect(page.locator("h1")).toHaveText("Tirea Chat", {
       timeout: 15_000,
     });
 
@@ -162,7 +162,7 @@ test.describe("AI SDK Chat", () => {
   test("handles tool execution error gracefully", async ({ page }) => {
     await page.goto("/");
 
-    await expect(page.locator("h1")).toHaveText("Uncarve Chat", {
+    await expect(page.locator("h1")).toHaveText("Tirea Chat", {
       timeout: 15_000,
     });
 
@@ -184,7 +184,7 @@ test.describe("AI SDK Chat", () => {
   test("multi-round tool execution with tool display", async ({ page }) => {
     await page.goto("/");
 
-    await expect(page.locator("h1")).toHaveText("Uncarve Chat", {
+    await expect(page.locator("h1")).toHaveText("Tirea Chat", {
       timeout: 15_000,
     });
 
@@ -208,7 +208,7 @@ test.describe("AI SDK Chat", () => {
     });
 
     // Tool output should contain the server name.
-    await expect(chatArea).toContainText("carve-agentos", {
+    await expect(chatArea).toContainText("tirea-agentos", {
       timeout: 10_000,
     });
   });
@@ -216,7 +216,7 @@ test.describe("AI SDK Chat", () => {
   test("StopOnTool terminates agent run", async ({ page }) => {
     await page.goto("/?agentId=stopper");
 
-    await expect(page.locator("h1")).toHaveText("Uncarve Chat", {
+    await expect(page.locator("h1")).toHaveText("Tirea Chat", {
       timeout: 15_000,
     });
 
@@ -249,7 +249,7 @@ test.describe("AI SDK Chat", () => {
   test("send button is disabled while loading", async ({ page }) => {
     await page.goto("/");
 
-    await expect(page.locator("h1")).toHaveText("Uncarve Chat", {
+    await expect(page.locator("h1")).toHaveText("Tirea Chat", {
       timeout: 15_000,
     });
 

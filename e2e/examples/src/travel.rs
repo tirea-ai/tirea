@@ -1,14 +1,14 @@
-use carve_agentos::contracts::plugin::AgentPlugin;
-use carve_agentos::contracts::tool::Tool;
-use carve_agentos::extensions::observability::{
+use tirea_agentos::contracts::plugin::AgentPlugin;
+use tirea_agentos::contracts::tool::Tool;
+use tirea_agentos::extensions::observability::{
     AgentMetrics, GenAISpan, LLMMetryPlugin, MetricsSink, ToolSpan,
 };
 use genai::chat::ChatOptions;
-use carve_agentos::extensions::permission::PermissionPlugin;
-use carve_agentos::orchestrator::AgentDefinition;
+use tirea_agentos::extensions::permission::PermissionPlugin;
+use tirea_agentos::orchestrator::AgentDefinition;
 use clap::Parser;
 use std::sync::Arc;
-use uncarve_examples::travel::tools::*;
+use tirea_examples::travel::tools::*;
 
 /// Logging sink that prints metrics to stderr after each session.
 struct LoggingSink;
@@ -68,7 +68,7 @@ impl MetricsSink for LoggingSink {
 
 #[tokio::main]
 async fn main() {
-    let args = uncarve_examples::Args::parse();
+    let args = tirea_examples::Args::parse();
 
     let agent_def = AgentDefinition {
         id: "travel".into(),
@@ -110,5 +110,5 @@ async fn main() {
         ("llmmetry".into(), Arc::new(llmmetry)),
     ];
 
-    uncarve_examples::serve(args, agent_def, tools, plugins).await;
+    tirea_examples::serve(args, agent_def, tools, plugins).await;
 }

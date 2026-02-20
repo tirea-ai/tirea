@@ -5,8 +5,8 @@ The `#[derive(State)]` macro generates typed state references with getter/setter
 ## Basic Usage
 
 ```rust,ignore
-use carve_state::State;
-use carve_state_derive::State;
+use tirea_state::State;
+use tirea_state_derive::State;
 use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, State)]
@@ -23,35 +23,35 @@ This generates:
 
 ## Field Attributes
 
-### `#[carve(rename = "json_name")]`
+### `#[tirea(rename = "json_name")]`
 
 Use a different key name in the JSON document:
 
 ```rust,ignore
 #[derive(State)]
 struct Config {
-    #[carve(rename = "display_name")]
+    #[tirea(rename = "display_name")]
     label: String,
 }
 // Reads/writes JSON key "display_name", Rust field is "label"
 ```
 
-### `#[carve(default = "expr")]`
+### `#[tirea(default = "expr")]`
 
 Provide a default value expression when the field is missing from JSON:
 
 ```rust,ignore
 #[derive(State)]
 struct Settings {
-    #[carve(default = "60")]
+    #[tirea(default = "60")]
     timeout_secs: i64,
 
-    #[carve(default = "\"en\".to_string()")]
+    #[tirea(default = "\"en\".to_string()")]
     language: String,
 }
 ```
 
-### `#[carve(skip)]`
+### `#[tirea(skip)]`
 
 Exclude a field from the state ref. The field must implement `Default`:
 
@@ -59,12 +59,12 @@ Exclude a field from the state ref. The field must implement `Default`:
 #[derive(State)]
 struct Record {
     data: String,
-    #[carve(skip)]
+    #[tirea(skip)]
     _internal: Vec<u8>,  // not accessible via RecordRef
 }
 ```
 
-### `#[carve(nested)]`
+### `#[tirea(nested)]`
 
 Treat a struct field as nested state with its own typed ref:
 
@@ -72,7 +72,7 @@ Treat a struct field as nested state with its own typed ref:
 #[derive(State)]
 struct User {
     name: String,
-    #[carve(nested)]
+    #[tirea(nested)]
     profile: Profile,
 }
 
@@ -85,9 +85,9 @@ struct Profile {
 // Usage: user.profile().bio()?
 ```
 
-Without `#[carve(nested)]`, the field is treated as a whole JSON value (serialized/deserialized as one unit).
+Without `#[tirea(nested)]`, the field is treated as a whole JSON value (serialized/deserialized as one unit).
 
-### `#[carve(flatten)]`
+### `#[tirea(flatten)]`
 
 Flatten nested struct fields into the parent JSON object:
 
@@ -95,7 +95,7 @@ Flatten nested struct fields into the parent JSON object:
 #[derive(State)]
 struct Event {
     name: String,
-    #[carve(flatten)]
+    #[tirea(flatten)]
     metadata: Metadata,
 }
 
@@ -115,7 +115,7 @@ For a field `value: i64`, the generated `Ref` type provides:
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `value()` | `fn value(&self) -> CarveResult<i64>` | Read current value |
+| `value()` | `fn value(&self) -> TireaResult<i64>` | Read current value |
 | `set_value()` | `fn set_value(&self, v: i64)` | Set value (collects patch) |
 | `increment_value()` | `fn increment_value(&self, amount: impl Into<Number>)` | Increment (numeric fields) |
 

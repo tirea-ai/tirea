@@ -1,0 +1,17 @@
+[package]
+name = "tirea-extension-mcp"
+version = "0.1.0"
+edition = "2021"
+description = "MCP extension for tirea"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+tirea-contract = { path = "../tirea-contract" }
+async-trait = "0.1"
+serde_json = "1"
+thiserror = "2"
+mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"] }
+tokio = { version = "1", default-features = false, features = ["macros", "rt", "sync", "time"] }
+
+[dev-dependencies]
+tirea-contract = { path = "../tirea-contract", features = ["test-support"] }

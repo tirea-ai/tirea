@@ -1,0 +1,48 @@
+[package]
+name = "tirea-agentos-server"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "HTTP/SSE/NATS gateway for tirea AgentOs"
+
+[dependencies]
+tirea-contract = { path = "../tirea-contract" }
+tirea-extension-permission = { path = "../tirea-extension-permission" }
+tirea-agentos = { path = "../tirea-agentos" }
+tirea-protocol-ag-ui = { path = "../tirea-protocol-ag-ui" }
+tirea-protocol-ai-sdk-v6 = { path = "../tirea-protocol-ai-sdk-v6" }
+tirea-store-adapters = { path = "../tirea-store-adapters", features = ["nats", "postgres"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
+futures = "0.3"
+async-stream = "0.3"
+bytes = "1"
+uuid = { version = "1", features = ["v4", "v7"] }
+
+axum = { version = "0.7", default-features = false, features = ["http1", "json", "query", "tokio"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+
+clap = { version = "4", features = ["derive", "env"] }
+async-nats = "0.38"
+genai = "0.5"
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+async-trait = "0.1"
+testcontainers = "0.26"
+testcontainers-modules = { version = "0.14", features = ["nats", "postgres"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres"], default-features = false }
+opentelemetry = "0.28"
+opentelemetry_sdk = { version = "0.28", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.28", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace"] }
+tracing-opentelemetry = "0.29"
+tracing-subscriber = { version = "0.3", features = ["registry"] }
+phoenix-test-helpers = { path = "../../e2e/phoenix/test-helpers" }

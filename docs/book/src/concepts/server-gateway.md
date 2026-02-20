@@ -1,6 +1,6 @@
 # Server Gateway
 
-`carve-agentos-server` provides HTTP and NATS interfaces for running agents as a service.
+`tirea-agentos-server` provides HTTP and NATS interfaces for running agents as a service.
 
 ## HTTP Server (Axum)
 
@@ -28,18 +28,18 @@ The protocol is selected via request headers or query parameters.
 
 ## NATS Transport
 
-For microservice deployments, `carve-agentos-server` can also listen on NATS subjects, enabling decoupled agent invocation.
+For microservice deployments, `tirea-agentos-server` can also listen on NATS subjects, enabling decoupled agent invocation.
 
 ## Configuration
 
 The server requires:
 
 - An `AgentOs` instance (with agents, tools, models registered)
-- A thread store implementation for thread persistence (for example `carve_thread_store_adapters::FileStore`)
+- A thread store implementation for thread persistence (for example `tirea_store_adapters::FileStore`)
 - Network binding configuration (host, port)
 
 ```rust,ignore
-use carve_agentos_server::http::AppState;
+use tireaos_server::http::AppState;
 
 let state = AppState {
     os: Arc::new(agent_os),

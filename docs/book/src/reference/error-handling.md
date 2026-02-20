@@ -1,11 +1,11 @@
 # Error Handling
 
-`carve-state` uses the `thiserror` crate with a unified `CarveError` enum.
+`tirea-state` uses the `thiserror` crate with a unified `TireaError` enum.
 
-## CarveError
+## TireaError
 
 ```rust,ignore
-pub enum CarveError {
+pub enum TireaError {
     PathNotFound { path: Path },
     IndexOutOfBounds { path: Path, index: usize, len: usize },
     TypeMismatch { path: Path, expected: &'static str, found: &'static str },
@@ -30,12 +30,12 @@ pub enum CarveError {
 | `InvalidOperation` | General invalid operation |
 | `Serialization` | serde_json serialization/deserialization failure |
 
-## CarveResult
+## TireaResult
 
 Convenience type alias:
 
 ```rust,ignore
-pub type CarveResult<T> = Result<T, CarveError>;
+pub type TireaResult<T> = Result<T, TireaError>;
 ```
 
 ## Error Context with `with_prefix`
@@ -44,26 +44,26 @@ When working with nested state, errors include the full path context. The `with_
 
 ```rust,ignore
 // If a nested struct at "address" has an error at "city":
-let err = CarveError::path_not_found(path!("city"));
+let err = TireaError::path_not_found(path!("city"));
 let contextualized = err.with_prefix(&path!("address"));
 // Error now shows: "path not found: address.city"
 ```
 
 ## Convenience Constructors
 
-`CarveError` provides factory methods for each variant:
+`TireaError` provides factory methods for each variant:
 
-- `CarveError::path_not_found(path)`
-- `CarveError::index_out_of_bounds(path, index, len)`
-- `CarveError::type_mismatch(path, expected, found)`
-- `CarveError::numeric_on_non_number(path)`
-- `CarveError::merge_requires_object(path)`
-- `CarveError::append_requires_array(path)`
-- `CarveError::invalid_operation(message)`
+- `TireaError::path_not_found(path)`
+- `TireaError::index_out_of_bounds(path, index, len)`
+- `TireaError::type_mismatch(path, expected, found)`
+- `TireaError::numeric_on_non_number(path)`
+- `TireaError::merge_requires_object(path)`
+- `TireaError::append_requires_array(path)`
+- `TireaError::invalid_operation(message)`
 
 ## Agent-Level Errors
 
-`carve-agent` defines additional error types:
+`tirea` defines additional error types:
 
 - **`ToolError`** — Errors from tool execution
 - **`AgentLoopError`** — Errors in the agent loop (LLM failures, tool errors)

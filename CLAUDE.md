@@ -50,14 +50,14 @@
 
 ## Key Patterns
 
-- Error handling: Rust `thiserror` with `CarveError` enum; use `.context()` for error chaining
-- Testing: `#[cfg(test)]` modules; integration tests in `crates/carve-state/tests/`
-- Benchmarks: `cargo bench --package carve-state` using criterion
+- Error handling: Rust `thiserror` with `TireaError` enum; use `.context()` for error chaining
+- Testing: `#[cfg(test)]` modules; integration tests in `crates/tirea-state/tests/`
+- Benchmarks: `cargo bench --package tirea-state` using criterion
 
 ## Key Entry Paths
 
-- `crates/carve-state/` - core library (patch, apply, conflict detection)
-- `crates/carve-state-derive/` - proc-macro for `#[derive(CarveViewModel)]`
+- `crates/tirea-state/` - core library (patch, apply, conflict detection)
+- `crates/tirea-state-derive/` - proc-macro for `#[derive(State)]`
 
 ## Documentation Rules
 

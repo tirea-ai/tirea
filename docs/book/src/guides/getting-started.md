@@ -1,6 +1,6 @@
 # Getting Started
 
-This guide walks you through the basics of `carve-state` and `carve-agent`.
+This guide walks you through the basics of `tirea-state` and `tirea`.
 
 ## Prerequisites
 
@@ -8,7 +8,7 @@ Add the dependencies to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-carve-state = { version = "0.1", features = ["derive"] }
+tirea-state = { version = "0.1", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ```
@@ -17,17 +17,17 @@ For agent functionality:
 
 ```toml
 [dependencies]
-carve-agent = "0.1"
+tirea = "0.1"
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 ```
 
 ## Step 1: Working with Patches
 
-The simplest way to use `carve-state` is with raw JSON patches:
+The simplest way to use `tirea-state` is with raw JSON patches:
 
 ```rust
-use carve_state::{apply_patch, Patch, Op, path};
+use tirea_state::{apply_patch, Patch, Op, path};
 use serde_json::json;
 
 // Start with initial state
@@ -50,7 +50,7 @@ assert_eq!(state["count"], 0);
 `JsonWriter` provides a builder-style API for constructing patches:
 
 ```rust
-use carve_state::{JsonWriter, path};
+use tirea_state::{JsonWriter, path};
 use serde_json::json;
 
 let mut w = JsonWriter::new();
@@ -67,8 +67,8 @@ let patch = w.build();
 For type safety, use `#[derive(State)]`:
 
 ```rust,ignore
-use carve_state::State;
-use carve_state_derive::State;
+use tirea_state::State;
+use tirea_state_derive::State;
 use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, State)]
@@ -85,7 +85,7 @@ This generates `CounterRef<'a>` with getters (`value()`, `label()`) and setters 
 Tools are the primary way agents interact with state:
 
 ```rust,ignore
-use carve_agent::{Tool, ToolDescriptor, ToolResult, ToolError, Context};
+use tirea::{Tool, ToolDescriptor, ToolResult, ToolError, Context};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
@@ -116,6 +116,6 @@ impl Tool for IncrementTool {
 
 ## Next Steps
 
-- [Derive Macro Reference](./derive-macro.md) — All `#[carve(...)]` attributes
+- [Derive Macro Reference](./derive-macro.md) — All `#[tirea(...)]` attributes
 - [Building Agents](./building-agents.md) — Full agent setup with AgentOs
 - [Operations](../reference/operations.md) — All patch operation types

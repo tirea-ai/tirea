@@ -1,4 +1,4 @@
-# Performance Analysis: Clone Overhead in Carve Agent Framework
+# Performance Analysis: Clone Overhead in Tirea Agent Framework
 
 **Date**: 2026-02-13
 **Analysis Goal**: Measure clone overhead and evaluate zero-copy optimization opportunities
@@ -194,7 +194,7 @@ pub struct StateView<'a> {
 }
 
 impl StateView<'_> {
-    fn current(&self) -> CarveResult<Value> {
+    fn current(&self) -> TireaResult<Value> {
         apply_patches(self.base, self.patches.iter().map(|p| p.patch()))
     }
 }

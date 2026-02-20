@@ -1,11 +1,11 @@
 # CopilotKit Frontend E2E Example
 
-Next.js frontend using [CopilotKit](https://copilotkit.ai) to chat with `carve-agentos-server` via the [AG-UI protocol](https://docs.ag-ui.com/).
+Next.js frontend using [CopilotKit](https://copilotkit.ai) to chat with `tirea-agentos-server` via the [AG-UI protocol](https://docs.ag-ui.com/).
 
 ## Architecture
 
 ```
-Browser (CopilotChat) → CopilotKit Runtime → carve-agentos-server (AG-UI SSE) → LLM
+Browser (CopilotChat) → CopilotKit Runtime → tirea-agentos-server (AG-UI SSE) → LLM
 ```
 
 No protocol bridge needed — CopilotKit's `HttpAgent` connects directly to our AG-UI endpoint at `/v1/ag-ui/agents/default/runs`. The `@copilotkit/runtime` handles the AG-UI event stream natively.
@@ -13,13 +13,13 @@ No protocol bridge needed — CopilotKit's `HttpAgent` connects directly to our 
 ## Prerequisites
 
 - Node.js 18+
-- A running `carve-agentos-server` instance (default: `http://localhost:8080`)
+- A running `tirea-agentos-server` instance (default: `http://localhost:8080`)
 
 ## Quick Start
 
 ```bash
 # 1. Start the Rust backend with DeepSeek (in project root)
-DEEPSEEK_API_KEY=<key> cargo run --package carve-agentos-server -- \
+DEEPSEEK_API_KEY=<key> cargo run --package tirea-agentos-server -- \
   --http-addr 127.0.0.1:8080 \
   --config e2e/copilotkit-frontend/agent-config.json
 
@@ -35,7 +35,7 @@ Open http://localhost:3002 and send a message.
 
 | Variable | Default | Description |
 |---|---|---|
-| `BACKEND_URL` | `http://localhost:8080` | carve-agentos-server address |
+| `BACKEND_URL` | `http://localhost:8080` | tirea-agentos-server address |
 
 Set via `.env.local` or environment:
 

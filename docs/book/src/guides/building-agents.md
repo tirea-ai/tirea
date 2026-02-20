@@ -14,7 +14,7 @@ An agent requires:
 ## Step 1: Define Tools
 
 ```rust,ignore
-use carve_agent::{Tool, ToolDescriptor, ToolResult, ToolError, Context};
+use tirea::{Tool, ToolDescriptor, ToolResult, ToolError, Context};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
@@ -44,7 +44,7 @@ impl Tool for SearchTool {
 ## Step 2: Build AgentOs
 
 ```rust,ignore
-use carve_agent::{
+use tirea::{
     AgentOs, AgentOsBuilder, AgentDefinition, AgentConfig,
     MemoryStore, MaxRounds, StopConditionSpec,
 };
@@ -72,7 +72,7 @@ let os = AgentOsBuilder::new()
 ### Blocking (returns final session)
 
 ```rust,ignore
-use carve_agent::{run_loop, Session, Message, RunContext};
+use tirea::{run_loop, Session, Message, RunContext};
 
 let session = Session::new("session-1")
     .with_message(Message::user("Search for Rust async patterns"));
@@ -84,7 +84,7 @@ let result = run_loop(run_ctx, session).await?;
 ### Streaming (returns event stream)
 
 ```rust,ignore
-use carve_agent::run_loop_stream;
+use tirea::run_loop_stream;
 use futures::StreamExt;
 
 let stream = run_loop_stream(run_ctx, session);
@@ -102,8 +102,8 @@ while let Some(event) = stream.next().await {
 ## Step 4: Persist Threads
 
 ```rust,ignore
-use carve_agent::{ThreadReader, ThreadWriter};
-use carve_thread_store_adapters::FileStore;
+use tirea::{ThreadReader, ThreadWriter};
+use tirea_store_adapters::FileStore;
 
 let thread_store = FileStore::new("./threads");
 

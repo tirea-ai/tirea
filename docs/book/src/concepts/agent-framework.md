@@ -1,6 +1,6 @@
 # Agent Framework
 
-`carve-agent` provides a framework for building AI agents where all state changes are tracked through patches.
+`tirea` provides a framework for building AI agents where all state changes are tracked through patches.
 
 ## Architecture
 
@@ -33,7 +33,7 @@ The `Tool` trait is the primary extension point. Each tool provides:
 - **`execute(args, ctx)`** — Async execution with typed state access via `Context`
 
 ```rust,ignore
-use carve_agent::{Tool, ToolDescriptor, ToolResult, ToolError, Context};
+use tirea::{Tool, ToolDescriptor, ToolResult, ToolError, Context};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
@@ -132,9 +132,9 @@ Thread persistence is modeled with:
 - `ThreadReader` / `ThreadWriter` traits
 - `ThreadStore` (combined read+write trait)
 - `MemoryStore` — In-memory (for testing)
-- `carve_thread_store_adapters::FileStore` — JSON files on disk
-- `carve_thread_store_adapters::PostgresStore` — PostgreSQL (`postgres` feature)
-- `carve_thread_store_adapters::NatsBufferedThreadWriter` — NATS JetStream buffering decorator (`nats` feature)
+- `tirea_store_adapters::FileStore` — JSON files on disk
+- `tirea_store_adapters::PostgresStore` — PostgreSQL (`postgres` feature)
+- `tirea_store_adapters::NatsBufferedThreadWriter` — NATS JetStream buffering decorator (`nats` feature)
 
 ## Streaming
 

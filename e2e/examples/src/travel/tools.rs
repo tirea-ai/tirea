@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use carve_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult, TypedTool};
-use carve_agentos::contracts::ToolCallContext;
+use tirea_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult, TypedTool};
+use tirea_agentos::contracts::ToolCallContext;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};

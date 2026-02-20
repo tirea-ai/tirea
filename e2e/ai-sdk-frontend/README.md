@@ -1,11 +1,11 @@
 # AI SDK Frontend E2E Example
 
-Next.js frontend using Vercel AI SDK v6 (`@ai-sdk/react`) to chat with `carve-agentos-server`.
+Next.js frontend using Vercel AI SDK v6 (`@ai-sdk/react`) to chat with `tirea-agentos-server`.
 
 ## Architecture
 
 ```
-Browser (useChat) → Next.js API Route → carve-agentos-server → LLM
+Browser (useChat) → Next.js API Route → tirea-agentos-server → LLM
                     (SSE passthrough)
 ```
 
@@ -14,13 +14,13 @@ The server emits [AI SDK v6 UI Message Stream](https://ai-sdk.dev/docs/ai-sdk-ui
 ## Prerequisites
 
 - Node.js 18+
-- A running `carve-agentos-server` instance (default: `http://localhost:8080`)
+- A running `tirea-agentos-server` instance (default: `http://localhost:8080`)
 
 ## Quick Start
 
 ```bash
 # 1. Start the Rust backend with DeepSeek (in project root)
-DEEPSEEK_API_KEY=<key> cargo run --package carve-agentos-server -- \
+DEEPSEEK_API_KEY=<key> cargo run --package tirea-agentos-server -- \
   --http-addr 127.0.0.1:8080 \
   --config e2e/ai-sdk-frontend/agent-config.json
 
@@ -39,7 +39,7 @@ Open http://localhost:3001 and send a message.
 DEEPSEEK_API_KEY=<key> docker compose -f e2e/tensorzero/docker-compose.yml up -d --wait
 
 # 2. Start the Rust backend with TensorZero
-cargo run --package carve-agentos-server -- --http-addr 127.0.0.1:8080
+cargo run --package tirea-agentos-server -- --http-addr 127.0.0.1:8080
 
 # 3. Start the frontend
 cd e2e/ai-sdk-frontend
@@ -51,7 +51,7 @@ npm run dev
 
 | Variable | Default | Description |
 |---|---|---|
-| `BACKEND_URL` | `http://localhost:8080` | carve-agentos-server address |
+| `BACKEND_URL` | `http://localhost:8080` | tirea-agentos-server address |
 
 Set via `.env.local` or environment:
 

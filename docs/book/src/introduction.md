@@ -1,15 +1,15 @@
 # Introduction
 
-**Uncarve** is an immutable state-driven agent framework built in Rust. It combines typed JSON state management with an AI agent loop, providing full traceability of state changes, replay capability, and component isolation.
+**Tirea** is an immutable state-driven agent framework built in Rust. It combines typed JSON state management with an AI agent loop, providing full traceability of state changes, replay capability, and component isolation.
 
 ## Crate Overview
 
 | Crate | Description |
 |-------|-------------|
-| `carve-state` | Core library: typed state, JSON patches, apply, conflict detection |
-| `carve-state-derive` | Proc-macro for `#[derive(State)]` |
-| `carve-agent` | Agent framework: tools, sessions, streaming, plugins |
-| `carve-agentos-server` | HTTP/SSE/NATS gateway server |
+| `tirea-state` | Core library: typed state, JSON patches, apply, conflict detection |
+| `tirea-state-derive` | Proc-macro for `#[derive(State)]` |
+| `tirea` | Agent framework: tools, sessions, streaming, plugins |
+| `tirea-agentos-server` | HTTP/SSE/NATS gateway server |
 
 ## Architecture
 

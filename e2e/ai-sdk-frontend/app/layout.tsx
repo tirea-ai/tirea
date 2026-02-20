@@ -1,6 +1,6 @@
 export const metadata = {
-  title: "Uncarve AI SDK Demo",
-  description: "E2E test frontend for carve-agentos-server",
+  title: "Tirea AI SDK Demo",
+  description: "E2E test frontend for tirea-agentos-server",
 };
 
 export default function RootLayout({

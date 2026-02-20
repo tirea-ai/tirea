@@ -1,6 +1,6 @@
 # Immutable State Management
 
-`carve-state` provides typed access to JSON state with automatic patch collection, enabling deterministic state transitions and full replay capability.
+`tirea-state` provides typed access to JSON state with automatic patch collection, enabling deterministic state transitions and full replay capability.
 
 ## The Patch Model
 
@@ -13,7 +13,7 @@ State' = apply_patch(State, Patch)
 A `Patch` contains a list of `Op` (operations), each targeting a specific path in the JSON document.
 
 ```rust
-use carve_state::{apply_patch, Patch, Op, path};
+use tirea_state::{apply_patch, Patch, Op, path};
 use serde_json::json;
 
 let state = json!({"count": 0, "name": "counter"});
@@ -49,7 +49,7 @@ assert_eq!(state["count"], 0); // Original unchanged
 For dynamic JSON manipulation without typed structs, use `JsonWriter`:
 
 ```rust
-use carve_state::{JsonWriter, path};
+use tirea_state::{JsonWriter, path};
 use serde_json::json;
 
 let mut w = JsonWriter::new();

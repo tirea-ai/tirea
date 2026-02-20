@@ -330,7 +330,7 @@ export default function Home() {
           borderRight: "1px solid #ccc",
         }}
       >
-        <h1 style={{ padding: "1rem", margin: 0 }}>Uncarve CopilotKit Demo</h1>
+        <h1 style={{ padding: "1rem", margin: 0 }}>Tirea CopilotKit Demo</h1>
         <TaskPanel />
         <ProgrammaticControls />
       </div>

@@ -1,0 +1,39 @@
+[package]
+name = "tirea-agentos"
+version = "0.1.0"
+edition = "2021"
+description = "AgentOS orchestration layer for tirea"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+tirea-state = { path = "../tirea-state" }
+tirea-contract = { path = "../tirea-contract" }
+tirea-agent-loop = { path = "../tirea-agent-loop" }
+tirea-extension-permission = { path = "../tirea-extension-permission" }
+tirea-extension-reminder = { path = "../tirea-extension-reminder" }
+tirea-extension-interaction = { path = "../tirea-extension-interaction" }
+tirea-extension-observability = { path = "../tirea-extension-observability" }
+tirea-extension-skills = { path = "../tirea-extension-skills" }
+tirea-extension-mcp = { path = "../tirea-extension-mcp", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+tokio = { version = "1", features = ["sync", "rt", "time", "process"] }
+thiserror = "2"
+genai = "0.5"
+futures = "0.3"
+uuid = { version = "1", features = ["v4", "v7"] }
+
+[features]
+default = []
+mcp = ["dep:tirea-extension-mcp"]
+
+[dev-dependencies]
+tirea-contract = { path = "../tirea-contract", features = ["test-support"] }
+tirea-store-adapters = { path = "../tirea-store-adapters" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
+tempfile = "3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[lints]
+workspace = true

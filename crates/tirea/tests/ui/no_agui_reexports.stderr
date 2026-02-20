@@ -1,0 +1,21 @@
+error[E0432]: unresolved import `tirea::ag_ui`
+ --> tests/ui/no_agui_reexports.rs:2:12
+  |
+2 | use tirea::ag_ui::AGUIContext;
+  |            ^^^^^ could not find `ag_ui` in `tirea`
+  |
+note: found an item that was configured out
+ --> src/lib.rs
+  |
+  | #[cfg(feature = "ag-ui")]
+  |       ----------------- the item is gated behind the `ag-ui` feature
+  | pub use tirea_protocol_ag_ui as ag_ui;
+  |                                 ^^^^^
+
+error[E0432]: unresolved imports `tirea::AGUIEvent`, `tirea::RunAgentRequest`
+ --> tests/ui/no_agui_reexports.rs:3:13
+  |
+3 | use tirea::{AGUIEvent, RunAgentRequest};
+  |             ^^^^^^^^^  ^^^^^^^^^^^^^^^ no `RunAgentRequest` in the root
+  |             |
+  |             no `AGUIEvent` in the root

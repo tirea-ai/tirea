@@ -7,8 +7,8 @@ While `JsonWriter` provides dynamic JSON access, the `#[derive(State)]` macro gi
 Given a struct:
 
 ```rust,ignore
-use carve_state::State;
-use carve_state_derive::State;
+use tirea_state::State;
+use tirea_state_derive::State;
 use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, State)]
@@ -53,7 +53,7 @@ After the tool executes, the framework calls `ctx.take_patch()` to collect all o
 - **PatchSink** — Internal collector that records operations as you call setters. Transparent to developers.
 - **Context** — Provides `state::<T>(path)` method. Holds the current JSON state and a PatchSink.
 - **StateRef** — The generated `{Name}Ref<'a>` type. Each field gets:
-  - `fn field_name(&self) -> CarveResult<T>` — getter
+  - `fn field_name(&self) -> TireaResult<T>` — getter
   - `fn set_field_name(&self, value: T)` — setter
   - `fn increment_field_name(&self, amount)` — for numeric fields
 
@@ -61,21 +61,21 @@ After the tool executes, the framework calls `ctx.take_patch()` to collect all o
 
 | Attribute | Description |
 |-----------|-------------|
-| `#[carve(rename = "json_name")]` | Use a different name in JSON |
-| `#[carve(default = "expr")]` | Default value if field is missing |
-| `#[carve(skip)]` | Exclude from state ref (field must impl `Default`) |
-| `#[carve(nested)]` | Treat as nested State with its own Ref type |
-| `#[carve(flatten)]` | Flatten nested struct fields into parent |
+| `#[tirea(rename = "json_name")]` | Use a different name in JSON |
+| `#[tirea(default = "expr")]` | Default value if field is missing |
+| `#[tirea(skip)]` | Exclude from state ref (field must impl `Default`) |
+| `#[tirea(nested)]` | Treat as nested State with its own Ref type |
+| `#[tirea(flatten)]` | Flatten nested struct fields into parent |
 
 ## Nested State
 
-Use `#[carve(nested)]` for struct fields that should have their own typed ref:
+Use `#[tirea(nested)]` for struct fields that should have their own typed ref:
 
 ```rust,ignore
 #[derive(State)]
 struct User {
     name: String,
-    #[carve(nested)]
+    #[tirea(nested)]
     profile: Profile,
 }
 

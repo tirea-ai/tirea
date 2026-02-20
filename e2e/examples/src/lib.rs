@@ -8,13 +8,13 @@ pub mod research {
     pub mod tools;
 }
 
-use carve_agentos::contracts::plugin::AgentPlugin;
-use carve_agentos::contracts::storage::{AgentStateReader, AgentStateStore};
-use carve_agentos::contracts::tool::Tool;
-use carve_agentos::orchestrator::{AgentDefinition, AgentOsBuilder, ModelDefinition};
-use carve_agentos::runtime::loop_runner::tool_map_from_arc;
-use carve_agentos_server::http::{self, AppState};
-use carve_thread_store_adapters::FileStore;
+use tirea_agentos::contracts::plugin::AgentPlugin;
+use tirea_agentos::contracts::storage::{AgentStateReader, AgentStateStore};
+use tirea_agentos::contracts::tool::Tool;
+use tirea_agentos::orchestrator::{AgentDefinition, AgentOsBuilder, ModelDefinition};
+use tirea_agentos::runtime::loop_runner::tool_map_from_arc;
+use tirea_agentos_server::http::{self, AppState};
+use tirea_store_adapters::FileStore;
 use clap::Parser;
 use std::collections::HashMap;
 use std::path::PathBuf;

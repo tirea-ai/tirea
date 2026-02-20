@@ -1,14 +1,14 @@
-use carve_agentos::contracts::plugin::AgentPlugin;
-use carve_agentos::contracts::tool::Tool;
-use carve_agentos::extensions::permission::PermissionPlugin;
-use carve_agentos::orchestrator::AgentDefinition;
+use tirea_agentos::contracts::plugin::AgentPlugin;
+use tirea_agentos::contracts::tool::Tool;
+use tirea_agentos::extensions::permission::PermissionPlugin;
+use tirea_agentos::orchestrator::AgentDefinition;
 use clap::Parser;
 use std::sync::Arc;
-use uncarve_examples::research::tools::*;
+use tirea_examples::research::tools::*;
 
 #[tokio::main]
 async fn main() {
-    let args = uncarve_examples::Args::parse();
+    let args = tirea_examples::Args::parse();
 
     let agent_def = AgentDefinition {
         id: "research".into(),
@@ -40,5 +40,5 @@ async fn main() {
     let plugins: Vec<(String, Arc<dyn AgentPlugin>)> =
         vec![("permission".into(), Arc::new(PermissionPlugin))];
 
-    uncarve_examples::serve(args, agent_def, tools, plugins).await;
+    tirea_examples::serve(args, agent_def, tools, plugins).await;
 }

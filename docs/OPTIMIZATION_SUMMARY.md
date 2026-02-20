@@ -14,7 +14,7 @@ Successfully migrated from `Vec<Message>` to `Vec<Arc<Message>>` in the Thread/S
 
 #### 1. Core Type Changes
 
-**File**: `crates/carve-agent/src/thread.rs`
+**File**: `crates/tirea/src/thread.rs`
 
 ```rust
 // Before:
@@ -39,7 +39,7 @@ pub struct Thread {
 
 #### 2. Agent Loop Optimization
 
-**File**: `crates/carve-agent/src/loop.rs`
+**File**: `crates/tirea/src/loop.rs`
 
 **Before** (Bottleneck):
 ```rust
@@ -61,7 +61,7 @@ for msg in &step.session.messages {
 
 #### 3. Placeholder Message Replacement
 
-**File**: `crates/carve-agent/src/loop.rs`
+**File**: `crates/tirea/src/loop.rs`
 
 **Challenge**: Arc is immutable, can't modify content directly
 
@@ -83,7 +83,7 @@ if let Some(index) = session.messages.iter().rposition(...) {
 
 #### 4. Storage Layer Updates
 
-**File**: `crates/carve-agent/src/storage.rs`
+**File**: `crates/tirea/src/storage.rs`
 
 Updated `paginate_in_memory()` function signature:
 
@@ -201,9 +201,9 @@ No breaking changes - all existing tests pass without modification. The optimiza
 ## Files Modified
 
 ### Core Implementation
-- `crates/carve-agent/src/thread.rs` - Thread type definition
-- `crates/carve-agent/src/loop.rs` - Agent loop logic
-- `crates/carve-agent/src/storage.rs` - Storage layer and tests
+- `crates/tirea/src/thread.rs` - Thread type definition
+- `crates/tirea/src/loop.rs` - Agent loop logic
+- `crates/tirea/src/storage.rs` - Storage layer and tests
 
 ### Documentation
 - `docs/PERFORMANCE_ANALYSIS.md` - Benchmark analysis
@@ -211,9 +211,9 @@ No breaking changes - all existing tests pass without modification. The optimiza
 - `docs/OPTIMIZATION_SUMMARY.md` - This document
 
 ### Benchmarks
-- `crates/carve-agent/benches/message_cloning.rs` - Message clone benchmarks
-- `crates/carve-agent/benches/session_operations.rs` - Session operation benchmarks
-- `crates/carve-agent/benches/quick_clone_test.rs` - Quick comparison benchmark
+- `crates/tirea/benches/message_cloning.rs` - Message clone benchmarks
+- `crates/tirea/benches/session_operations.rs` - Session operation benchmarks
+- `crates/tirea/benches/quick_clone_test.rs` - Quick comparison benchmark
 
 ---
 
@@ -221,19 +221,19 @@ No breaking changes - all existing tests pass without modification. The optimiza
 
 ### 1. Compilation
 ```bash
-cargo check --package carve-agent
+cargo check --package tirea
 # ✅ Success - no warnings or errors
 ```
 
 ### 2. Tests
 ```bash
-cargo test --package carve-agent --lib
+cargo test --package tirea --lib
 # ✅ test result: ok. 1263 passed; 0 failed
 ```
 
 ### 3. Benchmarks
 ```bash
-cargo bench --package carve-agent --bench quick_clone_test
+cargo bench --package tirea --bench quick_clone_test
 # ✅ 5-7x performance improvement confirmed
 ```
 

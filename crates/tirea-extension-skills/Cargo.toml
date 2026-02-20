@@ -1,0 +1,26 @@
+[package]
+name = "tirea-extension-skills"
+version = "0.1.0"
+edition = "2021"
+description = "Skills extension for tirea"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+tirea-contract = { path = "../tirea-contract" }
+tirea-extension-permission = { path = "../tirea-extension-permission" }
+tirea-state = { path = "../tirea-state", features = ["derive"] }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+unicode-normalization = "0.1"
+tracing = "0.1"
+base64 = "0.22"
+thiserror = "2"
+tokio = { version = "1", features = ["sync", "rt", "time", "process"] }
+
+[dev-dependencies]
+tirea-contract = { path = "../tirea-contract", features = ["test-support"] }
+tokio = { version = "1", features = ["rt", "macros"] }
+tempfile = "3"

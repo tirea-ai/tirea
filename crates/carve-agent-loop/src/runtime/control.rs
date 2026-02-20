@@ -1,3 +1,0 @@
-//! Loop control-state — re-exported from [`carve_agent_contract::runtime::control`].
-
-pub use crate::contracts::runtime::control::{InferenceError, LoopControlExt, LoopControlState};

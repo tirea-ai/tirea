@@ -1,23 +1,23 @@
-# Carve Agent Performance Benchmark Guide
+# Tirea Agent Performance Benchmark Guide
 
-This document describes how to run and interpret performance benchmarks for the Carve agent framework.
+This document describes how to run and interpret performance benchmarks for the Tirea agent framework.
 
 ## Quick Start
 
 ```bash
-# Run all benchmarks for carve-agent
-cargo bench --package carve-agent
+# Run all benchmarks for tirea
+cargo bench --package tirea
 
 # Run specific benchmark suites
-cargo bench --package carve-agent --bench message_cloning
-cargo bench --package carve-agent --bench session_operations
-cargo bench --package carve-agent --bench quick_clone_test
+cargo bench --package tirea --bench message_cloning
+cargo bench --package tirea --bench session_operations
+cargo bench --package tirea --bench quick_clone_test
 
 # Run with quick mode (fewer samples, faster)
-cargo bench --package carve-agent --bench quick_clone_test -- --quick
+cargo bench --package tirea --bench quick_clone_test -- --quick
 
-# Run carve-state benchmarks
-cargo bench --package carve-state
+# Run tirea-state benchmarks
+cargo bench --package tirea-state
 ```
 
 ## Benchmark Suites
@@ -142,14 +142,14 @@ open target/criterion/clone_100_owned/report/index.html
 
 1. **Establish baseline** (before optimization):
    ```bash
-   cargo bench --package carve-agent --bench quick_clone_test -- --save-baseline before
+   cargo bench --package tirea --bench quick_clone_test -- --save-baseline before
    ```
 
 2. **Make your changes** (e.g., implement Arc<Message>)
 
 3. **Compare against baseline**:
    ```bash
-   cargo bench --package carve-agent --bench quick_clone_test -- --baseline before
+   cargo bench --package tirea --bench quick_clone_test -- --baseline before
    ```
 
 Criterion will show percentage improvements/regressions.
@@ -167,14 +167,14 @@ Criterion will show percentage improvements/regressions.
    ```
 3. **Pin to specific CPU cores** (Linux):
    ```bash
-   taskset -c 0 cargo bench --package carve-agent --bench quick_clone_test
+   taskset -c 0 cargo bench --package tirea --bench quick_clone_test
    ```
 
 ### Quick Iteration
 
 For rapid development, use `--quick` mode:
 ```bash
-cargo bench --package carve-agent --bench quick_clone_test -- --quick
+cargo bench --package tirea --bench quick_clone_test -- --quick
 ```
 
 This reduces sample count from 100 to ~20, making benchmarks 3-5x faster.
@@ -243,7 +243,7 @@ brew install gnuplot
 
 1. **Create benchmark file**:
    ```bash
-   touch crates/carve-agent/benches/my_bench.rs
+   touch crates/tirea/benches/my_bench.rs
    ```
 
 2. **Add to Cargo.toml**:
@@ -272,7 +272,7 @@ brew install gnuplot
 
 4. **Run**:
    ```bash
-   cargo bench --package carve-agent --bench my_bench
+   cargo bench --package tirea --bench my_bench
    ```
 
 ---
@@ -293,7 +293,7 @@ jobs:
       - uses: actions/checkout@v2
 
       - name: Run benchmarks
-        run: cargo bench --package carve-agent -- --save-baseline ci
+        run: cargo bench --package tirea -- --save-baseline ci
 
       - name: Upload results
         uses: actions/upload-artifact@v2
@@ -316,9 +316,9 @@ For regression detection, use tools like [criterion-compare-action](https://gith
 
 ## Summary
 
-**Quick benchmark**: `cargo bench --package carve-agent --bench quick_clone_test`
+**Quick benchmark**: `cargo bench --package tirea --bench quick_clone_test`
 
-**Full analysis**: `cargo bench --package carve-agent`
+**Full analysis**: `cargo bench --package tirea`
 
 **View results**: `open target/criterion/report/index.html`
 

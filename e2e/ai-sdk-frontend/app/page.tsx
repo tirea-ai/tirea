@@ -16,10 +16,10 @@ interface InferenceMetrics {
 
 function getSessionId(): string {
   if (typeof window === "undefined") return "";
-  let id = localStorage.getItem("uncarve-session-id");
+  let id = localStorage.getItem("tirea-session-id");
   if (!id) {
     id = `ai-sdk-${crypto.randomUUID()}`;
-    localStorage.setItem("uncarve-session-id", id);
+    localStorage.setItem("tirea-session-id", id);
   }
   return id;
 }
@@ -58,7 +58,7 @@ export default function Chat() {
   if (!historyLoaded) {
     return (
       <main style={{ maxWidth: 640, margin: "2rem auto", fontFamily: "system-ui" }}>
-        <h1>Uncarve Chat</h1>
+        <h1>Tirea Chat</h1>
         <div style={{ color: "#888" }}>Loading...</div>
       </main>
     );
@@ -117,7 +117,7 @@ function ChatUI({
 
   return (
     <main style={{ maxWidth: 640, margin: "2rem auto", fontFamily: "system-ui" }}>
-      <h1>Uncarve Chat</h1>
+      <h1>Tirea Chat</h1>
 
       <div style={{ marginBottom: "1rem" }}>
         {messages.map((m) => (

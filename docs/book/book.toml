@@ -1,5 +1,5 @@
 [book]
-title = "Uncarve Documentation"
+title = "Tirea Documentation"
 description = "Immutable state-driven agent framework"
 language = "en"
 src = "src"
@@ -9,4 +9,4 @@ build-dir = "../../target/book"
 
 [output.html]
 default-theme = "rust"
-git-repository-url = "https://github.com/user/uncarve"
+git-repository-url = "https://github.com/user/tirea"

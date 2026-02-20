@@ -9,7 +9,7 @@ Operations (`Op`) are the atomic units of state change. Each operation targets a
 Set a value at the given path. Creates intermediate objects if they don't exist.
 
 ```rust
-use carve_state::{Op, path};
+use tirea_state::{Op, path};
 use serde_json::json;
 
 let op = Op::set(path!("user", "name"), json!("Alice"));
@@ -22,7 +22,7 @@ let op = Op::set(path!("user", "name"), json!("Alice"));
 Remove the value at the given path. No-op if the path doesn't exist.
 
 ```rust
-use carve_state::{Op, path};
+use tirea_state::{Op, path};
 
 let op = Op::delete(path!("user", "temp_field"));
 ```
@@ -32,7 +32,7 @@ let op = Op::delete(path!("user", "temp_field"));
 Append a value to an array. Creates the array if the path doesn't exist.
 
 ```rust
-use carve_state::{Op, path};
+use tirea_state::{Op, path};
 use serde_json::json;
 
 let op = Op::append(path!("user", "roles"), json!("admin"));
@@ -45,7 +45,7 @@ let op = Op::append(path!("user", "roles"), json!("admin"));
 Merge key-value pairs into an existing object. Creates the object if it doesn't exist.
 
 ```rust
-use carve_state::{Op, path};
+use tirea_state::{Op, path};
 use serde_json::json;
 
 let op = Op::merge_object(path!("user", "settings"), json!({"theme": "dark"}));
@@ -58,7 +58,7 @@ let op = Op::merge_object(path!("user", "settings"), json!({"theme": "dark"}));
 Add to a numeric value.
 
 ```rust
-use carve_state::{Op, path};
+use tirea_state::{Op, path};
 
 let op = Op::increment(path!("counter"), 1i64);
 ```
@@ -70,7 +70,7 @@ let op = Op::increment(path!("counter"), 1i64);
 Subtract from a numeric value.
 
 ```rust
-use carve_state::{Op, path};
+use tirea_state::{Op, path};
 
 let op = Op::decrement(path!("counter"), 1i64);
 ```
@@ -82,7 +82,7 @@ let op = Op::decrement(path!("counter"), 1i64);
 Insert a value at a specific index in an array, shifting elements to the right.
 
 ```rust
-use carve_state::{Op, path};
+use tirea_state::{Op, path};
 use serde_json::json;
 
 let op = Op::insert(path!("items"), 0, json!("first"));
@@ -95,7 +95,7 @@ let op = Op::insert(path!("items"), 0, json!("first"));
 Remove the first occurrence of a value from an array. No-op if the value is not found.
 
 ```rust
-use carve_state::{Op, path};
+use tirea_state::{Op, path};
 use serde_json::json;
 
 let op = Op::remove(path!("tags"), json!("deprecated"));
@@ -119,7 +119,7 @@ Conversions from `i32`, `i64`, `u32`, `u64`, `f32`, `f64` are provided via `From
 The `path!` macro creates paths from segments:
 
 ```rust
-use carve_state::path;
+use tirea_state::path;
 
 let p = path!("users", 0, "name");    // users[0].name
 let p = path!("settings", "theme");    // settings.theme

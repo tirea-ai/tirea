@@ -1,4 +1,4 @@
-use carve_state_derive::State;
+use tirea_state_derive::State;
 use serde::{Deserialize, Serialize};
 
 /// A single trip in the travel planner.

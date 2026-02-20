@@ -1,0 +1,58 @@
+[package]
+name = "tirea"
+version = "0.1.0"
+edition = "2021"
+description = "Unified umbrella crate for the tirea agent framework"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# Always included: core contract types + state
+tirea-contract = { path = "../tirea-contract" }
+tirea-state = { path = "../tirea-state" }
+
+# Core: agent loop + orchestrator (default)
+tirea-agent-loop = { path = "../tirea-agent-loop", optional = true }
+tirea-agentos = { path = "../tirea-agentos", optional = true }
+
+# Protocols
+tirea-protocol-ag-ui = { path = "../tirea-protocol-ag-ui", optional = true }
+tirea-protocol-ai-sdk-v6 = { path = "../tirea-protocol-ai-sdk-v6", optional = true }
+
+# Extensions
+tirea-extension-skills = { path = "../tirea-extension-skills", optional = true }
+
+# Storage backends
+tirea-store-adapters = { path = "../tirea-store-adapters", optional = true }
+
+# Re-exported for prelude convenience
+async-trait = "0.1"
+serde = { workspace = true }
+serde_json = "1"
+schemars = { workspace = true }
+
+[features]
+default = ["core"]
+core = ["dep:tirea-agent-loop", "dep:tirea-agentos"]
+ag-ui = ["dep:tirea-protocol-ag-ui", "core"]
+ai-sdk-v6 = ["dep:tirea-protocol-ai-sdk-v6"]
+skills = ["dep:tirea-extension-skills", "core"]
+mcp = ["core", "tirea-agentos/mcp"]
+postgres = ["dep:tirea-store-adapters", "tirea-store-adapters/postgres"]
+nats = ["dep:tirea-store-adapters", "tirea-store-adapters/nats"]
+full = ["core", "ag-ui", "ai-sdk-v6", "skills", "mcp", "postgres", "nats"]
+
+[dev-dependencies]
+trybuild.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "message_cloning"
+harness = false
+
+[[bench]]
+name = "thread_operations"
+harness = false
+
+[[bench]]
+name = "quick_clone_test"
+harness = false

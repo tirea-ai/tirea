@@ -1,0 +1,29 @@
+[package]
+name = "tirea-protocol-ag-ui"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "AG-UI protocol types and adapters for tirea"
+
+[dependencies]
+tirea-contract = { path = "../tirea-contract" }
+tirea-agentos = { path = "../tirea-agentos" }
+async-trait = "0.1"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+json-patch = "3"
+tracing = "0.1"
+uuid = { version = "1", features = ["v4", "v7"] }
+
+[dev-dependencies]
+tirea-contract = { path = "../tirea-contract", features = ["test-support"] }
+tirea-state = { path = "../tirea-state", features = ["derive"] }
+tirea-store-adapters = { path = "../tirea-store-adapters" }
+futures = "0.3"
+genai = "0.5"
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
+tracing-subscriber = { version = "0.3", features = ["fmt", "registry"] }
+
+[lints]
+workspace = true

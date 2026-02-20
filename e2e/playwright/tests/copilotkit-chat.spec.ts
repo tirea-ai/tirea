@@ -25,7 +25,7 @@ test.describe("CopilotKit Chat", () => {
   });
 
   test("page renders with task list and chat panel", async ({ page }) => {
-    await expect(page.locator("h1")).toHaveText("Uncarve CopilotKit Demo");
+    await expect(page.locator("h1")).toHaveText("Tirea CopilotKit Demo");
 
     const taskList = page.getByTestId("task-list");
     await expect(taskList.locator("li")).toHaveCount(2);
@@ -249,11 +249,11 @@ test.describe("CopilotKit Chat", () => {
     await expect(allowBtn).toBeVisible();
     await allowBtn.click();
 
-    // The agent should receive the serverInfo result and mention "carve-agentos" in its response.
+    // The agent should receive the serverInfo result and mention "tirea-agentos" in its response.
     const msgs = page.locator(".copilotKitAssistantMessage");
     await expect(msgs.last()).toBeVisible({ timeout: 45_000 });
     await expect(page.locator(".copilotKitMessages")).toContainText(
-      "carve-agentos",
+      "tirea-agentos",
       { timeout: 15_000 },
     );
   });
@@ -281,7 +281,7 @@ test.describe("CopilotKit Chat", () => {
 
     // The response should NOT contain the tool's success payload.
     await expect(page.locator(".copilotKitMessages")).not.toContainText(
-      "carve-agentos",
+      "tirea-agentos",
       { timeout: 5_000 },
     );
   });

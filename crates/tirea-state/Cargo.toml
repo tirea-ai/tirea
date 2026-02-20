@@ -1,0 +1,33 @@
+[package]
+name = "tirea-state"
+description = "Typed view + JSON patch library for deterministic immutable state management"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
+tirea-state-derive = { workspace = true, optional = true }
+
+[features]
+default = []
+derive = ["tirea-state-derive"]
+
+[dev-dependencies]
+tirea-state-derive.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+criterion.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[[bench]]
+name = "performance"
+harness = false
+
+[lints]
+workspace = true
