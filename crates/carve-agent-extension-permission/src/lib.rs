@@ -22,10 +22,10 @@
 //! ```
 
 use async_trait::async_trait;
+use carve_agent_contract::event::interaction::ResponseRouting;
 use carve_agent_contract::plugin::AgentPlugin;
-use carve_agent_contract::event::Interaction;
 use carve_agent_contract::tool::context::ToolCallContext;
-use carve_state::State;
+use carve_state::{Op, Path, State};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -153,41 +153,36 @@ impl AgentPlugin for PermissionPlugin {
                 step.block(format!("Tool '{}' is denied", tool_id));
             }
             ToolPermissionBehavior::Ask => {
-                let origin_call_id = step.tool_call_id().unwrap_or_default().to_string();
-                let origin_args = step.tool_args().cloned().unwrap_or_default();
                 let question = format!("Allow tool '{}' to execute?", tool_id);
-                // Create a pending interaction for confirmation.
-                // Uses tool_call_id as interaction id and "tool:<name>" as action
-                // to match the unified Interaction format used by FrontendToolPlugin.
-                let interaction = Interaction::new(&origin_call_id, format!("tool:{}", tool_id))
-                    .with_message(question.clone())
-                    .with_parameters(json!({
-                        "source": "permission",
-                        "questions": [
-                            {
-                                "question": question,
-                                "header": "Permission",
-                                "options": [
-                                    {
-                                        "label": "Allow",
-                                        "description": format!("Allow '{}' to run.", tool_id)
-                                    },
-                                    {
-                                        "label": "Deny",
-                                        "description": format!("Deny '{}' from running.", tool_id)
-                                    }
-                                ],
-                                "multiSelect": false
-                            }
-                        ],
-                        "ask_user_tool": ASK_USER_TOOL_NAME,
-                        "origin_tool_call": {
-                            "id": origin_call_id,
-                            "name": tool_id,
-                            "arguments": origin_args
+                let arguments = json!({
+                    "questions": [
+                        {
+                            "question": question,
+                            "header": "Permission",
+                            "options": [
+                                {
+                                    "label": "Allow",
+                                    "description": format!("Allow '{}' to run.", tool_id)
+                                },
+                                {
+                                    "label": "Deny",
+                                    "description": format!("Deny '{}' from running.", tool_id)
+                                }
+                            ],
+                            "multiSelect": false
                         }
-                    }));
-                step.pending(interaction);
+                    ]
+                });
+                let routing = ResponseRouting::ReplayOriginalTool {
+                    state_patches: vec![Op::set(
+                        Path::root()
+                            .key("permissions")
+                            .key("tools")
+                            .key(tool_id),
+                        json!("allow"),
+                    )],
+                };
+                step.invoke_frontend_tool(ASK_USER_TOOL_NAME, arguments, routing);
             }
         }
     }
@@ -416,12 +411,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_ask() {
+        use carve_agent_contract::event::interaction::{
+            FrontendToolInvocation, InvocationOrigin, ResponseRouting,
+        };
+
         let fixture = TestFixture::new_with_state(
             json!({ "permissions": { "default_behavior": "ask", "tools": {} } }),
         );
         let mut step = fixture.step(vec![]);
 
-        let call = ToolCall::new("call_1", "test_tool", json!({}));
+        let call = ToolCall::new("call_1", "test_tool", json!({"path": "a.txt"}));
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
@@ -429,22 +428,45 @@ mod tests {
         apply_interaction_intents(&mut step);
 
         assert!(step.tool_pending());
+
+        // Should have backward-compat Interaction
         let interaction = step
             .tool
             .as_ref()
             .and_then(|t| t.pending_interaction.as_ref())
             .expect("pending interaction should exist");
-        // Unified format: id = tool_call_id, action = "tool:<name>"
-        assert_eq!(interaction.id, "call_1");
-        assert_eq!(interaction.action, "tool:test_tool");
-        assert_eq!(interaction.parameters["source"], "permission");
-        assert!(interaction.parameters.get("questions").is_some());
-        assert_eq!(interaction.parameters["ask_user_tool"], ASK_USER_TOOL_NAME);
-        assert_eq!(interaction.parameters["origin_tool_call"]["id"], "call_1");
-        assert_eq!(
-            interaction.parameters["origin_tool_call"]["name"],
-            "test_tool"
-        );
+        assert_eq!(interaction.action, format!("tool:{}", ASK_USER_TOOL_NAME));
+
+        // Should have first-class FrontendToolInvocation
+        let inv = step
+            .tool
+            .as_ref()
+            .and_then(|t| t.pending_frontend_invocation.as_ref())
+            .expect("pending frontend invocation should exist");
+        assert_eq!(inv.tool_name, ASK_USER_TOOL_NAME);
+        assert!(inv.arguments.get("questions").is_some());
+
+        // Origin should be ToolCallIntercepted with original backend tool info
+        match &inv.origin {
+            InvocationOrigin::ToolCallIntercepted {
+                backend_call_id,
+                backend_tool_name,
+                backend_arguments,
+            } => {
+                assert_eq!(backend_call_id, "call_1");
+                assert_eq!(backend_tool_name, "test_tool");
+                assert_eq!(backend_arguments["path"], "a.txt");
+            }
+            _ => panic!("Expected ToolCallIntercepted origin"),
+        }
+
+        // Routing should be ReplayOriginalTool with permission patch
+        match &inv.routing {
+            ResponseRouting::ReplayOriginalTool { state_patches } => {
+                assert_eq!(state_patches.len(), 1);
+            }
+            _ => panic!("Expected ReplayOriginalTool routing"),
+        }
     }
 
     #[test]
