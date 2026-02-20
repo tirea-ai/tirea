@@ -1,16 +1,16 @@
 use async_trait::async_trait;
-use tirea_agentos::contracts::plugin::AgentPlugin;
+use futures::StreamExt;
+use std::sync::Arc;
 use tirea_agentos::contracts::plugin::phase::Phase;
 use tirea_agentos::contracts::plugin::phase::StepContext;
+use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::{AgentEvent, RunRequest};
 use tirea_agentos::orchestrator::AgentDefinition;
 use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder};
+use tirea_contract::ProtocolInputAdapter;
 use tirea_protocol_ag_ui::{apply_agui_extensions, AGUIMessage, AgUiInputAdapter, RunAgentRequest};
 use tirea_protocol_ai_sdk_v6::{AiSdkV6InputAdapter, AiSdkV6RunRequest};
-use tirea_contract::ProtocolInputAdapter;
 use tirea_store_adapters::MemoryStore;
-use futures::StreamExt;
-use std::sync::Arc;
 
 struct SkipInferencePlugin;
 
@@ -20,11 +20,7 @@ impl AgentPlugin for SkipInferencePlugin {
         "skip_inference_parity"
     }
 
-    async fn on_phase(
-        &self,
-        phase: Phase,
-        step: &mut StepContext<'_>,
-    ) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         if phase == Phase::BeforeInference {
             step.skip_inference = true;
         }

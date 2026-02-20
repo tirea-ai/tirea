@@ -1,6 +1,6 @@
 use super::{AiSdkEncoder, UIStreamEvent, AI_SDK_VERSION};
-use tirea_contract::{AgentEvent, ProtocolOutputEncoder};
 use serde_json::json;
+use tirea_contract::{AgentEvent, ProtocolOutputEncoder};
 
 const RUN_INFO_EVENT_NAME: &str = "run-info";
 

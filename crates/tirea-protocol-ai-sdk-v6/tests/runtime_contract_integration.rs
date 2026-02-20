@@ -57,3 +57,17 @@ fn protocol_encoder_closes_text_before_tool_and_maps_finish_reason() {
         } if reason == "length"
     ));
 }
+
+#[test]
+fn protocol_encoder_maps_cancelled_run_to_abort() {
+    let mut encoder = AiSdkV6ProtocolEncoder::new("run_cancel".to_string(), None);
+
+    let events = encoder.on_agent_event(&AgentEvent::RunFinish {
+        thread_id: "thread_1".to_string(),
+        run_id: "run_cancel".to_string(),
+        result: None,
+        termination: TerminationReason::Cancelled,
+    });
+    assert_eq!(events.len(), 1);
+    assert!(matches!(events[0], UIStreamEvent::Abort { .. }));
+}

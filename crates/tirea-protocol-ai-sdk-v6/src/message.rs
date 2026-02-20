@@ -51,6 +51,7 @@ pub enum UIMessagePart {
     },
 
     /// Tool invocation part.
+    #[serde(rename = "tool-invocation")]
     Tool {
         /// Tool call identifier.
         #[serde(rename = "toolCallId")]

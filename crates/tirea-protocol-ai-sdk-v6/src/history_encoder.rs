@@ -1,4 +1,5 @@
 use super::{StreamState, ToolState, UIMessage, UIMessagePart, UIRole};
+use serde_json::Value;
 use tirea_contract::{Message, ProtocolHistoryEncoder, Role};
 use tracing::warn;
 
@@ -16,23 +17,41 @@ impl ProtocolHistoryEncoder for AiSdkV6HistoryEncoder {
 
         let mut parts = Vec::new();
 
-        if !msg.content.is_empty() {
-            parts.push(UIMessagePart::Text {
-                text: msg.content.clone(),
-                state: Some(StreamState::Done),
-            });
-        }
-
-        if let Some(ref calls) = msg.tool_calls {
-            for tc in calls {
+        if msg.role == Role::Tool {
+            if let Some(tool_call_id) = &msg.tool_call_id {
                 parts.push(UIMessagePart::Tool {
-                    tool_call_id: tc.id.clone(),
-                    tool_name: tc.name.clone(),
+                    tool_call_id: tool_call_id.clone(),
+                    tool_name: "tool".to_string(),
                     state: ToolState::OutputAvailable,
-                    input: Some(tc.arguments.clone()),
-                    output: None,
+                    input: None,
+                    output: Some(parse_tool_output(&msg.content)),
                     error_text: None,
                 });
+            } else if !msg.content.is_empty() {
+                parts.push(UIMessagePart::Text {
+                    text: msg.content.clone(),
+                    state: Some(StreamState::Done),
+                });
+            }
+        } else {
+            if !msg.content.is_empty() {
+                parts.push(UIMessagePart::Text {
+                    text: msg.content.clone(),
+                    state: Some(StreamState::Done),
+                });
+            }
+
+            if let Some(ref calls) = msg.tool_calls {
+                for tc in calls {
+                    parts.push(UIMessagePart::Tool {
+                        tool_call_id: tc.id.clone(),
+                        tool_name: tc.name.clone(),
+                        state: ToolState::InputAvailable,
+                        input: Some(tc.arguments.clone()),
+                        output: None,
+                        error_text: None,
+                    });
+                }
             }
         }
 
@@ -57,6 +76,14 @@ impl ProtocolHistoryEncoder for AiSdkV6HistoryEncoder {
             metadata,
             parts,
         }
+    }
+}
+
+fn parse_tool_output(content: &str) -> Value {
+    if content.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_str(content).unwrap_or_else(|_| Value::String(content.to_string()))
     }
 }
 
@@ -120,7 +147,7 @@ mod tests {
         ));
         assert!(matches!(
             &encoded.parts[1],
-            UIMessagePart::Tool { tool_call_id, tool_name, state: ToolState::OutputAvailable, .. }
+            UIMessagePart::Tool { tool_call_id, tool_name, state: ToolState::InputAvailable, .. }
             if tool_call_id == "call_1" && tool_name == "search"
         ));
         assert!(matches!(
@@ -131,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ai_sdk_history_encoder_tool_role_maps_to_assistant() {
+    fn test_ai_sdk_history_encoder_tool_role_maps_to_assistant_with_tool_output_part() {
         let msg = Message {
             id: Some("msg_3".to_string()),
             role: Role::Tool,
@@ -146,7 +173,28 @@ mod tests {
         assert_eq!(encoded.parts.len(), 1);
         assert!(matches!(
             &encoded.parts[0],
-            UIMessagePart::Text { text, .. } if text == "{\"result\":42}"
+            UIMessagePart::Tool { tool_call_id, state: ToolState::OutputAvailable, output: Some(output), .. }
+            if tool_call_id == "call_1" && output["result"] == 42
+        ));
+    }
+
+    #[test]
+    fn test_ai_sdk_history_encoder_tool_role_without_call_id_falls_back_to_text() {
+        let msg = Message {
+            id: Some("msg_3b".to_string()),
+            role: Role::Tool,
+            content: "plain output".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            visibility: Visibility::default(),
+            metadata: None,
+        };
+        let encoded = AiSdkV6HistoryEncoder::encode_message(&msg);
+        assert_eq!(encoded.role, UIRole::Assistant);
+        assert_eq!(encoded.parts.len(), 1);
+        assert!(matches!(
+            &encoded.parts[0],
+            UIMessagePart::Text { text, .. } if text == "plain output"
         ));
     }
 

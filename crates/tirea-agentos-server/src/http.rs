@@ -5,13 +5,18 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
-use tirea_agentos::contracts::AgentEvent;
-use tirea_agentos::contracts::thread::{Thread, Visibility};
+use serde::{Deserialize, Serialize};
+use std::convert::Infallible;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tirea_agentos::contracts::storage::{
     AgentStateListPage, AgentStateListQuery, AgentStateReader, MessagePage, MessageQuery, SortOrder,
 };
+use tirea_agentos::contracts::thread::{Thread, Visibility};
+use tirea_agentos::contracts::AgentEvent;
 use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError, RunStream};
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
+use tirea_contract::{ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder};
 use tirea_protocol_ag_ui::{
     apply_agui_extensions, AgUiHistoryEncoder, AgUiInputAdapter, AgUiProtocolEncoder,
     RunAgentRequest,
@@ -20,11 +25,6 @@ use tirea_protocol_ai_sdk_v6::{
     AiSdkV6HistoryEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest,
     AI_SDK_VERSION,
 };
-use tirea_contract::{ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder};
-use serde::{Deserialize, Serialize};
-use std::convert::Infallible;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use tracing::warn;
 
 use crate::transport::pump_encoded_stream;
@@ -353,14 +353,10 @@ async fn run_ai_sdk_sse(
         ));
     }
 
-    let resolved = st.os.resolve(&agent_id)
-        .map_err(AgentOsRunError::from)?;
+    let resolved = st.os.resolve(&agent_id).map_err(AgentOsRunError::from)?;
     let run_request = AiSdkV6InputAdapter::to_run_request(agent_id, req);
     let cancellation_token = RunCancellationToken::new();
-    let prepared = st
-        .os
-        .prepare_run(run_request, resolved)
-        .await?;
+    let prepared = st.os.prepare_run(run_request, resolved).await?;
     let run =
         AgentOs::execute_prepared(prepared.with_cancellation_token(cancellation_token.clone()))?;
     let enc = AiSdkV6ProtocolEncoder::new(run.run_id.clone(), Some(run.thread_id.clone()));
@@ -377,8 +373,7 @@ async fn run_ag_ui_sse(
     req.validate()
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
-    let mut resolved = st.os.resolve(&agent_id)
-        .map_err(AgentOsRunError::from)?;
+    let mut resolved = st.os.resolve(&agent_id).map_err(AgentOsRunError::from)?;
     apply_agui_extensions(&mut resolved, &req);
     let run_request = AgUiInputAdapter::to_run_request(agent_id, req);
     let cancellation_token = RunCancellationToken::new();

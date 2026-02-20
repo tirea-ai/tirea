@@ -1,14 +1,14 @@
 use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
-use tirea_agentos::contracts::plugin::AgentPlugin;
+use serde_json::json;
+use std::sync::Arc;
 use tirea_agentos::contracts::plugin::phase::{Phase, StepContext};
+use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::storage::AgentStateReader;
 use tirea_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
 use tirea_agentos_server::http::{router, AppState};
 use tirea_store_adapters::MemoryStore;
-use serde_json::json;
-use std::sync::Arc;
 use tower::ServiceExt;
 
 struct SkipInferencePlugin;
@@ -19,11 +19,7 @@ impl AgentPlugin for SkipInferencePlugin {
         "skip_inference_e2e_http_matrix"
     }
 
-    async fn on_phase(
-        &self,
-        phase: Phase,
-        step: &mut StepContext<'_>,
-    ) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         if phase == Phase::BeforeInference {
             step.skip_inference = true;
         }
@@ -38,7 +34,10 @@ fn make_os(store: Arc<MemoryStore>) -> AgentOs {
     };
 
     AgentOsBuilder::new()
-        .with_registered_plugin("skip_inference_e2e_http_matrix", Arc::new(SkipInferencePlugin))
+        .with_registered_plugin(
+            "skip_inference_e2e_http_matrix",
+            Arc::new(SkipInferencePlugin),
+        )
         .with_agent("test", def)
         .with_agent_state_store(store)
         .build()

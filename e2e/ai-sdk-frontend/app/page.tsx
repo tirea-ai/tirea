@@ -133,6 +133,71 @@ function ChatUI({
               if (p.type === "text") {
                 return <span key={i}> {p.text}</span>;
               }
+              if (p.type === "reasoning") {
+                const reasoning = p as {
+                  text?: string;
+                  state?: string;
+                };
+                return (
+                  <div
+                    key={i}
+                    data-testid="reasoning-part"
+                    style={{
+                      margin: "0.5rem 0",
+                      padding: "0.5rem",
+                      background: "#fff7e6",
+                      borderLeft: "3px solid #f0a500",
+                      borderRadius: 4,
+                      fontSize: "0.85em",
+                      color: "#7a5a00",
+                    }}
+                  >
+                    <strong>Reasoning</strong>
+                    {reasoning.state ? ` (${reasoning.state})` : ""}: {reasoning.text ?? ""}
+                  </div>
+                );
+              }
+              if (p.type === "source-url") {
+                const source = p as {
+                  sourceId?: string;
+                  url: string;
+                  title?: string;
+                };
+                return (
+                  <div key={i} data-testid="source-url-part" style={{ margin: "0.25rem 0" }}>
+                    <strong>Source:</strong>{" "}
+                    <a href={source.url} target="_blank" rel="noreferrer">
+                      {source.title ?? source.url}
+                    </a>
+                  </div>
+                );
+              }
+              if (p.type === "source-document") {
+                const source = p as {
+                  title: string;
+                  filename?: string;
+                  mediaType?: string;
+                };
+                return (
+                  <div key={i} data-testid="source-document-part" style={{ margin: "0.25rem 0" }}>
+                    <strong>Document:</strong> {source.title}
+                    {source.filename ? ` (${source.filename})` : ""}
+                    {source.mediaType ? ` [${source.mediaType}]` : ""}
+                  </div>
+                );
+              }
+              if (p.type === "file") {
+                const file = p as { url: string; mediaType?: string };
+                return (
+                  <div key={i} data-testid="file-part" style={{ margin: "0.25rem 0" }}>
+                    <strong>File:</strong>{" "}
+                    <a href={file.url} target="_blank" rel="noreferrer">
+                      {file.url}
+                    </a>
+                    {file.mediaType ? ` [${file.mediaType}]` : ""}
+                  </div>
+                );
+              }
               if (p.type === "dynamic-tool" || p.type.startsWith("tool-")) {
                 const tool = p as {
                   type: string;

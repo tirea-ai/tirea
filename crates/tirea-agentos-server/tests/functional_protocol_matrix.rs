@@ -1,7 +1,7 @@
 use tirea_agentos::contracts::Role;
+use tirea_contract::ProtocolInputAdapter;
 use tirea_protocol_ag_ui::{convert_agui_messages, AGUIMessage, MessageRole, RunAgentRequest};
 use tirea_protocol_ai_sdk_v6::{AiSdkV6InputAdapter, AiSdkV6RunRequest};
-use tirea_contract::ProtocolInputAdapter;
 
 #[test]
 fn functional_protocol_scenario_matrix_180() {

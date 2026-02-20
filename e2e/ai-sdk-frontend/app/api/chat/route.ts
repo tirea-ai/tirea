@@ -11,37 +11,15 @@ export async function POST(req: Request) {
   const sessionId =
     req.headers.get("x-session-id") || `ai-sdk-${crypto.randomUUID()}`;
 
-  // Extract the last user message as input for our server.
-  // AI SDK v6 sends parts-based messages; fall back to content for older formats.
-  const lastUserMsg = [...messages]
-    .reverse()
-    .find((m: { role: string }) => m.role === "user");
-
-  if (!lastUserMsg) {
-    return new Response("No user message found", { status: 400 });
-  }
-
-  // Extract text: v6 uses parts[], older uses content string
-  let input: string;
-  if (typeof lastUserMsg.content === "string") {
-    input = lastUserMsg.content;
-  } else if (Array.isArray(lastUserMsg.parts)) {
-    input = lastUserMsg.parts
-      .filter((p: { type: string }) => p.type === "text")
-      .map((p: { text: string }) => p.text)
-      .join("");
-  } else {
-    return new Response("Could not extract message text", { status: 400 });
-  }
-
   const upstream = await fetch(
     `${BACKEND_URL}/v1/ai-sdk/agents/${agent}/runs`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        id: sessionId,
         sessionId,
-        input,
+        messages,
         runId: crypto.randomUUID(),
       }),
     }
