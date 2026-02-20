@@ -5,15 +5,18 @@
 //! - `StepContext`: Mutable context passed through all phases
 //! - `ToolContext`: Tool-call state carried by `StepContext`
 
-use crate::tool::context::ToolCallContext;
-use crate::event::interaction::Interaction;
+use crate::event::interaction::{
+    FrontendToolInvocation, Interaction, InvocationOrigin, ResponseRouting,
+};
 use crate::runtime::result::StreamResult;
 use crate::thread::{Message, ToolCall};
+use crate::tool::context::ToolCallContext;
 use crate::tool::contract::{ToolDescriptor, ToolResult};
 use crate::RunConfig;
 use carve_state::{CarveResult, State, TrackedPatch};
 use serde_json::Value;
 use std::sync::Arc;
+use uuid::Uuid;
 
 /// Execution phase in the agent loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -124,8 +127,11 @@ pub struct ToolContext {
     pub block_reason: Option<String>,
     /// Whether execution is pending user confirmation.
     pub pending: bool,
-    /// Pending interaction.
+    /// Pending interaction (legacy format, kept for backward compatibility).
     pub pending_interaction: Option<Interaction>,
+    /// Structured frontend tool invocation (first-class model).
+    /// When set, takes precedence over `pending_interaction` for routing.
+    pub pending_frontend_invocation: Option<FrontendToolInvocation>,
 }
 
 impl ToolContext {
@@ -140,6 +146,7 @@ impl ToolContext {
             block_reason: None,
             pending: false,
             pending_interaction: None,
+            pending_frontend_invocation: None,
         }
     }
 
@@ -414,11 +421,69 @@ impl<'a> StepContext<'a> {
         }
     }
 
+    /// Invoke a frontend tool, suspending the current tool execution.
+    ///
+    /// This is the first-class API for calling frontend tools. It:
+    /// - Auto-determines the invocation origin from the current tool context
+    /// - Generates a unique `call_id` for indirect invocations (ReplayOriginalTool),
+    ///   or reuses the current tool call ID for direct invocations (UseAsToolResult)
+    /// - Sets the tool to pending with both the structured `FrontendToolInvocation`
+    ///   and a backward-compatible `Interaction`
+    ///
+    /// Returns the generated `call_id`, or `None` if no tool context is active.
+    pub fn invoke_frontend_tool(
+        &mut self,
+        tool_name: impl Into<String>,
+        arguments: Value,
+        routing: ResponseRouting,
+    ) -> Option<String> {
+        let tool = self.tool.as_mut()?;
+        let tool_name = tool_name.into();
+
+        // Determine call_id: for UseAsToolResult the frontend call IS the backend
+        // call, so reuse the same ID. For other strategies, generate a new ID to
+        // avoid conflating frontend and backend call identities.
+        let call_id = match &routing {
+            ResponseRouting::UseAsToolResult => tool.id.clone(),
+            _ => format!("fc_{}", Uuid::new_v4().simple()),
+        };
+
+        // Auto-determine origin from current tool context.
+        let origin = match &routing {
+            ResponseRouting::UseAsToolResult => InvocationOrigin::PluginInitiated {
+                plugin_id: "agui_frontend_tools".to_string(),
+            },
+            _ => InvocationOrigin::ToolCallIntercepted {
+                backend_call_id: tool.id.clone(),
+                backend_tool_name: tool.name.clone(),
+                backend_arguments: tool.args.clone(),
+            },
+        };
+
+        let invocation = FrontendToolInvocation::new(
+            &call_id,
+            &tool_name,
+            arguments.clone(),
+            origin,
+            routing,
+        );
+
+        // Set backward-compatible Interaction from the invocation.
+        let interaction = invocation.to_interaction();
+
+        tool.pending = true;
+        tool.pending_interaction = Some(interaction);
+        tool.pending_frontend_invocation = Some(invocation);
+
+        Some(call_id)
+    }
+
     /// Confirm pending tool execution.
     pub fn confirm(&mut self) {
         if let Some(ref mut tool) = self.tool {
             tool.pending = false;
             tool.pending_interaction = None;
+            tool.pending_frontend_invocation = None;
         }
     }
 
@@ -1063,6 +1128,83 @@ mod tests {
             tool_ctx.pending_interaction.as_ref().unwrap().id,
             "confirm_1"
         );
+    }
+
+    #[test]
+    fn test_invoke_frontend_tool_direct() {
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
+
+        let call = ToolCall::new("call_copy", "copyToClipboard", json!({"text": "hello"}));
+        ctx.tool = Some(ToolContext::new(&call));
+
+        let call_id = ctx.invoke_frontend_tool(
+            "copyToClipboard",
+            json!({"text": "hello"}),
+            ResponseRouting::UseAsToolResult,
+        );
+
+        assert!(ctx.tool_pending());
+        // For UseAsToolResult, call_id should match the tool call ID
+        assert_eq!(call_id.as_deref(), Some("call_copy"));
+
+        let invocation = ctx.tool.as_ref().unwrap().pending_frontend_invocation.as_ref().unwrap();
+        assert_eq!(invocation.call_id, "call_copy");
+        assert_eq!(invocation.tool_name, "copyToClipboard");
+        assert!(matches!(invocation.routing, ResponseRouting::UseAsToolResult));
+        assert!(matches!(invocation.origin, InvocationOrigin::PluginInitiated { .. }));
+
+        // Backward-compat Interaction should also be set
+        let interaction = ctx.tool.as_ref().unwrap().pending_interaction.as_ref().unwrap();
+        assert_eq!(interaction.id, "call_copy");
+        assert_eq!(interaction.action, "tool:copyToClipboard");
+    }
+
+    #[test]
+    fn test_invoke_frontend_tool_indirect_permission() {
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
+
+        let call = ToolCall::new("call_write", "write_file", json!({"path": "a.txt"}));
+        ctx.tool = Some(ToolContext::new(&call));
+
+        let call_id = ctx.invoke_frontend_tool(
+            "AskUserQuestion",
+            json!({"question": "Allow write_file?"}),
+            ResponseRouting::ReplayOriginalTool { state_patches: vec![] },
+        );
+
+        assert!(ctx.tool_pending());
+        // For ReplayOriginalTool, call_id should be a new unique ID
+        let call_id = call_id.unwrap();
+        assert!(call_id.starts_with("fc_"), "expected generated ID, got: {call_id}");
+        assert_ne!(call_id, "call_write");
+
+        let invocation = ctx.tool.as_ref().unwrap().pending_frontend_invocation.as_ref().unwrap();
+        assert_eq!(invocation.call_id, call_id);
+        assert_eq!(invocation.tool_name, "AskUserQuestion");
+        assert!(matches!(invocation.routing, ResponseRouting::ReplayOriginalTool { .. }));
+        match &invocation.origin {
+            InvocationOrigin::ToolCallIntercepted { backend_call_id, backend_tool_name, .. } => {
+                assert_eq!(backend_call_id, "call_write");
+                assert_eq!(backend_tool_name, "write_file");
+            }
+            other => panic!("expected ToolCallIntercepted, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_invoke_frontend_tool_without_tool_context() {
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
+
+        let result = ctx.invoke_frontend_tool(
+            "AskUserQuestion",
+            json!({}),
+            ResponseRouting::UseAsToolResult,
+        );
+        assert!(result.is_none());
+        assert!(!ctx.tool_pending());
     }
 
     #[test]
