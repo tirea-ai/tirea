@@ -1400,9 +1400,10 @@ fn pending_echo_thread(id: &str, payload: &str) -> Thread {
         json!({
             "loop_control": {
                 "pending_interaction": {
-                    "id": "permission_echo",
-                    "action": "tool:AskUserQuestion",
+                    "id": "call_1",
+                    "action": "tool:echo",
                     "parameters": {
+                        "source": "permission",
                         "origin_tool_call": {
                             "id": "call_1",
                             "name": "echo",
@@ -1449,7 +1450,7 @@ async fn test_agui_pending_approval_resumes_and_replays_tool_call() {
         "threadId": "th-approve",
         "runId": "resume-approve-1",
         "messages": [
-            {"role": "tool", "content": "true", "toolCallId": "permission_echo"}
+            {"role": "tool", "content": "true", "toolCallId": "call_1"}
         ],
         "tools": []
     });
@@ -1509,7 +1510,7 @@ async fn test_agui_pending_denial_clears_pending_without_replay() {
         "threadId": "th-deny",
         "runId": "resume-deny-1",
         "messages": [
-            {"role": "tool", "content": "false", "toolCallId": "permission_echo"}
+            {"role": "tool", "content": "false", "toolCallId": "call_1"}
         ],
         "tools": []
     });

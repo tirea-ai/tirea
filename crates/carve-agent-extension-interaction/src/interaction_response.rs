@@ -9,7 +9,7 @@ use carve_agent_contract::runtime::control::LoopControlState;
 use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
 use carve_agent_contract::plugin::phase::{Phase, StepContext};
-use carve_state::State;
+use carve_state::{Op, Patch, Path, State, TrackedPatch};
 use carve_agent_contract::{Interaction, InteractionResponse};
 use serde_json::json;
 use std::collections::HashMap;
@@ -125,7 +125,6 @@ impl InteractionResponsePlugin {
 
     /// During RunStart, detect pending_interaction and schedule tool replay if approved.
     fn on_run_start(&self, step: &mut StepContext<'_>) {
-        let loop_ctrl = step.state_of::<LoopControlState>();
         let Some(pending) = Self::persisted_pending_interaction(step) else {
             return;
         };
@@ -133,7 +132,7 @@ impl InteractionResponsePlugin {
         let pending_id = pending_id_owned.as_str();
 
         if self.is_denied(pending_id) {
-            loop_ctrl.pending_interaction_none();
+            step.state_of::<LoopControlState>().pending_interaction_none();
             Self::push_resolution(
                 step,
                 pending_id_owned.clone(),
@@ -157,6 +156,21 @@ impl InteractionResponsePlugin {
                 .unwrap_or(serde_json::Value::Bool(true)),
         );
 
+        // When a permission interaction is approved, update the permission state
+        // so that the replayed tool execution sees Allow and doesn't re-trigger Ask.
+        if pending.parameters.get("source").and_then(|v| v.as_str()) == Some("permission") {
+            if let Some(tool_name) = pending.action.strip_prefix("tool:") {
+                let patch = TrackedPatch::new(Patch::with_ops(vec![
+                    Op::set(
+                        Path::root().key("permissions").key("tools").key(tool_name),
+                        json!("allow"),
+                    ),
+                ]))
+                .with_source("interaction_response");
+                step.pending_patches.push(patch);
+            }
+        }
+
         if pending.action == AGENT_RECOVERY_INTERACTION_ACTION {
             let run_id = pending
                 .parameters
@@ -169,7 +183,7 @@ impl InteractionResponsePlugin {
                         .map(str::to_string)
                 });
             let Some(run_id) = run_id else {
-                loop_ctrl.pending_interaction_none();
+                step.state_of::<LoopControlState>().pending_interaction_none();
                 return;
             };
 
@@ -204,19 +218,19 @@ impl InteractionResponsePlugin {
             return;
         }
 
-        if !pending_id_owned.starts_with("permission_") {
-            if let Some(tool_name) = pending.action.strip_prefix("tool:") {
-                let replay_call = carve_agent_contract::thread::ToolCall::new(
-                    pending_id_owned.clone(),
-                    tool_name,
-                    pending.parameters.clone(),
-                );
-                Self::queue_replay_call(step, replay_call);
-                return;
-            }
+        // Unified: both FrontendTool and Permission interactions use tool_call_id
+        // as interaction id and "tool:<name>" as action.
+        if let Some(tool_name) = pending.action.strip_prefix("tool:") {
+            let replay_call = carve_agent_contract::thread::ToolCall::new(
+                pending_id_owned.clone(),
+                tool_name,
+                pending.parameters.clone(),
+            );
+            Self::queue_replay_call(step, replay_call);
+            return;
         }
 
-        // Find the pending tool call from the last assistant message with tool_calls.
+        // Fallback: find the pending tool call from message history by tool_call_id.
         let tool_call = step
             .messages()
             .iter()
@@ -226,22 +240,10 @@ impl InteractionResponsePlugin {
             })
             .and_then(|m| m.tool_calls.as_ref())
             .and_then(|calls| {
-                // Frontend tool interactions use tool call id as interaction id.
-                if let Some(call) = calls
+                calls
                     .iter()
                     .find(|c| c.id.as_str() == pending_id_owned.as_str())
-                {
-                    return Some(call.clone());
-                }
-
-                // Permission interactions use `permission_<tool_name>`.
-                if let Some(tool_name) = pending_id_owned.strip_prefix("permission_") {
-                    if let Some(call) = calls.iter().find(|c| c.name == tool_name) {
-                        return Some(call.clone());
-                    }
-                }
-
-                None
+                    .cloned()
             });
 
         if let Some(call) = tool_call {
@@ -271,55 +273,40 @@ impl AgentPlugin for InteractionResponsePlugin {
             return;
         };
 
-        // Generate possible interaction IDs for this tool call
-        // These match the IDs generated by FrontendToolPlugin and PermissionPlugin
-        let frontend_interaction_id = tool.id.clone(); // FrontendToolPlugin uses tool call ID
-        let permission_interaction_id = format!("permission_{}", tool.name); // PermissionPlugin format
+        // Both FrontendTool and Permission interactions use tool_call_id as interaction id.
+        let interaction_id = tool.id.clone();
 
-        // Check if any of these interactions were approved/denied
-        let is_frontend_approved = self.is_approved(&frontend_interaction_id);
-        let is_permission_approved = self.is_approved(&permission_interaction_id);
-        let is_frontend_denied = self.is_denied(&frontend_interaction_id);
-        let is_permission_denied = self.is_denied(&permission_interaction_id);
+        let is_approved = self.is_approved(&interaction_id);
+        let is_denied = self.is_denied(&interaction_id);
 
-        // Only act if the client is responding to an interaction we actually match.
-        let has_response = is_frontend_approved
-            || is_permission_approved
-            || is_frontend_denied
-            || is_permission_denied;
-        if !has_response {
+        if !is_approved && !is_denied {
             return;
         }
 
         // Verify that the server actually has a persisted pending interaction whose ID
-        // matches one of the IDs the client claims to be responding to.  Without this
-        // check a malicious client could pre-approve arbitrary tool names by injecting
-        // approved IDs in a fresh request that has no outstanding pending interaction.
+        // matches the one the client claims to be responding to.  Without this check a
+        // malicious client could pre-approve arbitrary tool calls by injecting approved
+        // IDs in a fresh request that has no outstanding pending interaction.
         let persisted_id = Self::persisted_pending_interaction(step).map(|i| i.id);
 
         let id_matches = persisted_id
             .as_deref()
-            .map(|id| id == frontend_interaction_id || id == permission_interaction_id)
-            .unwrap_or(false);
+            .is_some_and(|id| id == interaction_id);
 
         if !id_matches {
-            // No matching persisted pending interaction — ignore the client's response.
             return;
         }
 
-        if is_frontend_denied || is_permission_denied {
-            // Interaction was denied - block the tool
+        if is_denied {
             step.confirm();
             step.block("User denied the action".to_string());
             step.state_of::<LoopControlState>().pending_interaction_none();
-            let resolved_id = persisted_id.unwrap_or(permission_interaction_id);
+            let resolved_id = persisted_id.unwrap_or(interaction_id);
             Self::push_resolution(step, resolved_id, serde_json::Value::Bool(false));
-        } else if is_frontend_approved || is_permission_approved {
-            // Interaction was approved - clear any pending state
-            // This allows the tool to execute normally.
+        } else if is_approved {
             step.confirm();
             step.state_of::<LoopControlState>().pending_interaction_none();
-            let resolved_id = persisted_id.unwrap_or(permission_interaction_id);
+            let resolved_id = persisted_id.unwrap_or(interaction_id);
             Self::push_resolution(step, resolved_id, serde_json::Value::Bool(true));
         }
     }
@@ -345,11 +332,20 @@ mod tests {
 
     #[tokio::test]
     async fn run_start_replays_tool_matching_pending_interaction() {
+        // Unified format: id = tool_call_id, action = "tool:<name>"
         let state = json!({
             "loop_control": {
                 "pending_interaction": {
-                    "id": "permission_write_file",
-                    "action": "confirm"
+                    "id": "call_write",
+                    "action": "tool:write_file",
+                    "parameters": {
+                        "source": "permission",
+                        "origin_tool_call": {
+                            "id": "call_write",
+                            "name": "write_file",
+                            "arguments": { "path": "b.txt" }
+                        }
+                    }
                 }
             }
         });
@@ -365,7 +361,7 @@ mod tests {
             ..TestFixture::new()
         };
         let plugin =
-            InteractionResponsePlugin::new(vec!["permission_write_file".to_string()], vec![]);
+            InteractionResponsePlugin::new(vec!["call_write".to_string()], vec![]);
 
         let mut step = fixture.step(vec![]);
         plugin.on_phase(Phase::RunStart, &mut step).await;
@@ -375,6 +371,9 @@ mod tests {
         assert_eq!(replay_calls.len(), 1);
         assert_eq!(replay_calls[0].id, "call_write");
         assert_eq!(replay_calls[0].name, "write_file");
+
+        // Permission state patch should be emitted
+        assert!(!step.pending_patches.is_empty(), "permission state patch should be emitted");
     }
 
     #[tokio::test]
@@ -382,8 +381,16 @@ mod tests {
         let state = json!({
             "loop_control": {
                 "pending_interaction": {
-                    "id": "permission_write_file",
-                    "action": "confirm"
+                    "id": "call_write",
+                    "action": "tool:write_file",
+                    "parameters": {
+                        "source": "permission",
+                        "origin_tool_call": {
+                            "id": "call_write",
+                            "name": "write_file",
+                            "arguments": { "path": "b.txt" }
+                        }
+                    }
                 }
             }
         });
@@ -400,7 +407,7 @@ mod tests {
             ..TestFixture::new()
         };
         let plugin =
-            InteractionResponsePlugin::new(vec!["permission_write_file".to_string()], vec![]);
+            InteractionResponsePlugin::new(vec!["call_write".to_string()], vec![]);
 
         let mut step = fixture.step(vec![]);
         plugin.on_phase(Phase::RunStart, &mut step).await;
@@ -472,15 +479,15 @@ mod tests {
 
     #[tokio::test]
     async fn run_start_permission_replay_without_history_uses_embedded_tool_call() {
+        // Unified format with origin_tool_call embedded in parameters
         let state = json!({
             "loop_control": {
                 "pending_interaction": {
-                    "id": "permission_write_file",
-                    "action": "confirm",
+                    "id": "call_write",
+                    "action": "tool:write_file",
                     "parameters": {
-                        "tool_id": "write_file",
-                        "tool_call_id": "call_write",
-                        "tool_call": {
+                        "source": "permission",
+                        "origin_tool_call": {
                             "id": "call_write",
                             "name": "write_file",
                             "arguments": { "path": "a.txt" }
@@ -491,7 +498,7 @@ mod tests {
         });
         let fixture = TestFixture::new_with_state(state);
         let plugin =
-            InteractionResponsePlugin::new(vec!["permission_write_file".to_string()], vec![]);
+            InteractionResponsePlugin::new(vec!["call_write".to_string()], vec![]);
 
         let mut step = fixture.step(vec![]);
         plugin.on_phase(Phase::RunStart, &mut step).await;
@@ -506,14 +513,14 @@ mod tests {
 
     #[tokio::test]
     async fn run_start_permission_replay_prefers_origin_tool_call_mapping() {
+        // origin_tool_call is checked before tool:<name> fallback
         let state = json!({
             "loop_control": {
                 "pending_interaction": {
-                    "id": "permission_write_file",
-                    "action": "tool:AskUserQuestion",
+                    "id": "call_write",
+                    "action": "tool:write_file",
                     "parameters": {
-                        "origin_call_id": "call_write",
-                        "origin_call_name": "write_file",
+                        "source": "permission",
                         "origin_tool_call": {
                             "id": "call_write",
                             "name": "write_file",
@@ -525,7 +532,7 @@ mod tests {
         });
         let fixture = TestFixture::new_with_state(state);
         let plugin =
-            InteractionResponsePlugin::new(vec!["permission_write_file".to_string()], vec![]);
+            InteractionResponsePlugin::new(vec!["call_write".to_string()], vec![]);
 
         let mut step = fixture.step(vec![]);
         plugin.on_phase(Phase::RunStart, &mut step).await;

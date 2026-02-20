@@ -156,10 +156,13 @@ impl AgentPlugin for PermissionPlugin {
                 let origin_call_id = step.tool_call_id().unwrap_or_default().to_string();
                 let origin_args = step.tool_args().cloned().unwrap_or_default();
                 let question = format!("Allow tool '{}' to execute?", tool_id);
-                // Create a pending interaction for confirmation
-                let interaction = Interaction::new(format!("permission_{}", tool_id), "confirm")
+                // Create a pending interaction for confirmation.
+                // Uses tool_call_id as interaction id and "tool:<name>" as action
+                // to match the unified Interaction format used by FrontendToolPlugin.
+                let interaction = Interaction::new(&origin_call_id, format!("tool:{}", tool_id))
                     .with_message(question.clone())
                     .with_parameters(json!({
+                        "source": "permission",
                         "questions": [
                             {
                                 "question": question,
@@ -177,10 +180,7 @@ impl AgentPlugin for PermissionPlugin {
                                 "multiSelect": false
                             }
                         ],
-                        "ask_call_id": format!("permission_{}", tool_id),
                         "ask_user_tool": ASK_USER_TOOL_NAME,
-                        "origin_call_id": origin_call_id,
-                        "origin_call_name": tool_id,
                         "origin_tool_call": {
                             "id": origin_call_id,
                             "name": tool_id,
@@ -434,11 +434,12 @@ mod tests {
             .as_ref()
             .and_then(|t| t.pending_interaction.as_ref())
             .expect("pending interaction should exist");
-        assert_eq!(interaction.action, "confirm");
+        // Unified format: id = tool_call_id, action = "tool:<name>"
+        assert_eq!(interaction.id, "call_1");
+        assert_eq!(interaction.action, "tool:test_tool");
+        assert_eq!(interaction.parameters["source"], "permission");
         assert!(interaction.parameters.get("questions").is_some());
         assert_eq!(interaction.parameters["ask_user_tool"], ASK_USER_TOOL_NAME);
-        assert_eq!(interaction.parameters["origin_call_id"], "call_1");
-        assert_eq!(interaction.parameters["origin_call_name"], "test_tool");
         assert_eq!(interaction.parameters["origin_tool_call"]["id"], "call_1");
         assert_eq!(
             interaction.parameters["origin_tool_call"]["name"],

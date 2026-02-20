@@ -1839,8 +1839,9 @@ fn test_execute_tools_with_config_denied_permission_is_visible_as_tool_error() {
             json!({
                 "loop_control": {
                     "pending_interaction": {
-                        "id": "permission_echo",
-                        "action": "tool:AskUserQuestion"
+                        "id": "call_1",
+                        "action": "tool:echo",
+                        "parameters": { "source": "permission" }
                     }
                 }
             }),
@@ -1857,7 +1858,7 @@ fn test_execute_tools_with_config_denied_permission_is_visible_as_tool_error() {
         let tools = tool_map([EchoTool]);
         let interaction = carve_agent_extension_interaction::InteractionPlugin::with_responses(
             Vec::new(),
-            vec!["permission_echo".to_string()],
+            vec!["call_1".to_string()],
         );
         let config =
             AgentConfig::new("gpt-4").with_plugin(Arc::new(interaction) as Arc<dyn AgentPlugin>);
@@ -2111,9 +2112,8 @@ async fn test_stream_skip_inference_emits_run_end_phase() {
         Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools = HashMap::new();
 
-    let config = config.with_tools(tools);
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, run_ctx, None, None);
+    let stream = run_loop_stream(config, tools, run_ctx, None, None);
     let events = collect_stream_events(stream).await;
 
     // Verify events include RunStart and RunFinish
@@ -2158,9 +2158,8 @@ async fn test_stream_skip_inference_emits_run_start_and_finish() {
         Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools = HashMap::new();
 
-    let config = config.with_tools(tools);
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, run_ctx, None, None);
+    let stream = run_loop_stream(config, tools, run_ctx, None, None);
     let events = collect_stream_events(stream).await;
 
     let event_names: Vec<&str> = events
@@ -2211,9 +2210,8 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
         Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools = HashMap::new();
 
-    let config = config.with_tools(tools);
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let events = collect_stream_events(run_loop_stream(config, run_ctx, None, None)).await;
+    let events = collect_stream_events(run_loop_stream(config, tools, run_ctx, None, None)).await;
 
     assert!(matches!(events.get(0), Some(AgentEvent::RunStart { .. })));
     assert!(matches!(
@@ -2259,7 +2257,7 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
 
     let interaction = carve_agent_extension_interaction::InteractionPlugin::with_responses(
         Vec::new(),
-        vec!["permission_write_file".to_string()],
+        vec!["call_write".to_string()],
     );
     let config = AgentConfig::new("gpt-4o-mini")
         .with_plugin(Arc::new(interaction))
@@ -2269,9 +2267,9 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
         serde_json::json!({
             "loop_control": {
                 "pending_interaction": {
-                    "id": "permission_write_file",
-                    "action": "confirm",
-                    "parameters": { "tool_id": "write_file" }
+                    "id": "call_write",
+                    "action": "tool:write_file",
+                    "parameters": { "source": "permission" }
                 }
             }
         }),
@@ -2279,9 +2277,8 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
     .with_message(crate::contracts::thread::Message::user("continue"));
     let tools = HashMap::new();
 
-    let config = config.with_tools(tools);
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let events = collect_stream_events(run_loop_stream(config, run_ctx, None, None)).await;
+    let events = collect_stream_events(run_loop_stream(config, tools, run_ctx, None, None)).await;
 
     assert!(matches!(events.first(), Some(AgentEvent::RunStart { .. })));
     assert!(
@@ -2290,7 +2287,7 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
                 AgentEvent::InteractionResolved {
                     interaction_id,
                     result
-                } if interaction_id == "permission_write_file" && result == &serde_json::Value::Bool(false)
+                } if interaction_id == "call_write" && result == &serde_json::Value::Bool(false)
             )),
             "missing denied InteractionResolved event: {events:?}"
         );
@@ -2318,7 +2315,7 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
     }
 
     let interaction = carve_agent_extension_interaction::InteractionPlugin::with_responses(
-        vec!["permission_echo".to_string()],
+        vec!["call_1".to_string()],
         Vec::new(),
     );
     let config = AgentConfig::new("mock")
@@ -2329,9 +2326,10 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
         json!({
             "loop_control": {
                 "pending_interaction": {
-                    "id": "permission_echo",
-                    "action": "tool:AskUserQuestion",
+                    "id": "call_1",
+                    "action": "tool:echo",
                     "parameters": {
+                        "source": "permission",
                         "origin_tool_call": {
                             "id": "call_1",
                             "name": "echo",
@@ -2370,7 +2368,7 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
             AgentEvent::InteractionResolved {
                 interaction_id,
                 result
-            } if interaction_id == "permission_echo" && result == &serde_json::Value::Bool(true)
+            } if interaction_id == "call_1" && result == &serde_json::Value::Bool(true)
         )),
         "missing approval InteractionResolved event: {events:?}"
     );
@@ -2435,7 +2433,7 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
 
     let interaction = carve_agent_extension_interaction::InteractionPlugin::with_responses(
         Vec::new(),
-        vec!["permission_echo".to_string()],
+        vec!["call_1".to_string()],
     );
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(interaction))
@@ -2445,9 +2443,10 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
         json!({
             "loop_control": {
                 "pending_interaction": {
-                    "id": "permission_echo",
-                    "action": "tool:AskUserQuestion",
+                    "id": "call_1",
+                    "action": "tool:echo",
                     "parameters": {
+                        "source": "permission",
                         "origin_tool_call": {
                             "id": "call_1",
                             "name": "echo",
@@ -2486,7 +2485,7 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
             AgentEvent::InteractionResolved {
                 interaction_id,
                 result
-            } if interaction_id == "permission_echo" && result == &serde_json::Value::Bool(false)
+            } if interaction_id == "call_1" && result == &serde_json::Value::Bool(false)
         )),
         "missing denied InteractionResolved event: {events:?}"
     );
@@ -2532,7 +2531,7 @@ async fn test_run_loop_skip_inference_emits_run_end_phase() {
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let outcome = run_loop(&config.clone().with_tools(tools), run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
     // skip_inference in run_loop terminates with PluginRequested (not NaturalEnd)
     assert!(matches!(outcome.termination, TerminationReason::PluginRequested));
 
@@ -2593,7 +2592,7 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let outcome = run_loop(&config.clone().with_tools(tools), run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
     assert!(matches!(outcome.termination, TerminationReason::PendingInteraction));
 
     let interaction = outcome.run_ctx.pending_interaction()
@@ -2629,7 +2628,7 @@ async fn test_run_loop_auto_generated_run_id_is_rfc4122_uuid_v7() {
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let outcome = run_loop(&config.clone().with_tools(tools), run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
     // skip_inference in run_loop terminates with PluginRequested
     assert!(matches!(outcome.termination, TerminationReason::PluginRequested));
     let run_id = outcome.run_ctx
@@ -2664,7 +2663,7 @@ async fn test_run_loop_phase_sequence_on_skip_inference() {
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let outcome = run_loop(&config.clone().with_tools(tools), run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
     // skip_inference in run_loop terminates with PluginRequested
     assert!(matches!(outcome.termination, TerminationReason::PluginRequested));
 
@@ -2710,7 +2709,7 @@ async fn test_run_loop_rejects_skip_inference_mutation_outside_before_inference(
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let outcome = run_loop(&config.clone().with_tools(tools), run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
     assert!(
         matches!(outcome.termination, TerminationReason::Error),
         "expected phase mutation state error, got: {:?}",
@@ -2774,9 +2773,8 @@ async fn test_stream_run_finish_has_matching_thread_id() {
         Thread::new("my-thread").with_message(crate::contracts::thread::Message::user("hello"));
     let tools = HashMap::new();
 
-    let config = config.with_tools(tools);
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, run_ctx, None, None);
+    let stream = run_loop_stream(config, tools, run_ctx, None, None);
     let events = collect_stream_events(stream).await;
 
     // Extract thread_id from RunStart and RunFinish
@@ -2983,12 +2981,11 @@ async fn test_nonstream_uses_fallback_model_after_primary_failures() {
             max_backoff_ms: 10,
             retry_stream_start: true,
         })
-        .with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>)
-        .with_tools(HashMap::new());
+        .with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
-    let outcome = run_loop(&config, run_ctx, None, None).await;
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None).await;
 
     assert_eq!(outcome.termination, TerminationReason::NaturalEnd);
     assert_eq!(outcome.response.as_deref(), Some("ok"));
@@ -3052,12 +3049,11 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
         "429 rate limit".to_string(),
     ))]));
     let config = config
-        .with_llm_executor(provider as Arc<dyn LlmExecutor>)
-        .with_tools(HashMap::new());
+        .with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
-    let outcome = run_loop(&config, run_ctx, None, None).await;
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None).await;
     assert_eq!(outcome.termination, TerminationReason::Error);
     assert!(
         matches!(outcome.failure, Some(outcome::LoopFailure::Llm(ref message)) if message.contains("429")),
@@ -3085,12 +3081,11 @@ async fn test_nonstream_stop_timeout_condition_triggers_on_natural_end_path() {
     let provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("done now"))]));
     let config = AgentConfig::new("mock")
         .with_stop_condition(crate::engine::stop_conditions::Timeout(std::time::Duration::from_secs(0)))
-        .with_llm_executor(provider as Arc<dyn LlmExecutor>)
-        .with_tools(HashMap::new());
+        .with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
-    let outcome = run_loop(&config, run_ctx, None, None).await;
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None).await;
 
     assert_eq!(outcome.termination, TerminationReason::Stopped(StopReason::TimeoutReached));
     assert!(
@@ -3115,13 +3110,12 @@ async fn test_nonstream_cancellation_token_during_inference() {
     let token_for_run = token.clone();
 
     let config = AgentConfig::new("mock")
-        .with_llm_executor(provider as Arc<dyn LlmExecutor>)
-        .with_tools(HashMap::new());
+        .with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
     let handle = tokio::spawn(async move {
-        run_loop(&config, run_ctx, Some(token_for_run), None).await
+        run_loop(&config, HashMap::new(), run_ctx, Some(token_for_run), None).await
     });
 
     ready.notified().await;
@@ -3194,12 +3188,11 @@ fn test_loop_outcome_run_finish_projection_non_natural_has_no_result_payload() {
 async fn test_nonstream_loop_outcome_collects_usage_and_stats() {
     let provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response_with_usage("done", 7, 3))]));
     let config = AgentConfig::new("mock")
-        .with_llm_executor(provider as Arc<dyn LlmExecutor>)
-        .with_tools(HashMap::new());
+        .with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("usage-stats").with_message(Message::user("go"));
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
-    let outcome = run_loop(&config, run_ctx, None, None).await;
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None).await;
 
     assert_eq!(outcome.termination, TerminationReason::NaturalEnd);
     assert_eq!(outcome.response.as_deref(), Some("done"));
@@ -3231,12 +3224,11 @@ async fn test_nonstream_loop_outcome_llm_error_tracks_attempts_and_failure_kind(
             max_backoff_ms: 1,
             retry_stream_start: true,
         })
-        .with_llm_executor(provider as Arc<dyn LlmExecutor>)
-        .with_tools(HashMap::new());
+        .with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("error-stats").with_message(Message::user("go"));
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
-    let outcome = run_loop(&config, run_ctx, None, None).await;
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None).await;
 
     assert_eq!(outcome.termination, TerminationReason::Error);
     assert_eq!(outcome.stats.llm_calls, 2);
@@ -3270,13 +3262,13 @@ async fn test_nonstream_cancellation_token_during_tool_execution() {
     let token_for_run = token.clone();
 
     let config = AgentConfig::new("mock")
-        .with_llm_executor(provider as Arc<dyn LlmExecutor>)
-        .with_tools(tool_map([tool]));
+        .with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let tools = tool_map([tool]);
     let thread = Thread::new("test").with_message(Message::user("go"));
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
     let handle = tokio::spawn(async move {
-        run_loop(&config, run_ctx, Some(token_for_run), None).await
+        run_loop(&config, tools, run_ctx, Some(token_for_run), None).await
     });
 
     ready.notified().await;
@@ -3318,11 +3310,10 @@ async fn test_golden_run_loop_and_stream_natural_end_alignment() {
         Ok(text_chat_response("done")),
     ]));
     let nonstream_config = AgentConfig::new("mock")
-        .with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>)
-        .with_tools(tools.clone());
+        .with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
-    let nonstream_outcome = run_loop(&nonstream_config, run_ctx, None, None).await;
+    let nonstream_outcome = run_loop(&nonstream_config, tools.clone(), run_ctx, None, None).await;
     assert_eq!(nonstream_outcome.termination, TerminationReason::NaturalEnd);
     let nonstream_response = nonstream_outcome.response.clone().unwrap_or_default();
 
@@ -3361,11 +3352,10 @@ async fn test_golden_run_loop_and_stream_cancelled_alignment() {
     nonstream_token.cancel();
 
     let nonstream_config = AgentConfig::new("mock")
-        .with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>)
-        .with_tools(tools.clone());
+        .with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
-    let nonstream_outcome = run_loop(&nonstream_config, run_ctx, Some(nonstream_token), None).await;
+    let nonstream_outcome = run_loop(&nonstream_config, tools.clone(), run_ctx, Some(nonstream_token), None).await;
     assert_eq!(nonstream_outcome.termination, TerminationReason::Cancelled);
 
     let stream_token = CancellationToken::new();
@@ -3427,11 +3417,10 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
     let nonstream_provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("unused"))]));
 
     let nonstream_config = config.clone()
-        .with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>)
-        .with_tools(tools.clone());
+        .with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
-    let nonstream_outcome = run_loop(&nonstream_config, run_ctx, None, None).await;
+    let nonstream_outcome = run_loop(&nonstream_config, tools.clone(), run_ctx, None, None).await;
     assert_eq!(nonstream_outcome.termination, TerminationReason::PendingInteraction);
     let nonstream_interaction = nonstream_outcome.run_ctx.pending_interaction()
         .expect("non-stream outcome should have pending interaction");
@@ -3495,7 +3484,7 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
 
     fn replay_config() -> AgentConfig {
         let interaction = carve_agent_extension_interaction::InteractionPlugin::with_responses(
-            vec!["permission_counting_echo".to_string()],
+            vec!["call_1".to_string()],
             Vec::new(),
         );
         AgentConfig::new("mock")
@@ -3514,9 +3503,10 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
         json!({
             "loop_control": {
                 "pending_interaction": {
-                    "id": "permission_counting_echo",
-                    "action": "tool:AskUserQuestion",
+                    "id": "call_1",
+                    "action": "tool:counting_echo",
                     "parameters": {
+                        "source": "permission",
                         "origin_tool_call": {
                             "id": "call_1",
                             "name": "counting_echo",
@@ -3769,9 +3759,9 @@ async fn run_mock_stream(
     thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
 ) -> Vec<AgentEvent> {
-    let config = config.with_llm_executor(Arc::new(provider)).with_tools(tools);
+    let config = config.with_llm_executor(Arc::new(provider));
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream_impl(config, run_ctx, None, None);
+    let stream = run_loop_stream_impl(config, tools, run_ctx, None, None);
     collect_stream_events(stream).await
 }
 
@@ -3839,9 +3829,9 @@ async fn test_stream_retries_startup_error_then_succeeds() {
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = HashMap::new();
 
-    let config = config.with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>).with_tools(tools);
+    let config = config.with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream_impl(config, run_ctx, None, None);
+    let stream = run_loop_stream_impl(config, tools, run_ctx, None, None);
     let events = collect_stream_events(stream).await;
 
     assert_eq!(
@@ -3866,9 +3856,9 @@ async fn test_stream_uses_fallback_model_after_primary_failures() {
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = HashMap::new();
 
-    let config = config.with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>).with_tools(tools);
+    let config = config.with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream_impl(config, run_ctx, None, None);
+    let stream = run_loop_stream_impl(config, tools, run_ctx, None, None);
     let events = collect_stream_events(stream).await;
 
     assert_eq!(
@@ -3920,9 +3910,9 @@ async fn run_mock_stream_with_final_thread_with_context(
     let mut final_thread = thread.clone();
     let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
     let committer: Arc<dyn StateCommitter> = Arc::new(ChannelStateCommitter::new(checkpoint_tx));
-    let config = config.with_llm_executor(Arc::new(provider)).with_tools(tools);
+    let config = config.with_llm_executor(Arc::new(provider));
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream_impl(config, run_ctx, cancellation_token, Some(committer));
+    let stream = run_loop_stream_impl(config, tools, run_ctx, cancellation_token, Some(committer));
     let events = collect_stream_events(stream).await;
     while let Some(changeset) = checkpoint_rx.recv().await {
         changeset.apply_to(&mut final_thread);
@@ -4085,10 +4075,9 @@ async fn test_stream_state_commit_failure_on_assistant_turn_emits_error_and_run_
     )));
     let thread = Thread::new("test").with_message(Message::user("go"));
     let config = AgentConfig::new("mock")
-        .with_llm_executor(Arc::new(MockStreamProvider::new(vec![MockResponse::text("done")])) as Arc<dyn LlmExecutor>)
-        .with_tools(HashMap::new());
+        .with_llm_executor(Arc::new(MockStreamProvider::new(vec![MockResponse::text("done")])) as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream_impl(config, run_ctx, None, Some(committer.clone() as Arc<dyn StateCommitter>));
+    let stream = run_loop_stream_impl(config, HashMap::new(), run_ctx, None, Some(committer.clone() as Arc<dyn StateCommitter>));
     let events = collect_stream_events(stream).await;
 
     assert_eq!(extract_termination(&events), Some(TerminationReason::Error));
@@ -4116,10 +4105,10 @@ async fn test_stream_state_commit_failure_on_tool_results_emits_error_before_too
     let config = AgentConfig::new("mock")
         .with_llm_executor(Arc::new(MockStreamProvider::new(vec![
             MockResponse::text("tool").with_tool_call("call_1", "echo", json!({"message":"hi"}))
-        ])) as Arc<dyn LlmExecutor>)
-        .with_tools(tool_map([EchoTool]));
+        ])) as Arc<dyn LlmExecutor>);
+    let tools = tool_map([EchoTool]);
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream_impl(config, run_ctx, None, Some(committer.clone() as Arc<dyn StateCommitter>));
+    let stream = run_loop_stream_impl(config, tools, run_ctx, None, Some(committer.clone() as Arc<dyn StateCommitter>));
     let events = collect_stream_events(stream).await;
 
     assert_eq!(extract_termination(&events), Some(TerminationReason::Error));
@@ -4152,10 +4141,9 @@ async fn test_stream_run_finished_commit_failure_emits_error_without_run_finish_
     )));
     let thread = Thread::new("test").with_message(Message::user("go"));
     let config = AgentConfig::new("mock")
-        .with_llm_executor(Arc::new(MockStreamProvider::new(vec![MockResponse::text("done")])) as Arc<dyn LlmExecutor>)
-        .with_tools(HashMap::new());
+        .with_llm_executor(Arc::new(MockStreamProvider::new(vec![MockResponse::text("done")])) as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream_impl(config, run_ctx, None, Some(committer.clone() as Arc<dyn StateCommitter>));
+    let stream = run_loop_stream_impl(config, HashMap::new(), run_ctx, None, Some(committer.clone() as Arc<dyn StateCommitter>));
     let events = collect_stream_events(stream).await;
 
     assert!(
@@ -4186,10 +4174,9 @@ async fn test_stream_skip_inference_force_commits_run_finished_delta() {
     let thread = Thread::new("test").with_message(Message::user("go"));
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>)
-        .with_llm_executor(Arc::new(MockStreamProvider::new(vec![])) as Arc<dyn LlmExecutor>)
-        .with_tools(HashMap::new());
+        .with_llm_executor(Arc::new(MockStreamProvider::new(vec![])) as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream_impl(config, run_ctx, None, Some(committer.clone() as Arc<dyn StateCommitter>));
+    let stream = run_loop_stream_impl(config, HashMap::new(), run_ctx, None, Some(committer.clone() as Arc<dyn StateCommitter>));
     let events = collect_stream_events(stream).await;
 
     assert_eq!(
@@ -4312,8 +4299,8 @@ async fn test_stream_replay_state_failure_emits_error() {
     let tools = tool_map([EchoTool]);
 
     let provider = MockStreamProvider::new(vec![MockResponse::text("should not run")]);
-    let config = config.with_llm_executor(Arc::new(provider)).with_tools(tools);
-    let stream = run_loop_stream_impl(config, run_ctx, None, None);
+    let config = config.with_llm_executor(Arc::new(provider));
+    let stream = run_loop_stream_impl(config, tools, run_ctx, None, None);
     let events = collect_stream_events(stream).await;
 
     assert!(
@@ -4806,9 +4793,9 @@ async fn test_stop_cancellation_token() {
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = HashMap::new();
 
-    let config = config.with_llm_executor(Arc::new(provider) as Arc<dyn LlmExecutor>).with_tools(tools);
+    let config = config.with_llm_executor(Arc::new(provider) as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream_impl(config, run_ctx, Some(token), None);
+    let stream = run_loop_stream_impl(config, tools, run_ctx, Some(token), None);
     let events = collect_stream_events(stream).await;
     assert_eq!(
         extract_termination(&events),
@@ -4854,10 +4841,9 @@ async fn test_stop_cancellation_token_during_inference_stream() {
     let token = CancellationToken::new();
     let thread = Thread::new("test").with_message(Message::user("go"));
     let config = AgentConfig::new("mock")
-        .with_llm_executor(Arc::new(HangingStreamProvider) as Arc<dyn LlmExecutor>)
-        .with_tools(HashMap::new());
+        .with_llm_executor(Arc::new(HangingStreamProvider) as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream_impl(config, run_ctx, Some(token.clone()), None);
+    let stream = run_loop_stream_impl(config, HashMap::new(), run_ctx, Some(token.clone()), None);
 
     let collect_task = tokio::spawn(async move { collect_stream_events(stream).await });
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
@@ -4904,7 +4890,7 @@ async fn test_run_loop_with_context_cancellation_token() {
     token.cancel();
 
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let outcome = run_loop(&config.clone().with_tools(tools), run_ctx, Some(token), None).await;
+    let outcome = run_loop(&config, tools, run_ctx, Some(token), None).await;
 
     assert!(
         matches!(outcome.termination, TerminationReason::Cancelled),
@@ -5653,7 +5639,7 @@ async fn test_run_step_skip_inference_returns_empty_result_without_assistant_mes
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let outcome = run_loop(&config.clone().with_tools(tools), run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
 
     // skip_inference in run_loop terminates with PluginRequested
     assert!(matches!(outcome.termination, TerminationReason::PluginRequested));
@@ -5701,7 +5687,7 @@ async fn test_run_step_skip_inference_with_pending_state_returns_pending_interac
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let outcome = run_loop(&config.clone().with_tools(tools), run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
     assert!(matches!(outcome.termination, TerminationReason::PendingInteraction));
 
     let interaction = outcome.run_ctx.pending_interaction()
@@ -5811,11 +5797,11 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
     let state_committer: Arc<dyn StateCommitter> = Arc::new(ChannelStateCommitter::new(checkpoint_tx));
 
     let config = config
-        .with_llm_executor(Arc::new(FailingStartProvider::new(10)) as Arc<dyn LlmExecutor>)
-        .with_tools(HashMap::new());
+        .with_llm_executor(Arc::new(FailingStartProvider::new(10)) as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&initial_thread, carve_agent_contract::RunConfig::default()).unwrap();
     let events = collect_stream_events(run_loop_stream_impl(
         config,
+        HashMap::new(),
         run_ctx,
         None,
         Some(state_committer),
@@ -5887,10 +5873,10 @@ async fn test_stop_cancellation_token_during_tool_execution_stream() {
     let token = CancellationToken::new();
     let thread = Thread::new("test").with_message(Message::user("go"));
     let config = AgentConfig::new("mock")
-        .with_llm_executor(Arc::new(MockStreamProvider::new(responses)) as Arc<dyn LlmExecutor>)
-        .with_tools(tool_map([tool]));
+        .with_llm_executor(Arc::new(MockStreamProvider::new(responses)) as Arc<dyn LlmExecutor>);
+    let tools = tool_map([tool]);
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream_impl(config, run_ctx, Some(token.clone()), None);
+    let stream = run_loop_stream_impl(config, tools, run_ctx, Some(token.clone()), None);
 
     let collector = tokio::spawn(async move { collect_stream_events(stream).await });
     ready.notified().await;
@@ -6253,10 +6239,9 @@ async fn test_run_loop_patches_accumulate_across_steps() {
     let tools = tool_map([CounterTool]);
 
     let config = AgentConfig::new("mock")
-        .with_llm_executor(provider as Arc<dyn LlmExecutor>)
-        .with_tools(tools);
+        .with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
-    let outcome = run_loop(&config, run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
 
     assert!(
         matches!(outcome.termination, TerminationReason::NaturalEnd),

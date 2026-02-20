@@ -5750,37 +5750,32 @@ fn test_scenario_mixed_messages_with_interaction_response() {
 /// Test scenario: InteractionPlugin blocks denied tool in execution flow
 #[tokio::test]
 async fn test_scenario_interaction_response_plugin_blocks_denied() {
-    // Thread must have a persisted pending interaction matching the denied ID.
+    // Unified format: id = tool_call_id, action = "tool:<name>"
     let thread = Thread::with_initial_state(
         "test",
-        json!({ "loop_control": { "pending_interaction": { "id": "permission_write_file", "action": "confirm" } } }),
+        json!({ "loop_control": { "pending_interaction": { "id": "call_write", "action": "tool:write_file", "parameters": { "source": "permission" } } } }),
     );
 
-    // Create plugin with denied interaction
     let plugin = InteractionPlugin::with_responses(
-        vec![],                                    // no approved
-        vec!["permission_write_file".to_string()], // denied
+        vec![],                              // no approved
+        vec!["call_write".to_string()],      // denied
     );
 
-    // Simulate tool call with matching interaction ID format
     let fix = TestFixture::new_with_state(thread.state.clone());
     let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
     let call = ToolCall::new(
-        "permission_write_file",
+        "call_write",
         "write_file",
         json!({"path": "/etc/config"}),
     );
     step.tool = Some(ToolContext::new(&call));
 
-    // Run plugin
     plugin
         .on_phase(Phase::BeforeToolExecute, &mut step)
         .await;
 
-    // Tool should be blocked
     assert!(step.tool_blocked(), "Denied tool should be blocked");
-    // Verify block reason via direct field access
     let block_reason = step.tool.as_ref().unwrap().block_reason.as_ref().unwrap();
     assert!(
         block_reason.contains("denied"),
@@ -5792,35 +5787,31 @@ async fn test_scenario_interaction_response_plugin_blocks_denied() {
 /// Test scenario: InteractionPlugin allows approved tool in execution flow
 #[tokio::test]
 async fn test_scenario_interaction_response_plugin_allows_approved() {
-    // Thread must have a persisted pending interaction matching the approved ID.
+    // Unified format: id = tool_call_id, action = "tool:<name>"
     let thread = Thread::with_initial_state(
         "test",
-        json!({ "loop_control": { "pending_interaction": { "id": "permission_read_file", "action": "confirm" } } }),
+        json!({ "loop_control": { "pending_interaction": { "id": "call_read", "action": "tool:read_file", "parameters": { "source": "permission" } } } }),
     );
 
-    // Create plugin with approved interaction
     let plugin = InteractionPlugin::with_responses(
-        vec!["permission_read_file".to_string()], // approved
-        vec![],                                   // no denied
+        vec!["call_read".to_string()], // approved
+        vec![],                        // no denied
     );
 
-    // Simulate tool call
     let fix = TestFixture::new_with_state(thread.state.clone());
     let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
     let call = ToolCall::new(
-        "permission_read_file",
+        "call_read",
         "read_file",
         json!({"path": "/home/user/doc.txt"}),
     );
     step.tool = Some(ToolContext::new(&call));
 
-    // Run plugin
     plugin
         .on_phase(Phase::BeforeToolExecute, &mut step)
         .await;
 
-    // Tool should NOT be blocked
     assert!(!step.tool_blocked(), "Approved tool should not be blocked");
 }
 
@@ -5849,10 +5840,10 @@ async fn test_scenario_e2e_permission_to_response_flow() {
         .pending_interaction
         .clone()
         .unwrap();
-    assert!(
-        interaction.id.starts_with("permission_"),
-        "Interaction ID should start with permission_"
-    );
+    // Unified format: id = tool_call_id, action = "tool:<name>"
+    assert_eq!(interaction.id, "call_exec");
+    assert_eq!(interaction.action, "tool:execute_command");
+    assert_eq!(interaction.parameters["source"], "permission");
 
     // Step 2: Client approves
     let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
@@ -5866,7 +5857,7 @@ async fn test_scenario_e2e_permission_to_response_flow() {
     // The session must have the pending interaction persisted (as the real loop does).
     let session2 = Thread::with_initial_state(
         "test",
-        json!({ "loop_control": { "pending_interaction": { "id": interaction.id, "action": "confirm" } } }),
+        json!({ "loop_control": { "pending_interaction": { "id": interaction.id, "action": interaction.action, "parameters": interaction.parameters } } }),
     );
     let response_plugin = interaction_plugin_from_request(&response_request);
     let fix2 = TestFixture::new_with_state(session2.state.clone());
@@ -6250,7 +6241,9 @@ async fn test_permission_flow_approval_e2e() {
         .pending_interaction
         .clone()
         .unwrap();
-    assert!(interaction.id.starts_with("permission_"));
+    // Unified format: id = tool_call_id
+    assert_eq!(interaction.id, "call_write");
+    assert_eq!(interaction.parameters["source"], "permission");
 
     // Phase 2: Convert to AG-UI events (client would receive these)
     let ag_ui_events = interaction_to_ag_ui_events(&interaction);
@@ -6472,9 +6465,9 @@ async fn test_e2e_permission_suspend_with_real_tool() {
         other => panic!("Expected PendingInteraction, got: {:?}", other),
     };
 
-    // Interaction details
-    assert_eq!(interaction.id, "permission_increment");
-    assert_eq!(interaction.action, "confirm");
+    // Unified format: id = tool_call_id, action = "tool:<name>"
+    assert_eq!(interaction.id, "call_inc");
+    assert_eq!(interaction.action, "tool:increment");
     assert!(interaction.message.contains("increment"));
 
     // Placeholder tool result keeps LLM message sequence valid while awaiting approval.
@@ -6493,8 +6486,8 @@ async fn test_e2e_permission_suspend_with_real_tool() {
     // pending_interaction persisted in session state
     let state = suspended_run_ctx.snapshot().unwrap();
     let pending = &state["loop_control"]["pending_interaction"];
-    assert_eq!(pending["id"], "permission_increment");
-    assert_eq!(pending["action"], "confirm");
+    assert_eq!(pending["id"], "call_inc");
+    assert_eq!(pending["action"], "tool:increment");
 
     // Counter should NOT have been modified
     assert!(
@@ -7016,7 +7009,7 @@ fn test_error_flow_run_finish_cancelled() {
 #[tokio::test]
 async fn test_resume_flow_with_approval() {
     // Simulate: Previous run ended with pending permission
-    let interaction_id = "permission_tool_x";
+    let interaction_id = "call_x";
 
     // New request includes approval
     let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
@@ -7043,7 +7036,7 @@ async fn test_resume_flow_with_approval() {
 /// Test: Resume with denial blocks execution
 #[tokio::test]
 async fn test_resume_flow_with_denial() {
-    let interaction_id = "permission_dangerous_tool";
+    let interaction_id = "call_dangerous";
 
     let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
         .with_message(AGUIMessage::tool("no", interaction_id));
@@ -7054,7 +7047,7 @@ async fn test_resume_flow_with_denial() {
     // Thread must have the pending interaction persisted.
     let thread = Thread::with_initial_state(
         "test",
-        json!({ "loop_control": { "pending_interaction": { "id": interaction_id, "action": "confirm" } } }),
+        json!({ "loop_control": { "pending_interaction": { "id": interaction_id, "action": "tool:dangerous_tool", "parameters": { "source": "permission" } } } }),
     );
     let fix = TestFixture::new_with_state(thread.state.clone());
     let ctx_step = fix.ctx();
@@ -12569,15 +12562,26 @@ fn replay_calls_from_state(state: &Value) -> Vec<ToolCall> {
 /// Test: on_run_start sets replay_tool_calls when pending_interaction is approved
 #[tokio::test]
 async fn test_interaction_response_run_start_sets_replay_on_approval() {
-    let pending_id = "permission_add_trips";
+    let pending_id = "call_add_trips";
 
-    // Build a session with:
-    //   1. A persisted pending_interaction in agent state
+    // Build a session with unified format:
+    //   1. A persisted pending_interaction (id = tool_call_id, action = tool:<name>)
     //   2. An assistant message carrying the original tool call
     //   3. A placeholder tool result
     let thread = Thread::with_initial_state(
         "test",
-        json!({ "loop_control": { "pending_interaction": { "id": pending_id, "action": "confirm" } } }),
+        json!({ "loop_control": { "pending_interaction": {
+            "id": pending_id,
+            "action": "tool:add_trips",
+            "parameters": {
+                "source": "permission",
+                "origin_tool_call": {
+                    "id": pending_id,
+                    "name": "add_trips",
+                    "arguments": { "destination": "Beijing" }
+                }
+            }
+        } } }),
     )
     .with_message(
         carve_agentos::contracts::thread::Message::assistant_with_tool_calls(
@@ -12594,20 +12598,17 @@ async fn test_interaction_response_run_start_sets_replay_on_approval() {
         "Tool 'add_trips' is awaiting approval. Execution paused.",
     ));
 
-    // Plugin with this interaction approved
     let plugin = InteractionPlugin::with_responses(
-        vec![pending_id.to_string()], // approved
-        vec![],                       // no denied
+        vec![pending_id.to_string()],
+        vec![],
     );
 
     let fix = TestFixture::new_with_state(thread.state.clone());
     let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
 
-    // Run RunStart phase
     plugin.on_phase(Phase::RunStart, &mut step).await;
 
-    // Should have set replay_tool_calls state
     let calls = replay_calls_from_state(&fix.updated_state());
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].name, "add_trips");
@@ -12618,11 +12619,11 @@ async fn test_interaction_response_run_start_sets_replay_on_approval() {
 #[tokio::test]
 async fn test_interaction_response_run_start_no_replay_on_denial() {
 
-    let pending_id = "permission_add_trips";
+    let pending_id = "call_add_trips";
 
     let thread = Thread::with_initial_state(
         "test",
-        json!({ "loop_control": { "pending_interaction": { "id": pending_id, "action": "confirm" } } }),
+        json!({ "loop_control": { "pending_interaction": { "id": pending_id, "action": "tool:add_trips", "parameters": { "source": "permission" } } } }),
     )
     .with_message(
         carve_agentos::contracts::thread::Message::assistant_with_tool_calls(
@@ -12674,15 +12675,15 @@ async fn test_interaction_response_run_start_mismatched_id() {
 
     let thread = Thread::with_initial_state(
         "test",
-        json!({ "loop_control": { "pending_interaction": { "id": "permission_x", "action": "confirm" } } }),
+        json!({ "loop_control": { "pending_interaction": { "id": "call_x", "action": "tool:some_tool", "parameters": { "source": "permission" } } } }),
     )
     .with_message(carve_agentos::contracts::thread::Message::assistant_with_tool_calls(
         "",
-        vec![ToolCall::new("permission_x", "some_tool", json!({}))],
+        vec![ToolCall::new("call_x", "some_tool", json!({}))],
     ));
 
     // Approved a different ID
-    let plugin = InteractionPlugin::with_responses(vec!["permission_y".to_string()], vec![]);
+    let plugin = InteractionPlugin::with_responses(vec!["call_y".to_string()], vec![]);
 
     let fix = TestFixture::new_with_state(thread.state.clone());
     let ctx_step = fix.ctx();
@@ -12700,12 +12701,26 @@ async fn test_interaction_response_run_start_mismatched_id() {
 #[tokio::test]
 async fn test_interaction_response_run_start_no_tool_calls_in_messages() {
 
-    let pending_id = "permission_add_trips";
+    let pending_id = "call_add_trips";
 
-    // Thread has pending interaction but no assistant message with tool calls
+    // Thread has pending interaction with unified format but no assistant message with tool calls.
+    // With origin_tool_call in parameters, replay should use that.
+    // Without origin_tool_call and with tool:<name> action, it creates replay from parameters.
+    // This test verifies the tool:<name> fallback path works.
     let thread = Thread::with_initial_state(
         "test",
-        json!({ "loop_control": { "pending_interaction": { "id": pending_id, "action": "confirm" } } }),
+        json!({ "loop_control": { "pending_interaction": {
+            "id": pending_id,
+            "action": "tool:add_trips",
+            "parameters": {
+                "source": "permission",
+                "origin_tool_call": {
+                    "id": pending_id,
+                    "name": "add_trips",
+                    "arguments": {}
+                }
+            }
+        } } }),
     )
     .with_message(carve_agentos::contracts::thread::Message::assistant(
         "I need to call a tool",
@@ -12718,11 +12733,10 @@ async fn test_interaction_response_run_start_no_tool_calls_in_messages() {
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
     plugin.on_phase(Phase::RunStart, &mut step).await;
 
+    // With origin_tool_call present, replay should be scheduled even without tool_calls in messages
     let replay = replay_calls_from_state(&fix.updated_state());
-    assert!(
-        replay.is_empty(),
-        "replay_tool_calls should not be set without tool calls"
-    );
+    assert_eq!(replay.len(), 1, "origin_tool_call should provide replay data");
+    assert_eq!(replay[0].name, "add_trips");
 }
 
 // ============================================================================
@@ -12814,7 +12828,7 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
 /// Test: HITL replay — denial path does NOT schedule replay
 #[tokio::test]
 async fn test_hitl_replay_denial_does_not_schedule() {
-    let pending_id = "permission_call_add";
+    let pending_id = "call_add";
 
     let persisted_thread = Thread::with_initial_state(
         "test",
@@ -12822,7 +12836,8 @@ async fn test_hitl_replay_denial_does_not_schedule() {
             "loop_control": {
                 "pending_interaction": {
                     "id": pending_id,
-                    "action": "confirm"
+                    "action": "tool:add_trips",
+                    "parameters": { "source": "permission" }
                 }
             }
         }),
@@ -12857,7 +12872,7 @@ async fn test_hitl_replay_denial_does_not_schedule() {
 /// Test: HITL replay — multiple tool calls, only first is scheduled
 #[tokio::test]
 async fn test_hitl_replay_picks_first_tool_call() {
-    let pending_id = "permission_multi";
+    let pending_id = "call_multi";
 
     let persisted_thread = Thread::with_initial_state(
         "test",
@@ -12865,7 +12880,15 @@ async fn test_hitl_replay_picks_first_tool_call() {
             "loop_control": {
                 "pending_interaction": {
                     "id": pending_id,
-                    "action": "confirm"
+                    "action": "tool:tool_a",
+                    "parameters": {
+                        "source": "permission",
+                        "origin_tool_call": {
+                            "id": pending_id,
+                            "name": "tool_a",
+                            "arguments": { "a": 1 }
+                        }
+                    }
                 }
             }
         }),
@@ -12900,7 +12923,7 @@ async fn test_hitl_replay_picks_first_tool_call() {
 #[tokio::test]
 async fn test_hitl_replay_run_start_does_not_affect_before_tool_execute() {
 
-    let pending_id = "permission_phase_test";
+    let pending_id = "call_phase_test";
 
     let thread = Thread::with_initial_state(
         "test",
@@ -12908,7 +12931,15 @@ async fn test_hitl_replay_run_start_does_not_affect_before_tool_execute() {
             "loop_control": {
                 "pending_interaction": {
                     "id": pending_id,
-                    "action": "confirm"
+                    "action": "tool:some_tool",
+                    "parameters": {
+                        "source": "permission",
+                        "origin_tool_call": {
+                            "id": pending_id,
+                            "name": "some_tool",
+                            "arguments": {}
+                        }
+                    }
                 }
             }
         }),

@@ -56,13 +56,6 @@ async fn drain_run_start_outbox_and_replay(
         .await
         .map_err(|e| e.to_string())?;
 
-        if replay_result.pending_interaction.is_some() {
-            return Err(format!(
-                "replayed tool '{}' requested pending interaction",
-                tool_call.id
-            ));
-        }
-
         // Append real replay tool result as a new tool message (append-only log).
         let replay_msg_id = gen_message_id();
         let replay_msg = tool_response(&tool_call.id, &replay_result.execution.result)
@@ -92,6 +85,29 @@ async fn drain_run_start_outbox_and_replay(
             patch: replay_result.execution.patch,
             message_id: replay_msg_id,
         });
+
+        // Multi-round: replayed tool produced a new pending interaction.
+        // Persist it and return early so the run terminates with PendingInteraction.
+        if let Some(new_interaction) = replay_result.pending_interaction {
+            let state = run_ctx.snapshot().map_err(|e| {
+                format!(
+                    "failed to rebuild state for multi-round pending on tool '{}': {e}",
+                    tool_call.id
+                )
+            })?;
+            let patch = set_agent_pending_interaction(&state, new_interaction.clone());
+            if !patch.patch().is_empty() {
+                run_ctx.add_thread_patch(patch);
+            }
+            for event in interaction_requested_pending_events(&new_interaction) {
+                events.push(event);
+            }
+            let snapshot = run_ctx
+                .snapshot()
+                .map_err(|e| format!("failed to rebuild multi-round snapshot: {e}"))?;
+            events.push(AgentEvent::StateSnapshot { snapshot });
+            return Ok(events);
+        }
     }
 
     // Clear pending_interaction state after replaying tools.
@@ -238,6 +254,7 @@ fn event_type_name(event: &AgentEvent) -> &'static str {
 
 pub(super) fn run_loop_stream_impl(
     config: AgentConfig,
+    tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
@@ -249,8 +266,7 @@ pub(super) fn run_loop_stream_impl(
     let mut last_text = String::new();
     let stop_conditions = effective_stop_conditions(&config);
     let run_cancellation_token = cancellation_token;
-    let no_static_tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-    let step_tool_provider = step_tool_provider_for_run(&config, &no_static_tools);
+    let step_tool_provider = step_tool_provider_for_run(&config, tools);
         let (activity_tx, mut activity_rx) = tokio::sync::mpsc::unbounded_channel();
         let activity_manager: Arc<dyn ActivityManager> = Arc::new(ActivityHub::new(activity_tx));
 
@@ -386,6 +402,11 @@ pub(super) fn run_loop_stream_impl(
         };
         for event in run_start_events {
             yield emitter.emit_existing(event);
+        }
+
+        // Check if drain produced a new pending interaction (multi-round).
+        if pending_interaction_from_ctx(&run_ctx).is_some() {
+            finish_run!(TerminationReason::PendingInteraction, None);
         }
 
         loop {

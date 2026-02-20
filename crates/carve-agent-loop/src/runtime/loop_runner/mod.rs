@@ -86,14 +86,14 @@ pub use crate::runtime::run_context::{
 use carve_state::TrackedPatch;
 pub use crate::contracts::runtime::{LlmExecutor, ToolExecutor};
 pub use config::{AgentConfig, GenaiLlmExecutor, LlmRetryPolicy};
-pub use config::{StaticStepToolProvider, StepToolInput, StepToolProvider, StepToolSnapshot};
+pub use config::{StepToolInput, StepToolProvider, StepToolSnapshot};
+use config::StaticStepToolProvider;
 #[cfg(test)]
 use core::build_messages;
-#[cfg(test)]
-use core::set_agent_pending_interaction;
 use core::{
     build_request_for_filtered_tools, clear_agent_pending_interaction,
     drain_agent_outbox, inference_inputs_from_step, pending_interaction_from_ctx,
+    set_agent_pending_interaction,
 };
 pub use outcome::{tool_map, tool_map_from_arc, AgentLoopError};
 pub use outcome::{LoopOutcome, LoopStats, LoopUsage};
@@ -236,10 +236,10 @@ fn is_run_cancelled(token: Option<&RunCancellationToken>) -> bool {
 
 pub(super) fn step_tool_provider_for_run(
     config: &AgentConfig,
-    fallback_tools: &HashMap<String, Arc<dyn Tool>>,
+    tools: HashMap<String, Arc<dyn Tool>>,
 ) -> Arc<dyn StepToolProvider> {
     config.step_tool_provider.clone().unwrap_or_else(|| {
-        Arc::new(StaticStepToolProvider::new(fallback_tools.clone())) as Arc<dyn StepToolProvider>
+        Arc::new(StaticStepToolProvider::new(tools)) as Arc<dyn StepToolProvider>
     })
 }
 
@@ -523,11 +523,12 @@ fn assistant_turn_message(
 
 /// Run the full agent loop until completion or a stop condition is met.
 ///
-/// This is the primary non-streaming entry point. Tools are sourced from
-/// `config.step_tool_provider`, and LLM calls are delegated to
-/// `config.llm_executor` (or a default `GenaiLlmExecutor` when unset).
+/// This is the primary non-streaming entry point. Tools are passed directly
+/// and used as the default tool set unless `config.step_tool_provider` is set
+/// (for dynamic per-step tool resolution).
 pub async fn run_loop(
     config: &AgentConfig,
+    tools: HashMap<String, Arc<dyn Tool>>,
     mut run_ctx: RunContext,
     cancellation_token: Option<RunCancellationToken>,
     _state_committer: Option<Arc<dyn StateCommitter>>,
@@ -537,8 +538,7 @@ pub async fn run_loop(
     let stop_conditions = effective_stop_conditions(config);
     let run_cancellation_token = cancellation_token;
     let mut last_text = String::new();
-    let no_static_tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-    let step_tool_provider = step_tool_provider_for_run(config, &no_static_tools);
+    let step_tool_provider = step_tool_provider_for_run(config, tools);
     let run_id = stream_core::resolve_stream_run_identity(&mut run_ctx).run_id;
     let initial_step_tools = match resolve_step_tool_snapshot(&step_tool_provider, &run_ctx).await {
         Ok(snapshot) => snapshot,
@@ -801,15 +801,19 @@ pub async fn run_loop(
 
 /// Run the agent loop with streaming output.
 ///
-/// Returns a stream of AgentEvent for real-time updates.
+/// Returns a stream of AgentEvent for real-time updates. Tools are passed
+/// directly and used as the default tool set unless `config.step_tool_provider`
+/// is set (for dynamic per-step tool resolution).
 pub fn run_loop_stream(
     config: AgentConfig,
+    tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     stream_runner::run_loop_stream_impl(
         config,
+        tools,
         run_ctx,
         cancellation_token,
         state_committer,
