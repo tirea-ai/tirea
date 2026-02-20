@@ -1,8 +1,9 @@
 use crate::skill_md::{parse_allowed_tool_token, parse_skill_md};
 use crate::tool_filter::{is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY};
 use crate::{
-    material_key, Skill, SkillError, SkillMaterializeError, SkillResource, SkillResourceKind,
-    SkillState, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID,
+    material_key, Skill, SkillError, SkillMaterializeError, SkillRegistry, SkillResource,
+    SkillResourceKind, SkillState, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID,
+    SKILL_SCRIPT_TOOL_ID,
 };
 use carve_agent_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
 use carve_agent_contract::tool::context::ToolCallContext;
@@ -13,18 +14,24 @@ use std::path::{Component, Path};
 use std::sync::Arc;
 use tracing::{debug, warn};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SkillActivateTool {
-    skills: HashMap<String, Arc<dyn Skill>>,
+    registry: Arc<dyn SkillRegistry>,
+}
+
+impl std::fmt::Debug for SkillActivateTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SkillActivateTool").finish_non_exhaustive()
+    }
 }
 
 impl SkillActivateTool {
-    pub fn new(skills: HashMap<String, Arc<dyn Skill>>) -> Self {
-        Self { skills }
+    pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
+        Self { registry }
     }
 
     fn resolve(&self, key: &str) -> Option<Arc<dyn Skill>> {
-        self.skills.get(key.trim()).cloned()
+        self.registry.get(key.trim())
     }
 }
 
@@ -167,18 +174,24 @@ impl Tool for SkillActivateTool {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LoadSkillResourceTool {
-    skills: HashMap<String, Arc<dyn Skill>>,
+    registry: Arc<dyn SkillRegistry>,
+}
+
+impl std::fmt::Debug for LoadSkillResourceTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoadSkillResourceTool").finish_non_exhaustive()
+    }
 }
 
 impl LoadSkillResourceTool {
-    pub fn new(skills: HashMap<String, Arc<dyn Skill>>) -> Self {
-        Self { skills }
+    pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
+        Self { registry }
     }
 
     fn resolve(&self, key: &str) -> Option<Arc<dyn Skill>> {
-        self.skills.get(key.trim()).cloned()
+        self.registry.get(key.trim())
     }
 }
 
@@ -308,18 +321,24 @@ impl Tool for LoadSkillResourceTool {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SkillScriptTool {
-    skills: HashMap<String, Arc<dyn Skill>>,
+    registry: Arc<dyn SkillRegistry>,
+}
+
+impl std::fmt::Debug for SkillScriptTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SkillScriptTool").finish_non_exhaustive()
+    }
 }
 
 impl SkillScriptTool {
-    pub fn new(skills: HashMap<String, Arc<dyn Skill>>) -> Self {
-        Self { skills }
+    pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
+        Self { registry }
     }
 
     fn resolve(&self, key: &str) -> Option<Arc<dyn Skill>> {
-        self.skills.get(key.trim()).cloned()
+        self.registry.get(key.trim())
     }
 }
 

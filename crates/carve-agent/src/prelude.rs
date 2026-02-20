@@ -76,4 +76,4 @@ pub use crate::extensions::interaction::{ContextCategory, ContextProvider};
 // ── Skills extension (require "skills" feature) ──────────────────────────
 
 #[cfg(feature = "skills")]
-pub use crate::skills::{SkillPlugin, SkillSubsystem};
+pub use crate::skills::{SkillPlugin, SkillRegistry, SkillSubsystem};

@@ -5,10 +5,11 @@ use carve_agentos::contracts::AgentEvent;
 use carve_agentos::contracts::thread::{Thread as ConversationAgentState, ToolCall};
 use carve_agentos::contracts::tool::ToolDescriptor;
 use carve_agentos::engine::tool_execution::execute_single_tool;
-use carve_agentos::extensions::skills::{FsSkill, SkillSubsystem};
+use carve_agentos::extensions::skills::{FsSkill, InMemorySkillRegistry, SkillRegistry, SkillSubsystem};
 use carve_protocol_ag_ui::{AGUIContext, AGUIEvent};
 use serde_json::json;
 use std::fs;
+use std::sync::Arc;
 use tempfile::TempDir;
 
 #[tokio::test]
@@ -23,7 +24,8 @@ async fn test_skill_tool_result_is_emitted_as_agui_tool_call_result() {
     .unwrap();
 
     let result = FsSkill::discover(root).unwrap();
-    let skills = SkillSubsystem::new(FsSkill::into_arc_skills(result.skills));
+    let registry: Arc<dyn SkillRegistry> = Arc::new(InMemorySkillRegistry::from_skills(FsSkill::into_arc_skills(result.skills)));
+    let skills = SkillSubsystem::new(registry);
     let tools = skills.tools();
     let tool = tools.get("skill").expect("skill tool registered");
 
@@ -127,7 +129,8 @@ async fn test_skills_plugin_injection_is_in_system_context_before_inference() {
     .unwrap();
 
     let result = FsSkill::discover(root).unwrap();
-    let skills = SkillSubsystem::new(FsSkill::into_arc_skills(result.skills));
+    let registry: Arc<dyn SkillRegistry> = Arc::new(InMemorySkillRegistry::from_skills(FsSkill::into_arc_skills(result.skills)));
+    let skills = SkillSubsystem::new(registry);
     let plugin = skills.plugin();
 
     // Even without activation, discovery should inject available_skills.

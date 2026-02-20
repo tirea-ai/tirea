@@ -11,7 +11,7 @@
 //! ```
 
 use async_trait::async_trait;
-use carve_agent_extension_skills::{FsSkill, SkillSubsystem};
+use carve_agent_extension_skills::{FsSkill, InMemorySkillRegistry, SkillRegistry, SkillSubsystem};
 use carve_agent_loop::contracts::AgentEvent;
 use carve_agent_loop::contracts::thread::Thread as ConversationAgentState;
 use carve_agent_loop::contracts::thread::Message;
@@ -179,12 +179,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Skills root: {}\n", skills_root.display());
 
     let result = FsSkill::discover(&skills_root)?;
-    let skills = FsSkill::into_arc_skills(result.skills);
-    let subsystem = SkillSubsystem::new(skills);
+    let registry: Arc<dyn SkillRegistry> = Arc::new(InMemorySkillRegistry::from_skills(
+        FsSkill::into_arc_skills(result.skills),
+    ));
+    let subsystem = SkillSubsystem::new(registry);
 
     // List discovered skills
     println!("Discovered skills:");
-    for skill in subsystem.skills().values() {
+    for skill in subsystem.registry().snapshot().values() {
         let meta = skill.meta();
         println!("  - {} : {}", meta.name, meta.description);
     }

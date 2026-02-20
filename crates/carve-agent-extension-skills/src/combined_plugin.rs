@@ -49,7 +49,7 @@ impl AgentPlugin for SkillPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FsSkill, Skill};
+    use crate::{FsSkill, InMemorySkillRegistry, Skill, SkillRegistry};
     use carve_agent_contract::testing::TestFixture;
     use carve_agent_contract::tool::ToolDescriptor;
     use serde_json::json;
@@ -69,7 +69,8 @@ mod tests {
 
         let result = FsSkill::discover(root).unwrap();
         let skills: Vec<Arc<dyn Skill>> = FsSkill::into_arc_skills(result.skills);
-        let discovery = SkillDiscoveryPlugin::new(skills);
+        let registry: Arc<dyn SkillRegistry> = Arc::new(InMemorySkillRegistry::from_skills(skills));
+        let discovery = SkillDiscoveryPlugin::new(registry);
         let plugin = SkillPlugin::new(discovery);
 
         let fixture = TestFixture::new_with_state(json!({

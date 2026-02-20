@@ -447,7 +447,7 @@ More instructions.
 
     #[tokio::test]
     async fn works_with_skill_subsystem() {
-        use crate::SkillSubsystem;
+        use crate::{InMemorySkillRegistry, SkillRegistry, SkillSubsystem};
 
         let data = &[
             EmbeddedSkillData {
@@ -462,14 +462,16 @@ More instructions.
             },
         ];
         let skills = EmbeddedSkill::from_static_slice(data).unwrap();
-        let subsystem = SkillSubsystem::new(skills);
+        let registry: Arc<dyn SkillRegistry> =
+            Arc::new(InMemorySkillRegistry::from_skills(skills));
+        let subsystem = SkillSubsystem::new(registry);
 
         let tools = subsystem.tools();
         assert!(tools.contains_key("skill"));
         assert!(tools.contains_key("load_skill_resource"));
         assert!(tools.contains_key("skill_script"));
 
-        let skills_map = subsystem.skills();
+        let skills_map = subsystem.registry().snapshot();
         assert_eq!(skills_map.len(), 2);
 
         let test_skill = skills_map.get("test-skill").unwrap();

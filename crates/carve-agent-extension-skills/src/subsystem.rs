@@ -1,5 +1,5 @@
 use crate::{
-    LoadSkillResourceTool, Skill, SkillActivateTool, SkillDiscoveryPlugin, SkillPlugin,
+    LoadSkillResourceTool, SkillActivateTool, SkillDiscoveryPlugin, SkillPlugin, SkillRegistry,
     SkillRuntimePlugin, SkillScriptTool,
 };
 use carve_agent_contract::plugin::AgentPlugin;
@@ -23,55 +23,52 @@ pub enum SkillSubsystemError {
 /// # Example
 ///
 /// ```ignore
-/// use carve_agent::contracts::tool::Tool;
-/// use carve_agent::extensions::skills::{FsSkill, SkillSubsystem};
-/// use std::collections::HashMap;
+/// use carve_agent::extensions::skills::{
+///     FsSkill, InMemorySkillRegistry, SkillSubsystem,
+/// };
 /// use std::sync::Arc;
 ///
-/// // 1) Discover skills and wire into subsystem.
+/// // 1) Discover skills and build a registry.
 /// let result = FsSkill::discover("skills").unwrap();
-/// let skills = SkillSubsystem::new(FsSkill::into_arc_skills(result.skills));
+/// let registry = Arc::new(
+///     InMemorySkillRegistry::from_skills(FsSkill::into_arc_skills(result.skills)),
+/// );
 ///
-/// // 2) Register tools (skill activation + reference/script utilities).
-/// let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+/// // 2) Wire into subsystem.
+/// let skills = SkillSubsystem::new(registry);
+///
+/// // 3) Register tools (skill activation + reference/script utilities).
+/// let mut tools = std::collections::HashMap::new();
 /// skills.extend_tools(&mut tools).unwrap();
 ///
-/// // 3) Register the combined plugin: discovery catalog + runtime injection.
+/// // 4) Register the combined plugin: discovery catalog + runtime injection.
 /// let config = AgentConfig::new("gpt-4o-mini").with_plugin(skills.plugin());
 /// # let _ = config;
 /// # let _ = tools;
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SkillSubsystem {
-    skills: HashMap<String, Arc<dyn Skill>>,
+    registry: Arc<dyn SkillRegistry>,
+}
+
+impl std::fmt::Debug for SkillSubsystem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SkillSubsystem").finish_non_exhaustive()
+    }
 }
 
 impl SkillSubsystem {
-    pub fn new(skills: Vec<Arc<dyn Skill>>) -> Self {
-        let mut map: HashMap<String, Arc<dyn Skill>> = HashMap::new();
-        for skill in skills {
-            map.insert(skill.meta().id.clone(), skill);
-        }
-        Self { skills: map }
+    pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
+        Self { registry }
     }
 
-    pub fn from_map(skills: HashMap<String, Arc<dyn Skill>>) -> Self {
-        Self { skills }
-    }
-
-    pub fn skills(&self) -> &HashMap<String, Arc<dyn Skill>> {
-        &self.skills
-    }
-
-    fn skills_list(&self) -> Vec<Arc<dyn Skill>> {
-        let mut list: Vec<_> = self.skills.values().cloned().collect();
-        list.sort_by(|a, b| a.meta().id.cmp(&b.meta().id));
-        list
+    pub fn registry(&self) -> &Arc<dyn SkillRegistry> {
+        &self.registry
     }
 
     /// Build the combined skills plugin (discovery + runtime).
     pub fn plugin(&self) -> Arc<dyn AgentPlugin> {
-        let discovery = SkillDiscoveryPlugin::new(self.skills_list());
+        let discovery = SkillDiscoveryPlugin::new(self.registry.clone());
         SkillPlugin::new(discovery).boxed()
     }
 
@@ -82,7 +79,7 @@ impl SkillSubsystem {
 
     /// Build only the discovery plugin.
     pub fn discovery_plugin(&self) -> SkillDiscoveryPlugin {
-        SkillDiscoveryPlugin::new(self.skills_list())
+        SkillDiscoveryPlugin::new(self.registry.clone())
     }
 
     /// Construct the skills tools map.
@@ -105,11 +102,11 @@ impl SkillSubsystem {
         &self,
         tools: &mut HashMap<String, Arc<dyn Tool>>,
     ) -> Result<(), SkillSubsystemError> {
-        let skills = self.skills.clone();
+        let registry = self.registry.clone();
         let tool_defs: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(SkillActivateTool::new(skills.clone())),
-            Arc::new(LoadSkillResourceTool::new(skills.clone())),
-            Arc::new(SkillScriptTool::new(skills)),
+            Arc::new(SkillActivateTool::new(registry.clone())),
+            Arc::new(LoadSkillResourceTool::new(registry.clone())),
+            Arc::new(SkillScriptTool::new(registry)),
         ];
 
         for t in tool_defs {
@@ -127,7 +124,7 @@ impl SkillSubsystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FsSkill, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID};
+    use crate::{FsSkill, InMemorySkillRegistry, Skill, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID};
     use async_trait::async_trait;
     use carve_agent_contract::plugin::phase::{Phase, StepContext};
     use carve_agent_contract::thread::Thread;
@@ -140,6 +137,10 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use tempfile::TempDir;
+
+    fn make_registry(skills: Vec<Arc<dyn Skill>>) -> Arc<dyn SkillRegistry> {
+        Arc::new(InMemorySkillRegistry::from_skills(skills))
+    }
 
     struct LocalToolExecution {
         result: ToolResult,
@@ -207,7 +208,7 @@ mod tests {
         .unwrap();
 
         let result = FsSkill::discover(root).unwrap();
-        let sys = SkillSubsystem::new(FsSkill::into_arc_skills(result.skills));
+        let sys = SkillSubsystem::new(make_registry(FsSkill::into_arc_skills(result.skills)));
         (td, sys)
     }
 
@@ -280,7 +281,7 @@ mod tests {
         .unwrap();
 
         let result = FsSkill::discover(root).unwrap();
-        let sys = SkillSubsystem::new(FsSkill::into_arc_skills(result.skills));
+        let sys = SkillSubsystem::new(make_registry(FsSkill::into_arc_skills(result.skills)));
         let tools = sys.tools();
 
         // Activate the skill via the registered "skill" tool.

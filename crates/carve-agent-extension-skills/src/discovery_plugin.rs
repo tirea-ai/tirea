@@ -1,5 +1,5 @@
 use crate::tool_filter::{is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY};
-use crate::{Skill, SkillMeta, SkillState, SKILLS_DISCOVERY_PLUGIN_ID};
+use crate::{SkillMeta, SkillRegistry, SkillState, SKILLS_DISCOVERY_PLUGIN_ID};
 use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
 use carve_agent_contract::plugin::phase::{Phase, StepContext};
@@ -8,18 +8,27 @@ use std::sync::Arc;
 
 /// Injects a skills catalog into the LLM context so the model can discover and activate skills.
 ///
-/// This is intentionally non-persistent: the catalog is rebuilt from the skill list per step.
-#[derive(Debug, Clone)]
+/// This is intentionally non-persistent: the catalog is rebuilt from the registry snapshot per step.
+#[derive(Clone)]
 pub struct SkillDiscoveryPlugin {
-    skills: Vec<Arc<dyn Skill>>,
+    registry: Arc<dyn SkillRegistry>,
     max_entries: usize,
     max_chars: usize,
 }
 
+impl std::fmt::Debug for SkillDiscoveryPlugin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SkillDiscoveryPlugin")
+            .field("max_entries", &self.max_entries)
+            .field("max_chars", &self.max_chars)
+            .finish_non_exhaustive()
+    }
+}
+
 impl SkillDiscoveryPlugin {
-    pub fn new(skills: Vec<Arc<dyn Skill>>) -> Self {
+    pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
         Self {
-            skills,
+            registry,
             max_entries: 32,
             max_chars: 16 * 1024,
         }
@@ -43,8 +52,9 @@ impl SkillDiscoveryPlugin {
         runtime: Option<&carve_agent_contract::RunConfig>,
     ) -> String {
         let mut metas: Vec<SkillMeta> = self
-            .skills
-            .iter()
+            .registry
+            .snapshot()
+            .values()
             .map(|s| s.meta().clone())
             .filter(|m| {
                 is_scope_allowed(
@@ -150,7 +160,7 @@ impl AgentPlugin for SkillDiscoveryPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::FsSkill;
+    use crate::{FsSkill, InMemorySkillRegistry, Skill};
     use carve_agent_contract::thread::Thread;
     use carve_agent_contract::tool::ToolDescriptor;
     use carve_agent_contract::testing::TestFixture;
@@ -158,6 +168,10 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use tempfile::TempDir;
+
+    fn make_registry(skills: Vec<Arc<dyn Skill>>) -> Arc<dyn SkillRegistry> {
+        Arc::new(InMemorySkillRegistry::from_skills(skills))
+    }
 
     fn make_skills() -> (TempDir, Vec<Arc<dyn Skill>>) {
         let td = TempDir::new().unwrap();
@@ -182,7 +196,7 @@ mod tests {
     async fn injects_catalog_with_usage() {
         let fix = TestFixture::new();
         let (_td, skills) = make_skills();
-        let p = SkillDiscoveryPlugin::new(skills).with_limits(10, 8 * 1024);
+        let p = SkillDiscoveryPlugin::new(make_registry(skills)).with_limits(10, 8 * 1024);
         let thread = Thread::with_initial_state("s", json!({}));
         let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
@@ -199,7 +213,7 @@ mod tests {
     async fn marks_active_skills() {
         let fix = TestFixture::new();
         let (_td, skills) = make_skills();
-        let p = SkillDiscoveryPlugin::new(skills);
+        let p = SkillDiscoveryPlugin::new(make_registry(skills));
         let thread = Thread::with_initial_state(
             "s",
             json!({
@@ -220,7 +234,7 @@ mod tests {
     #[tokio::test]
     async fn does_not_inject_when_skills_empty() {
         let fix = TestFixture::new();
-        let p = SkillDiscoveryPlugin::new(vec![]);
+        let p = SkillDiscoveryPlugin::new(make_registry(vec![]));
         let thread = Thread::with_initial_state("s", json!({}));
         let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
@@ -243,7 +257,7 @@ mod tests {
         assert!(result.skills.is_empty());
 
         let skills = FsSkill::into_arc_skills(result.skills);
-        let p = SkillDiscoveryPlugin::new(skills);
+        let p = SkillDiscoveryPlugin::new(make_registry(skills));
         let thread = Thread::with_initial_state("s", json!({}));
         let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
@@ -270,7 +284,7 @@ mod tests {
 
         let result = FsSkill::discover(root).unwrap();
         let skills = FsSkill::into_arc_skills(result.skills);
-        let p = SkillDiscoveryPlugin::new(skills);
+        let p = SkillDiscoveryPlugin::new(make_registry(skills));
         let thread = Thread::with_initial_state("s", json!({}));
         let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
@@ -299,7 +313,7 @@ mod tests {
         }
         let result = FsSkill::discover(root).unwrap();
         let skills = FsSkill::into_arc_skills(result.skills);
-        let p = SkillDiscoveryPlugin::new(skills).with_limits(2, 8 * 1024);
+        let p = SkillDiscoveryPlugin::new(make_registry(skills)).with_limits(2, 8 * 1024);
         let thread = Thread::with_initial_state("s", json!({}));
         let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
@@ -322,7 +336,7 @@ mod tests {
         .unwrap();
         let result = FsSkill::discover(root).unwrap();
         let skills = FsSkill::into_arc_skills(result.skills);
-        let p = SkillDiscoveryPlugin::new(skills).with_limits(10, 256);
+        let p = SkillDiscoveryPlugin::new(make_registry(skills)).with_limits(10, 256);
         let thread = Thread::with_initial_state("s", json!({}));
         let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
@@ -334,7 +348,7 @@ mod tests {
     async fn filters_catalog_by_runtime_skill_policy() {
         let mut fix = TestFixture::new();
         let (_td, skills) = make_skills();
-        let p = SkillDiscoveryPlugin::new(skills);
+        let p = SkillDiscoveryPlugin::new(make_registry(skills));
         let thread = Thread::with_initial_state("s", json!({}));
         fix.run_config
             .set(SCOPE_ALLOWED_SKILLS_KEY, vec!["a-skill"])

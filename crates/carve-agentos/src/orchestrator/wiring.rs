@@ -166,18 +166,21 @@ impl AgentOs {
         Ok(())
     }
 
-    fn build_skills_plugins(&self, skills: Vec<Arc<dyn Skill>>) -> Vec<Arc<dyn AgentPlugin>> {
+    fn build_skills_plugins(
+        &self,
+        registry: Arc<dyn SkillRegistry>,
+    ) -> Vec<Arc<dyn AgentPlugin>> {
         match self.skills_config.mode {
             SkillsMode::Disabled => Vec::new(),
             SkillsMode::DiscoveryAndRuntime => {
-                let discovery = SkillDiscoveryPlugin::new(skills).with_limits(
+                let discovery = SkillDiscoveryPlugin::new(registry).with_limits(
                     self.skills_config.discovery_max_entries,
                     self.skills_config.discovery_max_chars,
                 );
                 vec![SkillPlugin::new(discovery).boxed()]
             }
             SkillsMode::DiscoveryOnly => {
-                let discovery = SkillDiscoveryPlugin::new(skills).with_limits(
+                let discovery = SkillDiscoveryPlugin::new(registry).with_limits(
                     self.skills_config.discovery_max_entries,
                     self.skills_config.discovery_max_chars,
                 );
@@ -223,13 +226,8 @@ impl AgentOs {
 
         Self::ensure_skills_plugin_not_installed(resolved_plugins)?;
         let registry = skills_registry.ok_or(AgentOsWiringError::SkillsNotConfigured)?;
-        let skills = {
-            let mut skills: Vec<Arc<dyn Skill>> = registry.snapshot().into_values().collect();
-            skills.sort_by(|a, b| a.meta().id.cmp(&b.meta().id));
-            skills
-        };
 
-        let subsystem = SkillSubsystem::new(skills.clone());
+        let subsystem = SkillSubsystem::new(registry.clone());
         let mut tool_defs = HashMap::new();
         subsystem
             .extend_tools(&mut tool_defs)
@@ -240,7 +238,7 @@ impl AgentOs {
             })?;
 
         let mut bundle = ToolPluginBundle::new(SKILLS_BUNDLE_ID).with_tools(tool_defs);
-        for plugin in self.build_skills_plugins(skills) {
+        for plugin in self.build_skills_plugins(registry) {
             bundle = bundle.with_plugin(plugin);
         }
         Ok(vec![Arc::new(bundle)])
