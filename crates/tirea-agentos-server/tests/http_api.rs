@@ -1,25 +1,25 @@
 use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
-use tirea_agentos::contracts::plugin::AgentPlugin;
-use tirea_agentos::contracts::plugin::phase::Phase;
-use tirea_agentos::contracts::plugin::phase::StepContext;
-use tirea_agentos::contracts::thread::Thread;
-use tirea_agentos::contracts::storage::{
-    AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStore,
-    AgentStateStoreError, AgentStateWriter, Committed,
-};
-use tirea_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
-use tirea_agentos::contracts::ToolCallContext;
-use tirea_agentos::contracts::ThreadChangeSet;
-use tirea_agentos::orchestrator::AgentDefinition;
-use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder};
-use tirea_agentos_server::http::{router, AppState};
-use tirea_store_adapters::MemoryStore;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use tirea_agentos::contracts::plugin::phase::Phase;
+use tirea_agentos::contracts::plugin::phase::StepContext;
+use tirea_agentos::contracts::plugin::AgentPlugin;
+use tirea_agentos::contracts::storage::{
+    AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStore,
+    AgentStateStoreError, AgentStateWriter, Committed,
+};
+use tirea_agentos::contracts::thread::Thread;
+use tirea_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use tirea_agentos::contracts::ThreadChangeSet;
+use tirea_agentos::contracts::ToolCallContext;
+use tirea_agentos::orchestrator::AgentDefinition;
+use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder};
+use tirea_agentos_server::http::{router, AppState};
+use tirea_store_adapters::MemoryStore;
 use tokio::sync::{Notify, RwLock};
 use tower::ServiceExt;
 
@@ -31,11 +31,7 @@ impl AgentPlugin for SkipInferencePlugin {
         "skip_inference_test"
     }
 
-    async fn on_phase(
-        &self,
-        phase: Phase,
-        step: &mut StepContext<'_>,
-    ) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         if phase == Phase::BeforeInference {
             step.skip_inference = true;
         }
@@ -295,6 +291,156 @@ async fn test_ai_sdk_sse_and_persists_session() {
     assert_eq!(saved.id, "t1");
     assert_eq!(saved.messages.len(), 1);
     assert_eq!(saved.messages[0].content, "hi");
+}
+
+#[tokio::test]
+async fn test_ai_sdk_sse_accepts_messages_request_shape() {
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_storage(storage.clone()));
+    let app = router(AppState {
+        os: os.clone(),
+        read_store: storage.clone(),
+    });
+
+    let payload = json!({
+        "id": "t-id-fallback",
+        "sessionId": "t-messages-shape",
+        "messages": [
+            { "role": "user", "parts": [{ "type": "text", "text": "first input" }] },
+            { "role": "assistant", "parts": [{ "type": "text", "text": "ignored assistant text" }] },
+            { "role": "user", "parts": [{ "type": "text", "text": "latest input" }] }
+        ],
+        "runId": "run-messages-shape"
+    });
+
+    let (status, text) = post_sse_text(app, "/v1/ai-sdk/agents/test/runs", payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        text.contains(r#""type":"finish""#),
+        "missing finish event: {text}"
+    );
+
+    let saved = storage
+        .load_agent_state("t-messages-shape")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.messages.len(), 1);
+    assert_eq!(saved.messages[0].content, "latest input");
+}
+
+#[tokio::test]
+async fn test_ai_sdk_sse_messages_request_uses_id_when_session_id_missing() {
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_storage(storage.clone()));
+    let app = router(AppState {
+        os: os.clone(),
+        read_store: storage.clone(),
+    });
+
+    let payload = json!({
+        "id": "t-id-only",
+        "messages": [
+            { "role": "user", "content": "id-fallback-input" }
+        ],
+        "runId": "run-id-only"
+    });
+
+    let (status, text) = post_sse_text(app, "/v1/ai-sdk/agents/test/runs", payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        text.contains(r#""type":"finish""#),
+        "missing finish event: {text}"
+    );
+
+    let saved = storage
+        .load_agent_state("t-id-only")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.messages.len(), 1);
+    assert_eq!(saved.messages[0].content, "id-fallback-input");
+}
+
+#[tokio::test]
+async fn test_ai_sdk_sse_messages_request_requires_user_text() {
+    let os = Arc::new(make_os());
+    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let app = make_app(os, read_store);
+
+    let payload = json!({
+        "id": "s1",
+        "messages": [
+            { "role": "assistant", "parts": [{ "type": "text", "text": "no user turn" }] }
+        ]
+    });
+    let (status, body) = post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("input"),
+        "expected input validation error: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_ai_sdk_sse_messages_request_requires_thread_identifier() {
+    let os = Arc::new(make_os());
+    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let app = make_app(os, read_store);
+
+    let payload = json!({
+        "messages": [
+            { "role": "user", "content": "hello without thread id" }
+        ]
+    });
+    let (status, body) = post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("sessionId cannot be empty"),
+        "expected sessionId validation error: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_ai_sdk_sse_accepts_messages_content_array_shape() {
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_storage(storage.clone()));
+    let app = router(AppState {
+        os: os.clone(),
+        read_store: storage.clone(),
+    });
+
+    let payload = json!({
+        "id": "t-content-array",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "content-array-input" },
+                    { "type": "file", "url": "https://example.com/f.txt" }
+                ]
+            }
+        ],
+        "runId": "run-content-array"
+    });
+
+    let (status, text) = post_sse_text(app, "/v1/ai-sdk/agents/test/runs", payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        text.contains(r#""type":"finish""#),
+        "missing finish event: {text}"
+    );
+
+    let saved = storage
+        .load_agent_state("t-content-array")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.messages.len(), 1);
+    assert_eq!(saved.messages[0].content, "content-array-input");
 }
 
 #[tokio::test]
@@ -579,7 +725,8 @@ async fn test_agui_sse_idless_user_message_not_duplicated_by_internal_reapply() 
         .messages
         .iter()
         .filter(|m| {
-            m.role == tirea_agentos::contracts::thread::Role::User && m.content == "hello without id"
+            m.role == tirea_agentos::contracts::thread::Role::User
+                && m.content == "hello without id"
         })
         .count();
     assert_eq!(
@@ -1339,6 +1486,110 @@ async fn test_protocol_history_endpoints_hide_internal_messages_by_default() {
     );
     assert!(body_text.contains("visible-user"));
     assert!(body_text.contains("visible-assistant"));
+}
+
+#[tokio::test]
+async fn test_ai_sdk_history_encodes_tool_messages_as_tool_invocation_parts() {
+    let os = Arc::new(make_os());
+    let storage = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn AgentStateReader> = storage.clone();
+
+    let thread = Thread::new("s-tool-history")
+        .with_message(
+            tirea_agentos::contracts::thread::Message::assistant_with_tool_calls(
+                "calling tool",
+                vec![tirea_agentos::contracts::thread::ToolCall::new(
+                    "call_1",
+                    "search",
+                    json!({"q":"rust"}),
+                )],
+            ),
+        )
+        .with_message(tirea_agentos::contracts::thread::Message::tool(
+            "call_1",
+            r#"{"result":"ok"}"#,
+        ));
+    storage.save(&thread).await.unwrap();
+
+    let app = make_app(os, read_store);
+    let (status, body) = get_json(
+        app,
+        "/v1/ai-sdk/threads/s-tool-history/messages?visibility=none",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let messages = body["messages"]
+        .as_array()
+        .expect("messages should be array");
+    let has_tool_invocation = messages.iter().any(|msg| {
+        msg["parts"]
+            .as_array()
+            .is_some_and(|parts| parts.iter().any(|part| part["type"] == "tool-invocation"))
+    });
+    assert!(
+        has_tool_invocation,
+        "ai-sdk history should include tool-invocation parts: {body}"
+    );
+
+    let has_tool_output = messages.iter().any(|msg| {
+        msg["parts"].as_array().is_some_and(|parts| {
+            parts.iter().any(|part| {
+                part["type"] == "tool-invocation"
+                    && part["toolCallId"] == "call_1"
+                    && part["output"]["result"] == "ok"
+            })
+        })
+    });
+    assert!(
+        has_tool_output,
+        "tool output should be encoded in tool-invocation part: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_ai_sdk_history_encodes_assistant_tool_call_input_as_input_available() {
+    let os = Arc::new(make_os());
+    let storage = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn AgentStateReader> = storage.clone();
+
+    let thread = Thread::new("s-tool-input-history").with_message(
+        tirea_agentos::contracts::thread::Message::assistant_with_tool_calls(
+            "calling tool",
+            vec![tirea_agentos::contracts::thread::ToolCall::new(
+                "call_input_1",
+                "search",
+                json!({"q":"rust ai-sdk"}),
+            )],
+        ),
+    );
+    storage.save(&thread).await.unwrap();
+
+    let app = make_app(os, read_store);
+    let (status, body) = get_json(
+        app,
+        "/v1/ai-sdk/threads/s-tool-input-history/messages?visibility=none",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let messages = body["messages"]
+        .as_array()
+        .expect("messages should be array");
+    let has_tool_input_available = messages.iter().any(|msg| {
+        msg["parts"].as_array().is_some_and(|parts| {
+            parts.iter().any(|part| {
+                part["type"] == "tool-invocation"
+                    && part["toolCallId"] == "call_input_1"
+                    && part["state"] == "input-available"
+                    && part["input"]["q"] == "rust ai-sdk"
+            })
+        })
+    });
+    assert!(
+        has_tool_input_available,
+        "assistant tool call should encode to input-available tool-invocation part: {body}"
+    );
 }
 
 #[tokio::test]
