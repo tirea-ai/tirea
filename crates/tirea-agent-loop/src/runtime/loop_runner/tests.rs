@@ -7,6 +7,7 @@ use crate::contracts::runtime::ActivityManager;
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::Thread;
 use crate::contracts::storage::VersionPrecondition;
+use crate::contracts::event::interaction::ResponseRouting;
 use crate::contracts::tool::{ToolDescriptor, ToolError, ToolResult};
 use crate::contracts::{RunContext, ToolCallContext};
 use crate::runtime::activity::ActivityHub;
@@ -53,6 +54,33 @@ impl Tool for EchoTool {
     ) -> Result<ToolResult, ToolError> {
         let msg = args["message"].as_str().unwrap_or("no message");
         Ok(ToolResult::success("echo", json!({ "echoed": msg })))
+    }
+}
+
+struct AddTaskTool;
+
+#[async_trait]
+impl Tool for AddTaskTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("addTask", "Add Task", "Add a task")
+            .with_parameters(json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string" }
+                },
+                "required": ["title"]
+            }))
+    }
+
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
+        Ok(ToolResult::success(
+            "addTask",
+            json!({ "added": args["title"].as_str().unwrap_or_default() }),
+        ))
     }
 }
 
@@ -3769,7 +3797,7 @@ async fn run_mock_stream(
 ) -> Vec<AgentEvent> {
     let config = config.with_llm_executor(Arc::new(provider));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream_impl(config, tools, run_ctx, None, None);
+    let stream = run_loop_stream(config, tools, run_ctx, None, None);
     collect_stream_events(stream).await
 }
 
@@ -3839,7 +3867,7 @@ async fn test_stream_retries_startup_error_then_succeeds() {
 
     let config = config.with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream_impl(config, tools, run_ctx, None, None);
+    let stream = run_loop_stream(config, tools, run_ctx, None, None);
     let events = collect_stream_events(stream).await;
 
     assert_eq!(
@@ -3866,7 +3894,7 @@ async fn test_stream_uses_fallback_model_after_primary_failures() {
 
     let config = config.with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream_impl(config, tools, run_ctx, None, None);
+    let stream = run_loop_stream(config, tools, run_ctx, None, None);
     let events = collect_stream_events(stream).await;
 
     assert_eq!(
@@ -3920,7 +3948,7 @@ async fn run_mock_stream_with_final_thread_with_context(
     let committer: Arc<dyn StateCommitter> = Arc::new(ChannelStateCommitter::new(checkpoint_tx));
     let config = config.with_llm_executor(Arc::new(provider));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream_impl(config, tools, run_ctx, cancellation_token, Some(committer));
+    let stream = run_loop_stream(config, tools, run_ctx, cancellation_token, Some(committer));
     let events = collect_stream_events(stream).await;
     while let Some(changeset) = checkpoint_rx.recv().await {
         changeset.apply_to(&mut final_thread);
@@ -4085,7 +4113,7 @@ async fn test_stream_state_commit_failure_on_assistant_turn_emits_error_and_run_
     let config = AgentConfig::new("mock")
         .with_llm_executor(Arc::new(MockStreamProvider::new(vec![MockResponse::text("done")])) as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream_impl(config, HashMap::new(), run_ctx, None, Some(committer.clone() as Arc<dyn StateCommitter>));
+    let stream = run_loop_stream(config, HashMap::new(), run_ctx, None, Some(committer.clone() as Arc<dyn StateCommitter>));
     let events = collect_stream_events(stream).await;
 
     assert_eq!(extract_termination(&events), Some(TerminationReason::Error));
@@ -4116,7 +4144,7 @@ async fn test_stream_state_commit_failure_on_tool_results_emits_error_before_too
         ])) as Arc<dyn LlmExecutor>);
     let tools = tool_map([EchoTool]);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream_impl(config, tools, run_ctx, None, Some(committer.clone() as Arc<dyn StateCommitter>));
+    let stream = run_loop_stream(config, tools, run_ctx, None, Some(committer.clone() as Arc<dyn StateCommitter>));
     let events = collect_stream_events(stream).await;
 
     assert_eq!(extract_termination(&events), Some(TerminationReason::Error));
@@ -4151,7 +4179,7 @@ async fn test_stream_run_finished_commit_failure_emits_error_without_run_finish_
     let config = AgentConfig::new("mock")
         .with_llm_executor(Arc::new(MockStreamProvider::new(vec![MockResponse::text("done")])) as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream_impl(config, HashMap::new(), run_ctx, None, Some(committer.clone() as Arc<dyn StateCommitter>));
+    let stream = run_loop_stream(config, HashMap::new(), run_ctx, None, Some(committer.clone() as Arc<dyn StateCommitter>));
     let events = collect_stream_events(stream).await;
 
     assert!(
@@ -4176,6 +4204,73 @@ async fn test_stream_run_finished_commit_failure_emits_error_without_run_finish_
 }
 
 #[tokio::test]
+async fn test_stream_frontend_use_as_tool_result_emits_single_tool_call_start() {
+    struct FrontendPendingPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for FrontendPendingPlugin {
+        fn id(&self) -> &str {
+            "frontend_pending_plugin"
+        }
+
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+        ) {
+            if phase != Phase::BeforeToolExecute || step.tool_call_id() != Some("call_1") {
+                return;
+            }
+
+            step.invoke_frontend_tool(
+                "addTask",
+                json!({ "title": "Deploy v2" }),
+                ResponseRouting::UseAsToolResult,
+            );
+        }
+    }
+
+    let thread = Thread::new("frontend-pending").with_message(Message::user("add task"));
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(FrontendPendingPlugin) as Arc<dyn AgentPlugin>);
+    let tools = tool_map([AddTaskTool]);
+    let responses = vec![
+        MockResponse::text("planning")
+            .with_tool_call("call_1", "addTask", json!({ "title": "Deploy v2" })),
+    ];
+
+    let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
+
+    let starts_for_call_1 = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::ToolCallStart { id, .. } if id == "call_1"))
+        .count();
+    assert_eq!(
+        starts_for_call_1,
+        1,
+        "frontend pending call must not emit duplicate ToolCallStart events: {events:?}"
+    );
+
+    let ready_for_call_1 = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::ToolCallReady { id, .. } if id == "call_1"))
+        .count();
+    assert_eq!(
+        ready_for_call_1,
+        1,
+        "frontend pending call must emit a single ToolCallReady: {events:?}"
+    );
+
+    assert!(matches!(
+        events.last(),
+        Some(AgentEvent::RunFinish {
+            termination: TerminationReason::PendingInteraction,
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
 async fn test_stream_skip_inference_force_commits_run_finished_delta() {
     let (recorder, _phases) = RecordAndSkipPlugin::new();
     let committer = Arc::new(RecordingStateCommitter::new(None));
@@ -4184,7 +4279,7 @@ async fn test_stream_skip_inference_force_commits_run_finished_delta() {
         .with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>)
         .with_llm_executor(Arc::new(MockStreamProvider::new(vec![])) as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream_impl(config, HashMap::new(), run_ctx, None, Some(committer.clone() as Arc<dyn StateCommitter>));
+    let stream = run_loop_stream(config, HashMap::new(), run_ctx, None, Some(committer.clone() as Arc<dyn StateCommitter>));
     let events = collect_stream_events(stream).await;
 
     assert_eq!(
@@ -4308,7 +4403,7 @@ async fn test_stream_replay_state_failure_emits_error() {
 
     let provider = MockStreamProvider::new(vec![MockResponse::text("should not run")]);
     let config = config.with_llm_executor(Arc::new(provider));
-    let stream = run_loop_stream_impl(config, tools, run_ctx, None, None);
+    let stream = run_loop_stream(config, tools, run_ctx, None, None);
     let events = collect_stream_events(stream).await;
 
     assert!(
@@ -4803,7 +4898,7 @@ async fn test_stop_cancellation_token() {
 
     let config = config.with_llm_executor(Arc::new(provider) as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream_impl(config, tools, run_ctx, Some(token), None);
+    let stream = run_loop_stream(config, tools, run_ctx, Some(token), None);
     let events = collect_stream_events(stream).await;
     assert_eq!(
         extract_termination(&events),
@@ -4851,7 +4946,7 @@ async fn test_stop_cancellation_token_during_inference_stream() {
     let config = AgentConfig::new("mock")
         .with_llm_executor(Arc::new(HangingStreamProvider) as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream_impl(config, HashMap::new(), run_ctx, Some(token.clone()), None);
+    let stream = run_loop_stream(config, HashMap::new(), run_ctx, Some(token.clone()), None);
 
     let collect_task = tokio::spawn(async move { collect_stream_events(stream).await });
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
@@ -5808,7 +5903,7 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
     let config = config
         .with_llm_executor(Arc::new(FailingStartProvider::new(10)) as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&initial_thread, tirea_contract::RunConfig::default()).unwrap();
-    let events = collect_stream_events(run_loop_stream_impl(
+    let events = collect_stream_events(run_loop_stream(
         config,
         HashMap::new(),
         run_ctx,
@@ -5885,7 +5980,7 @@ async fn test_stop_cancellation_token_during_tool_execution_stream() {
         .with_llm_executor(Arc::new(MockStreamProvider::new(responses)) as Arc<dyn LlmExecutor>);
     let tools = tool_map([tool]);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream_impl(config, tools, run_ctx, Some(token.clone()), None);
+    let stream = run_loop_stream(config, tools, run_ctx, Some(token.clone()), None);
 
     let collector = tokio::spawn(async move { collect_stream_events(stream).await });
     ready.notified().await;

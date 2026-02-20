@@ -106,7 +106,6 @@ use run_state::{effective_stop_conditions, RunState};
 pub use state_commit::ChannelStateCommitter;
 use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(test)]
-use stream_runner::run_loop_stream_impl;
 #[cfg(test)]
 use tokio_util::sync::CancellationToken;
 #[cfg(test)]

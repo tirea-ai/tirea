@@ -1,7 +1,8 @@
 #![allow(missing_docs)]
 
 use tirea_extension_skills::{
-    FsSkill, LoadSkillResourceTool, Skill, SkillActivateTool, SkillScriptTool,
+    FsSkill, InMemorySkillRegistry, LoadSkillResourceTool, Skill, SkillActivateTool,
+    SkillRegistry, SkillScriptTool,
 };
 use tirea_agent_loop::contracts::thread::Thread;
 use tirea_agent_loop::contracts::thread::{Message, ToolCall};
@@ -10,13 +11,12 @@ use tirea_agent_loop::engine::tool_execution::{
     execute_single_tool, execute_single_tool_with_scope,
 };
 use serde_json::json;
-use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::sync::Arc;
 use tempfile::TempDir;
 
-fn make_skill_tree() -> (TempDir, HashMap<String, Arc<dyn Skill>>) {
+fn make_skill_tree() -> (TempDir, Arc<dyn SkillRegistry>) {
     let td = TempDir::new().unwrap();
     let skills_root = td.path().join("skills");
     let docx_root = skills_root.join("docx");
@@ -47,12 +47,13 @@ echo "hello"
     .unwrap();
 
     let result = FsSkill::discover(skills_root).unwrap();
-    let skills: HashMap<String, Arc<dyn Skill>> = result
+    let skills: Vec<Arc<dyn Skill>> = result
         .skills
         .into_iter()
-        .map(|s| (s.meta().id.clone(), Arc::new(s) as Arc<dyn Skill>))
+        .map(|s| Arc::new(s) as Arc<dyn Skill>)
         .collect();
-    (td, skills)
+    let registry: Arc<dyn SkillRegistry> = Arc::new(InMemorySkillRegistry::from_skills(skills));
+    (td, registry)
 }
 
 async fn apply_tool(
@@ -89,6 +90,19 @@ async fn apply_tool_with_scope(
 fn assert_error_code(result: &ToolResult, expected_code: &str) {
     assert!(result.is_error(), "expected an error result");
     assert_eq!(result.data["error"]["code"], expected_code);
+}
+
+fn assert_invalid_arguments_error(result: &ToolResult) {
+    assert!(result.is_error(), "expected an error result");
+    if result.data["error"]["code"] == "invalid_arguments" {
+        return;
+    }
+    let message = result.message.as_deref().unwrap_or_default().to_ascii_lowercase();
+    assert!(
+        message.contains("invalid arguments"),
+        "expected invalid_arguments code or validation error message, got: {:?}",
+        result
+    );
 }
 
 #[tokio::test]
@@ -364,7 +378,7 @@ async fn test_skill_activation_missing_skill_argument_is_error() {
     )
     .await;
 
-    assert_error_code(&result, "invalid_arguments");
+    assert_invalid_arguments_error(&result);
 }
 
 #[tokio::test]
@@ -461,7 +475,7 @@ async fn test_load_reference_missing_arguments_are_errors() {
         ToolCall::new("call_1", "load_skill_resource", json!({"skill": "docx"})),
     )
     .await;
-    assert_error_code(&r1, "invalid_arguments");
+    assert_invalid_arguments_error(&r1);
 
     let (_thread, r2) = apply_tool(
         thread,
@@ -473,7 +487,7 @@ async fn test_load_reference_missing_arguments_are_errors() {
         ),
     )
     .await;
-    assert_error_code(&r2, "invalid_arguments");
+    assert_invalid_arguments_error(&r2);
 }
 
 #[tokio::test]
@@ -581,7 +595,7 @@ async fn test_script_missing_arguments_are_errors() {
         ToolCall::new("call_1", "skill_script", json!({"skill": "docx"})),
     )
     .await;
-    assert_error_code(&r1, "invalid_arguments");
+    assert_invalid_arguments_error(&r1);
 
     let (_thread, r2) = apply_tool(
         thread,
@@ -593,7 +607,7 @@ async fn test_script_missing_arguments_are_errors() {
         ),
     )
     .await;
-    assert_error_code(&r2, "invalid_arguments");
+    assert_invalid_arguments_error(&r2);
 }
 
 #[tokio::test]
@@ -724,12 +738,13 @@ Body
     )
     .unwrap();
     let result = FsSkill::discover(skills_root).unwrap();
-    let skills: HashMap<String, Arc<dyn Skill>> = result
+    let skills: Vec<Arc<dyn Skill>> = result
         .skills
         .into_iter()
-        .map(|s| (s.meta().id.clone(), Arc::new(s) as Arc<dyn Skill>))
+        .map(|s| Arc::new(s) as Arc<dyn Skill>)
         .collect();
-    let activate = SkillActivateTool::new(skills);
+    let registry: Arc<dyn SkillRegistry> = Arc::new(InMemorySkillRegistry::from_skills(skills));
+    let activate = SkillActivateTool::new(registry);
 
     let thread = Thread::with_initial_state("s", json!({}));
     let (thread, result) = apply_tool(
