@@ -35,9 +35,9 @@ test.describe("CopilotKit Chat", () => {
     await expect(page.getByTestId("no-actions")).toBeVisible();
     await expect(page.getByTestId("programmatic-send")).toBeVisible();
 
-    // Verify CopilotKit chat panel rendered.
-    await expect(page.locator(".copilotKitChat")).toBeVisible();
-    await expect(page.locator('button[aria-label="Send"]')).toBeVisible();
+    // Verify CopilotKit chat panel rendered (use explicit timeout to handle slow re-renders).
+    await expect(page.locator(".copilotKitChat")).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator('button[aria-label="Send"]')).toBeVisible({ timeout: 15_000 });
   });
 
   test("basic chat: send message and receive streaming response", async ({

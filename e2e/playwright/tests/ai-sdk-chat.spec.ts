@@ -38,6 +38,10 @@ test.describe("AI SDK Chat", () => {
     const agentMsg = page.locator("strong", { hasText: "Agent:" }).first();
     await expect(agentMsg).toBeVisible({ timeout: 45_000 });
 
+    // Wait for streaming to finish (Send button re-enabled), then check content.
+    const sendButton = page.getByRole("button", { name: "Send" });
+    await expect(sendButton).toBeEnabled({ timeout: 30_000 });
+
     // The response should contain "4".
     const responseDiv = agentMsg.locator("..");
     await expect(responseDiv).toContainText("4", { timeout: 10_000 });
