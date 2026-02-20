@@ -9,6 +9,8 @@ description = "Shared agent contracts: runtime, extension SPI, and composition r
 carve-state = { path = "../carve-state", features = ["derive"] }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
+schemars = { workspace = true }
+jsonschema = { workspace = true }
 thiserror = { workspace = true }
 async-trait = "0.1"
 genai = "0.5"

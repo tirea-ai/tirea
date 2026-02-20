@@ -39,7 +39,11 @@ pub use crate::contracts::Thread;
 pub use carve_state::StateContext;
 
 // Tool trait and types
-pub use crate::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
+pub use crate::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus, TypedTool};
+
+// Derive helpers for TypedTool implementations
+pub use schemars::JsonSchema;
+pub use serde::Deserialize;
 
 // Message types
 pub use crate::contracts::thread::{Message, Role, ToolCall};

@@ -773,6 +773,17 @@ pub(super) async fn execute_single_tool_with_phases(
             None,
             None,
         )
+    } else if let Err(e) = tool.unwrap().validate_args(&call.arguments) {
+        // Argument validation failed — return error to the LLM
+        (
+            ToolExecution {
+                call: call.clone(),
+                result: ToolResult::error(&call.name, e.to_string()),
+                patch: None,
+            },
+            None,
+            None,
+        )
     } else {
         // Execute the tool with its own ToolCallContext
         let tool_doc = carve_state::DocCell::new(state.clone());

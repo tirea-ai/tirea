@@ -1,6 +1,8 @@
 use async_trait::async_trait;
-use carve_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use carve_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult, TypedTool};
 use carve_agentos::contracts::ToolCallContext;
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::state::{Place, SearchProgress, TravelState, Trip};
@@ -184,40 +186,35 @@ impl Tool for DeleteTripTool {
     }
 }
 
+/// Arguments for [`SelectTripTool`].
+#[derive(Deserialize, JsonSchema)]
+pub struct SelectTripArgs {
+    /// ID of the trip to select.
+    trip_id: String,
+}
+
 /// Select a trip as the currently active trip.
 pub struct SelectTripTool;
 
 #[async_trait]
-impl Tool for SelectTripTool {
-    fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new(
-            "select_trip",
-            "Select Trip",
-            "Select a trip as the currently active trip",
-        )
-        .with_parameters(json!({
-            "type": "object",
-            "properties": {
-                "trip_id": {
-                    "type": "string",
-                    "description": "ID of the trip to select"
-                }
-            },
-            "required": ["trip_id"]
-        }))
-    }
+impl TypedTool for SelectTripTool {
+    type Args = SelectTripArgs;
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
-        let trip_id = args["trip_id"]
-            .as_str()
-            .ok_or_else(|| ToolError::InvalidArguments("Missing 'trip_id'".into()))?;
+    fn tool_id(&self) -> &str { "select_trip" }
+    fn name(&self) -> &str { "Select Trip" }
+    fn description(&self) -> &str { "Select a trip as the currently active trip" }
 
+    async fn execute(
+        &self,
+        args: SelectTripArgs,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let state = ctx.state::<TravelState>("");
-        state.set_selected_trip_id(Some(trip_id.to_string()));
+        state.set_selected_trip_id(Some(args.trip_id.clone()));
 
         Ok(ToolResult::success(
             "select_trip",
-            json!({ "selected": trip_id }),
+            json!({ "selected": args.trip_id }),
         ))
     }
 }
