@@ -120,6 +120,43 @@ pub use tool_exec::{
     execute_tools_with_plugins_and_executor, ParallelToolExecutor, SequentialToolExecutor,
 };
 
+/// Fully resolved agent wiring ready for execution.
+///
+/// Contains everything needed to run an agent loop: the loop configuration,
+/// the resolved tool map, and the runtime config. This is a pure data struct
+/// that can be inspected, mutated, and tested independently.
+pub struct ResolvedRun {
+    /// Loop configuration (model, plugins, stop conditions, ...).
+    pub config: AgentConfig,
+    /// Resolved tool map after filtering and wiring.
+    pub tools: HashMap<String, Arc<dyn Tool>>,
+    /// Runtime configuration (user_id, run_id, ...).
+    pub run_config: crate::contracts::RunConfig,
+}
+
+impl ResolvedRun {
+    /// Add or replace a tool in the resolved tool map.
+    #[must_use]
+    pub fn with_tool(mut self, id: String, tool: Arc<dyn Tool>) -> Self {
+        self.tools.insert(id, tool);
+        self
+    }
+
+    /// Add a plugin to the resolved config.
+    #[must_use]
+    pub fn with_plugin(mut self, plugin: Arc<dyn crate::contracts::plugin::AgentPlugin>) -> Self {
+        self.config.plugins.push(plugin);
+        self
+    }
+
+    /// Overlay tools from a tool registry (insert-if-absent semantics).
+    pub fn overlay_tool_registry(&mut self, registry: &dyn crate::contracts::ToolRegistry) {
+        for (id, tool) in registry.snapshot() {
+            self.tools.entry(id).or_insert(tool);
+        }
+    }
+}
+
 fn uuid_v7() -> String {
     Uuid::now_v7().simple().to_string()
 }
