@@ -31,12 +31,13 @@ fn make_os(
     let def = AgentDefinition {
         id: "test".to_string(),
         model: configured_model.to_string(),
-        plugins: vec![plugin],
+        plugin_ids: vec!["llmmetry".into()],
         max_rounds: 1,
         ..Default::default()
     };
 
     AgentOsBuilder::new()
+        .with_registered_plugin("llmmetry", plugin)
         .with_provider(observed_provider, provider_client)
         .with_model(
             configured_model,

@@ -241,6 +241,7 @@ impl std::fmt::Debug for AgentConfig {
 
 impl AgentConfig {
     carve_agent_contract::impl_shared_agent_builder_methods!();
+    carve_agent_contract::impl_loop_config_builder_methods!();
 
     /// Set tool executor strategy.
     #[must_use]
@@ -261,6 +262,9 @@ impl AgentConfig {
     }
 
     /// Set static tool map (wraps in [`StaticStepToolProvider`]).
+    ///
+    /// Prefer passing tools directly to [`run_loop`] / [`run_loop_stream`];
+    /// use this only when you need to set tools via `step_tool_provider`.
     #[must_use]
     pub fn with_tools(self, tools: HashMap<String, Arc<dyn Tool>>) -> Self {
         self.with_step_tool_provider(Arc::new(StaticStepToolProvider::new(tools)))
@@ -277,13 +281,6 @@ impl AgentConfig {
     #[must_use]
     pub fn with_llm_executor(mut self, executor: Arc<dyn LlmExecutor>) -> Self {
         self.llm_executor = Some(executor);
-        self
-    }
-
-    /// Clear per-step tool provider and use static tools input.
-    #[must_use]
-    pub fn clear_step_tool_provider(mut self) -> Self {
-        self.step_tool_provider = None;
         self
     }
 

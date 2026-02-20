@@ -1,6 +1,6 @@
 use super::*;
 use crate::contracts::storage::VersionPrecondition;
-use crate::runtime::loop_runner::{run_loop_stream, StaticStepToolProvider};
+use crate::runtime::loop_runner::run_loop_stream;
 
 impl AgentOs {
     pub fn agent_state_store(&self) -> Option<&Arc<dyn AgentStateStore>> {
@@ -27,23 +27,26 @@ impl AgentOs {
         Ok(agent_state_store.load(id).await?)
     }
 
-    /// Prepare a request for execution.
+    /// Prepare a resolved run for execution.
     ///
     /// This handles all deterministic pre-run logic:
     /// 1. Thread loading/creation from storage
     /// 2. Message deduplication and appending
     /// 3. Persisting pre-run state
-    /// 4. Agent resolution and run-context creation
-    /// 5. Append run-scoped plugins and tool registries from [`RunScope`]
+    /// 4. Run-context creation
+    ///
+    /// Callers resolve first, optionally customize, then prepare:
+    /// ```ignore
+    /// let mut resolved = os.resolve("my-agent")?;
+    /// resolved.tools.insert("extra".into(), tool);
+    /// let prepared = os.prepare_run(request, resolved).await?;
+    /// ```
     pub async fn prepare_run(
         &self,
         mut request: RunRequest,
-        scope: RunScope,
+        mut resolved: ResolvedRun,
     ) -> Result<PreparedRun, AgentOsRunError> {
         let agent_state_store = self.require_agent_state_store()?;
-
-        // 0. Validate agent exists (fail fast before creating thread)
-        self.validate_agent(&request.agent_id)?;
 
         let thread_id = request.thread_id.unwrap_or_else(Self::generate_id);
         let run_id = request.run_id.unwrap_or_else(Self::generate_id);
@@ -87,7 +90,7 @@ impl AgentOs {
             thread = thread.with_messages(deduped);
         }
 
-        // 5. Persist pending changes (user messages + frontend state snapshot)
+        // 4. Persist pending changes (user messages + frontend state snapshot)
         let pending = thread.take_pending();
         if !pending.is_empty() || state_snapshot_for_delta.is_some() {
             let changeset = crate::contracts::ThreadChangeSet::from_parts(
@@ -105,39 +108,25 @@ impl AgentOs {
         }
         thread.metadata.version = Some(version);
 
-        // 4. Resolve static wiring.
-        let (mut cfg, mut tools, thread, mut run_config) = self.resolve(&request.agent_id, thread)?;
-
-        // Set run identity on the run_config
-        let _ = run_config.set("run_id", run_id.clone());
+        // 5. Set run identity on the run_config
+        let _ = resolved.run_config.set("run_id", run_id.clone());
         if let Some(parent) = parent_run_id.as_deref() {
-            let _ = run_config.set("parent_run_id", parent.to_string());
+            let _ = resolved.run_config.set("parent_run_id", parent.to_string());
         }
 
-        // 5. Append run-scoped plugins (dedup check).
-        if !scope.plugins.is_empty() {
-            cfg.plugins.extend(scope.plugins);
-            Self::ensure_unique_plugin_ids(&cfg.plugins)
-                .map_err(AgentOsResolveError::from)
-                .map_err(AgentOsRunError::from)?;
-        }
+        // 6. Validate plugin uniqueness (caller may have added plugins to resolved).
+        Self::ensure_unique_plugin_ids(&resolved.config.plugins)
+            .map_err(AgentOsResolveError::from)
+            .map_err(AgentOsRunError::from)?;
 
-        // 6. Overlay run-scoped tool registries (outside allowed_tools filtering).
-        for reg in &scope.tool_registries {
-            for (id, tool) in reg.snapshot() {
-                tools.entry(id).or_insert(tool);
-            }
-        }
-
-        cfg = cfg.with_step_tool_provider(Arc::new(StaticStepToolProvider::new(tools)));
-
-        let run_ctx = RunContext::from_thread(&thread, run_config)
+        let run_ctx = RunContext::from_thread(&thread, resolved.run_config)
             .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;
 
         Ok(PreparedRun {
             thread_id,
             run_id,
-            config: cfg,
+            config: resolved.config,
+            tools: resolved.tools,
             run_ctx,
             cancellation_token: None,
             state_committer: Some(Arc::new(
@@ -150,6 +139,7 @@ impl AgentOs {
     pub fn execute_prepared(prepared: PreparedRun) -> Result<RunStream, AgentOsRunError> {
         let events = run_loop_stream(
             prepared.config,
+            prepared.tools,
             prepared.run_ctx,
             prepared.cancellation_token,
             prepared.state_committer,
@@ -161,19 +151,17 @@ impl AgentOs {
         })
     }
 
-    /// Run an agent from a [`RunRequest`].
-    pub async fn run_stream(&self, request: RunRequest) -> Result<RunStream, AgentOsRunError> {
-        let prepared = self.prepare_run(request, RunScope::default()).await?;
-        Ok(Self::execute_prepared(prepared)?)
-    }
-
-    /// Run an agent from a [`RunRequest`] with run-scoped extensions.
-    pub async fn run_stream_with_scope(
+    /// Resolve, prepare, and execute an agent run.
+    ///
+    /// This is the primary entry point. Callers that need to customize
+    /// the resolved wiring should use [`resolve`] + mutation + [`prepare_run`]
+    /// + [`execute_prepared`] instead.
+    pub async fn run_stream(
         &self,
         request: RunRequest,
-        scope: RunScope,
     ) -> Result<RunStream, AgentOsRunError> {
-        let prepared = self.prepare_run(request, scope).await?;
+        let resolved = self.resolve(&request.agent_id)?;
+        let prepared = self.prepare_run(request, resolved).await?;
         Ok(Self::execute_prepared(prepared)?)
     }
 
@@ -223,10 +211,9 @@ impl AgentOs {
         cancellation_token: Option<RunCancellationToken>,
         state_committer: Option<Arc<dyn StateCommitter>>,
     ) -> Result<impl futures::Stream<Item = AgentEvent> + Send, AgentOsRunError> {
-        let (cfg, tools, thread, run_config) = self.resolve(agent_id, thread)?;
-        let cfg = cfg.with_step_tool_provider(Arc::new(StaticStepToolProvider::new(tools)));
-        let run_ctx = RunContext::from_thread(&thread, run_config)
+        let resolved = self.resolve(agent_id)?;
+        let run_ctx = RunContext::from_thread(&thread, resolved.run_config)
             .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;
-        Ok(run_loop_stream(cfg, run_ctx, cancellation_token, state_committer))
+        Ok(run_loop_stream(resolved.config, resolved.tools, run_ctx, cancellation_token, state_committer))
     }
 }

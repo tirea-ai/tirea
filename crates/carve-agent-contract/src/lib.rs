@@ -1,6 +1,10 @@
 //! Shared agent contracts for conversation state, runtime protocol, extension SPI, and storage.
 #![allow(missing_docs)]
 
+/// Builder methods for pure-data fields shared by both AgentConfig and AgentDefinition.
+///
+/// Covers: id, model, system_prompt, max_rounds, chat_options, fallback_models,
+/// llm_retry_policy, stop_condition_specs.
 #[macro_export]
 macro_rules! impl_shared_agent_builder_methods {
     () => {
@@ -63,6 +67,29 @@ macro_rules! impl_shared_agent_builder_methods {
             self
         }
 
+        /// Add a declarative stop policy spec.
+        #[must_use]
+        pub fn with_stop_condition_spec(mut self, spec: StopConditionSpec) -> Self {
+            self.stop_condition_specs.push(spec);
+            self
+        }
+
+        /// Set all declarative stop policy specs, replacing any previously set.
+        #[must_use]
+        pub fn with_stop_condition_specs(mut self, specs: Vec<StopConditionSpec>) -> Self {
+            self.stop_condition_specs = specs;
+            self
+        }
+    };
+}
+
+/// Builder methods for runtime instance fields (plugins, stop_conditions).
+///
+/// Only used by AgentConfig (loop layer) which directly holds plugin and
+/// stop_condition instances. AgentDefinition uses id-based references instead.
+#[macro_export]
+macro_rules! impl_loop_config_builder_methods {
+    () => {
         /// Set plugins.
         #[must_use]
         pub fn with_plugins(mut self, plugins: Vec<Arc<dyn AgentPlugin>>) -> Self {
@@ -88,20 +115,6 @@ macro_rules! impl_shared_agent_builder_methods {
         #[must_use]
         pub fn with_stop_conditions(mut self, conditions: Vec<Arc<dyn StopPolicy>>) -> Self {
             self.stop_conditions = conditions;
-            self
-        }
-
-        /// Add a declarative stop policy spec.
-        #[must_use]
-        pub fn with_stop_condition_spec(mut self, spec: StopConditionSpec) -> Self {
-            self.stop_condition_specs.push(spec);
-            self
-        }
-
-        /// Set all declarative stop policy specs, replacing any previously set.
-        #[must_use]
-        pub fn with_stop_condition_specs(mut self, specs: Vec<StopConditionSpec>) -> Self {
-            self.stop_condition_specs = specs;
             self
         }
     };

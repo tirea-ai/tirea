@@ -1,4 +1,3 @@
-use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::StopConditionSpec;
 use crate::contracts::runtime::{StopPolicy, ToolExecutor};
 use crate::runtime::loop_runner::{
@@ -9,8 +8,8 @@ use std::sync::Arc;
 
 /// Agent composition definition owned by AgentOS orchestration.
 ///
-/// This is the orchestration-facing model and can include registry references
-/// (`plugin_ids`, `policy_ids`) and policy filters (`allowed_*`, `excluded_*`).
+/// This is the orchestration-facing model and uses only registry references
+/// (`plugin_ids`, `stop_condition_ids`) and declarative specs (`stop_condition_specs`).
 /// Before execution, AgentOS resolves it into loop-facing [`AgentConfig`].
 #[derive(Clone)]
 pub struct AgentDefinition {
@@ -32,12 +31,8 @@ pub struct AgentDefinition {
     pub fallback_models: Vec<String>,
     /// Retry policy for LLM inference failures.
     pub llm_retry_policy: LlmRetryPolicy,
-    /// Explicit plugin instances.
-    pub plugins: Vec<Arc<dyn AgentPlugin>>,
     /// Plugin references resolved from AgentOS plugin registry.
     pub plugin_ids: Vec<String>,
-    /// Policy references resolved from AgentOS plugin registry.
-    pub policy_ids: Vec<String>,
     /// Tool whitelist (None = all tools available).
     pub allowed_tools: Option<Vec<String>>,
     /// Tool blacklist.
@@ -50,10 +45,10 @@ pub struct AgentDefinition {
     pub allowed_agents: Option<Vec<String>>,
     /// Agent blacklist for `agent_run` delegation.
     pub excluded_agents: Option<Vec<String>>,
-    /// Composable stop conditions checked after each tool-call round.
-    pub stop_conditions: Vec<Arc<dyn StopPolicy>>,
     /// Declarative stop condition specs, resolved at runtime.
     pub stop_condition_specs: Vec<StopConditionSpec>,
+    /// Stop condition references resolved from AgentOS StopPolicyRegistry.
+    pub stop_condition_ids: Vec<String>,
 }
 
 impl Default for AgentDefinition {
@@ -71,17 +66,15 @@ impl Default for AgentDefinition {
             ),
             fallback_models: Vec::new(),
             llm_retry_policy: LlmRetryPolicy::default(),
-            plugins: Vec::new(),
             plugin_ids: Vec::new(),
-            policy_ids: Vec::new(),
             allowed_tools: None,
             excluded_tools: None,
             allowed_skills: None,
             excluded_skills: None,
             allowed_agents: None,
             excluded_agents: None,
-            stop_conditions: Vec::new(),
             stop_condition_specs: Vec::new(),
+            stop_condition_ids: Vec::new(),
         }
     }
 }
@@ -100,20 +93,15 @@ impl std::fmt::Debug for AgentDefinition {
             .field("chat_options", &self.chat_options)
             .field("fallback_models", &self.fallback_models)
             .field("llm_retry_policy", &self.llm_retry_policy)
-            .field("plugins", &format!("[{} plugins]", self.plugins.len()))
             .field("plugin_ids", &self.plugin_ids)
-            .field("policy_ids", &self.policy_ids)
             .field("allowed_tools", &self.allowed_tools)
             .field("excluded_tools", &self.excluded_tools)
             .field("allowed_skills", &self.allowed_skills)
             .field("excluded_skills", &self.excluded_skills)
             .field("allowed_agents", &self.allowed_agents)
             .field("excluded_agents", &self.excluded_agents)
-            .field(
-                "stop_conditions",
-                &format!("[{} conditions]", self.stop_conditions.len()),
-            )
             .field("stop_condition_specs", &self.stop_condition_specs)
+            .field("stop_condition_ids", &self.stop_condition_ids)
             .finish()
     }
 }
@@ -140,14 +128,14 @@ impl AgentDefinition {
     }
 
     #[must_use]
-    pub fn with_policy_ids(mut self, policy_ids: Vec<String>) -> Self {
-        self.policy_ids = policy_ids;
+    pub fn with_stop_condition_id(mut self, id: impl Into<String>) -> Self {
+        self.stop_condition_ids.push(id.into());
         self
     }
 
     #[must_use]
-    pub fn with_policy_id(mut self, policy_id: impl Into<String>) -> Self {
-        self.policy_ids.push(policy_id.into());
+    pub fn with_stop_condition_ids(mut self, ids: Vec<String>) -> Self {
+        self.stop_condition_ids = ids;
         self
     }
 
@@ -187,7 +175,12 @@ impl AgentDefinition {
         self
     }
 
-    pub fn into_loop_config(self) -> AgentConfig {
+    /// Convert into loop-facing config with the given resolved plugins and stop conditions.
+    pub(crate) fn into_loop_config(
+        self,
+        plugins: Vec<Arc<dyn crate::contracts::plugin::AgentPlugin>>,
+        stop_conditions: Vec<Arc<dyn StopPolicy>>,
+    ) -> AgentConfig {
         let tool_executor: Arc<dyn ToolExecutor> = if self.parallel_tools {
             Arc::new(ParallelToolExecutor)
         } else {
@@ -202,8 +195,8 @@ impl AgentDefinition {
             chat_options: self.chat_options,
             fallback_models: self.fallback_models,
             llm_retry_policy: self.llm_retry_policy,
-            plugins: self.plugins,
-            stop_conditions: self.stop_conditions,
+            plugins,
+            stop_conditions,
             stop_condition_specs: self.stop_condition_specs,
             step_tool_provider: None,
             llm_executor: None,

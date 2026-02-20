@@ -31,6 +31,7 @@ impl std::fmt::Debug for AgentOs {
             .field("agents", &self.agents.len())
             .field("base_tools", &self.base_tools.len())
             .field("plugins", &self.plugins.len())
+            .field("stop_policies", &self.stop_policies.len())
             .field("providers", &self.providers.len())
             .field("models", &self.models.len())
             .field(
@@ -52,6 +53,8 @@ impl std::fmt::Debug for AgentOsBuilder {
             .field("agents", &self.agents.len())
             .field("base_tools", &self.base_tools.len())
             .field("plugins", &self.plugins.len())
+            .field("stop_policies", &self.stop_policies.len())
+            .field("stop_policy_registries", &self.stop_policy_registries.len())
             .field("providers", &self.providers.len())
             .field("models", &self.models.len())
             .field("skills", &self.skills.len())
@@ -75,6 +78,8 @@ impl AgentOsBuilder {
             base_tool_registries: Vec::new(),
             plugins: HashMap::new(),
             plugin_registries: Vec::new(),
+            stop_policies: HashMap::new(),
+            stop_policy_registries: Vec::new(),
             providers: HashMap::new(),
             provider_registries: Vec::new(),
             models: HashMap::new(),
@@ -133,6 +138,20 @@ impl AgentOsBuilder {
 
     pub fn with_plugin_registry(mut self, registry: Arc<dyn PluginRegistry>) -> Self {
         self.plugin_registries.push(registry);
+        self
+    }
+
+    pub fn with_stop_policy(
+        mut self,
+        id: impl Into<String>,
+        policy: Arc<dyn crate::contracts::runtime::StopPolicy>,
+    ) -> Self {
+        self.stop_policies.insert(id.into(), policy);
+        self
+    }
+
+    pub fn with_stop_policy_registry(mut self, registry: Arc<dyn StopPolicyRegistry>) -> Self {
+        self.stop_policy_registries.push(registry);
         self
     }
 
@@ -201,6 +220,8 @@ impl AgentOsBuilder {
             mut base_tool_registries,
             plugins: mut plugin_defs,
             mut plugin_registries,
+            stop_policies: stop_policy_defs,
+            stop_policy_registries,
             providers: mut provider_defs,
             mut provider_registries,
             models: mut model_defs,
@@ -280,12 +301,23 @@ impl AgentOsBuilder {
             |regs| Ok(Arc::new(CompositePluginRegistry::try_new(regs)?)),
         )?;
 
+        let mut stop_policies_mem = InMemoryStopPolicyRegistry::new();
+        stop_policies_mem.extend_named(stop_policy_defs)?;
+
+        let stop_policies: Arc<dyn StopPolicyRegistry> = merge_registry(
+            stop_policies_mem,
+            stop_policy_registries,
+            |reg: &InMemoryStopPolicyRegistry| reg.is_empty(),
+            |reg| Arc::new(reg),
+            |regs| Ok(Arc::new(CompositeStopPolicyRegistry::try_new(regs)?)),
+        )?;
+
         // Fail-fast for builder-provided agents (external registries may be dynamic).
         {
             let reserved = AgentOs::reserved_plugin_ids();
             for (agent_id, def) in &agents_defs {
                 let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-                for id in def.policy_ids.iter().chain(def.plugin_ids.iter()) {
+                for id in &def.plugin_ids {
                     let id = id.trim();
                     if id.is_empty() {
                         return Err(AgentOsBuildError::AgentEmptyPluginRef {
@@ -308,6 +340,30 @@ impl AgentOsBuilder {
                         return Err(AgentOsBuildError::AgentPluginNotFound {
                             agent_id: agent_id.clone(),
                             plugin_id: id.to_string(),
+                        });
+                    }
+                }
+
+                // Validate stop_condition_ids
+                let mut sc_seen: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                for sc_id in &def.stop_condition_ids {
+                    let sc_id = sc_id.trim();
+                    if sc_id.is_empty() {
+                        return Err(AgentOsBuildError::AgentEmptyStopConditionRef {
+                            agent_id: agent_id.clone(),
+                        });
+                    }
+                    if !sc_seen.insert(sc_id.to_string()) {
+                        return Err(AgentOsBuildError::AgentDuplicateStopConditionRef {
+                            agent_id: agent_id.clone(),
+                            stop_condition_id: sc_id.to_string(),
+                        });
+                    }
+                    if stop_policies.get(sc_id).is_none() {
+                        return Err(AgentOsBuildError::AgentStopConditionNotFound {
+                            agent_id: agent_id.clone(),
+                            stop_condition_id: sc_id.to_string(),
                         });
                     }
                 }
@@ -369,6 +425,7 @@ impl AgentOsBuilder {
             plugins: registries.plugins,
             providers: registries.providers,
             models: registries.models,
+            stop_policies,
             skills_registry,
             skills_config,
             agent_runs: Arc::new(AgentRunManager::new()),

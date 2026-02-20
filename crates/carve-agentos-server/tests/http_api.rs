@@ -56,11 +56,12 @@ fn make_os_with_storage_and_tools(
 ) -> AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
-        plugins: vec![Arc::new(SkipInferencePlugin)],
+        plugin_ids: vec!["skip_inference_test".into()],
         ..Default::default()
     };
 
     AgentOsBuilder::new()
+        .with_registered_plugin("skip_inference_test", Arc::new(SkipInferencePlugin))
         .with_tools(tools)
         .with_agent("test", def)
         .with_agent_state_store(write_store)

@@ -248,10 +248,11 @@ fn caller_scope() -> carve_agent_contract::RunConfig {
 #[tokio::test]
 async fn background_stop_then_resume_completes() {
     let os = AgentOs::builder()
+        .with_registered_plugin("slow_skip", Arc::new(SlowSkipPlugin))
         .with_agent(
             "worker",
             crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
-                .with_plugin(Arc::new(SlowSkipPlugin)),
+                .with_plugin_id("slow_skip"),
         )
         .build()
         .unwrap();
@@ -384,10 +385,11 @@ async fn manager_stop_tree_stops_descendants() {
 #[tokio::test]
 async fn agent_run_tool_persists_run_state_patch() {
     let os = AgentOs::builder()
+        .with_registered_plugin("slow_skip", Arc::new(SlowSkipPlugin))
         .with_agent(
             "worker",
             crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
-                .with_plugin(Arc::new(SlowSkipPlugin)),
+                .with_plugin_id("slow_skip"),
         )
         .build()
         .unwrap();
@@ -428,10 +430,11 @@ async fn agent_run_tool_persists_run_state_patch() {
 #[tokio::test]
 async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
     let os = AgentOs::builder()
+        .with_registered_plugin("slow_skip", Arc::new(SlowSkipPlugin))
         .with_agent(
             "worker",
             crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
-                .with_plugin(Arc::new(SlowSkipPlugin)),
+                .with_plugin_id("slow_skip"),
         )
         .build()
         .unwrap();
@@ -475,10 +478,11 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
 #[tokio::test]
 async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
     let os = AgentOs::builder()
+        .with_registered_plugin("slow_skip", Arc::new(SlowSkipPlugin))
         .with_agent(
             "worker",
             crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
-                .with_plugin(Arc::new(SlowSkipPlugin)),
+                .with_plugin_id("slow_skip"),
         )
         .build()
         .unwrap();
@@ -518,10 +522,11 @@ async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
 #[tokio::test]
 async fn agent_run_tool_resume_updates_parent_run_lineage() {
     let os = AgentOs::builder()
+        .with_registered_plugin("slow_skip", Arc::new(SlowSkipPlugin))
         .with_agent(
             "worker",
             crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
-                .with_plugin(Arc::new(SlowSkipPlugin)),
+                .with_plugin_id("slow_skip"),
         )
         .build()
         .unwrap();
@@ -575,10 +580,11 @@ async fn agent_run_tool_resume_updates_parent_run_lineage() {
 #[tokio::test]
 async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
     let os = AgentOs::builder()
+        .with_registered_plugin("slow_skip", Arc::new(SlowSkipPlugin))
         .with_agent(
             "worker",
             crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
-                .with_plugin(Arc::new(SlowSkipPlugin)),
+                .with_plugin_id("slow_skip"),
         )
         .build()
         .unwrap();

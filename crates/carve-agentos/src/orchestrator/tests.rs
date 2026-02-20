@@ -275,14 +275,14 @@ fn wire_skills_disabled_is_noop() {
 
     let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
     let cfg = AgentDefinition::new("gpt-4o-mini");
-    let cfg2 = os.wire_skills_into(cfg.clone(), &mut tools).unwrap();
+    let cfg2 = os.wire_skills_into(cfg, &mut tools).unwrap();
 
     assert!(tools.is_empty());
-    assert_eq!(cfg2.plugins.len(), cfg.plugins.len());
+    assert!(cfg2.plugins.is_empty());
 }
 
 #[test]
-fn wire_plugins_into_orders_policy_then_plugin_then_explicit() {
+fn wire_plugins_into_orders_plugin_ids() {
     #[derive(Debug)]
     struct LocalPlugin(&'static str);
 
@@ -307,13 +307,12 @@ fn wire_plugins_into_orders_policy_then_plugin_then_explicit() {
         .unwrap();
 
     let cfg = AgentDefinition::new("gpt-4o-mini")
-        .with_policy_id("policy1")
-        .with_plugin_id("p1")
-        .with_plugin(Arc::new(LocalPlugin("explicit")));
+        .with_plugin_id("policy1")
+        .with_plugin_id("p1");
 
     let wired = os.wire_plugins_into(cfg).unwrap();
-    let ids: Vec<&str> = wired.plugins.iter().map(|p| p.id()).collect();
-    assert_eq!(ids, vec!["policy1", "p1", "explicit"]);
+    let ids: Vec<&str> = wired.iter().map(|p| p.id()).collect();
+    assert_eq!(ids, vec!["policy1", "p1"]);
 }
 
 #[test]
@@ -335,16 +334,20 @@ fn wire_plugins_into_rejects_duplicate_plugin_ids_after_assembly() {
         }
     }
 
+    // Register two different plugins with the same id — this is normally prevented
+    // by the registry, but we can test the wire_plugins_into dedup via an agent
+    // that references the same id twice.
     let os = AgentOs::builder()
         .with_registered_plugin("p1", Arc::new(LocalPlugin("p1")))
         .build()
         .unwrap();
 
+    // Referencing same plugin_id twice should fail at wire time
     let cfg = AgentDefinition::new("gpt-4o-mini")
         .with_plugin_id("p1")
-        .with_plugin(Arc::new(LocalPlugin("p1")));
+        .with_plugin_id("p1");
 
-    let err = os.wire_plugins_into(cfg).unwrap_err();
+    let err = os.wire_plugins_into(cfg).err().expect("expected error");
     assert!(matches!(err, AgentOsWiringError::PluginAlreadyInstalled(id) if id == "p1"));
 }
 
@@ -362,9 +365,9 @@ impl AgentPlugin for FakeSkillsPlugin {
 }
 
 #[test]
-fn wire_skills_errors_if_plugin_already_installed() {
+fn build_errors_if_agent_references_reserved_skills_plugin_id() {
     let (_td, root) = make_skills_root();
-    let os = AgentOs::builder()
+    let err = AgentOs::builder()
         .with_skills(FsSkill::into_arc_skills(
             FsSkill::discover(root).unwrap().skills,
         ))
@@ -372,14 +375,19 @@ fn wire_skills_errors_if_plugin_already_installed() {
             mode: SkillsMode::DiscoveryAndRuntime,
             ..SkillsConfig::default()
         })
+        .with_registered_plugin("skills", Arc::new(FakeSkillsPlugin))
+        .with_agent(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini").with_plugin_id("skills"),
+        )
         .build()
-        .unwrap();
+        .unwrap_err();
 
-    let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-    let cfg = AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(FakeSkillsPlugin));
-
-    let err = os.wire_skills_into(cfg, &mut tools).unwrap_err();
-    assert!(err.to_string().contains("skills plugin already installed"));
+    assert!(matches!(
+        err,
+        AgentOsBuildError::AgentReservedPluginId { ref agent_id, ref plugin_id }
+        if agent_id == "a1" && plugin_id == "skills"
+    ));
 }
 
 #[derive(Debug)]
@@ -396,21 +404,20 @@ impl AgentPlugin for FakeAgentToolsPlugin {
 }
 
 #[test]
-fn resolve_errors_if_agent_tools_plugin_already_installed() {
-    let os = AgentOs::builder()
+fn build_errors_if_agent_references_reserved_agent_tools_plugin_id() {
+    let err = AgentOs::builder()
+        .with_registered_plugin("agent_tools", Arc::new(FakeAgentToolsPlugin))
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(FakeAgentToolsPlugin)),
+            AgentDefinition::new("gpt-4o-mini").with_plugin_id("agent_tools"),
         )
         .build()
-        .unwrap();
+        .unwrap_err();
 
-    let thread = Thread::with_initial_state("s", json!({}));
-    let err = os.resolve("a1", thread).err().unwrap();
     assert!(matches!(
         err,
-        AgentOsResolveError::Wiring(AgentOsWiringError::AgentToolsPluginAlreadyInstalled(ref id))
-        if id == "agent_tools"
+        AgentOsBuildError::AgentReservedPluginId { ref agent_id, ref plugin_id }
+        if agent_id == "a1" && plugin_id == "agent_tools"
     ));
 }
 
@@ -428,30 +435,27 @@ impl AgentPlugin for FakeAgentRecoveryPlugin {
 }
 
 #[test]
-fn resolve_errors_if_agent_recovery_plugin_already_installed() {
-    let os = AgentOs::builder()
+fn build_errors_if_agent_references_reserved_agent_recovery_plugin_id() {
+    let err = AgentOs::builder()
+        .with_registered_plugin("agent_recovery", Arc::new(FakeAgentRecoveryPlugin))
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(FakeAgentRecoveryPlugin)),
+            AgentDefinition::new("gpt-4o-mini").with_plugin_id("agent_recovery"),
         )
         .build()
-        .unwrap();
+        .unwrap_err();
 
-    let thread = Thread::with_initial_state("s", json!({}));
-    let err = os.resolve("a1", thread).err().unwrap();
     assert!(matches!(
         err,
-        AgentOsResolveError::Wiring(
-            AgentOsWiringError::AgentRecoveryPluginAlreadyInstalled(ref id)
-        ) if id == "agent_recovery"
+        AgentOsBuildError::AgentReservedPluginId { ref agent_id, ref plugin_id }
+        if agent_id == "a1" && plugin_id == "agent_recovery"
     ));
 }
 
 #[test]
 fn resolve_errors_if_agent_missing() {
     let os = AgentOs::builder().build().unwrap();
-    let thread = Thread::with_initial_state("s", json!({}));
-    let err = os.resolve("missing", thread).err().unwrap();
+    let err = os.resolve("missing").err().unwrap();
     assert!(matches!(err, AgentOsResolveError::AgentNotFound(_)));
 }
 
@@ -492,20 +496,19 @@ async fn resolve_wires_skills_and_preserves_base_tools() {
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
-    let (cfg, tools, _thread, _run_config) = os.resolve("a1", thread).unwrap();
+    let resolved = os.resolve("a1").unwrap();
 
-    assert_eq!(cfg.id, "a1");
-    assert!(tools.contains_key("base_tool"));
-    assert!(tools.contains_key("skill"));
-    assert!(tools.contains_key("load_skill_resource"));
-    assert!(tools.contains_key("skill_script"));
-    assert!(tools.contains_key("agent_run"));
-    assert!(tools.contains_key("agent_stop"));
-    assert_eq!(cfg.plugins.len(), 3);
-    assert_eq!(cfg.plugins[0].id(), "skills");
-    assert_eq!(cfg.plugins[1].id(), "agent_tools");
-    assert_eq!(cfg.plugins[2].id(), "agent_recovery");
+    assert_eq!(resolved.config.id, "a1");
+    assert!(resolved.tools.contains_key("base_tool"));
+    assert!(resolved.tools.contains_key("skill"));
+    assert!(resolved.tools.contains_key("load_skill_resource"));
+    assert!(resolved.tools.contains_key("skill_script"));
+    assert!(resolved.tools.contains_key("agent_run"));
+    assert!(resolved.tools.contains_key("agent_stop"));
+    assert_eq!(resolved.config.plugins.len(), 3);
+    assert_eq!(resolved.config.plugins[0].id(), "skills");
+    assert_eq!(resolved.config.plugins[1].id(), "agent_tools");
+    assert_eq!(resolved.config.plugins[2].id(), "agent_recovery");
 }
 
 #[test]
@@ -578,8 +581,8 @@ fn resolve_freezes_tool_snapshot_per_run_boundary() {
         .build()
         .expect("build agent os");
 
-    let thread1 = Thread::with_initial_state("freeze-1", json!({}));
-    let (_cfg1, tools_first_run, _thread1, _rc1) = os.resolve("a1", thread1).expect("resolve #1");
+    let resolved1 = os.resolve("a1").expect("resolve #1");
+    let tools_first_run = resolved1.tools;
     assert!(tools_first_run.contains_key("mcp__s1__echo"));
     assert!(!tools_first_run.contains_key("mcp__s1__sum"));
 
@@ -590,8 +593,8 @@ fn resolve_freezes_tool_snapshot_per_run_boundary() {
     assert!(!tools_first_run.contains_key("mcp__s1__sum"));
 
     // The next resolve picks up refreshed registry state.
-    let thread2 = Thread::with_initial_state("freeze-2", json!({}));
-    let (_cfg2, tools_second_run, _thread2, _rc2) = os.resolve("a1", thread2).expect("resolve #2");
+    let resolved2 = os.resolve("a1").expect("resolve #2");
+    let tools_second_run = resolved2.tools;
     assert!(!tools_second_run.contains_key("mcp__s1__echo"));
     assert!(tools_second_run.contains_key("mcp__s1__sum"));
 }
@@ -648,8 +651,8 @@ async fn resolve_freezes_agent_snapshot_per_run_boundary() {
         .build()
         .expect("build agent os");
 
-    let thread1 = Thread::with_initial_state("freeze-agent-1", json!({}));
-    let (_cfg1, tools_first_run, _thread1, _rc1) = os.resolve("root", thread1).expect("resolve #1");
+    let resolved1 = os.resolve("root").expect("resolve #1");
+    let tools_first_run = resolved1.tools;
     let run_tool_first = tools_first_run
         .get("agent_run")
         .cloned()
@@ -687,8 +690,8 @@ async fn resolve_freezes_agent_snapshot_per_run_boundary() {
     );
 
     // Next resolve should use refreshed source and reject worker_a.
-    let thread2 = Thread::with_initial_state("freeze-agent-2", json!({}));
-    let (_cfg2, tools_second_run, _thread2, _rc2) = os.resolve("root", thread2).expect("resolve #2");
+    let resolved2 = os.resolve("root").expect("resolve #2");
+    let tools_second_run = resolved2.tools;
     let run_tool_second = tools_second_run
         .get("agent_run")
         .cloned()
@@ -820,8 +823,8 @@ async fn resolve_freezes_skill_snapshot_per_run_boundary() {
         .build()
         .expect("build agent os");
 
-    let thread1 = Thread::with_initial_state("freeze-skill-1", json!({}));
-    let (_cfg1, tools_first_run, _thread1, _rc1) = os.resolve("root", thread1).expect("resolve #1");
+    let resolved1 = os.resolve("root").expect("resolve #1");
+    let tools_first_run = resolved1.tools;
     let activate_first = tools_first_run
         .get("skill")
         .cloned()
@@ -839,8 +842,8 @@ async fn resolve_freezes_skill_snapshot_per_run_boundary() {
         "first run should use frozen skills"
     );
 
-    let thread2 = Thread::with_initial_state("freeze-skill-2", json!({}));
-    let (_cfg2, tools_second_run, _thread2, _rc2) = os.resolve("root", thread2).expect("resolve #2");
+    let resolved2 = os.resolve("root").expect("resolve #2");
+    let tools_second_run = resolved2.tools;
     let activate_second = tools_second_run
         .get("skill")
         .cloned()
@@ -922,9 +925,9 @@ async fn run_and_run_stream_work_without_llm_when_skip_inference() {
         }
     }
 
-    let def = AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipInferencePlugin));
     let os = AgentOs::builder()
-        .with_agent("a1", def)
+        .with_registered_plugin("skip_inference", Arc::new(SkipInferencePlugin))
+        .with_agent("a1", AgentDefinition::new("gpt-4o-mini").with_plugin_id("skip_inference"))
         .with_agent_state_store(Arc::new(carve_thread_store_adapters::MemoryStore::new()))
         .build()
         .unwrap();
@@ -960,26 +963,25 @@ fn resolve_sets_runtime_caller_agent_id() {
         )
         .build()
         .unwrap();
-    let thread = Thread::with_initial_state("s", json!({}));
-    let (_cfg, _tools, _thread, run_config) = os.resolve("a1", thread).unwrap();
+    let resolved = os.resolve("a1").unwrap();
     assert_eq!(
-        run_config
+        resolved.run_config
             .value(SCOPE_CALLER_AGENT_ID_KEY)
             .and_then(|v| v.as_str()),
         Some("a1")
     );
     assert_eq!(
-        run_config
+        resolved.run_config
             .value(carve_agent_extension_skills::SCOPE_ALLOWED_SKILLS_KEY),
         Some(&json!(["s1"]))
     );
     assert_eq!(
-        run_config
+        resolved.run_config
             .value(super::policy::SCOPE_ALLOWED_AGENTS_KEY),
         Some(&json!(["worker"]))
     );
     assert_eq!(
-        run_config
+        resolved.run_config
             .value(carve_agent_loop::engine::tool_filter::SCOPE_ALLOWED_TOOLS_KEY),
         Some(&json!(["echo"]))
     );
@@ -1022,8 +1024,7 @@ async fn resolve_errors_on_skills_tool_id_conflict() {
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
-    let err = os.resolve("a1", thread).err().unwrap();
+    let err = os.resolve("a1").err().unwrap();
     assert!(matches!(
         err,
         AgentOsResolveError::Wiring(AgentOsWiringError::SkillsToolIdConflict(ref id))
@@ -1038,12 +1039,11 @@ async fn resolve_wires_agent_tools_by_default() {
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
-    let (cfg, tools, _thread, _run_config) = os.resolve("a1", thread).unwrap();
-    assert!(tools.contains_key("agent_run"));
-    assert!(tools.contains_key("agent_stop"));
-    assert_eq!(cfg.plugins[0].id(), "agent_tools");
-    assert_eq!(cfg.plugins[1].id(), "agent_recovery");
+    let resolved = os.resolve("a1").unwrap();
+    assert!(resolved.tools.contains_key("agent_run"));
+    assert!(resolved.tools.contains_key("agent_stop"));
+    assert_eq!(resolved.config.plugins[0].id(), "agent_tools");
+    assert_eq!(resolved.config.plugins[1].id(), "agent_recovery");
 }
 
 #[tokio::test]
@@ -1075,8 +1075,7 @@ async fn resolve_errors_on_agent_tools_tool_id_conflict() {
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
-    let err = os.resolve("a1", thread).err().unwrap();
+    let err = os.resolve("a1").err().unwrap();
     assert!(matches!(
         err,
         AgentOsResolveError::Wiring(AgentOsWiringError::AgentToolIdConflict(ref id))
@@ -1134,8 +1133,7 @@ async fn resolve_errors_if_models_registry_present_but_model_missing() {
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
-    let err = os.resolve("a1", thread).err().unwrap();
+    let err = os.resolve("a1").err().unwrap();
     assert!(matches!(err, AgentOsResolveError::ModelNotFound(ref id) if id == "missing_model_ref"));
 }
 
@@ -1148,9 +1146,8 @@ async fn resolve_rewrites_model_when_registry_present() {
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
-    let (cfg, _tools, _thread, _run_config) = os.resolve("a1", thread).unwrap();
-    assert_eq!(cfg.model, "gpt-4o-mini");
+    let resolved = os.resolve("a1").unwrap();
+    assert_eq!(resolved.config.model, "gpt-4o-mini");
 }
 
 #[derive(Debug)]
@@ -1180,42 +1177,40 @@ async fn resolve_wires_plugins_from_registry() {
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
-    let (cfg, _tools, _thread, _run_config) = os.resolve("a1", thread).unwrap();
-    assert!(cfg.plugins.iter().any(|p| p.id() == "p1"));
+    let resolved = os.resolve("a1").unwrap();
+    assert!(resolved.config.plugins.iter().any(|p| p.id() == "p1"));
 
     let fixture = TestFixture::new();
     let mut step = fixture.step(vec![ToolDescriptor::new("t", "t", "t")]);
-    for p in &cfg.plugins {
+    for p in &resolved.config.plugins {
         p.on_phase(Phase::BeforeInference, &mut step).await;
     }
     assert!(step.system_context.iter().any(|s| s.contains("p1")));
 }
 
 #[tokio::test]
-async fn resolve_wires_policies_before_plugins() {
+async fn resolve_wires_plugins_in_order() {
     let os = AgentOs::builder()
         .with_registered_plugin("policy1", Arc::new(TestPlugin("policy1")))
         .with_registered_plugin("p1", Arc::new(TestPlugin("p1")))
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini")
-                .with_policy_id("policy1")
+                .with_plugin_id("policy1")
                 .with_plugin_id("p1"),
         )
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
-    let (cfg, _tools, _thread, _run_config) = os.resolve("a1", thread).unwrap();
-    assert_eq!(cfg.plugins[0].id(), "agent_tools");
-    assert_eq!(cfg.plugins[1].id(), "agent_recovery");
-    assert_eq!(cfg.plugins[2].id(), "policy1");
-    assert_eq!(cfg.plugins[3].id(), "p1");
+    let resolved = os.resolve("a1").unwrap();
+    assert_eq!(resolved.config.plugins[0].id(), "agent_tools");
+    assert_eq!(resolved.config.plugins[1].id(), "agent_recovery");
+    assert_eq!(resolved.config.plugins[2].id(), "policy1");
+    assert_eq!(resolved.config.plugins[3].id(), "p1");
 }
 
 #[tokio::test]
-async fn resolve_wires_skills_before_policies_plugins_and_explicit_plugins() {
+async fn resolve_wires_skills_before_plugins() {
     let (_td, root) = make_skills_root();
     let os = AgentOs::builder()
         .with_skills(FsSkill::into_arc_skills(
@@ -1230,27 +1225,24 @@ async fn resolve_wires_skills_before_policies_plugins_and_explicit_plugins() {
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini")
-                .with_policy_id("policy1")
-                .with_plugin_id("p1")
-                .with_plugin(Arc::new(TestPlugin("explicit"))),
+                .with_plugin_id("policy1")
+                .with_plugin_id("p1"),
         )
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
-    let (cfg, tools, _thread, _run_config) = os.resolve("a1", thread).unwrap();
-    assert!(tools.contains_key("skill"));
-    assert!(tools.contains_key("load_skill_resource"));
-    assert!(tools.contains_key("skill_script"));
-    assert!(tools.contains_key("agent_run"));
-    assert!(tools.contains_key("agent_stop"));
+    let resolved = os.resolve("a1").unwrap();
+    assert!(resolved.tools.contains_key("skill"));
+    assert!(resolved.tools.contains_key("load_skill_resource"));
+    assert!(resolved.tools.contains_key("skill_script"));
+    assert!(resolved.tools.contains_key("agent_run"));
+    assert!(resolved.tools.contains_key("agent_stop"));
 
-    assert_eq!(cfg.plugins[0].id(), "skills");
-    assert_eq!(cfg.plugins[1].id(), "agent_tools");
-    assert_eq!(cfg.plugins[2].id(), "agent_recovery");
-    assert_eq!(cfg.plugins[3].id(), "policy1");
-    assert_eq!(cfg.plugins[4].id(), "p1");
-    assert_eq!(cfg.plugins[5].id(), "explicit");
+    assert_eq!(resolved.config.plugins[0].id(), "skills");
+    assert_eq!(resolved.config.plugins[1].id(), "agent_tools");
+    assert_eq!(resolved.config.plugins[2].id(), "agent_recovery");
+    assert_eq!(resolved.config.plugins[3].id(), "policy1");
+    assert_eq!(resolved.config.plugins[4].id(), "p1");
 }
 
 #[test]
@@ -1270,64 +1262,22 @@ fn build_errors_if_builder_agent_references_missing_plugin() {
 }
 
 #[test]
-fn build_errors_if_builder_agent_references_missing_policy() {
+fn build_errors_on_duplicate_plugin_id_in_agent() {
     let err = AgentOs::builder()
-        .with_agent(
-            "a1",
-            AgentDefinition::new("gpt-4o-mini").with_policy_id("policy1"),
-        )
-        .build()
-        .unwrap_err();
-    assert!(matches!(
-        err,
-        AgentOsBuildError::AgentPluginNotFound { ref agent_id, ref plugin_id }
-        if agent_id == "a1" && plugin_id == "policy1"
-    ));
-}
-
-#[test]
-fn resolve_errors_on_duplicate_plugin_id() {
-    let os = AgentOs::builder()
         .with_registered_plugin("p1", Arc::new(TestPlugin("p1")))
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini")
                 .with_plugin_id("p1")
-                .with_plugin(Arc::new(TestPlugin("p1"))),
+                .with_plugin_id("p1"),
         )
         .build()
-        .unwrap();
+        .unwrap_err();
 
-    let thread = Thread::with_initial_state("s", json!({}));
-    let err = os.resolve("a1", thread).err().unwrap();
     assert!(matches!(
         err,
-        AgentOsResolveError::Wiring(AgentOsWiringError::PluginAlreadyInstalled(ref id)) if id == "p1"
-    ));
-}
-
-#[test]
-fn resolve_errors_on_duplicate_plugin_id_between_policy_and_plugin_ref() {
-    let os = AgentOs::builder()
-        .with_registered_plugin("p1", Arc::new(TestPlugin("p1")))
-        .with_agent_registry(Arc::new({
-            let mut reg = InMemoryAgentRegistry::new();
-            reg.upsert(
-                "a1",
-                AgentDefinition::new("gpt-4o-mini")
-                    .with_policy_id("p1")
-                    .with_plugin_id("p1"),
-            );
-            reg
-        }))
-        .build()
-        .unwrap();
-
-    let thread = Thread::with_initial_state("s", json!({}));
-    let err = os.resolve("a1", thread).err().unwrap();
-    assert!(matches!(
-        err,
-        AgentOsResolveError::Wiring(AgentOsWiringError::PluginAlreadyInstalled(ref id)) if id == "p1"
+        AgentOsBuildError::AgentDuplicatePluginRef { ref agent_id, ref plugin_id }
+        if agent_id == "a1" && plugin_id == "p1"
     ));
 }
 
@@ -1338,7 +1288,7 @@ fn build_errors_on_duplicate_plugin_ref_in_builder_agent() {
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini")
-                .with_policy_id("p1")
+                .with_plugin_id("p1")
                 .with_plugin_id("p1"),
         )
         .build()
@@ -1355,7 +1305,7 @@ fn build_errors_on_reserved_plugin_id_in_builder_agent() {
     let err = AgentOs::builder()
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_policy_id("skills"),
+            AgentDefinition::new("gpt-4o-mini").with_plugin_id("skills"),
         )
         .build()
         .unwrap_err();
@@ -1380,30 +1330,7 @@ fn resolve_errors_on_reserved_plugin_id() {
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
-    let err = os.resolve("a1", thread).err().unwrap();
-    assert!(matches!(
-        err,
-        AgentOsResolveError::Wiring(AgentOsWiringError::ReservedPluginId(ref id)) if id == "skills"
-    ));
-}
-
-#[test]
-fn resolve_errors_on_reserved_policy_id() {
-    let os = AgentOs::builder()
-        .with_agent_registry(Arc::new({
-            let mut reg = InMemoryAgentRegistry::new();
-            reg.upsert(
-                "a1",
-                AgentDefinition::new("gpt-4o-mini").with_policy_id("skills"),
-            );
-            reg
-        }))
-        .build()
-        .unwrap();
-
-    let thread = Thread::with_initial_state("s", json!({}));
-    let err = os.resolve("a1", thread).err().unwrap();
+    let err = os.resolve("a1").err().unwrap();
     assert!(matches!(
         err,
         AgentOsResolveError::Wiring(AgentOsWiringError::ReservedPluginId(ref id)) if id == "skills"
@@ -1455,9 +1382,10 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
         .with_agent_state_store(
             storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
         )
+        .with_registered_plugin("skip", Arc::new(SkipPlugin))
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
+            AgentDefinition::new("gpt-4o-mini").with_plugin_id("skip"),
         )
         .build()
         .unwrap();
@@ -1520,9 +1448,10 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
         .with_agent_state_store(
             storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
         )
+        .with_registered_plugin("skip", Arc::new(SkipPlugin))
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
+            AgentDefinition::new("gpt-4o-mini").with_plugin_id("skip"),
         )
         .build()
         .unwrap();
@@ -1576,9 +1505,10 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
         .with_agent_state_store(
             storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
         )
+        .with_registered_plugin("skip", Arc::new(SkipPlugin))
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
+            AgentDefinition::new("gpt-4o-mini").with_plugin_id("skip"),
         )
         .build()
         .unwrap();
@@ -1635,13 +1565,15 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
         .with_agent_state_store(
             storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
         )
+        .with_registered_plugin("skip", Arc::new(SkipPlugin))
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
+            AgentDefinition::new("gpt-4o-mini").with_plugin_id("skip"),
         )
         .build()
         .unwrap();
 
+    let resolved = os.resolve("a1").unwrap();
     let prepared = os
         .prepare_run(
             RunRequest {
@@ -1653,7 +1585,7 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
                 state: Some(json!({"count": 1})),
                 messages: vec![crate::contracts::thread::Message::user("hello")],
             },
-            RunScope::default(),
+            resolved,
         )
         .await
         .unwrap();
@@ -1707,13 +1639,15 @@ async fn execute_prepared_runs_stream() {
         .with_agent_state_store(
             storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
         )
+        .with_registered_plugin("skip", Arc::new(SkipPlugin))
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
+            AgentDefinition::new("gpt-4o-mini").with_plugin_id("skip"),
         )
         .build()
         .unwrap();
 
+    let resolved = os.resolve("a1").unwrap();
     let prepared = os
         .prepare_run(
             RunRequest {
@@ -1725,7 +1659,7 @@ async fn execute_prepared_runs_stream() {
                 state: None,
                 messages: vec![crate::contracts::thread::Message::user("hello")],
             },
-            RunScope::default(),
+            resolved,
         )
         .await
         .unwrap();
@@ -1755,9 +1689,10 @@ async fn run_stream_checkpoint_append_failure_keeps_persisted_prefix_consistent(
         .with_agent_state_store(
             storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
         )
+        .with_registered_plugin("skip_with_run_end_patch", Arc::new(SkipWithRunEndPatchPlugin))
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipWithRunEndPatchPlugin)),
+            AgentDefinition::new("gpt-4o-mini").with_plugin_id("skip_with_run_end_patch"),
         )
         .build()
         .unwrap();
@@ -1838,9 +1773,10 @@ async fn run_stream_checkpoint_failure_on_existing_thread_keeps_storage_unchange
         .with_agent_state_store(
             storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
         )
+        .with_registered_plugin("skip_with_run_end_patch", Arc::new(SkipWithRunEndPatchPlugin))
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipWithRunEndPatchPlugin)),
+            AgentDefinition::new("gpt-4o-mini").with_plugin_id("skip_with_run_end_patch"),
         )
         .build()
         .unwrap();
@@ -1928,8 +1864,6 @@ async fn load_agent_state_without_store_returns_not_configured() {
 
 #[tokio::test]
 async fn prepare_run_scope_tool_registry_adds_new_tool() {
-    use crate::runtime::loop_runner::StepToolInput;
-
     struct FrontendTool;
     #[async_trait::async_trait]
     impl Tool for FrontendTool {
@@ -1955,7 +1889,8 @@ async fn prepare_run_scope_tool_registry_adds_new_tool() {
 
     let mut registry = InMemoryToolRegistry::new();
     registry.register(Arc::new(FrontendTool)).unwrap();
-    let scope = RunScope::new().with_tool_registry(Arc::new(registry) as Arc<dyn ToolRegistry>);
+    let mut resolved = os.resolve("a1").unwrap();
+    resolved.overlay_tool_registry(&registry);
 
     let prepared = os
         .prepare_run(
@@ -1968,27 +1903,18 @@ async fn prepare_run_scope_tool_registry_adds_new_tool() {
                 state: None,
                 messages: vec![Message::user("hello")],
             },
-            scope,
+            resolved,
         )
         .await
         .unwrap();
 
-    let provider = prepared.config.step_tool_provider.as_ref().unwrap();
-    let snapshot = provider
-        .provide(StepToolInput {
-            state: &prepared.run_ctx,
-        })
-        .await
-        .unwrap();
-    assert!(snapshot.tools.contains_key("frontend_action"));
+    assert!(prepared.tools.contains_key("frontend_action"));
     // Backend tools (agent_run, agent_stop) should also be present
-    assert!(snapshot.tools.contains_key("agent_run"));
+    assert!(prepared.tools.contains_key("agent_run"));
 }
 
 #[tokio::test]
 async fn prepare_run_scope_tool_registry_skips_shadowed() {
-    use crate::runtime::loop_runner::StepToolInput;
-
     struct ShadowTool;
     #[async_trait::async_trait]
     impl Tool for ShadowTool {
@@ -2014,7 +1940,8 @@ async fn prepare_run_scope_tool_registry_skips_shadowed() {
 
     let mut registry = InMemoryToolRegistry::new();
     registry.register(Arc::new(ShadowTool)).unwrap();
-    let scope = RunScope::new().with_tool_registry(Arc::new(registry) as Arc<dyn ToolRegistry>);
+    let mut resolved = os.resolve("a1").unwrap();
+    resolved.overlay_tool_registry(&registry);
 
     let prepared = os
         .prepare_run(
@@ -2027,26 +1954,15 @@ async fn prepare_run_scope_tool_registry_skips_shadowed() {
                 state: None,
                 messages: vec![Message::user("hello")],
             },
-            scope,
+            resolved,
         )
         .await
         .unwrap();
 
-    let provider = prepared.config.step_tool_provider.as_ref().unwrap();
-    let snapshot = provider
-        .provide(StepToolInput {
-            state: &prepared.run_ctx,
-        })
-        .await
-        .unwrap();
-    // Backend agent_run wins — frontend shadow is skipped
-    assert!(snapshot.tools.contains_key("agent_run"));
-    let desc = snapshot
-        .descriptors
-        .iter()
-        .find(|d| d.id == "agent_run")
-        .unwrap();
-    assert_ne!(desc.description, "frontend stub");
+    // Backend agent_run wins — frontend shadow is skipped (overlay uses insert-if-absent)
+    assert!(prepared.tools.contains_key("agent_run"));
+    let tool = prepared.tools.get("agent_run").unwrap();
+    assert_ne!(tool.descriptor().description, "frontend stub");
 }
 
 #[tokio::test]
@@ -2075,7 +1991,7 @@ async fn prepare_run_scope_appends_plugins() {
         .build()
         .unwrap();
 
-    let scope = RunScope::new().with_plugin(Arc::new(RunScopedPlugin));
+    let resolved = os.resolve("a1").unwrap().with_plugin(Arc::new(RunScopedPlugin));
 
     let prepared = os
         .prepare_run(
@@ -2088,7 +2004,7 @@ async fn prepare_run_scope_appends_plugins() {
                 state: None,
                 messages: vec![Message::user("hello")],
             },
-            scope,
+            resolved,
         )
         .await
         .unwrap();
@@ -2124,7 +2040,7 @@ async fn prepare_run_scope_rejects_duplicate_plugin_id() {
         .build()
         .unwrap();
 
-    let scope = RunScope::new().with_plugin(Arc::new(DupPlugin));
+    let resolved = os.resolve("a1").unwrap().with_plugin(Arc::new(DupPlugin));
 
     let result = os
         .prepare_run(
@@ -2137,7 +2053,7 @@ async fn prepare_run_scope_rejects_duplicate_plugin_id() {
                 state: None,
                 messages: vec![Message::user("hello")],
             },
-            scope,
+            resolved,
         )
         .await;
     let err = result.err().expect("duplicate plugin id should error");
@@ -2203,4 +2119,103 @@ fn builder_fails_fast_on_bundle_registry_conflict() {
             id,
         }) if bundle_id == "tool_conflict_bundle" && id == "dup_tool"
     ));
+}
+
+// ── StopPolicyRegistry build-time validation tests ────────────────────────
+
+#[test]
+fn build_errors_if_agent_references_missing_stop_condition() {
+    let err = AgentOs::builder()
+        .with_agent(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini").with_stop_condition_id("missing_sc"),
+        )
+        .build()
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        AgentOsBuildError::AgentStopConditionNotFound { ref agent_id, ref stop_condition_id }
+        if agent_id == "a1" && stop_condition_id == "missing_sc"
+    ));
+}
+
+#[test]
+fn build_errors_on_duplicate_stop_condition_ref_in_builder_agent() {
+    use crate::contracts::runtime::StopPolicyInput;
+    use crate::contracts::StopReason;
+
+    #[derive(Debug)]
+    struct MockStop;
+
+    impl crate::contracts::runtime::StopPolicy for MockStop {
+        fn id(&self) -> &str {
+            "mock_stop"
+        }
+        fn evaluate(&self, _input: &StopPolicyInput<'_>) -> Option<StopReason> {
+            None
+        }
+    }
+
+    let err = AgentOs::builder()
+        .with_stop_policy("sc1", Arc::new(MockStop))
+        .with_agent(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini")
+                .with_stop_condition_id("sc1")
+                .with_stop_condition_id("sc1"),
+        )
+        .build()
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        AgentOsBuildError::AgentDuplicateStopConditionRef { ref agent_id, ref stop_condition_id }
+        if agent_id == "a1" && stop_condition_id == "sc1"
+    ));
+}
+
+#[test]
+fn build_errors_on_empty_stop_condition_ref_in_builder_agent() {
+    let err = AgentOs::builder()
+        .with_agent(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini").with_stop_condition_id(""),
+        )
+        .build()
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        AgentOsBuildError::AgentEmptyStopConditionRef { ref agent_id }
+        if agent_id == "a1"
+    ));
+}
+
+#[tokio::test]
+async fn resolve_wires_stop_conditions_from_registry() {
+    use crate::contracts::runtime::StopPolicyInput;
+    use crate::contracts::StopReason;
+
+    #[derive(Debug)]
+    struct TestStopPolicy;
+
+    impl crate::contracts::runtime::StopPolicy for TestStopPolicy {
+        fn id(&self) -> &str {
+            "test_stop"
+        }
+        fn evaluate(&self, _input: &StopPolicyInput<'_>) -> Option<StopReason> {
+            None
+        }
+    }
+
+    let os = AgentOs::builder()
+        .with_stop_policy("sc1", Arc::new(TestStopPolicy))
+        .with_agent(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini").with_stop_condition_id("sc1"),
+        )
+        .build()
+        .unwrap();
+
+    let resolved = os.resolve("a1").unwrap();
+    assert_eq!(resolved.config.stop_conditions.len(), 1);
+    assert_eq!(resolved.config.stop_conditions[0].id(), "test_stop");
 }

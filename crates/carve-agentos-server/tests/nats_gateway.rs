@@ -46,11 +46,12 @@ impl AgentPlugin for SkipInferencePlugin {
 fn make_os(storage: Arc<dyn AgentStateStore>) -> carve_agentos::orchestrator::AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
-        plugins: vec![Arc::new(SkipInferencePlugin)],
+        plugin_ids: vec!["skip_inference_test".into()],
         ..Default::default()
     };
 
     AgentOsBuilder::new()
+        .with_registered_plugin("skip_inference_test", Arc::new(SkipInferencePlugin))
         .with_agent("test", def)
         .with_agent_state_store(storage)
         .build()

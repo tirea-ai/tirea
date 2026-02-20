@@ -1,5 +1,6 @@
 mod bundle;
 mod registry;
+mod stop_policy_registry;
 
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::tool::Tool;
@@ -18,6 +19,10 @@ pub use registry::{
     CompositeAgentRegistry, CompositeModelRegistry, CompositePluginRegistry,
     CompositeProviderRegistry, CompositeToolRegistry, InMemoryAgentRegistry, InMemoryModelRegistry,
     InMemoryPluginRegistry, InMemoryProviderRegistry, InMemoryToolRegistry,
+};
+pub use stop_policy_registry::{
+    CompositeStopPolicyRegistry, InMemoryStopPolicyRegistry, StopPolicyRegistry,
+    StopPolicyRegistryError,
 };
 
 #[derive(Debug, thiserror::Error)]

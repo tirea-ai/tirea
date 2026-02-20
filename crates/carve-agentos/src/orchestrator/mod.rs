@@ -44,15 +44,52 @@ use agent_tools::{
 pub use composition::{
     AgentRegistry, AgentRegistryError, BundleComposeError, BundleComposer,
     BundleRegistryAccumulator, BundleRegistryKind, CompositeAgentRegistry, CompositeModelRegistry,
-    CompositePluginRegistry, CompositeProviderRegistry, CompositeToolRegistry,
-    InMemoryAgentRegistry, InMemoryModelRegistry, InMemoryPluginRegistry, InMemoryProviderRegistry,
-    InMemoryToolRegistry, ModelDefinition, ModelRegistry, ModelRegistryError, PluginRegistry,
-    PluginRegistryError, ProviderRegistry, ProviderRegistryError, RegistryBundle, RegistrySet,
-    ToolPluginBundle, ToolRegistry, ToolRegistryError,
+    CompositePluginRegistry, CompositeProviderRegistry, CompositeStopPolicyRegistry,
+    CompositeToolRegistry, InMemoryAgentRegistry, InMemoryModelRegistry, InMemoryPluginRegistry,
+    InMemoryProviderRegistry, InMemoryStopPolicyRegistry, InMemoryToolRegistry, ModelDefinition,
+    ModelRegistry, ModelRegistryError, PluginRegistry, PluginRegistryError, ProviderRegistry,
+    ProviderRegistryError, RegistryBundle, RegistrySet, StopPolicyRegistry,
+    StopPolicyRegistryError, ToolPluginBundle, ToolRegistry, ToolRegistryError,
 };
 
-type ResolvedAgentWiring = (AgentConfig, HashMap<String, Arc<dyn Tool>>, Thread, crate::contracts::RunConfig);
+/// Fully resolved agent wiring ready for execution.
+///
+/// Contains everything needed to run an agent loop: the loop configuration,
+/// the resolved tool map, and the runtime config. This is a pure data struct
+/// that can be inspected, mutated, and tested independently.
+///
+/// Produced by [`AgentOs::resolve`] and consumed by [`AgentOs::prepare_run`].
+pub struct ResolvedRun {
+    /// Loop configuration (model, plugins, stop conditions, ...).
+    pub config: AgentConfig,
+    /// Resolved tool map after filtering and wiring.
+    pub tools: HashMap<String, Arc<dyn Tool>>,
+    /// Runtime configuration (user_id, run_id, ...).
+    pub run_config: crate::contracts::RunConfig,
+}
 
+impl ResolvedRun {
+    /// Add or replace a tool in the resolved tool map.
+    #[must_use]
+    pub fn with_tool(mut self, id: String, tool: Arc<dyn Tool>) -> Self {
+        self.tools.insert(id, tool);
+        self
+    }
+
+    /// Add a plugin to the resolved config.
+    #[must_use]
+    pub fn with_plugin(mut self, plugin: Arc<dyn AgentPlugin>) -> Self {
+        self.config.plugins.push(plugin);
+        self
+    }
+
+    /// Overlay tools from a tool registry (insert-if-absent semantics).
+    pub fn overlay_tool_registry(&mut self, registry: &dyn ToolRegistry) {
+        for (id, tool) in registry.snapshot() {
+            self.tools.entry(id).or_insert(tool);
+        }
+    }
+}
 
 
 #[derive(Clone)]
@@ -131,6 +168,9 @@ pub enum AgentOsWiringError {
     #[error("plugin not found: {0}")]
     PluginNotFound(String),
 
+    #[error("stop condition not found: {0}")]
+    StopConditionNotFound(String),
+
     #[error("plugin id already installed: {0}")]
     PluginAlreadyInstalled(String),
 
@@ -195,6 +235,9 @@ pub enum AgentOsBuildError {
     #[error(transparent)]
     SkillRegistryManager(#[from] SkillRegistryManagerError),
 
+    #[error(transparent)]
+    StopPolicies(#[from] StopPolicyRegistryError),
+
     #[error("agent {agent_id} references an empty plugin id")]
     AgentEmptyPluginRef { agent_id: String },
 
@@ -206,6 +249,21 @@ pub enum AgentOsBuildError {
 
     #[error("agent {agent_id} has duplicate plugin reference: {plugin_id}")]
     AgentDuplicatePluginRef { agent_id: String, plugin_id: String },
+
+    #[error("agent {agent_id} references an empty stop condition id")]
+    AgentEmptyStopConditionRef { agent_id: String },
+
+    #[error("agent {agent_id} references unknown stop condition id: {stop_condition_id}")]
+    AgentStopConditionNotFound {
+        agent_id: String,
+        stop_condition_id: String,
+    },
+
+    #[error("agent {agent_id} has duplicate stop condition reference: {stop_condition_id}")]
+    AgentDuplicateStopConditionRef {
+        agent_id: String,
+        stop_condition_id: String,
+    },
 
     #[error("models configured but no ProviderRegistry configured")]
     ProvidersNotConfigured,
@@ -253,44 +311,6 @@ pub enum AgentOsRunError {
     AgentStateStoreNotConfigured,
 }
 
-/// Per-run extensions that participate in the resolve/wiring process.
-///
-/// These are composited into the agent's registries at resolve time,
-/// not patched on after assembly.
-#[derive(Clone, Default)]
-pub struct RunScope {
-    /// Additional plugins appended after agent-default plugins.
-    pub plugins: Vec<Arc<dyn AgentPlugin>>,
-    /// Additional tool registries composited after base tools + system bundles,
-    /// but outside `allowed_tools`/`excluded_tools` filtering (overlay semantics).
-    pub tool_registries: Vec<Arc<dyn ToolRegistry>>,
-}
-
-impl RunScope {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn with_plugin(mut self, plugin: Arc<dyn AgentPlugin>) -> Self {
-        self.plugins.push(plugin);
-        self
-    }
-
-    pub fn with_plugins(mut self, plugins: Vec<Arc<dyn AgentPlugin>>) -> Self {
-        self.plugins.extend(plugins);
-        self
-    }
-
-    pub fn with_tool_registry(mut self, registry: Arc<dyn ToolRegistry>) -> Self {
-        self.tool_registries.push(registry);
-        self
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.plugins.is_empty() && self.tool_registries.is_empty()
-    }
-}
-
 /// Result of [`AgentOs::run_stream`]: an event stream plus metadata.
 ///
 /// Checkpoint persistence is handled internally in stream order — callers only
@@ -317,6 +337,7 @@ pub struct PreparedRun {
     /// Resolved run ID (may have been auto-generated).
     pub run_id: String,
     config: AgentConfig,
+    tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
@@ -342,6 +363,7 @@ pub struct AgentOs {
     plugins: Arc<dyn PluginRegistry>,
     providers: Arc<dyn ProviderRegistry>,
     models: Arc<dyn ModelRegistry>,
+    stop_policies: Arc<dyn StopPolicyRegistry>,
     skills_registry: Option<Arc<dyn SkillRegistry>>,
     skills_config: SkillsConfig,
     agent_runs: Arc<AgentRunManager>,
@@ -359,6 +381,8 @@ pub struct AgentOsBuilder {
     base_tool_registries: Vec<Arc<dyn ToolRegistry>>,
     plugins: HashMap<String, Arc<dyn AgentPlugin>>,
     plugin_registries: Vec<Arc<dyn PluginRegistry>>,
+    stop_policies: HashMap<String, Arc<dyn crate::contracts::runtime::StopPolicy>>,
+    stop_policy_registries: Vec<Arc<dyn StopPolicyRegistry>>,
     providers: HashMap<String, Client>,
     provider_registries: Vec<Arc<dyn ProviderRegistry>>,
     models: HashMap<String, ModelDefinition>,

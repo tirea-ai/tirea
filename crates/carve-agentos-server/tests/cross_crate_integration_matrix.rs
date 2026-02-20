@@ -33,11 +33,12 @@ impl AgentPlugin for SkipInferencePlugin {
 fn make_os(store: Arc<MemoryStore>) -> AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
-        plugins: vec![Arc::new(SkipInferencePlugin)],
+        plugin_ids: vec!["skip_inference_cross_crate_matrix".into()],
         ..Default::default()
     };
 
     AgentOsBuilder::new()
+        .with_registered_plugin("skip_inference_cross_crate_matrix", Arc::new(SkipInferencePlugin))
         .with_agent("test", def)
         .with_agent_state_store(store)
         .build()
