@@ -151,13 +151,29 @@ impl AgentPlugin for PermissionPlugin {
         // If this call_id was approved, consume the entry and allow execution.
         let call_id = step.tool_call_id().unwrap_or_default().to_string();
         if !call_id.is_empty() {
-            let state = step.ctx().state_of::<PermissionState>();
-            if let Ok(approved) = state.approved_calls() {
-                if approved.get(&call_id) == Some(&true) {
-                    // Consume: mark as used so it can't be reused.
-                    state.approved_calls_insert(call_id, false);
-                    return; // Allow this specific call
-                }
+            let is_approved = {
+                let state = step.ctx().state_of::<PermissionState>();
+                state
+                    .approved_calls()
+                    .ok()
+                    .and_then(|m| m.get(&call_id).copied())
+                    == Some(true)
+            };
+            if is_approved {
+                // Consume: delete the entry so it can't be reused and
+                // doesn't accumulate garbage in state.
+                step.pending_patches.push(
+                    tirea_state::TrackedPatch::new(
+                        tirea_state::Patch::new().with_op(Op::delete(
+                            Path::root()
+                                .key("permissions")
+                                .key("approved_calls")
+                                .key(&call_id),
+                        )),
+                    )
+                    .with_source("permission"),
+                );
+                return; // Allow this specific call
             }
         }
 
@@ -785,8 +801,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_consumed_approval_not_reusable() {
-        // After consuming an approval (set to false), the same call_id should
-        // not be allowed again.
+        // After consuming an approval (key deleted from state), the same call_id
+        // should not be allowed again if it somehow reappears as false.
         let fixture = TestFixture::new_with_state(json!({
             "permissions": {
                 "default_behavior": "ask",
@@ -802,6 +818,32 @@ mod tests {
         let plugin = PermissionPlugin;
         plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-        assert!(step.tool_pending(), "consumed (false) approval should not bypass permission check");
+        assert!(step.tool_pending(), "non-true approval value should not bypass permission check");
+    }
+
+    #[tokio::test]
+    async fn test_permission_approval_cleanup_emits_delete_patch() {
+        // When a one-shot approval is consumed, the plugin should emit a
+        // delete patch to clean up the entry from state.
+        let fixture = TestFixture::new_with_state(json!({
+            "permissions": {
+                "default_behavior": "ask",
+                "tools": {},
+                "approved_calls": { "call_1": true }
+            }
+        }));
+
+        let mut step = fixture.step(vec![]);
+        let call = ToolCall::new("call_1", "test_tool", json!({}));
+        step.tool = Some(ToolContext::new(&call));
+
+        let plugin = PermissionPlugin;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+
+        assert!(!step.tool_pending(), "approved call should be allowed");
+        assert!(
+            !step.pending_patches.is_empty(),
+            "consuming approval should emit a delete patch"
+        );
     }
 }
