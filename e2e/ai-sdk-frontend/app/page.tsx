@@ -64,19 +64,31 @@ export default function Chat() {
     );
   }
 
-  return <ChatUI sessionId={sessionId} initialMessages={initialMessages} />;
+  // Read agentId from URL query parameter.
+  const agentId =
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("agentId") ?? undefined
+      : undefined;
+
+  return <ChatUI sessionId={sessionId} initialMessages={initialMessages} agentId={agentId} />;
 }
 
 function ChatUI({
   sessionId,
   initialMessages,
+  agentId,
 }: {
   sessionId: string;
   initialMessages?: UIMessage[];
+  agentId?: string;
 }) {
   const transport = useMemo(
-    () => new DefaultChatTransport({ headers: { "x-session-id": sessionId } }),
-    [sessionId],
+    () =>
+      new DefaultChatTransport({
+        headers: { "x-session-id": sessionId },
+        ...(agentId ? { body: { agentId } } : {}),
+      }),
+    [sessionId, agentId],
   );
   const [metrics, setMetrics] = useState<InferenceMetrics[]>([]);
 

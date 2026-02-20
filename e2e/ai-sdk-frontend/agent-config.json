@@ -4,7 +4,16 @@
       "id": "default",
       "model": "deepseek-chat",
       "system_prompt": "You are a helpful assistant. Keep answers brief. When asked to trigger an error, use the failingTool. When asked for server info, use the serverInfo tool.",
-      "max_rounds": 1
+      "max_rounds": 3
+    },
+    {
+      "id": "stopper",
+      "model": "deepseek-chat",
+      "system_prompt": "You are a helpful assistant. Keep answers brief. After answering the user's question, always call the finish tool with a brief summary of what you told them.",
+      "max_rounds": 10,
+      "stop_condition_specs": [
+        { "type": "stop_on_tool", "tool_name": "finish" }
+      ]
     }
   ]
 }

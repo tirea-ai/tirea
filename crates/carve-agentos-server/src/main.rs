@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use carve_agent_contract::StopConditionSpec;
 use carve_agent_contract::tool::context::ToolCallContext;
 use carve_agent_contract::tool::contract::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent_extension_permission::PermissionPlugin;
@@ -50,6 +51,8 @@ struct AgentConfigFile {
     parallel_tools: Option<bool>,
     #[serde(default)]
     plugin_ids: Vec<String>,
+    #[serde(default)]
+    stop_condition_specs: Vec<StopConditionSpec>,
 }
 
 /// Simple backend tool that returns server information.
@@ -113,6 +116,44 @@ impl Tool for FailingTool {
     }
 }
 
+/// Simple tool that signals the agent run should finish.
+///
+/// Used with `StopOnTool` stop condition to test early termination.
+struct FinishTool;
+
+#[async_trait]
+impl Tool for FinishTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new(
+            "finish",
+            "Finish",
+            "Call this tool to signal that you are done. Pass a brief summary.",
+        )
+        .with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "A brief summary of what was accomplished"
+                }
+            },
+            "required": ["summary"],
+            "additionalProperties": false
+        }))
+    }
+
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+        let summary = args
+            .get("summary")
+            .and_then(|v| v.as_str())
+            .unwrap_or("done");
+        Ok(ToolResult::success("finish", json!({
+            "status": "done",
+            "summary": summary
+        })))
+    }
+}
+
 fn build_os(
     cfg: Option<Config>,
     tensorzero_url: Option<String>,
@@ -125,6 +166,7 @@ fn build_os(
             let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
             tools.insert("serverInfo".to_string(), Arc::new(ServerInfoTool));
             tools.insert("failingTool".to_string(), Arc::new(FailingTool));
+            tools.insert("finish".to_string(), Arc::new(FinishTool));
             tools
         });
 
@@ -137,6 +179,7 @@ fn build_os(
             max_rounds: None,
             parallel_tools: None,
             plugin_ids: Vec::new(),
+            stop_condition_specs: Vec::new(),
         }],
     };
 
@@ -175,6 +218,7 @@ fn build_os(
             def.parallel_tools = parallel;
         }
         def.plugin_ids = a.plugin_ids;
+        def.stop_condition_specs = a.stop_condition_specs;
 
         // Map each agent's model through TensorZero when configured.
         if tensorzero_url.is_some() {

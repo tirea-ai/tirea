@@ -4,7 +4,8 @@ const AGENT_ID = process.env.AGENT_ID ?? "default";
 
 export async function POST(req: Request) {
   const body = await req.json();
-  const { messages } = body;
+  const { messages, agentId } = body;
+  const agent = agentId || AGENT_ID;
 
   // Session ID from client header (stable across reloads via localStorage).
   const sessionId =
@@ -34,7 +35,7 @@ export async function POST(req: Request) {
   }
 
   const upstream = await fetch(
-    `${BACKEND_URL}/v1/ai-sdk/agents/${AGENT_ID}/runs`,
+    `${BACKEND_URL}/v1/ai-sdk/agents/${agent}/runs`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },

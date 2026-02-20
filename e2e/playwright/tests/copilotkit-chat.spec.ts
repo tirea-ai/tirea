@@ -130,6 +130,48 @@ test.describe("CopilotKit Chat", () => {
     await expect(taskList).not.toContainText("Write tests", { timeout: 5_000 });
   });
 
+  // --- Multi-round tool chain tests ---
+
+  test("multi-round tool chain: add task and count", async ({ page }) => {
+    await sendChatMessage(
+      page,
+      'Add a task called "Deploy staging" and then tell me how many tasks there are in total.',
+    );
+
+    // Wait for the action log to reflect the add.
+    const actionLog = page.getByTestId("action-log");
+    await expect(actionLog).toContainText("Added:", { timeout: 45_000 });
+
+    // Agent should mention "3" (original 2 + new 1).
+    const msg = assistantMessage(page);
+    await expect(msg).toBeVisible({ timeout: 45_000 });
+    await expect(msg).toContainText("3", { timeout: 15_000 });
+  });
+
+  test("consecutive multi-tool calls: add and toggle", async ({ page }) => {
+    await sendChatMessage(
+      page,
+      'Add a task "Run benchmarks" and mark "Review PR" as completed.',
+    );
+
+    // Wait for both actions to appear in the log.
+    const actionLog = page.getByTestId("action-log");
+    await expect(actionLog).toContainText("Added:", { timeout: 45_000 });
+    await expect(actionLog).toContainText("Toggled:", { timeout: 45_000 });
+
+    // Verify the new task is in the list.
+    const taskList = page.getByTestId("task-list");
+    await expect(taskList).toContainText("Run benchmarks", { timeout: 5_000 });
+
+    // Verify "Review PR" is marked as completed.
+    const taskSpan = page.locator(
+      '[data-testid="task-list"] span:has-text("Review PR")',
+    );
+    await expect(taskSpan).toHaveAttribute("data-completed", "true", {
+      timeout: 5_000,
+    });
+  });
+
   // --- HITL (Human-in-the-Loop) tests for deleteTask ---
 
   test("HITL: approval dialog appears for deleteTask", async ({ page }) => {

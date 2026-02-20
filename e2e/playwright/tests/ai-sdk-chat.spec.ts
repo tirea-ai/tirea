@@ -181,6 +181,71 @@ test.describe("AI SDK Chat", () => {
     await expect(chatArea).toContainText(/fail|error/i, { timeout: 15_000 });
   });
 
+  test("multi-round tool execution with tool display", async ({ page }) => {
+    await page.goto("/");
+
+    await expect(page.locator("h1")).toHaveText("Uncarve Chat", {
+      timeout: 15_000,
+    });
+
+    const input = page.getByPlaceholder("Type a message...");
+    await input.fill("Use the serverInfo tool and tell me the server name.");
+    await page.getByRole("button", { name: "Send" }).click();
+
+    // Wait for the agent response (multi-round: LLM → tool → LLM).
+    const agentMsg = page.locator("strong", { hasText: "Agent:" }).first();
+    await expect(agentMsg).toBeVisible({ timeout: 60_000 });
+
+    // Wait for streaming to finish.
+    const sendButton = page.getByRole("button", { name: "Send" });
+    await expect(sendButton).toBeEnabled({ timeout: 30_000 });
+
+    const chatArea = page.locator("main");
+
+    // Tool display: the frontend should render the tool call UI.
+    await expect(chatArea).toContainText("Tool: serverInfo", {
+      timeout: 10_000,
+    });
+
+    // Tool output should contain the server name.
+    await expect(chatArea).toContainText("carve-agentos", {
+      timeout: 10_000,
+    });
+  });
+
+  test("StopOnTool terminates agent run", async ({ page }) => {
+    await page.goto("/?agentId=stopper");
+
+    await expect(page.locator("h1")).toHaveText("Uncarve Chat", {
+      timeout: 15_000,
+    });
+
+    const input = page.getByPlaceholder("Type a message...");
+    await input.fill("What is 2+2?");
+    await page.getByRole("button", { name: "Send" }).click();
+
+    // Wait for agent response.
+    const agentMsg = page.locator("strong", { hasText: "Agent:" }).first();
+    await expect(agentMsg).toBeVisible({ timeout: 60_000 });
+
+    // Wait for streaming to finish.
+    const sendButton = page.getByRole("button", { name: "Send" });
+    await expect(sendButton).toBeEnabled({ timeout: 30_000 });
+
+    const chatArea = page.locator("main");
+
+    // Agent should answer with "4".
+    await expect(chatArea).toContainText("4", { timeout: 10_000 });
+
+    // The finish tool should have been called (tool display rendered).
+    await expect(chatArea).toContainText("Tool: finish", {
+      timeout: 10_000,
+    });
+
+    // Run terminated — send button is enabled again.
+    await expect(sendButton).toBeEnabled();
+  });
+
   test("send button is disabled while loading", async ({ page }) => {
     await page.goto("/");
 
