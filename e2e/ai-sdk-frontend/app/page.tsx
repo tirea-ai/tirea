@@ -2,7 +2,17 @@
 
 import { useChat, type UIMessage } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { useState, useEffect, useRef, useMemo, FormEvent } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, FormEvent } from "react";
+
+interface InferenceMetrics {
+  model: string;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
+  duration_ms: number;
+}
 
 function getSessionId(): string {
   if (typeof window === "undefined") return "";
@@ -68,9 +78,18 @@ function ChatUI({
     () => new DefaultChatTransport({ headers: { "x-session-id": sessionId } }),
     [sessionId],
   );
+  const [metrics, setMetrics] = useState<InferenceMetrics[]>([]);
+
+  const onData = useCallback((dataPart: { type: string; data: unknown }) => {
+    if (dataPart.type === "data-inference-complete") {
+      setMetrics((prev) => [...prev, dataPart.data as InferenceMetrics]);
+    }
+  }, []);
+
   const { messages, sendMessage, status, error } = useChat({
     messages: initialMessages,
     transport,
+    onData: onData as never,
   });
   const [input, setInput] = useState("");
 
@@ -159,6 +178,32 @@ function ChatUI({
       {error && (
         <div style={{ color: "red", marginBottom: "0.5rem" }}>
           Error: {error.message}
+        </div>
+      )}
+
+      {metrics.length > 0 && (
+        <div
+          data-testid="metrics-panel"
+          style={{
+            marginBottom: "1rem",
+            padding: "0.5rem",
+            background: "#f0f4ff",
+            borderRadius: 4,
+            fontSize: "0.85em",
+          }}
+        >
+          <strong>Token Usage</strong>
+          {metrics.map((m, i) => {
+            const totalTokens =
+              m.usage?.total_tokens ??
+              ((m.usage?.prompt_tokens ?? 0) + (m.usage?.completion_tokens ?? 0));
+            return (
+              <div key={i} data-testid="metrics-entry" style={{ marginTop: "0.25rem" }}>
+                {m.model}: {totalTokens > 0 ? `${totalTokens} tokens` : "no usage data"}{" "}
+                ({m.duration_ms}ms)
+              </div>
+            );
+          })}
         </div>
       )}
 

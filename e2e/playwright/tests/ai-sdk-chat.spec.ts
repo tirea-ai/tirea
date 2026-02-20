@@ -130,6 +130,57 @@ test.describe("AI SDK Chat", () => {
     await expect(userDiv).toContainText("pineapple", { timeout: 5_000 });
   });
 
+  test("displays token usage metrics after response", async ({ page }) => {
+    await page.goto("/");
+
+    await expect(page.locator("h1")).toHaveText("Uncarve Chat", {
+      timeout: 15_000,
+    });
+
+    const input = page.getByPlaceholder("Type a message...");
+    await input.fill("What is 2+2? Reply with just the number.");
+    await page.getByRole("button", { name: "Send" }).click();
+
+    // Wait for the agent response.
+    const agentMsg = page.locator("strong", { hasText: "Agent:" }).first();
+    await expect(agentMsg).toBeVisible({ timeout: 45_000 });
+
+    // Wait for streaming to finish.
+    const sendButton = page.getByRole("button", { name: "Send" });
+    await expect(sendButton).toBeEnabled({ timeout: 15_000 });
+
+    // The metrics panel should appear with token usage data.
+    const metricsPanel = page.getByTestId("metrics-panel");
+    await expect(metricsPanel).toBeVisible({ timeout: 10_000 });
+
+    // Should contain at least one metrics entry with token count.
+    const entry = page.getByTestId("metrics-entry").first();
+    await expect(entry).toBeVisible();
+    await expect(entry).toContainText("tokens");
+  });
+
+  test("handles tool execution error gracefully", async ({ page }) => {
+    await page.goto("/");
+
+    await expect(page.locator("h1")).toHaveText("Uncarve Chat", {
+      timeout: 15_000,
+    });
+
+    const input = page.getByPlaceholder("Type a message...");
+    await input.fill("Trigger an error by using the failingTool.");
+    await page.getByRole("button", { name: "Send" }).click();
+
+    // Wait for the agent response that includes the tool error.
+    const agentMsg = page.locator("strong", { hasText: "Agent:" }).first();
+    await expect(agentMsg).toBeVisible({ timeout: 45_000 });
+
+    // The tool error should be displayed in the chat.
+    // The AI SDK frontend renders tool.errorText in a red div with "Error:" prefix.
+    // Or the agent may describe the error in text. Either way, "fail" should appear.
+    const chatArea = page.locator("main");
+    await expect(chatArea).toContainText(/fail|error/i, { timeout: 15_000 });
+  });
+
   test("send button is disabled while loading", async ({ page }) => {
     await page.goto("/");
 

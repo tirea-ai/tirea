@@ -81,6 +81,38 @@ impl Tool for ServerInfoTool {
     }
 }
 
+/// Backend tool that always fails with an error.
+///
+/// Used in E2E tests to verify error rendering in the frontend.
+struct FailingTool;
+
+#[async_trait]
+impl Tool for FailingTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new(
+            "failingTool",
+            "Failing Tool",
+            "A tool that always fails. Use this to test error handling.",
+        )
+        .with_parameters(json!({
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+        }))
+    }
+
+    async fn execute(
+        &self,
+        _args: Value,
+        _ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
+        Err(ToolError::ExecutionFailed(
+            "This tool always fails for testing purposes".to_string(),
+        ))
+    }
+}
+
 fn build_os(
     cfg: Option<Config>,
     tensorzero_url: Option<String>,
@@ -92,6 +124,7 @@ fn build_os(
         .with_tools({
             let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
             tools.insert("serverInfo".to_string(), Arc::new(ServerInfoTool));
+            tools.insert("failingTool".to_string(), Arc::new(FailingTool));
             tools
         });
 

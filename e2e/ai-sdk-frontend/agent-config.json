@@ -3,7 +3,7 @@
     {
       "id": "default",
       "model": "deepseek-chat",
-      "system_prompt": "You are a helpful assistant. Keep answers brief.",
+      "system_prompt": "You are a helpful assistant. Keep answers brief. When asked to trigger an error, use the failingTool. When asked for server info, use the serverInfo tool.",
       "max_rounds": 1
     }
   ]

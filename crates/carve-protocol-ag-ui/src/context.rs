@@ -36,6 +36,11 @@ pub struct AGUIContext {
     /// Used to avoid emitting duplicate TOOL_CALL events when InteractionRequested
     /// arrives for a tool call that was already streamed by the LLM.
     emitted_tool_call_ids: HashSet<String>,
+    /// Tool call IDs that have received at least one ToolCallDelta (args chunk).
+    /// Used to avoid double-emitting TOOL_CALL_ARGS: when ToolCallReady arrives
+    /// for a tool call that never received deltas (e.g. frontend tool invocations),
+    /// we emit the full arguments as a single TOOL_CALL_ARGS event.
+    tool_ids_with_deltas: HashSet<String>,
 }
 
 impl AGUIContext {
@@ -54,6 +59,7 @@ impl AGUIContext {
             stopped: false,
             last_state: None,
             emitted_tool_call_ids: HashSet::new(),
+            tool_ids_with_deltas: HashSet::new(),
         }
     }
 
@@ -236,10 +242,22 @@ impl AGUIContext {
                 events
             }
             AgentEvent::ToolCallDelta { id, args_delta } => {
+                self.tool_ids_with_deltas.insert(id.clone());
                 vec![AGUIEvent::tool_call_args(id, args_delta)]
             }
-            AgentEvent::ToolCallReady { id, .. } => {
-                vec![AGUIEvent::tool_call_end(id)]
+            AgentEvent::ToolCallReady { id, arguments, .. } => {
+                let mut events = Vec::new();
+                // For frontend tool invocations (and any tool call that skipped
+                // the streaming ToolCallDelta path), emit the full arguments as
+                // a single TOOL_CALL_ARGS event before TOOL_CALL_END.
+                if !self.tool_ids_with_deltas.contains(id.as_str()) {
+                    let args_str = arguments.to_string();
+                    if args_str != "{}" && args_str != "null" {
+                        events.push(AGUIEvent::tool_call_args(id.clone(), args_str));
+                    }
+                }
+                events.push(AGUIEvent::tool_call_end(id));
+                events
             }
             AgentEvent::ToolCallDone {
                 id,
