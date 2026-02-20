@@ -174,6 +174,65 @@ test.describe("CopilotKit Chat", () => {
     await expect(actionLog).not.toContainText("Deleted:");
   });
 
+  // --- Permission plugin tests for backend tool (serverInfo) ---
+
+  test("permission approval allows backend tool execution", async ({
+    page,
+  }) => {
+    await sendChatMessage(
+      page,
+      "Use the serverInfo tool to get server information.",
+    );
+
+    // Wait for the permission dialog to appear.
+    const dialog = page.getByTestId("permission-dialog");
+    await expect(dialog).toBeVisible({ timeout: 45_000 });
+
+    // Should mention the serverInfo tool.
+    await expect(dialog).toContainText("serverInfo");
+
+    // Click Allow.
+    const allowBtn = page.getByTestId("permission-allow");
+    await expect(allowBtn).toBeVisible();
+    await allowBtn.click();
+
+    // The agent should receive the serverInfo result and mention "carve-agentos" in its response.
+    const msgs = page.locator(".copilotKitAssistantMessage");
+    await expect(msgs.last()).toBeVisible({ timeout: 45_000 });
+    await expect(page.locator(".copilotKitMessages")).toContainText(
+      "carve-agentos",
+      { timeout: 15_000 },
+    );
+  });
+
+  test("permission denial blocks backend tool execution", async ({
+    page,
+  }) => {
+    await sendChatMessage(
+      page,
+      "Use the serverInfo tool to get server information.",
+    );
+
+    // Wait for the permission dialog to appear.
+    const dialog = page.getByTestId("permission-dialog");
+    await expect(dialog).toBeVisible({ timeout: 45_000 });
+
+    // Click Deny.
+    const denyBtn = page.getByTestId("permission-deny");
+    await expect(denyBtn).toBeVisible();
+    await denyBtn.click();
+
+    // The agent should acknowledge the denial in some way (message about denied/blocked).
+    const msgs = page.locator(".copilotKitAssistantMessage");
+    await expect(msgs.last()).toBeVisible({ timeout: 45_000 });
+
+    // The response should NOT contain the tool's success payload.
+    await expect(page.locator(".copilotKitMessages")).not.toContainText(
+      "carve-agentos",
+      { timeout: 5_000 },
+    );
+  });
+
   test("HITL: button state feedback after approval", async ({ page }) => {
     await sendChatMessage(page, 'Delete the task "Write tests" from the list.');
 

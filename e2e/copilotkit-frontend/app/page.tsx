@@ -70,6 +70,80 @@ function TaskPanel() {
     },
   });
 
+  // AskUserQuestion: handles Permission plugin prompts for backend tool approval
+  useCopilotAction({
+    name: "AskUserQuestion",
+    description: "Ask the user a question with options",
+    parameters: [
+      {
+        name: "questions",
+        type: "object[]",
+        description: "Array of questions to ask",
+        required: true,
+      },
+    ],
+    renderAndWaitForResponse: ({ args, respond, status }) => {
+      const questions = (args as { questions?: Array<{ question: string; header: string; options: Array<{ label: string; description: string }> }> }).questions ?? [];
+      const isExecuting = status === "executing";
+
+      if (status === "complete") {
+        return (
+          <div data-testid="permission-dialog">
+            <p style={{ color: "#16a34a", fontWeight: 500 }}>Permission resolved</p>
+          </div>
+        );
+      }
+
+      return (
+        <div
+          data-testid="permission-dialog"
+          style={{
+            padding: 12,
+            border: "1px solid #e0e0e0",
+            borderRadius: 8,
+            margin: 8,
+            background: "#f9f9f9",
+          }}
+        >
+          {questions.map((q, i) => (
+            <div key={i}>
+              <p style={{ fontWeight: 600, marginBottom: 8 }}>{q.question}</p>
+              <div style={{ display: "flex", gap: 8 }}>
+                {q.options.map((opt, j) => (
+                  <button
+                    key={j}
+                    disabled={!isExecuting}
+                    data-testid={`permission-${opt.label.toLowerCase()}`}
+                    onClick={() => {
+                      const answers: Record<string, string> = {};
+                      answers[q.question] = opt.label;
+                      respond?.(JSON.stringify({ answers }));
+                    }}
+                    style={{
+                      padding: "6px 16px",
+                      background: !isExecuting
+                        ? "#d1d5db"
+                        : opt.label === "Allow"
+                          ? "#2563eb"
+                          : "#dc2626",
+                      color: "#fff",
+                      border: "none",
+                      borderRadius: 4,
+                      cursor: !isExecuting ? "not-allowed" : "pointer",
+                      opacity: !isExecuting ? 0.6 : 1,
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      );
+    },
+  });
+
   // useCopilotAction: let the agent delete tasks (HITL — requires approval)
   useCopilotAction({
     name: "deleteTask",

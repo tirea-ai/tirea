@@ -328,7 +328,29 @@ impl AGUIContext {
             AgentEvent::Error { message } => {
                 vec![AGUIEvent::run_error(message, None)]
             }
-            AgentEvent::InferenceComplete { .. } => vec![],
+            AgentEvent::InferenceComplete {
+                model,
+                usage,
+                duration_ms,
+            } => {
+                let mut content = serde_json::Map::new();
+                content.insert("model".to_string(), serde_json::Value::String(model.clone()));
+                content.insert(
+                    "duration_ms".to_string(),
+                    serde_json::Value::Number((*duration_ms).into()),
+                );
+                if let Some(u) = usage {
+                    if let Ok(v) = serde_json::to_value(u) {
+                        content.insert("usage".to_string(), v);
+                    }
+                }
+                vec![AGUIEvent::activity_snapshot(
+                    self.message_id.clone(),
+                    "inference_complete".to_string(),
+                    content.into_iter().collect(),
+                    Some(false),
+                )]
+            }
             AgentEvent::InteractionRequested { .. } | AgentEvent::InteractionResolved { .. } => {
                 unreachable!()
             }
@@ -347,6 +369,51 @@ pub(super) fn value_to_map(value: &Value) -> HashMap<String, Value> {
             map.insert("value".to_string(), value.clone());
             map
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use genai::chat::Usage;
+
+    #[test]
+    fn inference_complete_emits_activity_snapshot() {
+        let mut ctx = AGUIContext::new("t1".into(), "run_12345678".into());
+        let ev = AgentEvent::InferenceComplete {
+            model: "gpt-4o".into(),
+            usage: Some(Usage {
+                prompt_tokens: Some(100),
+                completion_tokens: Some(50),
+                ..Default::default()
+            }),
+            duration_ms: 1234,
+        };
+        let events = ctx.on_agent_event(&ev);
+        assert_eq!(events.len(), 1);
+        let json = serde_json::to_value(&events[0]).unwrap();
+        assert_eq!(json["type"], "ACTIVITY_SNAPSHOT");
+        let content = &json["content"];
+        assert_eq!(content["model"], "gpt-4o");
+        assert_eq!(content["duration_ms"], 1234);
+        assert!(content["usage"].is_object());
+    }
+
+    #[test]
+    fn inference_complete_without_usage() {
+        let mut ctx = AGUIContext::new("t1".into(), "run_12345678".into());
+        let ev = AgentEvent::InferenceComplete {
+            model: "gpt-4o-mini".into(),
+            usage: None,
+            duration_ms: 500,
+        };
+        let events = ctx.on_agent_event(&ev);
+        assert_eq!(events.len(), 1);
+        let json = serde_json::to_value(&events[0]).unwrap();
+        assert_eq!(json["type"], "ACTIVITY_SNAPSHOT");
+        let content = &json["content"];
+        assert_eq!(content["model"], "gpt-4o-mini");
+        assert!(content.get("usage").is_none());
     }
 }
 

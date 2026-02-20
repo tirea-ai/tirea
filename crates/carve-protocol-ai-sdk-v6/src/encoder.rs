@@ -18,6 +18,8 @@ pub const DATA_EVENT_INTERACTION: &str = "interaction";
 pub const DATA_EVENT_INTERACTION_REQUESTED: &str = "interaction-requested";
 /// Data event name for interaction-resolved payload.
 pub const DATA_EVENT_INTERACTION_RESOLVED: &str = "interaction-resolved";
+/// Data event name for inference-complete payload (token usage).
+pub const DATA_EVENT_INFERENCE_COMPLETE: &str = "inference-complete";
 
 /// Stateful encoder for AI SDK v6 UI Message Stream protocol.
 ///
@@ -168,7 +170,19 @@ impl AiSdkEncoder {
                 events.push(UIStreamEvent::finish_step());
                 events
             }
-            AgentEvent::RunStart { .. } | AgentEvent::InferenceComplete { .. } => vec![],
+            AgentEvent::RunStart { .. } => vec![],
+            AgentEvent::InferenceComplete {
+                model,
+                usage,
+                duration_ms,
+            } => {
+                let payload = serde_json::json!({
+                    "model": model,
+                    "usage": usage,
+                    "duration_ms": duration_ms,
+                });
+                vec![UIStreamEvent::data(DATA_EVENT_INFERENCE_COMPLETE, payload)]
+            }
 
             AgentEvent::StateSnapshot { snapshot } => {
                 vec![UIStreamEvent::data(
@@ -274,6 +288,57 @@ impl AiSdkEncoder {
                 StopReason::ConsecutiveErrorsExceeded | StopReason::LoopDetected => "error",
                 StopReason::Custom(_) => "other",
             },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use genai::chat::Usage;
+
+    #[test]
+    fn inference_complete_emits_data_event() {
+        let mut enc = AiSdkEncoder::new("run_12345678".into());
+        let ev = AgentEvent::InferenceComplete {
+            model: "gpt-4o".into(),
+            usage: Some(Usage {
+                prompt_tokens: Some(100),
+                completion_tokens: Some(50),
+                ..Default::default()
+            }),
+            duration_ms: 1234,
+        };
+        let events = enc.on_agent_event(&ev);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            UIStreamEvent::Data { data_type, data } => {
+                assert_eq!(data_type, &format!("data-{DATA_EVENT_INFERENCE_COMPLETE}"));
+                assert_eq!(data["model"], "gpt-4o");
+                assert_eq!(data["duration_ms"], 1234);
+                assert!(data["usage"].is_object(), "usage: {:?}", data["usage"]);
+            }
+            other => panic!("expected Data event, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn inference_complete_without_usage() {
+        let mut enc = AiSdkEncoder::new("run_12345678".into());
+        let ev = AgentEvent::InferenceComplete {
+            model: "gpt-4o-mini".into(),
+            usage: None,
+            duration_ms: 500,
+        };
+        let events = enc.on_agent_event(&ev);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            UIStreamEvent::Data { data_type, data } => {
+                assert_eq!(data_type, &format!("data-{DATA_EVENT_INFERENCE_COMPLETE}"));
+                assert_eq!(data["model"], "gpt-4o-mini");
+                assert!(data["usage"].is_null());
+            }
+            other => panic!("expected Data event, got: {:?}", other),
         }
     }
 }

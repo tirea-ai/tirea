@@ -3,8 +3,9 @@
     {
       "id": "default",
       "model": "deepseek-chat",
-      "system_prompt": "You are a helpful assistant. Keep answers brief. When asked to add, toggle, or delete tasks, always use the provided tools.",
-      "max_rounds": 5
+      "system_prompt": "You are a helpful assistant. Keep answers brief. When asked to add, toggle, or delete tasks, always use the provided tools. When asked for server info, use the serverInfo tool.",
+      "max_rounds": 5,
+      "plugin_ids": ["permission"]
     }
   ]
 }

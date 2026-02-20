@@ -7,6 +7,7 @@ description = "HTTP/SSE/NATS gateway for carve-agent AgentOs"
 
 [dependencies]
 carve-agent-contract = { path = "../carve-agent-contract" }
+carve-agent-extension-permission = { path = "../carve-agent-extension-permission" }
 carve-agentos = { path = "../carve-agentos" }
 carve-protocol-ag-ui = { path = "../carve-protocol-ag-ui" }
 carve-protocol-ag-ui-runtime = { path = "../carve-protocol-ag-ui-runtime" }

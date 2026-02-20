@@ -1,3 +1,7 @@
+use async_trait::async_trait;
+use carve_agent_contract::tool::context::ToolCallContext;
+use carve_agent_contract::tool::contract::{Tool, ToolDescriptor, ToolError, ToolResult};
+use carve_agent_extension_permission::PermissionPlugin;
 use carve_agentos::contracts::storage::{AgentStateReader, AgentStateStore};
 use carve_agentos::orchestrator::AgentDefinition;
 use carve_agentos::orchestrator::{AgentOs, AgentOsBuilder, ModelDefinition};
@@ -5,6 +9,8 @@ use carve_agentos_server::http::{self, AppState};
 use carve_thread_store_adapters::FileStore;
 use clap::Parser;
 use serde::Deserialize;
+use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -42,6 +48,37 @@ struct AgentConfigFile {
     system_prompt: String,
     max_rounds: Option<usize>,
     parallel_tools: Option<bool>,
+    #[serde(default)]
+    plugin_ids: Vec<String>,
+}
+
+/// Simple backend tool that returns server information.
+///
+/// Used in E2E tests to exercise the Permission plugin against a real backend tool.
+struct ServerInfoTool;
+
+#[async_trait]
+impl Tool for ServerInfoTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("serverInfo", "Server Info", "Returns server name and current timestamp")
+            .with_parameters(json!({
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+            }))
+    }
+
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        Ok(ToolResult::success("serverInfo", json!({
+            "server": "carve-agentos",
+            "timestamp": now
+        })))
+    }
 }
 
 fn build_os(
@@ -49,7 +86,14 @@ fn build_os(
     tensorzero_url: Option<String>,
     write_store: Arc<dyn AgentStateStore>,
 ) -> AgentOs {
-    let mut builder = AgentOsBuilder::new().with_agent_state_store(write_store);
+    let mut builder = AgentOsBuilder::new()
+        .with_agent_state_store(write_store)
+        .with_registered_plugin("permission", Arc::new(PermissionPlugin))
+        .with_tools({
+            let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+            tools.insert("serverInfo".to_string(), Arc::new(ServerInfoTool));
+            tools
+        });
 
     let agents = match cfg {
         Some(c) => c.agents,
@@ -59,6 +103,7 @@ fn build_os(
             system_prompt: String::new(),
             max_rounds: None,
             parallel_tools: None,
+            plugin_ids: Vec::new(),
         }],
     };
 
@@ -96,6 +141,7 @@ fn build_os(
         if let Some(parallel) = a.parallel_tools {
             def.parallel_tools = parallel;
         }
+        def.plugin_ids = a.plugin_ids;
 
         // Map each agent's model through TensorZero when configured.
         if tensorzero_url.is_some() {
