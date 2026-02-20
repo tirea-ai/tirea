@@ -22,13 +22,13 @@
 //! ```
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::collections::HashMap;
 use tirea_contract::event::interaction::ResponseRouting;
 use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::tool::context::ToolCallContext;
 use tirea_state::{Op, Path, State};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use std::collections::HashMap;
 
 /// Tool permission behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -187,6 +187,10 @@ impl AgentPlugin for PermissionPlugin {
                 step.block(format!("Tool '{}' is denied", tool_id));
             }
             ToolPermissionBehavior::Ask => {
+                if call_id.is_empty() {
+                    step.block("Permission check requires non-empty tool call id");
+                    return;
+                }
                 let tool_args = step
                     .tool
                     .as_ref()
@@ -216,14 +220,12 @@ impl AgentPlugin for PermissionPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tirea_contract::plugin::phase::{Phase, ToolContext};
-    use tirea_contract::thread::ToolCall;
-    use tirea_contract::testing::TestFixture;
     use serde_json::json;
+    use tirea_contract::plugin::phase::{Phase, ToolContext};
+    use tirea_contract::testing::TestFixture;
+    use tirea_contract::thread::ToolCall;
 
-    fn apply_interaction_intents(
-        _step: &mut tirea_contract::plugin::phase::StepContext<'_>,
-    ) {
+    fn apply_interaction_intents(_step: &mut tirea_contract::plugin::phase::StepContext<'_>) {
         // No-op: permission plugin now sets pending interaction directly.
     }
 
@@ -436,9 +438,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_ask() {
-        use tirea_contract::event::interaction::{
-            InvocationOrigin, ResponseRouting,
-        };
+        use tirea_contract::event::interaction::{InvocationOrigin, ResponseRouting};
 
         let fixture = TestFixture::new_with_state(
             json!({ "permissions": { "default_behavior": "ask", "tools": {} } }),
@@ -460,7 +460,10 @@ mod tests {
             .as_ref()
             .and_then(|t| t.pending_interaction.as_ref())
             .expect("pending interaction should exist");
-        assert_eq!(interaction.action, format!("tool:{}", PERMISSION_CONFIRM_TOOL_NAME));
+        assert_eq!(
+            interaction.action,
+            format!("tool:{}", PERMISSION_CONFIRM_TOOL_NAME)
+        );
 
         // Should have first-class FrontendToolInvocation
         let inv = step
@@ -503,6 +506,24 @@ mod tests {
             }
             _ => panic!("Expected ReplayOriginalTool routing"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_permission_plugin_ask_with_empty_call_id_blocks() {
+        let fixture = TestFixture::new_with_state(
+            json!({ "permissions": { "default_behavior": "ask", "tools": {} } }),
+        );
+        let mut step = fixture.step(vec![]);
+
+        let call = ToolCall::new("", "test_tool", json!({"path": "a.txt"}));
+        step.tool = Some(ToolContext::new(&call));
+
+        let plugin = PermissionPlugin;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        apply_interaction_intents(&mut step);
+
+        assert!(step.tool_blocked());
+        assert!(!step.tool_pending());
     }
 
     #[test]
@@ -736,9 +757,7 @@ mod tests {
     #[tokio::test]
     async fn test_permission_plugin_permissions_is_array() {
         // "permissions" is an array instead of object — should fall back to Ask
-        let fixture = TestFixture::new_with_state(
-            json!({ "permissions": [1, 2, 3] }),
-        );
+        let fixture = TestFixture::new_with_state(json!({ "permissions": [1, 2, 3] }));
         let mut step = fixture.step(vec![]);
 
         let call = ToolCall::new("call_1", "any_tool", json!({}));
@@ -773,7 +792,10 @@ mod tests {
         plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         assert!(!step.tool_blocked(), "approved call_1 should be allowed");
-        assert!(!step.tool_pending(), "approved call_1 should not be pending");
+        assert!(
+            !step.tool_pending(),
+            "approved call_1 should not be pending"
+        );
     }
 
     #[tokio::test]
@@ -796,7 +818,10 @@ mod tests {
         let plugin = PermissionPlugin;
         plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-        assert!(step.tool_pending(), "unapproved call_2 for same tool should still require confirmation");
+        assert!(
+            step.tool_pending(),
+            "unapproved call_2 for same tool should still require confirmation"
+        );
     }
 
     #[tokio::test]
@@ -818,7 +843,10 @@ mod tests {
         let plugin = PermissionPlugin;
         plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-        assert!(step.tool_pending(), "non-true approval value should not bypass permission check");
+        assert!(
+            step.tool_pending(),
+            "non-true approval value should not bypass permission check"
+        );
     }
 
     #[tokio::test]

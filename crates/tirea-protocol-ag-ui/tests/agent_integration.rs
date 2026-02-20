@@ -4,21 +4,21 @@
 //! work correctly with the new State/Context API.
 
 use async_trait::async_trait;
-use tirea_agentos::contracts::InteractionResponse;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use tirea_agentos::contracts::thread::Thread as ConversationAgentState;
 use tirea_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use tirea_agentos::contracts::InteractionResponse;
 use tirea_agentos::contracts::ToolCallContext;
-use tirea_contract::testing::TestFixture;
 use tirea_agentos::extensions::interaction::InteractionPlugin;
 use tirea_agentos::extensions::interaction::{ContextCategory, ContextProvider};
 use tirea_agentos::extensions::reminder::SystemReminder;
 use tirea_agentos::runtime::activity::ActivityHub;
 use tirea_agentos::runtime::loop_runner::AgentLoopError;
+use tirea_contract::testing::TestFixture;
 use tirea_protocol_ag_ui::{interaction_to_ag_ui_events, MessageRole, ToolExecutionLocation};
 use tirea_state::State;
 use tirea_state::StateManager;
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 
 // ============================================================================
 // Test state types
@@ -162,7 +162,10 @@ impl ContextProvider for CounterContextProvider {
         100
     }
 
-    async fn provide(&self, ctx: &tirea_contract::tool::context::ToolCallContext<'_>) -> Vec<String> {
+    async fn provide(
+        &self,
+        ctx: &tirea_contract::tool::context::ToolCallContext<'_>,
+    ) -> Vec<String> {
         let counter = ctx.state::<CounterState>("counter");
 
         // Provider can also modify state
@@ -192,7 +195,10 @@ impl SystemReminder for TaskReminder {
         "task_reminder"
     }
 
-    async fn remind(&self, ctx: &tirea_contract::tool::context::ToolCallContext<'_>) -> Option<String> {
+    async fn remind(
+        &self,
+        ctx: &tirea_contract::tool::context::ToolCallContext<'_>,
+    ) -> Option<String> {
         let tasks = ctx.state::<TaskState>("tasks");
 
         let count = tasks.count().unwrap_or(0);
@@ -219,7 +225,10 @@ async fn test_tool_basic_execution() {
     let fix = TestFixture::new_with_state(snapshot);
 
     let result = tool
-        .execute(json!({"path": "counter"}), &fix.ctx_with("call_001", "tool:increment"))
+        .execute(
+            json!({"path": "counter"}),
+            &fix.ctx_with("call_001", "tool:increment"),
+        )
         .await
         .unwrap();
 
@@ -247,7 +256,10 @@ async fn test_tool_multiple_executions() {
         let fix = TestFixture::new_with_state(snapshot);
 
         let result = tool
-            .execute(json!({"path": "counter"}), &fix.ctx_with(format!("call_{}", i), "tool:increment"))
+            .execute(
+                json!({"path": "counter"}),
+                &fix.ctx_with(format!("call_{}", i), "tool:increment"),
+            )
             .await
             .unwrap();
 
@@ -276,7 +288,13 @@ async fn test_tool_with_call_state() {
         let snapshot = manager.snapshot().await;
         let fix = TestFixture::new_with_state(snapshot);
 
-        let result = tool.execute(json!({"label": "step1"}), &fix.ctx_with("call_abc", "tool:update_call")).await.unwrap();
+        let result = tool
+            .execute(
+                json!({"label": "step1"}),
+                &fix.ctx_with("call_abc", "tool:update_call"),
+            )
+            .await
+            .unwrap();
 
         assert!(result.is_success());
         assert_eq!(result.data["step"], 1);
@@ -289,7 +307,13 @@ async fn test_tool_with_call_state() {
         let snapshot = manager.snapshot().await;
         let fix = TestFixture::new_with_state(snapshot);
 
-        let result = tool.execute(json!({"label": "step2"}), &fix.ctx_with("call_abc", "tool:update_call")).await.unwrap();
+        let result = tool
+            .execute(
+                json!({"label": "step2"}),
+                &fix.ctx_with("call_abc", "tool:update_call"),
+            )
+            .await
+            .unwrap();
 
         assert!(result.is_success());
         assert_eq!(result.data["step"], 2);
@@ -311,7 +335,9 @@ async fn test_tool_error_handling() {
     let fix = TestFixture::new_with_state(snapshot);
 
     // Missing required argument
-    let result = tool.execute(json!({}), &fix.ctx_with("call_001", "tool:increment")).await;
+    let result = tool
+        .execute(json!({}), &fix.ctx_with("call_001", "tool:increment"))
+        .await;
     assert!(result.is_err());
 
     match result {
@@ -515,7 +541,10 @@ async fn test_full_tool_workflow() {
         let fix = TestFixture::new_with_state(snapshot);
 
         let result = tool
-            .execute(json!({"item": format!("Task {}", i)}), &fix.ctx_with(&call_id, "tool:add_task"))
+            .execute(
+                json!({"item": format!("Task {}", i)}),
+                &fix.ctx_with(&call_id, "tool:add_task"),
+            )
             .await
             .unwrap();
 
@@ -560,7 +589,10 @@ async fn test_tool_provider_reminder_integration() {
         let snapshot = manager.snapshot().await;
         let fix = TestFixture::new_with_state(snapshot);
         let _ = increment_tool
-            .execute(json!({"path": "counter"}), &fix.ctx_with("call_1", "tool:increment"))
+            .execute(
+                json!({"path": "counter"}),
+                &fix.ctx_with("call_1", "tool:increment"),
+            )
             .await
             .unwrap();
         manager.commit(fix.ctx().take_patch()).await.unwrap();
@@ -571,7 +603,10 @@ async fn test_tool_provider_reminder_integration() {
         let snapshot = manager.snapshot().await;
         let fix = TestFixture::new_with_state(snapshot);
         let _ = task_tool
-            .execute(json!({"item": "New task"}), &fix.ctx_with("call_2", "tool:add_task"))
+            .execute(
+                json!({"item": "New task"}),
+                &fix.ctx_with("call_2", "tool:add_task"),
+            )
             .await
             .unwrap();
         manager.commit(fix.ctx().take_patch()).await.unwrap();
@@ -606,14 +641,14 @@ async fn test_tool_provider_reminder_integration() {
 // Thread and Agent Loop Integration Tests
 // ============================================================================
 
+use std::sync::Arc;
+use tempfile::TempDir;
 use tirea_agentos::contracts::runtime::StreamResult;
-use tirea_agentos::contracts::thread::{Message, Role};
 use tirea_agentos::contracts::storage::{AgentStateReader, AgentStateWriter};
+use tirea_agentos::contracts::thread::{Message, Role};
 use tirea_agentos::runtime::loop_runner::{execute_tools_with_plugins, tool_map, AgentConfig};
 use tirea_state::{path, Op, Patch, TrackedPatch};
 use tirea_store_adapters::{FileStore, MemoryStore};
-use std::sync::Arc;
-use tempfile::TempDir;
 type Thread = ConversationAgentState;
 
 async fn loop_execute_tools(
@@ -1226,7 +1261,7 @@ async fn test_incremental_checkpoints_via_append() {
     use tirea_agentos::contracts::storage::{
         AgentStateSync, AgentStateWriter, VersionPrecondition,
     };
-    use tirea_agentos::contracts::{ThreadChangeSet, CheckpointReason};
+    use tirea_agentos::contracts::{CheckpointReason, ThreadChangeSet};
 
     let storage = MemoryStore::new();
 
@@ -1560,17 +1595,29 @@ async fn test_multiple_tools_with_varying_timeouts() {
 
     // Fast - should complete
     let fix = TestFixture::new_with_state(snapshot.clone());
-    let fast_result = tokio::time::timeout(timeout, fast_tool.execute(json!({}), &fix.ctx_with("fast", "tool:fast"))).await;
+    let fast_result = tokio::time::timeout(
+        timeout,
+        fast_tool.execute(json!({}), &fix.ctx_with("fast", "tool:fast")),
+    )
+    .await;
     assert!(fast_result.is_ok());
 
     // Medium - should complete
     let fix = TestFixture::new_with_state(snapshot.clone());
-    let medium_result = tokio::time::timeout(timeout, medium_tool.execute(json!({}), &fix.ctx_with("medium", "tool:medium"))).await;
+    let medium_result = tokio::time::timeout(
+        timeout,
+        medium_tool.execute(json!({}), &fix.ctx_with("medium", "tool:medium")),
+    )
+    .await;
     assert!(medium_result.is_ok());
 
     // Slow - should timeout
     let fix = TestFixture::new_with_state(snapshot);
-    let slow_result = tokio::time::timeout(timeout, slow_tool.execute(json!({}), &fix.ctx_with("slow", "tool:slow"))).await;
+    let slow_result = tokio::time::timeout(
+        timeout,
+        slow_tool.execute(json!({}), &fix.ctx_with("slow", "tool:slow")),
+    )
+    .await;
     assert!(slow_result.is_err());
 }
 
@@ -1756,19 +1803,25 @@ async fn test_tool_network_error_retry() {
     // Attempt 1 - fails
     let snapshot = manager.snapshot().await;
     let fix = TestFixture::new_with_state(snapshot);
-    let result1 = tool.execute(json!({}), &fix.ctx_with("call_1", "tool:network")).await;
+    let result1 = tool
+        .execute(json!({}), &fix.ctx_with("call_1", "tool:network"))
+        .await;
     assert!(result1.is_err());
 
     // Attempt 2 - fails
     let snapshot = manager.snapshot().await;
     let fix = TestFixture::new_with_state(snapshot);
-    let result2 = tool.execute(json!({}), &fix.ctx_with("call_2", "tool:network")).await;
+    let result2 = tool
+        .execute(json!({}), &fix.ctx_with("call_2", "tool:network"))
+        .await;
     assert!(result2.is_err());
 
     // Attempt 3 - succeeds
     let snapshot = manager.snapshot().await;
     let fix = TestFixture::new_with_state(snapshot);
-    let result3 = tool.execute(json!({}), &fix.ctx_with("call_3", "tool:network")).await;
+    let result3 = tool
+        .execute(json!({}), &fix.ctx_with("call_3", "tool:network"))
+        .await;
     assert!(result3.is_ok());
 
     // Apply successful patch
@@ -1789,7 +1842,12 @@ async fn test_tool_error_does_not_corrupt_state() {
         let snapshot = manager.snapshot().await;
         let fix = TestFixture::new_with_state(snapshot);
 
-        let result = tool.execute(json!({}), &fix.ctx_with(format!("call_{}", i), "tool:network")).await;
+        let result = tool
+            .execute(
+                json!({}),
+                &fix.ctx_with(format!("call_{}", i), "tool:network"),
+            )
+            .await;
         assert!(result.is_err());
 
         // Don't apply patch from failed execution
@@ -2236,16 +2294,20 @@ fn test_agent_event_all_variants() {
 
 #[tokio::test]
 async fn test_activity_context_emits_snapshot_on_update() {
-    use tirea_agentos::contracts::AgentEvent;
     use std::sync::Arc;
+    use tirea_agentos::contracts::AgentEvent;
     use tokio::sync::mpsc;
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let hub = Arc::new(ActivityHub::new(tx));
     let fix = TestFixture::new();
     let ctx = ToolCallContext::new(
-        &fix.doc, &fix.ops,
-        "call_1", "tool:test", &fix.run_config, &fix.pending_messages,
+        &fix.doc,
+        &fix.ops,
+        "call_1",
+        "tool:test",
+        &fix.run_config,
+        &fix.pending_messages,
         Some(hub),
     );
     let activity = ctx.activity("stream_1", "progress");
@@ -2292,8 +2354,12 @@ async fn test_activity_context_snapshot_reused_across_contexts() {
     let fix = TestFixture::new();
 
     let ctx = ToolCallContext::new(
-        &fix.doc, &fix.ops,
-        "call_1", "tool:test", &fix.run_config, &fix.pending_messages,
+        &fix.doc,
+        &fix.ops,
+        "call_1",
+        "tool:test",
+        &fix.run_config,
+        &fix.pending_messages,
         Some(hub.clone()),
     );
     let activity = ctx.activity("stream_2", "progress");
@@ -2301,8 +2367,12 @@ async fn test_activity_context_snapshot_reused_across_contexts() {
     progress.set_progress(0.9);
 
     let ctx2 = ToolCallContext::new(
-        &fix.doc, &fix.ops,
-        "call_2", "tool:test", &fix.run_config, &fix.pending_messages,
+        &fix.doc,
+        &fix.ops,
+        "call_2",
+        "tool:test",
+        &fix.run_config,
+        &fix.pending_messages,
         Some(hub),
     );
     let activity2 = ctx2.activity("stream_2", "progress");
@@ -2312,8 +2382,8 @@ async fn test_activity_context_snapshot_reused_across_contexts() {
 
 #[tokio::test]
 async fn test_activity_context_multiple_streams_emit_separately() {
-    use tirea_agentos::contracts::AgentEvent;
     use std::sync::Arc;
+    use tirea_agentos::contracts::AgentEvent;
     use tokio::sync::mpsc;
 
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -2321,8 +2391,12 @@ async fn test_activity_context_multiple_streams_emit_separately() {
     let fix = TestFixture::new();
 
     let ctx = ToolCallContext::new(
-        &fix.doc, &fix.ops,
-        "call_1", "tool:test", &fix.run_config, &fix.pending_messages,
+        &fix.doc,
+        &fix.ops,
+        "call_1",
+        "tool:test",
+        &fix.run_config,
+        &fix.pending_messages,
         Some(hub),
     );
     let activity_a = ctx.activity("stream_a", "progress");
@@ -2435,8 +2509,8 @@ async fn test_session_state_complex_operations() {
 
 #[test]
 fn test_storage_error_variants() {
-    use tirea_agentos::contracts::storage::AgentStateStoreError;
     use std::io::{Error as IoError, ErrorKind};
+    use tirea_agentos::contracts::storage::AgentStateStoreError;
 
     // Test IO error variant
     let io_error = AgentStateStoreError::from(IoError::new(
@@ -2987,7 +3061,10 @@ fn test_agent_loop_error_all_variants() {
     // Stopped
     let stopped_err = AgentLoopError::Stopped {
         run_ctx: Box::new(tirea_agentos::contracts::RunContext::new(
-            "s", serde_json::json!({}), vec![], Default::default(),
+            "s",
+            serde_json::json!({}),
+            vec![],
+            Default::default(),
         )),
         reason: tirea_agentos::engine::stop_conditions::StopReason::MaxRoundsReached,
     };
@@ -3001,7 +3078,10 @@ fn test_agent_loop_error_all_variants() {
     // PendingInteraction
     let pending_err = AgentLoopError::PendingInteraction {
         run_ctx: Box::new(tirea_agentos::contracts::RunContext::new(
-            "s", serde_json::json!({}), vec![], Default::default(),
+            "s",
+            serde_json::json!({}),
+            vec![],
+            Default::default(),
         )),
         interaction: Box::new(Interaction::new("int_1", "confirm")),
     };
@@ -3554,7 +3634,10 @@ async fn test_e2e_context_provider_integration() {
     let tool = IncrementTool;
     let fix = TestFixture::new_with_state(new_snapshot);
     let result = tool
-        .execute(json!({"path": "counter"}), &fix.ctx_with("tool_call", "tool:increment"))
+        .execute(
+            json!({"path": "counter"}),
+            &fix.ctx_with("tool_call", "tool:increment"),
+        )
         .await
         .unwrap();
 
@@ -3603,7 +3686,10 @@ async fn test_e2e_multiple_providers_priority() {
             100
         } // Higher priority
 
-        async fn provide(&self, _ctx: &tirea_contract::tool::context::ToolCallContext<'_>) -> Vec<String> {
+        async fn provide(
+            &self,
+            _ctx: &tirea_contract::tool::context::ToolCallContext<'_>,
+        ) -> Vec<String> {
             vec!["High priority context".to_string()]
         }
     }
@@ -3620,7 +3706,10 @@ async fn test_e2e_multiple_providers_priority() {
             10
         } // Lower priority
 
-        async fn provide(&self, _ctx: &tirea_contract::tool::context::ToolCallContext<'_>) -> Vec<String> {
+        async fn provide(
+            &self,
+            _ctx: &tirea_contract::tool::context::ToolCallContext<'_>,
+        ) -> Vec<String> {
             vec!["Low priority context".to_string()]
         }
     }
@@ -3660,7 +3749,10 @@ async fn test_e2e_conditional_context_provider() {
             50
         }
 
-        async fn provide(&self, ctx: &tirea_contract::tool::context::ToolCallContext<'_>) -> Vec<String> {
+        async fn provide(
+            &self,
+            ctx: &tirea_contract::tool::context::ToolCallContext<'_>,
+        ) -> Vec<String> {
             let counter = ctx.state::<CounterState>("counter");
             let value = counter.value().unwrap_or(0);
 
@@ -3779,7 +3871,10 @@ async fn test_e2e_tool_pending_status() {
     let fix = TestFixture::new_with_state(snapshot);
 
     // First call without confirmation
-    let result = tool.execute(json!({}), &fix.ctx_with("call_1", "tool:dangerous")).await.unwrap();
+    let result = tool
+        .execute(json!({}), &fix.ctx_with("call_1", "tool:dangerous"))
+        .await
+        .unwrap();
 
     assert!(result.is_pending());
     assert!(!result.is_success());
@@ -3788,7 +3883,10 @@ async fn test_e2e_tool_pending_status() {
 
     // Second call with confirmation
     let result = tool
-        .execute(json!({"confirmed": true}), &fix.ctx_with("call_1", "tool:dangerous"))
+        .execute(
+            json!({"confirmed": true}),
+            &fix.ctx_with("call_1", "tool:dangerous"),
+        )
         .await
         .unwrap();
 
@@ -3805,7 +3903,10 @@ async fn test_e2e_tool_warning_status() {
 
     // Process 10 items (80% success = 8 success, 2 failed)
     let result = tool
-        .execute(json!({"items": [1,2,3,4,5,6,7,8,9,10]}), &fix.ctx_with("call_1", "tool:batch"))
+        .execute(
+            json!({"items": [1,2,3,4,5,6,7,8,9,10]}),
+            &fix.ctx_with("call_1", "tool:batch"),
+        )
         .await
         .unwrap();
 
@@ -4580,8 +4681,8 @@ fn test_stream_collector_end_merges_chunk_and_captured_tool_calls() {
 
 #[test]
 fn test_stream_collector_tool_chunk_with_null_arguments() {
-    use tirea_agentos::runtime::streaming::StreamOutput;
     use genai::chat::{ChatStreamEvent, ToolChunk};
+    use tirea_agentos::runtime::streaming::StreamOutput;
 
     let mut collector = StreamCollector::new();
 
@@ -4671,7 +4772,11 @@ fn test_scenario_permission_confirmation_to_ag_ui() {
     let ag_ui_events = ctx.on_agent_event(&event);
 
     // 4. Pending no longer emits tool call events (communicated via STATE_SNAPSHOT)
-    assert_eq!(ag_ui_events.len(), 0, "Pending should not emit AG-UI events when no text stream is active");
+    assert_eq!(
+        ag_ui_events.len(),
+        0,
+        "Pending should not emit AG-UI events when no text stream is active"
+    );
 }
 
 /// Test scenario: Custom frontend action (file picker)
@@ -4750,10 +4855,7 @@ fn test_scenario_text_interrupted_by_interaction() {
     let events3 = ctx.on_agent_event(&pending_event);
 
     // Should end text stream (pending no longer emits tool call events)
-    assert!(
-        events3.len() >= 1,
-        "Should have TextMessageEnd"
-    );
+    assert!(events3.len() >= 1, "Should have TextMessageEnd");
     assert!(
         matches!(events3[0], AGUIEvent::TextMessageEnd { .. }),
         "First event should be TextMessageEnd"
@@ -4798,11 +4900,11 @@ fn test_scenario_various_interaction_types() {
 // InteractionPlugin Scenario Tests
 // ============================================================================
 
-use tirea_agentos::contracts::plugin::AgentPlugin;
+use std::collections::HashSet;
 use tirea_agentos::contracts::plugin::phase::{Phase, StepContext, ToolContext};
+use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::thread::ToolCall;
 use tirea_protocol_ag_ui::{AGUIToolDef, RunAgentRequest};
-use std::collections::HashSet;
 
 fn interaction_plugin_from_request(request: &RunAgentRequest) -> InteractionPlugin {
     InteractionPlugin::with_responses(
@@ -4831,11 +4933,7 @@ impl AgentPlugin for TestFrontendToolPlugin {
         "test_frontend_tools"
     }
 
-    async fn on_phase(
-        &self,
-        phase: Phase,
-        step: &mut StepContext<'_>,
-    ) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         if phase != Phase::BeforeToolExecute {
             return;
         }
@@ -4904,9 +5002,7 @@ async fn test_scenario_frontend_tool_request_to_agui() {
     step.tool = Some(ToolContext::new(&tool_call));
 
     // 4. Plugin intercepts in BeforeToolExecute phase
-    plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step)
-        .await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
     // 5. Tool should be pending
     assert!(step.tool_pending());
@@ -4978,9 +5074,7 @@ async fn test_scenario_multiple_frontend_tools_sequence() {
         let tool_call = ToolCall::new(call_id, tool_name, args.clone());
         step.tool = Some(ToolContext::new(&tool_call));
 
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         assert!(step.tool_pending(), "Tool {} should be pending", tool_name);
 
@@ -5035,9 +5129,7 @@ async fn test_scenario_frontend_tool_complex_args() {
     let tool_call = ToolCall::new("call_complex", "fileDialog", complex_args.clone());
     step.tool = Some(ToolContext::new(&tool_call));
 
-    plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step)
-        .await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
     assert!(step.tool_pending());
 
@@ -5078,9 +5170,7 @@ async fn test_scenario_frontend_tool_empty_args() {
         let tool_call = ToolCall::new("call_empty", "getClipboard", json!({}));
         step.tool = Some(ToolContext::new(&tool_call));
 
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         assert!(step.tool_pending());
         let interaction = step
@@ -5101,9 +5191,7 @@ async fn test_scenario_frontend_tool_empty_args() {
         let tool_call = ToolCall::new("call_null", "getClipboard", Value::Null);
         step.tool = Some(ToolContext::new(&tool_call));
 
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         assert!(step.tool_pending());
         let interaction = step
@@ -5142,9 +5230,7 @@ async fn test_scenario_frontend_tool_special_names() {
         let tool_call = ToolCall::new("call_1", tool_name, json!({}));
         step.tool = Some(ToolContext::new(&tool_call));
 
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         assert!(
             step.tool_pending(),
@@ -5194,9 +5280,7 @@ async fn test_scenario_frontend_tool_case_sensitivity() {
         let tool_call = ToolCall::new("call_1", tool_name, json!({}));
         step.tool = Some(ToolContext::new(&tool_call));
 
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         assert_eq!(
             step.tool_pending(),
@@ -5278,9 +5362,7 @@ async fn test_scenario_frontend_tool_full_event_pipeline() {
     step.tool = Some(ToolContext::new(&tool_call));
 
     // 1. Plugin creates pending state with interaction
-    plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step)
-        .await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
     // 2. Agent loop would create AgentEvent::Pending
     let interaction = step
@@ -5323,9 +5405,7 @@ async fn test_scenario_backend_tool_passthrough() {
     step.tool = Some(ToolContext::new(&tool_call));
 
     // Plugin should not interfere
-    plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step)
-        .await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
     assert!(!step.tool_pending(), "Backend tool should not be pending");
     assert!(!step.tool_blocked(), "Backend tool should not be blocked");
@@ -5397,9 +5477,7 @@ async fn test_scenario_permission_approved_complete_flow() {
 
     // PermissionPlugin creates pending interaction
     let plugin = PermissionPlugin;
-    plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step)
-        .await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
     assert!(step.tool_pending());
     let interaction = step
@@ -5455,9 +5533,7 @@ async fn test_scenario_permission_denied_complete_flow() {
     step.tool = Some(ToolContext::new(&tool_call));
 
     let plugin = PermissionPlugin;
-    plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step)
-        .await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
     assert!(step.tool_pending());
     let interaction = step
@@ -5512,9 +5588,7 @@ async fn test_scenario_frontend_tool_execution_complete_flow() {
     let tool_call = ToolCall::new("call_copy_1", "copyToClipboard", json!({"text": "Hello!"}));
     step.tool = Some(ToolContext::new(&tool_call));
 
-    plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step)
-        .await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
     assert!(step.tool_pending());
     let interaction = step
@@ -5563,9 +5637,7 @@ async fn test_scenario_multiple_interactions_sequence() {
     let call1 = ToolCall::new("call_1", "write_file", json!({}));
     step1.tool = Some(ToolContext::new(&call1));
 
-    plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step1)
-        .await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step1).await;
     let interaction1 = step1
         .tool
         .as_ref()
@@ -5581,9 +5653,7 @@ async fn test_scenario_multiple_interactions_sequence() {
     let call2 = ToolCall::new("call_2", "read_file", json!({}));
     step2.tool = Some(ToolContext::new(&call2));
 
-    plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step2)
-        .await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step2).await;
     let interaction2 = step2
         .tool
         .as_ref()
@@ -5757,23 +5827,17 @@ async fn test_scenario_interaction_response_plugin_blocks_denied() {
     );
 
     let plugin = InteractionPlugin::with_responses(
-        vec![],                              // no approved
-        vec!["call_write".to_string()],      // denied
+        vec![],                         // no approved
+        vec!["call_write".to_string()], // denied
     );
 
     let fix = TestFixture::new_with_state(thread.state.clone());
     let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
-    let call = ToolCall::new(
-        "call_write",
-        "write_file",
-        json!({"path": "/etc/config"}),
-    );
+    let call = ToolCall::new("call_write", "write_file", json!({"path": "/etc/config"}));
     step.tool = Some(ToolContext::new(&call));
 
-    plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step)
-        .await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
     assert!(step.tool_blocked(), "Denied tool should be blocked");
     let block_reason = step.tool.as_ref().unwrap().block_reason.as_ref().unwrap();
@@ -5808,9 +5872,7 @@ async fn test_scenario_interaction_response_plugin_allows_approved() {
     );
     step.tool = Some(ToolContext::new(&call));
 
-    plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step)
-        .await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
     assert!(!step.tool_blocked(), "Approved tool should not be blocked");
 }
@@ -6229,9 +6291,7 @@ async fn test_permission_flow_approval_e2e() {
 
     // PermissionPlugin creates pending
     let plugin = PermissionPlugin;
-    plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step)
-        .await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
     assert!(
         step.tool_pending(),
         "Tool should be pending after permission ask"
@@ -6301,9 +6361,7 @@ async fn test_permission_flow_denial_e2e() {
     step.tool = Some(ToolContext::new(&tool_call));
 
     let plugin = PermissionPlugin;
-    plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step)
-        .await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
     assert!(step.tool_pending());
 
     let interaction = step
@@ -6362,9 +6420,7 @@ async fn test_permission_flow_multiple_tools_mixed() {
     step1.tool = Some(ToolContext::new(&call1));
 
     let plugin = PermissionPlugin;
-    plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step1)
-        .await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step1).await;
     let int1 = step1
         .tool
         .as_ref()
@@ -6379,9 +6435,7 @@ async fn test_permission_flow_multiple_tools_mixed() {
     let mut step2 = StepContext::new(ctx_step2, &thread.id, &thread.messages, vec![]);
     let call2 = ToolCall::new("call_2", "write_file", json!({}));
     step2.tool = Some(ToolContext::new(&call2));
-    plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step2)
-        .await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step2).await;
     let int2 = step2
         .tool
         .as_ref()
@@ -6468,7 +6522,10 @@ async fn test_e2e_permission_suspend_with_real_tool() {
         .unwrap_err();
 
     let (suspended_run_ctx, interaction) = match err {
-        AgentLoopError::PendingInteraction { run_ctx, interaction } => (*run_ctx, *interaction),
+        AgentLoopError::PendingInteraction {
+            run_ctx,
+            interaction,
+        } => (*run_ctx, *interaction),
         other => panic!("Expected PendingInteraction, got: {:?}", other),
     };
 
@@ -6543,14 +6600,18 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
         .unwrap_err();
 
     let (suspended_run_ctx, interaction) = match err {
-        AgentLoopError::PendingInteraction { run_ctx, interaction } => (*run_ctx, *interaction),
+        AgentLoopError::PendingInteraction {
+            run_ctx,
+            interaction,
+        } => (*run_ctx, *interaction),
         other => panic!("Expected PendingInteraction, got: {:?}", other),
     };
 
     // Reconstruct Thread from RunContext for resume
     let suspended_thread = {
         let state = suspended_run_ctx.snapshot().unwrap();
-        let mut t = ConversationAgentState::with_initial_state(suspended_run_ctx.thread_id(), state);
+        let mut t =
+            ConversationAgentState::with_initial_state(suspended_run_ctx.thread_id(), state);
         for msg in suspended_run_ctx.messages() {
             t = t.with_message((**msg).clone());
         }
@@ -6647,14 +6708,18 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
         .unwrap_err();
 
     let (suspended_run_ctx, interaction) = match err {
-        AgentLoopError::PendingInteraction { run_ctx, interaction } => (*run_ctx, *interaction),
+        AgentLoopError::PendingInteraction {
+            run_ctx,
+            interaction,
+        } => (*run_ctx, *interaction),
         other => panic!("Expected PendingInteraction, got: {:?}", other),
     };
 
     // Reconstruct Thread from RunContext for resume
     let suspended_thread = {
         let state = suspended_run_ctx.snapshot().unwrap();
-        let mut t = ConversationAgentState::with_initial_state(suspended_run_ctx.thread_id(), state);
+        let mut t =
+            ConversationAgentState::with_initial_state(suspended_run_ctx.thread_id(), state);
         for msg in suspended_run_ctx.messages() {
             t = t.with_message((**msg).clone());
         }
@@ -6748,9 +6813,7 @@ async fn test_frontend_tool_flow_creates_pending() {
     );
     step.tool = Some(ToolContext::new(&call));
 
-    plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step)
-        .await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
     assert!(step.tool_pending(), "Frontend tool should be pending");
 
@@ -6813,7 +6876,8 @@ async fn test_frontend_tool_flow_mixed_with_backend() {
     // Frontend tool - should be pending
     let fix_frontend = TestFixture::new();
     let ctx_step_frontend = fix_frontend.ctx();
-    let mut step_frontend = StepContext::new(ctx_step_frontend, &thread.id, &thread.messages, vec![]);
+    let mut step_frontend =
+        StepContext::new(ctx_step_frontend, &thread.id, &thread.messages, vec![]);
     let call_frontend = ToolCall::new("call_dialog", "showDialog", json!({"title": "Confirm"}));
     step_frontend.tool = Some(ToolContext::new(&call_frontend));
     plugin
@@ -7040,9 +7104,7 @@ async fn test_resume_flow_with_approval() {
     let call = ToolCall::new(interaction_id, "tool_x", json!({}));
     step.tool = Some(ToolContext::new(&call));
 
-    plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step)
-        .await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
     assert!(!step.tool_blocked());
 }
 
@@ -7068,9 +7130,7 @@ async fn test_resume_flow_with_denial() {
     let call = ToolCall::new(interaction_id, "dangerous_tool", json!({}));
     step.tool = Some(ToolContext::new(&call));
 
-    plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step)
-        .await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
     assert!(step.tool_blocked());
 }
 
@@ -7100,9 +7160,7 @@ async fn test_resume_flow_multiple_responses() {
         let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
         let call = ToolCall::new(id, "test_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
         assert_eq!(
             step.tool_blocked(),
             should_block,
@@ -7136,9 +7194,7 @@ async fn test_resume_flow_partial_responses() {
     let mut step1 = StepContext::new(ctx_step1, &session1.id, &session1.messages, vec![]);
     let call1 = ToolCall::new("perm_1", "tool_1", json!({}));
     step1.tool = Some(ToolContext::new(&call1));
-    plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step1)
-        .await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step1).await;
     assert!(!step1.tool_blocked());
 
     // Non-responded tool - plugin doesn't affect it (no matching approved/denied ID).
@@ -7148,9 +7204,7 @@ async fn test_resume_flow_partial_responses() {
     let mut step2 = StepContext::new(ctx_step2, &session2.id, &session2.messages, vec![]);
     let call2 = ToolCall::new("perm_2", "tool_2", json!({}));
     step2.tool = Some(ToolContext::new(&call2));
-    plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step2)
-        .await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step2).await;
     assert!(!step2.tool_blocked()); // Not blocked by response plugin (no response)
 }
 
@@ -7762,9 +7816,7 @@ async fn test_multiple_interaction_responses() {
         let call = ToolCall::new(id, "some_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         assert_eq!(
             step.tool_blocked(),
@@ -12319,16 +12371,16 @@ fn test_interaction_to_ag_ui_events() {
 // ============================================================================
 
 mod llmmetry_tracing {
-    use tirea_contract::testing::TestFixture;
-    use tirea_agentos::contracts::plugin::AgentPlugin;
+    use serde_json::json;
+    use std::sync::{Arc, Mutex};
     use tirea_agentos::contracts::plugin::phase::{Phase, StepContext, ToolContext};
+    use tirea_agentos::contracts::plugin::AgentPlugin;
     use tirea_agentos::contracts::runtime::StreamResult;
     use tirea_agentos::contracts::thread::Thread as ConversationAgentState;
     use tirea_agentos::contracts::thread::ToolCall;
     use tirea_agentos::contracts::tool::ToolResult;
     use tirea_agentos::extensions::observability::{InMemorySink, LLMMetryPlugin};
-    use serde_json::json;
-    use std::sync::{Arc, Mutex};
+    use tirea_contract::testing::TestFixture;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::registry::LookupSpan;
 
@@ -12411,9 +12463,7 @@ mod llmmetry_tracing {
         let ctx_step = fix.ctx();
         let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
 
-        plugin
-            .on_phase(Phase::BeforeInference, &mut step)
-            .await;
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
 
         step.response = Some(StreamResult {
             text: "hello".into(),
@@ -12421,9 +12471,7 @@ mod llmmetry_tracing {
             usage: Some(usage(100, 50, 150)),
         });
 
-        plugin
-            .on_phase(Phase::AfterInference, &mut step)
-            .await;
+        plugin.on_phase(Phase::AfterInference, &mut step).await;
 
         let new_spans: Vec<CapturedSpan> = {
             let spans = captured.lock().unwrap();
@@ -12463,16 +12511,12 @@ mod llmmetry_tracing {
         let call = ToolCall::new("tc1", "search", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         step.tool.as_mut().unwrap().result =
             Some(ToolResult::success("search", json!({"found": true})));
 
-        plugin
-            .on_phase(Phase::AfterToolExecute, &mut step)
-            .await;
+        plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
 
         let new_spans: Vec<CapturedSpan> = {
             let spans = captured.lock().unwrap();
@@ -12511,29 +12555,21 @@ mod llmmetry_tracing {
         plugin.on_phase(Phase::RunStart, &mut step).await;
 
         // Inference
-        plugin
-            .on_phase(Phase::BeforeInference, &mut step)
-            .await;
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
         step.response = Some(StreamResult {
             text: "use search tool".into(),
             tool_calls: vec![],
             usage: Some(usage(50, 25, 75)),
         });
-        plugin
-            .on_phase(Phase::AfterInference, &mut step)
-            .await;
+        plugin.on_phase(Phase::AfterInference, &mut step).await;
 
         // Tool execution
         let call = ToolCall::new("c1", "search", json!({"q": "test"}));
         step.tool = Some(ToolContext::new(&call));
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
         step.tool.as_mut().unwrap().result =
             Some(ToolResult::success("search", json!({"results": []})));
-        plugin
-            .on_phase(Phase::AfterToolExecute, &mut step)
-            .await;
+        plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
 
         // Thread end
         plugin.on_phase(Phase::RunEnd, &mut step).await;
@@ -12576,6 +12612,7 @@ fn replay_calls_from_state(state: &Value) -> Vec<ToolCall> {
 #[tokio::test]
 async fn test_interaction_response_run_start_sets_replay_on_approval() {
     let pending_id = "call_add_trips";
+    let frontend_call_id = "fc_perm_add_trips";
 
     // Build a session with unified format:
     //   1. A persisted pending_interaction (id = tool_call_id, action = tool:<name>)
@@ -12584,15 +12621,28 @@ async fn test_interaction_response_run_start_sets_replay_on_approval() {
     let thread = Thread::with_initial_state(
         "test",
         json!({ "loop_control": { "pending_interaction": {
-            "id": pending_id,
+            "id": frontend_call_id,
             "action": "tool:add_trips",
             "parameters": {
-                "source": "permission",
-                "origin_tool_call": {
-                    "id": pending_id,
-                    "name": "add_trips",
-                    "arguments": { "destination": "Beijing" }
-                }
+                "source": "permission"
+            }
+        },
+        "pending_frontend_invocation": {
+            "call_id": frontend_call_id,
+            "tool_name": "PermissionConfirm",
+            "arguments": {
+                "tool_name": "add_trips",
+                "tool_args": { "destination": "Beijing" }
+            },
+            "origin": {
+                "type": "tool_call_intercepted",
+                "backend_call_id": pending_id,
+                "backend_tool_name": "add_trips",
+                "backend_arguments": { "destination": "Beijing" }
+            },
+            "routing": {
+                "strategy": "replay_original_tool",
+                "state_patches": []
             }
         } } }),
     )
@@ -12611,10 +12661,7 @@ async fn test_interaction_response_run_start_sets_replay_on_approval() {
         "Tool 'add_trips' is awaiting approval. Execution paused.",
     ));
 
-    let plugin = InteractionPlugin::with_responses(
-        vec![pending_id.to_string()],
-        vec![],
-    );
+    let plugin = InteractionPlugin::with_responses(vec![frontend_call_id.to_string()], vec![]);
 
     let fix = TestFixture::new_with_state(thread.state.clone());
     let ctx_step = fix.ctx();
@@ -12631,7 +12678,6 @@ async fn test_interaction_response_run_start_sets_replay_on_approval() {
 /// Test: on_run_start does NOT set replay_tool_calls when interaction is denied
 #[tokio::test]
 async fn test_interaction_response_run_start_no_replay_on_denial() {
-
     let pending_id = "call_add_trips";
 
     let thread = Thread::with_initial_state(
@@ -12685,7 +12731,6 @@ async fn test_interaction_response_run_start_no_pending() {
 /// Test: on_run_start does nothing when approved ID doesn't match pending
 #[tokio::test]
 async fn test_interaction_response_run_start_mismatched_id() {
-
     let thread = Thread::with_initial_state(
         "test",
         json!({ "loop_control": { "pending_interaction": { "id": "call_x", "action": "tool:some_tool", "parameters": { "source": "permission" } } } }),
@@ -12713,8 +12758,8 @@ async fn test_interaction_response_run_start_mismatched_id() {
 /// Test: on_run_start does nothing when no assistant message with tool_calls
 #[tokio::test]
 async fn test_interaction_response_run_start_no_tool_calls_in_messages() {
-
     let pending_id = "call_add_trips";
+    let frontend_call_id = "fc_perm_add_trips";
 
     // Thread has pending interaction with unified format but no assistant message with tool calls.
     // With origin_tool_call in parameters, replay should use that.
@@ -12723,15 +12768,28 @@ async fn test_interaction_response_run_start_no_tool_calls_in_messages() {
     let thread = Thread::with_initial_state(
         "test",
         json!({ "loop_control": { "pending_interaction": {
-            "id": pending_id,
+            "id": frontend_call_id,
             "action": "tool:add_trips",
             "parameters": {
-                "source": "permission",
-                "origin_tool_call": {
-                    "id": pending_id,
-                    "name": "add_trips",
-                    "arguments": {}
-                }
+                "source": "permission"
+            }
+        },
+        "pending_frontend_invocation": {
+            "call_id": frontend_call_id,
+            "tool_name": "PermissionConfirm",
+            "arguments": {
+                "tool_name": "add_trips",
+                "tool_args": {}
+            },
+            "origin": {
+                "type": "tool_call_intercepted",
+                "backend_call_id": pending_id,
+                "backend_tool_name": "add_trips",
+                "backend_arguments": {}
+            },
+            "routing": {
+                "strategy": "replay_original_tool",
+                "state_patches": []
             }
         } } }),
     )
@@ -12739,7 +12797,7 @@ async fn test_interaction_response_run_start_no_tool_calls_in_messages() {
         "I need to call a tool",
     ));
 
-    let plugin = InteractionPlugin::with_responses(vec![pending_id.to_string()], vec![]);
+    let plugin = InteractionPlugin::with_responses(vec![frontend_call_id.to_string()], vec![]);
 
     let fix = TestFixture::new_with_state(thread.state.clone());
     let ctx_step = fix.ctx();
@@ -12748,7 +12806,11 @@ async fn test_interaction_response_run_start_no_tool_calls_in_messages() {
 
     // With origin_tool_call present, replay should be scheduled even without tool_calls in messages
     let replay = replay_calls_from_state(&fix.updated_state());
-    assert_eq!(replay.len(), 1, "origin_tool_call should provide replay data");
+    assert_eq!(
+        replay.len(),
+        1,
+        "origin_tool_call should provide replay data"
+    );
     assert_eq!(replay[0].name, "add_trips");
 }
 
@@ -12785,6 +12847,13 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
         .pending_interaction
         .clone()
         .unwrap();
+    let invocation = step1
+        .tool
+        .as_ref()
+        .unwrap()
+        .pending_frontend_invocation
+        .clone()
+        .unwrap();
 
     // Phase 2: Simulate persisted session with pending_interaction + placeholder
     let persisted_thread = Thread::with_initial_state(
@@ -12793,8 +12862,9 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
             "loop_control": {
                 "pending_interaction": {
                     "id": interaction.id,
-                    "action": "confirm"
-                }
+                    "action": interaction.action
+                },
+                "pending_frontend_invocation": serde_json::to_value(invocation).unwrap()
             }
         }),
     )
@@ -12825,16 +12895,19 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
     let response_plugin = interaction_plugin_from_request(&approve_request);
     let fix2 = TestFixture::new_with_state(persisted_thread.state.clone());
     let ctx_step2 = fix2.ctx();
-    let mut step2 = StepContext::new(ctx_step2, &persisted_thread.id, &persisted_thread.messages, vec![]);
-    response_plugin
-        .on_phase(Phase::RunStart, &mut step2)
-        .await;
+    let mut step2 = StepContext::new(
+        ctx_step2,
+        &persisted_thread.id,
+        &persisted_thread.messages,
+        vec![],
+    );
+    response_plugin.on_phase(Phase::RunStart, &mut step2).await;
 
     // Verify: replay_tool_calls is set with correct tool call
     let replay = replay_calls_from_state(&fix2.updated_state());
     assert_eq!(replay.len(), 1, "Should schedule exactly one tool call");
     assert_eq!(replay[0].name, "add_trips");
-    assert_eq!(replay[0].id, interaction.id);
+    assert_eq!(replay[0].id, call.id);
     assert_eq!(replay[0].arguments["destination"], "Beijing");
 }
 
@@ -12873,10 +12946,13 @@ async fn test_hitl_replay_denial_does_not_schedule() {
     let response_plugin = interaction_plugin_from_request(&deny_request);
     let fix = TestFixture::new_with_state(persisted_thread.state.clone());
     let ctx_step = fix.ctx();
-    let mut step = StepContext::new(ctx_step, &persisted_thread.id, &persisted_thread.messages, vec![]);
-    response_plugin
-        .on_phase(Phase::RunStart, &mut step)
-        .await;
+    let mut step = StepContext::new(
+        ctx_step,
+        &persisted_thread.id,
+        &persisted_thread.messages,
+        vec![],
+    );
+    response_plugin.on_phase(Phase::RunStart, &mut step).await;
 
     let replay = replay_calls_from_state(&fix.updated_state());
     assert!(replay.is_empty(), "Denial should NOT schedule tool replay");
@@ -12902,6 +12978,24 @@ async fn test_hitl_replay_picks_first_tool_call() {
                             "arguments": { "a": 1 }
                         }
                     }
+                },
+                "pending_frontend_invocation": {
+                    "call_id": pending_id,
+                    "tool_name": "PermissionConfirm",
+                    "arguments": {
+                        "tool_name": "tool_a",
+                        "tool_args": { "a": 1 }
+                    },
+                    "origin": {
+                        "type": "tool_call_intercepted",
+                        "backend_call_id": pending_id,
+                        "backend_tool_name": "tool_a",
+                        "backend_arguments": { "a": 1 }
+                    },
+                    "routing": {
+                        "strategy": "replay_original_tool",
+                        "state_patches": []
+                    }
                 }
             }
         }),
@@ -12922,10 +13016,13 @@ async fn test_hitl_replay_picks_first_tool_call() {
     let response_plugin = interaction_plugin_from_request(&approve_request);
     let fix = TestFixture::new_with_state(persisted_thread.state.clone());
     let ctx_step = fix.ctx();
-    let mut step = StepContext::new(ctx_step, &persisted_thread.id, &persisted_thread.messages, vec![]);
-    response_plugin
-        .on_phase(Phase::RunStart, &mut step)
-        .await;
+    let mut step = StepContext::new(
+        ctx_step,
+        &persisted_thread.id,
+        &persisted_thread.messages,
+        vec![],
+    );
+    response_plugin.on_phase(Phase::RunStart, &mut step).await;
 
     let replay = replay_calls_from_state(&fix.updated_state());
     assert_eq!(replay.len(), 1, "Should only schedule the first tool call");
@@ -12935,7 +13032,6 @@ async fn test_hitl_replay_picks_first_tool_call() {
 /// Test: HITL replay — RunStart + BeforeToolExecute phases are independent
 #[tokio::test]
 async fn test_hitl_replay_run_start_does_not_affect_before_tool_execute() {
-
     let pending_id = "call_phase_test";
 
     let thread = Thread::with_initial_state(
@@ -12952,6 +13048,24 @@ async fn test_hitl_replay_run_start_does_not_affect_before_tool_execute() {
                             "name": "some_tool",
                             "arguments": {}
                         }
+                    }
+                },
+                "pending_frontend_invocation": {
+                    "call_id": pending_id,
+                    "tool_name": "PermissionConfirm",
+                    "arguments": {
+                        "tool_name": "some_tool",
+                        "tool_args": {}
+                    },
+                    "origin": {
+                        "type": "tool_call_intercepted",
+                        "backend_call_id": pending_id,
+                        "backend_tool_name": "some_tool",
+                        "backend_arguments": {}
+                    },
+                    "routing": {
+                        "strategy": "replay_original_tool",
+                        "state_patches": []
                     }
                 }
             }
@@ -12972,9 +13086,7 @@ async fn test_hitl_replay_run_start_does_not_affect_before_tool_execute() {
     let fix1 = TestFixture::new_with_state(thread.state.clone());
     let ctx_step1 = fix1.ctx();
     let mut step1 = StepContext::new(ctx_step1, &thread.id, &thread.messages, vec![]);
-    response_plugin
-        .on_phase(Phase::RunStart, &mut step1)
-        .await;
+    response_plugin.on_phase(Phase::RunStart, &mut step1).await;
     let replay = replay_calls_from_state(&fix1.updated_state());
     assert!(!replay.is_empty());
 

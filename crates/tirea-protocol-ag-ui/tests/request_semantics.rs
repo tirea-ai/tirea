@@ -1,9 +1,9 @@
 #![allow(missing_docs)]
 
+use serde_json::{json, Value};
 use tirea_protocol_ag_ui::{
     AGUIMessage, AGUIToolDef, MessageRole, RunAgentRequest, ToolExecutionLocation,
 };
-use serde_json::{json, Value};
 
 #[test]
 fn frontend_tools_filters_backend_tools() {
@@ -79,13 +79,30 @@ fn approved_and_denied_ids_follow_runtime_interaction_semantics() {
 }
 
 #[test]
-fn conflicting_results_for_same_interaction_id_appear_in_both_lists() {
+fn conflicting_results_for_same_interaction_id_use_last_result() {
     let request = RunAgentRequest::new("thread_1", "run_1")
         .with_message(AGUIMessage::tool("true", "same_id"))
         .with_message(AGUIMessage::tool("false", "same_id"));
 
-    assert_eq!(request.approved_interaction_ids(), vec!["same_id"]);
+    assert!(request.approved_interaction_ids().is_empty());
     assert_eq!(request.denied_interaction_ids(), vec!["same_id"]);
+}
+
+#[test]
+fn interaction_responses_filter_to_pending_ids_when_state_exists() {
+    let request = RunAgentRequest::new("thread_1", "run_1")
+        .with_state(json!({
+            "loop_control": {
+                "pending_interaction": { "id": "call_pending" },
+                "pending_frontend_invocation": { "call_id": "call_pending" }
+            }
+        }))
+        .with_message(AGUIMessage::tool("true", "call_pending"))
+        .with_message(AGUIMessage::tool("true", "unrelated_tool_result"));
+
+    let responses = request.interaction_responses();
+    assert_eq!(responses.len(), 1);
+    assert_eq!(responses[0].interaction_id, "call_pending");
 }
 
 #[test]

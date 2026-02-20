@@ -1,8 +1,9 @@
 use crate::protocol::MessageRole;
-use tirea_contract::InteractionResponse;
-use tirea_contract::{gen_message_id, Message, Role, Visibility};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::{HashMap, HashSet};
+use tirea_contract::InteractionResponse;
+use tirea_contract::{gen_message_id, Message, Role, Visibility};
 use tracing::warn;
 
 /// AG-UI message in a conversation.
@@ -238,16 +239,33 @@ impl RunAgentRequest {
 
     /// Extract all interaction responses from tool messages.
     pub fn interaction_responses(&self) -> Vec<InteractionResponse> {
+        let expected_ids = self.pending_interaction_response_ids();
+        let mut latest_by_id: HashMap<String, (usize, Value)> = HashMap::new();
+
         self.messages
             .iter()
-            .filter(|m| m.role == MessageRole::Tool)
-            .filter_map(|m| {
-                m.tool_call_id.as_ref().map(|id| {
+            .enumerate()
+            .filter(|(_, m)| m.role == MessageRole::Tool)
+            .filter_map(|(idx, m)| {
+                m.tool_call_id.as_ref().and_then(|id| {
+                    if !expected_ids.is_empty() && !expected_ids.contains(id) {
+                        return None;
+                    }
                     let result = parse_interaction_result_value(&m.content);
-                    InteractionResponse::new(id.clone(), result)
+                    Some((idx, id.clone(), result))
                 })
             })
-            .collect()
+            .for_each(|(idx, id, result)| {
+                // Last write wins for duplicate IDs.
+                latest_by_id.insert(id, (idx, result));
+            });
+
+        let mut responses: Vec<(usize, InteractionResponse)> = latest_by_id
+            .into_iter()
+            .map(|(id, (idx, result))| (idx, InteractionResponse::new(id, result)))
+            .collect();
+        responses.sort_by_key(|(idx, _)| *idx);
+        responses.into_iter().map(|(_, response)| response).collect()
     }
 
     /// Get all approved interaction IDs.
@@ -266,6 +284,33 @@ impl RunAgentRequest {
             .filter(|r| r.denied())
             .map(|r| r.interaction_id)
             .collect()
+    }
+
+    fn pending_interaction_response_ids(&self) -> HashSet<String> {
+        let mut ids = HashSet::new();
+        let Some(state) = self.state.as_ref() else {
+            return ids;
+        };
+
+        if let Some(id) = state
+            .get("loop_control")
+            .and_then(|v| v.get("pending_frontend_invocation"))
+            .and_then(|v| v.get("call_id"))
+            .and_then(Value::as_str)
+        {
+            ids.insert(id.to_string());
+        }
+
+        if let Some(id) = state
+            .get("loop_control")
+            .and_then(|v| v.get("pending_interaction"))
+            .and_then(|v| v.get("id"))
+            .and_then(Value::as_str)
+        {
+            ids.insert(id.to_string());
+        }
+
+        ids
     }
 }
 
