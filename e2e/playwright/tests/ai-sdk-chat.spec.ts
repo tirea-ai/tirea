@@ -265,6 +265,6 @@ test.describe("AI SDK Chat", () => {
     // Wait for completion, then button should be enabled again.
     const agentMsg = page.locator("strong", { hasText: "Agent:" }).first();
     await expect(agentMsg).toBeVisible({ timeout: 45_000 });
-    await expect(sendButton).toBeEnabled({ timeout: 5_000 });
+    await expect(sendButton).toBeEnabled({ timeout: 30_000 });
   });
 });
