@@ -33,6 +33,65 @@ fn agui_context_pending_closes_text_and_emits_interaction_tool_events() {
 }
 
 #[test]
+fn agui_context_interaction_requested_emits_tool_call_events_for_new_ids() {
+    let mut ctx = AGUIContext::new("thread_1".to_string(), "run_1".to_string());
+
+    // InteractionRequested with a never-seen ID → should emit TOOL_CALL_START/ARGS/END
+    let events = ctx.on_agent_event(&AgentEvent::InteractionRequested {
+        interaction: Interaction::new("new_call_1", "tool:AskUserQuestion")
+            .with_message("Allow this?")
+            .with_parameters(serde_json::json!({ "question": "ok?" })),
+    });
+
+    assert_eq!(events.len(), 3);
+    assert!(matches!(events[0], AGUIEvent::ToolCallStart { .. }));
+    assert!(matches!(events[1], AGUIEvent::ToolCallArgs { .. }));
+    assert!(matches!(events[2], AGUIEvent::ToolCallEnd { .. }));
+}
+
+#[test]
+fn agui_context_interaction_requested_skips_already_emitted_tool_call_ids() {
+    let mut ctx = AGUIContext::new("thread_1".to_string(), "run_1".to_string());
+
+    // First: LLM streams a ToolCallStart for "call_copy"
+    let _ = ctx.on_agent_event(&AgentEvent::ToolCallStart {
+        id: "call_copy".to_string(),
+        name: "copyToClipboard".to_string(),
+    });
+
+    // Then: InteractionRequested for same ID → should be suppressed (already emitted)
+    let events = ctx.on_agent_event(&AgentEvent::InteractionRequested {
+        interaction: Interaction::new("call_copy", "tool:copyToClipboard")
+            .with_parameters(serde_json::json!({ "text": "hello" })),
+    });
+
+    assert!(events.is_empty());
+}
+
+#[test]
+fn agui_context_interaction_requested_closes_open_text_stream() {
+    let mut ctx = AGUIContext::new("thread_1".to_string(), "run_1".to_string());
+
+    // Start text
+    let _ = ctx.on_agent_event(&AgentEvent::TextDelta {
+        delta: "thinking...".to_string(),
+    });
+    assert!(ctx.is_text_open());
+
+    // InteractionRequested for new ID with open text → closes text first
+    let events = ctx.on_agent_event(&AgentEvent::InteractionRequested {
+        interaction: Interaction::new("new_int_1", "tool:AskUserQuestion")
+            .with_parameters(serde_json::json!({})),
+    });
+
+    // TEXT_MESSAGE_END + TOOL_CALL_START + TOOL_CALL_ARGS + TOOL_CALL_END
+    assert_eq!(events.len(), 4);
+    assert!(matches!(events[0], AGUIEvent::TextMessageEnd { .. }));
+    assert!(matches!(events[1], AGUIEvent::ToolCallStart { .. }));
+    assert!(!ctx.is_text_open());
+}
+
+#[test]
 fn agui_input_adapter_converts_messages() {
     let mut request = RunAgentRequest::new("thread_1", "run_1").with_messages(vec![
         AGUIMessage::assistant("skip this"),

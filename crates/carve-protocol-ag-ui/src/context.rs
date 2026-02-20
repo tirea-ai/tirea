@@ -1,7 +1,7 @@
-use crate::protocol::AGUIEvent;
+use crate::protocol::{AGUIEvent, interaction_to_ag_ui_events};
 use carve_agent_contract::{AgentEvent, TerminationReason};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tracing::warn;
 use uuid::Uuid;
 
@@ -32,6 +32,10 @@ pub struct AGUIContext {
     stopped: bool,
     /// Last emitted state snapshot, used to compute RFC 6902 deltas.
     last_state: Option<Value>,
+    /// Tool call IDs already emitted via normal LLM stream (ToolCallStart).
+    /// Used to avoid emitting duplicate TOOL_CALL events when InteractionRequested
+    /// arrives for a tool call that was already streamed by the LLM.
+    emitted_tool_call_ids: HashSet<String>,
 }
 
 impl AGUIContext {
@@ -49,6 +53,7 @@ impl AGUIContext {
             current_step: None,
             stopped: false,
             last_state: None,
+            emitted_tool_call_ids: HashSet::new(),
         }
     }
 
@@ -135,14 +140,27 @@ impl AGUIContext {
             AgentEvent::RunFinish { .. } | AgentEvent::Error { .. } => {
                 self.stopped = true;
             }
-            AgentEvent::InteractionRequested { .. } | AgentEvent::InteractionResolved { .. } => {
+            AgentEvent::InteractionResolved { .. } => {
                 return vec![];
+            }
+            // InteractionRequested: emit TOOL_CALL events for interactions whose
+            // tool call ID hasn't been seen yet (e.g. multi-round replays that
+            // produce new pending interactions, or permission interactions where
+            // the frontend tool call was never streamed by the LLM).
+            AgentEvent::InteractionRequested { interaction } => {
+                if self.emitted_tool_call_ids.contains(&interaction.id) {
+                    return vec![];
+                }
+                self.emitted_tool_call_ids.insert(interaction.id.clone());
+                let mut events = Vec::new();
+                if self.end_text() {
+                    events.push(AGUIEvent::text_message_end(&self.message_id));
+                }
+                events.extend(interaction_to_ag_ui_events(interaction));
+                return events;
             }
             // Pending: close current text stream.
             // The pending interaction is communicated via STATE_SNAPSHOT (emitted separately).
-            // We do NOT emit duplicate TOOL_CALL events here — the original LLM tool call
-            // sequence (TOOL_CALL_START/ARGS/END) is sufficient for CopilotKit to execute
-            // frontend actions.
             AgentEvent::Pending { .. } => {
                 let mut events = Vec::new();
                 if self.end_text() {
@@ -205,6 +223,7 @@ impl AGUIContext {
             }
 
             AgentEvent::ToolCallStart { id, name } => {
+                self.emitted_tool_call_ids.insert(id.clone());
                 let mut events = vec![];
                 if self.end_text() {
                     events.push(AGUIEvent::text_message_end(&self.message_id));
@@ -311,7 +330,7 @@ impl AGUIContext {
             }
             AgentEvent::InferenceComplete { .. } => vec![],
             AgentEvent::InteractionRequested { .. } | AgentEvent::InteractionResolved { .. } => {
-                vec![]
+                unreachable!()
             }
         }
     }
