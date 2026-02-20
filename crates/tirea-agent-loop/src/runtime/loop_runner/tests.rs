@@ -6887,3 +6887,77 @@ fn build_messages_keeps_tool_results_with_matching_call() {
     let tool_msgs: Vec<_> = msgs.iter().filter(|m| m.role == Role::Tool).collect();
     assert_eq!(tool_msgs.len(), 2, "both matching tool results should be kept");
 }
+
+#[tokio::test]
+async fn test_stream_permission_intercept_emits_tool_call_start_for_frontend() {
+    // A plugin that intercepts a backend tool call and invokes PermissionConfirm
+    // via ReplayOriginalTool routing. This must emit ToolCallStart + ToolCallReady
+    // events for the frontend to render a permission dialog.
+    struct PermissionInterceptPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for PermissionInterceptPlugin {
+        fn id(&self) -> &str {
+            "permission_intercept_plugin"
+        }
+
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+        ) {
+            if phase != Phase::BeforeToolExecute || step.tool_call_id() != Some("call_1") {
+                return;
+            }
+
+            step.invoke_frontend_tool(
+                "PermissionConfirm",
+                json!({ "tool_name": "serverInfo", "tool_args": {} }),
+                ResponseRouting::ReplayOriginalTool {
+                    state_patches: vec![],
+                },
+            );
+        }
+    }
+
+    let thread = Thread::new("permission-intercept").with_message(Message::user("get server info"));
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(PermissionInterceptPlugin) as Arc<dyn AgentPlugin>);
+    let tools = tool_map([EchoTool]);
+    let responses = vec![
+        MockResponse::text("checking")
+            .with_tool_call("call_1", "echo", json!({ "message": "info" })),
+    ];
+
+    let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
+
+    // The fc_xxx ToolCallStart must be emitted for PermissionConfirm
+    let permission_starts: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::ToolCallStart { name, .. } if name == "PermissionConfirm"))
+        .collect();
+    assert_eq!(
+        permission_starts.len(),
+        1,
+        "PermissionConfirm must emit exactly one ToolCallStart event: {events:?}"
+    );
+
+    let permission_readys: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::ToolCallReady { name, .. } if name == "PermissionConfirm"))
+        .collect();
+    assert_eq!(
+        permission_readys.len(),
+        1,
+        "PermissionConfirm must emit exactly one ToolCallReady event: {events:?}"
+    );
+
+    // The run should terminate with PendingInteraction (waiting for frontend response)
+    assert!(matches!(
+        events.last(),
+        Some(AgentEvent::RunFinish {
+            termination: TerminationReason::PendingInteraction,
+            ..
+        })
+    ), "run should pause with PendingInteraction: {events:?}");
+}

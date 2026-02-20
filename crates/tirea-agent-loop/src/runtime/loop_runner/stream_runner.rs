@@ -719,13 +719,17 @@ pub(super) fn run_loop_stream_impl(
             // Emit pending interaction event(s) first.
             for exec_result in &results {
                 if let Some(ref interaction) = exec_result.pending_interaction {
-                    // Frontend tool invocations are already represented by the
-                    // normal tool call stream (ToolCallStart/Delta/Ready) for
-                    // the same backend call_id. Re-emitting pending_tool_events
-                    // here duplicates ToolCallStart/Ready and breaks clients
-                    // that parse tool args from a single call lifecycle.
-                    if exec_result.pending_frontend_invocation.is_some() {
-                        continue;
+                    // UseAsToolResult frontend tools (e.g. deleteTask) reuse the
+                    // LLM's original call_id, so ToolCallStart was already emitted
+                    // during the LLM stream. Re-emitting here would duplicate it.
+                    //
+                    // Other routings (e.g. ReplayOriginalTool for PermissionConfirm)
+                    // use a new fc_xxx call_id that the LLM never streamed, so we
+                    // MUST emit ToolCallStart/Ready here for the frontend to see it.
+                    if let Some(ref inv) = exec_result.pending_frontend_invocation {
+                        if matches!(inv.routing, crate::contracts::event::interaction::ResponseRouting::UseAsToolResult) {
+                            continue;
+                        }
                     }
                     for event in pending_tool_events(
                         interaction,

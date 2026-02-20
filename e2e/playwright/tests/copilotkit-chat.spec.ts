@@ -224,12 +224,8 @@ test.describe("CopilotKit Chat", () => {
   });
 
   // --- Permission plugin tests for backend tool (serverInfo) ---
-  // SKIPPED: CopilotKit's AG-UI runtime only renders renderAndWaitForResponse
-  // for LLM-initiated tool calls. Backend-initiated frontend tool invocations
-  // (from the Permission plugin via invoke_frontend_tool) are not rendered.
-  // The backend infrastructure works correctly (verified via direct AG-UI curl).
 
-  test.skip("permission approval allows backend tool execution", async ({
+  test("permission approval allows backend tool execution", async ({
     page,
   }) => {
     await sendChatMessage(
@@ -258,7 +254,7 @@ test.describe("CopilotKit Chat", () => {
     );
   });
 
-  test.skip("permission denial blocks backend tool execution", async ({
+  test("permission denial blocks backend tool execution", async ({
     page,
   }) => {
     await sendChatMessage(
@@ -286,7 +282,7 @@ test.describe("CopilotKit Chat", () => {
     );
   });
 
-  test.skip("handles tool execution error gracefully", async ({ page }) => {
+  test("handles tool execution error gracefully", async ({ page }) => {
     await sendChatMessage(
       page,
       "Trigger an error by using the failingTool.",
