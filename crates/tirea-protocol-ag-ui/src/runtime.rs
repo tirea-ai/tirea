@@ -5,16 +5,16 @@
 //! and interaction-response replay plugin wiring.
 
 use async_trait::async_trait;
-use tirea_contract::event::interaction::ResponseRouting;
-use tirea_contract::plugin::AgentPlugin;
-use tirea_contract::plugin::phase::{Phase, StepContext};
-use tirea_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
-use tirea_contract::ToolCallContext;
-use tirea_agent_loop::runtime::loop_runner::ResolvedRun;
-use tirea_extension_interaction::InteractionPlugin;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
+use tirea_agent_loop::runtime::loop_runner::ResolvedRun;
+use tirea_contract::event::interaction::ResponseRouting;
+use tirea_contract::plugin::phase::{Phase, StepContext};
+use tirea_contract::plugin::AgentPlugin;
+use tirea_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use tirea_contract::ToolCallContext;
+use tirea_extension_interaction::InteractionPlugin;
 
 use crate::{build_context_addendum, RunAgentRequest};
 
@@ -40,18 +40,22 @@ pub fn apply_agui_extensions(resolved: &mut ResolvedRun, request: &RunAgentReque
 
     // Run-scoped plugins
     if !frontend_tool_names.is_empty() {
-        resolved.config.plugins.push(Arc::new(FrontendToolPendingPlugin::new(frontend_tool_names)));
+        resolved.config.plugins.insert(
+            0,
+            Arc::new(FrontendToolPendingPlugin::new(frontend_tool_names)),
+        );
     }
 
     // Context injection: forward useCopilotReadable context to the agent's system prompt.
     if let Some(addendum) = build_context_addendum(request) {
-        resolved.config.plugins.push(Arc::new(ContextInjectionPlugin::new(addendum)));
+        resolved
+            .config
+            .plugins
+            .push(Arc::new(ContextInjectionPlugin::new(addendum)));
     }
 
-    let interaction_plugin = InteractionPlugin::with_responses(
-        request.approved_interaction_ids(),
-        request.denied_interaction_ids(),
-    );
+    let interaction_plugin =
+        InteractionPlugin::from_interaction_responses(request.interaction_responses());
     if interaction_plugin.is_active() {
         resolved.config.plugins.push(Arc::new(interaction_plugin));
     }
@@ -161,13 +165,16 @@ impl AgentPlugin for FrontendToolPendingPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tirea_contract::testing::TestFixture;
-    use tirea_contract::plugin::phase::{Phase, ToolContext};
-    use tirea_contract::thread::ToolCall;
-    use tirea_agent_loop::runtime::loop_runner::AgentConfig;
-    use crate::{AGUIMessage, AGUIToolDef, ToolExecutionLocation, AGUIContextEntry};
+    use async_trait::async_trait;
+    use crate::{AGUIContextEntry, AGUIMessage, AGUIToolDef, ToolExecutionLocation};
     use serde_json::json;
     use std::collections::HashMap;
+    use std::sync::Arc;
+    use tirea_agent_loop::runtime::loop_runner::AgentConfig;
+    use tirea_contract::plugin::AgentPlugin;
+    use tirea_contract::plugin::phase::{Phase, StepContext, ToolContext};
+    use tirea_contract::testing::TestFixture;
+    use tirea_contract::thread::ToolCall;
 
     fn empty_resolved() -> ResolvedRun {
         ResolvedRun {
@@ -175,6 +182,17 @@ mod tests {
             tools: HashMap::new(),
             run_config: tirea_contract::RunConfig::new(),
         }
+    }
+
+    struct MarkerPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for MarkerPlugin {
+        fn id(&self) -> &str {
+            "marker_plugin"
+        }
+
+        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
     }
 
     #[test]
@@ -212,7 +230,11 @@ mod tests {
         // Only 1 frontend tool (backend tools are not stubs)
         assert_eq!(resolved.tools.len(), 1);
         // FrontendToolPendingPlugin
-        assert!(resolved.config.plugins.iter().any(|p| p.id() == "agui_frontend_tools"));
+        assert!(resolved
+            .config
+            .plugins
+            .iter()
+            .any(|p| p.id() == "agui_frontend_tools"));
     }
 
     #[test]
@@ -237,6 +259,48 @@ mod tests {
         apply_agui_extensions(&mut resolved, &request);
         assert!(resolved.tools.is_empty());
         // InteractionPlugin only
+        assert_eq!(resolved.config.plugins.len(), 1);
+    }
+
+    #[test]
+    fn injects_response_plugin_for_non_boolean_frontend_tool_payload() {
+        let request = RunAgentRequest {
+            thread_id: "t1".to_string(),
+            run_id: "r1".to_string(),
+            messages: vec![
+                AGUIMessage::user("hello"),
+                AGUIMessage::tool(r#"{"todo":"ship starter"}"#, "call_copy_1"),
+            ],
+            tools: vec![],
+            context: vec![],
+            state: Some(json!({
+                "loop_control": {
+                    "pending_interaction": {
+                        "id": "call_copy_1",
+                        "action": "tool:copyToClipboard"
+                    },
+                    "pending_frontend_invocation": {
+                        "call_id": "call_copy_1",
+                        "tool_name": "copyToClipboard",
+                        "routing": { "strategy": "use_as_tool_result" },
+                        "origin": {
+                            "type": "plugin_initiated",
+                            "plugin_id": "agui_frontend_tools"
+                        }
+                    }
+                }
+            })),
+            parent_run_id: None,
+            model: None,
+            system_prompt: None,
+            config: None,
+        };
+
+        let mut resolved = empty_resolved();
+        apply_agui_extensions(&mut resolved, &request);
+        assert!(resolved.tools.is_empty());
+        // Non-boolean tool response must still install InteractionPlugin
+        // so routing (e.g. use_as_tool_result) can replay and clear pending state.
         assert_eq!(resolved.config.plugins.len(), 1);
     }
 
@@ -271,6 +335,38 @@ mod tests {
     }
 
     #[test]
+    fn prepends_frontend_pending_plugin_before_existing_plugins() {
+        let request = RunAgentRequest {
+            thread_id: "t1".to_string(),
+            run_id: "r1".to_string(),
+            messages: vec![AGUIMessage::user("hello")],
+            tools: vec![AGUIToolDef {
+                name: "copyToClipboard".to_string(),
+                description: "copy".to_string(),
+                parameters: None,
+                execute: ToolExecutionLocation::Frontend,
+            }],
+            context: vec![],
+            state: None,
+            parent_run_id: None,
+            model: None,
+            system_prompt: None,
+            config: None,
+        };
+
+        let mut resolved = empty_resolved();
+        resolved.config.plugins.push(Arc::new(MarkerPlugin));
+
+        apply_agui_extensions(&mut resolved, &request);
+
+        assert_eq!(
+            resolved.config.plugins.first().map(|p| p.id()),
+            Some("agui_frontend_tools")
+        );
+        assert_eq!(resolved.config.plugins.get(1).map(|p| p.id()), Some("marker_plugin"));
+    }
+
+    #[test]
     fn no_changes_without_frontend_or_response_data() {
         let request = RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("hello"));
         let mut resolved = empty_resolved();
@@ -290,9 +386,7 @@ mod tests {
         let call = ToolCall::new("call_1", "copyToClipboard", json!({"text":"hello"}));
         step.tool = Some(ToolContext::new(&call));
 
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         assert!(step.tool_pending());
 
@@ -314,7 +408,10 @@ mod tests {
         assert_eq!(inv.tool_name, "copyToClipboard");
         assert_eq!(inv.arguments["text"], "hello");
         assert!(matches!(inv.routing, ResponseRouting::UseAsToolResult));
-        assert!(matches!(inv.origin, InvocationOrigin::PluginInitiated { .. }));
+        assert!(matches!(
+            inv.origin,
+            InvocationOrigin::PluginInitiated { .. }
+        ));
     }
 
     #[test]
@@ -337,7 +434,11 @@ mod tests {
 
         let mut resolved = empty_resolved();
         apply_agui_extensions(&mut resolved, &request);
-        assert!(resolved.config.plugins.iter().any(|p| p.id() == "agui_context_injection"));
+        assert!(resolved
+            .config
+            .plugins
+            .iter()
+            .any(|p| p.id() == "agui_context_injection"));
     }
 
     #[tokio::test]
@@ -360,7 +461,12 @@ mod tests {
 
         let mut resolved = empty_resolved();
         apply_agui_extensions(&mut resolved, &request);
-        let plugin = resolved.config.plugins.iter().find(|p| p.id() == "agui_context_injection").unwrap();
+        let plugin = resolved
+            .config
+            .plugins
+            .iter()
+            .find(|p| p.id() == "agui_context_injection")
+            .unwrap();
 
         let fixture = TestFixture::new();
         let mut step = fixture.step(vec![]);
@@ -369,8 +475,14 @@ mod tests {
 
         assert!(!step.system_context.is_empty());
         let merged = step.system_context.join("\n");
-        assert!(merged.contains("Task list"), "should contain context description");
-        assert!(merged.contains("Review PR"), "should contain context values");
+        assert!(
+            merged.contains("Task list"),
+            "should contain context description"
+        );
+        assert!(
+            merged.contains("Review PR"),
+            "should contain context values"
+        );
     }
 
     #[test]
@@ -378,6 +490,10 @@ mod tests {
         let request = RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("hello"));
         let mut resolved = empty_resolved();
         apply_agui_extensions(&mut resolved, &request);
-        assert!(!resolved.config.plugins.iter().any(|p| p.id() == "agui_context_injection"));
+        assert!(!resolved
+            .config
+            .plugins
+            .iter()
+            .any(|p| p.id() == "agui_context_injection"));
     }
 }

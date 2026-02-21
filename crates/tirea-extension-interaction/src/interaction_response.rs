@@ -224,24 +224,34 @@ impl InteractionResponsePlugin {
             return;
         }
 
-        // Check if the client approved this interaction.
+        let result_payload = self.result_for(pending_id).cloned();
         let is_approved = self.is_approved(pending_id);
-        if !is_approved {
+        let should_continue_use_as_result = result_payload.is_some()
+            && matches!(
+                &invocation.routing,
+                ResponseRouting::UseAsToolResult | ResponseRouting::PassToLLM
+            );
+        if !is_approved && !should_continue_use_as_result {
             return;
         }
         Self::push_resolution(
             step,
             pending_id_owned.clone(),
-            self.result_for(pending_id)
-                .cloned()
+            result_payload
+                .clone()
                 .unwrap_or(serde_json::Value::Bool(true)),
         );
 
-        self.route_frontend_invocation(step, &invocation);
+        self.route_frontend_invocation(step, &invocation, result_payload.as_ref());
     }
 
     /// Route an approved response using the first-class `FrontendToolInvocation` model.
-    fn route_frontend_invocation(&self, step: &mut StepContext<'_>, inv: &FrontendToolInvocation) {
+    fn route_frontend_invocation(
+        &self,
+        step: &mut StepContext<'_>,
+        inv: &FrontendToolInvocation,
+        response: Option<&serde_json::Value>,
+    ) {
         match &inv.routing {
             ResponseRouting::ReplayOriginalTool { state_patches } => {
                 // Apply pre-replay state patches (e.g. permission → allow).
@@ -282,7 +292,7 @@ impl InteractionResponsePlugin {
                 let replay_call = tirea_contract::thread::ToolCall::new(
                     inv.call_id.clone(),
                     inv.tool_name.clone(),
-                    inv.arguments.clone(),
+                    normalize_frontend_tool_result(response, &inv.arguments),
                 );
                 Self::queue_replay_call(step, replay_call);
             }
@@ -292,13 +302,24 @@ impl InteractionResponsePlugin {
                 let replay_call = tirea_contract::thread::ToolCall::new(
                     inv.call_id.clone(),
                     inv.tool_name.clone(),
-                    inv.arguments.clone(),
+                    normalize_frontend_tool_result(response, &inv.arguments),
                 );
                 Self::queue_replay_call(step, replay_call);
             }
         }
     }
+}
 
+fn normalize_frontend_tool_result(
+    response: Option<&serde_json::Value>,
+    fallback_arguments: &serde_json::Value,
+) -> serde_json::Value {
+    match response {
+        // Backward compatibility: approved/denied channels only carry bool.
+        // For use_as_tool_result/pass_to_llm we treat bool as ack and keep original args.
+        Some(serde_json::Value::Bool(_)) | None => fallback_arguments.clone(),
+        Some(value) => value.clone(),
+    }
 }
 
 #[async_trait]
@@ -396,6 +417,17 @@ mod tests {
             .and_then(|agent| agent.get("replay_tool_calls"))
             .cloned()
             .and_then(|v| serde_json::from_value::<Vec<ToolCall>>(v).ok())
+            .unwrap_or_default()
+    }
+
+    fn interaction_resolutions_from_state(
+        state: &serde_json::Value,
+    ) -> Vec<InteractionResponse> {
+        state
+            .get("interaction_outbox")
+            .and_then(|agent| agent.get("interaction_resolutions"))
+            .cloned()
+            .and_then(|v| serde_json::from_value::<Vec<InteractionResponse>>(v).ok())
             .unwrap_or_default()
     }
 
@@ -756,6 +788,56 @@ mod tests {
 
         // No state patches for UseAsToolResult
         assert!(step.pending_patches.is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_start_use_as_tool_result_preserves_non_boolean_payload() {
+        let state = json!({
+            "loop_control": {
+                "pending_interaction": {
+                    "id": "call_copy",
+                    "action": "tool:copyToClipboard",
+                    "parameters": { "text": "hello" }
+                },
+                "pending_frontend_invocation": {
+                    "call_id": "call_copy",
+                    "tool_name": "copyToClipboard",
+                    "arguments": { "text": "hello" },
+                    "origin": {
+                        "type": "plugin_initiated",
+                        "plugin_id": "agui_frontend_tools"
+                    },
+                    "routing": {
+                        "strategy": "use_as_tool_result"
+                    }
+                }
+            }
+        });
+        let fixture = TestFixture::new_with_state(state);
+        let plugin = InteractionResponsePlugin::from_responses(vec![InteractionResponse::new(
+            "call_copy",
+            json!({
+                "ok": true,
+                "copied": "hello"
+            }),
+        )]);
+
+        let mut step = fixture.step(vec![]);
+        plugin.on_phase(Phase::RunStart, &mut step).await;
+
+        let updated = fixture.updated_state();
+        let replay_calls = replay_calls_from_state(&updated);
+        assert_eq!(replay_calls.len(), 1);
+        assert_eq!(replay_calls[0].id, "call_copy");
+        assert_eq!(replay_calls[0].name, "copyToClipboard");
+        assert_eq!(replay_calls[0].arguments["ok"], true);
+        assert_eq!(replay_calls[0].arguments["copied"], "hello");
+
+        let resolutions = interaction_resolutions_from_state(&updated);
+        assert_eq!(resolutions.len(), 1);
+        assert_eq!(resolutions[0].interaction_id, "call_copy");
+        assert_eq!(resolutions[0].result["ok"], true);
+        assert_eq!(resolutions[0].result["copied"], "hello");
     }
 
     #[tokio::test]

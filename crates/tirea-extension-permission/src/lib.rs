@@ -143,6 +143,10 @@ impl AgentPlugin for PermissionPlugin {
             return;
         }
 
+        if step.tool_pending() || step.tool_blocked() {
+            return;
+        }
+
         let Some(tool_id) = step.tool_name() else {
             return;
         };
@@ -506,6 +510,37 @@ mod tests {
             }
             _ => panic!("Expected ReplayOriginalTool routing"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_permission_plugin_skips_when_tool_already_pending() {
+        use tirea_contract::event::interaction::ResponseRouting;
+
+        let fixture = TestFixture::new_with_state(
+            json!({ "permissions": { "default_behavior": "ask", "tools": {} } }),
+        );
+        let mut step = fixture.step(vec![]);
+        let call = ToolCall::new("call_1", "copyToClipboard", json!({"text": "hello"}));
+        step.tool = Some(ToolContext::new(&call));
+
+        step.invoke_frontend_tool(
+            "copyToClipboard",
+            json!({"text": "hello"}),
+            ResponseRouting::UseAsToolResult,
+        );
+
+        let plugin = PermissionPlugin;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        apply_interaction_intents(&mut step);
+
+        assert!(step.tool_pending());
+        assert!(!step.tool_blocked());
+        let inv = step
+            .tool
+            .as_ref()
+            .and_then(|t| t.pending_frontend_invocation.as_ref())
+            .expect("pending frontend invocation should exist");
+        assert_eq!(inv.tool_name, "copyToClipboard");
     }
 
     #[tokio::test]
