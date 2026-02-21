@@ -215,7 +215,7 @@ impl AgentPlugin for PermissionPlugin {
                         json!(true),
                     )],
                 };
-                step.invoke_frontend_tool(PERMISSION_CONFIRM_TOOL_NAME, arguments, routing);
+                step.ask_frontend_tool(PERMISSION_CONFIRM_TOOL_NAME, arguments, routing);
             }
         }
     }
@@ -523,7 +523,7 @@ mod tests {
         let call = ToolCall::new("call_1", "copyToClipboard", json!({"text": "hello"}));
         step.tool = Some(ToolContext::new(&call));
 
-        step.invoke_frontend_tool(
+        step.ask_frontend_tool(
             "copyToClipboard",
             json!({"text": "hello"}),
             ResponseRouting::UseAsToolResult,

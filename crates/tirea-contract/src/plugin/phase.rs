@@ -310,39 +310,14 @@ impl<'a> StepContext<'a> {
         self.system_context.push(content.into());
     }
 
-    /// Set system context (replaces existing) [Position 1].
-    pub fn set_system(&mut self, content: impl Into<String>) {
-        self.system_context = vec![content.into()];
-    }
-
-    /// Clear system context [Position 1].
-    pub fn clear_system(&mut self) {
-        self.system_context.clear();
-    }
-
     /// Add session context message (before user messages) [Position 2].
     pub fn thread(&mut self, content: impl Into<String>) {
         self.session_context.push(content.into());
     }
 
-    /// Set session context (replaces existing) [Position 2].
-    pub fn set_session(&mut self, content: impl Into<String>) {
-        self.session_context = vec![content.into()];
-    }
-
-    /// Clear session context [Position 2].
-    pub fn clear_session(&mut self) {
-        self.session_context.clear();
-    }
-
     /// Add system reminder (after tool result) [Position 7].
     pub fn reminder(&mut self, content: impl Into<String>) {
         self.system_reminders.push(content.into());
-    }
-
-    /// Clear system reminders [Position 7].
-    pub fn clear_reminders(&mut self) {
-        self.system_reminders.clear();
     }
 
     // =========================================================================
@@ -439,21 +414,7 @@ impl<'a> StepContext<'a> {
         }
     }
 
-    /// Block current tool execution.
-    ///
-    /// Backward-compatible alias for [`StepContext::deny`].
-    pub fn block(&mut self, reason: impl Into<String>) {
-        self.deny(reason);
-    }
-
-    /// Set current tool to pending (requires user confirmation).
-    ///
-    /// Backward-compatible alias for [`StepContext::ask`].
-    pub fn pending(&mut self, interaction: Interaction) {
-        self.ask(interaction);
-    }
-
-    /// Invoke a frontend tool, suspending the current tool execution.
+    /// Ask a frontend tool, suspending the current tool execution.
     ///
     /// This is the first-class API for calling frontend tools. It:
     /// - Auto-determines the invocation origin from the current tool context
@@ -463,7 +424,7 @@ impl<'a> StepContext<'a> {
     ///   and a backward-compatible `Interaction`
     ///
     /// Returns the generated `call_id`, or `None` if no tool context is active.
-    pub fn invoke_frontend_tool(
+    pub fn ask_frontend_tool(
         &mut self,
         tool_name: impl Into<String>,
         arguments: Value,
@@ -505,13 +466,6 @@ impl<'a> StepContext<'a> {
         tool.pending_frontend_invocation = Some(invocation);
 
         Some(call_id)
-    }
-
-    /// Confirm pending tool execution.
-    ///
-    /// Backward-compatible alias for [`StepContext::allow`].
-    pub fn confirm(&mut self) {
-        self.allow();
     }
 
     /// Set tool result.
@@ -666,7 +620,7 @@ mod tests {
 
         ctx.system("Context 1");
         ctx.system("Context 2");
-        ctx.set_system("Replaced");
+        ctx.system_context = vec!["Replaced".to_string()];
 
         assert_eq!(ctx.system_context.len(), 1);
         assert_eq!(ctx.system_context[0], "Replaced");
@@ -678,7 +632,7 @@ mod tests {
         let mut ctx = fix.step(vec![]);
 
         ctx.system("Context 1");
-        ctx.clear_system();
+        ctx.system_context.clear();
 
         assert!(ctx.system_context.is_empty());
     }
@@ -700,7 +654,7 @@ mod tests {
         let mut ctx = fix.step(vec![]);
 
         ctx.thread("Thread 1");
-        ctx.set_session("Replaced");
+        ctx.session_context = vec!["Replaced".to_string()];
 
         assert_eq!(ctx.session_context.len(), 1);
         assert_eq!(ctx.session_context[0], "Replaced");
@@ -723,7 +677,7 @@ mod tests {
         let mut ctx = fix.step(vec![]);
 
         ctx.reminder("Reminder 1");
-        ctx.clear_reminders();
+        ctx.system_reminders.clear();
 
         assert!(ctx.system_reminders.is_empty());
     }
@@ -782,7 +736,7 @@ mod tests {
         let call = ToolCall::new("call_1", "delete_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
 
-        ctx.block("Permission denied");
+        ctx.deny("Permission denied");
 
         assert!(ctx.tool_blocked());
         assert!(!ctx.tool_pending());
@@ -802,7 +756,7 @@ mod tests {
         ctx.tool = Some(ToolContext::new(&call));
 
         let interaction = Interaction::new("confirm_1", "confirm").with_message("Allow write?");
-        ctx.pending(interaction);
+        ctx.ask(interaction);
 
         assert!(ctx.tool_pending());
         assert!(!ctx.tool_blocked());
@@ -819,8 +773,8 @@ mod tests {
         ctx.tool = Some(ToolContext::new(&call));
 
         let interaction = Interaction::new("confirm_1", "confirm").with_message("Allow write?");
-        ctx.pending(interaction);
-        ctx.confirm();
+        ctx.ask(interaction);
+        ctx.allow();
 
         assert!(!ctx.tool_pending());
         assert!(!ctx.tool_blocked());
@@ -893,7 +847,7 @@ mod tests {
         ctx.tool = Some(ToolContext::new(&call));
 
         let interaction = Interaction::new("confirm_1", "confirm").with_message("Allow?");
-        ctx.pending(interaction.clone());
+        ctx.ask(interaction.clone());
 
         match ctx.result() {
             StepOutcome::Pending(i) => assert_eq!(i.id, "confirm_1"),
@@ -1080,7 +1034,7 @@ mod tests {
         let mut ctx = fix.step(vec![]);
 
         // No tool context, block should not panic
-        ctx.block("test");
+        ctx.deny("test");
 
         assert!(!ctx.tool_blocked()); // tool_blocked returns false when no tool
     }
@@ -1091,7 +1045,7 @@ mod tests {
         let mut ctx = fix.step(vec![]);
 
         let interaction = Interaction::new("id", "confirm").with_message("test");
-        ctx.pending(interaction);
+        ctx.ask(interaction);
 
         assert!(!ctx.tool_pending()); // tool_pending returns false when no tool
     }
@@ -1105,7 +1059,7 @@ mod tests {
         ctx.tool = Some(ToolContext::new(&call));
 
         // Confirm without pending should not panic
-        ctx.confirm();
+        ctx.allow();
 
         assert!(!ctx.tool_pending());
     }
@@ -1199,9 +1153,9 @@ mod tests {
 
         let call = ToolCall::new("call_copy", "copyToClipboard", json!({"text": "hello"}));
         ctx.tool = Some(ToolContext::new(&call));
-        ctx.block("old deny state");
+        ctx.deny("old deny state");
 
-        let call_id = ctx.invoke_frontend_tool(
+        let call_id = ctx.ask_frontend_tool(
             "copyToClipboard",
             json!({"text": "hello"}),
             ResponseRouting::UseAsToolResult,
@@ -1251,7 +1205,7 @@ mod tests {
         let call = ToolCall::new("call_write", "write_file", json!({"path": "a.txt"}));
         ctx.tool = Some(ToolContext::new(&call));
 
-        let call_id = ctx.invoke_frontend_tool(
+        let call_id = ctx.ask_frontend_tool(
             "PermissionConfirm",
             json!({"tool_name": "write_file", "tool_args": {"path": "a.txt"}}),
             ResponseRouting::ReplayOriginalTool {
@@ -1299,7 +1253,7 @@ mod tests {
         let fix = TestFixture::new();
         let mut ctx = fix.step(vec![]);
 
-        let result = ctx.invoke_frontend_tool(
+        let result = ctx.ask_frontend_tool(
             "PermissionConfirm",
             json!({}),
             ResponseRouting::UseAsToolResult,
@@ -1315,7 +1269,7 @@ mod tests {
 
         ctx.thread("Context 1");
         ctx.thread("Context 2");
-        ctx.set_session("Only this");
+        ctx.session_context = vec!["Only this".to_string()];
 
         assert_eq!(ctx.session_context.len(), 1);
         assert_eq!(ctx.session_context[0], "Only this");

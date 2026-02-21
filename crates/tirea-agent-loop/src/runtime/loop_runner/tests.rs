@@ -818,7 +818,7 @@ impl AgentPlugin for BlockingPhasePlugin {
 
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         if phase == Phase::BeforeToolExecute && step.tool_name() == Some("echo") {
-            step.block("Echo tool is blocked");
+            step.deny("Echo tool is blocked");
         }
     }
 }
@@ -864,7 +864,7 @@ impl AgentPlugin for InvalidAfterToolMutationPlugin {
 
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         if phase == Phase::AfterToolExecute {
-            step.block("too late");
+            step.deny("too late");
         }
     }
 }
@@ -1093,7 +1093,7 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
                 .unwrap_or(false);
 
             if !allow_exec {
-                step.block("missing plugin.allow_exec in state");
+                step.deny("missing plugin.allow_exec in state");
             }
         }
     }
@@ -1526,7 +1526,7 @@ impl AgentPlugin for PendingPhasePlugin {
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         if phase == Phase::BeforeToolExecute && step.tool_name() == Some("echo") {
             use crate::contracts::Interaction;
-            step.pending(Interaction::new("confirm_1", "confirm").with_message("Execute echo?"));
+            step.ask(Interaction::new("confirm_1", "confirm").with_message("Execute echo?"));
         }
     }
 }
@@ -2987,7 +2987,7 @@ async fn test_run_loop_rejects_non_append_prompt_context_mutation_in_before_infe
 
         async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase == Phase::BeforeInference {
-                step.set_system("replaced");
+                step.system_context = vec!["replaced".to_string()];
             }
         }
     }
@@ -3121,7 +3121,7 @@ impl AgentPlugin for ReminderReplacePlugin {
 
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         if phase == Phase::AfterToolExecute {
-            step.clear_reminders();
+            step.system_reminders.clear();
             step.reminder("second");
         }
     }
@@ -4636,7 +4636,7 @@ async fn test_stream_frontend_use_as_tool_result_emits_single_tool_call_start() 
                 return;
             }
 
-            step.invoke_frontend_tool(
+            step.ask_frontend_tool(
                 "addTask",
                 json!({ "title": "Deploy v2" }),
                 ResponseRouting::UseAsToolResult,
@@ -4861,7 +4861,7 @@ async fn test_stream_replay_tool_exec_respects_tool_phases() {
                 }
                 Phase::BeforeToolExecute if step.tool_call_id() == Some("replay_call_1") => {
                     BEFORE_TOOL_EXECUTED.store(true, Ordering::SeqCst);
-                    step.block("blocked in replay");
+                    step.deny("blocked in replay");
                 }
                 _ => {}
             }
@@ -4979,7 +4979,7 @@ async fn test_stream_parallel_multiple_pending_keeps_run_end_and_single_pending(
             match phase {
                 Phase::BeforeToolExecute => {
                     if let Some(call_id) = step.tool_call_id() {
-                        step.pending(
+                        step.ask(
                             Interaction::new(format!("confirm_{call_id}"), "confirm")
                                 .with_message("needs confirmation"),
                         );
@@ -5762,7 +5762,7 @@ async fn test_sequential_tools_stop_after_first_pending_interaction() {
                     .lock()
                     .expect("lock poisoned")
                     .push(call_id.to_string());
-                step.pending(
+                step.ask(
                     Interaction::new(format!("confirm_{call_id}"), "confirm")
                         .with_message("needs confirmation"),
                 );
@@ -5827,7 +5827,7 @@ async fn test_parallel_tools_allow_single_pending_interaction_per_round() {
                     .lock()
                     .expect("lock poisoned")
                     .push(call_id.to_string());
-                step.pending(
+                step.ask(
                     Interaction::new(format!("confirm_{call_id}"), "confirm")
                         .with_message("needs confirmation"),
                 );
@@ -5979,7 +5979,7 @@ impl AgentPlugin for ConditionalBlockPlugin {
 
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         if phase == Phase::BeforeToolExecute && step.tool_pending() {
-            step.block("Blocked because tool was pending".to_string());
+            step.deny("Blocked because tool was pending".to_string());
         }
     }
 }
@@ -7515,7 +7515,7 @@ async fn test_stream_permission_intercept_emits_tool_call_start_for_frontend() {
                 return;
             }
 
-            step.invoke_frontend_tool(
+            step.ask_frontend_tool(
                 "PermissionConfirm",
                 json!({ "tool_name": "serverInfo", "tool_args": {} }),
                 ResponseRouting::ReplayOriginalTool {

@@ -4987,7 +4987,7 @@ impl AgentPlugin for TestFrontendToolPlugin {
 
         let interaction = Interaction::new(&tool.id, format!("tool:{}", tool.name))
             .with_parameters(tool.args.clone());
-        step.pending(interaction);
+        step.ask(interaction);
     }
 }
 

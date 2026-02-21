@@ -232,7 +232,7 @@ impl AgentPlugin for FrontendToolPendingPlugin {
 
         let tool_name = tool.name.clone();
         let args = tool.args.clone();
-        step.invoke_frontend_tool(tool_name, args, ResponseRouting::UseAsToolResult);
+        step.ask_frontend_tool(tool_name, args, ResponseRouting::UseAsToolResult);
     }
 }
 
