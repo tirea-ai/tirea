@@ -27,6 +27,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use tirea_contract::event::interaction::ResponseRouting;
 use tirea_contract::plugin::AgentPlugin;
+use tirea_contract::plugin::phase::PluginPhaseContext;
 use tirea_contract::tool::context::ToolCallContext;
 use tirea_state::{Op, Path, State};
 
@@ -132,18 +133,14 @@ impl AgentPlugin for PermissionPlugin {
         "permission"
     }
 
-    async fn on_phase(
+    async fn before_tool_execute(
         &self,
-        phase: tirea_contract::plugin::phase::Phase,
-        step: &mut tirea_contract::plugin::phase::StepContext<'_>,
+        step: &mut tirea_contract::plugin::phase::BeforeToolExecuteContext<'_, '_>,
     ) {
-        use tirea_contract::plugin::phase::Phase;
-
-        if phase != Phase::BeforeToolExecute {
-            return;
-        }
-
-        if step.tool_pending() || step.tool_blocked() {
+        if !matches!(
+            step.decision(),
+            tirea_contract::plugin::phase::ToolDecision::Proceed
+        ) {
             return;
         }
 
@@ -156,7 +153,7 @@ impl AgentPlugin for PermissionPlugin {
         let call_id = step.tool_call_id().unwrap_or_default().to_string();
         if !call_id.is_empty() {
             let is_approved = {
-                let state = step.ctx().state_of::<PermissionState>();
+                let state = step.state_of::<PermissionState>();
                 state
                     .approved_calls()
                     .ok()
@@ -164,24 +161,27 @@ impl AgentPlugin for PermissionPlugin {
                     == Some(true)
             };
             if is_approved {
-                // Consume: delete the entry so it can't be reused and
-                // doesn't accumulate garbage in state.
-                step.pending_patches.push(
-                    tirea_state::TrackedPatch::new(
-                        tirea_state::Patch::new().with_op(Op::delete(
-                            Path::root()
-                                .key("permissions")
-                                .key("approved_calls")
-                                .key(&call_id),
-                        )),
-                    )
-                    .with_source("permission"),
-                );
+                // Consume once: remove approved entry after use.
+                let state = step.state_of::<PermissionState>();
+                let mut approved = state.approved_calls().ok().unwrap_or_default();
+                approved.remove(&call_id);
+                let _ = state.set_approved_calls(approved);
                 return; // Allow this specific call
             }
         }
 
-        let permission = step.ctx().get_permission(tool_id);
+        let permission = {
+            let state = step.state_of::<PermissionState>();
+            if let Ok(tools) = state.tools() {
+                if let Some(permission) = tools.get(tool_id) {
+                    *permission
+                } else {
+                    state.default_behavior().ok().unwrap_or_default()
+                }
+            } else {
+                state.default_behavior().ok().unwrap_or_default()
+            }
+        };
 
         match permission {
             ToolPermissionBehavior::Allow => {
@@ -196,9 +196,8 @@ impl AgentPlugin for PermissionPlugin {
                     return;
                 }
                 let tool_args = step
-                    .tool
-                    .as_ref()
-                    .map(|t| t.args.clone())
+                    .tool_args()
+                    .cloned()
                     .unwrap_or_default();
                 let arguments = json!({
                     "tool_name": tool_id,
@@ -225,12 +224,20 @@ impl AgentPlugin for PermissionPlugin {
 mod tests {
     use super::*;
     use serde_json::json;
-    use tirea_contract::plugin::phase::{Phase, ToolContext};
+    use tirea_contract::plugin::phase::{BeforeToolExecuteContext, ToolContext};
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::ToolCall;
 
     fn apply_interaction_intents(_step: &mut tirea_contract::plugin::phase::StepContext<'_>) {
         // No-op: permission plugin now sets pending interaction directly.
+    }
+
+    async fn run_before_tool_execute(
+        plugin: &PermissionPlugin,
+        step: &mut tirea_contract::plugin::phase::StepContext<'_>,
+    ) {
+        let mut ctx = BeforeToolExecuteContext::new(step);
+        plugin.before_tool_execute(&mut ctx).await;
     }
 
     #[test]
@@ -416,7 +423,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
         apply_interaction_intents(&mut step);
 
         assert!(!step.tool_blocked());
@@ -434,7 +441,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
         apply_interaction_intents(&mut step);
 
         assert!(step.tool_blocked());
@@ -453,7 +460,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
         apply_interaction_intents(&mut step);
 
         assert!(step.tool_pending());
@@ -530,7 +537,7 @@ mod tests {
         );
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
         apply_interaction_intents(&mut step);
 
         assert!(step.tool_pending());
@@ -554,7 +561,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
         apply_interaction_intents(&mut step);
 
         assert!(step.tool_blocked());
@@ -611,7 +618,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
         apply_interaction_intents(&mut step);
 
         assert!(!step.tool_blocked());
@@ -628,7 +635,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
         apply_interaction_intents(&mut step);
 
         assert!(step.tool_blocked());
@@ -645,7 +652,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
         apply_interaction_intents(&mut step);
 
         assert!(step.tool_pending());
@@ -662,7 +669,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
         apply_interaction_intents(&mut step);
 
         // Should fall back to default "allow" behavior
@@ -681,7 +688,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
         apply_interaction_intents(&mut step);
 
         // Should fall back to Ask behavior
@@ -698,7 +705,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
         apply_interaction_intents(&mut step);
 
         assert!(step.tool_pending());
@@ -721,7 +728,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
         apply_interaction_intents(&mut step);
 
         // "tools" is not an object -> tools.get(tool_id) returns None -> falls
@@ -742,7 +749,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
         apply_interaction_intents(&mut step);
 
         // parse_behavior("invalid_value") returns None -> unwrap_or(Ask)
@@ -761,7 +768,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
         apply_interaction_intents(&mut step);
 
         // as_str() on a number returns None -> parse_behavior not called -> unwrap_or(Ask)
@@ -780,7 +787,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
         apply_interaction_intents(&mut step);
 
         // tools.get("my_tool") returns Some(123), as_str() returns None ->
@@ -799,7 +806,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
         apply_interaction_intents(&mut step);
 
         // Array can't .get("tools") -> None -> falls to default check ->
@@ -824,7 +831,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
 
         assert!(!step.tool_blocked(), "approved call_1 should be allowed");
         assert!(
@@ -851,7 +858,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
 
         assert!(
             step.tool_pending(),
@@ -876,7 +883,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
 
         assert!(
             step.tool_pending(),
@@ -885,9 +892,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_permission_approval_cleanup_emits_delete_patch() {
-        // When a one-shot approval is consumed, the plugin should emit a
-        // delete patch to clean up the entry from state.
+    async fn test_permission_approval_cleanup_removes_consumed_call() {
+        // Consumed one-shot approvals should be removed from state so they
+        // cannot be reused.
         let fixture = TestFixture::new_with_state(json!({
             "permissions": {
                 "default_behavior": "ask",
@@ -901,12 +908,17 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
 
         assert!(!step.tool_pending(), "approved call should be allowed");
+        let approvals = step
+            .state_of::<PermissionState>()
+            .approved_calls()
+            .ok()
+            .unwrap_or_default();
         assert!(
-            !step.pending_patches.is_empty(),
-            "consuming approval should emit a delete patch"
+            !approvals.contains_key("call_1"),
+            "consumed approval must be removed from state"
         );
     }
 }

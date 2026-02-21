@@ -3,7 +3,7 @@ use crate::{SkillMeta, SkillRegistry, SkillState, SKILLS_DISCOVERY_PLUGIN_ID};
 use async_trait::async_trait;
 use std::collections::HashSet;
 use std::sync::Arc;
-use tirea_contract::plugin::phase::{Phase, StepContext};
+use tirea_contract::plugin::phase::{BeforeInferenceContext, PluginPhaseContext};
 use tirea_contract::plugin::AgentPlugin;
 
 /// Injects a skills catalog into the LLM context so the model can discover and activate skills.
@@ -131,11 +131,7 @@ impl AgentPlugin for SkillDiscoveryPlugin {
         SKILLS_DISCOVERY_PLUGIN_ID
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        if phase != Phase::BeforeInference {
-            return;
-        }
-
+    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
         let (active, scope) = {
             let skill_state = step.state_of::<SkillState>();
             let active: HashSet<String> = skill_state
@@ -153,7 +149,7 @@ impl AgentPlugin for SkillDiscoveryPlugin {
             return;
         }
 
-        step.system(rendered);
+        step.add_system_context(rendered);
     }
 }
 
@@ -165,6 +161,7 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use tempfile::TempDir;
+    use tirea_contract::plugin::phase::{BeforeInferenceContext, StepContext};
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::Thread;
     use tirea_contract::tool::ToolDescriptor;
@@ -192,6 +189,11 @@ mod tests {
         (td, skills)
     }
 
+    async fn run_before_inference(plugin: &SkillDiscoveryPlugin, step: &mut StepContext<'_>) {
+        let mut ctx = BeforeInferenceContext::new(step);
+        plugin.before_inference(&mut ctx).await;
+    }
+
     #[tokio::test]
     async fn injects_catalog_with_usage() {
         let fix = TestFixture::new();
@@ -204,7 +206,7 @@ mod tests {
             &thread.messages,
             vec![ToolDescriptor::new("t", "t", "t")],
         );
-        p.on_phase(Phase::BeforeInference, &mut step).await;
+        run_before_inference(&p, &mut step).await;
         assert_eq!(step.system_context.len(), 1);
         let s = &step.system_context[0];
         assert!(s.contains("<available_skills>"));
@@ -236,7 +238,7 @@ mod tests {
             &thread.messages,
             vec![ToolDescriptor::new("t", "t", "t")],
         );
-        p.on_phase(Phase::BeforeInference, &mut step).await;
+        run_before_inference(&p, &mut step).await;
         let s = &step.system_context[0];
         assert!(s.contains("<name>a-skill</name>"));
     }
@@ -252,7 +254,7 @@ mod tests {
             &thread.messages,
             vec![ToolDescriptor::new("t", "t", "t")],
         );
-        p.on_phase(Phase::BeforeInference, &mut step).await;
+        run_before_inference(&p, &mut step).await;
         assert!(step.system_context.is_empty());
     }
 
@@ -280,7 +282,7 @@ mod tests {
             &thread.messages,
             vec![ToolDescriptor::new("t", "t", "t")],
         );
-        p.on_phase(Phase::BeforeInference, &mut step).await;
+        run_before_inference(&p, &mut step).await;
         assert!(step.system_context.is_empty());
     }
 
@@ -312,7 +314,7 @@ mod tests {
             &thread.messages,
             vec![ToolDescriptor::new("t", "t", "t")],
         );
-        p.on_phase(Phase::BeforeInference, &mut step).await;
+        run_before_inference(&p, &mut step).await;
 
         assert_eq!(step.system_context.len(), 1);
         let s = &step.system_context[0];
@@ -346,7 +348,7 @@ mod tests {
             &thread.messages,
             vec![ToolDescriptor::new("t", "t", "t")],
         );
-        p.on_phase(Phase::BeforeInference, &mut step).await;
+        run_before_inference(&p, &mut step).await;
         let s = &step.system_context[0];
         assert!(s.contains("<available_skills>"));
         assert!(s.contains("truncated"));
@@ -374,7 +376,7 @@ mod tests {
             &thread.messages,
             vec![ToolDescriptor::new("t", "t", "t")],
         );
-        p.on_phase(Phase::BeforeInference, &mut step).await;
+        run_before_inference(&p, &mut step).await;
         let s = &step.system_context[0];
         assert!(s.len() <= 256);
     }
@@ -394,7 +396,7 @@ mod tests {
             &thread.messages,
             vec![ToolDescriptor::new("t", "t", "t")],
         );
-        p.on_phase(Phase::BeforeInference, &mut step).await;
+        run_before_inference(&p, &mut step).await;
         assert_eq!(step.system_context.len(), 1);
         let s = &step.system_context[0];
         assert!(s.contains("<name>a-skill</name>"));

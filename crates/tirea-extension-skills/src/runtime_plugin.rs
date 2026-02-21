@@ -1,7 +1,6 @@
 use crate::SKILLS_RUNTIME_PLUGIN_ID;
 use async_trait::async_trait;
-use tirea_contract::plugin::phase::Phase;
-use tirea_contract::plugin::phase::StepContext;
+use tirea_contract::plugin::phase::BeforeInferenceContext;
 use tirea_contract::plugin::AgentPlugin;
 
 /// Placeholder plugin for activated skill state.
@@ -25,7 +24,7 @@ impl AgentPlugin for SkillRuntimePlugin {
         SKILLS_RUNTIME_PLUGIN_ID
     }
 
-    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {
+    async fn before_inference(&self, _ctx: &mut BeforeInferenceContext<'_, '_>) {
         // No-op: skill content is delivered via append_user_messages and tool results.
     }
 }
@@ -49,7 +48,8 @@ mod tests {
         }));
         let mut step = fixture.step(vec![ToolDescriptor::new("t", "t", "t")]);
         let p = SkillRuntimePlugin::new();
-        p.on_phase(Phase::BeforeInference, &mut step).await;
+        let mut before = BeforeInferenceContext::new(&mut step);
+        p.before_inference(&mut before).await;
         assert!(
             step.system_context.is_empty(),
             "runtime plugin should not inject system context"

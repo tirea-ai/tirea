@@ -134,7 +134,7 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use tempfile::TempDir;
-    use tirea_contract::plugin::phase::{Phase, StepContext};
+    use tirea_contract::plugin::phase::{BeforeInferenceContext, StepContext};
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::Thread;
     use tirea_contract::thread::{Message, ToolCall};
@@ -315,7 +315,8 @@ mod tests {
             &thread.messages,
             vec![ToolDescriptor::new("t", "t", "t")],
         );
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        let mut before = BeforeInferenceContext::new(&mut step);
+        plugin.before_inference(&mut before).await;
 
         assert_eq!(step.system_context.len(), 1);
         assert!(step.system_context[0].contains("<available_skills>"));

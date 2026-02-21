@@ -22,6 +22,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tirea_contract::plugin::AgentPlugin;
+use tirea_contract::plugin::phase::PluginPhaseContext;
 use tirea_contract::tool::context::ToolCallContext;
 use tirea_state::State;
 
@@ -124,33 +125,21 @@ impl AgentPlugin for ReminderPlugin {
         "reminder"
     }
 
-    async fn on_phase(
+    async fn before_inference(
         &self,
-        phase: tirea_contract::plugin::phase::Phase,
-        step: &mut tirea_contract::plugin::phase::StepContext<'_>,
+        ctx: &mut tirea_contract::plugin::phase::BeforeInferenceContext<'_, '_>,
     ) {
-        use tirea_contract::plugin::phase::Phase;
-
-        if phase != Phase::BeforeInference {
-            return;
-        }
-
-        let reminders = step
-            .ctx()
-            .state_of::<ReminderState>()
-            .items()
-            .ok()
-            .unwrap_or_default();
+        let reminders = ctx.state_of::<ReminderState>().items().ok().unwrap_or_default();
         if reminders.is_empty() {
             return;
         }
 
         for text in &reminders {
-            step.thread(format!("Reminder: {}", text));
+            ctx.add_session_message(format!("Reminder: {}", text));
         }
 
         if self.clear_after_llm_request {
-            let state = step.ctx().state_of::<ReminderState>();
+            let state = ctx.state_of::<ReminderState>();
             let _ = state.set_items(Vec::new());
         }
     }
@@ -160,8 +149,16 @@ impl AgentPlugin for ReminderPlugin {
 mod tests {
     use super::*;
     use serde_json::json;
-    use tirea_contract::plugin::phase::Phase;
+    use tirea_contract::plugin::phase::BeforeInferenceContext;
     use tirea_contract::testing::TestFixture;
+
+    async fn run_before_inference(
+        plugin: &ReminderPlugin,
+        step: &mut tirea_contract::plugin::phase::StepContext<'_>,
+    ) {
+        let mut ctx = BeforeInferenceContext::new(step);
+        plugin.before_inference(&mut ctx).await;
+    }
 
     #[test]
     fn test_reminder_state_default() {
@@ -282,7 +279,7 @@ mod tests {
         let plugin = ReminderPlugin::new();
         let mut step = fixture.step(vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        run_before_inference(&plugin, &mut step).await;
 
         assert!(!step.session_context.is_empty());
         assert!(step.session_context[0].contains("Test reminder"));
@@ -297,7 +294,7 @@ mod tests {
         let plugin = ReminderPlugin::new(); // clear_after_llm_request = true
         let mut step = fixture.step(vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        run_before_inference(&plugin, &mut step).await;
 
         // Should have injected reminders as session context
         assert_eq!(step.session_context.len(), 2);
@@ -316,7 +313,7 @@ mod tests {
         let plugin = ReminderPlugin::new().with_clear_after_llm_request(false);
         let mut step = fixture.step(vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        run_before_inference(&plugin, &mut step).await;
 
         assert!(!step.session_context.is_empty());
         // No pending patches when clearing is disabled
@@ -330,7 +327,7 @@ mod tests {
         let plugin = ReminderPlugin::new();
         let mut step = fixture.step(vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        run_before_inference(&plugin, &mut step).await;
 
         assert!(step.session_context.is_empty());
         assert!(step.pending_patches.is_empty());
@@ -343,7 +340,7 @@ mod tests {
         let plugin = ReminderPlugin::new();
         let mut step = fixture.step(vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        run_before_inference(&plugin, &mut step).await;
 
         assert!(step.session_context.is_empty());
         assert!(step.pending_patches.is_empty());

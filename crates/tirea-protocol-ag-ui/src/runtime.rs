@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tirea_agent_loop::runtime::loop_runner::ResolvedRun;
 use tirea_contract::event::interaction::ResponseRouting;
-use tirea_contract::plugin::phase::{Phase, StepContext};
+use tirea_contract::plugin::phase::{BeforeInferenceContext, BeforeToolExecuteContext};
 use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_contract::ToolCallContext;
@@ -189,10 +189,8 @@ impl AgentPlugin for ContextInjectionPlugin {
         "agui_context_injection"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        if phase == Phase::BeforeInference {
-            step.system(&self.addendum);
-        }
+    async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
+        ctx.add_system_context(&self.addendum);
     }
 }
 
@@ -213,26 +211,23 @@ impl AgentPlugin for FrontendToolPendingPlugin {
         "agui_frontend_tools"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        if phase != Phase::BeforeToolExecute {
+    async fn before_tool_execute(&self, ctx: &mut BeforeToolExecuteContext<'_, '_>) {
+        if !matches!(
+            ctx.decision(),
+            tirea_contract::plugin::phase::ToolDecision::Proceed
+        ) {
             return;
         }
 
-        if step.tool_blocked() || step.tool_pending() {
-            return;
-        }
-
-        let Some(tool) = step.tool.as_ref() else {
+        let Some(tool_name) = ctx.tool_name() else {
             return;
         };
-
-        if !self.frontend_tools.contains(&tool.name) {
+        if !self.frontend_tools.contains(tool_name) {
             return;
         }
 
-        let tool_name = tool.name.clone();
-        let args = tool.args.clone();
-        step.ask_frontend_tool(tool_name, args, ResponseRouting::UseAsToolResult);
+        let args = ctx.tool_args().cloned().unwrap_or_default();
+        ctx.ask_frontend_tool(tool_name.to_string(), args, ResponseRouting::UseAsToolResult);
     }
 }
 
@@ -249,6 +244,19 @@ mod tests {
     use tirea_contract::plugin::AgentPlugin;
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::ToolCall;
+
+    async fn run_before_tool_execute(
+        plugin: &dyn AgentPlugin,
+        step: &mut StepContext<'_>,
+    ) {
+        let mut ctx = tirea_contract::plugin::phase::BeforeToolExecuteContext::new(step);
+        plugin.before_tool_execute(&mut ctx).await;
+    }
+
+    async fn run_before_inference(plugin: &dyn AgentPlugin, step: &mut StepContext<'_>) {
+        let mut ctx = tirea_contract::plugin::phase::BeforeInferenceContext::new(step);
+        plugin.before_inference(&mut ctx).await;
+    }
 
     fn empty_resolved() -> ResolvedRun {
         ResolvedRun {
@@ -467,7 +475,7 @@ mod tests {
         let call = ToolCall::new("call_1", "copyToClipboard", json!({"text":"hello"}));
         step.tool = Some(ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
 
         assert!(step.tool_pending());
 
@@ -554,7 +562,7 @@ mod tests {
         let fixture = TestFixture::new();
         let mut step = fixture.step(vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        run_before_inference(plugin.as_ref(), &mut step).await;
 
         assert!(!step.system_context.is_empty());
         let merged = step.system_context.join("\n");
