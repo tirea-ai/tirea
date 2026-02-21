@@ -5,7 +5,7 @@ use crate::contracts::thread::{Message, MessageMetadata, Role};
 use crate::contracts::tool::Tool;
 use crate::contracts::RunContext;
 use crate::runtime::control::{InferenceError, LoopControlState};
-use tirea_state::{DocCell, StateContext, TrackedPatch};
+use tirea_state::{DocCell, StateContext, TireaError, TrackedPatch};
 
 /// Skills state path — matches `SkillState::PATH` (avoids type dependency).
 const SKILLS_STATE_PATH: &str = "skills";
@@ -124,22 +124,44 @@ pub(super) fn set_agent_pending_interaction(
     state: &Value,
     interaction: Interaction,
     frontend_invocation: Option<FrontendToolInvocation>,
-) -> TrackedPatch {
+) -> Result<TrackedPatch, AgentLoopError> {
     let doc = DocCell::new(state.clone());
     let ctx = StateContext::new(&doc);
     let lc = ctx.state_of::<LoopControlState>();
-    lc.set_pending_interaction(Some(interaction));
-    lc.set_pending_frontend_invocation(frontend_invocation);
-    ctx.take_tracked_patch("agent_loop")
+    lc.set_pending_interaction(Some(interaction))
+        .map_err(|e| {
+            AgentLoopError::StateError(format!("failed to set loop_control.pending_interaction: {e}"))
+        })?;
+    lc.set_pending_frontend_invocation(frontend_invocation)
+        .map_err(|e| {
+            AgentLoopError::StateError(format!(
+                "failed to set loop_control.pending_frontend_invocation: {e}"
+            ))
+        })?;
+    Ok(ctx.take_tracked_patch("agent_loop"))
 }
 
-pub(super) fn clear_agent_pending_interaction(state: &Value) -> TrackedPatch {
+pub(super) fn clear_agent_pending_interaction(state: &Value) -> Result<TrackedPatch, AgentLoopError> {
     let doc = DocCell::new(state.clone());
     let ctx = StateContext::new(&doc);
     let lc = ctx.state_of::<LoopControlState>();
-    lc.pending_interaction_none();
-    lc.pending_frontend_invocation_none();
-    ctx.take_tracked_patch("agent_loop")
+    match lc.pending_interaction_none() {
+        Ok(()) | Err(TireaError::PathNotFound { .. }) => {}
+        Err(e) => {
+            return Err(AgentLoopError::StateError(format!(
+                "failed to clear loop_control.pending_interaction: {e}"
+            )))
+        }
+    }
+    match lc.pending_frontend_invocation_none() {
+        Ok(()) | Err(TireaError::PathNotFound { .. }) => {}
+        Err(e) => {
+            return Err(AgentLoopError::StateError(format!(
+                "failed to clear loop_control.pending_frontend_invocation: {e}"
+            )))
+        }
+    }
+    Ok(ctx.take_tracked_patch("agent_loop"))
 }
 
 pub(super) fn pending_interaction_from_ctx(run_ctx: &RunContext) -> Option<Interaction> {
@@ -152,20 +174,33 @@ pub(super) fn pending_frontend_invocation_from_ctx(
     run_ctx.pending_frontend_invocation()
 }
 
-pub(super) fn set_agent_inference_error(state: &Value, error: InferenceError) -> TrackedPatch {
+pub(super) fn set_agent_inference_error(
+    state: &Value,
+    error: InferenceError,
+) -> Result<TrackedPatch, AgentLoopError> {
     let doc = DocCell::new(state.clone());
     let ctx = StateContext::new(&doc);
     let lc = ctx.state_of::<LoopControlState>();
-    lc.set_inference_error(Some(error));
-    ctx.take_tracked_patch("agent_loop")
+    lc.set_inference_error(Some(error))
+        .map_err(|e| {
+            AgentLoopError::StateError(format!("failed to set loop_control.inference_error: {e}"))
+        })?;
+    Ok(ctx.take_tracked_patch("agent_loop"))
 }
 
-pub(super) fn clear_agent_inference_error(state: &Value) -> TrackedPatch {
+pub(super) fn clear_agent_inference_error(state: &Value) -> Result<TrackedPatch, AgentLoopError> {
     let doc = DocCell::new(state.clone());
     let ctx = StateContext::new(&doc);
     let lc = ctx.state_of::<LoopControlState>();
-    lc.inference_error_none();
-    ctx.take_tracked_patch("agent_loop")
+    match lc.inference_error_none() {
+        Ok(()) | Err(TireaError::PathNotFound { .. }) => {}
+        Err(e) => {
+            return Err(AgentLoopError::StateError(format!(
+                "failed to clear loop_control.inference_error: {e}"
+            )))
+        }
+    }
+    Ok(ctx.take_tracked_patch("agent_loop"))
 }
 
 #[derive(Default)]

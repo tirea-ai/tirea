@@ -122,16 +122,17 @@ pub(super) fn set_pending_interaction_patch(
     state: &Value,
     interaction: Interaction,
     call_id: &str,
-) -> Option<tirea_state::TrackedPatch> {
+) -> Result<Option<tirea_state::TrackedPatch>, String> {
     let (doc, ops, scope, pending_msgs) = patch_context_storage(state);
     let ctx = ToolCallContext::new(&doc, &ops, call_id, AGENT_RECOVERY_PLUGIN_ID, &scope, &pending_msgs, None);
     let lc = ctx.state_of::<crate::runtime::control::LoopControlState>();
-    lc.set_pending_interaction(Some(interaction));
+    lc.set_pending_interaction(Some(interaction))
+        .map_err(|e| format!("failed to set loop_control.pending_interaction: {e}"))?;
     let patch = ctx.take_patch();
     if patch.patch().is_empty() {
-        None
+        Ok(None)
     } else {
-        Some(patch)
+        Ok(Some(patch))
     }
 }
 
@@ -196,16 +197,18 @@ pub(super) fn set_agent_runs_patch_from_state_doc(
     state: &Value,
     next_runs: HashMap<String, DelegationRecord>,
     call_id: &str,
-) -> Option<tirea_state::TrackedPatch> {
+) -> Result<Option<tirea_state::TrackedPatch>, String> {
     let (doc, ops, scope, pending_msgs) = patch_context_storage(state);
     let ctx = ToolCallContext::new(&doc, &ops, call_id, AGENT_TOOLS_PLUGIN_ID, &scope, &pending_msgs, None);
     let agent = ctx.state_of::<DelegationState>();
-    agent.set_runs(next_runs);
+    agent
+        .set_runs(next_runs)
+        .map_err(|e| format!("failed to set delegation.runs: {e}"))?;
     let patch = ctx.take_patch();
     if patch.patch().is_empty() {
-        None
+        Ok(None)
     } else {
-        Some(patch)
+        Ok(Some(patch))
     }
 }
 

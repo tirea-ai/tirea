@@ -2034,7 +2034,8 @@ fn test_execute_tools_with_config_clears_persisted_pending_interaction_on_succes
             &base_state,
             Interaction::new("confirm_1", "confirm").with_message("ok"),
             None,
-        );
+        )
+        .expect("failed to set pending interaction for test seed");
         let thread = Thread::with_initial_state("test", base_state).with_patch(pending_patch);
 
         let result = StreamResult {
@@ -2256,7 +2257,8 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
                 Interaction::new("agent_recovery_run-1", "recover_agent_run")
                     .with_message("resume?"),
                 None,
-            );
+            )
+            .expect("failed to set pending interaction");
             step.pending_patches.push(patch);
             step.skip_inference = true;
         }
@@ -2621,7 +2623,8 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
                 Interaction::new("agent_recovery_run-1", "recover_agent_run")
                     .with_message("resume?"),
                 None,
-            );
+            )
+            .expect("failed to set pending interaction");
             step.pending_patches.push(patch);
             step.skip_inference = true;
         }
@@ -3476,7 +3479,8 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
                 &state,
                 Interaction::new("golden_resume_1", "recover_agent_run").with_message("resume me"),
                 None,
-            );
+            )
+            .expect("failed to set pending interaction");
             step.pending_patches.push(patch);
             step.skip_inference = true;
         }
@@ -5904,7 +5908,8 @@ async fn test_run_step_skip_inference_with_pending_state_returns_pending_interac
                 Interaction::new("agent_recovery_step-1", "recover_agent_run")
                     .with_message("resume step?"),
                 None,
-            );
+            )
+            .expect("failed to set pending interaction");
             step.pending_patches.push(patch);
             step.skip_inference = true;
         }

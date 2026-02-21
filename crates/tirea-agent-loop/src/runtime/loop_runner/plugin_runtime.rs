@@ -183,7 +183,7 @@ pub(super) async fn emit_cleanup_phases_and_apply(
             error_type: error_type.to_string(),
             message,
         },
-    );
+    )?;
     run_ctx.add_thread_patch(set_error_patch);
 
     let pending = emit_phase_block(
@@ -199,7 +199,7 @@ pub(super) async fn emit_cleanup_phases_and_apply(
     let state = run_ctx
         .snapshot()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let clear_error_patch = clear_agent_inference_error(&state);
+    let clear_error_patch = clear_agent_inference_error(&state)?;
     run_ctx.add_thread_patch(clear_error_patch);
 
     let pending =

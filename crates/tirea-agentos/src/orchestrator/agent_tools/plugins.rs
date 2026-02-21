@@ -24,12 +24,19 @@ impl AgentRecoveryPlugin {
         let outcome =
             reconcile_persisted_runs(self.manager.as_ref(), step.thread_id(), &mut runs).await;
         if outcome.changed {
-            if let Some(patch) = set_agent_runs_patch_from_state_doc(
+            match set_agent_runs_patch_from_state_doc(
                 &state,
                 runs.clone(),
                 &format!("agent_recovery_reconcile_{}", step.thread_id()),
             ) {
-                step.pending_patches.push(patch);
+                Ok(Some(patch)) => {
+                    step.pending_patches.push(patch);
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    step.block(err);
+                    return;
+                }
             }
         }
 
@@ -50,10 +57,15 @@ impl AgentRecoveryPlugin {
             ToolPermissionBehavior::Deny => {}
             ToolPermissionBehavior::Ask => {
                 let interaction = build_recovery_interaction(&run_id, run);
-                if let Some(patch) =
-                    set_pending_interaction_patch(&state, interaction, "agent_recovery_pending")
+                match set_pending_interaction_patch(&state, interaction, "agent_recovery_pending")
                 {
-                    step.pending_patches.push(patch);
+                    Ok(Some(patch)) => {
+                        step.pending_patches.push(patch);
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        step.block(err);
+                    }
                 }
             }
         }

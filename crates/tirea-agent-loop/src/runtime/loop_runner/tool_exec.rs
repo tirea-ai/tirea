@@ -260,7 +260,7 @@ pub(super) fn apply_tool_results_impl(
         let state = run_ctx
             .snapshot()
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-        let patch = set_agent_pending_interaction(&state, interaction.clone(), frontend_invocation);
+        let patch = set_agent_pending_interaction(&state, interaction.clone(), frontend_invocation)?;
         if !patch.patch().is_empty() {
             state_changed = true;
             run_ctx.add_thread_patch(patch);
@@ -290,7 +290,7 @@ pub(super) fn apply_tool_results_impl(
         .and_then(|v| v.get("pending_interaction"))
         .is_some()
     {
-        let patch = clear_agent_pending_interaction(&state);
+        let patch = clear_agent_pending_interaction(&state)?;
         if !patch.patch().is_empty() {
             state_changed = true;
             run_ctx.add_thread_patch(patch);

@@ -107,7 +107,8 @@ async fn drain_run_start_outbox_and_replay(
                 &state,
                 new_interaction.clone(),
                 new_frontend_invocation.clone(),
-            );
+            )
+            .map_err(|e| e.to_string())?;
             if !patch.patch().is_empty() {
                 run_ctx.add_thread_patch(patch);
             }
@@ -126,7 +127,7 @@ async fn drain_run_start_outbox_and_replay(
     let state = run_ctx
         .snapshot()
         .map_err(|e| format!("failed to rebuild state after replay: {e}"))?;
-    let clear_patch = clear_agent_pending_interaction(&state);
+    let clear_patch = clear_agent_pending_interaction(&state).map_err(|e| e.to_string())?;
     if !clear_patch.patch().is_empty() {
         replay_state_changed = true;
         run_ctx.add_thread_patch(clear_patch);

@@ -84,17 +84,17 @@ pub trait PermissionContextExt {
 impl PermissionContextExt for ToolCallContext<'_> {
     fn allow_tool(&self, tool_id: impl Into<String>) {
         let state = self.state_of::<PermissionState>();
-        state.tools_insert(tool_id.into(), ToolPermissionBehavior::Allow);
+        let _ = state.tools_insert(tool_id.into(), ToolPermissionBehavior::Allow);
     }
 
     fn deny_tool(&self, tool_id: impl Into<String>) {
         let state = self.state_of::<PermissionState>();
-        state.tools_insert(tool_id.into(), ToolPermissionBehavior::Deny);
+        let _ = state.tools_insert(tool_id.into(), ToolPermissionBehavior::Deny);
     }
 
     fn ask_tool(&self, tool_id: impl Into<String>) {
         let state = self.state_of::<PermissionState>();
-        state.tools_insert(tool_id.into(), ToolPermissionBehavior::Ask);
+        let _ = state.tools_insert(tool_id.into(), ToolPermissionBehavior::Ask);
     }
 
     fn get_permission(&self, tool_id: &str) -> ToolPermissionBehavior {
@@ -109,7 +109,7 @@ impl PermissionContextExt for ToolCallContext<'_> {
 
     fn set_default_permission(&self, behavior: ToolPermissionBehavior) {
         let state = self.state_of::<PermissionState>();
-        state.set_default_behavior(behavior);
+        let _ = state.set_default_behavior(behavior);
     }
 
     fn get_default_permission(&self) -> ToolPermissionBehavior {

@@ -58,7 +58,7 @@ pub trait ReminderContextExt {
 impl ReminderContextExt for ToolCallContext<'_> {
     fn add_reminder(&self, text: impl Into<String>) {
         let state = self.state_of::<ReminderState>();
-        state.items_push(text.into());
+        let _ = state.items_push(text.into());
     }
 
     fn reminders(&self) -> Vec<String> {
@@ -72,14 +72,14 @@ impl ReminderContextExt for ToolCallContext<'_> {
 
     fn clear_reminders(&self) {
         let state = self.state_of::<ReminderState>();
-        state.set_items(Vec::new());
+        let _ = state.set_items(Vec::new());
     }
 
     fn remove_reminder(&self, text: &str) {
         let reminders = self.reminders();
         let filtered: Vec<String> = reminders.into_iter().filter(|r| r != text).collect();
         let state = self.state_of::<ReminderState>();
-        state.set_items(filtered);
+        let _ = state.set_items(filtered);
     }
 }
 
@@ -146,7 +146,7 @@ impl AgentPlugin for ReminderPlugin {
 
         if self.clear_after_llm_request {
             let state = step.ctx().state_of::<ReminderState>();
-            state.set_items(Vec::new());
+            let _ = state.set_items(Vec::new());
         }
     }
 }
