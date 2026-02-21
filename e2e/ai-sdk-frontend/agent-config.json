@@ -7,6 +7,13 @@
       "max_rounds": 3
     },
     {
+      "id": "permission",
+      "model": "deepseek-chat",
+      "system_prompt": "You are a helpful assistant. Keep answers brief. When asked for server info, use the serverInfo tool.",
+      "max_rounds": 5,
+      "plugin_ids": ["permission"]
+    },
+    {
       "id": "stopper",
       "model": "deepseek-chat",
       "system_prompt": "You are a helpful assistant. Keep answers brief. After answering the user's question, always call the finish tool with a brief summary of what you told them.",
