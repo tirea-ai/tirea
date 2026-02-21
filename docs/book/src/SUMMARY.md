@@ -15,6 +15,8 @@
 - [Use File Store](./how-to/use-file-store.md)
 - [Use Postgres Store](./how-to/use-postgres-store.md)
 - [Expose HTTP SSE](./how-to/expose-http-sse.md)
+- [Integrate AI SDK Frontend](./how-to/integrate-ai-sdk-frontend.md)
+- [Integrate CopilotKit (AG-UI)](./how-to/integrate-copilotkit-ag-ui.md)
 - [Expose NATS](./how-to/expose-nats.md)
 - [Debug a Run](./how-to/debug-a-run.md)
 
@@ -30,6 +32,7 @@
 - [HTTP API](./reference/http-api.md)
 - [Config](./reference/config.md)
 - [Errors](./reference/errors.md)
+- [Ecosystem Integrations](./reference/ecosystem-integrations.md)
 - [AG-UI Protocol](./reference/protocols/ag-ui.md)
 - [AI SDK v6 Protocol](./reference/protocols/ai-sdk-v6.md)
 - [NATS Protocol](./reference/protocols/nats.md)

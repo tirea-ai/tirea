@@ -76,5 +76,7 @@ curl 'http://127.0.0.1:8080/v1/threads/thread-1/messages?limit=20'
 ## Related
 
 - [HTTP API](../reference/http-api.md)
+- [Integrate AI SDK Frontend](./integrate-ai-sdk-frontend.md)
+- [Integrate CopilotKit (AG-UI)](./integrate-copilotkit-ag-ui.md)
 - [AG-UI Protocol](../reference/protocols/ag-ui.md)
 - [AI SDK v6 Protocol](../reference/protocols/ai-sdk-v6.md)
