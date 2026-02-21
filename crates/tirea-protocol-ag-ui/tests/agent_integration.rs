@@ -1,6 +1,6 @@
 //! Integration tests for tirea.
 //!
-//! These tests verify the Tool, ContextProvider, and SystemReminder traits
+//! These tests verify the Tool and SystemReminder traits
 //! work correctly with the new State/Context API.
 
 use async_trait::async_trait;
@@ -12,7 +12,6 @@ use tirea_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult
 use tirea_agentos::contracts::InteractionResponse;
 use tirea_agentos::contracts::ToolCallContext;
 use tirea_agentos::extensions::interaction::InteractionPlugin;
-use tirea_agentos::extensions::interaction::{ContextCategory, ContextProvider};
 use tirea_agentos::extensions::reminder::SystemReminder;
 use tirea_agentos::runtime::activity::ActivityHub;
 use tirea_agentos::runtime::loop_runner::AgentLoopError;
@@ -150,49 +149,6 @@ impl Tool for UpdateCallStateTool {
             "update_call",
             json!({"step": step + 1}),
         ))
-    }
-}
-
-// ============================================================================
-// Test context providers
-// ============================================================================
-
-struct CounterContextProvider;
-
-#[async_trait]
-impl ContextProvider for CounterContextProvider {
-    fn id(&self) -> &str {
-        "counter_context"
-    }
-
-    fn category(&self) -> ContextCategory {
-        ContextCategory::ToolExecution
-    }
-
-    fn priority(&self) -> u32 {
-        100
-    }
-
-    async fn provide(
-        &self,
-        ctx: &tirea_contract::tool::context::ToolCallContext<'_>,
-    ) -> Vec<String> {
-        let counter = ctx.state::<CounterState>("counter");
-
-        // Provider can also modify state
-        counter
-            .set_label("context_provided")
-            .expect("state mutation should succeed");
-
-        if let Ok(value) = counter.value() {
-            if value > 10 {
-                vec![format!("Counter is high: {}", value)]
-            } else {
-                vec![]
-            }
-        } else {
-            vec![]
-        }
     }
 }
 
@@ -359,58 +315,6 @@ async fn test_tool_error_handling() {
         }
         _ => panic!("Expected InvalidArguments error"),
     }
-}
-
-// ============================================================================
-// Context provider tests
-// ============================================================================
-
-#[tokio::test]
-async fn test_context_provider_basic() {
-    let manager = StateManager::new(json!({
-        "counter": {"value": 5, "label": "test"}
-    }));
-
-    let provider = CounterContextProvider;
-
-    let snapshot = manager.snapshot().await;
-    let fix = TestFixture::new_with_state(snapshot);
-
-    let messages = provider.provide(&fix.ctx()).await;
-    assert!(messages.is_empty()); // value <= 10
-
-    // Provider modifies state
-    let patch = fix.ctx().take_patch();
-    manager.commit(patch).await.unwrap();
-
-    let new_state = manager.snapshot().await;
-    assert_eq!(new_state["counter"]["label"], "context_provided");
-}
-
-#[tokio::test]
-async fn test_context_provider_with_high_value() {
-    let manager = StateManager::new(json!({
-        "counter": {"value": 15, "label": "test"}
-    }));
-
-    let provider = CounterContextProvider;
-
-    let snapshot = manager.snapshot().await;
-    let fix = TestFixture::new_with_state(snapshot);
-
-    let messages = provider.provide(&fix.ctx()).await;
-    assert_eq!(messages.len(), 1);
-    assert!(messages[0].contains("high"));
-    assert!(messages[0].contains("15"));
-}
-
-#[tokio::test]
-async fn test_context_provider_metadata() {
-    let provider = CounterContextProvider;
-
-    assert_eq!(provider.id(), "counter_context");
-    assert_eq!(provider.category(), ContextCategory::ToolExecution);
-    assert_eq!(provider.priority(), 100);
 }
 
 // ============================================================================
@@ -586,7 +490,7 @@ async fn test_full_tool_workflow() {
 }
 
 #[tokio::test]
-async fn test_tool_provider_reminder_integration() {
+async fn test_tool_reminder_integration() {
     let manager = StateManager::new(json!({
         "counter": {"value": 0, "label": "initial"},
         "tasks": {"items": [], "count": 0}
@@ -594,7 +498,6 @@ async fn test_tool_provider_reminder_integration() {
 
     let increment_tool = IncrementTool;
     let task_tool = AddTaskTool;
-    let provider = CounterContextProvider;
     let reminder = TaskReminder;
 
     // Execute increment tool
@@ -625,15 +528,6 @@ async fn test_tool_provider_reminder_integration() {
         manager.commit(fix.ctx().take_patch()).await.unwrap();
     }
 
-    // Run context provider
-    {
-        let snapshot = manager.snapshot().await;
-        let fix = TestFixture::new_with_state(snapshot);
-        let messages = provider.provide(&fix.ctx()).await;
-        assert!(messages.is_empty()); // value is only 1
-        manager.commit(fix.ctx().take_patch()).await.unwrap();
-    }
-
     // Run system reminder
     {
         let snapshot = manager.snapshot().await;
@@ -646,7 +540,7 @@ async fn test_tool_provider_reminder_integration() {
     // Verify final state
     let final_state = manager.snapshot().await;
     assert_eq!(final_state["counter"]["value"], 1);
-    assert_eq!(final_state["counter"]["label"], "context_provided");
+    assert_eq!(final_state["counter"]["label"], "initial");
     assert_eq!(final_state["tasks"]["count"], 1);
 }
 
@@ -3125,26 +3019,6 @@ fn test_agent_loop_error_all_variants() {
 }
 
 // ============================================================================
-// Context Category Tests
-// ============================================================================
-
-#[test]
-fn test_context_category_variants() {
-    // Test all ContextCategory variants
-    let tool_exec = ContextCategory::ToolExecution;
-    let thread = ContextCategory::Thread;
-    let user_input = ContextCategory::UserInput;
-
-    // Verify they are different (PartialEq)
-    assert_eq!(tool_exec, ContextCategory::ToolExecution);
-    assert_eq!(thread, ContextCategory::Thread);
-    assert_eq!(user_input, ContextCategory::UserInput);
-    assert_ne!(tool_exec, thread);
-    assert_ne!(thread, user_input);
-    assert_ne!(user_input, tool_exec);
-}
-
-// ============================================================================
 // Mock-based End-to-End Tests (No Real LLM Required)
 // ============================================================================
 
@@ -3632,55 +3506,6 @@ async fn test_execute_single_tool_with_complex_state() {
     assert_eq!(result.result.data["new_value"], 101);
 }
 
-// ============================================================================
-// ContextProvider & SystemReminder Integration Tests
-// ============================================================================
-
-/// Test ContextProvider integration in a simulated agent flow
-#[tokio::test]
-async fn test_e2e_context_provider_integration() {
-    // Simulate: Provider injects context -> Tool sees updated state
-
-    let manager = StateManager::new(json!({
-        "counter": {"value": 15, "label": "initial"},
-        "user_context": {}
-    }));
-
-    let provider = CounterContextProvider;
-
-    // 1. Provider runs and may modify state
-    let snapshot = manager.snapshot().await;
-    let fix = TestFixture::new_with_state(snapshot);
-
-    let messages = provider.provide(&fix.ctx()).await;
-
-    // Provider should return message for high counter (>10)
-    assert_eq!(messages.len(), 1);
-    assert!(messages[0].contains("high"));
-
-    // Provider also modifies state
-    manager.commit(fix.ctx().take_patch()).await.unwrap();
-
-    // 2. Verify state was modified by provider
-    let new_snapshot = manager.snapshot().await;
-    assert_eq!(new_snapshot["counter"]["label"], "context_provided");
-
-    // 3. Now a tool runs and sees the provider's changes
-    let tool = IncrementTool;
-    let fix = TestFixture::new_with_state(new_snapshot);
-    let result = tool
-        .execute(
-            json!({"path": "counter"}),
-            &fix.ctx_with("tool_call", "tool:increment"),
-        )
-        .await
-        .unwrap();
-
-    assert!(result.is_success());
-    // Counter was 15, now 16
-    assert_eq!(result.data["new_value"], 16);
-}
-
 /// Test SystemReminder integration
 #[tokio::test]
 async fn test_e2e_system_reminder_integration() {
@@ -3700,124 +3525,6 @@ async fn test_e2e_system_reminder_integration() {
     assert!(message.is_some());
     let msg = message.unwrap();
     assert!(msg.contains("3")); // 3 pending tasks
-}
-
-/// Test multiple ContextProviders with priority ordering
-#[tokio::test]
-async fn test_e2e_multiple_providers_priority() {
-    // Define providers with different priorities
-    struct HighPriorityProvider;
-    struct LowPriorityProvider;
-
-    #[async_trait]
-    impl ContextProvider for HighPriorityProvider {
-        fn id(&self) -> &str {
-            "high_priority"
-        }
-        fn category(&self) -> ContextCategory {
-            ContextCategory::Thread
-        }
-        fn priority(&self) -> u32 {
-            100
-        } // Higher priority
-
-        async fn provide(
-            &self,
-            _ctx: &tirea_contract::tool::context::ToolCallContext<'_>,
-        ) -> Vec<String> {
-            vec!["High priority context".to_string()]
-        }
-    }
-
-    #[async_trait]
-    impl ContextProvider for LowPriorityProvider {
-        fn id(&self) -> &str {
-            "low_priority"
-        }
-        fn category(&self) -> ContextCategory {
-            ContextCategory::Thread
-        }
-        fn priority(&self) -> u32 {
-            10
-        } // Lower priority
-
-        async fn provide(
-            &self,
-            _ctx: &tirea_contract::tool::context::ToolCallContext<'_>,
-        ) -> Vec<String> {
-            vec!["Low priority context".to_string()]
-        }
-    }
-
-    let high = HighPriorityProvider;
-    let low = LowPriorityProvider;
-
-    // Verify priorities
-    assert!(high.priority() > low.priority());
-
-    // Both providers can run and produce context
-    let manager = StateManager::new(json!({}));
-    let snapshot = manager.snapshot().await;
-    let fix = TestFixture::new_with_state(snapshot);
-
-    let high_msgs = high.provide(&fix.ctx()).await;
-    let low_msgs = low.provide(&fix.ctx()).await;
-
-    assert_eq!(high_msgs.len(), 1);
-    assert_eq!(low_msgs.len(), 1);
-}
-
-/// Test ContextProvider that modifies state based on conditions
-#[tokio::test]
-async fn test_e2e_conditional_context_provider() {
-    struct ConditionalProvider;
-
-    #[async_trait]
-    impl ContextProvider for ConditionalProvider {
-        fn id(&self) -> &str {
-            "conditional"
-        }
-        fn category(&self) -> ContextCategory {
-            ContextCategory::ToolExecution
-        }
-        fn priority(&self) -> u32 {
-            50
-        }
-
-        async fn provide(
-            &self,
-            ctx: &tirea_contract::tool::context::ToolCallContext<'_>,
-        ) -> Vec<String> {
-            let counter = ctx.state::<CounterState>("counter");
-            let value = counter.value().unwrap_or(0);
-
-            if value < 0 {
-                // Auto-fix negative values
-                counter.set_value(0).expect("state mutation should succeed");
-                vec!["Warning: Counter was negative, reset to 0".to_string()]
-            } else if value > 100 {
-                vec![format!("Note: Counter is very high ({})", value)]
-            } else {
-                vec![]
-            }
-        }
-    }
-
-    let provider = ConditionalProvider;
-
-    // Test with negative value
-    let manager = StateManager::new(json!({"counter": {"value": -5, "label": ""}}));
-    let snapshot = manager.snapshot().await;
-    let fix = TestFixture::new_with_state(snapshot);
-
-    let messages = provider.provide(&fix.ctx()).await;
-    assert_eq!(messages.len(), 1);
-    assert!(messages[0].contains("negative"));
-
-    // Apply the fix
-    manager.commit(fix.ctx().take_patch()).await.unwrap();
-    let fixed_state = manager.snapshot().await;
-    assert_eq!(fixed_state["counter"]["value"], 0);
 }
 
 // ============================================================================

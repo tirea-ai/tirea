@@ -2,7 +2,6 @@
 //!
 //! This module is protocol-agnostic and operates on runtime interaction data.
 
-mod context_provider;
 mod interaction_plugin;
 mod interaction_response;
 mod outbox;
@@ -17,6 +16,5 @@ pub const AGENT_RECOVERY_INTERACTION_ACTION: &str = "recover_agent_run";
 /// Interaction ID prefix used for agent run recovery confirmation.
 pub const AGENT_RECOVERY_INTERACTION_PREFIX: &str = "agent_recovery_";
 
-pub use context_provider::{ContextCategory, ContextProvider};
 pub use interaction_plugin::InteractionPlugin;
 pub use outbox::InteractionOutbox;

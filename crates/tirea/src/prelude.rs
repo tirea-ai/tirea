@@ -72,9 +72,6 @@ pub use crate::extensions::reminder::{
     ReminderContextExt, ReminderPlugin, ReminderState, SystemReminder,
 };
 
-#[cfg(feature = "core")]
-pub use crate::extensions::interaction::{ContextCategory, ContextProvider};
-
 // ── Skills extension (require "skills" feature) ──────────────────────────
 
 #[cfg(feature = "skills")]
