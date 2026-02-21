@@ -177,7 +177,7 @@ impl InteractionResponsePlugin {
 
             if self.is_denied(pending_id) {
                 if let Err(err) = Self::clear_pending_interaction_state(step) {
-                    step.block(err);
+                    step.deny(err);
                     return;
                 }
                 if let Err(err) = Self::push_resolution(
@@ -187,7 +187,7 @@ impl InteractionResponsePlugin {
                         .cloned()
                         .unwrap_or(serde_json::Value::Bool(false)),
                 ) {
-                    step.block(err);
+                    step.deny(err);
                 }
                 return;
             }
@@ -203,7 +203,7 @@ impl InteractionResponsePlugin {
                     .cloned()
                     .unwrap_or(serde_json::Value::Bool(true)),
             ) {
-                step.block(err);
+                step.deny(err);
                 return;
             }
 
@@ -230,7 +230,7 @@ impl InteractionResponsePlugin {
                     }
                 };
                 if let Err(err) = clear_result {
-                    step.block(err);
+                    step.deny(err);
                 }
                 return;
             };
@@ -244,7 +244,7 @@ impl InteractionResponsePlugin {
                 }),
             );
             if let Err(err) = Self::queue_replay_call(step, replay_call) {
-                step.block(err);
+                step.deny(err);
             }
             return;
         }
@@ -259,7 +259,7 @@ impl InteractionResponsePlugin {
 
         if self.is_denied(pending_id) {
             if let Err(err) = Self::clear_pending_interaction_state(step) {
-                step.block(err);
+                step.deny(err);
                 return;
             }
             if let Err(err) = Self::push_resolution(
@@ -269,7 +269,7 @@ impl InteractionResponsePlugin {
                     .cloned()
                     .unwrap_or(serde_json::Value::Bool(false)),
             ) {
-                step.block(err);
+                step.deny(err);
             }
             return;
         }
@@ -291,7 +291,7 @@ impl InteractionResponsePlugin {
                 .clone()
                 .unwrap_or(serde_json::Value::Bool(true)),
         ) {
-            step.block(err);
+            step.deny(err);
             return;
         }
 
@@ -326,7 +326,7 @@ impl InteractionResponsePlugin {
                             backend_arguments.clone(),
                         );
                         if let Err(err) = Self::queue_replay_call(step, replay_call) {
-                            step.block(err);
+                            step.deny(err);
                         }
                     }
                     InvocationOrigin::PluginInitiated { .. } => {
@@ -338,7 +338,7 @@ impl InteractionResponsePlugin {
                             inv.arguments.clone(),
                         );
                         if let Err(err) = Self::queue_replay_call(step, replay_call) {
-                            step.block(err);
+                            step.deny(err);
                         }
                     }
                 }
@@ -352,7 +352,7 @@ impl InteractionResponsePlugin {
                     normalize_frontend_tool_result(response, &inv.arguments),
                 );
                 if let Err(err) = Self::queue_replay_call(step, replay_call) {
-                    step.block(err);
+                    step.deny(err);
                 }
             }
             ResponseRouting::PassToLLM => {
@@ -364,7 +364,7 @@ impl InteractionResponsePlugin {
                     normalize_frontend_tool_result(response, &inv.arguments),
                 );
                 if let Err(err) = Self::queue_replay_call(step, replay_call) {
-                    step.block(err);
+                    step.deny(err);
                 }
             }
         }
@@ -443,29 +443,28 @@ impl AgentPlugin for InteractionResponsePlugin {
         }
 
         if is_denied {
-            step.confirm();
-            step.block("User denied the action".to_string());
+            step.deny("User denied the action".to_string());
             if let Err(err) = Self::clear_pending_interaction_state(step) {
-                step.block(err);
+                step.deny(err);
                 return;
             }
             let resolved_id = persisted_id.unwrap_or(effective_id);
             if let Err(err) =
                 Self::push_resolution(step, resolved_id, serde_json::Value::Bool(false))
             {
-                step.block(err);
+                step.deny(err);
             }
         } else if is_approved {
-            step.confirm();
+            step.allow();
             if let Err(err) = Self::clear_pending_interaction_state(step) {
-                step.block(err);
+                step.deny(err);
                 return;
             }
             let resolved_id = persisted_id.unwrap_or(effective_id);
             if let Err(err) =
                 Self::push_resolution(step, resolved_id, serde_json::Value::Bool(true))
             {
-                step.block(err);
+                step.deny(err);
             }
         }
     }

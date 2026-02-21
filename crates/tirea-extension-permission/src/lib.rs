@@ -188,11 +188,11 @@ impl AgentPlugin for PermissionPlugin {
                 // Allowed - do nothing
             }
             ToolPermissionBehavior::Deny => {
-                step.block(format!("Tool '{}' is denied", tool_id));
+                step.deny(format!("Tool '{}' is denied", tool_id));
             }
             ToolPermissionBehavior::Ask => {
                 if call_id.is_empty() {
-                    step.block("Permission check requires non-empty tool call id");
+                    step.deny("Permission check requires non-empty tool call id");
                     return;
                 }
                 let tool_args = step

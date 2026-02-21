@@ -190,7 +190,7 @@ mod tests {
 
             if let Some(tool_id) = step.tool_name() {
                 if self.denied_tools.contains(&tool_id.to_string()) {
-                    step.block("Permission denied");
+                    step.deny("Permission denied");
                 }
             }
         }
@@ -221,7 +221,7 @@ mod tests {
 
             if let Some(tool_id) = step.tool_name() {
                 if self.confirm_tools.contains(&tool_id.to_string()) && !step.tool_pending() {
-                    step.pending(
+                    step.ask(
                         Interaction::new("confirm", "confirm").with_message("Execute this tool?"),
                     );
                 }

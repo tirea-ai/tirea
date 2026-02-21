@@ -34,7 +34,7 @@ impl AgentRecoveryPlugin {
                 }
                 Ok(None) => {}
                 Err(err) => {
-                    step.block(err);
+                    step.deny(err);
                     return;
                 }
             }
@@ -63,7 +63,7 @@ impl AgentRecoveryPlugin {
                     }
                     Ok(None) => {}
                     Err(err) => {
-                        step.block(err);
+                        step.deny(err);
                     }
                 }
             }
