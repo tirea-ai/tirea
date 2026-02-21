@@ -6,7 +6,8 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use tirea_state::{
-    apply_patch, path, DocCell, PatchSink, Path, State as StateTrait, StateExt, TireaResult,
+    apply_patch, path, DocCell, PatchSink, Path, State as StateTrait, StateExt, TireaError,
+    TireaResult,
 };
 use tirea_state_derive::State;
 
@@ -56,9 +57,9 @@ fn test_simple_struct_write() {
     let doc = json!({});
 
     let patch = with_state_ref::<SimpleStruct, _>(&doc, Path::root(), |state| {
-        state.set_name("David");
-        state.set_age(40);
-        state.set_active(true);
+        state.set_name("David").unwrap();
+        state.set_age(40).unwrap();
+        state.set_active(true).unwrap();
     });
 
     assert_eq!(patch.len(), 3);
@@ -74,8 +75,8 @@ fn test_simple_struct_delete() {
     let doc = json!({"name": "Eve", "age": 35, "active": true});
 
     let patch = with_state_ref::<SimpleStruct, _>(&doc, Path::root(), |state| {
-        state.delete_name();
-        state.delete_age();
+        state.delete_name().unwrap();
+        state.delete_age().unwrap();
     });
 
     assert_eq!(patch.len(), 2);
@@ -109,7 +110,7 @@ fn test_simple_struct_to_value() {
         active: true,
     };
 
-    let value = s.to_value();
+    let value = s.to_value().unwrap();
 
     assert_eq!(value["name"], "Grace");
     assert_eq!(value["age"], 28);
@@ -174,8 +175,8 @@ fn test_option_writer_set_none() {
     let doc = json!({"required": "old", "optional": 100});
 
     let patch = with_state_ref::<WithOption, _>(&doc, Path::root(), |state| {
-        state.set_required("test");
-        state.optional_none();
+        state.set_required("test").unwrap();
+        state.optional_none().unwrap();
     });
 
     let result = apply_patch(&doc, &patch).unwrap();
@@ -213,8 +214,10 @@ fn test_vec_field_write_set() {
     let doc = json!({});
 
     let patch = with_state_ref::<WithVec, _>(&doc, Path::root(), |state| {
-        state.set_items(vec!["x".to_string(), "y".to_string()]);
-        state.set_numbers(vec![10, 20]);
+        state
+            .set_items(vec!["x".to_string(), "y".to_string()])
+            .unwrap();
+        state.set_numbers(vec![10, 20]).unwrap();
     });
 
     let result = apply_patch(&doc, &patch).unwrap();
@@ -227,10 +230,10 @@ fn test_vec_field_write_push() {
     let doc = json!({"items": [], "numbers": []});
 
     let patch = with_state_ref::<WithVec, _>(&doc, Path::root(), |state| {
-        state.items_push("first");
-        state.items_push("second");
-        state.numbers_push(1);
-        state.numbers_push(2);
+        state.items_push("first").unwrap();
+        state.items_push("second").unwrap();
+        state.numbers_push(1).unwrap();
+        state.numbers_push(2).unwrap();
     });
 
     let result = apply_patch(&doc, &patch).unwrap();
@@ -275,7 +278,7 @@ fn test_map_field_write_set() {
     let patch = with_state_ref::<WithMap, _>(&doc, Path::root(), |state| {
         let mut metadata = BTreeMap::new();
         metadata.insert("k".to_string(), "v".to_string());
-        state.set_metadata(metadata);
+        state.set_metadata(metadata).unwrap();
     });
 
     let result = apply_patch(&doc, &patch).unwrap();
@@ -287,9 +290,9 @@ fn test_map_field_write_insert() {
     let doc = json!({"metadata": {}, "scores": {}});
 
     let patch = with_state_ref::<WithMap, _>(&doc, Path::root(), |state| {
-        state.metadata_insert("key1", "value1");
-        state.metadata_insert("key2", "value2");
-        state.scores_insert("player1", 100);
+        state.metadata_insert("key1", "value1").unwrap();
+        state.metadata_insert("key2", "value2").unwrap();
+        state.scores_insert("player1", 100).unwrap();
     });
 
     let result = apply_patch(&doc, &patch).unwrap();
@@ -341,9 +344,9 @@ fn test_nested_struct_write() {
     let doc = json!({});
 
     let patch = with_state_ref::<Outer, _>(&doc, Path::root(), |state| {
-        state.set_name("parent");
-        state.inner().set_value(100);
-        state.inner().set_label("child");
+        state.set_name("parent").unwrap();
+        state.inner().set_value(100).unwrap();
+        state.inner().set_label("child").unwrap();
     });
 
     let result = apply_patch(&doc, &patch).unwrap();
@@ -384,8 +387,8 @@ fn test_rename_attribute_write() {
     let doc = json!({});
 
     let patch = with_state_ref::<WithRename, _>(&doc, Path::root(), |state| {
-        state.set_name("Bob");
-        state.set_age(25);
+        state.set_name("Bob").unwrap();
+        state.set_age(25).unwrap();
     });
 
     let result = apply_patch(&doc, &patch).unwrap();
@@ -481,7 +484,7 @@ fn test_skip_attribute_write() {
     let doc = json!({});
 
     let patch = with_state_ref::<WithSkip, _>(&doc, Path::root(), |state| {
-        state.set_visible("test");
+        state.set_visible("test").unwrap();
         // hidden field should not have a setter
         // (compile-time verification - no set_hidden() method)
     });
@@ -538,8 +541,8 @@ fn test_write_at_path() {
     let doc = json!({"users": {}});
 
     let patch = with_state_ref::<SimpleStruct, _>(&doc, path!("users", "bob"), |state| {
-        state.set_name("Bob");
-        state.set_age(25);
+        state.set_name("Bob").unwrap();
+        state.set_age(25).unwrap();
     });
 
     let result = apply_patch(&doc, &patch).unwrap();
@@ -560,7 +563,7 @@ fn test_full_roundtrip() {
     };
 
     // Struct -> Value
-    let value = original.to_value();
+    let value = original.to_value().unwrap();
 
     // Value -> Struct
     let restored = SimpleStruct::from_value(&value).unwrap();
@@ -575,9 +578,9 @@ fn test_read_write_roundtrip() {
 
     // Write using state ref
     let patch = with_state_ref::<SimpleStruct, _>(&doc, Path::root(), |state| {
-        state.set_name("Test");
-        state.set_age(100);
-        state.set_active(false);
+        state.set_name("Test").unwrap();
+        state.set_age(100).unwrap();
+        state.set_active(false).unwrap();
     });
 
     doc = apply_patch(&doc, &patch).unwrap();
@@ -607,7 +610,7 @@ fn test_increment_i64() {
     let doc = json!({"count": 10, "score": 1.5});
 
     let patch = with_state_ref::<WithNumbers, _>(&doc, Path::root(), |state| {
-        state.increment_count(5);
+        state.increment_count(5).unwrap();
     });
 
     let result = apply_patch(&doc, &patch).unwrap();
@@ -619,7 +622,7 @@ fn test_decrement_i64() {
     let doc = json!({"count": 10, "score": 1.5});
 
     let patch = with_state_ref::<WithNumbers, _>(&doc, Path::root(), |state| {
-        state.decrement_count(3);
+        state.decrement_count(3).unwrap();
     });
 
     let result = apply_patch(&doc, &patch).unwrap();
@@ -631,7 +634,7 @@ fn test_increment_f64() {
     let doc = json!({"count": 10, "score": 1.5});
 
     let patch = with_state_ref::<WithNumbers, _>(&doc, Path::root(), |state| {
-        state.increment_score(0.5);
+        state.increment_score(0.5).unwrap();
     });
 
     let result = apply_patch(&doc, &patch).unwrap();
@@ -650,7 +653,7 @@ fn test_state_to_patch_basic() {
         active: true,
     };
 
-    let patch = state.to_patch();
+    let patch = state.to_patch().unwrap();
 
     // Apply patch to empty document
     let doc = json!({});
@@ -669,7 +672,7 @@ fn test_state_to_patch_overwrites_existing() {
         active: false,
     };
 
-    let patch = state.to_patch();
+    let patch = state.to_patch().unwrap();
 
     // Apply patch to document with existing data
     let doc = json!({
@@ -705,7 +708,7 @@ fn test_state_to_patch_with_nested() {
         inner: Inner { value: 42 },
     };
 
-    let patch = state.to_patch();
+    let patch = state.to_patch().unwrap();
     let doc = json!({});
     let result = apply_patch(&doc, &patch).unwrap();
 
@@ -749,8 +752,8 @@ fn test_state_ext_at_root_write() {
     let sink = PatchSink::new(&ops);
 
     let state = SimpleStruct::at_root(&doc, sink);
-    state.set_name("Bob");
-    state.set_age(25);
+    state.set_name("Bob").unwrap();
+    state.set_age(25).unwrap();
 
     drop(state);
     let patch = tirea_state::Patch::with_ops(ops.into_inner().unwrap());
@@ -775,7 +778,7 @@ fn test_state_ext_at_root_equivalent_to_state_ref_root() {
     let sink1 = PatchSink::new(&ops1);
     let state1 = SimpleStruct::at_root(&doc, sink1);
     let name1 = state1.name().unwrap();
-    state1.set_age(200);
+    state1.set_age(200).unwrap();
     drop(state1);
 
     // Using State::state_ref with Path::root()
@@ -783,7 +786,7 @@ fn test_state_ext_at_root_equivalent_to_state_ref_root() {
     let sink2 = PatchSink::new(&ops2);
     let state2 = SimpleStruct::state_ref(&doc, Path::root(), sink2);
     let name2 = state2.name().unwrap();
-    state2.set_age(200);
+    state2.set_age(200).unwrap();
     drop(state2);
 
     // Results should be identical
@@ -830,19 +833,19 @@ struct WithFailingSerialize {
 }
 
 #[test]
-#[should_panic(expected = "state setter serialization failed")]
-fn test_setter_serialization_failure_panics() {
+fn test_setter_serialization_failure_returns_error() {
     let doc = json!({});
     let _ = with_state_ref::<WithFailingSerialize, _>(&doc, Path::root(), |state| {
-        state.set_bad(FailingSerialize);
+        let err = state.set_bad(FailingSerialize).unwrap_err();
+        assert!(matches!(err, TireaError::Serialization(_)));
     });
 }
 
 #[test]
-#[should_panic(expected = "State::to_value serialization failed")]
-fn test_to_value_serialization_failure_panics() {
+fn test_to_value_serialization_failure_returns_error() {
     let state = WithFailingSerialize {
         bad: FailingSerialize,
     };
-    let _ = state.to_value();
+    let err = state.to_value().unwrap_err();
+    assert!(matches!(err, TireaError::Serialization(_)));
 }

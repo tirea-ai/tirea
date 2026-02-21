@@ -3,10 +3,10 @@
 //! These tests verify the StateManager's ability to manage immutable state
 //! with patch history and replay capabilities.
 
-use tirea_state::{path, DocCell, Op, Patch, StateContext, StateManager, TrackedPatch};
-use tirea_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tirea_state::{path, DocCell, Op, Patch, StateContext, StateManager, TrackedPatch};
+use tirea_state_derive::State;
 
 // ============================================================================
 // Test state types
@@ -357,8 +357,8 @@ async fn test_manager_with_context_workflow() {
 
         let counter = ctx.state::<CounterState>("counters.main");
         let current = counter.value().unwrap();
-        counter.set_value(current + 10);
-        counter.set_label(format!("After step {}", i));
+        counter.set_value(current + 10).unwrap();
+        counter.set_label(format!("After step {}", i)).unwrap();
 
         let tracked_patch = ctx.take_tracked_patch(format!("tool:increment:{i}"));
         manager.commit(tracked_patch).await.unwrap();

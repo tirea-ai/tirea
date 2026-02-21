@@ -3,12 +3,12 @@
 //! These tests verify that the API is thread-safe and works correctly
 //! in concurrent scenarios.
 
-use tirea_state::{path, DocCell, Op, Patch, PatchSink, StateContext, StateManager, TrackedPatch};
-use tirea_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use tirea_state::{path, DocCell, Op, Patch, PatchSink, StateContext, StateManager, TrackedPatch};
+use tirea_state_derive::State;
 
 // ============================================================================
 // Test state types
@@ -34,7 +34,7 @@ fn test_patch_sink_thread_safe() {
             let ops_clone = Arc::clone(&ops);
             thread::spawn(move || {
                 let sink = PatchSink::new(&ops_clone);
-                sink.collect(Op::set(path!("field"), json!(i)));
+                sink.collect(Op::set(path!("field"), json!(i))).unwrap();
             })
         })
         .collect();
@@ -61,7 +61,8 @@ fn test_patch_sink_concurrent_writes() {
                 let sink = PatchSink::new(&ops_clone);
                 // Each thread writes multiple operations
                 for j in 0..10 {
-                    sink.collect(Op::set(path!("data"), json!(i * 10 + j)));
+                    sink.collect(Op::set(path!("data"), json!(i * 10 + j)))
+                        .unwrap();
                 }
             })
         })
@@ -118,13 +119,13 @@ fn test_context_concurrent_state_access() {
 
     // Access state from main thread
     let c1 = ctx.state::<CounterState>("counter1");
-    c1.set_value(10);
+    c1.set_value(10).unwrap();
 
     let c2 = ctx.state::<CounterState>("counter2");
-    c2.set_value(20);
+    c2.set_value(20).unwrap();
 
     let c3 = ctx.state::<CounterState>("counter3");
-    c3.set_value(30);
+    c3.set_value(30).unwrap();
 
     // Verify all operations collected
     assert_eq!(ctx.ops_count(), 3);
@@ -150,7 +151,7 @@ fn test_context_scoped_parallel_access() {
             s.spawn(move || {
                 let path = format!("counters.{}", ['a', 'b', 'c'][i]);
                 let counter = ctx_ref.state::<CounterState>(&path);
-                counter.set_value(i as i64 * 10);
+                counter.set_value(i as i64 * 10).unwrap();
             });
         }
     });
@@ -310,7 +311,7 @@ fn test_stress_patch_sink_high_volume() {
 
     // Collect a large number of operations
     for i in 0..10000 {
-        sink.collect(Op::set(path!("field"), json!(i)));
+        sink.collect(Op::set(path!("field"), json!(i))).unwrap();
     }
 
     let collected = ops.lock().unwrap();

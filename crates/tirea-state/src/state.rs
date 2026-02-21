@@ -7,7 +7,7 @@ use crate::{DocCell, Op, Patch, Path, TireaResult, TrackedPatch};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 
-type CollectHook<'a> = Arc<dyn Fn(&Op) + Send + Sync + 'a>;
+type CollectHook<'a> = Arc<dyn Fn(&Op) -> TireaResult<()> + Send + Sync + 'a>;
 
 /// Collector for patch operations.
 ///
@@ -56,7 +56,7 @@ impl<'a> PatchSink<'a> {
         }
     }
 
-    /// Create a read-only PatchSink that panics on collect.
+    /// Create a read-only PatchSink that errors on collect.
     ///
     /// Used for `SealedState::get()` where writes are a programming error.
     #[doc(hidden)]
@@ -69,14 +69,19 @@ impl<'a> PatchSink<'a> {
 
     /// Collect an operation.
     #[inline]
-    pub fn collect(&self, op: Op) {
-        let ops = self
-            .ops
-            .expect("PatchSink::collect called on read-only sink (programming error)");
-        ops.lock().unwrap().push(op.clone());
+    pub fn collect(&self, op: Op) -> TireaResult<()> {
+        let ops = self.ops.ok_or_else(|| {
+            crate::TireaError::invalid_operation("write attempted on read-only state reference")
+        })?;
+        let mut guard = ops.lock().map_err(|_| {
+            crate::TireaError::invalid_operation("state operation collector mutex poisoned")
+        })?;
+        guard.push(op.clone());
+        drop(guard);
         if let Some(hook) = &self.on_collect {
-            hook(&op);
+            hook(&op)?;
         }
+        Ok(())
     }
 
     /// Get the inner Mutex reference (for creating nested PatchSinks).
@@ -105,9 +110,7 @@ impl<'a> StateContext<'a> {
     /// Get a typed state reference at the specified path.
     pub fn state<T: State>(&self, path: &str) -> T::Ref<'_> {
         let base = parse_path(path);
-        let hook: CollectHook<'_> = Arc::new(|op: &Op| {
-            self.doc.apply(op);
-        });
+        let hook: CollectHook<'_> = Arc::new(|op: &Op| self.doc.apply(op));
         T::state_ref(self.doc, base, PatchSink::new_with_hook(&self.ops, hook))
     }
 
@@ -207,11 +210,14 @@ pub trait State: Sized {
     fn from_value(value: &Value) -> TireaResult<Self>;
 
     /// Serialize this type to a JSON value.
-    fn to_value(&self) -> Value;
+    fn to_value(&self) -> TireaResult<Value>;
 
     /// Create a patch that sets this value at the root.
-    fn to_patch(&self) -> Patch {
-        Patch::with_ops(vec![Op::set(Path::root(), self.to_value())])
+    fn to_patch(&self) -> TireaResult<Patch> {
+        Ok(Patch::with_ops(vec![Op::set(
+            Path::root(),
+            self.to_value()?,
+        )]))
     }
 }
 
@@ -235,8 +241,10 @@ mod tests {
         let ops = Mutex::new(Vec::new());
         let sink = PatchSink::new(&ops);
 
-        sink.collect(Op::set(Path::root().key("a"), Value::from(1)));
-        sink.collect(Op::set(Path::root().key("b"), Value::from(2)));
+        sink.collect(Op::set(Path::root().key("a"), Value::from(1)))
+            .unwrap();
+        sink.collect(Op::set(Path::root().key("b"), Value::from(2)))
+            .unwrap();
 
         let collected = ops.lock().unwrap();
         assert_eq!(collected.len(), 2);
@@ -249,11 +257,13 @@ mod tests {
         let seen_hook = seen.clone();
         let hook = Arc::new(move |op: &Op| {
             seen_hook.lock().unwrap().push(format!("{:?}", op));
+            Ok(())
         });
         let sink = PatchSink::new_with_hook(&ops, hook);
 
-        sink.collect(Op::set(Path::root().key("a"), Value::from(1)));
-        sink.collect(Op::delete(Path::root().key("b")));
+        sink.collect(Op::set(Path::root().key("a"), Value::from(1)))
+            .unwrap();
+        sink.collect(Op::delete(Path::root().key("b"))).unwrap();
 
         let collected = ops.lock().unwrap();
         assert_eq!(collected.len(), 2);
@@ -267,29 +277,36 @@ mod tests {
         let seen_hook = seen.clone();
         let hook = Arc::new(move |op: &Op| {
             seen_hook.lock().unwrap().push(format!("{:?}", op));
+            Ok(())
         });
         let sink = PatchSink::new_with_hook(&ops, hook);
         let child = sink.child();
 
-        child.collect(Op::set(Path::root().key("nested"), Value::from(1)));
+        child
+            .collect(Op::set(Path::root().key("nested"), Value::from(1)))
+            .unwrap();
 
         assert_eq!(ops.lock().unwrap().len(), 1);
         assert_eq!(seen.lock().unwrap().len(), 1);
     }
 
     #[test]
-    #[should_panic(expected = "read-only sink")]
-    fn test_patch_sink_read_only_child_collect_panics() {
+    fn test_patch_sink_read_only_child_collect_errors() {
         let sink = PatchSink::read_only();
         let child = sink.child();
-        child.collect(Op::set(Path::root().key("x"), Value::from(1)));
+        let err = child
+            .collect(Op::set(Path::root().key("x"), Value::from(1)))
+            .unwrap_err();
+        assert!(matches!(err, crate::TireaError::InvalidOperation { .. }));
     }
 
     #[test]
-    #[should_panic(expected = "read-only sink")]
-    fn test_patch_sink_read_only_collect_panics() {
+    fn test_patch_sink_read_only_collect_errors() {
         let sink = PatchSink::read_only();
-        sink.collect(Op::set(Path::root().key("x"), Value::from(1)));
+        let err = sink
+            .collect(Op::set(Path::root().key("x"), Value::from(1)))
+            .unwrap_err();
+        assert!(matches!(err, crate::TireaError::InvalidOperation { .. }));
     }
 
     #[test]
@@ -321,9 +338,9 @@ mod tests {
         }
 
         impl<'a> CounterRef<'a> {
-            fn set_value(&self, value: i64) {
+            fn set_value(&self, value: i64) -> TireaResult<()> {
                 self.sink
-                    .collect(Op::set(self.base.clone().key("value"), Value::from(value)));
+                    .collect(Op::set(self.base.clone().key("value"), Value::from(value)))
             }
         }
 
@@ -338,15 +355,15 @@ mod tests {
                 Ok(Counter)
             }
 
-            fn to_value(&self) -> Value {
-                Value::Null
+            fn to_value(&self) -> TireaResult<Value> {
+                Ok(Value::Null)
             }
         }
 
         let doc = DocCell::new(json!({"counter": {"value": 1}}));
         let ctx = StateContext::new(&doc);
         let counter = ctx.state::<Counter>("counter");
-        counter.set_value(2);
+        counter.set_value(2).unwrap();
 
         assert!(ctx.has_changes());
         assert_eq!(ctx.ops_count(), 1);

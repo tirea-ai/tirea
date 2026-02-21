@@ -97,8 +97,8 @@ fn test_context_state_write() {
     let ctx = StateContext::new(&doc_cell);
 
     let counter = ctx.state::<CounterState>("counters.main");
-    counter.set_value(20);
-    counter.set_label("Updated Counter");
+    counter.set_value(20).unwrap();
+    counter.set_label("Updated Counter").unwrap();
 
     assert!(ctx.has_changes());
     assert_eq!(ctx.ops_count(), 2);
@@ -125,7 +125,7 @@ fn test_context_state_increment() {
     let ctx = StateContext::new(&doc_cell);
 
     let counter = ctx.state::<CounterState>("counter");
-    counter.increment_value(5);
+    counter.increment_value(5).unwrap();
 
     let tracked = ctx.take_patch();
     let new_doc = apply_patch(&doc, &tracked).unwrap();
@@ -144,7 +144,7 @@ fn test_context_state_decrement() {
     let ctx = StateContext::new(&doc_cell);
 
     let counter = ctx.state::<CounterState>("counter");
-    counter.decrement_value(30);
+    counter.decrement_value(30).unwrap();
 
     let tracked = ctx.take_patch();
     let new_doc = apply_patch(&doc, &tracked).unwrap();
@@ -163,7 +163,7 @@ fn test_context_state_delete() {
     let ctx = StateContext::new(&doc_cell);
 
     let counter = ctx.state::<CounterState>("counter");
-    counter.delete_label();
+    counter.delete_label().unwrap();
 
     let tracked = ctx.take_patch();
     let new_doc = apply_patch(&doc, &tracked).unwrap();
@@ -178,7 +178,7 @@ fn test_context_take_patch_clears_ops() {
     let ctx = StateContext::new(&doc_cell);
 
     let counter = ctx.state::<CounterState>("counter");
-    counter.set_value(20);
+    counter.set_value(20).unwrap();
 
     assert_eq!(ctx.ops_count(), 1);
 
@@ -212,7 +212,7 @@ fn test_context_call_state() {
     assert_eq!(state.value().unwrap(), 5);
     assert_eq!(state.label().unwrap(), "Call State");
 
-    state.set_value(10);
+    state.set_value(10).unwrap();
 
     let tracked = ctx.take_patch();
     let new_doc = apply_patch(&doc, &tracked).unwrap();
@@ -239,9 +239,11 @@ fn test_context_multiple_state_refs() {
     let bob = ctx.state::<UserState>("users.bob");
 
     // Modify both
-    alice.set_age(31);
-    alice.set_email(Some("alice@example.com".to_string()));
-    bob.increment_age(1);
+    alice.set_age(31).unwrap();
+    alice
+        .set_email(Some("alice@example.com".to_string()))
+        .unwrap();
+    bob.increment_age(1).unwrap();
 
     let tracked = ctx.take_patch();
     assert_eq!(tracked.len(), 3);
@@ -260,13 +262,13 @@ fn test_context_state_ref_reuse() {
 
     // Get state ref multiple times - all should share the same sink
     let counter1 = ctx.state::<CounterState>("counter");
-    counter1.set_value(10);
+    counter1.set_value(10).unwrap();
 
     let counter2 = ctx.state::<CounterState>("counter");
-    counter2.set_value(20);
+    counter2.set_value(20).unwrap();
 
     let counter3 = ctx.state::<CounterState>("counter");
-    counter3.set_label("Updated");
+    counter3.set_label("Updated").unwrap();
 
     // All operations collected
     assert_eq!(ctx.ops_count(), 3);
@@ -289,11 +291,11 @@ fn test_context_vec_operations() {
     let ctx = StateContext::new(&doc_cell);
 
     let todos = ctx.state::<TodoState>("todos");
-    todos.items_push("Task 2");
-    todos.items_push("Task 3");
-    todos.completed_push(false);
-    todos.completed_push(false);
-    todos.increment_count(2);
+    todos.items_push("Task 2").unwrap();
+    todos.items_push("Task 3").unwrap();
+    todos.completed_push(false).unwrap();
+    todos.completed_push(false).unwrap();
+    todos.increment_count(2).unwrap();
 
     let tracked = ctx.take_patch();
     let new_doc = apply_patch(&doc, &tracked).unwrap();
@@ -321,9 +323,9 @@ fn test_context_map_operations() {
     let ctx = StateContext::new(&doc_cell);
 
     let user = ctx.state::<UserState>("user");
-    user.metadata_insert("key2", "value2");
-    user.metadata_insert("key3", "value3");
-    user.tags_push("vip");
+    user.metadata_insert("key2", "value2").unwrap();
+    user.metadata_insert("key3", "value3").unwrap();
+    user.tags_push("vip").unwrap();
 
     let tracked = ctx.take_patch();
     let new_doc = apply_patch(&doc, &tracked).unwrap();
@@ -378,11 +380,12 @@ fn test_context_nested_state_write() {
     let ctx = StateContext::new(&doc_cell);
 
     let account = ctx.state::<AccountState>("account");
-    account.set_username("alice_updated");
-    account.profile().set_bio("New bio");
+    account.set_username("alice_updated").unwrap();
+    account.profile().set_bio("New bio").unwrap();
     account
         .profile()
-        .set_avatar_url(Some("https://example.com/new.png".to_string()));
+        .set_avatar_url(Some("https://example.com/new.png".to_string()))
+        .unwrap();
 
     let tracked = ctx.take_patch();
     let new_doc = apply_patch(&doc, &tracked).unwrap();
@@ -414,7 +417,7 @@ fn test_context_option_field_some_to_none() {
     let ctx = StateContext::new(&doc_cell);
 
     let user = ctx.state::<UserState>("user");
-    user.email_none();
+    user.email_none().unwrap();
 
     let tracked = ctx.take_patch();
     let new_doc = apply_patch(&doc, &tracked).unwrap();
@@ -437,7 +440,8 @@ fn test_context_option_field_none_to_some() {
     let ctx = StateContext::new(&doc_cell);
 
     let user = ctx.state::<UserState>("user");
-    user.set_email(Some("alice@example.com".to_string()));
+    user.set_email(Some("alice@example.com".to_string()))
+        .unwrap();
 
     let tracked = ctx.take_patch();
     let new_doc = apply_patch(&doc, &tracked).unwrap();
@@ -463,7 +467,7 @@ fn test_context_root_state() {
     assert_eq!(counter.value().unwrap(), 100);
     assert_eq!(counter.label().unwrap(), "Root Counter");
 
-    counter.set_value(200);
+    counter.set_value(200).unwrap();
 
     let tracked = ctx.take_patch();
     let new_doc = apply_patch(&doc, &tracked).unwrap();
@@ -502,14 +506,14 @@ fn test_context_complex_workflow() {
     let current_step = call_state.value().unwrap();
 
     // Update call state
-    call_state.set_value(current_step + 1);
-    call_state.set_label("Step 1 complete");
+    call_state.set_value(current_step + 1).unwrap();
+    call_state.set_label("Step 1 complete").unwrap();
 
     // Update results
     let results = ctx.state::<TodoState>("results");
-    results.items_push("Result 1");
-    results.completed_push(true);
-    results.increment_count(1);
+    results.items_push("Result 1").unwrap();
+    results.completed_push(true).unwrap();
+    results.increment_count(1).unwrap();
 
     // Verify changes
     let tracked = ctx.take_patch();
@@ -579,8 +583,8 @@ fn test_context_original_doc_unchanged() {
     let ctx = StateContext::new(&doc_cell);
 
     let counter = ctx.state::<CounterState>("counter");
-    counter.set_value(999);
-    counter.set_label("Modified");
+    counter.set_value(999).unwrap();
+    counter.set_label("Modified").unwrap();
 
     // Original doc should be unchanged
     assert_eq!(doc["counter"]["value"], 10);
@@ -623,7 +627,7 @@ fn test_state_to_value_via_context() {
         label: "Created".to_string(),
     };
 
-    let value = counter.to_value();
+    let value = counter.to_value().unwrap();
     assert_eq!(value["value"], 100);
     assert_eq!(value["label"], "Created");
 }
@@ -643,7 +647,7 @@ fn test_state_context_write_through_read_same_ref() {
     assert_eq!(counter.value().unwrap(), 10);
 
     // Write then read from the same ref
-    counter.set_value(42);
+    counter.set_value(42).unwrap();
     assert_eq!(
         counter.value().unwrap(),
         42,
@@ -665,8 +669,8 @@ fn test_state_context_write_through_read_cross_ref() {
 
     // Write via first state ref
     let counter1 = ctx.state::<CounterState>("counter");
-    counter1.set_value(100);
-    counter1.set_label("Updated");
+    counter1.set_value(100).unwrap();
+    counter1.set_label("Updated").unwrap();
 
     // Read via second state ref — must see the writes
     let counter2 = ctx.state::<CounterState>("counter");
@@ -690,7 +694,7 @@ fn test_state_context_nested_write_through_read_same_ref() {
 
     let account = ctx.state::<AccountState>("account");
     let profile = account.profile();
-    profile.set_bio("New");
+    profile.set_bio("New").unwrap();
 
     assert_eq!(
         profile.bio().unwrap(),
@@ -710,7 +714,7 @@ fn test_state_context_nested_write_through_read_cross_ref() {
     let ctx = StateContext::new(&doc);
 
     let account1 = ctx.state::<AccountState>("account");
-    account1.profile().set_bio("Cross Updated");
+    account1.profile().set_bio("Cross Updated").unwrap();
 
     let account2 = ctx.state::<AccountState>("account");
     assert_eq!(

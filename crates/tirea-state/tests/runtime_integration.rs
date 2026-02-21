@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::thread;
-use tirea_state::{SealedState, SealedStateError};
+use tirea_state::{SealedState, SealedStateError, TireaError};
 use tirea_state_derive::State;
 
 // ============================================================================
@@ -78,26 +78,26 @@ fn test_scope_get_missing_field_errors() {
 }
 
 #[test]
-#[should_panic(expected = "read-only sink")]
-fn test_scope_get_write_panics() {
+fn test_scope_get_write_errors() {
     let mut rt = SealedState::new();
     rt.set("user_id", "u-1").unwrap();
     rt.set("locale", "en").unwrap();
 
     let user = rt.get::<UserInfo>();
-    // Attempting to write through a scope state ref should panic
-    user.set_user_id("u-2");
+    // Attempting to write through a scope state ref should return an error
+    let err = user.set_user_id("u-2").unwrap_err();
+    assert!(matches!(err, TireaError::InvalidOperation { .. }));
 }
 
 #[test]
-#[should_panic(expected = "read-only sink")]
-fn test_scope_get_at_write_panics() {
+fn test_scope_get_at_write_errors() {
     let mut rt = SealedState::new();
     rt.set("config", json!({"timeout_ms": 1000, "retry": false}))
         .unwrap();
 
     let cfg = rt.get_at::<NestedConfig>("config");
-    cfg.set_timeout_ms(2000);
+    let err = cfg.set_timeout_ms(2000).unwrap_err();
+    assert!(matches!(err, TireaError::InvalidOperation { .. }));
 }
 
 // ============================================================================

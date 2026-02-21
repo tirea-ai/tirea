@@ -4,11 +4,11 @@
 //! rather than under a separate key in JSON.
 #![allow(missing_docs)]
 
-use tirea_state::{apply_patch, DocCell, PatchSink, Path, State as StateTrait};
-use tirea_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Mutex;
+use tirea_state::{apply_patch, DocCell, PatchSink, Path, State as StateTrait};
+use tirea_state_derive::State;
 
 /// Helper to create a state ref and collect patches for testing.
 fn with_state_ref<T: StateTrait, F>(doc: &serde_json::Value, path: Path, f: F) -> tirea_state::Patch
@@ -97,9 +97,9 @@ fn test_flatten_write_basic() {
     let doc = json!({});
 
     let patch = with_state_ref::<OuterState, _>(&doc, Path::root(), |state| {
-        state.set_name("parent");
-        state.inner().set_value(100);
-        state.inner().set_label("child");
+        state.set_name("parent").unwrap();
+        state.inner().set_value(100).unwrap();
+        state.inner().set_label("child").unwrap();
     });
 
     let result = apply_patch(&doc, &patch).unwrap();
@@ -121,7 +121,7 @@ fn test_flatten_write_partial() {
 
     let patch = with_state_ref::<OuterState, _>(&doc, Path::root(), |state| {
         // Only update some fields
-        state.inner().set_value(999);
+        state.inner().set_value(999).unwrap();
     });
 
     let result = apply_patch(&doc, &patch).unwrap();
@@ -137,7 +137,7 @@ fn test_flatten_write_patch_paths() {
     let doc = json!({});
 
     let patch = with_state_ref::<OuterState, _>(&doc, Path::root(), |state| {
-        state.inner().set_value(42);
+        state.inner().set_value(42).unwrap();
     });
 
     // The patch should have path $.value, not $.inner.value
@@ -161,7 +161,7 @@ fn test_flatten_delete() {
     });
 
     let patch = with_state_ref::<OuterState, _>(&doc, Path::root(), |state| {
-        state.inner().delete_label();
+        state.inner().delete_label().unwrap();
     });
 
     let result = apply_patch(&doc, &patch).unwrap();
@@ -184,7 +184,7 @@ fn test_flatten_increment() {
     });
 
     let patch = with_state_ref::<OuterState, _>(&doc, Path::root(), |state| {
-        state.inner().increment_value(5);
+        state.inner().increment_value(5).unwrap();
     });
 
     let result = apply_patch(&doc, &patch).unwrap();
@@ -209,7 +209,7 @@ fn test_flatten_at_nested_path() {
         assert_eq!(state.name().unwrap(), "nested");
         assert_eq!(state.inner().value().unwrap(), 50);
 
-        state.inner().set_value(100);
+        state.inner().set_value(100).unwrap();
     });
 
     let result = apply_patch(&doc, &patch).unwrap();
@@ -261,7 +261,7 @@ fn test_nested_with_inner_flatten() {
         assert_eq!(middle.deep().deep_value().unwrap(), 42);
 
         // Write to flattened field
-        middle.deep().set_deep_value(100);
+        middle.deep().set_deep_value(100).unwrap();
     });
 
     let result = apply_patch(&doc, &patch).unwrap();
@@ -297,7 +297,7 @@ fn test_flatten_with_rename() {
     let patch = with_state_ref::<OuterWithRenamedFlat, _>(&doc, Path::root(), |state| {
         assert_eq!(state.inner().value().unwrap(), 42);
 
-        state.inner().set_value(100);
+        state.inner().set_value(100).unwrap();
     });
 
     let result = apply_patch(&doc, &patch).unwrap();
@@ -348,10 +348,10 @@ fn test_flatten_multiple_operations() {
 
     let patch = with_state_ref::<OuterState, _>(&doc, Path::root(), |state| {
         // Multiple operations on both outer and flattened fields
-        state.set_name("updated");
-        state.inner().set_value(10);
-        state.inner().increment_value(5);
-        state.inner().set_label("final");
+        state.set_name("updated").unwrap();
+        state.inner().set_value(10).unwrap();
+        state.inner().increment_value(5).unwrap();
+        state.inner().set_label("final").unwrap();
     });
 
     // Should have 4 operations
@@ -399,7 +399,7 @@ fn test_flatten_to_value() {
         },
     };
 
-    let value = outer.to_value();
+    let value = outer.to_value().unwrap();
 
     // Without #[serde(flatten)], to_value produces nested structure
     assert!(value.is_object());

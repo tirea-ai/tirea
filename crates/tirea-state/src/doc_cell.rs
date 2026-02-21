@@ -4,7 +4,7 @@
 //! immediately update the document and subsequent reads see the latest values.
 
 use crate::apply::apply_op;
-use crate::Op;
+use crate::{Op, TireaResult};
 use serde_json::Value;
 use std::sync::{Mutex, MutexGuard};
 
@@ -31,11 +31,13 @@ impl DocCell {
 
     /// Apply a single operation to the document in-place.
     ///
-    /// This panics if applying the operation fails. In `StateContext` write-through
-    /// flows, an invalid operation is a programming error and should fail fast.
-    pub fn apply(&self, op: &Op) {
-        apply_op(&mut self.0.lock().unwrap(), op)
-            .expect("DocCell::apply failed while applying collected operation");
+    /// Apply an operation and return any validation/type error.
+    pub fn apply(&self, op: &Op) -> TireaResult<()> {
+        let mut guard = self
+            .0
+            .lock()
+            .map_err(|_| crate::TireaError::invalid_operation("state document mutex poisoned"))?;
+        apply_op(&mut guard, op)
     }
 
     /// Consume the `DocCell` and return the inner value.

@@ -76,8 +76,9 @@ pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
                     .map_err(::tirea_state::TireaError::from)
             }
 
-            fn to_value(&self) -> ::serde_json::Value {
-                ::serde_json::to_value(self).expect("State::to_value serialization failed")
+            fn to_value(&self) -> ::tirea_state::TireaResult<::serde_json::Value> {
+                ::serde_json::to_value(self)
+                    .map_err(::tirea_state::TireaError::from)
             }
         }
     })
@@ -270,22 +271,23 @@ fn generate_write_method(field: &FieldInput) -> syn::Result<TokenStream> {
             let none_name = format_ident!("{}_none", field_name);
             quote! {
                 /// Set the entire optional nested field value.
-                pub fn #set_name(&self, value: #field_ty) {
+                pub fn #set_name(&self, value: #field_ty) -> ::tirea_state::TireaResult<()> {
                     let path = self.base.clone().key(#json_key);
+                    let value = ::serde_json::to_value(&value)
+                        .map_err(::tirea_state::TireaError::from)?;
                     self.sink.collect(::tirea_state::Op::Set {
                         path,
-                        value: ::serde_json::to_value(&value)
-                            .expect("state setter serialization failed"),
-                    });
+                        value,
+                    })
                 }
 
                 /// Set the optional field to null (None).
-                pub fn #none_name(&self) {
+                pub fn #none_name(&self) -> ::tirea_state::TireaResult<()> {
                     let path = self.base.clone().key(#json_key);
                     self.sink.collect(::tirea_state::Op::Set {
                         path,
                         value: ::serde_json::Value::Null,
-                    });
+                    })
                 }
             }
         }
@@ -294,22 +296,23 @@ fn generate_write_method(field: &FieldInput) -> syn::Result<TokenStream> {
             let none_name = format_ident!("{}_none", field_name);
             quote! {
                 /// Set the optional field value.
-                pub fn #set_name(&self, value: #field_ty) {
+                pub fn #set_name(&self, value: #field_ty) -> ::tirea_state::TireaResult<()> {
                     let path = self.base.clone().key(#json_key);
+                    let value = ::serde_json::to_value(&value)
+                        .map_err(::tirea_state::TireaError::from)?;
                     self.sink.collect(::tirea_state::Op::Set {
                         path,
-                        value: ::serde_json::to_value(&value)
-                            .expect("state setter serialization failed"),
-                    });
+                        value,
+                    })
                 }
 
                 /// Set the optional field to null (None).
-                pub fn #none_name(&self) {
+                pub fn #none_name(&self) -> ::tirea_state::TireaResult<()> {
                     let path = self.base.clone().key(#json_key);
                     self.sink.collect(::tirea_state::Op::Set {
                         path,
                         value: ::serde_json::Value::Null,
-                    });
+                    })
                 }
             }
         }
@@ -321,46 +324,50 @@ fn generate_write_method(field: &FieldInput) -> syn::Result<TokenStream> {
             if inner.is_nested() {
                 quote! {
                     /// Set the entire array.
-                    pub fn #set_name(&self, value: #field_ty) {
+                    pub fn #set_name(&self, value: #field_ty) -> ::tirea_state::TireaResult<()> {
                         let path = self.base.clone().key(#json_key);
+                        let value = ::serde_json::to_value(&value)
+                            .map_err(::tirea_state::TireaError::from)?;
                         self.sink.collect(::tirea_state::Op::Set {
                             path,
-                            value: ::serde_json::to_value(&value)
-                                .expect("state setter serialization failed"),
-                        });
+                            value,
+                        })
                     }
 
                     /// Push an item to the array.
-                    pub fn #push_name(&self, value: #inner_ty) {
+                    pub fn #push_name(&self, value: #inner_ty) -> ::tirea_state::TireaResult<()> {
                         let path = self.base.clone().key(#json_key);
+                        let value = ::serde_json::to_value(&value)
+                            .map_err(::tirea_state::TireaError::from)?;
                         self.sink.collect(::tirea_state::Op::Append {
                             path,
-                            value: ::serde_json::to_value(&value)
-                                .expect("state setter serialization failed"),
-                        });
+                            value,
+                        })
                     }
                 }
             } else {
                 quote! {
                     /// Set the entire array.
-                    pub fn #set_name(&self, value: #field_ty) {
+                    pub fn #set_name(&self, value: #field_ty) -> ::tirea_state::TireaResult<()> {
                         let path = self.base.clone().key(#json_key);
+                        let value = ::serde_json::to_value(&value)
+                            .map_err(::tirea_state::TireaError::from)?;
                         self.sink.collect(::tirea_state::Op::Set {
                             path,
-                            value: ::serde_json::to_value(&value)
-                                .expect("state setter serialization failed"),
-                        });
+                            value,
+                        })
                     }
 
                     /// Push an item to the array.
-                    pub fn #push_name(&self, value: impl Into<#inner_ty>) {
+                    pub fn #push_name(&self, value: impl Into<#inner_ty>) -> ::tirea_state::TireaResult<()> {
                         let path = self.base.clone().key(#json_key);
                         let v: #inner_ty = value.into();
+                        let value = ::serde_json::to_value(&v)
+                            .map_err(::tirea_state::TireaError::from)?;
                         self.sink.collect(::tirea_state::Op::Append {
                             path,
-                            value: ::serde_json::to_value(&v)
-                                .expect("state setter serialization failed"),
-                        });
+                            value,
+                        })
                     }
                 }
             }
@@ -374,16 +381,17 @@ fn generate_write_method(field: &FieldInput) -> syn::Result<TokenStream> {
                 let insert_name = format_ident!("{}_insert", field_name);
                 quote! {
                     /// Insert a key-value pair into the map.
-                    pub fn #insert_name(&self, key: impl Into<String>, value: impl Into<#value_ty>) {
+                    pub fn #insert_name(&self, key: impl Into<String>, value: impl Into<#value_ty>) -> ::tirea_state::TireaResult<()> {
                         let path = self.base.clone().key(#json_key);
                         let k: String = key.into();
                         let path = path.key(k);
                         let v: #value_ty = value.into();
+                        let value = ::serde_json::to_value(&v)
+                            .map_err(::tirea_state::TireaError::from)?;
                         self.sink.collect(::tirea_state::Op::Set {
                             path,
-                            value: ::serde_json::to_value(&v)
-                                .expect("state setter serialization failed"),
-                        });
+                            value,
+                        })
                     }
                 }
             } else {
@@ -392,13 +400,14 @@ fn generate_write_method(field: &FieldInput) -> syn::Result<TokenStream> {
 
             quote! {
                 /// Set the entire map.
-                pub fn #set_name(&self, value: #field_ty) {
+                pub fn #set_name(&self, value: #field_ty) -> ::tirea_state::TireaResult<()> {
                     let path = self.base.clone().key(#json_key);
+                    let value = ::serde_json::to_value(&value)
+                        .map_err(::tirea_state::TireaError::from)?;
                     self.sink.collect(::tirea_state::Op::Set {
                         path,
-                        value: ::serde_json::to_value(&value)
-                            .expect("state setter serialization failed"),
-                    });
+                        value,
+                    })
                 }
 
                 #insert_method
@@ -411,25 +420,26 @@ fn generate_write_method(field: &FieldInput) -> syn::Result<TokenStream> {
             if type_name == "String" {
                 quote! {
                     /// Set the field value.
-                    pub fn #set_name(&self, value: impl Into<String>) {
+                    pub fn #set_name(&self, value: impl Into<String>) -> ::tirea_state::TireaResult<()> {
                         let path = self.base.clone().key(#json_key);
                         let v: String = value.into();
                         self.sink.collect(::tirea_state::Op::Set {
                             path,
                             value: ::serde_json::Value::String(v),
-                        });
+                        })
                     }
                 }
             } else {
                 quote! {
                     /// Set the field value.
-                    pub fn #set_name(&self, value: #field_ty) {
+                    pub fn #set_name(&self, value: #field_ty) -> ::tirea_state::TireaResult<()> {
                         let path = self.base.clone().key(#json_key);
+                        let value = ::serde_json::to_value(&value)
+                            .map_err(::tirea_state::TireaError::from)?;
                         self.sink.collect(::tirea_state::Op::Set {
                             path,
-                            value: ::serde_json::to_value(&value)
-                                .expect("state setter serialization failed"),
-                        });
+                            value,
+                        })
                     }
                 }
             }
@@ -455,9 +465,9 @@ fn generate_delete_methods(fields: &[&FieldInput]) -> syn::Result<TokenStream> {
 
         methods.extend(quote! {
             /// Delete this field entirely from the object.
-            pub fn #delete_name(&self) {
+            pub fn #delete_name(&self) -> ::tirea_state::TireaResult<()> {
                 let path = self.base.clone().key(#json_key);
-                self.sink.collect(::tirea_state::Op::Delete { path });
+                self.sink.collect(::tirea_state::Op::Delete { path })
             }
         });
     }
@@ -493,41 +503,41 @@ fn generate_increment_methods(fields: &[&FieldInput]) -> syn::Result<TokenStream
         if is_int {
             methods.extend(quote! {
                 /// Increment the numeric field by the given amount.
-                pub fn #increment_name(&self, amount: i64) {
+                pub fn #increment_name(&self, amount: i64) -> ::tirea_state::TireaResult<()> {
                     let path = self.base.clone().key(#json_key);
                     self.sink.collect(::tirea_state::Op::Increment {
                         path,
                         amount: ::tirea_state::Number::Int(amount),
-                    });
+                    })
                 }
 
                 /// Decrement the numeric field by the given amount.
-                pub fn #decrement_name(&self, amount: i64) {
+                pub fn #decrement_name(&self, amount: i64) -> ::tirea_state::TireaResult<()> {
                     let path = self.base.clone().key(#json_key);
                     self.sink.collect(::tirea_state::Op::Decrement {
                         path,
                         amount: ::tirea_state::Number::Int(amount),
-                    });
+                    })
                 }
             });
         } else if is_float {
             methods.extend(quote! {
                 /// Increment the numeric field by the given amount.
-                pub fn #increment_name(&self, amount: f64) {
+                pub fn #increment_name(&self, amount: f64) -> ::tirea_state::TireaResult<()> {
                     let path = self.base.clone().key(#json_key);
                     self.sink.collect(::tirea_state::Op::Increment {
                         path,
                         amount: ::tirea_state::Number::Float(amount),
-                    });
+                    })
                 }
 
                 /// Decrement the numeric field by the given amount.
-                pub fn #decrement_name(&self, amount: f64) {
+                pub fn #decrement_name(&self, amount: f64) -> ::tirea_state::TireaResult<()> {
                     let path = self.base.clone().key(#json_key);
                     self.sink.collect(::tirea_state::Op::Decrement {
                         path,
                         amount: ::tirea_state::Number::Float(amount),
-                    });
+                    })
                 }
             });
         }
