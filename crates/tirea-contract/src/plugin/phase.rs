@@ -405,20 +405,57 @@ impl<'a> StepContext<'a> {
         self.tool.as_ref().map(|t| t.pending).unwrap_or(false)
     }
 
-    /// Block current tool execution.
-    pub fn block(&mut self, reason: impl Into<String>) {
+    /// Mark the current tool as explicitly allowed.
+    ///
+    /// This clears any prior deny/pending state.
+    pub fn allow(&mut self) {
         if let Some(ref mut tool) = self.tool {
-            tool.blocked = true;
-            tool.block_reason = Some(reason.into());
+            tool.blocked = false;
+            tool.block_reason = None;
+            tool.pending = false;
+            tool.pending_interaction = None;
+            tool.pending_frontend_invocation = None;
         }
     }
 
-    /// Set current tool to pending (requires user confirmation).
-    pub fn pending(&mut self, interaction: Interaction) {
+    /// Mark the current tool as denied with a reason.
+    ///
+    /// This clears any prior pending state.
+    pub fn deny(&mut self, reason: impl Into<String>) {
         if let Some(ref mut tool) = self.tool {
+            tool.blocked = true;
+            tool.block_reason = Some(reason.into());
+            tool.pending = false;
+            tool.pending_interaction = None;
+            tool.pending_frontend_invocation = None;
+        }
+    }
+
+    /// Mark the current tool as requiring user confirmation.
+    ///
+    /// This clears any prior deny state.
+    pub fn ask(&mut self, interaction: Interaction) {
+        if let Some(ref mut tool) = self.tool {
+            tool.blocked = false;
+            tool.block_reason = None;
             tool.pending = true;
             tool.pending_interaction = Some(interaction);
+            tool.pending_frontend_invocation = None;
         }
+    }
+
+    /// Block current tool execution.
+    ///
+    /// Backward-compatible alias for [`StepContext::deny`].
+    pub fn block(&mut self, reason: impl Into<String>) {
+        self.deny(reason);
+    }
+
+    /// Set current tool to pending (requires user confirmation).
+    ///
+    /// Backward-compatible alias for [`StepContext::ask`].
+    pub fn pending(&mut self, interaction: Interaction) {
+        self.ask(interaction);
     }
 
     /// Invoke a frontend tool, suspending the current tool execution.
@@ -466,6 +503,8 @@ impl<'a> StepContext<'a> {
         // Set backward-compatible Interaction from the invocation.
         let interaction = invocation.to_interaction();
 
+        tool.blocked = false;
+        tool.block_reason = None;
         tool.pending = true;
         tool.pending_interaction = Some(interaction);
         tool.pending_frontend_invocation = Some(invocation);
@@ -474,12 +513,10 @@ impl<'a> StepContext<'a> {
     }
 
     /// Confirm pending tool execution.
+    ///
+    /// Backward-compatible alias for [`StepContext::allow`].
     pub fn confirm(&mut self) {
-        if let Some(ref mut tool) = self.tool {
-            tool.pending = false;
-            tool.pending_interaction = None;
-            tool.pending_frontend_invocation = None;
-        }
+        self.allow();
     }
 
     /// Set tool result.
@@ -753,10 +790,12 @@ mod tests {
         ctx.block("Permission denied");
 
         assert!(ctx.tool_blocked());
+        assert!(!ctx.tool_pending());
         assert_eq!(
             ctx.tool.as_ref().unwrap().block_reason,
             Some("Permission denied".to_string())
         );
+        assert!(ctx.tool.as_ref().unwrap().pending_interaction.is_none());
     }
 
     #[test]
@@ -771,6 +810,8 @@ mod tests {
         ctx.pending(interaction);
 
         assert!(ctx.tool_pending());
+        assert!(!ctx.tool_blocked());
+        assert!(ctx.tool.as_ref().unwrap().block_reason.is_none());
         assert!(ctx.tool.as_ref().unwrap().pending_interaction.is_some());
     }
 
@@ -787,7 +828,38 @@ mod tests {
         ctx.confirm();
 
         assert!(!ctx.tool_pending());
+        assert!(!ctx.tool_blocked());
+        assert!(ctx.tool.as_ref().unwrap().block_reason.is_none());
         assert!(ctx.tool.as_ref().unwrap().pending_interaction.is_none());
+    }
+
+    #[test]
+    fn test_allow_deny_ask_transitions_are_mutually_exclusive() {
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
+
+        let call = ToolCall::new("call_1", "write_file", json!({}));
+        ctx.tool = Some(ToolContext::new(&call));
+
+        ctx.deny("denied");
+        assert!(ctx.tool_blocked());
+        assert!(!ctx.tool_pending());
+
+        ctx.ask(Interaction::new("confirm_1", "confirm").with_message("Allow write?"));
+        assert!(!ctx.tool_blocked());
+        assert!(ctx.tool_pending());
+        assert!(ctx.tool.as_ref().unwrap().block_reason.is_none());
+
+        ctx.allow();
+        assert!(!ctx.tool_blocked());
+        assert!(!ctx.tool_pending());
+        assert!(ctx.tool.as_ref().unwrap().pending_interaction.is_none());
+        assert!(ctx
+            .tool
+            .as_ref()
+            .unwrap()
+            .pending_frontend_invocation
+            .is_none());
     }
 
     #[test]
@@ -1132,6 +1204,7 @@ mod tests {
 
         let call = ToolCall::new("call_copy", "copyToClipboard", json!({"text": "hello"}));
         ctx.tool = Some(ToolContext::new(&call));
+        ctx.block("old deny state");
 
         let call_id = ctx.invoke_frontend_tool(
             "copyToClipboard",
@@ -1140,6 +1213,8 @@ mod tests {
         );
 
         assert!(ctx.tool_pending());
+        assert!(!ctx.tool_blocked());
+        assert!(ctx.tool.as_ref().unwrap().block_reason.is_none());
         // For UseAsToolResult, call_id should match the tool call ID
         assert_eq!(call_id.as_deref(), Some("call_copy"));
 

@@ -901,6 +901,59 @@ fn test_execute_tools_rejects_tool_gate_mutation_outside_before_tool_execute() {
     });
 }
 
+struct InvalidDualToolGatePlugin;
+
+#[async_trait]
+impl AgentPlugin for InvalidDualToolGatePlugin {
+    fn id(&self) -> &str {
+        "invalid_dual_tool_gate"
+    }
+
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        if phase != Phase::BeforeToolExecute {
+            return;
+        }
+        if let Some(tool) = step.tool.as_mut() {
+            tool.blocked = true;
+            tool.pending = true;
+            tool.pending_interaction =
+                Some(Interaction::new("confirm", "confirm").with_message("invalid gate"));
+        }
+    }
+}
+
+#[test]
+fn test_execute_tools_rejects_non_orthogonal_tool_gate_state() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let thread = Thread::new("test");
+        let result = StreamResult {
+            text: "invalid".to_string(),
+            tool_calls: vec![crate::contracts::thread::ToolCall::new(
+                "call_1",
+                "echo",
+                json!({"message": "test"}),
+            )],
+            usage: None,
+        };
+        let tools = tool_map([EchoTool]);
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(InvalidDualToolGatePlugin)];
+
+        let err = execute_tools_with_plugins(thread, &result, &tools, true, &plugins)
+            .await
+            .expect_err("blocked+pending should be rejected");
+
+        assert!(
+            matches!(
+                err,
+                AgentLoopError::StateError(ref message)
+                if message.contains("blocked and pending are mutually exclusive")
+            ),
+            "unexpected error: {err:?}"
+        );
+    });
+}
+
 struct ReminderPhasePlugin;
 
 #[async_trait]

@@ -72,7 +72,7 @@ use async_trait::async_trait;
 ///
 /// - **Inject context**: `step.system()`, `step.thread()`, `step.reminder()`
 /// - **Filter tools**: `step.exclude()`, `step.include_only()`
-/// - **Control execution**: `step.block()`, `step.pending()`, `step.confirm()`
+/// - **Control execution**: `step.allow()`, `step.deny()`, `step.ask()`
 /// - **Read/write state**: `step.state_of::<T>()`, `step.ctx().state(...)`
 #[async_trait]
 pub trait AgentPlugin: Send + Sync {

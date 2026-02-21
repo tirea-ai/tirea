@@ -97,6 +97,12 @@ fn validate_phase_mutation(
             plugin_id
         )));
     }
+    if after.tool_blocked && after.tool_pending {
+        return Err(AgentLoopError::StateError(format!(
+            "plugin '{}' produced invalid tool gate state: blocked and pending are mutually exclusive ({phase})",
+            plugin_id
+        )));
+    }
 
     if before.tool_has_result != after.tool_has_result {
         return Err(AgentLoopError::StateError(format!(
