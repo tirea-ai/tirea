@@ -5,8 +5,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tirea_agentos::contracts::plugin::phase::Phase;
-use tirea_agentos::contracts::plugin::phase::StepContext;
+use tirea_agentos::contracts::plugin::phase::BeforeInferenceContext;
 use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::storage::{
     AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStore,
@@ -31,10 +30,8 @@ impl AgentPlugin for SkipInferencePlugin {
         "skip_inference_test"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        if phase == Phase::BeforeInference {
-            step.skip_inference = true;
-        }
+    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
+        step.skip_inference();
     }
 }
 
@@ -46,11 +43,9 @@ impl AgentPlugin for SlowSkipInferencePlugin {
         "slow_skip_inference_test"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        if phase == Phase::BeforeInference {
-            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-            step.skip_inference = true;
-        }
+    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        step.skip_inference();
     }
 }
 

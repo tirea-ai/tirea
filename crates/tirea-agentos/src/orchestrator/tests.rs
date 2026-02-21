@@ -1,5 +1,5 @@
 use super::*;
-use crate::contracts::plugin::phase::{BeforeInferenceContext, Phase, StepContext};
+use crate::contracts::plugin::phase::{BeforeInferenceContext, RunEndContext};
 use crate::contracts::storage::{AgentStateReader, AgentStateWriter};
 use crate::contracts::thread::Thread;
 use crate::contracts::tool::ToolDescriptor;
@@ -156,17 +156,16 @@ impl AgentPlugin for SkipWithRunEndPatchPlugin {
         "skip_with_run_end_patch"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        if phase == Phase::BeforeInference {
-            step.skip_inference = true;
-        }
-        if phase == Phase::RunEnd {
-            let patch = tirea_state::TrackedPatch::new(tirea_state::Patch::new().with_op(
-                tirea_state::Op::set(tirea_state::path!("run_end_marker"), json!(true)),
-            ))
-            .with_source("test:run_end_marker");
-            step.pending_patches.push(patch);
-        }
+    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
+        step.skip_inference();
+    }
+
+    async fn run_end(&self, step: &mut RunEndContext<'_, '_>) {
+        let patch = tirea_state::TrackedPatch::new(tirea_state::Patch::new().with_op(
+            tirea_state::Op::set(tirea_state::path!("run_end_marker"), json!(true)),
+        ))
+        .with_source("test:run_end_marker");
+        step.step_mut_for_tests().pending_patches.push(patch);
     }
 }
 
@@ -290,7 +289,7 @@ fn wire_plugins_into_orders_plugin_ids() {
             self.0
         }
 
-        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
+        
     }
 
     let os = AgentOs::builder()
@@ -319,7 +318,7 @@ fn wire_plugins_into_rejects_duplicate_plugin_ids_after_assembly() {
             self.0
         }
 
-        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
+        
     }
 
     // Register two different plugins with the same id — this is normally prevented
@@ -348,7 +347,7 @@ impl AgentPlugin for FakeSkillsPlugin {
         "skills"
     }
 
-    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
+    
 }
 
 #[test]
@@ -386,7 +385,7 @@ impl AgentPlugin for FakeAgentToolsPlugin {
         "agent_tools"
     }
 
-    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
+    
 }
 
 #[test]
@@ -416,7 +415,7 @@ impl AgentPlugin for FakeAgentRecoveryPlugin {
         "agent_recovery"
     }
 
-    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
+    
 }
 
 #[test]
@@ -905,10 +904,8 @@ async fn run_and_run_stream_work_without_llm_when_skip_inference() {
             "skip_inference"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-            if phase == Phase::BeforeInference {
-                step.skip_inference = true;
-            }
+        async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
+            step.skip_inference();
         }
     }
 
@@ -1359,10 +1356,8 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-            if phase == Phase::BeforeInference {
-                step.skip_inference = true;
-            }
+        async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
+            step.skip_inference();
         }
     }
 
@@ -1421,10 +1416,8 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-            if phase == Phase::BeforeInference {
-                step.skip_inference = true;
-            }
+        async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
+            step.skip_inference();
         }
     }
 
@@ -1474,10 +1467,8 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-            if phase == Phase::BeforeInference {
-                step.skip_inference = true;
-            }
+        async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
+            step.skip_inference();
         }
     }
 
@@ -1530,10 +1521,8 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-            if phase == Phase::BeforeInference {
-                step.skip_inference = true;
-            }
+        async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
+            step.skip_inference();
         }
     }
 
@@ -1600,10 +1589,8 @@ async fn execute_prepared_runs_stream() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-            if phase == Phase::BeforeInference {
-                step.skip_inference = true;
-            }
+        async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
+            step.skip_inference();
         }
     }
 
@@ -1953,7 +1940,7 @@ async fn prepare_run_scope_appends_plugins() {
             "run_scoped"
         }
 
-        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
+        
     }
 
     let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
@@ -2008,7 +1995,7 @@ async fn prepare_run_scope_rejects_duplicate_plugin_id() {
             "agent_tools"
         }
 
-        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
+        
     }
 
     let storage = Arc::new(tirea_store_adapters::MemoryStore::new());

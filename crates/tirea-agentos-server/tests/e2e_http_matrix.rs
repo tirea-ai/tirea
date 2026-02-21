@@ -3,7 +3,7 @@ use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use serde_json::json;
 use std::sync::Arc;
-use tirea_agentos::contracts::plugin::phase::{Phase, StepContext};
+use tirea_agentos::contracts::plugin::phase::BeforeInferenceContext;
 use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::storage::AgentStateReader;
 use tirea_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
@@ -19,10 +19,8 @@ impl AgentPlugin for SkipInferencePlugin {
         "skip_inference_e2e_http_matrix"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        if phase == Phase::BeforeInference {
-            step.skip_inference = true;
-        }
+    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
+        step.skip_inference();
     }
 }
 

@@ -240,7 +240,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use tirea_agent_loop::runtime::loop_runner::AgentConfig;
-    use tirea_contract::plugin::phase::{Phase, StepContext, ToolContext};
+    use tirea_contract::plugin::phase::{StepContext, ToolContext};
     use tirea_contract::plugin::AgentPlugin;
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::ToolCall;
@@ -273,8 +273,6 @@ mod tests {
         fn id(&self) -> &str {
             "marker_plugin"
         }
-
-        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
     }
 
     #[test]

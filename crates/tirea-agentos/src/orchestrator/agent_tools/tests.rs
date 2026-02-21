@@ -292,11 +292,9 @@ impl AgentPlugin for SlowSkipPlugin {
         "slow_skip"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        if phase == Phase::BeforeInference {
-            tokio::time::sleep(Duration::from_millis(120)).await;
-            step.skip_inference = true;
-        }
+    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        step.skip_inference();
     }
 }
 

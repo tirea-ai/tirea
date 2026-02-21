@@ -15,8 +15,7 @@ use serde_json::json;
 use std::sync::Arc;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::nats::Nats;
-use tirea_agentos::contracts::plugin::phase::Phase;
-use tirea_agentos::contracts::plugin::phase::StepContext;
+use tirea_agentos::contracts::plugin::phase::BeforeInferenceContext;
 use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::storage::{AgentStateReader, AgentStateStore};
 use tirea_agentos::orchestrator::AgentDefinition;
@@ -32,10 +31,8 @@ impl AgentPlugin for SkipInferencePlugin {
         "skip_inference_test"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        if phase == Phase::BeforeInference {
-            step.skip_inference = true;
-        }
+    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
+        step.skip_inference();
     }
 }
 
