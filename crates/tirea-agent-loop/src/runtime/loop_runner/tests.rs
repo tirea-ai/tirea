@@ -183,10 +183,10 @@ impl Tool for ActivityGateTool {
     ) -> Result<ToolResult, ToolError> {
         let activity = ctx.activity(self.stream_id.clone(), "progress");
         let progress = activity.state::<ActivityProgressState>("");
-        progress.set_progress(0.1);
+        let _ = progress.set_progress(0.1);
         self.ready.notify_one();
         self.proceed.notified().await;
-        progress.set_progress(1.0);
+        let _ = progress.set_progress(1.0);
         Ok(ToolResult::success(&self.id, json!({ "ok": true })))
     }
 }
@@ -214,7 +214,9 @@ fn skill_activation_result(
         let fix = TestFixture::new();
         let ctx = fix.ctx_with(call_id, "skill_test");
         let skill_state = ctx.state_of::<tirea_extension_skills::SkillState>();
-        skill_state.append_user_messages_insert(call_id.to_string(), vec![text.to_string()]);
+        skill_state
+            .append_user_messages_insert(call_id.to_string(), vec![text.to_string()])
+            .expect("failed to persist append_user_messages");
         ctx.take_patch()
     });
     let result = ToolResult::success("skill", json!({ "activated": true, "skill_id": skill_id }));
@@ -639,7 +641,9 @@ async fn test_parallel_tool_executor_honors_cancellation_token() {
         result
     });
 
-    ready.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), ready.notified())
+        .await
+        .expect("tool execution did not reach cancellation checkpoint");
     token.cancel();
 
     let result = tokio::time::timeout(std::time::Duration::from_millis(300), handle)
@@ -676,7 +680,7 @@ impl Tool for CounterTool {
         let current = state.counter().unwrap_or(0);
         let new_value = current + amount;
 
-        state.set_counter(new_value);
+        state.set_counter(new_value).expect("failed to set counter");
 
         Ok(ToolResult::success(
             "counter",
@@ -1628,10 +1632,12 @@ fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
     let fix = TestFixture::new();
     let ctx = fix.ctx_with("call_1", "test");
     let skill_state = ctx.state_of::<tirea_extension_skills::SkillState>();
-    skill_state.append_user_messages_insert(
-        "call_1".to_string(),
-        vec!["first".to_string(), "second".to_string()],
-    );
+    skill_state
+        .append_user_messages_insert(
+            "call_1".to_string(),
+            vec!["first".to_string(), "second".to_string()],
+        )
+        .expect("failed to persist append_user_messages");
     let outbox_patch = ctx.take_patch();
     let result = ToolExecutionResult {
         execution: crate::engine::tool_execution::ToolExecution {
@@ -1673,10 +1679,12 @@ fn test_apply_tool_results_ignores_blank_agent_state_outbox_messages() {
     let fix = TestFixture::new();
     let ctx = fix.ctx_with("call_1", "test");
     let skill_state = ctx.state_of::<tirea_extension_skills::SkillState>();
-    skill_state.append_user_messages_insert(
-        "call_1".to_string(),
-        vec!["".to_string(), "   ".to_string()],
-    );
+    skill_state
+        .append_user_messages_insert(
+            "call_1".to_string(),
+            vec!["".to_string(), "   ".to_string()],
+        )
+        .expect("failed to persist append_user_messages");
     let outbox_patch = ctx.take_patch();
     let result = ToolExecutionResult {
         execution: crate::engine::tool_execution::ToolExecution {
@@ -2325,6 +2333,24 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
                     "id": "call_write",
                     "action": "tool:write_file",
                     "parameters": { "source": "permission" }
+                },
+                "pending_frontend_invocation": {
+                    "call_id": "call_write",
+                    "tool_name": "PermissionConfirm",
+                    "arguments": {
+                        "tool_name": "write_file",
+                        "tool_args": { "path": "a.txt" }
+                    },
+                    "origin": {
+                        "type": "tool_call_intercepted",
+                        "backend_call_id": "call_write",
+                        "backend_tool_name": "write_file",
+                        "backend_arguments": { "path": "a.txt" }
+                    },
+                    "routing": {
+                        "strategy": "replay_original_tool",
+                        "state_patches": []
+                    }
                 }
             }
         }),
@@ -2386,6 +2412,24 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
                             "name": "echo",
                             "arguments": { "message": "approved-run" }
                         }
+                    }
+                },
+                "pending_frontend_invocation": {
+                    "call_id": "call_1",
+                    "tool_name": "PermissionConfirm",
+                    "arguments": {
+                        "tool_name": "echo",
+                        "tool_args": { "message": "approved-run" }
+                    },
+                    "origin": {
+                        "type": "tool_call_intercepted",
+                        "backend_call_id": "call_1",
+                        "backend_tool_name": "echo",
+                        "backend_arguments": { "message": "approved-run" }
+                    },
+                    "routing": {
+                        "strategy": "replay_original_tool",
+                        "state_patches": []
                     }
                 }
             }
@@ -2499,6 +2543,24 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
                             "name": "echo",
                             "arguments": { "message": "denied-run" }
                         }
+                    }
+                },
+                "pending_frontend_invocation": {
+                    "call_id": "call_1",
+                    "tool_name": "PermissionConfirm",
+                    "arguments": {
+                        "tool_name": "echo",
+                        "tool_args": { "message": "denied-run" }
+                    },
+                    "origin": {
+                        "type": "tool_call_intercepted",
+                        "backend_call_id": "call_1",
+                        "backend_tool_name": "echo",
+                        "backend_arguments": { "message": "denied-run" }
+                    },
+                    "routing": {
+                        "strategy": "replay_original_tool",
+                        "state_patches": []
                     }
                 }
             }
@@ -2912,23 +2974,6 @@ fn text_chat_response_with_usage(
     }
 }
 
-fn tool_call_chat_response(call_id: &str, name: &str, args: Value) -> genai::chat::ChatResponse {
-    let model_iden = genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "mock");
-    genai::chat::ChatResponse {
-        content: MessageContent::from_tool_calls(vec![genai::chat::ToolCall {
-            call_id: call_id.to_string(),
-            fn_name: name.to_string(),
-            fn_arguments: Value::String(args.to_string()),
-            thought_signatures: None,
-        }]),
-        reasoning_content: None,
-        model_iden: model_iden.clone(),
-        provider_model_iden: model_iden,
-        usage: Usage::default(),
-        captured_raw_body: None,
-    }
-}
-
 fn tool_call_chat_response_object_args(
     call_id: &str,
     name: &str,
@@ -3172,7 +3217,9 @@ async fn test_nonstream_cancellation_token_during_inference() {
         run_loop(&config, HashMap::new(), run_ctx, Some(token_for_run), None).await
     });
 
-    ready.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), ready.notified())
+        .await
+        .expect("inference execution did not reach cancellation checkpoint");
     token.cancel();
 
     let outcome = tokio::time::timeout(std::time::Duration::from_millis(300), handle)
@@ -3320,7 +3367,7 @@ async fn test_nonstream_cancellation_token_during_tool_execution() {
         proceed,
     };
     let provider = Arc::new(MockChatProvider::new(vec![
-        Ok(tool_call_chat_response(
+        Ok(tool_call_chat_response_object_args(
             "call_1",
             "activity_gate",
             json!({}),
@@ -3340,7 +3387,9 @@ async fn test_nonstream_cancellation_token_during_tool_execution() {
             async move { run_loop(&config, tools, run_ctx, Some(token_for_run), None).await },
         );
 
-    ready.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), ready.notified())
+        .await
+        .expect("tool execution did not reach cancellation checkpoint");
     token.cancel();
 
     let outcome = tokio::time::timeout(std::time::Duration::from_millis(300), handle)
@@ -3593,6 +3642,24 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
                             "name": "counting_echo",
                             "arguments": { "message": "approved-run" }
                         }
+                    }
+                },
+                "pending_frontend_invocation": {
+                    "call_id": "call_1",
+                    "tool_name": "PermissionConfirm",
+                    "arguments": {
+                        "tool_name": "counting_echo",
+                        "tool_args": { "message": "approved-run" }
+                    },
+                    "origin": {
+                        "type": "tool_call_intercepted",
+                        "backend_call_id": "call_1",
+                        "backend_tool_name": "counting_echo",
+                        "backend_arguments": { "message": "approved-run" }
+                    },
+                    "routing": {
+                        "strategy": "replay_original_tool",
+                        "state_patches": []
                     }
                 }
             }
@@ -4427,11 +4494,13 @@ async fn test_stream_replay_state_failure_emits_error() {
         async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase == Phase::RunStart {
                 let outbox = step.state_of::<InteractionOutbox>();
-                outbox.replay_tool_calls_push(crate::contracts::thread::ToolCall::new(
-                    "replay_call_1",
-                    "echo",
-                    json!({"message": "resume"}),
-                ));
+                outbox
+                    .replay_tool_calls_push(crate::contracts::thread::ToolCall::new(
+                        "replay_call_1",
+                        "echo",
+                        json!({"message": "resume"}),
+                    ))
+                    .expect("failed to queue replay call");
             }
         }
     }
@@ -4492,11 +4561,13 @@ async fn test_stream_replay_tool_exec_respects_tool_phases() {
             match phase {
                 Phase::RunStart => {
                     let outbox = step.state_of::<InteractionOutbox>();
-                    outbox.replay_tool_calls_push(crate::contracts::thread::ToolCall::new(
-                        "replay_call_1",
-                        "echo",
-                        json!({"message": "resume"}),
-                    ));
+                    outbox
+                        .replay_tool_calls_push(crate::contracts::thread::ToolCall::new(
+                            "replay_call_1",
+                            "echo",
+                            json!({"message": "resume"}),
+                        ))
+                        .expect("failed to queue replay call");
                 }
                 Phase::BeforeToolExecute if step.tool_call_id() == Some("replay_call_1") => {
                     BEFORE_TOOL_EXECUTED.store(true, Ordering::SeqCst);
@@ -4557,11 +4628,13 @@ async fn test_stream_replay_without_placeholder_appends_tool_result_message() {
         async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase == Phase::RunStart {
                 let outbox = step.state_of::<InteractionOutbox>();
-                outbox.replay_tool_calls_push(crate::contracts::thread::ToolCall::new(
-                    "replay_call_1",
-                    "echo",
-                    json!({"message": "resume"}),
-                ));
+                outbox
+                    .replay_tool_calls_push(crate::contracts::thread::ToolCall::new(
+                        "replay_call_1",
+                        "echo",
+                        json!({"message": "resume"}),
+                    ))
+                    .expect("failed to queue replay call");
             }
         }
     }
@@ -6117,7 +6190,9 @@ async fn test_stop_cancellation_token_during_tool_execution_stream() {
     let stream = run_loop_stream(config, tools, run_ctx, Some(token.clone()), None);
 
     let collector = tokio::spawn(async move { collect_stream_events(stream).await });
-    ready.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), ready.notified())
+        .await
+        .expect("tool execution did not reach cancellation checkpoint");
     token.cancel();
 
     let events = tokio::time::timeout(std::time::Duration::from_millis(300), collector)
@@ -6393,7 +6468,7 @@ fn test_parallel_tools_disjoint_paths_both_visible() {
                 ctx: &ToolCallContext<'_>,
             ) -> Result<ToolResult, ToolError> {
                 let state = ctx.state::<TestCounterState>("alpha");
-                state.set_counter(111);
+                state.set_counter(111).expect("failed to set counter");
                 Ok(ToolResult::success("alpha", json!({"ok": true})))
             }
         }
@@ -6409,7 +6484,7 @@ fn test_parallel_tools_disjoint_paths_both_visible() {
                 ctx: &ToolCallContext<'_>,
             ) -> Result<ToolResult, ToolError> {
                 let state = ctx.state::<TestCounterState>("beta");
-                state.set_counter(222);
+                state.set_counter(222).expect("failed to set counter");
                 Ok(ToolResult::success("beta", json!({"ok": true})))
             }
         }
