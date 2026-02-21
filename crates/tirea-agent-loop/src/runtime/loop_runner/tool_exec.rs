@@ -7,28 +7,28 @@ use super::{
     AgentConfig, AgentLoopError, RunCancellationToken, TOOL_SCOPE_CALLER_MESSAGES_KEY,
     TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
-use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::plugin::phase::{Phase, StepContext, ToolContext};
-use crate::contracts::Interaction;
-use crate::contracts::runtime::{
-    StreamResult, ToolExecution, ToolExecutionRequest, ToolExecutionResult,
-    ToolExecutor, ToolExecutorError,
-};
-use crate::engine::tool_filter::{SCOPE_ALLOWED_TOOLS_KEY, SCOPE_EXCLUDED_TOOLS_KEY};
+use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::ActivityManager;
+use crate::contracts::runtime::{
+    StreamResult, ToolExecution, ToolExecutionRequest, ToolExecutionResult, ToolExecutor,
+    ToolExecutorError,
+};
 use crate::contracts::thread::Thread;
 use crate::contracts::thread::{Message, MessageMetadata};
 use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult};
+use crate::contracts::Interaction;
 use crate::contracts::RunContext;
 use crate::engine::convert::tool_response;
 use crate::engine::tool_execution::collect_patches;
+use crate::engine::tool_filter::{SCOPE_ALLOWED_TOOLS_KEY, SCOPE_EXCLUDED_TOOLS_KEY};
 use crate::runtime::control::LoopControlState;
-use tirea_state::State;
 use async_trait::async_trait;
-use tirea_state::{PatchExt, TrackedPatch};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tirea_state::State;
+use tirea_state::{PatchExt, TrackedPatch};
 
 pub(super) struct AppliedToolResults {
     pub(super) pending_interaction: Option<Interaction>,
@@ -178,23 +178,10 @@ pub(super) fn apply_tool_results_impl(
     check_parallel_patch_conflicts: bool,
     tool_msg_ids: Option<&HashMap<String, String>>,
 ) -> Result<AppliedToolResults, AgentLoopError> {
-    let mut pending_interactions = results
-        .iter()
-        .filter_map(|r| r.pending_interaction.clone())
-        .collect::<Vec<_>>();
-
-    if pending_interactions.len() > 1 {
-        let ids = pending_interactions
-            .iter()
-            .map(|i| i.id.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(AgentLoopError::StateError(format!(
-            "multiple pending interactions in one tool round: [{ids}]"
-        )));
-    }
-
-    let pending_interaction = pending_interactions.pop();
+    let pending_interaction_idx = results.iter().position(|r| r.pending_interaction.is_some());
+    let pending_interaction =
+        pending_interaction_idx.and_then(|idx| results[idx].pending_interaction.clone());
+    let pending_interaction_id = pending_interaction.as_ref().map(|i| i.id.clone());
 
     if check_parallel_patch_conflicts {
         validate_parallel_state_patch_conflicts(results)?;
@@ -216,8 +203,10 @@ pub(super) fn apply_tool_results_impl(
     // Add tool result messages for all executions.
     let tool_messages: Vec<Arc<Message>> = results
         .iter()
-        .flat_map(|r| {
-            let mut msgs = if r.pending_interaction.is_some() {
+        .enumerate()
+        .flat_map(|(idx, r)| {
+            let is_active_pending = pending_interaction_idx == Some(idx);
+            let mut msgs = if is_active_pending {
                 vec![Message::tool(
                     &r.execution.call.id,
                     format!(
@@ -226,7 +215,19 @@ pub(super) fn apply_tool_results_impl(
                     ),
                 )]
             } else {
-                let mut tool_msg = tool_response(&r.execution.call.id, &r.execution.result);
+                let message_result = if r.pending_interaction.is_some() {
+                    ToolResult::error(
+                        &r.execution.call.name,
+                        format!(
+                            "Tool '{}' was deferred because interaction '{}' is already pending in this round.",
+                            r.execution.call.name,
+                            pending_interaction_id.as_deref().unwrap_or("unknown")
+                        ),
+                    )
+                } else {
+                    r.execution.result.clone()
+                };
+                let mut tool_msg = tool_response(&r.execution.call.id, &message_result);
                 if let Some(id) = tool_msg_ids.and_then(|ids| ids.get(&r.execution.call.id)) {
                     tool_msg = tool_msg.with_id(id.clone());
                 }
@@ -254,9 +255,8 @@ pub(super) fn apply_tool_results_impl(
     }
 
     if let Some(interaction) = pending_interaction.clone() {
-        let frontend_invocation = results
-            .iter()
-            .find_map(|r| r.pending_frontend_invocation.clone());
+        let frontend_invocation = pending_interaction_idx
+            .and_then(|idx| results[idx].pending_frontend_invocation.clone());
         let state = run_ctx
             .snapshot()
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
@@ -393,8 +393,11 @@ pub(super) fn scope_with_tool_caller_context(
 ) -> Result<tirea_contract::RunConfig, AgentLoopError> {
     let mut rt = run_ctx.run_config.clone();
     if rt.value(TOOL_SCOPE_CALLER_THREAD_ID_KEY).is_none() {
-        rt.set(TOOL_SCOPE_CALLER_THREAD_ID_KEY, run_ctx.thread_id().to_string())
-            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+        rt.set(
+            TOOL_SCOPE_CALLER_THREAD_ID_KEY,
+            run_ctx.thread_id().to_string(),
+        )
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     }
     if rt.value(TOOL_SCOPE_CALLER_STATE_KEY).is_none() {
         rt.set(TOOL_SCOPE_CALLER_STATE_KEY, state.clone())
@@ -509,7 +512,9 @@ pub(super) async fn execute_tools_parallel_with_phases(
     if cancellation_token.is_some_and(|token| token.is_cancelled()) {
         return Err(AgentLoopError::Cancelled {
             run_ctx: Box::new(RunContext::new(
-                thread_id, serde_json::json!({}), vec![],
+                thread_id,
+                serde_json::json!({}),
+                vec![],
                 tirea_contract::RunConfig::default(),
             )),
         });
@@ -564,7 +569,35 @@ pub(super) async fn execute_tools_parallel_with_phases(
     } else {
         join_future.await
     };
-    results.into_iter().collect()
+    let mut results: Vec<ToolExecutionResult> = results.into_iter().collect::<Result<_, _>>()?;
+    coalesce_pending_interactions(&mut results);
+    Ok(results)
+}
+
+fn coalesce_pending_interactions(results: &mut [ToolExecutionResult]) {
+    let mut active_pending_id: Option<String> = None;
+    for result in results {
+        let Some(interaction_id) = result.pending_interaction.as_ref().map(|i| i.id.clone()) else {
+            continue;
+        };
+
+        if active_pending_id.is_none() {
+            active_pending_id = Some(interaction_id);
+            continue;
+        }
+
+        let active_id = active_pending_id.as_deref().unwrap_or("unknown");
+        result.pending_interaction = None;
+        result.pending_frontend_invocation = None;
+        result.pending_patches.clear();
+        result.execution.result = ToolResult::error(
+            &result.execution.call.name,
+            format!(
+                "Tool '{}' was deferred because interaction '{}' is already pending in this round.",
+                result.execution.call.name, active_id
+            ),
+        );
+    }
 }
 
 /// Execute tools sequentially with phase hooks.
@@ -586,7 +619,9 @@ pub(super) async fn execute_tools_sequential_with_phases(
     if cancellation_token.is_some_and(|token| token.is_cancelled()) {
         return Err(AgentLoopError::Cancelled {
             run_ctx: Box::new(RunContext::new(
-                thread_id, serde_json::json!({}), vec![],
+                thread_id,
+                serde_json::json!({}),
+                vec![],
                 tirea_contract::RunConfig::default(),
             )),
         });
@@ -745,85 +780,88 @@ pub(super) async fn execute_single_tool_with_phases(
                 None,
                 None,
             )
-    } else if step.tool_pending() {
-        let interaction = step
-            .tool
-            .as_ref()
-            .and_then(|t| t.pending_interaction.clone());
-        let frontend_invocation = step
-            .tool
-            .as_ref()
-            .and_then(|t| t.pending_frontend_invocation.clone());
-        (
-            ToolExecution {
-                call: call.clone(),
-                result: ToolResult::pending(&call.name, "Waiting for user confirmation"),
-                patch: None,
-            },
-            interaction,
-            frontend_invocation,
-        )
-    } else if tool.is_none() {
-        (
-            ToolExecution {
-                call: call.clone(),
-                result: ToolResult::error(&call.name, format!("Tool '{}' not found", call.name)),
-                patch: None,
-            },
-            None,
-            None,
-        )
-    } else if let Err(e) = tool.unwrap().validate_args(&call.arguments) {
-        // Argument validation failed — return error to the LLM
-        (
-            ToolExecution {
-                call: call.clone(),
-                result: ToolResult::error(&call.name, e.to_string()),
-                patch: None,
-            },
-            None,
-            None,
-        )
-    } else {
-        // Execute the tool with its own ToolCallContext
-        let tool_doc = tirea_state::DocCell::new(state.clone());
-        let tool_ops = std::sync::Mutex::new(Vec::new());
-        let tool_pending_msgs = std::sync::Mutex::new(Vec::new());
-        let tool_ctx = crate::contracts::ToolCallContext::new(
-            &tool_doc,
-            &tool_ops,
-            &call.id,
-            format!("tool:{}", call.name),
-            plugin_scope,
-            &tool_pending_msgs,
-            activity_manager,
-        );
-        let result = match tool
-            .unwrap()
-            .execute(call.arguments.clone(), &tool_ctx)
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => ToolResult::error(&call.name, e.to_string()),
-        };
-
-        let patch = tool_ctx.take_patch();
-        let patch = if patch.patch().is_empty() {
-            None
+        } else if step.tool_pending() {
+            let interaction = step
+                .tool
+                .as_ref()
+                .and_then(|t| t.pending_interaction.clone());
+            let frontend_invocation = step
+                .tool
+                .as_ref()
+                .and_then(|t| t.pending_frontend_invocation.clone());
+            (
+                ToolExecution {
+                    call: call.clone(),
+                    result: ToolResult::pending(&call.name, "Waiting for user confirmation"),
+                    patch: None,
+                },
+                interaction,
+                frontend_invocation,
+            )
+        } else if tool.is_none() {
+            (
+                ToolExecution {
+                    call: call.clone(),
+                    result: ToolResult::error(
+                        &call.name,
+                        format!("Tool '{}' not found", call.name),
+                    ),
+                    patch: None,
+                },
+                None,
+                None,
+            )
+        } else if let Err(e) = tool.unwrap().validate_args(&call.arguments) {
+            // Argument validation failed — return error to the LLM
+            (
+                ToolExecution {
+                    call: call.clone(),
+                    result: ToolResult::error(&call.name, e.to_string()),
+                    patch: None,
+                },
+                None,
+                None,
+            )
         } else {
-            Some(patch)
-        };
+            // Execute the tool with its own ToolCallContext
+            let tool_doc = tirea_state::DocCell::new(state.clone());
+            let tool_ops = std::sync::Mutex::new(Vec::new());
+            let tool_pending_msgs = std::sync::Mutex::new(Vec::new());
+            let tool_ctx = crate::contracts::ToolCallContext::new(
+                &tool_doc,
+                &tool_ops,
+                &call.id,
+                format!("tool:{}", call.name),
+                plugin_scope,
+                &tool_pending_msgs,
+                activity_manager,
+            );
+            let result = match tool
+                .unwrap()
+                .execute(call.arguments.clone(), &tool_ctx)
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => ToolResult::error(&call.name, e.to_string()),
+            };
 
-        (
-            ToolExecution {
-                call: call.clone(),
-                result,
-                patch,
-            },
-            None,
-            None,
-        )
-    };
+            let patch = tool_ctx.take_patch();
+            let patch = if patch.patch().is_empty() {
+                None
+            } else {
+                Some(patch)
+            };
+
+            (
+                ToolExecution {
+                    call: call.clone(),
+                    result,
+                    patch,
+                },
+                None,
+                None,
+            )
+        };
 
     // Set tool result in context
     step.set_tool_result(execution.result.clone());

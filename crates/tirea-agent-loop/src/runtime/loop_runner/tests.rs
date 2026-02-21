@@ -1,27 +1,28 @@
-use super::*;
 use super::outcome::LoopFailure;
+use super::*;
+use crate::contracts::event::interaction::ResponseRouting;
 use crate::contracts::plugin::phase::Phase;
-use crate::contracts::runtime::LlmExecutor;
-use crate::contracts::TerminationReason;
 use crate::contracts::runtime::ActivityManager;
+use crate::contracts::runtime::LlmExecutor;
+use crate::contracts::storage::VersionPrecondition;
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{Message, Role, Thread, ToolCall};
-use crate::contracts::storage::VersionPrecondition;
-use crate::contracts::event::interaction::ResponseRouting;
 use crate::contracts::tool::{ToolDescriptor, ToolError, ToolResult};
+use crate::contracts::TerminationReason;
 use crate::contracts::{RunContext, ToolCallContext};
 use crate::runtime::activity::ActivityHub;
 use async_trait::async_trait;
-use tirea_extension_interaction::InteractionOutbox;
-use tirea_contract::testing::TestFixture;
-use tirea_state::{Op, Patch, State};
-use genai::chat::{ChatOptions, ChatStreamEvent, MessageContent, StreamChunk, StreamEnd, ToolChunk, Usage};
+use genai::chat::{
+    ChatOptions, ChatStreamEvent, MessageContent, StreamChunk, StreamEnd, ToolChunk, Usage,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use tirea_contract::testing::TestFixture;
+use tirea_extension_interaction::InteractionOutbox;
+use tirea_state::{Op, Patch, State};
 use tokio::sync::Notify;
-
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 struct TestCounterState {
@@ -62,14 +63,13 @@ struct AddTaskTool;
 #[async_trait]
 impl Tool for AddTaskTool {
     fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new("addTask", "Add Task", "Add a task")
-            .with_parameters(json!({
-                "type": "object",
-                "properties": {
-                    "title": { "type": "string" }
-                },
-                "required": ["title"]
-            }))
+        ToolDescriptor::new("addTask", "Add Task", "Add a task").with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "title": { "type": "string" }
+            },
+            "required": ["title"]
+        }))
     }
 
     async fn execute(
@@ -303,7 +303,12 @@ fn test_agent_loop_error_display() {
     assert!(err.to_string().contains("timeout"));
 
     let err = AgentLoopError::Stopped {
-        run_ctx: Box::new(RunContext::new("test", json!({}), vec![], crate::contracts::RunConfig::default())),
+        run_ctx: Box::new(RunContext::new(
+            "test",
+            json!({}),
+            vec![],
+            crate::contracts::RunConfig::default(),
+        )),
         reason: StopReason::MaxRoundsReached,
     };
     assert!(err.to_string().contains("MaxRoundsReached"));
@@ -312,7 +317,12 @@ fn test_agent_loop_error_display() {
 #[test]
 fn test_agent_loop_error_termination_reason_mapping() {
     let stopped = AgentLoopError::Stopped {
-        run_ctx: Box::new(RunContext::new("test", json!({}), vec![], crate::contracts::RunConfig::default())),
+        run_ctx: Box::new(RunContext::new(
+            "test",
+            json!({}),
+            vec![],
+            crate::contracts::RunConfig::default(),
+        )),
         reason: StopReason::MaxRoundsReached,
     };
     assert_eq!(
@@ -321,12 +331,22 @@ fn test_agent_loop_error_termination_reason_mapping() {
     );
 
     let cancelled = AgentLoopError::Cancelled {
-        run_ctx: Box::new(RunContext::new("test", json!({}), vec![], crate::contracts::RunConfig::default())),
+        run_ctx: Box::new(RunContext::new(
+            "test",
+            json!({}),
+            vec![],
+            crate::contracts::RunConfig::default(),
+        )),
     };
     assert_eq!(cancelled.termination_reason(), TerminationReason::Cancelled);
 
     let pending = AgentLoopError::PendingInteraction {
-        run_ctx: Box::new(RunContext::new("test", json!({}), vec![], crate::contracts::RunConfig::default())),
+        run_ctx: Box::new(RunContext::new(
+            "test",
+            json!({}),
+            vec![],
+            crate::contracts::RunConfig::default(),
+        )),
         interaction: Box::new(Interaction::new("int_1", "confirm")),
     };
     assert_eq!(
@@ -385,7 +405,10 @@ fn test_execute_tools_with_calls() {
         let thread = execute_tools(thread, &result, &tools, true).await.unwrap();
 
         assert_eq!(thread.message_count(), 1);
-        assert_eq!(thread.messages[0].role, crate::contracts::thread::Role::Tool);
+        assert_eq!(
+            thread.messages[0].role,
+            crate::contracts::thread::Role::Tool
+        );
     });
 }
 
@@ -642,7 +665,11 @@ impl Tool for CounterTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let amount = args["amount"].as_i64().unwrap_or(1);
 
         let state = ctx.state::<TestCounterState>("");
@@ -995,11 +1022,7 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
             "guarded"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase != Phase::BeforeToolExecute {
                 return;
             }
@@ -1056,11 +1079,7 @@ async fn test_plugin_sees_real_session_id_and_scope_in_tool_phase() {
             "session_check"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase == Phase::BeforeToolExecute {
                 assert_eq!(step.thread_id(), "real-thread-42");
                 assert_eq!(step.run_config().value("user_id"), Some(&json!("u-abc")),);
@@ -1072,7 +1091,8 @@ async fn test_plugin_sees_real_session_id_and_scope_in_tool_phase() {
     VERIFIED.store(false, Ordering::SeqCst);
 
     let tool = EchoTool;
-    let call = crate::contracts::thread::ToolCall::new("call_1", "echo", json!({ "message": "hi" }));
+    let call =
+        crate::contracts::thread::ToolCall::new("call_1", "echo", json!({ "message": "hi" }));
     let state = json!({});
     let tool_descriptors = vec![tool.descriptor()];
     let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(SessionCheckPlugin)];
@@ -1109,11 +1129,7 @@ async fn test_plugin_state_patch_visible_in_next_step_before_inference() {
             "state_channel"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             match phase {
                 Phase::BeforeToolExecute => {
                     let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
@@ -1179,11 +1195,7 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
             "phase_block"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             self.phases.lock().unwrap().push(phase);
             match phase {
                 Phase::StepStart => {
@@ -1248,11 +1260,7 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
             "cleanup_plugin"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             self.phases.lock().unwrap().push(phase);
             match phase {
                 Phase::AfterInference => {
@@ -1283,7 +1291,8 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
     }
 
     let thread = Thread::with_initial_state("test", json!({}));
-    let mut run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let mut run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let tool_descriptors = vec![ToolDescriptor::new("echo", "Echo", "Echo")];
     let phases = Arc::new(Mutex::new(Vec::new()));
     let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(CleanupPlugin {
@@ -1303,9 +1312,7 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
         phases.lock().unwrap().as_slice(),
         &[Phase::AfterInference, Phase::StepEnd]
     );
-    let state = run_ctx
-        .snapshot()
-        .expect("state rebuild should succeed");
+    let state = run_ctx.snapshot().expect("state rebuild should succeed");
     assert_eq!(state["debug"]["cleanup_ran"], true);
 }
 
@@ -1319,11 +1326,7 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
             "run_scoped_state"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             match phase {
                 Phase::RunStart => {
                     let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
@@ -1447,12 +1450,7 @@ fn test_agent_config_with_plugins() {
         fn id(&self) -> &str {
             "dummy"
         }
-        async fn on_phase(
-            &self,
-            _phase: Phase,
-            _step: &mut StepContext<'_>,
-        ) {
-        }
+        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
     }
 
     let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(DummyPlugin), Arc::new(DummyPlugin)];
@@ -1515,14 +1513,18 @@ fn test_execute_tools_with_pending_phase_plugin() {
         assert!(msg.content.contains("awaiting approval"));
 
         let state = thread.snapshot().unwrap();
-        assert_eq!(state["loop_control"]["pending_interaction"]["id"], "confirm_1");
+        assert_eq!(
+            state["loop_control"]["pending_interaction"]["id"],
+            "confirm_1"
+        );
     });
 }
 
 #[test]
-fn test_apply_tool_results_rejects_multiple_pending_interactions() {
+fn test_apply_tool_results_keeps_first_pending_interaction_when_multiple_exist() {
     let thread = Thread::new("test");
-    let mut run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let mut run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
     let mut first = tool_execution_result("call_1", None);
     first.pending_interaction =
@@ -1532,17 +1534,37 @@ fn test_apply_tool_results_rejects_multiple_pending_interactions() {
     second.pending_interaction =
         Some(Interaction::new("confirm_2", "confirm").with_message("approve second tool"));
 
-    let result = apply_tool_results_to_session(&mut run_ctx, &[first, second], None, false);
+    let applied = apply_tool_results_to_session(&mut run_ctx, &[first, second], None, false)
+        .expect("apply should keep the first pending interaction");
+    assert_eq!(
+        applied.pending_interaction.as_ref().map(|i| i.id.as_str()),
+        Some("confirm_1")
+    );
+    assert_eq!(run_ctx.messages().len(), 2);
     assert!(
-        matches!(result, Err(AgentLoopError::StateError(_))),
-        "expected StateError when multiple pending interactions exist"
+        run_ctx.messages()[0].content.contains("awaiting approval"),
+        "first pending should remain placeholder: {}",
+        run_ctx.messages()[0].content
+    );
+    assert!(
+        run_ctx.messages()[1]
+            .content
+            .contains("deferred because interaction 'confirm_1'"),
+        "extra pending should be converted to deferred tool result: {}",
+        run_ctx.messages()[1].content
+    );
+    let state = run_ctx.snapshot().expect("snapshot should succeed");
+    assert_eq!(
+        state["loop_control"]["pending_interaction"]["id"],
+        "confirm_1"
     );
 }
 
 #[test]
 fn test_apply_tool_results_appends_skill_instruction_as_user_message() {
     let thread = Thread::with_initial_state("test", json!({}));
-    let mut run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let mut run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let result = skill_activation_result("call_1", "docx", Some("## DOCX\nUse docx-js."));
 
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
@@ -1563,15 +1585,17 @@ fn test_apply_tool_results_appends_skill_instruction_as_user_message() {
 #[test]
 fn test_apply_tool_results_skill_instruction_user_message_attaches_metadata() {
     let thread = Thread::with_initial_state("test", json!({}));
-    let mut run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let mut run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let result = skill_activation_result("call_1", "docx", Some("Use docx-js."));
     let meta = MessageMetadata {
         run_id: Some("run-1".to_string()),
         step_index: Some(3),
     };
 
-    let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], Some(meta.clone()), false)
-        .expect("apply_tool_results_to_session should succeed");
+    let _applied =
+        apply_tool_results_to_session(&mut run_ctx, &[result], Some(meta.clone()), false)
+            .expect("apply_tool_results_to_session should succeed");
 
     assert_eq!(run_ctx.messages().len(), 2);
     let user_msg = &run_ctx.messages()[1];
@@ -1582,7 +1606,8 @@ fn test_apply_tool_results_skill_instruction_user_message_attaches_metadata() {
 #[test]
 fn test_apply_tool_results_skill_without_instruction_does_not_append_user_message() {
     let thread = Thread::with_initial_state("test", json!({}));
-    let mut run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let mut run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let result = skill_activation_result("call_1", "docx", None);
 
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
@@ -1598,7 +1623,8 @@ fn test_apply_tool_results_skill_without_instruction_does_not_append_user_messag
 #[test]
 fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
     let thread = Thread::with_initial_state("test", json!({}));
-    let mut run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let mut run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let fix = TestFixture::new();
     let ctx = fix.ctx_with("call_1", "test");
     let skill_state = ctx.state_of::<tirea_extension_skills::SkillState>();
@@ -1642,7 +1668,8 @@ fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
 #[test]
 fn test_apply_tool_results_ignores_blank_agent_state_outbox_messages() {
     let thread = Thread::with_initial_state("test", json!({}));
-    let mut run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let mut run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let fix = TestFixture::new();
     let ctx = fix.ctx_with("call_1", "test");
     let skill_state = ctx.state_of::<tirea_extension_skills::SkillState>();
@@ -1676,7 +1703,8 @@ fn test_apply_tool_results_ignores_blank_agent_state_outbox_messages() {
 #[test]
 fn test_apply_tool_results_keeps_tool_and_appended_user_message_order_stable() {
     let thread = Thread::with_initial_state("test", json!({}));
-    let mut run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let mut run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let first = skill_activation_result("call_2", "beta", Some("Instruction B"));
     let second = skill_activation_result("call_1", "alpha", Some("Instruction A"));
 
@@ -1774,7 +1802,10 @@ fn test_execute_tools_with_config_basic() {
             .unwrap();
 
         assert_eq!(thread.message_count(), 1);
-        assert_eq!(thread.messages[0].role, crate::contracts::thread::Role::Tool);
+        assert_eq!(
+            thread.messages[0].role,
+            crate::contracts::thread::Role::Tool
+        );
     });
 }
 
@@ -1958,7 +1989,10 @@ fn test_execute_tools_with_config_with_pending_plugin() {
 
         // Pending interaction should be persisted via RunContext.
         let state = thread.snapshot().unwrap();
-        assert_eq!(state["loop_control"]["pending_interaction"]["id"], "confirm_1");
+        assert_eq!(
+            state["loop_control"]["pending_interaction"]["id"],
+            "confirm_1"
+        );
     });
 }
 
@@ -2040,11 +2074,7 @@ fn test_execute_tools_sequential_propagates_intermediate_state_apply_errors() {
             "first_call_intermediate_patch"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase != Phase::AfterToolExecute || step.tool_call_id() != Some("call_1") {
                 return;
             }
@@ -2141,8 +2171,7 @@ async fn test_stream_skip_inference_emits_run_end_phase() {
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
-    let thread =
-        Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
+    let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
@@ -2187,8 +2216,7 @@ async fn test_stream_skip_inference_emits_run_start_and_finish() {
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
-    let thread =
-        Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
+    let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
@@ -2218,11 +2246,7 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
             "pending_skip"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase != Phase::BeforeInference {
                 return;
             }
@@ -2240,8 +2264,7 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
 
     let config = AgentConfig::new("gpt-4o-mini")
         .with_plugin(Arc::new(PendingSkipPlugin) as Arc<dyn AgentPlugin>);
-    let thread =
-        Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
+    let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
@@ -2278,11 +2301,7 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
             "skip_inference"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -2316,15 +2335,15 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
 
     assert!(matches!(events.first(), Some(AgentEvent::RunStart { .. })));
     assert!(
-            events.iter().any(|e| matches!(
-                e,
-                AgentEvent::InteractionResolved {
-                    interaction_id,
-                    result
-                } if interaction_id == "call_write" && result == &serde_json::Value::Bool(false)
-            )),
-            "missing denied InteractionResolved event: {events:?}"
-        );
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::InteractionResolved {
+                interaction_id,
+                result
+            } if interaction_id == "call_write" && result == &serde_json::Value::Bool(false)
+        )),
+        "missing denied InteractionResolved event: {events:?}"
+    );
 }
 
 #[tokio::test]
@@ -2337,11 +2356,7 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
             "skip_inference_for_permission_approval"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -2454,11 +2469,7 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
             "skip_inference_for_permission_denial"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -2560,14 +2571,16 @@ async fn test_run_loop_skip_inference_emits_run_end_phase() {
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
-    let thread =
-        Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
+    let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None).await;
     // skip_inference in run_loop terminates with PluginRequested (not NaturalEnd)
-    assert!(matches!(outcome.termination, TerminationReason::PluginRequested));
+    assert!(matches!(
+        outcome.termination,
+        TerminationReason::PluginRequested
+    ));
 
     let recorded = phases.lock().unwrap().clone();
     assert!(
@@ -2597,11 +2610,7 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
             "pending_skip_non_stream"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             self.phases.lock().unwrap().push(phase);
             if phase != Phase::BeforeInference {
                 return;
@@ -2622,15 +2631,19 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
     let config = AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(PendingSkipPlugin {
         phases: phases.clone(),
     }) as Arc<dyn AgentPlugin>);
-    let thread =
-        Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
+    let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None).await;
-    assert!(matches!(outcome.termination, TerminationReason::PendingInteraction));
+    assert!(matches!(
+        outcome.termination,
+        TerminationReason::PendingInteraction
+    ));
 
-    let interaction = outcome.run_ctx.pending_interaction()
+    let interaction = outcome
+        .run_ctx
+        .pending_interaction()
         .expect("should have pending interaction");
     assert_eq!(interaction.action, "recover_agent_run");
     assert_eq!(interaction.message, "resume?");
@@ -2658,15 +2671,18 @@ async fn test_run_loop_auto_generated_run_id_is_rfc4122_uuid_v7() {
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
-    let thread =
-        Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
+    let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None).await;
     // skip_inference in run_loop terminates with PluginRequested
-    assert!(matches!(outcome.termination, TerminationReason::PluginRequested));
-    let run_id = outcome.run_ctx
+    assert!(matches!(
+        outcome.termination,
+        TerminationReason::PluginRequested
+    ));
+    let run_id = outcome
+        .run_ctx
         .run_config
         .value("run_id")
         .and_then(|v| v.as_str())
@@ -2693,14 +2709,16 @@ async fn test_run_loop_phase_sequence_on_skip_inference() {
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
-    let thread =
-        Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
+    let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None).await;
     // skip_inference in run_loop terminates with PluginRequested
-    assert!(matches!(outcome.termination, TerminationReason::PluginRequested));
+    assert!(matches!(
+        outcome.termination,
+        TerminationReason::PluginRequested
+    ));
 
     let recorded = phases.lock().unwrap().clone();
     assert_eq!(
@@ -2726,11 +2744,7 @@ async fn test_run_loop_rejects_skip_inference_mutation_outside_before_inference(
             "invalid_step_start_skip"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase == Phase::StepStart {
                 step.skip_inference = true;
             }
@@ -2739,8 +2753,7 @@ async fn test_run_loop_rejects_skip_inference_mutation_outside_before_inference(
 
     let config = AgentConfig::new("gpt-4o-mini")
         .with_plugin(Arc::new(InvalidStepStartSkipPlugin) as Arc<dyn AgentPlugin>);
-    let thread =
-        Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
+    let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
@@ -2766,11 +2779,7 @@ async fn test_stream_rejects_skip_inference_mutation_outside_before_inference() 
             "invalid_step_start_skip"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase == Phase::StepStart {
                 step.skip_inference = true;
             }
@@ -2967,7 +2976,9 @@ impl LlmExecutor for MockChatProvider {
         unimplemented!("MockChatProvider doesn't support streaming")
     }
 
-    fn name(&self) -> &'static str { "mock_chat" }
+    fn name(&self) -> &'static str {
+        "mock_chat"
+    }
 }
 
 struct HangingChatProvider {
@@ -2998,7 +3009,9 @@ impl LlmExecutor for HangingChatProvider {
         unimplemented!("HangingChatProvider doesn't support streaming")
     }
 
-    fn name(&self) -> &'static str { "hanging_chat" }
+    fn name(&self) -> &'static str {
+        "hanging_chat"
+    }
 }
 
 #[tokio::test]
@@ -3033,7 +3046,8 @@ async fn test_nonstream_uses_fallback_model_after_primary_failures() {
         ]
     );
     assert!(
-        outcome.run_ctx
+        outcome
+            .run_ctx
             .messages()
             .iter()
             .any(|m| m.role == crate::contracts::thread::Role::Assistant && m.content == "ok"),
@@ -3053,11 +3067,7 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
             "cleanup_on_llm_error_nonstream"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             self.phases.lock().expect("lock poisoned").push(phase);
             if phase != Phase::AfterInference {
                 return;
@@ -3083,8 +3093,7 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
     let provider = Arc::new(MockChatProvider::new(vec![Err(genai::Error::Internal(
         "429 rate limit".to_string(),
     ))]));
-    let config = config
-        .with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let config = config.with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
@@ -3113,18 +3122,26 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
 
 #[tokio::test]
 async fn test_nonstream_stop_timeout_condition_triggers_on_natural_end_path() {
-    let provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("done now"))]));
+    let provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response(
+        "done now",
+    ))]));
     let config = AgentConfig::new("mock")
-        .with_stop_condition(crate::engine::stop_conditions::Timeout(std::time::Duration::from_secs(0)))
+        .with_stop_condition(crate::engine::stop_conditions::Timeout(
+            std::time::Duration::from_secs(0),
+        ))
         .with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None).await;
 
-    assert_eq!(outcome.termination, TerminationReason::Stopped(StopReason::TimeoutReached));
+    assert_eq!(
+        outcome.termination,
+        TerminationReason::Stopped(StopReason::TimeoutReached)
+    );
     assert!(
-        outcome.run_ctx
+        outcome
+            .run_ctx
             .messages()
             .iter()
             .any(|m| m.role == crate::contracts::thread::Role::Assistant),
@@ -3144,8 +3161,7 @@ async fn test_nonstream_cancellation_token_during_inference() {
     let token = CancellationToken::new();
     let token_for_run = token.clone();
 
-    let config = AgentConfig::new("mock")
-        .with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let config = AgentConfig::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
@@ -3162,14 +3178,23 @@ async fn test_nonstream_cancellation_token_during_inference() {
         .expect("run task should not panic");
     proceed.notify_waiters();
 
-    assert_eq!(outcome.termination, TerminationReason::Cancelled,
-        "expected cancellation during inference, got: {:?}", outcome.termination);
+    assert_eq!(
+        outcome.termination,
+        TerminationReason::Cancelled,
+        "expected cancellation during inference, got: {:?}",
+        outcome.termination
+    );
 }
 
 #[test]
 fn test_loop_outcome_run_finish_projection_natural_end_has_result_payload() {
     let outcome = LoopOutcome {
-        run_ctx: RunContext::new("thread-1", json!({}), vec![], crate::contracts::RunConfig::default()),
+        run_ctx: RunContext::new(
+            "thread-1",
+            json!({}),
+            vec![],
+            crate::contracts::RunConfig::default(),
+        ),
         termination: TerminationReason::NaturalEnd,
         response: Some("final text".to_string()),
         usage: LoopUsage::default(),
@@ -3197,7 +3222,12 @@ fn test_loop_outcome_run_finish_projection_natural_end_has_result_payload() {
 #[test]
 fn test_loop_outcome_run_finish_projection_non_natural_has_no_result_payload() {
     let outcome = LoopOutcome {
-        run_ctx: RunContext::new("thread-2", json!({}), vec![], crate::contracts::RunConfig::default()),
+        run_ctx: RunContext::new(
+            "thread-2",
+            json!({}),
+            vec![],
+            crate::contracts::RunConfig::default(),
+        ),
         termination: TerminationReason::Cancelled,
         response: Some("ignored".to_string()),
         usage: LoopUsage::default(),
@@ -3221,9 +3251,10 @@ fn test_loop_outcome_run_finish_projection_non_natural_has_no_result_payload() {
 
 #[tokio::test]
 async fn test_nonstream_loop_outcome_collects_usage_and_stats() {
-    let provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response_with_usage("done", 7, 3))]));
-    let config = AgentConfig::new("mock")
-        .with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let provider = Arc::new(MockChatProvider::new(vec![Ok(
+        text_chat_response_with_usage("done", 7, 3),
+    )]));
+    let config = AgentConfig::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("usage-stats").with_message(Message::user("go"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
@@ -3296,15 +3327,15 @@ async fn test_nonstream_cancellation_token_during_tool_execution() {
     let token = CancellationToken::new();
     let token_for_run = token.clone();
 
-    let config = AgentConfig::new("mock")
-        .with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let config = AgentConfig::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let tools = tool_map([tool]);
     let thread = Thread::new("test").with_message(Message::user("go"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
-    let handle = tokio::spawn(async move {
-        run_loop(&config, tools, run_ctx, Some(token_for_run), None).await
-    });
+    let handle =
+        tokio::spawn(
+            async move { run_loop(&config, tools, run_ctx, Some(token_for_run), None).await },
+        );
 
     ready.notified().await;
     token.cancel();
@@ -3344,8 +3375,8 @@ async fn test_golden_run_loop_and_stream_natural_end_alignment() {
         )),
         Ok(text_chat_response("done")),
     ]));
-    let nonstream_config = AgentConfig::new("mock")
-        .with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>);
+    let nonstream_config =
+        AgentConfig::new("mock").with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
     let nonstream_outcome = run_loop(&nonstream_config, tools.clone(), run_ctx, None, None).await;
@@ -3382,15 +3413,24 @@ async fn test_golden_run_loop_and_stream_natural_end_alignment() {
 async fn test_golden_run_loop_and_stream_cancelled_alignment() {
     let thread = Thread::new("golden-cancel").with_message(Message::user("go"));
     let tools = HashMap::new();
-    let nonstream_provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("unused"))]));
+    let nonstream_provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response(
+        "unused",
+    ))]));
     let nonstream_token = CancellationToken::new();
     nonstream_token.cancel();
 
-    let nonstream_config = AgentConfig::new("mock")
-        .with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>);
+    let nonstream_config =
+        AgentConfig::new("mock").with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
-    let nonstream_outcome = run_loop(&nonstream_config, tools.clone(), run_ctx, Some(nonstream_token), None).await;
+    let nonstream_outcome = run_loop(
+        &nonstream_config,
+        tools.clone(),
+        run_ctx,
+        Some(nonstream_token),
+        None,
+    )
+    .await;
     assert_eq!(nonstream_outcome.termination, TerminationReason::Cancelled);
 
     let stream_token = CancellationToken::new();
@@ -3427,11 +3467,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
             "golden_pending_plugin"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase != Phase::BeforeInference {
                 return;
             }
@@ -3450,15 +3486,23 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
     let config =
         AgentConfig::new("mock").with_plugin(Arc::new(GoldenPendingPlugin) as Arc<dyn AgentPlugin>);
     let tools = HashMap::new();
-    let nonstream_provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("unused"))]));
+    let nonstream_provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response(
+        "unused",
+    ))]));
 
-    let nonstream_config = config.clone()
+    let nonstream_config = config
+        .clone()
         .with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
     let nonstream_outcome = run_loop(&nonstream_config, tools.clone(), run_ctx, None, None).await;
-    assert_eq!(nonstream_outcome.termination, TerminationReason::PendingInteraction);
-    let nonstream_interaction = nonstream_outcome.run_ctx.pending_interaction()
+    assert_eq!(
+        nonstream_outcome.termination,
+        TerminationReason::PendingInteraction
+    );
+    let nonstream_interaction = nonstream_outcome
+        .run_ctx
+        .pending_interaction()
         .expect("non-stream outcome should have pending interaction");
 
     let (events, stream_thread) = run_mock_stream_with_final_thread(
@@ -3485,7 +3529,8 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
         "stream/non-stream pending path should preserve equivalent persisted messages"
     );
 
-    let nonstream_state = nonstream_outcome.run_ctx
+    let nonstream_state = nonstream_outcome
+        .run_ctx
         .snapshot()
         .expect("non-stream state should rebuild");
     let stream_state = stream_thread
@@ -3507,11 +3552,7 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
             "skip_inference_replay_idempotent"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -3719,7 +3760,9 @@ impl LlmExecutor for FailingStartProvider {
         Ok(Box::pin(futures::stream::iter(events)))
     }
 
-    fn name(&self) -> &'static str { "failing_start" }
+    fn name(&self) -> &'static str {
+        "failing_start"
+    }
 }
 
 impl MockStreamProvider {
@@ -3785,7 +3828,9 @@ impl LlmExecutor for MockStreamProvider {
         Ok(Box::pin(futures::stream::iter(events)))
     }
 
-    fn name(&self) -> &'static str { "mock_stream" }
+    fn name(&self) -> &'static str {
+        "mock_stream"
+    }
 }
 
 /// Helper: run a mock stream and collect events.
@@ -3923,15 +3968,8 @@ async fn run_mock_stream_with_final_thread(
     thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
 ) -> (Vec<AgentEvent>, Thread) {
-    run_mock_stream_with_final_thread_with_context(
-        provider,
-        config,
-        thread,
-        tools,
-        None,
-        None,
-    )
-    .await
+    run_mock_stream_with_final_thread_with_context(provider, config, thread, tools, None, None)
+        .await
 }
 
 /// Helper: run a mock stream and collect events plus final session with explicit run context.
@@ -4110,10 +4148,17 @@ async fn test_stream_state_commit_failure_on_assistant_turn_emits_error_and_run_
         CheckpointReason::AssistantTurnCommitted,
     )));
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let config = AgentConfig::new("mock")
-        .with_llm_executor(Arc::new(MockStreamProvider::new(vec![MockResponse::text("done")])) as Arc<dyn LlmExecutor>);
+    let config = AgentConfig::new("mock").with_llm_executor(Arc::new(MockStreamProvider::new(vec![
+        MockResponse::text("done"),
+    ])) as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, HashMap::new(), run_ctx, None, Some(committer.clone() as Arc<dyn StateCommitter>));
+    let stream = run_loop_stream(
+        config,
+        HashMap::new(),
+        run_ctx,
+        None,
+        Some(committer.clone() as Arc<dyn StateCommitter>),
+    );
     let events = collect_stream_events(stream).await;
 
     assert_eq!(extract_termination(&events), Some(TerminationReason::Error));
@@ -4138,13 +4183,18 @@ async fn test_stream_state_commit_failure_on_tool_results_emits_error_before_too
         CheckpointReason::ToolResultsCommitted,
     )));
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let config = AgentConfig::new("mock")
-        .with_llm_executor(Arc::new(MockStreamProvider::new(vec![
-            MockResponse::text("tool").with_tool_call("call_1", "echo", json!({"message":"hi"}))
-        ])) as Arc<dyn LlmExecutor>);
+    let config = AgentConfig::new("mock").with_llm_executor(Arc::new(MockStreamProvider::new(vec![
+        MockResponse::text("tool").with_tool_call("call_1", "echo", json!({"message":"hi"})),
+    ])) as Arc<dyn LlmExecutor>);
     let tools = tool_map([EchoTool]);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, tools, run_ctx, None, Some(committer.clone() as Arc<dyn StateCommitter>));
+    let stream = run_loop_stream(
+        config,
+        tools,
+        run_ctx,
+        None,
+        Some(committer.clone() as Arc<dyn StateCommitter>),
+    );
     let events = collect_stream_events(stream).await;
 
     assert_eq!(extract_termination(&events), Some(TerminationReason::Error));
@@ -4176,10 +4226,17 @@ async fn test_stream_run_finished_commit_failure_emits_error_without_run_finish_
         CheckpointReason::RunFinished,
     )));
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let config = AgentConfig::new("mock")
-        .with_llm_executor(Arc::new(MockStreamProvider::new(vec![MockResponse::text("done")])) as Arc<dyn LlmExecutor>);
+    let config = AgentConfig::new("mock").with_llm_executor(Arc::new(MockStreamProvider::new(vec![
+        MockResponse::text("done"),
+    ])) as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, HashMap::new(), run_ctx, None, Some(committer.clone() as Arc<dyn StateCommitter>));
+    let stream = run_loop_stream(
+        config,
+        HashMap::new(),
+        run_ctx,
+        None,
+        Some(committer.clone() as Arc<dyn StateCommitter>),
+    );
     let events = collect_stream_events(stream).await;
 
     assert!(
@@ -4213,11 +4270,7 @@ async fn test_stream_frontend_use_as_tool_result_emits_single_tool_call_start() 
             "frontend_pending_plugin"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase != Phase::BeforeToolExecute || step.tool_call_id() != Some("call_1") {
                 return;
             }
@@ -4234,10 +4287,11 @@ async fn test_stream_frontend_use_as_tool_result_emits_single_tool_call_start() 
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(FrontendPendingPlugin) as Arc<dyn AgentPlugin>);
     let tools = tool_map([AddTaskTool]);
-    let responses = vec![
-        MockResponse::text("planning")
-            .with_tool_call("call_1", "addTask", json!({ "title": "Deploy v2" })),
-    ];
+    let responses = vec![MockResponse::text("planning").with_tool_call(
+        "call_1",
+        "addTask",
+        json!({ "title": "Deploy v2" }),
+    )];
 
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
 
@@ -4246,8 +4300,7 @@ async fn test_stream_frontend_use_as_tool_result_emits_single_tool_call_start() 
         .filter(|e| matches!(e, AgentEvent::ToolCallStart { id, .. } if id == "call_1"))
         .count();
     assert_eq!(
-        starts_for_call_1,
-        1,
+        starts_for_call_1, 1,
         "frontend pending call must not emit duplicate ToolCallStart events: {events:?}"
     );
 
@@ -4256,8 +4309,7 @@ async fn test_stream_frontend_use_as_tool_result_emits_single_tool_call_start() 
         .filter(|e| matches!(e, AgentEvent::ToolCallReady { id, .. } if id == "call_1"))
         .count();
     assert_eq!(
-        ready_for_call_1,
-        1,
+        ready_for_call_1, 1,
         "frontend pending call must emit a single ToolCallReady: {events:?}"
     );
 
@@ -4279,7 +4331,13 @@ async fn test_stream_skip_inference_force_commits_run_finished_delta() {
         .with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>)
         .with_llm_executor(Arc::new(MockStreamProvider::new(vec![])) as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, HashMap::new(), run_ctx, None, Some(committer.clone() as Arc<dyn StateCommitter>));
+    let stream = run_loop_stream(
+        config,
+        HashMap::new(),
+        run_ctx,
+        None,
+        Some(committer.clone() as Arc<dyn StateCommitter>),
+    );
     let events = collect_stream_events(stream).await;
 
     assert_eq!(
@@ -4299,11 +4357,7 @@ async fn test_stream_replay_invalid_payload_emits_error_and_finish() {
             "invalid_replay_payload"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase == Phase::RunStart {
                 step.pending_patches.push(
                     tirea_state::TrackedPatch::new(Patch::new().with_op(Op::set(
@@ -4366,11 +4420,7 @@ async fn test_stream_replay_state_failure_emits_error() {
             "replay_state_failure"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase == Phase::RunStart {
                 let outbox = step.state_of::<InteractionOutbox>();
                 outbox.replay_tool_calls_push(crate::contracts::thread::ToolCall::new(
@@ -4434,11 +4484,7 @@ async fn test_stream_replay_tool_exec_respects_tool_phases() {
             "replay_blocking"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             match phase {
                 Phase::RunStart => {
                     let outbox = step.state_of::<InteractionOutbox>();
@@ -4504,11 +4550,7 @@ async fn test_stream_replay_without_placeholder_appends_tool_result_message() {
             "replay_without_placeholder"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase == Phase::RunStart {
                 let outbox = step.state_of::<InteractionOutbox>();
                 outbox.replay_tool_calls_push(crate::contracts::thread::ToolCall::new(
@@ -4553,7 +4595,7 @@ async fn test_stream_replay_without_placeholder_appends_tool_result_message() {
 }
 
 #[tokio::test]
-async fn test_stream_apply_error_still_runs_run_end_phase() {
+async fn test_stream_parallel_multiple_pending_keeps_run_end_and_single_pending() {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     static SESSION_END_RAN: AtomicBool = AtomicBool::new(false);
@@ -4566,11 +4608,7 @@ async fn test_stream_apply_error_still_runs_run_end_phase() {
             "pending_and_run_end"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             match phase {
                 Phase::BeforeToolExecute => {
                     if let Some(call_id) = step.tool_call_id() {
@@ -4602,16 +4640,24 @@ async fn test_stream_apply_error_still_runs_run_end_phase() {
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
 
     assert!(
-        events.iter().any(|e| matches!(
-            e,
-            AgentEvent::Error { message }
-            if message.contains("multiple pending interactions")
-        )),
-        "expected apply error when multiple pending interactions exist: {events:?}"
+        !events.iter().any(|e| matches!(e, AgentEvent::Error { .. })),
+        "multiple pending in parallel should not fail apply: {events:?}"
+    );
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::PendingInteraction)
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::Pending { .. }))
+            .count(),
+        1,
+        "only one pending interaction should be emitted per tool round"
     );
     assert!(
         SESSION_END_RAN.load(Ordering::SeqCst),
-        "RunEnd phase must run on apply_tool_results failure"
+        "RunEnd phase must run when stream terminates on pending interaction"
     );
 }
 
@@ -4663,7 +4709,8 @@ async fn test_stop_natural_end_no_tools() {
 #[test]
 fn test_apply_tool_results_rejects_conflicting_parallel_state_patches() {
     let thread = Thread::with_initial_state("test", json!({}));
-    let mut run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let mut run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let left = tool_execution_result(
         "call_a",
         Some(TrackedPatch::new(Patch::new().with_op(Op::set(
@@ -4697,7 +4744,8 @@ fn test_apply_tool_results_rejects_conflicting_parallel_state_patches() {
 #[test]
 fn test_apply_tool_results_accepts_disjoint_parallel_state_patches() {
     let thread = Thread::with_initial_state("test", json!({}));
-    let mut run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let mut run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let left = tool_execution_result(
         "call_a",
         Some(TrackedPatch::new(Patch::new().with_op(Op::set(
@@ -4938,7 +4986,9 @@ async fn test_stop_cancellation_token_during_inference_stream() {
             Ok(Box::pin(stream))
         }
 
-        fn name(&self) -> &'static str { "hanging_stream" }
+        fn name(&self) -> &'static str {
+            "hanging_stream"
+        }
     }
 
     let token = CancellationToken::new();
@@ -4986,8 +5036,7 @@ async fn test_run_loop_with_context_cancellation_token() {
     let (recorder, _phases) = RecordAndSkipPlugin::new();
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
-    let thread =
-        Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
+    let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
     let token = CancellationToken::new();
     token.cancel();
@@ -5337,11 +5386,7 @@ async fn test_sequential_tools_stop_after_first_pending_interaction() {
             "pending_every_tool"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase != Phase::BeforeToolExecute {
                 return;
             }
@@ -5392,6 +5437,82 @@ async fn test_sequential_tools_stop_after_first_pending_interaction() {
     );
     assert_eq!(thread.messages().len(), 1);
     assert_eq!(thread.messages()[0].tool_call_id.as_deref(), Some("call_1"));
+}
+
+#[tokio::test]
+async fn test_parallel_tools_allow_single_pending_interaction_per_round() {
+    struct PendingEveryToolPlugin {
+        seen_calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl AgentPlugin for PendingEveryToolPlugin {
+        fn id(&self) -> &str {
+            "pending_every_tool_parallel"
+        }
+
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            if phase != Phase::BeforeToolExecute {
+                return;
+            }
+            if let Some(call_id) = step.tool_call_id() {
+                self.seen_calls
+                    .lock()
+                    .expect("lock poisoned")
+                    .push(call_id.to_string());
+                step.pending(
+                    Interaction::new(format!("confirm_{call_id}"), "confirm")
+                        .with_message("needs confirmation"),
+                );
+            }
+        }
+    }
+
+    let seen_calls = Arc::new(Mutex::new(Vec::new()));
+    let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(PendingEveryToolPlugin {
+        seen_calls: seen_calls.clone(),
+    }) as Arc<dyn AgentPlugin>];
+
+    let thread = Thread::new("test");
+    let result = StreamResult {
+        text: "Call both".to_string(),
+        tool_calls: vec![
+            crate::contracts::thread::ToolCall::new("call_1", "echo", json!({"message":"a"})),
+            crate::contracts::thread::ToolCall::new("call_2", "echo", json!({"message":"b"})),
+        ],
+        usage: None,
+    };
+    let tools = tool_map([EchoTool]);
+
+    let err = execute_tools_with_plugins(thread, &result, &tools, true, &plugins)
+        .await
+        .expect_err("parallel mode should keep one pending interaction and pause");
+    let (thread, interaction) = match err {
+        AgentLoopError::PendingInteraction {
+            run_ctx: thread,
+            interaction,
+        } => (thread, interaction),
+        other => panic!("expected PendingInteraction, got: {other:?}"),
+    };
+    assert_eq!(interaction.id, "confirm_call_1");
+    let mut seen = seen_calls.lock().expect("lock poisoned").clone();
+    seen.sort();
+    assert_eq!(
+        seen,
+        vec!["call_1".to_string(), "call_2".to_string()],
+        "parallel mode should still execute both BeforeToolExecute phases"
+    );
+    assert_eq!(thread.messages().len(), 2);
+    assert!(
+        thread.messages()[0].content.contains("awaiting approval"),
+        "first tool should remain pending placeholder"
+    );
+    assert!(
+        thread.messages()[1]
+            .content
+            .contains("deferred because interaction 'confirm_call_1'"),
+        "second pending interaction should be converted into a deferred tool result"
+    );
 }
 
 // ========================================================================
@@ -5737,20 +5858,30 @@ async fn test_run_step_skip_inference_returns_empty_result_without_assistant_mes
     let config = AgentConfig::new("gpt-4o-mini")
         .with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>)
         .with_max_rounds(1);
-    let thread =
-        Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
+    let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None).await;
 
     // skip_inference in run_loop terminates with PluginRequested
-    assert!(matches!(outcome.termination, TerminationReason::PluginRequested));
+    assert!(matches!(
+        outcome.termination,
+        TerminationReason::PluginRequested
+    ));
     assert!(outcome.response.as_ref().map_or(true, |s| s.is_empty()));
     assert_eq!(outcome.run_ctx.messages().len(), 1);
 
     let recorded = phases.lock().expect("lock poisoned").clone();
-    assert_eq!(recorded, vec![Phase::RunStart, Phase::StepStart, Phase::BeforeInference, Phase::RunEnd]);
+    assert_eq!(
+        recorded,
+        vec![
+            Phase::RunStart,
+            Phase::StepStart,
+            Phase::BeforeInference,
+            Phase::RunEnd
+        ]
+    );
 }
 
 #[tokio::test]
@@ -5763,11 +5894,7 @@ async fn test_run_step_skip_inference_with_pending_state_returns_pending_interac
             "pending_skip_step"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase != Phase::BeforeInference {
                 return;
             }
@@ -5786,15 +5913,19 @@ async fn test_run_step_skip_inference_with_pending_state_returns_pending_interac
     let config = AgentConfig::new("gpt-4o-mini")
         .with_plugin(Arc::new(PendingSkipStepPlugin) as Arc<dyn AgentPlugin>)
         .with_max_rounds(1);
-    let thread =
-        Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
+    let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None).await;
-    assert!(matches!(outcome.termination, TerminationReason::PendingInteraction));
+    assert!(matches!(
+        outcome.termination,
+        TerminationReason::PendingInteraction
+    ));
 
-    let interaction = outcome.run_ctx.pending_interaction()
+    let interaction = outcome
+        .run_ctx
+        .pending_interaction()
         .expect("should have pending interaction");
     assert_eq!(interaction.action, "recover_agent_run");
     assert_eq!(interaction.message, "resume step?");
@@ -5856,11 +5987,7 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
             "cleanup_on_start_error"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             self.phases.lock().expect("lock poisoned").push(phase);
             match phase {
                 Phase::AfterInference => {
@@ -5898,11 +6025,13 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
         Thread::with_initial_state("test", json!({})).with_message(Message::user("go"));
     let mut final_thread = initial_thread.clone();
     let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
-    let state_committer: Arc<dyn StateCommitter> = Arc::new(ChannelStateCommitter::new(checkpoint_tx));
+    let state_committer: Arc<dyn StateCommitter> =
+        Arc::new(ChannelStateCommitter::new(checkpoint_tx));
 
-    let config = config
-        .with_llm_executor(Arc::new(FailingStartProvider::new(10)) as Arc<dyn LlmExecutor>);
-    let run_ctx = RunContext::from_thread(&initial_thread, tirea_contract::RunConfig::default()).unwrap();
+    let config =
+        config.with_llm_executor(Arc::new(FailingStartProvider::new(10)) as Arc<dyn LlmExecutor>);
+    let run_ctx =
+        RunContext::from_thread(&initial_thread, tirea_contract::RunConfig::default()).unwrap();
     let events = collect_stream_events(run_loop_stream(
         config,
         HashMap::new(),
@@ -6098,20 +6227,23 @@ fn test_run_ctx_take_delta_tracks_incremental_patches() {
 /// and the conflict-free patches from both tools are visible in `state()`.
 #[test]
 fn test_parallel_disjoint_patches_applied_atomically() {
-    let mut run_ctx = RunContext::new("test", json!({"alpha": 0, "beta": 0}), vec![], Default::default());
+    let mut run_ctx = RunContext::new(
+        "test",
+        json!({"alpha": 0, "beta": 0}),
+        vec![],
+        Default::default(),
+    );
     let left = tool_execution_result(
         "call_a",
-        Some(TrackedPatch::new(Patch::new().with_op(Op::set(
-            tirea_state::path!("alpha"),
-            json!(10),
-        )))),
+        Some(TrackedPatch::new(
+            Patch::new().with_op(Op::set(tirea_state::path!("alpha"), json!(10))),
+        )),
     );
     let right = tool_execution_result(
         "call_b",
-        Some(TrackedPatch::new(Patch::new().with_op(Op::set(
-            tirea_state::path!("beta"),
-            json!(20),
-        )))),
+        Some(TrackedPatch::new(
+            Patch::new().with_op(Op::set(tirea_state::path!("beta"), json!(20))),
+        )),
     );
 
     let applied = apply_tool_results_to_session(&mut run_ctx, &[left, right], None, true)
@@ -6128,7 +6260,11 @@ fn test_parallel_disjoint_patches_applied_atomically() {
     assert_eq!(state["beta"], 20);
 
     // Tool result messages are added
-    assert_eq!(run_ctx.messages().len(), 2, "each tool gets a result message");
+    assert_eq!(
+        run_ctx.messages().len(),
+        2,
+        "each tool gets a result message"
+    );
 }
 
 /// When parallel tools produce conflicting patches, NO patches are applied —
@@ -6138,17 +6274,15 @@ fn test_parallel_conflicting_patches_rejected_before_application() {
     let mut run_ctx = RunContext::new("test", json!({"shared": 0}), vec![], Default::default());
     let left = tool_execution_result(
         "call_a",
-        Some(TrackedPatch::new(Patch::new().with_op(Op::set(
-            tirea_state::path!("shared"),
-            json!(1),
-        )))),
+        Some(TrackedPatch::new(
+            Patch::new().with_op(Op::set(tirea_state::path!("shared"), json!(1))),
+        )),
     );
     let right = tool_execution_result(
         "call_b",
-        Some(TrackedPatch::new(Patch::new().with_op(Op::set(
-            tirea_state::path!("shared"),
-            json!(2),
-        )))),
+        Some(TrackedPatch::new(
+            Patch::new().with_op(Op::set(tirea_state::path!("shared"), json!(2))),
+        )),
     );
 
     match apply_tool_results_to_session(&mut run_ctx, &[left, right], None, true) {
@@ -6158,11 +6292,22 @@ fn test_parallel_conflicting_patches_rejected_before_application() {
     }
 
     // Crucially: no patches were applied to run_ctx
-    assert_eq!(run_ctx.thread_patches().len(), 0, "no patches should be added on conflict");
-    assert_eq!(run_ctx.messages().len(), 0, "no messages should be added on conflict");
+    assert_eq!(
+        run_ctx.thread_patches().len(),
+        0,
+        "no patches should be added on conflict"
+    );
+    assert_eq!(
+        run_ctx.messages().len(),
+        0,
+        "no messages should be added on conflict"
+    );
 
     let state = run_ctx.snapshot().unwrap();
-    assert_eq!(state["shared"], 0, "state must remain unchanged after conflict rejection");
+    assert_eq!(
+        state["shared"], 0,
+        "state must remain unchanged after conflict rejection"
+    );
 }
 
 /// Sequential execution: the second tool sees the first tool's state changes
@@ -6237,7 +6382,11 @@ fn test_parallel_tools_disjoint_paths_both_visible() {
             fn descriptor(&self) -> ToolDescriptor {
                 ToolDescriptor::new("alpha", "Alpha", "Write alpha")
             }
-            async fn execute(&self, _args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+            async fn execute(
+                &self,
+                _args: Value,
+                ctx: &ToolCallContext<'_>,
+            ) -> Result<ToolResult, ToolError> {
                 let state = ctx.state::<TestCounterState>("alpha");
                 state.set_counter(111);
                 Ok(ToolResult::success("alpha", json!({"ok": true})))
@@ -6249,14 +6398,21 @@ fn test_parallel_tools_disjoint_paths_both_visible() {
             fn descriptor(&self) -> ToolDescriptor {
                 ToolDescriptor::new("beta", "Beta", "Write beta")
             }
-            async fn execute(&self, _args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+            async fn execute(
+                &self,
+                _args: Value,
+                ctx: &ToolCallContext<'_>,
+            ) -> Result<ToolResult, ToolError> {
                 let state = ctx.state::<TestCounterState>("beta");
                 state.set_counter(222);
                 Ok(ToolResult::success("beta", json!({"ok": true})))
             }
         }
 
-        let thread = Thread::with_initial_state("test", json!({"alpha": {"counter": 0}, "beta": {"counter": 0}}));
+        let thread = Thread::with_initial_state(
+            "test",
+            json!({"alpha": {"counter": 0}, "beta": {"counter": 0}}),
+        );
         let result = StreamResult {
             text: "Two tools".to_string(),
             tool_calls: vec![
@@ -6299,20 +6455,16 @@ fn test_plugin_pending_patches_accumulated_with_tool_patches() {
 
     // Simulate a plugin pending patch (added alongside the tool result)
     let mut result_with_plugin_patch = tool_result;
-    result_with_plugin_patch.pending_patches.push(TrackedPatch::new(
-        Patch::new().with_op(Op::set(
+    result_with_plugin_patch
+        .pending_patches
+        .push(TrackedPatch::new(Patch::new().with_op(Op::set(
             tirea_state::path!("plugin_field"),
             json!(200),
-        )),
-    ));
+        ))));
 
-    let _applied = apply_tool_results_to_session(
-        &mut run_ctx,
-        &[result_with_plugin_patch],
-        None,
-        false,
-    )
-    .expect("should succeed");
+    let _applied =
+        apply_tool_results_to_session(&mut run_ctx, &[result_with_plugin_patch], None, false)
+            .expect("should succeed");
 
     let state = run_ctx.snapshot().unwrap();
     assert_eq!(state["tool_field"], 100, "tool patch applied");
@@ -6333,17 +6485,24 @@ async fn test_run_loop_patches_accumulate_across_steps() {
     // Two-step loop: step 1 increments counter by 5, step 2 by 10.
     // After step 2, final state should show 15.
     let provider = Arc::new(MockChatProvider::new(vec![
-        Ok(tool_call_chat_response_object_args("c1", "counter", json!({"amount": 5}))),
-        Ok(tool_call_chat_response_object_args("c2", "counter", json!({"amount": 10}))),
+        Ok(tool_call_chat_response_object_args(
+            "c1",
+            "counter",
+            json!({"amount": 5}),
+        )),
+        Ok(tool_call_chat_response_object_args(
+            "c2",
+            "counter",
+            json!({"amount": 10}),
+        )),
         Ok(text_chat_response("done")),
     ]));
 
-    let thread = Thread::with_initial_state("test", json!({"counter": 0}))
-        .with_message(Message::user("go"));
+    let thread =
+        Thread::with_initial_state("test", json!({"counter": 0})).with_message(Message::user("go"));
     let tools = tool_map([CounterTool]);
 
-    let config = AgentConfig::new("mock")
-        .with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let config = AgentConfig::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None).await;
 
@@ -6416,7 +6575,9 @@ async fn test_commit_pending_delta_force_persists_empty() {
     .await
     .unwrap();
 
-    let changeset = rx.try_recv().expect("forced commit should produce a changeset");
+    let changeset = rx
+        .try_recv()
+        .expect("forced commit should produce a changeset");
     assert_eq!(changeset.run_id, "run-1");
     assert_eq!(changeset.reason, CheckpointReason::RunFinished);
     assert!(changeset.messages.is_empty());
@@ -6446,7 +6607,11 @@ async fn test_commit_pending_delta_version_advancement() {
     )
     .await
     .unwrap();
-    assert_eq!(run_ctx.version(), 1, "version should be 1 after first commit");
+    assert_eq!(
+        run_ctx.version(),
+        1,
+        "version should be 1 after first commit"
+    );
     let _ = rx.try_recv().unwrap();
 
     // Second commit
@@ -6461,7 +6626,11 @@ async fn test_commit_pending_delta_version_advancement() {
     )
     .await
     .unwrap();
-    assert_eq!(run_ctx.version(), 2, "version should be 2 after second commit");
+    assert_eq!(
+        run_ctx.version(),
+        2,
+        "version should be 2 after second commit"
+    );
     let _ = rx.try_recv().unwrap();
 
     // Timestamp should have been set
@@ -6515,7 +6684,11 @@ async fn test_commit_pending_delta_precondition_exactness() {
 
     // The committer was called with Exact(10) since initial version is 10.
     // We verify via version advancement: ChannelStateCommitter returns v+1.
-    assert_eq!(run_ctx.version(), 11, "version should advance from 10 to 11");
+    assert_eq!(
+        run_ctx.version(),
+        11,
+        "version should advance from 10 to 11"
+    );
 }
 
 /// Error from StateCommitter propagates as AgentLoopError::StateError.
@@ -6742,27 +6915,20 @@ async fn test_all_deltas_consumed_final_checkpoint_empty() {
 /// rejected patches are NOT added to run_ctx.
 #[test]
 fn test_conflict_rejection_leaves_delta_clean() {
-    let mut run_ctx = RunContext::new(
-        "test",
-        json!({"counter": 0}),
-        vec![],
-        Default::default(),
-    );
+    let mut run_ctx = RunContext::new("test", json!({"counter": 0}), vec![], Default::default());
 
     // Two conflicting patches on the same path
     let left = tool_execution_result(
         "call_left",
-        Some(TrackedPatch::new(Patch::new().with_op(Op::set(
-            tirea_state::path!("counter"),
-            json!(10),
-        )))),
+        Some(TrackedPatch::new(
+            Patch::new().with_op(Op::set(tirea_state::path!("counter"), json!(10))),
+        )),
     );
     let right = tool_execution_result(
         "call_right",
-        Some(TrackedPatch::new(Patch::new().with_op(Op::set(
-            tirea_state::path!("counter"),
-            json!(20),
-        )))),
+        Some(TrackedPatch::new(
+            Patch::new().with_op(Op::set(tirea_state::path!("counter"), json!(20))),
+        )),
     );
 
     // Record initial delta state
@@ -6782,7 +6948,10 @@ fn test_conflict_rejection_leaves_delta_clean() {
     );
     // State unchanged
     let state = run_ctx.snapshot().unwrap();
-    assert_eq!(state["counter"], 0, "state unchanged after conflict rejection");
+    assert_eq!(
+        state["counter"], 0,
+        "state unchanged after conflict rejection"
+    );
 }
 
 /// Sequential mode: if second tool's patch fails, first tool's patch is
@@ -6790,20 +6959,14 @@ fn test_conflict_rejection_leaves_delta_clean() {
 /// tool patches from being added.
 #[test]
 fn test_sequential_error_preserves_prior_patches() {
-    let mut run_ctx = RunContext::new(
-        "test",
-        json!({"a": 0, "b": 0}),
-        vec![],
-        Default::default(),
-    );
+    let mut run_ctx = RunContext::new("test", json!({"a": 0, "b": 0}), vec![], Default::default());
 
     // First tool writes "a" — succeeds
     let first = tool_execution_result(
         "call_1",
-        Some(TrackedPatch::new(Patch::new().with_op(Op::set(
-            tirea_state::path!("a"),
-            json!(100),
-        )))),
+        Some(TrackedPatch::new(
+            Patch::new().with_op(Op::set(tirea_state::path!("a"), json!(100))),
+        )),
     );
 
     // Apply first tool result in non-parallel (sequential) mode
@@ -6819,10 +6982,9 @@ fn test_sequential_error_preserves_prior_patches() {
     // in non-parallel mode since conflict detection is only for parallel
     let second = tool_execution_result(
         "call_2",
-        Some(TrackedPatch::new(Patch::new().with_op(Op::set(
-            tirea_state::path!("a"),
-            json!(200),
-        )))),
+        Some(TrackedPatch::new(
+            Patch::new().with_op(Op::set(tirea_state::path!("a"), json!(200))),
+        )),
     );
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[second], None, false)
         .expect("sequential mode allows overwriting");
@@ -6853,14 +7015,15 @@ fn build_messages_filters_orphaned_tool_results() {
     assert_eq!(msgs.len(), 4);
     // The orphaned fc_xyz tool result must not appear
     assert!(
-        !msgs.iter().any(|m| m.role == Role::Tool
-            && m.tool_call_id.as_deref() == Some("fc_xyz")),
+        !msgs
+            .iter()
+            .any(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("fc_xyz")),
         "orphaned tool result should be filtered"
     );
     // The matching tool result must still be present
     assert!(
-        msgs.iter().any(|m| m.role == Role::Tool
-            && m.tool_call_id.as_deref() == Some("call_1")),
+        msgs.iter()
+            .any(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("call_1")),
         "matching tool result should be kept"
     );
 }
@@ -6885,7 +7048,11 @@ fn build_messages_keeps_tool_results_with_matching_call() {
 
     // System prompt is empty so not added, user + assistant + 2 tool results = 4
     let tool_msgs: Vec<_> = msgs.iter().filter(|m| m.role == Role::Tool).collect();
-    assert_eq!(tool_msgs.len(), 2, "both matching tool results should be kept");
+    assert_eq!(
+        tool_msgs.len(),
+        2,
+        "both matching tool results should be kept"
+    );
 }
 
 #[tokio::test]
@@ -6901,11 +7068,7 @@ async fn test_stream_permission_intercept_emits_tool_call_start_for_frontend() {
             "permission_intercept_plugin"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase != Phase::BeforeToolExecute || step.tool_call_id() != Some("call_1") {
                 return;
             }
@@ -6924,17 +7087,20 @@ async fn test_stream_permission_intercept_emits_tool_call_start_for_frontend() {
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(PermissionInterceptPlugin) as Arc<dyn AgentPlugin>);
     let tools = tool_map([EchoTool]);
-    let responses = vec![
-        MockResponse::text("checking")
-            .with_tool_call("call_1", "echo", json!({ "message": "info" })),
-    ];
+    let responses = vec![MockResponse::text("checking").with_tool_call(
+        "call_1",
+        "echo",
+        json!({ "message": "info" }),
+    )];
 
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
 
     // The fc_xxx ToolCallStart must be emitted for PermissionConfirm
     let permission_starts: Vec<_> = events
         .iter()
-        .filter(|e| matches!(e, AgentEvent::ToolCallStart { name, .. } if name == "PermissionConfirm"))
+        .filter(
+            |e| matches!(e, AgentEvent::ToolCallStart { name, .. } if name == "PermissionConfirm"),
+        )
         .collect();
     assert_eq!(
         permission_starts.len(),
@@ -6944,7 +7110,9 @@ async fn test_stream_permission_intercept_emits_tool_call_start_for_frontend() {
 
     let permission_readys: Vec<_> = events
         .iter()
-        .filter(|e| matches!(e, AgentEvent::ToolCallReady { name, .. } if name == "PermissionConfirm"))
+        .filter(
+            |e| matches!(e, AgentEvent::ToolCallReady { name, .. } if name == "PermissionConfirm"),
+        )
         .collect();
     assert_eq!(
         permission_readys.len(),
@@ -6953,11 +7121,14 @@ async fn test_stream_permission_intercept_emits_tool_call_start_for_frontend() {
     );
 
     // The run should terminate with PendingInteraction (waiting for frontend response)
-    assert!(matches!(
-        events.last(),
-        Some(AgentEvent::RunFinish {
-            termination: TerminationReason::PendingInteraction,
-            ..
-        })
-    ), "run should pause with PendingInteraction: {events:?}");
+    assert!(
+        matches!(
+            events.last(),
+            Some(AgentEvent::RunFinish {
+                termination: TerminationReason::PendingInteraction,
+                ..
+            })
+        ),
+        "run should pause with PendingInteraction: {events:?}"
+    );
 }

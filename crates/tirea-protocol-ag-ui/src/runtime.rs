@@ -165,14 +165,14 @@ impl AgentPlugin for FrontendToolPendingPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
     use crate::{AGUIContextEntry, AGUIMessage, AGUIToolDef, ToolExecutionLocation};
+    use async_trait::async_trait;
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Arc;
     use tirea_agent_loop::runtime::loop_runner::AgentConfig;
-    use tirea_contract::plugin::AgentPlugin;
     use tirea_contract::plugin::phase::{Phase, StepContext, ToolContext};
+    use tirea_contract::plugin::AgentPlugin;
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::ToolCall;
 
@@ -226,6 +226,7 @@ mod tests {
 
         let mut resolved = empty_resolved();
         apply_agui_extensions(&mut resolved, &request);
+        assert_eq!(resolved.config.tool_executor.name(), "parallel");
         assert!(resolved.tools.contains_key("copyToClipboard"));
         // Only 1 frontend tool (backend tools are not stubs)
         assert_eq!(resolved.tools.len(), 1);
@@ -363,7 +364,10 @@ mod tests {
             resolved.config.plugins.first().map(|p| p.id()),
             Some("agui_frontend_tools")
         );
-        assert_eq!(resolved.config.plugins.get(1).map(|p| p.id()), Some("marker_plugin"));
+        assert_eq!(
+            resolved.config.plugins.get(1).map(|p| p.id()),
+            Some("marker_plugin")
+        );
     }
 
     #[test]
@@ -371,6 +375,7 @@ mod tests {
         let request = RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("hello"));
         let mut resolved = empty_resolved();
         apply_agui_extensions(&mut resolved, &request);
+        assert_eq!(resolved.config.tool_executor.name(), "parallel");
         assert!(resolved.tools.is_empty());
         assert!(resolved.config.plugins.is_empty());
     }
