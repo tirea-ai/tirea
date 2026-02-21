@@ -4,9 +4,9 @@
 //! (created by `agent_run` / `agent_stop` tools).
 
 use crate::contracts::thread::Thread;
-use tirea_state::State;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tirea_state::State;
 
 /// Status of a delegated agent run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

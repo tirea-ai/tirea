@@ -2,9 +2,9 @@
 //!
 //! Run with: cargo bench --package tirea-state
 
-use tirea_state::{apply_patch, path, Op, Patch};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use serde_json::{json, Value};
+use tirea_state::{apply_patch, path, Op, Patch};
 
 // ============================================================================
 // Helper functions to generate test data

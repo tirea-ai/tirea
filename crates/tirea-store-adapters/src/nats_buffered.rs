@@ -25,14 +25,14 @@
 
 use async_nats::jetstream;
 use async_trait::async_trait;
+use futures::StreamExt;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tirea_contract::storage::{
     AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStore,
     AgentStateStoreError, AgentStateWriter, Committed, VersionPrecondition,
 };
-use tirea_contract::{ThreadChangeSet, Thread, CheckpointReason};
-use futures::StreamExt;
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use tirea_contract::{CheckpointReason, Thread, ThreadChangeSet};
 
 /// NATS JetStream stream name for thread deltas.
 const STREAM_NAME: &str = "THREAD_DELTAS";
@@ -216,12 +216,14 @@ impl NatsBufferedThreadWriter {
 
         loop {
             match tokio::time::timeout(DRAIN_TIMEOUT, messages.next()).await {
-                Ok(Some(Ok(msg))) => match serde_json::from_slice::<ThreadChangeSet>(&msg.payload) {
-                    Ok(delta) => deltas_with_msgs.push((delta, msg)),
-                    Err(_) => {
-                        let _ = msg.double_ack().await;
+                Ok(Some(Ok(msg))) => {
+                    match serde_json::from_slice::<ThreadChangeSet>(&msg.payload) {
+                        Ok(delta) => deltas_with_msgs.push((delta, msg)),
+                        Err(_) => {
+                            let _ = msg.double_ack().await;
+                        }
                     }
-                },
+                }
                 Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
             }
         }

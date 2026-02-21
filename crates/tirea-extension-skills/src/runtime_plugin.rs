@@ -1,8 +1,8 @@
 use crate::SKILLS_RUNTIME_PLUGIN_ID;
 use async_trait::async_trait;
-use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::plugin::phase::Phase;
 use tirea_contract::plugin::phase::StepContext;
+use tirea_contract::plugin::AgentPlugin;
 
 /// Placeholder plugin for activated skill state.
 ///
@@ -33,9 +33,9 @@ impl AgentPlugin for SkillRuntimePlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use tirea_contract::testing::TestFixture;
     use tirea_contract::tool::ToolDescriptor;
-    use serde_json::json;
 
     #[tokio::test]
     async fn plugin_does_not_inject_system_context() {

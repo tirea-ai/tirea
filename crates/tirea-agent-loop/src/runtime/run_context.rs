@@ -1,5 +1,5 @@
-use crate::contracts::thread::ThreadChangeSet;
 use crate::contracts::storage::VersionPrecondition;
+use crate::contracts::thread::ThreadChangeSet;
 use async_trait::async_trait;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;

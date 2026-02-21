@@ -36,11 +36,11 @@
 //! }
 //! ```
 
-pub use crate::contracts::StopReason;
 use crate::contracts::runtime::{StopPolicy, StopPolicyInput, StopPolicyStats};
-use crate::contracts::StopConditionSpec;
 use crate::contracts::thread::ToolCall;
 use crate::contracts::RunContext;
+use crate::contracts::StopConditionSpec;
+pub use crate::contracts::StopReason;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
@@ -302,9 +302,9 @@ pub(crate) fn condition_from_spec(spec: StopConditionSpec) -> Arc<dyn StopPolicy
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tirea_contract::RunConfig;
     use serde_json::json;
     use std::sync::LazyLock;
+    use tirea_contract::RunConfig;
 
     static TEST_RUN_CTX: LazyLock<RunContext> =
         LazyLock::new(|| RunContext::new("test", json!({}), vec![], RunConfig::default()));

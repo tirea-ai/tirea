@@ -1,6 +1,6 @@
-use tirea_state::Op;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tirea_state::Op;
 
 /// Generic interaction request for client-side actions.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

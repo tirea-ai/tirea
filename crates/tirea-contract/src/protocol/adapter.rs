@@ -1,7 +1,7 @@
 //! Shared protocol adapter traits.
 
-use crate::thread::Message;
 use crate::protocol::request::RunRequest;
+use crate::thread::Message;
 use serde::Serialize;
 
 /// Protocol input boundary: protocol request -> internal runtime `RunRequest`.

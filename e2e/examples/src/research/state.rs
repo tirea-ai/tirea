@@ -1,5 +1,5 @@
-use tirea_state_derive::State;
 use serde::{Deserialize, Serialize};
+use tirea_state_derive::State;
 
 /// A web resource found during research.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

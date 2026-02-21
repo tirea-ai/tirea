@@ -1,7 +1,7 @@
 //! Edge case tests for tirea-state.
 
-use tirea_state::{apply_patch, path, TireaError, JsonWriter, Op, Patch, Path};
 use serde_json::json;
+use tirea_state::{apply_patch, path, JsonWriter, Op, Patch, Path, TireaError};
 
 // ============================================================================
 // apply_patch edge cases

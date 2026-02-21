@@ -1,20 +1,20 @@
 #![allow(missing_docs)]
 
-use tirea_extension_skills::{
-    FsSkill, InMemorySkillRegistry, LoadSkillResourceTool, Skill, SkillActivateTool,
-    SkillRegistry, SkillScriptTool,
-};
+use serde_json::json;
+use std::fs;
+use std::io::Write;
+use std::sync::Arc;
+use tempfile::TempDir;
 use tirea_agent_loop::contracts::thread::Thread;
 use tirea_agent_loop::contracts::thread::{Message, ToolCall};
 use tirea_agent_loop::contracts::tool::{Tool, ToolResult};
 use tirea_agent_loop::engine::tool_execution::{
     execute_single_tool, execute_single_tool_with_scope,
 };
-use serde_json::json;
-use std::fs;
-use std::io::Write;
-use std::sync::Arc;
-use tempfile::TempDir;
+use tirea_extension_skills::{
+    FsSkill, InMemorySkillRegistry, LoadSkillResourceTool, Skill, SkillActivateTool, SkillRegistry,
+    SkillScriptTool,
+};
 
 fn make_skill_tree() -> (TempDir, Arc<dyn SkillRegistry>) {
     let td = TempDir::new().unwrap();
@@ -56,11 +56,7 @@ echo "hello"
     (td, registry)
 }
 
-async fn apply_tool(
-    thread: Thread,
-    tool: &dyn Tool,
-    call: ToolCall,
-) -> (Thread, ToolResult) {
+async fn apply_tool(thread: Thread, tool: &dyn Tool, call: ToolCall) -> (Thread, ToolResult) {
     let state = thread.rebuild_state().unwrap();
     let exec = execute_single_tool(Some(tool), &call, &state).await;
     let thread = if let Some(patch) = exec.patch.clone() {
@@ -97,7 +93,11 @@ fn assert_invalid_arguments_error(result: &ToolResult) {
     if result.data["error"]["code"] == "invalid_arguments" {
         return;
     }
-    let message = result.message.as_deref().unwrap_or_default().to_ascii_lowercase();
+    let message = result
+        .message
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     assert!(
         message.contains("invalid arguments"),
         "expected invalid_arguments code or validation error message, got: {:?}",

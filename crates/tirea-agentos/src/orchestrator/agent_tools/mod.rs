@@ -1,16 +1,12 @@
 use super::policy::{is_scope_allowed, SCOPE_ALLOWED_AGENTS_KEY, SCOPE_EXCLUDED_AGENTS_KEY};
 use super::{AgentOs, AgentRegistry};
-use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::plugin::phase::{Phase, StepContext};
-use crate::contracts::{AgentEvent, Interaction};
+use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::thread::{Message, Role, ToolCall};
 use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult};
+use crate::contracts::{AgentEvent, Interaction};
 use crate::extensions::permission::PermissionContextExt;
 use crate::extensions::permission::ToolPermissionBehavior;
-use tirea_extension_interaction::{
-    AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
-};
-use types::{DelegationRecord, DelegationState, DelegationStatus};
 pub(super) use crate::runtime::loop_runner::TOOL_SCOPE_CALLER_AGENT_ID_KEY as SCOPE_CALLER_AGENT_ID_KEY;
 use crate::runtime::loop_runner::{
     ChannelStateCommitter, RunCancellationToken, TOOL_SCOPE_CALLER_MESSAGES_KEY,
@@ -21,7 +17,11 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use tirea_extension_interaction::{
+    AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
+};
 use tokio::sync::Mutex;
+use types::{DelegationRecord, DelegationState, DelegationStatus};
 
 const SCOPE_CALLER_SESSION_ID_KEY: &str = TOOL_SCOPE_CALLER_THREAD_ID_KEY;
 const SCOPE_CALLER_STATE_KEY: &str = TOOL_SCOPE_CALLER_STATE_KEY;

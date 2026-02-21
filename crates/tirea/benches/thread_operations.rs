@@ -2,11 +2,11 @@
 //!
 //! Run with: cargo bench --package tirea --bench session_operations
 
-use tirea::contracts::thread::Thread;
-use tirea::contracts::thread::Message;
-use tirea_state::{path, Op, Patch, TrackedPatch};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use serde_json::json;
+use tirea::contracts::thread::Message;
+use tirea::contracts::thread::Thread;
+use tirea_state::{path, Op, Patch, TrackedPatch};
 
 // ============================================================================
 // Helper functions
@@ -29,6 +29,8 @@ fn generate_state(size: &str) -> serde_json::Value {
         "medium" => {
             let mut obj = serde_json::Map::new();
             obj.insert("thread_id".to_string(), json!("sess-123"));
+            obj.insert("counter".to_string(), json!(0));
+            obj.insert("items".to_string(), json!([]));
             obj.insert(
                 "user".to_string(),
                 json!({
@@ -332,8 +334,7 @@ fn bench_agent_loop_simulation(c: &mut Criterion) {
             &initial_msgs,
             |b, &msg_count| {
                 b.iter(|| {
-                    let mut thread =
-                        Thread::with_initial_state("test", generate_state("medium"));
+                    let mut thread = Thread::with_initial_state("test", generate_state("medium"));
 
                     // Add initial messages
                     for msg in generate_messages(msg_count) {

@@ -69,12 +69,8 @@ mod tests {
         let allowed_key = "__test_allowed";
         let excluded_key = "__test_excluded";
         let mut scope = RunConfig::new();
-        scope
-            .set(allowed_key, vec!["a", "b"])
-            .expect("set allowed");
-        scope
-            .set(excluded_key, vec!["b"])
-            .expect("set excluded");
+        scope.set(allowed_key, vec!["a", "b"]).expect("set allowed");
+        scope.set(excluded_key, vec!["b"]).expect("set excluded");
 
         assert!(is_scope_allowed(
             Some(&scope),

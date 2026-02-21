@@ -3,14 +3,15 @@
 //! These tests verify that meaningful error messages are produced
 //! when operations fail.
 
-use tirea_state::{
-    apply_patch, path, TireaError, DocCell, Op, Patch, PatchSink, Path, State as StateTrait, StateContext,
-};
-use tirea_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
+use tirea_state::{
+    apply_patch, path, DocCell, Op, Patch, PatchSink, Path, State as StateTrait, StateContext,
+    TireaError,
+};
+use tirea_state_derive::State;
 
 /// Helper to create a state ref and collect patches for testing.
 fn with_state_ref<T: StateTrait, F>(doc: &serde_json::Value, path: Path, f: F) -> tirea_state::Patch

@@ -7,19 +7,19 @@
 
 #![cfg(feature = "nats")]
 
-use tirea_contract::thread::ThreadChangeSet;
-use tirea_contract::storage::VersionPrecondition;
-use tirea_contract::{
-    Thread, AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStoreError,
-    AgentStateWriter, CheckpointReason, Committed, Message, MessageQuery,
-};
-use tirea_store_adapters::{MemoryStore, NatsBufferedThreadWriter};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ImageExt;
 use testcontainers_modules::nats::Nats;
+use tirea_contract::storage::VersionPrecondition;
+use tirea_contract::thread::ThreadChangeSet;
+use tirea_contract::{
+    AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStoreError,
+    AgentStateWriter, CheckpointReason, Committed, Message, MessageQuery, Thread,
+};
+use tirea_store_adapters::{MemoryStore, NatsBufferedThreadWriter};
 
 async fn start_nats_js() -> Option<(testcontainers::ContainerAsync<Nats>, String)> {
     let container = match Nats::default().with_cmd(["-js"]).start().await {

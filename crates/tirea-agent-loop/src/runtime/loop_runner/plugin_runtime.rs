@@ -1,15 +1,13 @@
-use super::core::{
-    clear_agent_inference_error, set_agent_inference_error,
-};
+use super::core::{clear_agent_inference_error, set_agent_inference_error};
 use super::AgentLoopError;
-use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::plugin::phase::{Phase, StepContext};
+use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::tool::ToolDescriptor;
 use crate::contracts::RunContext;
 use crate::contracts::ToolCallContext;
 use crate::runtime::control::InferenceError;
-use tirea_state::{DocCell, TrackedPatch};
 use std::sync::{Arc, Mutex};
+use tirea_state::{DocCell, TrackedPatch};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PhaseMutationSnapshot {

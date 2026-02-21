@@ -129,9 +129,9 @@ impl AgentOs {
             tools: resolved.tools,
             run_ctx,
             cancellation_token: None,
-            state_committer: Some(Arc::new(
-                AgentStateStoreStateCommitter::new(agent_state_store.clone()),
-            )),
+            state_committer: Some(Arc::new(AgentStateStoreStateCommitter::new(
+                agent_state_store.clone(),
+            ))),
         })
     }
 
@@ -156,10 +156,7 @@ impl AgentOs {
     /// This is the primary entry point. Callers that need to customize
     /// the resolved wiring should use [`resolve`] + mutation + [`prepare_run`]
     /// + [`execute_prepared`] instead.
-    pub async fn run_stream(
-        &self,
-        request: RunRequest,
-    ) -> Result<RunStream, AgentOsRunError> {
+    pub async fn run_stream(&self, request: RunRequest) -> Result<RunStream, AgentOsRunError> {
         let resolved = self.resolve(&request.agent_id)?;
         let prepared = self.prepare_run(request, resolved).await?;
         Ok(Self::execute_prepared(prepared)?)
@@ -214,6 +211,12 @@ impl AgentOs {
         let resolved = self.resolve(agent_id)?;
         let run_ctx = RunContext::from_thread(&thread, resolved.run_config)
             .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;
-        Ok(run_loop_stream(resolved.config, resolved.tools, run_ctx, cancellation_token, state_committer))
+        Ok(run_loop_stream(
+            resolved.config,
+            resolved.tools,
+            run_ctx,
+            cancellation_token,
+            state_committer,
+        ))
     }
 }

@@ -1,13 +1,13 @@
 use async_trait::async_trait;
+#[cfg(feature = "postgres")]
+use sqlx::{Postgres, QueryBuilder};
+use std::collections::HashSet;
 use tirea_contract::storage::{
     AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
     AgentStateStoreError, AgentStateWriter, Committed, MessagePage, MessageQuery,
     MessageWithCursor, SortOrder, VersionPrecondition,
 };
-use tirea_contract::{ThreadChangeSet, Thread, Message, Visibility};
-use std::collections::HashSet;
-#[cfg(feature = "postgres")]
-use sqlx::{Postgres, QueryBuilder};
+use tirea_contract::{Message, Thread, ThreadChangeSet, Visibility};
 
 pub struct PostgresStore {
     pool: sqlx::PgPool,
@@ -324,13 +324,16 @@ impl AgentStateWriter for PostgresStore {
                 "INSERT INTO {} (session_id, message_id, run_id, step_index, data) ",
                 self.messages_table
             ));
-            qb.push_values(rows.iter(), |mut b, (message_id, run_id, step_index, data)| {
-                b.push_bind(&thread.id)
-                    .push_bind(message_id.as_deref())
-                    .push_bind(run_id.as_deref())
-                    .push_bind(*step_index)
-                    .push_bind(data);
-            });
+            qb.push_values(
+                rows.iter(),
+                |mut b, (message_id, run_id, step_index, data)| {
+                    b.push_bind(&thread.id)
+                        .push_bind(message_id.as_deref())
+                        .push_bind(run_id.as_deref())
+                        .push_bind(*step_index)
+                        .push_bind(data);
+                },
+            );
             qb.build().execute(&mut *tx).await.map_err(Self::sql_err)?;
         }
 

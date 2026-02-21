@@ -1,11 +1,11 @@
 //! Activity state manager and event emission.
 
-use crate::contracts::AgentEvent;
 use crate::contracts::runtime::ActivityManager;
-use tirea_state::{apply_patch, Op, Patch, Value};
+use crate::contracts::AgentEvent;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Mutex;
+use tirea_state::{apply_patch, Op, Patch, Value};
 use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug, Clone)]
@@ -76,9 +76,9 @@ impl ActivityManager for ActivityHub {
 mod tests {
     use super::*;
     use crate::contracts::AgentEvent;
-    use tirea_state::{Op, Path};
     use serde_json::json;
     use std::sync::Arc;
+    use tirea_state::{Op, Path};
     use tokio::sync::mpsc;
 
     #[test]

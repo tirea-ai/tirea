@@ -5,8 +5,8 @@
 
 use crate::event::interaction::{FrontendToolInvocation, Interaction};
 use crate::thread::Thread;
-use tirea_state::State;
 use serde::{Deserialize, Serialize};
+use tirea_state::State;
 
 /// Inference error emitted by the loop and consumed by telemetry plugins.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

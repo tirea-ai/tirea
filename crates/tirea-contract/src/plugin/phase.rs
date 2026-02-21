@@ -13,9 +13,9 @@ use crate::thread::{Message, ToolCall};
 use crate::tool::context::ToolCallContext;
 use crate::tool::contract::{ToolDescriptor, ToolResult};
 use crate::RunConfig;
-use tirea_state::{TireaResult, State, TrackedPatch};
 use serde_json::Value;
 use std::sync::Arc;
+use tirea_state::{State, TireaResult, TrackedPatch};
 use uuid::Uuid;
 
 /// Execution phase in the agent loop.
@@ -460,13 +460,8 @@ impl<'a> StepContext<'a> {
             },
         };
 
-        let invocation = FrontendToolInvocation::new(
-            &call_id,
-            &tool_name,
-            arguments.clone(),
-            origin,
-            routing,
-        );
+        let invocation =
+            FrontendToolInvocation::new(&call_id, &tool_name, arguments.clone(), origin, routing);
 
         // Set backward-compatible Interaction from the invocation.
         let interaction = invocation.to_interaction();
@@ -1148,14 +1143,32 @@ mod tests {
         // For UseAsToolResult, call_id should match the tool call ID
         assert_eq!(call_id.as_deref(), Some("call_copy"));
 
-        let invocation = ctx.tool.as_ref().unwrap().pending_frontend_invocation.as_ref().unwrap();
+        let invocation = ctx
+            .tool
+            .as_ref()
+            .unwrap()
+            .pending_frontend_invocation
+            .as_ref()
+            .unwrap();
         assert_eq!(invocation.call_id, "call_copy");
         assert_eq!(invocation.tool_name, "copyToClipboard");
-        assert!(matches!(invocation.routing, ResponseRouting::UseAsToolResult));
-        assert!(matches!(invocation.origin, InvocationOrigin::PluginInitiated { .. }));
+        assert!(matches!(
+            invocation.routing,
+            ResponseRouting::UseAsToolResult
+        ));
+        assert!(matches!(
+            invocation.origin,
+            InvocationOrigin::PluginInitiated { .. }
+        ));
 
         // Backward-compat Interaction should also be set
-        let interaction = ctx.tool.as_ref().unwrap().pending_interaction.as_ref().unwrap();
+        let interaction = ctx
+            .tool
+            .as_ref()
+            .unwrap()
+            .pending_interaction
+            .as_ref()
+            .unwrap();
         assert_eq!(interaction.id, "call_copy");
         assert_eq!(interaction.action, "tool:copyToClipboard");
     }
@@ -1171,21 +1184,39 @@ mod tests {
         let call_id = ctx.invoke_frontend_tool(
             "PermissionConfirm",
             json!({"tool_name": "write_file", "tool_args": {"path": "a.txt"}}),
-            ResponseRouting::ReplayOriginalTool { state_patches: vec![] },
+            ResponseRouting::ReplayOriginalTool {
+                state_patches: vec![],
+            },
         );
 
         assert!(ctx.tool_pending());
         // For ReplayOriginalTool, call_id should be a new unique ID
         let call_id = call_id.unwrap();
-        assert!(call_id.starts_with("fc_"), "expected generated ID, got: {call_id}");
+        assert!(
+            call_id.starts_with("fc_"),
+            "expected generated ID, got: {call_id}"
+        );
         assert_ne!(call_id, "call_write");
 
-        let invocation = ctx.tool.as_ref().unwrap().pending_frontend_invocation.as_ref().unwrap();
+        let invocation = ctx
+            .tool
+            .as_ref()
+            .unwrap()
+            .pending_frontend_invocation
+            .as_ref()
+            .unwrap();
         assert_eq!(invocation.call_id, call_id);
         assert_eq!(invocation.tool_name, "PermissionConfirm");
-        assert!(matches!(invocation.routing, ResponseRouting::ReplayOriginalTool { .. }));
+        assert!(matches!(
+            invocation.routing,
+            ResponseRouting::ReplayOriginalTool { .. }
+        ));
         match &invocation.origin {
-            InvocationOrigin::ToolCallIntercepted { backend_call_id, backend_tool_name, .. } => {
+            InvocationOrigin::ToolCallIntercepted {
+                backend_call_id,
+                backend_tool_name,
+                ..
+            } => {
                 assert_eq!(backend_call_id, "call_write");
                 assert_eq!(backend_tool_name, "write_file");
             }

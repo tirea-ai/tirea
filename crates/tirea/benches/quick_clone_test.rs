@@ -2,9 +2,9 @@
 //!
 //! Run with: cargo bench --package tirea --bench quick_clone_test
 
-use tirea::contracts::thread::Message;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use std::sync::Arc;
+use tirea::contracts::thread::Message;
 
 fn generate_messages(count: usize) -> Vec<Message> {
     (0..count)

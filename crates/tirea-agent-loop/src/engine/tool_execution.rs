@@ -1,15 +1,15 @@
 //! Tool execution utilities.
 
 pub use crate::contracts::runtime::ToolExecution;
-use crate::contracts::tool::context::ToolCallContext;
 use crate::contracts::thread::ToolCall;
+use crate::contracts::tool::context::ToolCallContext;
 use crate::contracts::tool::{Tool, ToolResult};
-use tirea_contract::RunConfig;
-use tirea_state::{apply_patch, DocCell, TrackedPatch};
 use futures::future::join_all;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tirea_contract::RunConfig;
+use tirea_state::{apply_patch, DocCell, TrackedPatch};
 
 /// Execute a single tool call.
 ///
@@ -149,7 +149,11 @@ mod tests {
             ToolDescriptor::new("echo", "Echo", "Echo the input")
         }
 
-        async fn execute(&self, args: Value, _ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("echo", args))
         }
     }
@@ -377,14 +381,15 @@ mod tests {
     #[async_trait]
     impl Tool for StrictSchemaTool {
         fn descriptor(&self) -> ToolDescriptor {
-            ToolDescriptor::new("strict", "Strict", "Requires a string 'name'")
-                .with_parameters(json!({
+            ToolDescriptor::new("strict", "Strict", "Requires a string 'name'").with_parameters(
+                json!({
                     "type": "object",
                     "properties": {
                         "name": { "type": "string" }
                     },
                     "required": ["name"]
-                }))
+                }),
+            )
         }
 
         async fn execute(

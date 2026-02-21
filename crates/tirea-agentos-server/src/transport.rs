@@ -1,9 +1,9 @@
-use tirea_contract::ProtocolOutputEncoder;
-use tirea_agentos::contracts::AgentEvent;
 use futures::Stream;
 use futures::StreamExt;
 use std::future::Future;
 use std::pin::Pin;
+use tirea_agentos::contracts::AgentEvent;
+use tirea_contract::ProtocolOutputEncoder;
 
 /// Pump an internal agent event stream through a protocol output encoder and
 /// forward each encoded event to the provided async sink callback.

@@ -1,11 +1,11 @@
 use async_trait::async_trait;
+use serde::Deserialize;
+use std::path::PathBuf;
 use tirea_contract::storage::{
     AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
     AgentStateStoreError, AgentStateWriter, Committed, VersionPrecondition,
 };
-use tirea_contract::{ThreadChangeSet, Thread, Version};
-use serde::Deserialize;
-use std::path::PathBuf;
+use tirea_contract::{Thread, ThreadChangeSet, Version};
 use tokio::io::AsyncWriteExt;
 
 pub struct FileStore {
@@ -281,13 +281,13 @@ struct VersionedThread {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use std::sync::Arc;
+    use tempfile::TempDir;
     use tirea_contract::{
         storage::AgentStateReader, AgentStateWriter, CheckpointReason, Message, MessageQuery,
     };
     use tirea_state::{path, Op, Patch, TrackedPatch};
-    use serde_json::json;
-    use std::sync::Arc;
-    use tempfile::TempDir;
 
     fn make_thread_with_messages(thread_id: &str, n: usize) -> Thread {
         let mut thread = Thread::new(thread_id);

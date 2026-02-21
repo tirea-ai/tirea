@@ -4,10 +4,10 @@
 //! message history and patches.
 
 use crate::thread::message::Message;
-use tirea_state::{apply_patches, TireaError, TireaResult, TrackedPatch};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
+use tirea_state::{apply_patches, TireaError, TireaResult, TrackedPatch};
 
 /// Accumulated new messages and patches since the last `take_pending()`.
 ///
@@ -233,8 +233,8 @@ impl Thread {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tirea_state::{path, Op, Patch};
     use serde_json::json;
+    use tirea_state::{path, Op, Patch};
 
     // Tests use Thread directly (the canonical name).
 
@@ -489,10 +489,9 @@ mod tests {
 
     #[test]
     fn test_state_persists_after_serialization() {
-        let thread = Thread::with_initial_state("test-1", json!({"counter": 0}))
-            .with_patch(TrackedPatch::new(
-                Patch::new().with_op(Op::set(path!("counter"), json!(5))),
-            ));
+        let thread = Thread::with_initial_state("test-1", json!({"counter": 0})).with_patch(
+            TrackedPatch::new(Patch::new().with_op(Op::set(path!("counter"), json!(5)))),
+        );
 
         let json_str = serde_json::to_string(&thread).unwrap();
         let restored: Thread = serde_json::from_str(&json_str).unwrap();
@@ -553,5 +552,4 @@ mod tests {
             .to_string()
             .contains("replay index 0 out of bounds (history len: 0)"));
     }
-
 }

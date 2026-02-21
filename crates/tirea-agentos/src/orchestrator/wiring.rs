@@ -166,10 +166,7 @@ impl AgentOs {
         Ok(())
     }
 
-    fn build_skills_plugins(
-        &self,
-        registry: Arc<dyn SkillRegistry>,
-    ) -> Vec<Arc<dyn AgentPlugin>> {
+    fn build_skills_plugins(&self, registry: Arc<dyn SkillRegistry>) -> Vec<Arc<dyn AgentPlugin>> {
         match self.skills_config.mode {
             SkillsMode::Disabled => Vec::new(),
             SkillsMode::DiscoveryAndRuntime => {
@@ -445,15 +442,15 @@ impl AgentOs {
             frozen_agents,
             frozen_skills,
         )?);
-        let system_plugins =
-            self.merge_wiring_bundles(&system_bundles, tools)?;
+        let system_plugins = self.merge_wiring_bundles(&system_bundles, tools)?;
         let all_plugins = ResolvedPlugins::default()
             .with_global(system_plugins)
             .with_agent_default(resolved_plugins)
             .into_plugins()?;
 
         // Resolve stop conditions from stop_condition_ids
-        let stop_conditions = self.resolve_stop_condition_id_list(&definition.stop_condition_ids)?;
+        let stop_conditions =
+            self.resolve_stop_condition_id_list(&definition.stop_condition_ids)?;
 
         Ok(definition.into_loop_config(all_plugins, stop_conditions))
     }
@@ -492,14 +489,14 @@ impl AgentOs {
         let resolved_plugins = self.resolve_plugin_id_list(&definition.plugin_ids)?;
         let skills_bundles =
             self.build_skills_wiring_bundles(&resolved_plugins, self.freeze_skill_registry())?;
-        let skills_plugins =
-            self.merge_wiring_bundles(&skills_bundles, tools)?;
+        let skills_plugins = self.merge_wiring_bundles(&skills_bundles, tools)?;
         let all_plugins = ResolvedPlugins::default()
             .with_global(skills_plugins)
             .with_agent_default(resolved_plugins)
             .into_plugins()?;
 
-        let stop_conditions = self.resolve_stop_condition_id_list(&definition.stop_condition_ids)?;
+        let stop_conditions =
+            self.resolve_stop_condition_id_list(&definition.stop_condition_ids)?;
         Ok(definition.into_loop_config(all_plugins, stop_conditions))
     }
 
@@ -517,10 +514,7 @@ impl AgentOs {
     /// This performs all one-time resolution (tool filtering, model lookup,
     /// plugin wiring) and returns a [`ResolvedRun`] that can be inspected
     /// or mutated before execution.
-    pub fn resolve(
-        &self,
-        agent_id: &str,
-    ) -> Result<ResolvedRun, AgentOsResolveError> {
+    pub fn resolve(&self, agent_id: &str) -> Result<ResolvedRun, AgentOsResolveError> {
         let definition = self
             .agents
             .get(agent_id)

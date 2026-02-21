@@ -2,10 +2,10 @@
 //!
 //! Run with: cargo bench --package tirea --bench message_cloning
 
-use tirea::contracts::thread::{Message, ToolCall};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use serde_json::json;
 use std::sync::Arc;
+use tirea::contracts::thread::{Message, ToolCall};
 
 // ============================================================================
 // Helper functions to generate test data

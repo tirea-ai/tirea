@@ -1,8 +1,8 @@
-use tirea_contract::ProtocolOutputEncoder;
-use tirea_agentos::contracts::AgentEvent;
-use tirea_agentos_server::transport::pump_encoded_stream;
 use futures::{future::ready, stream};
 use std::pin::Pin;
+use tirea_agentos::contracts::AgentEvent;
+use tirea_agentos_server::transport::pump_encoded_stream;
+use tirea_contract::ProtocolOutputEncoder;
 
 #[derive(Default)]
 struct StubEncoder {

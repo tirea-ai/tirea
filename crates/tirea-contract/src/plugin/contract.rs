@@ -97,8 +97,8 @@ pub trait AgentPlugin: Send + Sync {
 mod tests {
     use super::*;
     use crate::event::Interaction;
-    use crate::thread::ToolCall;
     use crate::testing::TestFixture;
+    use crate::thread::ToolCall;
     use crate::tool::contract::ToolDescriptor;
     use serde_json::json;
 

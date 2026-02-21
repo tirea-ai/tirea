@@ -1,5 +1,5 @@
-use crate::thread::ThreadChangeSet;
 use crate::thread::Thread;
+use crate::thread::ThreadChangeSet;
 use crate::thread::Version;
 use async_trait::async_trait;
 

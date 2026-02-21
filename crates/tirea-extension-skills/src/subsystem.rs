@@ -2,10 +2,10 @@ use crate::{
     LoadSkillResourceTool, SkillActivateTool, SkillDiscoveryPlugin, SkillPlugin, SkillRegistry,
     SkillRuntimePlugin, SkillScriptTool,
 };
-use tirea_contract::plugin::AgentPlugin;
-use tirea_contract::tool::Tool;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tirea_contract::plugin::AgentPlugin;
+use tirea_contract::tool::Tool;
 
 /// Errors returned when wiring the skills subsystem into an agent.
 #[derive(Debug, thiserror::Error)]
@@ -124,19 +124,22 @@ impl SkillSubsystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FsSkill, InMemorySkillRegistry, Skill, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID};
+    use crate::{
+        FsSkill, InMemorySkillRegistry, Skill, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID,
+        SKILL_SCRIPT_TOOL_ID,
+    };
     use async_trait::async_trait;
-    use tirea_contract::plugin::phase::{Phase, StepContext};
-    use tirea_contract::thread::Thread;
-    use tirea_contract::thread::{Message, ToolCall};
-    use tirea_contract::tool::{ToolDescriptor, ToolError, ToolResult};
-    use tirea_contract::testing::TestFixture;
-    use tirea_state::TrackedPatch;
     use serde_json::json;
     use serde_json::Value;
     use std::fs;
     use std::io::Write;
     use tempfile::TempDir;
+    use tirea_contract::plugin::phase::{Phase, StepContext};
+    use tirea_contract::testing::TestFixture;
+    use tirea_contract::thread::Thread;
+    use tirea_contract::thread::{Message, ToolCall};
+    use tirea_contract::tool::{ToolDescriptor, ToolError, ToolResult};
+    use tirea_state::TrackedPatch;
 
     fn make_registry(skills: Vec<Arc<dyn Skill>>) -> Arc<dyn SkillRegistry> {
         Arc::new(InMemorySkillRegistry::from_skills(skills))
@@ -188,8 +191,7 @@ mod tests {
             &self,
             _args: Value,
             _ctx: &tirea_contract::tool::context::ToolCallContext<'_>,
-        ) -> Result<tirea_contract::tool::ToolResult, tirea_contract::tool::ToolError>
-        {
+        ) -> Result<tirea_contract::tool::ToolResult, tirea_contract::tool::ToolError> {
             Ok(tirea_contract::tool::ToolResult::success(
                 SKILL_ACTIVATE_TOOL_ID,
                 json!({}),
@@ -250,8 +252,7 @@ mod tests {
     #[async_trait]
     impl Tool for DummyOtherTool {
         fn descriptor(&self) -> tirea_contract::tool::ToolDescriptor {
-            tirea_contract::tool::ToolDescriptor::new("other", "x", "x")
-                .with_parameters(json!({}))
+            tirea_contract::tool::ToolDescriptor::new("other", "x", "x").with_parameters(json!({}))
         }
 
         async fn execute(
@@ -285,8 +286,7 @@ mod tests {
         let tools = sys.tools();
 
         // Activate the skill via the registered "skill" tool.
-        let thread =
-            Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+        let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
         let state = thread.rebuild_state().unwrap();
         let call = ToolCall::new("call_1", SKILL_ACTIVATE_TOOL_ID, json!({"skill": "docx"}));
         let activate_tool = tools.get(SKILL_ACTIVATE_TOOL_ID).unwrap().as_ref();
@@ -315,9 +315,7 @@ mod tests {
             &thread.messages,
             vec![ToolDescriptor::new("t", "t", "t")],
         );
-        plugin
-            .on_phase(Phase::BeforeInference, &mut step)
-            .await;
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
 
         assert_eq!(step.system_context.len(), 1);
         assert!(step.system_context[0].contains("<available_skills>"));

@@ -1,19 +1,19 @@
 use async_trait::async_trait;
-use tirea_contract::StopConditionSpec;
-use tirea_contract::tool::context::ToolCallContext;
-use tirea_contract::tool::contract::{Tool, ToolDescriptor, ToolError, ToolResult};
-use tirea_extension_permission::PermissionPlugin;
+use clap::Parser;
+use serde::Deserialize;
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 use tirea_agentos::contracts::storage::{AgentStateReader, AgentStateStore};
 use tirea_agentos::orchestrator::AgentDefinition;
 use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder, ModelDefinition};
 use tirea_agentos_server::http::{self, AppState};
+use tirea_contract::tool::context::ToolCallContext;
+use tirea_contract::tool::contract::{Tool, ToolDescriptor, ToolError, ToolResult};
+use tirea_contract::StopConditionSpec;
+use tirea_extension_permission::PermissionPlugin;
 use tirea_store_adapters::FileStore;
-use clap::Parser;
-use serde::Deserialize;
-use serde_json::{Value, json};
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
 
 #[derive(Debug, Parser)]
 #[command(name = "tirea-agentos-server")]
@@ -63,24 +63,35 @@ struct ServerInfoTool;
 #[async_trait]
 impl Tool for ServerInfoTool {
     fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new("serverInfo", "Server Info", "Returns server name and current timestamp")
-            .with_parameters(json!({
-                "type": "object",
-                "properties": {},
-                "required": [],
-                "additionalProperties": false
-            }))
+        ToolDescriptor::new(
+            "serverInfo",
+            "Server Info",
+            "Returns server name and current timestamp",
+        )
+        .with_parameters(json!({
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+        }))
     }
 
-    async fn execute(&self, _args: Value, _ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        _args: Value,
+        _ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        Ok(ToolResult::success("serverInfo", json!({
-            "server": "tirea-agentos",
-            "timestamp": now
-        })))
+        Ok(ToolResult::success(
+            "serverInfo",
+            json!({
+                "server": "tirea-agentos",
+                "timestamp": now
+            }),
+        ))
     }
 }
 
@@ -142,15 +153,22 @@ impl Tool for FinishTool {
         }))
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let summary = args
             .get("summary")
             .and_then(|v| v.as_str())
             .unwrap_or("done");
-        Ok(ToolResult::success("finish", json!({
-            "status": "done",
-            "summary": summary
-        })))
+        Ok(ToolResult::success(
+            "finish",
+            json!({
+                "status": "done",
+                "summary": summary
+            }),
+        ))
     }
 }
 

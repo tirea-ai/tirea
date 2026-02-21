@@ -3,7 +3,7 @@ use tirea_contract::storage::{
     AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
     AgentStateStoreError, AgentStateSync, AgentStateWriter, VersionPrecondition,
 };
-use tirea_contract::{ThreadChangeSet, Thread, Committed, Version};
+use tirea_contract::{Committed, Thread, ThreadChangeSet, Version};
 
 struct MemoryEntry {
     agent_state: Thread,

@@ -8,6 +8,10 @@ pub mod research {
     pub mod tools;
 }
 
+use clap::Parser;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::storage::{AgentStateReader, AgentStateStore};
 use tirea_agentos::contracts::tool::Tool;
@@ -15,10 +19,6 @@ use tirea_agentos::orchestrator::{AgentDefinition, AgentOsBuilder, ModelDefiniti
 use tirea_agentos::runtime::loop_runner::tool_map_from_arc;
 use tirea_agentos_server::http::{self, AppState};
 use tirea_store_adapters::FileStore;
-use clap::Parser;
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
 
 #[derive(Debug, Parser)]
 pub struct Args {

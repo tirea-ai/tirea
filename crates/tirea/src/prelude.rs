@@ -46,7 +46,9 @@ pub use crate::contracts::Thread;
 pub use tirea_state::StateContext;
 
 // Tool trait and types
-pub use crate::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus, TypedTool};
+pub use crate::contracts::tool::{
+    Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus, TypedTool,
+};
 
 // Message types
 pub use crate::contracts::thread::{Message, Role, ToolCall};

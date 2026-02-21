@@ -1,8 +1,8 @@
 //! ContextProvider trait for injecting dynamic context messages.
 
 use async_trait::async_trait;
-use tirea_contract::tool::context::ToolCallContext;
 use serde::{Deserialize, Serialize};
+use tirea_contract::tool::context::ToolCallContext;
 
 /// Category determines when context is injected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

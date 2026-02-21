@@ -1,12 +1,13 @@
 #![allow(missing_docs)]
 
-use tirea_contract::{AgentEvent, RunRequest};
-use tirea_contract::thread::Message;
-use tirea_agentos::orchestrator::AgentDefinition;
-use tirea_agentos::orchestrator::AgentOs;
 use futures::StreamExt;
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
+use tirea_agentos::orchestrator::AgentDefinition;
+use tirea_agentos::orchestrator::AgentOs;
+use tirea_contract::thread::Message;
+use tirea_contract::{AgentEvent, RunRequest};
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
@@ -63,6 +64,7 @@ You must complete this workflow:\n\
 Do not skip tool calls.",
                 ),
         )
+        .with_agent_state_store(Arc::new(tirea_store_adapters::MemoryStore::new()))
         .build()
         .unwrap();
 

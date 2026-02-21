@@ -63,13 +63,15 @@ impl AgentRunManager {
                     return None;
                 }
                 match rec.status {
-                    DelegationStatus::Running | DelegationStatus::Stopped => Some(AgentRunSummary {
-                        run_id: run_id.clone(),
-                        target_agent_id: rec.target_agent_id.clone(),
-                        status: rec.status,
-                        assistant: rec.assistant.clone(),
-                        error: rec.error.clone(),
-                    }),
+                    DelegationStatus::Running | DelegationStatus::Stopped => {
+                        Some(AgentRunSummary {
+                            run_id: run_id.clone(),
+                            target_agent_id: rec.target_agent_id.clone(),
+                            status: rec.status,
+                            assistant: rec.assistant.clone(),
+                            error: rec.error.clone(),
+                        })
+                    }
                     _ => None,
                 }
             })
@@ -272,7 +274,12 @@ pub(super) async fn execute_target_agent(
     let (checkpoint_tx, mut checkpoints) = tokio::sync::mpsc::unbounded_channel();
     let state_committer: Option<Arc<dyn crate::runtime::loop_runner::StateCommitter>> =
         Some(Arc::new(ChannelStateCommitter::new(checkpoint_tx)));
-    let mut events = match os.run_stream_with_context(&target_agent_id, thread.clone(), cancellation_token, state_committer) {
+    let mut events = match os.run_stream_with_context(
+        &target_agent_id,
+        thread.clone(),
+        cancellation_token,
+        state_committer,
+    ) {
         Ok(stream) => stream,
         Err(e) => {
             return AgentRunCompletion {

@@ -7,10 +7,10 @@ use crate::runtime::loop_runner::{
     TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use async_trait::async_trait;
-use tirea_contract::testing::TestFixture;
-use tirea_state::apply_patches;
 use serde_json::json;
 use std::time::Duration;
+use tirea_contract::testing::TestFixture;
+use tirea_state::apply_patches;
 
 #[test]
 fn plugin_filters_out_caller_agent() {
@@ -60,9 +60,7 @@ async fn plugin_adds_reminder_for_running_and_stopped_runs() {
 
     let fixture = TestFixture::new();
     let mut step = StepContext::new(fixture.ctx(), "owner-1", &fixture.messages, vec![]);
-    plugin
-        .on_phase(Phase::AfterToolExecute, &mut step)
-        .await;
+    plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
     let reminder = step
         .system_reminders
         .first()
@@ -72,9 +70,7 @@ async fn plugin_adds_reminder_for_running_and_stopped_runs() {
     manager.stop_owned_tree("owner-1", "run-1").await.unwrap();
     let fixture2 = TestFixture::new();
     let mut step2 = StepContext::new(fixture2.ctx(), "owner-1", &fixture2.messages, vec![]);
-    plugin
-        .on_phase(Phase::AfterToolExecute, &mut step2)
-        .await;
+    plugin.on_phase(Phase::AfterToolExecute, &mut step2).await;
     let reminder2 = step2
         .system_reminders
         .first()
@@ -187,7 +183,9 @@ async fn agent_run_tool_rejects_disallowed_target_agent() {
     let tool = AgentRunTool::new(os, Arc::new(AgentRunManager::new()));
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
-    fix.run_config.set(SCOPE_ALLOWED_AGENTS_KEY, vec!["worker"]).unwrap();
+    fix.run_config
+        .set(SCOPE_ALLOWED_AGENTS_KEY, vec!["worker"])
+        .unwrap();
     let result = tool
         .execute(
             json!({"agent_id":"reviewer","prompt":"hi","background":false}),
@@ -281,8 +279,7 @@ async fn background_stop_then_resume_completes() {
         .with_registered_plugin("slow_skip", Arc::new(SlowSkipPlugin))
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
-                .with_plugin_id("slow_skip"),
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini").with_plugin_id("slow_skip"),
         )
         .build()
         .unwrap();
@@ -313,7 +310,10 @@ async fn background_stop_then_resume_completes() {
     let mut stop_fix = TestFixture::new();
     stop_fix.run_config = caller_scope();
     let stopped = stop_tool
-        .execute(json!({ "run_id": run_id.clone() }), &stop_fix.ctx_with("call-stop", "tool:agent_stop"))
+        .execute(
+            json!({ "run_id": run_id.clone() }),
+            &stop_fix.ctx_with("call-stop", "tool:agent_stop"),
+        )
         .await
         .unwrap();
     assert_eq!(stopped.status, ToolStatus::Success);
@@ -418,8 +418,7 @@ async fn agent_run_tool_persists_run_state_patch() {
         .with_registered_plugin("slow_skip", Arc::new(SlowSkipPlugin))
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
-                .with_plugin_id("slow_skip"),
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini").with_plugin_id("slow_skip"),
         )
         .build()
         .unwrap();
@@ -463,8 +462,7 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
         .with_registered_plugin("slow_skip", Arc::new(SlowSkipPlugin))
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
-                .with_plugin_id("slow_skip"),
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini").with_plugin_id("slow_skip"),
         )
         .build()
         .unwrap();
@@ -494,7 +492,10 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
         .owned_record("owner-thread", &run_id)
         .await
         .expect("child thread should be tracked");
-    assert_eq!(child_thread.parent_thread_id.as_deref(), Some("owner-thread"));
+    assert_eq!(
+        child_thread.parent_thread_id.as_deref(),
+        Some("owner-thread")
+    );
 
     let patch = fix.ctx_with("call-run", "tool:agent_run").take_patch();
     let base = json!({});
@@ -511,8 +512,7 @@ async fn agent_run_tool_injects_prompt_into_child_thread() {
         .with_registered_plugin("slow_skip", Arc::new(SlowSkipPlugin))
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
-                .with_plugin_id("slow_skip"),
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini").with_plugin_id("slow_skip"),
         )
         .build()
         .unwrap();
@@ -546,10 +546,7 @@ async fn agent_run_tool_injects_prompt_into_child_thread() {
         .messages
         .last()
         .expect("child thread should contain prompt message");
-    assert_eq!(
-        prompt_message.role,
-        crate::contracts::thread::Role::User
-    );
+    assert_eq!(prompt_message.role, crate::contracts::thread::Role::User);
     assert_eq!(prompt_message.content, "prompt-injected");
 }
 
@@ -559,8 +556,7 @@ async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
         .with_registered_plugin("slow_skip", Arc::new(SlowSkipPlugin))
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
-                .with_plugin_id("slow_skip"),
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini").with_plugin_id("slow_skip"),
         )
         .build()
         .unwrap();
@@ -603,8 +599,7 @@ async fn agent_run_tool_resume_injects_prompt_into_child_thread() {
         .with_registered_plugin("slow_skip", Arc::new(SlowSkipPlugin))
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
-                .with_plugin_id("slow_skip"),
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini").with_plugin_id("slow_skip"),
         )
         .build()
         .unwrap();
@@ -649,10 +644,7 @@ async fn agent_run_tool_resume_injects_prompt_into_child_thread() {
         .messages
         .last()
         .expect("resumed child thread should contain prompt message");
-    assert_eq!(
-        prompt_message.role,
-        crate::contracts::thread::Role::User
-    );
+    assert_eq!(prompt_message.role, crate::contracts::thread::Role::User);
     assert_eq!(prompt_message.content, "resume-prompt");
 }
 
@@ -662,8 +654,7 @@ async fn agent_run_tool_resume_updates_parent_run_lineage() {
         .with_registered_plugin("slow_skip", Arc::new(SlowSkipPlugin))
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
-                .with_plugin_id("slow_skip"),
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini").with_plugin_id("slow_skip"),
         )
         .build()
         .unwrap();
@@ -704,7 +695,10 @@ async fn agent_run_tool_resume_updates_parent_run_lineage() {
         .owned_record("owner-thread", "run-1")
         .await
         .expect("resumed run should be tracked");
-    assert_eq!(child_thread.parent_thread_id.as_deref(), Some("owner-thread"));
+    assert_eq!(
+        child_thread.parent_thread_id.as_deref(),
+        Some("owner-thread")
+    );
 
     let patch = fix.ctx_with("call-run", "tool:agent_run").take_patch();
     let updated = apply_patches(&doc, std::iter::once(patch.patch())).unwrap();
@@ -720,8 +714,7 @@ async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
         .with_registered_plugin("slow_skip", Arc::new(SlowSkipPlugin))
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
-                .with_plugin_id("slow_skip"),
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini").with_plugin_id("slow_skip"),
         )
         .build()
         .unwrap();
@@ -836,7 +829,10 @@ async fn agent_stop_tool_stops_descendant_runs() {
         rt
     };
     let result = stop_tool
-        .execute(json!({ "run_id": parent_run_id }), &fix.ctx_with("call-stop", "tool:agent_stop"))
+        .execute(
+            json!({ "run_id": parent_run_id }),
+            &fix.ctx_with("call-stop", "tool:agent_stop"),
+        )
         .await
         .unwrap();
     assert_eq!(result.status, ToolStatus::Success);
@@ -926,9 +922,7 @@ async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
     let updated_doc = updated_thread.rebuild_state().unwrap();
     let fixture2 = TestFixture::new_with_state(updated_doc);
     let mut before = fixture2.step(vec![]);
-    plugin
-        .on_phase(Phase::BeforeInference, &mut before)
-        .await;
+    plugin.on_phase(Phase::BeforeInference, &mut before).await;
     assert!(
         before.skip_inference,
         "recovery confirmation should pause inference"

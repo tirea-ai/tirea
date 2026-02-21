@@ -3,9 +3,8 @@ use crate::plugin::contract::AgentPlugin;
 use crate::runtime::activity::ActivityManager;
 use crate::thread::{Message, ToolCall};
 use crate::tool::contract::{Tool, ToolDescriptor, ToolResult};
-use async_trait::async_trait;
 use crate::RunConfig;
-use tirea_state::TrackedPatch;
+use async_trait::async_trait;
 use futures::Stream;
 use genai::chat::{ChatOptions, ChatRequest, ChatResponse, ChatStreamEvent};
 use serde_json::Value;
@@ -13,6 +12,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use thiserror::Error;
+use tirea_state::TrackedPatch;
 use tokio_util::sync::CancellationToken;
 
 /// Stream item type returned by LLM streaming executors.

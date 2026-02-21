@@ -1,7 +1,7 @@
 use super::*;
+use std::sync::{Arc, Mutex};
 use tirea_contract::tool::context::ToolCallContext;
 use tirea_state::{DocCell, State};
-use std::sync::{Arc, Mutex};
 pub(super) fn as_delegation_record(
     summary: &AgentRunSummary,
     parent_run_id: Option<String>,
@@ -109,7 +109,12 @@ pub(super) fn parse_replay_tool_calls_from_state(state: &Value) -> Vec<ToolCall>
 /// Create storage for a short-lived ToolCallContext used for state patch generation.
 fn patch_context_storage(
     state: &Value,
-) -> (DocCell, Mutex<Vec<tirea_state::Op>>, tirea_contract::RunConfig, Mutex<Vec<Arc<crate::contracts::thread::Message>>>) {
+) -> (
+    DocCell,
+    Mutex<Vec<tirea_state::Op>>,
+    tirea_contract::RunConfig,
+    Mutex<Vec<Arc<crate::contracts::thread::Message>>>,
+) {
     (
         DocCell::new(state.clone()),
         Mutex::new(Vec::new()),
@@ -124,7 +129,15 @@ pub(super) fn set_pending_interaction_patch(
     call_id: &str,
 ) -> Result<Option<tirea_state::TrackedPatch>, String> {
     let (doc, ops, scope, pending_msgs) = patch_context_storage(state);
-    let ctx = ToolCallContext::new(&doc, &ops, call_id, AGENT_RECOVERY_PLUGIN_ID, &scope, &pending_msgs, None);
+    let ctx = ToolCallContext::new(
+        &doc,
+        &ops,
+        call_id,
+        AGENT_RECOVERY_PLUGIN_ID,
+        &scope,
+        &pending_msgs,
+        None,
+    );
     let lc = ctx.state_of::<crate::runtime::control::LoopControlState>();
     lc.set_pending_interaction(Some(interaction))
         .map_err(|e| format!("failed to set loop_control.pending_interaction: {e}"))?;
@@ -199,7 +212,15 @@ pub(super) fn set_agent_runs_patch_from_state_doc(
     call_id: &str,
 ) -> Result<Option<tirea_state::TrackedPatch>, String> {
     let (doc, ops, scope, pending_msgs) = patch_context_storage(state);
-    let ctx = ToolCallContext::new(&doc, &ops, call_id, AGENT_TOOLS_PLUGIN_ID, &scope, &pending_msgs, None);
+    let ctx = ToolCallContext::new(
+        &doc,
+        &ops,
+        call_id,
+        AGENT_TOOLS_PLUGIN_ID,
+        &scope,
+        &pending_msgs,
+        None,
+    );
     let agent = ctx.state_of::<DelegationState>();
     agent
         .set_runs(next_runs)
@@ -234,8 +255,11 @@ pub(super) async fn reconcile_persisted_runs(
         };
         if let Some(summary) = by_id.get(&run_id) {
             let thread = manager.owned_record(owner_thread_id, &run_id).await;
-            let next =
-                as_delegation_record(summary, current.parent_run_id.clone(), thread.or_else(|| current.agent_state.clone()));
+            let next = as_delegation_record(
+                summary,
+                current.parent_run_id.clone(),
+                thread.or_else(|| current.agent_state.clone()),
+            );
             if current.status != next.status
                 || current.assistant != next.assistant
                 || current.error != next.error

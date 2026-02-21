@@ -1,15 +1,5 @@
 #![allow(missing_docs)]
 
-use tirea_extension_observability::{InMemorySink, LLMMetryPlugin};
-use tirea_agent_loop::contracts::plugin::AgentPlugin;
-use tirea_agent_loop::contracts::{AgentEvent, runtime::StreamResult};
-use tirea_agent_loop::contracts::thread::Thread;
-use tirea_agent_loop::contracts::thread::{Message, ToolCall};
-use tirea_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
-use tirea_agent_loop::contracts::{RunContext, ToolCallContext};
-use tirea_agent_loop::runtime::loop_runner::{
-    execute_tools_with_plugins, run_loop, run_loop_stream, AgentConfig, GenaiLlmExecutor,
-};
 use futures::StreamExt;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
@@ -17,6 +7,16 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::sync::Arc;
+use tirea_agent_loop::contracts::plugin::AgentPlugin;
+use tirea_agent_loop::contracts::thread::Thread;
+use tirea_agent_loop::contracts::thread::{Message, ToolCall};
+use tirea_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use tirea_agent_loop::contracts::{runtime::StreamResult, AgentEvent};
+use tirea_agent_loop::contracts::{RunContext, ToolCallContext};
+use tirea_agent_loop::runtime::loop_runner::{
+    execute_tools_with_plugins, run_loop, run_loop_stream, AgentConfig, GenaiLlmExecutor,
+};
+use tirea_extension_observability::{InMemorySink, LLMMetryPlugin};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tracing_opentelemetry::OpenTelemetryLayer;
@@ -142,10 +142,7 @@ impl Tool for ErrorTool {
         _args: serde_json::Value,
         _ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
-        Err(ToolError::ExecutionFailed(format!(
-            "{} exploded",
-            self.id
-        )))
+        Err(ToolError::ExecutionFailed(format!("{} exploded", self.id)))
     }
 }
 
@@ -300,7 +297,10 @@ async fn test_run_step_llm_error_closes_inference_span_and_sets_error_type() {
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None).await;
-    assert!(matches!(outcome.termination, tirea_agent_loop::contracts::TerminationReason::Error));
+    assert!(matches!(
+        outcome.termination,
+        tirea_agent_loop::contracts::TerminationReason::Error
+    ));
 
     // Metrics should record the failed inference.
     let m = sink.metrics();
@@ -552,9 +552,8 @@ async fn test_execute_tool_error_exports_otel_error_span() {
     let (_guard, exporter, provider) = setup_otel_test();
 
     let sink = InMemorySink::new();
-    let plugin = Arc::new(
-        LLMMetryPlugin::new(sink.clone()).with_provider("test-provider"),
-    ) as Arc<dyn AgentPlugin>;
+    let plugin = Arc::new(LLMMetryPlugin::new(sink.clone()).with_provider("test-provider"))
+        as Arc<dyn AgentPlugin>;
 
     let thread = Thread::with_initial_state("t", json!({})).with_message(Message::user("hi"));
     let result = StreamResult {
@@ -564,10 +563,7 @@ async fn test_execute_tool_error_exports_otel_error_span() {
     };
 
     let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-    tools.insert(
-        "bad_tool".into(),
-        Arc::new(ErrorTool { id: "bad_tool" }),
-    );
+    tools.insert("bad_tool".into(), Arc::new(ErrorTool { id: "bad_tool" }));
 
     // Tool execution errors are captured as ToolStatus::Error, not propagated as Err.
     let _session = execute_tools_with_plugins(thread, &result, &tools, true, &[plugin])

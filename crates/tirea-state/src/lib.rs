@@ -107,9 +107,9 @@ mod writer;
 
 // Core types
 pub use apply::{apply_patch, apply_patches, get_at_path};
+pub use conflict::{compute_touched, detect_conflicts, Conflict, ConflictKind, PatchExt};
 pub use delta_tracked::DeltaTracked;
 pub use doc_cell::DocCell;
-pub use conflict::{compute_touched, detect_conflicts, Conflict, ConflictKind, PatchExt};
 pub use error::{value_type_name, TireaError, TireaResult};
 pub use op::{Number, Op};
 pub use patch::{Patch, TrackedPatch};

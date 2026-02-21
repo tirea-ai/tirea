@@ -49,19 +49,18 @@ mod stream_runner;
 mod tool_exec;
 
 use crate::contracts::plugin::phase::Phase;
-use crate::contracts::{AgentEvent, FrontendToolInvocation, Interaction, TerminationReason};
+use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
-    StopPolicy, StreamResult, ToolExecutionRequest,
-    ToolExecutionResult,
+    StopPolicy, StreamResult, ToolExecutionRequest, ToolExecutionResult,
 };
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{gen_message_id, Message, MessageMetadata};
-use crate::contracts::runtime::ActivityManager;
 use crate::contracts::tool::Tool;
 use crate::contracts::RunContext;
+use crate::contracts::StopReason;
+use crate::contracts::{AgentEvent, FrontendToolInvocation, Interaction, TerminationReason};
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
 use crate::engine::stop_conditions::check_stop_policies;
-use crate::contracts::StopReason;
 use crate::runtime::activity::ActivityHub;
 
 use crate::runtime::streaming::StreamCollector;
@@ -75,25 +74,23 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 #[cfg(test)]
-use crate::contracts::plugin::AgentPlugin;
-#[cfg(test)]
 use crate::contracts::plugin::phase::StepContext;
-pub use crate::runtime::run_context::{
-    RunCancellationToken, StateCommitError, StateCommitter,
-    TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
-    TOOL_SCOPE_CALLER_THREAD_ID_KEY,
-};
-use tirea_state::TrackedPatch;
+#[cfg(test)]
+use crate::contracts::plugin::AgentPlugin;
 pub use crate::contracts::runtime::{LlmExecutor, ToolExecutor};
+pub use crate::runtime::run_context::{
+    RunCancellationToken, StateCommitError, StateCommitter, TOOL_SCOPE_CALLER_AGENT_ID_KEY,
+    TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
+};
+use config::StaticStepToolProvider;
 pub use config::{AgentConfig, GenaiLlmExecutor, LlmRetryPolicy};
 pub use config::{StepToolInput, StepToolProvider, StepToolSnapshot};
-use config::StaticStepToolProvider;
 #[cfg(test)]
 use core::build_messages;
 use core::{
-    build_request_for_filtered_tools, clear_agent_pending_interaction,
-    drain_agent_outbox, inference_inputs_from_step, pending_frontend_invocation_from_ctx,
-    pending_interaction_from_ctx, set_agent_pending_interaction,
+    build_request_for_filtered_tools, clear_agent_pending_interaction, drain_agent_outbox,
+    inference_inputs_from_step, pending_frontend_invocation_from_ctx, pending_interaction_from_ctx,
+    set_agent_pending_interaction,
 };
 pub use outcome::{tool_map, tool_map_from_arc, AgentLoopError};
 pub use outcome::{LoopOutcome, LoopStats, LoopUsage};
@@ -105,6 +102,7 @@ use plugin_runtime::{
 use run_state::{effective_stop_conditions, RunState};
 pub use state_commit::ChannelStateCommitter;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tirea_state::TrackedPatch;
 #[cfg(test)]
 #[cfg(test)]
 use tokio_util::sync::CancellationToken;
@@ -159,7 +157,6 @@ impl ResolvedRun {
 fn uuid_v7() -> String {
     Uuid::now_v7().simple().to_string()
 }
-
 
 pub(crate) fn current_unix_millis() -> u64 {
     SystemTime::now()
@@ -290,7 +287,9 @@ pub(super) async fn resolve_step_tool_snapshot(
     step_tool_provider: &Arc<dyn StepToolProvider>,
     run_ctx: &RunContext,
 ) -> Result<StepToolSnapshot, AgentLoopError> {
-    step_tool_provider.provide(StepToolInput { state: run_ctx }).await
+    step_tool_provider
+        .provide(StepToolInput { state: run_ctx })
+        .await
 }
 
 fn mark_step_completed(run_state: &mut RunState) {
@@ -391,10 +390,7 @@ pub(super) async fn run_step_prepare_phases(
     run_ctx: &RunContext,
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
     config: &AgentConfig,
-) -> Result<
-    (Vec<Message>, Vec<String>, bool, Vec<TrackedPatch>),
-    AgentLoopError,
-> {
+) -> Result<(Vec<Message>, Vec<String>, bool, Vec<TrackedPatch>), AgentLoopError> {
     let ((messages, filtered_tools, skip_inference), pending) = run_phase_block(
         run_ctx,
         tool_descriptors,
@@ -436,14 +432,7 @@ pub(super) async fn apply_llm_error_cleanup(
     error_type: &'static str,
     message: String,
 ) -> Result<(), AgentLoopError> {
-    emit_cleanup_phases_and_apply(
-        run_ctx,
-        tool_descriptors,
-        plugins,
-        error_type,
-        message,
-    )
-    .await
+    emit_cleanup_phases_and_apply(run_ctx, tool_descriptors, plugins, error_type, message).await
 }
 
 pub(super) async fn complete_step_after_inference(
@@ -469,14 +458,8 @@ pub(super) async fn complete_step_after_inference(
     let assistant = assistant_turn_message(result, step_meta, assistant_message_id);
     run_ctx.add_message(Arc::new(assistant));
 
-    let pending = emit_phase_block(
-        Phase::StepEnd,
-        run_ctx,
-        tool_descriptors,
-        plugins,
-        |_| {},
-    )
-    .await?;
+    let pending =
+        emit_phase_block(Phase::StepEnd, run_ctx, tool_descriptors, plugins, |_| {}).await?;
     run_ctx.add_thread_patches(pending);
     Ok(())
 }
@@ -664,17 +647,17 @@ pub async fn run_loop(
         };
         active_tool_descriptors = step_tools.descriptors.clone();
 
-        let prepared = match prepare_step_execution(&run_ctx, &active_tool_descriptors, config).await
-        {
-            Ok(v) => v,
-            Err(e) => {
-                terminate_run!(
-                    TerminationReason::Error,
-                    None,
-                    Some(outcome::LoopFailure::State(e.to_string()))
-                );
-            }
-        };
+        let prepared =
+            match prepare_step_execution(&run_ctx, &active_tool_descriptors, config).await {
+                Ok(v) => v,
+                Err(e) => {
+                    terminate_run!(
+                        TerminationReason::Error,
+                        None,
+                        Some(outcome::LoopFailure::State(e.to_string()))
+                    );
+                }
+            };
         run_ctx.add_thread_patches(prepared.pending_patches);
 
         if prepared.skip_inference {
@@ -858,7 +841,8 @@ pub async fn run_loop(
         run_state.record_tool_step(&result.tool_calls, error_count);
 
         // Check stop conditions.
-        if let Some(reason) = stop_reason_for_step(&run_state, &result, &run_ctx, &stop_conditions) {
+        if let Some(reason) = stop_reason_for_step(&run_state, &result, &run_ctx, &stop_conditions)
+        {
             terminate_run!(TerminationReason::Stopped(reason), None, None);
         }
     }
@@ -876,13 +860,7 @@ pub fn run_loop_stream(
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
-    stream_runner::run_loop_stream_impl(
-        config,
-        tools,
-        run_ctx,
-        cancellation_token,
-        state_committer,
-    )
+    stream_runner::run_loop_stream_impl(config, tools, run_ctx, cancellation_token, state_committer)
 }
 
 #[cfg(test)]

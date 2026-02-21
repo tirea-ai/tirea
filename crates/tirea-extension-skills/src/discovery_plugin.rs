@@ -1,10 +1,10 @@
 use crate::tool_filter::{is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY};
 use crate::{SkillMeta, SkillRegistry, SkillState, SKILLS_DISCOVERY_PLUGIN_ID};
 use async_trait::async_trait;
-use tirea_contract::plugin::AgentPlugin;
-use tirea_contract::plugin::phase::{Phase, StepContext};
 use std::collections::HashSet;
 use std::sync::Arc;
+use tirea_contract::plugin::phase::{Phase, StepContext};
+use tirea_contract::plugin::AgentPlugin;
 
 /// Injects a skills catalog into the LLM context so the model can discover and activate skills.
 ///
@@ -161,13 +161,13 @@ impl AgentPlugin for SkillDiscoveryPlugin {
 mod tests {
     use super::*;
     use crate::{FsSkill, InMemorySkillRegistry, Skill};
-    use tirea_contract::thread::Thread;
-    use tirea_contract::tool::ToolDescriptor;
-    use tirea_contract::testing::TestFixture;
     use serde_json::json;
     use std::fs;
     use std::io::Write;
     use tempfile::TempDir;
+    use tirea_contract::testing::TestFixture;
+    use tirea_contract::thread::Thread;
+    use tirea_contract::tool::ToolDescriptor;
 
     fn make_registry(skills: Vec<Arc<dyn Skill>>) -> Arc<dyn SkillRegistry> {
         Arc::new(InMemorySkillRegistry::from_skills(skills))
@@ -198,7 +198,12 @@ mod tests {
         let (_td, skills) = make_skills();
         let p = SkillDiscoveryPlugin::new(make_registry(skills)).with_limits(10, 8 * 1024);
         let thread = Thread::with_initial_state("s", json!({}));
-        let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(
+            fix.ctx(),
+            &thread.id,
+            &thread.messages,
+            vec![ToolDescriptor::new("t", "t", "t")],
+        );
         p.on_phase(Phase::BeforeInference, &mut step).await;
         assert_eq!(step.system_context.len(), 1);
         let s = &step.system_context[0];
@@ -225,7 +230,12 @@ mod tests {
                 }
             }),
         );
-        let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(
+            fix.ctx(),
+            &thread.id,
+            &thread.messages,
+            vec![ToolDescriptor::new("t", "t", "t")],
+        );
         p.on_phase(Phase::BeforeInference, &mut step).await;
         let s = &step.system_context[0];
         assert!(s.contains("<name>a-skill</name>"));
@@ -236,7 +246,12 @@ mod tests {
         let fix = TestFixture::new();
         let p = SkillDiscoveryPlugin::new(make_registry(vec![]));
         let thread = Thread::with_initial_state("s", json!({}));
-        let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(
+            fix.ctx(),
+            &thread.id,
+            &thread.messages,
+            vec![ToolDescriptor::new("t", "t", "t")],
+        );
         p.on_phase(Phase::BeforeInference, &mut step).await;
         assert!(step.system_context.is_empty());
     }
@@ -259,7 +274,12 @@ mod tests {
         let skills = FsSkill::into_arc_skills(result.skills);
         let p = SkillDiscoveryPlugin::new(make_registry(skills));
         let thread = Thread::with_initial_state("s", json!({}));
-        let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(
+            fix.ctx(),
+            &thread.id,
+            &thread.messages,
+            vec![ToolDescriptor::new("t", "t", "t")],
+        );
         p.on_phase(Phase::BeforeInference, &mut step).await;
         assert!(step.system_context.is_empty());
     }
@@ -286,7 +306,12 @@ mod tests {
         let skills = FsSkill::into_arc_skills(result.skills);
         let p = SkillDiscoveryPlugin::new(make_registry(skills));
         let thread = Thread::with_initial_state("s", json!({}));
-        let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(
+            fix.ctx(),
+            &thread.id,
+            &thread.messages,
+            vec![ToolDescriptor::new("t", "t", "t")],
+        );
         p.on_phase(Phase::BeforeInference, &mut step).await;
 
         assert_eq!(step.system_context.len(), 1);
@@ -315,7 +340,12 @@ mod tests {
         let skills = FsSkill::into_arc_skills(result.skills);
         let p = SkillDiscoveryPlugin::new(make_registry(skills)).with_limits(2, 8 * 1024);
         let thread = Thread::with_initial_state("s", json!({}));
-        let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(
+            fix.ctx(),
+            &thread.id,
+            &thread.messages,
+            vec![ToolDescriptor::new("t", "t", "t")],
+        );
         p.on_phase(Phase::BeforeInference, &mut step).await;
         let s = &step.system_context[0];
         assert!(s.contains("<available_skills>"));
@@ -338,7 +368,12 @@ mod tests {
         let skills = FsSkill::into_arc_skills(result.skills);
         let p = SkillDiscoveryPlugin::new(make_registry(skills)).with_limits(10, 256);
         let thread = Thread::with_initial_state("s", json!({}));
-        let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(
+            fix.ctx(),
+            &thread.id,
+            &thread.messages,
+            vec![ToolDescriptor::new("t", "t", "t")],
+        );
         p.on_phase(Phase::BeforeInference, &mut step).await;
         let s = &step.system_context[0];
         assert!(s.len() <= 256);
@@ -353,7 +388,12 @@ mod tests {
         fix.run_config
             .set(SCOPE_ALLOWED_SKILLS_KEY, vec!["a-skill"])
             .unwrap();
-        let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(
+            fix.ctx(),
+            &thread.id,
+            &thread.messages,
+            vec![ToolDescriptor::new("t", "t", "t")],
+        );
         p.on_phase(Phase::BeforeInference, &mut step).await;
         assert_eq!(step.system_context.len(), 1);
         let s = &step.system_context[0];

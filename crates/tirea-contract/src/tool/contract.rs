@@ -295,7 +295,11 @@ pub trait Tool: Send + Sync {
     /// # Returns
     ///
     /// Tool result or error
-    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError>;
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError>;
 }
 
 /// Validate a JSON value against a JSON Schema.
@@ -303,16 +307,12 @@ pub trait Tool: Send + Sync {
 /// Returns `Ok(())` if the value conforms to the schema, or
 /// `Err(ToolError::InvalidArguments)` with a description of all violations.
 pub fn validate_against_schema(schema: &Value, args: &Value) -> Result<(), ToolError> {
-    let validator = jsonschema::Validator::new(schema).map_err(|e| {
-        ToolError::Internal(format!("invalid tool schema: {e}"))
-    })?;
+    let validator = jsonschema::Validator::new(schema)
+        .map_err(|e| ToolError::Internal(format!("invalid tool schema: {e}")))?;
     if validator.is_valid(args) {
         return Ok(());
     }
-    let errors: Vec<String> = validator
-        .iter_errors(args)
-        .map(|e| e.to_string())
-        .collect();
+    let errors: Vec<String> = validator.iter_errors(args).map(|e| e.to_string()).collect();
     Err(ToolError::InvalidArguments(errors.join("; ")))
 }
 
@@ -385,8 +385,7 @@ pub trait TypedTool: Send + Sync {
 impl<T: TypedTool> Tool for T {
     fn descriptor(&self) -> ToolDescriptor {
         let schema = typed_tool_schema::<T::Args>();
-        ToolDescriptor::new(self.tool_id(), self.name(), self.description())
-            .with_parameters(schema)
+        ToolDescriptor::new(self.tool_id(), self.name(), self.description()).with_parameters(schema)
     }
 
     /// Skips JSON Schema validation — `from_value` deserialization covers it.
@@ -399,8 +398,8 @@ impl<T: TypedTool> Tool for T {
         args: Value,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
-        let typed: T::Args = serde_json::from_value(args)
-            .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let typed: T::Args =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
         self.validate(&typed).map_err(ToolError::InvalidArguments)?;
         TypedTool::execute(self, typed, ctx).await
     }
@@ -807,7 +806,10 @@ mod tests {
         let err = validate_against_schema(&schema, &json!({})).unwrap_err();
         let msg = err.to_string();
         // Both missing-field errors should be present, joined by "; "
-        assert!(msg.contains("; "), "expected multiple errors joined by '; ', got: {msg}");
+        assert!(
+            msg.contains("; "),
+            "expected multiple errors joined by '; ', got: {msg}"
+        );
         assert!(msg.contains("name"), "expected 'name' in error: {msg}");
         assert!(msg.contains("age"), "expected 'age' in error: {msg}");
     }
@@ -869,16 +871,25 @@ mod tests {
     #[async_trait]
     impl TypedTool for GreetTool {
         type Args = GreetArgs;
-        fn tool_id(&self) -> &str { "greet" }
-        fn name(&self) -> &str { "Greet" }
-        fn description(&self) -> &str { "Greet a user" }
+        fn tool_id(&self) -> &str {
+            "greet"
+        }
+        fn name(&self) -> &str {
+            "Greet"
+        }
+        fn description(&self) -> &str {
+            "Greet a user"
+        }
 
         async fn execute(
             &self,
             args: GreetArgs,
             _ctx: &ToolCallContext<'_>,
         ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::success("greet", json!({"greeting": format!("Hello, {}!", args.name)})))
+            Ok(ToolResult::success(
+                "greet",
+                json!({"greeting": format!("Hello, {}!", args.name)}),
+            ))
         }
     }
 
@@ -931,9 +942,15 @@ mod tests {
     #[async_trait]
     impl TypedTool for PositiveTool {
         type Args = PositiveArgs;
-        fn tool_id(&self) -> &str { "positive" }
-        fn name(&self) -> &str { "Positive" }
-        fn description(&self) -> &str { "Requires positive value" }
+        fn tool_id(&self) -> &str {
+            "positive"
+        }
+        fn name(&self) -> &str {
+            "Positive"
+        }
+        fn description(&self) -> &str {
+            "Requires positive value"
+        }
 
         fn validate(&self, args: &PositiveArgs) -> Result<(), String> {
             if args.value <= 0 {
@@ -947,7 +964,10 @@ mod tests {
             args: PositiveArgs,
             _ctx: &ToolCallContext<'_>,
         ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::success("positive", json!({"value": args.value})))
+            Ok(ToolResult::success(
+                "positive",
+                json!({"value": args.value}),
+            ))
         }
     }
 
@@ -992,19 +1012,28 @@ mod tests {
     #[async_trait]
     impl TypedTool for OptionalTool {
         type Args = OptionalArgs;
-        fn tool_id(&self) -> &str { "optional" }
-        fn name(&self) -> &str { "Optional" }
-        fn description(&self) -> &str { "Tool with optional field" }
+        fn tool_id(&self) -> &str {
+            "optional"
+        }
+        fn name(&self) -> &str {
+            "Optional"
+        }
+        fn description(&self) -> &str {
+            "Tool with optional field"
+        }
 
         async fn execute(
             &self,
             args: OptionalArgs,
             _ctx: &ToolCallContext<'_>,
         ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::success("optional", json!({
-                "required": args.required_field,
-                "optional": args.optional_field,
-            })))
+            Ok(ToolResult::success(
+                "optional",
+                json!({
+                    "required": args.required_field,
+                    "optional": args.optional_field,
+                }),
+            ))
         }
     }
 

@@ -14,7 +14,6 @@ pub use bundle::{
     BundleComposeError, BundleComposer, BundleRegistryAccumulator, BundleRegistryKind, RegistrySet,
     ToolPluginBundle,
 };
-pub use tirea_contract::{ToolRegistry, ToolRegistryError};
 pub use registry::{
     CompositeAgentRegistry, CompositeModelRegistry, CompositePluginRegistry,
     CompositeProviderRegistry, CompositeToolRegistry, InMemoryAgentRegistry, InMemoryModelRegistry,
@@ -24,6 +23,7 @@ pub use stop_policy_registry::{
     CompositeStopPolicyRegistry, InMemoryStopPolicyRegistry, StopPolicyRegistry,
     StopPolicyRegistryError,
 };
+pub use tirea_contract::{ToolRegistry, ToolRegistryError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderRegistryError {

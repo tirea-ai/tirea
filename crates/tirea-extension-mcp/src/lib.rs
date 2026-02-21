@@ -1,7 +1,4 @@
 use async_trait::async_trait;
-use tirea_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
-use tirea_contract::ToolCallContext;
-use tirea_contract::ToolRegistry;
 use mcp::transport::{McpServerConnectionConfig, McpTransport, McpTransportError, TransportTypeId};
 use mcp::transport_factory::TransportFactory;
 use mcp::McpToolDefinition;
@@ -9,6 +6,9 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
+use tirea_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use tirea_contract::ToolCallContext;
+use tirea_contract::ToolRegistry;
 use tokio::runtime::Handle;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -134,7 +134,11 @@ impl Tool for McpTool {
         self.descriptor()
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let res = self
             .transport
             .call_tool(&self.tool_name, args)

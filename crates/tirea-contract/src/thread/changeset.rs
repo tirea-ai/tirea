@@ -1,10 +1,10 @@
 //! Shared persistence change-set types shared by runtime and storage.
 
-use crate::thread::{Thread, Message};
-use tirea_state::TrackedPatch;
+use crate::thread::{Message, Thread};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
+use tirea_state::TrackedPatch;
 
 /// Monotonically increasing version for optimistic concurrency.
 pub type Version = u64;

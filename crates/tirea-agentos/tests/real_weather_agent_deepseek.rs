@@ -1,16 +1,17 @@
 #![allow(missing_docs)]
 
 use async_trait::async_trait;
-use tirea_contract::{AgentEvent, RunRequest};
-use tirea_contract::thread::Message;
-use tirea_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
-use tirea_contract::ToolCallContext;
-use tirea_agentos::orchestrator::AgentDefinition;
-use tirea_agentos::orchestrator::AgentOs;
 use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::sync::Arc;
 use std::time::Duration;
+use tirea_agentos::orchestrator::AgentDefinition;
+use tirea_agentos::orchestrator::AgentOs;
+use tirea_contract::thread::Message;
+use tirea_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use tirea_contract::ToolCallContext;
+use tirea_contract::{AgentEvent, RunRequest};
 
 struct OpenMeteoWeatherTool {
     http: reqwest::Client,
@@ -197,6 +198,7 @@ Rules:\n\
 - Answer in 2-4 short sentences.\n",
             ),
         )
+        .with_agent_state_store(Arc::new(tirea_store_adapters::MemoryStore::new()))
         .build()
         .unwrap();
 

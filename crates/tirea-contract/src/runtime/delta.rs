@@ -1,6 +1,6 @@
 use crate::thread::Message;
-use tirea_state::TrackedPatch;
 use std::sync::Arc;
+use tirea_state::TrackedPatch;
 
 /// Incremental output from a run step — the new messages and patches
 /// accumulated since the last `take_delta()`.

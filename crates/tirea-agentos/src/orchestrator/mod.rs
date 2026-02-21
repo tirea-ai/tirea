@@ -7,23 +7,22 @@ use futures::Stream;
 use genai::Client;
 
 use crate::contracts::plugin::AgentPlugin;
-use crate::contracts::{AgentEvent, RunRequest};
-use crate::contracts::thread::Thread;
-use crate::contracts::thread::CheckpointReason;
-use crate::contracts::thread::Message;
 use crate::contracts::storage::{
     AgentStateHead, AgentStateStore, AgentStateStoreError, VersionPrecondition,
 };
+use crate::contracts::thread::CheckpointReason;
+use crate::contracts::thread::Message;
+use crate::contracts::thread::Thread;
 use crate::contracts::tool::Tool;
+use crate::contracts::RunContext;
+use crate::contracts::{AgentEvent, RunRequest};
 use crate::extensions::skills::{
     CompositeSkillRegistry, InMemorySkillRegistry, Skill, SkillDiscoveryPlugin, SkillError,
     SkillPlugin, SkillRegistry, SkillRegistryError, SkillRegistryManagerError, SkillRuntimePlugin,
     SkillSubsystem, SkillSubsystemError,
 };
-use crate::contracts::RunContext;
 use crate::runtime::loop_runner::{
-    AgentConfig, AgentLoopError,
-    RunCancellationToken, StateCommitError, StateCommitter,
+    AgentConfig, AgentLoopError, RunCancellationToken, StateCommitError, StateCommitter,
 };
 
 mod agent_definition;
@@ -53,7 +52,6 @@ pub use composition::{
 };
 
 pub use crate::runtime::loop_runner::ResolvedRun;
-
 
 #[derive(Clone)]
 struct AgentStateStoreStateCommitter {

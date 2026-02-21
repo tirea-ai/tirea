@@ -65,8 +65,8 @@ impl EmbeddedSkill {
     /// Parses and validates the SKILL.md content. Returns an error if the
     /// content is invalid or if base64 asset decoding fails.
     pub fn new(data: &EmbeddedSkillData) -> Result<Self, SkillError> {
-        let doc = parse_skill_md(data.skill_md)
-            .map_err(|e| SkillError::InvalidSkillMd(e.to_string()))?;
+        let doc =
+            parse_skill_md(data.skill_md).map_err(|e| SkillError::InvalidSkillMd(e.to_string()))?;
 
         let fm = &doc.frontmatter;
         let id = fm.name.clone();
@@ -176,9 +176,7 @@ impl Skill for EmbeddedSkill {
                 .get(path)
                 .cloned()
                 .map(SkillResource::Reference)
-                .ok_or_else(|| {
-                    SkillError::Unsupported(format!("reference not available: {path}"))
-                }),
+                .ok_or_else(|| SkillError::Unsupported(format!("reference not available: {path}"))),
             SkillResourceKind::Asset => self
                 .assets
                 .get(path)
@@ -188,11 +186,7 @@ impl Skill for EmbeddedSkill {
         }
     }
 
-    async fn run_script(
-        &self,
-        script: &str,
-        _args: &[String],
-    ) -> Result<ScriptResult, SkillError> {
+    async fn run_script(&self, script: &str, _args: &[String]) -> Result<ScriptResult, SkillError> {
         Err(SkillError::Unsupported(format!(
             "embedded skills do not support script execution: {script}"
         )))
@@ -357,10 +351,7 @@ More instructions.
         };
         let skill = EmbeddedSkill::new(&data).unwrap();
 
-        let err = skill
-            .run_script("scripts/run.sh", &[])
-            .await
-            .unwrap_err();
+        let err = skill.run_script("scripts/run.sh", &[]).await.unwrap_err();
         assert!(matches!(err, SkillError::Unsupported(_)));
         assert!(err.to_string().contains("embedded skills do not support"));
     }
@@ -418,16 +409,8 @@ More instructions.
         let skill1 = EmbeddedSkill::new(&data).unwrap();
         let skill2 = EmbeddedSkill::new(&data).unwrap();
 
-        let hash1 = &skill1
-            .references
-            .get("references/guide.md")
-            .unwrap()
-            .sha256;
-        let hash2 = &skill2
-            .references
-            .get("references/guide.md")
-            .unwrap()
-            .sha256;
+        let hash1 = &skill1.references.get("references/guide.md").unwrap().sha256;
+        let hash2 = &skill2.references.get("references/guide.md").unwrap().sha256;
         assert_eq!(hash1, hash2);
         assert_eq!(hash1.len(), 64);
     }
@@ -462,8 +445,7 @@ More instructions.
             },
         ];
         let skills = EmbeddedSkill::from_static_slice(data).unwrap();
-        let registry: Arc<dyn SkillRegistry> =
-            Arc::new(InMemorySkillRegistry::from_skills(skills));
+        let registry: Arc<dyn SkillRegistry> = Arc::new(InMemorySkillRegistry::from_skills(skills));
         let subsystem = SkillSubsystem::new(registry);
 
         let tools = subsystem.tools();

@@ -1,9 +1,9 @@
 use super::AgentLoopError;
 use crate::contracts::plugin::phase::StepContext;
-use crate::contracts::{FrontendToolInvocation, Interaction, InteractionResponse};
 use crate::contracts::thread::{Message, MessageMetadata, Role};
 use crate::contracts::tool::Tool;
 use crate::contracts::RunContext;
+use crate::contracts::{FrontendToolInvocation, Interaction, InteractionResponse};
 use crate::runtime::control::{InferenceError, LoopControlState};
 use tirea_state::{DocCell, StateContext, TireaError, TrackedPatch};
 
@@ -306,7 +306,11 @@ pub(super) fn drain_agent_append_user_messages(
         let Some(queued_messages) = queued_by_call.get(call_id) else {
             continue;
         };
-        for text in queued_messages.iter().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        for text in queued_messages
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
             let mut msg = Message::user(text.to_string());
             if let Some(meta) = metadata {
                 msg.metadata = Some(meta.clone());
@@ -323,7 +327,11 @@ pub(super) fn drain_agent_append_user_messages(
     stale_keys.sort();
     for key in stale_keys {
         if let Some(queued_messages) = queued_by_call.get(key) {
-            for text in queued_messages.iter().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            for text in queued_messages
+                .iter()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+            {
                 let mut msg = Message::user(text.to_string());
                 if let Some(meta) = metadata {
                     msg.metadata = Some(meta.clone());

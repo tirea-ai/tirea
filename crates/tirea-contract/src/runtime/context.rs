@@ -1,16 +1,16 @@
-use crate::tool::context::ToolCallContext;
-use crate::runtime::delta::RunDelta;
-use crate::runtime::control::LoopControlState;
 use crate::event::interaction::{FrontendToolInvocation, Interaction};
 use crate::runtime::activity::ActivityManager;
+use crate::runtime::control::LoopControlState;
+use crate::runtime::delta::RunDelta;
 use crate::thread::Message;
+use crate::tool::context::ToolCallContext;
 use crate::RunConfig;
-use tirea_state::{
-    apply_patches, get_at_path, parse_path, TireaResult, DeltaTracked, DocCell, Op, State,
-    TrackedPatch,
-};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
+use tirea_state::{
+    apply_patches, get_at_path, parse_path, DeltaTracked, DocCell, Op, State, TireaResult,
+    TrackedPatch,
+};
 
 /// Run-scoped workspace that holds mutable state for a single agent run.
 ///
@@ -240,7 +240,6 @@ impl RunContext {
             activity_manager,
         )
     }
-
 }
 
 impl RunContext {
@@ -249,7 +248,10 @@ impl RunContext {
     /// Rebuilds state from the thread's base state + patches, then wraps
     /// the thread's messages and the given `run_config` into a `RunContext`.
     /// Version metadata is carried over from thread metadata.
-    pub fn from_thread(thread: &crate::thread::Thread, run_config: RunConfig) -> Result<Self, tirea_state::TireaError> {
+    pub fn from_thread(
+        thread: &crate::thread::Thread,
+        run_config: RunConfig,
+    ) -> Result<Self, tirea_state::TireaError> {
         let state = thread.rebuild_state()?;
         let messages: Vec<Arc<Message>> = thread.messages.clone();
         let mut ctx = Self::new(thread.id.clone(), state, messages, run_config);
@@ -274,8 +276,8 @@ impl std::fmt::Debug for RunContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tirea_state::{path, Patch};
     use serde_json::json;
+    use tirea_state::{path, Patch};
 
     #[test]
     fn new_context_has_no_delta() {
@@ -486,15 +488,18 @@ mod tests {
 
         let mut thread = Thread::with_initial_state("t-1", json!({"x": 1}));
         // Append to a non-array path — this will fail during rebuild_state
-        thread.patches.push(TrackedPatch::new(
-            Patch::with_ops(vec![tirea_state::Op::Append {
+        thread.patches.push(TrackedPatch::new(Patch::with_ops(vec![
+            tirea_state::Op::Append {
                 path: path!("x"),
                 value: json!(999),
-            }]),
-        ));
+            },
+        ])));
 
         let result = RunContext::from_thread(&thread, RunConfig::default());
-        assert!(result.is_err(), "broken patch should cause from_thread to fail");
+        assert!(
+            result.is_err(),
+            "broken patch should cause from_thread to fail"
+        );
     }
 
     // =========================================================================

@@ -3,14 +3,14 @@
 //! Gated behind the `test-support` cargo feature so production builds are
 //! unaffected.  Enable via `[dev-dependencies] tirea-contract = { ..., features = ["test-support"] }`.
 
-use crate::tool::context::ToolCallContext;
 use crate::plugin::phase::StepContext;
 use crate::thread::Message;
+use crate::tool::context::ToolCallContext;
 use crate::tool::contract::ToolDescriptor;
 use crate::RunConfig;
-use tirea_state::{DocCell, Op};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
+use tirea_state::{DocCell, Op};
 
 pub struct TestFixture {
     pub doc: DocCell,

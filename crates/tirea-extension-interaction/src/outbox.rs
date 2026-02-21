@@ -3,10 +3,10 @@
 //! Stored at `state["interaction_outbox"]`. Written by interaction plugins,
 //! drained by the agent loop.
 
+use serde::{Deserialize, Serialize};
 use tirea_contract::event::interaction::InteractionResponse;
 use tirea_contract::thread::ToolCall;
 use tirea_state::State;
-use serde::{Deserialize, Serialize};
 
 /// Persisted outbox for interaction-driven tool replay and resolution events.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]

@@ -1,10 +1,10 @@
 use super::*;
-use crate::contracts::ToolCallContext;
 use crate::contracts::plugin::phase::{Phase, StepContext};
-use crate::contracts::thread::Thread;
 use crate::contracts::storage::{AgentStateReader, AgentStateWriter};
+use crate::contracts::thread::Thread;
 use crate::contracts::tool::ToolDescriptor;
 use crate::contracts::tool::{ToolError, ToolResult};
+use crate::contracts::ToolCallContext;
 use crate::extensions::skills::{
     FsSkill, FsSkillRegistryManager, InMemorySkillRegistry, ScriptResult, Skill, SkillError,
     SkillMeta, SkillRegistry, SkillRegistryError, SkillResource, SkillResourceKind,
@@ -14,13 +14,13 @@ use crate::runtime::loop_runner::{
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use async_trait::async_trait;
-use tirea_contract::testing::TestFixture;
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tempfile::TempDir;
+use tirea_contract::testing::TestFixture;
 
 fn make_skills_root() -> (TempDir, PathBuf) {
     let td = TempDir::new().unwrap();
@@ -292,12 +292,7 @@ fn wire_plugins_into_orders_plugin_ids() {
             self.0
         }
 
-        async fn on_phase(
-            &self,
-            _phase: Phase,
-            _step: &mut StepContext<'_>,
-        ) {
-        }
+        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
     }
 
     let os = AgentOs::builder()
@@ -326,12 +321,7 @@ fn wire_plugins_into_rejects_duplicate_plugin_ids_after_assembly() {
             self.0
         }
 
-        async fn on_phase(
-            &self,
-            _phase: Phase,
-            _step: &mut StepContext<'_>,
-        ) {
-        }
+        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
     }
 
     // Register two different plugins with the same id — this is normally prevented
@@ -360,8 +350,7 @@ impl AgentPlugin for FakeSkillsPlugin {
         "skills"
     }
 
-    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {
-    }
+    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
 }
 
 #[test]
@@ -399,8 +388,7 @@ impl AgentPlugin for FakeAgentToolsPlugin {
         "agent_tools"
     }
 
-    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {
-    }
+    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
 }
 
 #[test]
@@ -430,8 +418,7 @@ impl AgentPlugin for FakeAgentRecoveryPlugin {
         "agent_recovery"
     }
 
-    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {
-    }
+    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
 }
 
 #[test]
@@ -834,7 +821,10 @@ async fn resolve_freezes_skill_snapshot_per_run_boundary() {
 
     let fix_first = TestFixture::new();
     let first_result = activate_first
-        .execute(json!({"skill": "s1"}), &fix_first.ctx_with("call-skill-1", "tool:skill"))
+        .execute(
+            json!({"skill": "s1"}),
+            &fix_first.ctx_with("call-skill-1", "tool:skill"),
+        )
         .await
         .expect("execute first skill tool");
     assert!(
@@ -850,7 +840,10 @@ async fn resolve_freezes_skill_snapshot_per_run_boundary() {
         .expect("skill activate tool should exist");
     let fix_second = TestFixture::new();
     let second_result = activate_second
-        .execute(json!({"skill": "s1"}), &fix_second.ctx_with("call-skill-2", "tool:skill"))
+        .execute(
+            json!({"skill": "s1"}),
+            &fix_second.ctx_with("call-skill-2", "tool:skill"),
+        )
         .await
         .expect("execute second skill tool");
     assert!(
@@ -914,11 +907,7 @@ async fn run_and_run_stream_work_without_llm_when_skip_inference() {
             "skip_inference"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -927,7 +916,10 @@ async fn run_and_run_stream_work_without_llm_when_skip_inference() {
 
     let os = AgentOs::builder()
         .with_registered_plugin("skip_inference", Arc::new(SkipInferencePlugin))
-        .with_agent("a1", AgentDefinition::new("gpt-4o-mini").with_plugin_id("skip_inference"))
+        .with_agent(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini").with_plugin_id("skip_inference"),
+        )
         .with_agent_state_store(Arc::new(tirea_store_adapters::MemoryStore::new()))
         .build()
         .unwrap();
@@ -965,23 +957,27 @@ fn resolve_sets_runtime_caller_agent_id() {
         .unwrap();
     let resolved = os.resolve("a1").unwrap();
     assert_eq!(
-        resolved.run_config
+        resolved
+            .run_config
             .value(SCOPE_CALLER_AGENT_ID_KEY)
             .and_then(|v| v.as_str()),
         Some("a1")
     );
     assert_eq!(
-        resolved.run_config
+        resolved
+            .run_config
             .value(tirea_extension_skills::SCOPE_ALLOWED_SKILLS_KEY),
         Some(&json!(["s1"]))
     );
     assert_eq!(
-        resolved.run_config
+        resolved
+            .run_config
             .value(super::policy::SCOPE_ALLOWED_AGENTS_KEY),
         Some(&json!(["worker"]))
     );
     assert_eq!(
-        resolved.run_config
+        resolved
+            .run_config
             .value(tirea_agent_loop::engine::tool_filter::SCOPE_ALLOWED_TOOLS_KEY),
         Some(&json!(["echo"]))
     );
@@ -1355,8 +1351,8 @@ fn build_errors_on_reserved_plugin_id_agent_tools_in_builder_agent() {
 
 #[tokio::test]
 async fn run_stream_applies_frontend_state_to_existing_thread() {
-    use tirea_store_adapters::MemoryStore;
     use futures::StreamExt;
+    use tirea_store_adapters::MemoryStore;
 
     #[derive(Debug)]
     struct SkipPlugin;
@@ -1366,11 +1362,7 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -1421,8 +1413,8 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
 
 #[tokio::test]
 async fn run_stream_uses_state_as_initial_for_new_thread() {
-    use tirea_store_adapters::MemoryStore;
     use futures::StreamExt;
+    use tirea_store_adapters::MemoryStore;
 
     #[derive(Debug)]
     struct SkipPlugin;
@@ -1432,11 +1424,7 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -1478,8 +1466,8 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
 
 #[tokio::test]
 async fn run_stream_preserves_state_when_no_frontend_state() {
-    use tirea_store_adapters::MemoryStore;
     use futures::StreamExt;
+    use tirea_store_adapters::MemoryStore;
 
     #[derive(Debug)]
     struct SkipPlugin;
@@ -1489,11 +1477,7 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -1549,11 +1533,7 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -1612,8 +1592,8 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
 
 #[tokio::test]
 async fn execute_prepared_runs_stream() {
-    use tirea_store_adapters::MemoryStore;
     use futures::StreamExt;
+    use tirea_store_adapters::MemoryStore;
 
     #[derive(Debug)]
     struct SkipPlugin;
@@ -1623,11 +1603,7 @@ async fn execute_prepared_runs_stream() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -1689,7 +1665,10 @@ async fn run_stream_checkpoint_append_failure_keeps_persisted_prefix_consistent(
         .with_agent_state_store(
             storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
         )
-        .with_registered_plugin("skip_with_run_end_patch", Arc::new(SkipWithRunEndPatchPlugin))
+        .with_registered_plugin(
+            "skip_with_run_end_patch",
+            Arc::new(SkipWithRunEndPatchPlugin),
+        )
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin_id("skip_with_run_end_patch"),
@@ -1773,7 +1752,10 @@ async fn run_stream_checkpoint_failure_on_existing_thread_keeps_storage_unchange
         .with_agent_state_store(
             storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
         )
-        .with_registered_plugin("skip_with_run_end_patch", Arc::new(SkipWithRunEndPatchPlugin))
+        .with_registered_plugin(
+            "skip_with_run_end_patch",
+            Arc::new(SkipWithRunEndPatchPlugin),
+        )
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin_id("skip_with_run_end_patch"),
@@ -1859,8 +1841,6 @@ async fn load_agent_state_without_store_returns_not_configured() {
     let err = os.load_agent_state("t1").await.unwrap_err();
     assert!(matches!(err, AgentOsRunError::AgentStateStoreNotConfigured));
 }
-
-
 
 #[tokio::test]
 async fn prepare_run_scope_tool_registry_adds_new_tool() {
@@ -1976,12 +1956,7 @@ async fn prepare_run_scope_appends_plugins() {
             "run_scoped"
         }
 
-        async fn on_phase(
-            &self,
-            _phase: Phase,
-            _step: &mut StepContext<'_>,
-        ) {
-        }
+        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
     }
 
     let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
@@ -1991,7 +1966,10 @@ async fn prepare_run_scope_appends_plugins() {
         .build()
         .unwrap();
 
-    let resolved = os.resolve("a1").unwrap().with_plugin(Arc::new(RunScopedPlugin));
+    let resolved = os
+        .resolve("a1")
+        .unwrap()
+        .with_plugin(Arc::new(RunScopedPlugin));
 
     let prepared = os
         .prepare_run(
@@ -2009,9 +1987,17 @@ async fn prepare_run_scope_appends_plugins() {
         .await
         .unwrap();
 
-    assert!(prepared.config.plugins.iter().any(|p| p.id() == "run_scoped"));
+    assert!(prepared
+        .config
+        .plugins
+        .iter()
+        .any(|p| p.id() == "run_scoped"));
     // System plugins should still be present
-    assert!(prepared.config.plugins.iter().any(|p| p.id() == "agent_tools"));
+    assert!(prepared
+        .config
+        .plugins
+        .iter()
+        .any(|p| p.id() == "agent_tools"));
 }
 
 #[tokio::test]
@@ -2025,12 +2011,7 @@ async fn prepare_run_scope_rejects_duplicate_plugin_id() {
             "agent_tools"
         }
 
-        async fn on_phase(
-            &self,
-            _phase: Phase,
-            _step: &mut StepContext<'_>,
-        ) {
-        }
+        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
     }
 
     let storage = Arc::new(tirea_store_adapters::MemoryStore::new());

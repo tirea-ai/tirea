@@ -1,15 +1,15 @@
-use tirea_contract::thread::ThreadChangeSet;
+use serde_json::json;
+use std::sync::Arc;
 use tirea_contract::storage::{
     AgentStateReader, AgentStateStore, AgentStateStoreError, AgentStateSync, AgentStateWriter,
     VersionPrecondition,
 };
+use tirea_contract::thread::ThreadChangeSet;
 use tirea_contract::{
-    Thread, AgentStateListQuery, CheckpointReason, Message, MessageMetadata, MessageQuery, Role,
+    AgentStateListQuery, CheckpointReason, Message, MessageMetadata, MessageQuery, Role, Thread,
 };
 use tirea_state::{path, Op, Patch, TrackedPatch};
 use tirea_store_adapters::MemoryStore;
-use serde_json::json;
-use std::sync::Arc;
 
 #[tokio::test]
 async fn test_memory_storage_save_load() {
