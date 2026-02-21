@@ -2091,6 +2091,118 @@ async fn test_ai_sdk_permission_denial_emits_output_denied_without_replay() {
 }
 
 #[tokio::test]
+async fn test_ai_sdk_tool_approval_response_part_replays_backend_tool_call() {
+    let storage = Arc::new(MemoryStore::new());
+    storage
+        .save(&pending_permission_frontend_thread(
+            "th-ai-approve-part",
+            "approved-by-approval-part",
+        ))
+        .await
+        .unwrap();
+
+    let tools: HashMap<String, Arc<dyn Tool>> =
+        HashMap::from([("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>)]);
+    let os = Arc::new(make_os_with_storage_and_tools(storage.clone(), tools));
+    let app = router(AppState {
+        os,
+        read_store: storage.clone(),
+    });
+
+    let payload = json!({
+        "id": "th-ai-approve-part",
+        "runId": "resume-ai-approve-part",
+        "messages": [{
+            "role": "assistant",
+            "parts": [{
+                "type": "tool-approval-response",
+                "approvalId": "fc_perm_1",
+                "approved": true,
+                "reason": "approved via response part"
+            }]
+        }]
+    });
+    let (status, body) = post_sse_text(app, "/v1/ai-sdk/agents/test/runs", payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains(r#""type":"tool-output-available""#)
+            && body.contains(r#""toolCallId":"call_1""#),
+        "approved response-part resume should replay backend call: {body}"
+    );
+
+    let saved = storage
+        .load_agent_state("th-ai-approve-part")
+        .await
+        .unwrap()
+        .unwrap();
+    let replayed_tool = saved.messages.iter().find(|m| {
+        m.role == tirea_agentos::contracts::thread::Role::Tool
+            && m.tool_call_id.as_deref() == Some("call_1")
+            && m.content.contains("approved-by-approval-part")
+    });
+    assert!(
+        replayed_tool.is_some(),
+        "approved tool-approval-response should append replayed backend tool result"
+    );
+}
+
+#[tokio::test]
+async fn test_ai_sdk_tool_approval_response_part_denial_emits_output_denied() {
+    let storage = Arc::new(MemoryStore::new());
+    storage
+        .save(&pending_permission_frontend_thread(
+            "th-ai-deny-part",
+            "denied-by-approval-part",
+        ))
+        .await
+        .unwrap();
+
+    let tools: HashMap<String, Arc<dyn Tool>> =
+        HashMap::from([("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>)]);
+    let os = Arc::new(make_os_with_storage_and_tools(storage.clone(), tools));
+    let app = router(AppState {
+        os,
+        read_store: storage.clone(),
+    });
+
+    let payload = json!({
+        "id": "th-ai-deny-part",
+        "runId": "resume-ai-deny-part",
+        "messages": [{
+            "role": "assistant",
+            "parts": [{
+                "type": "tool-approval-response",
+                "approvalId": "fc_perm_1",
+                "approved": false,
+                "reason": "denied via response part"
+            }]
+        }]
+    });
+    let (status, body) = post_sse_text(app, "/v1/ai-sdk/agents/test/runs", payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains(r#""type":"tool-output-denied""#)
+            && body.contains(r#""toolCallId":"fc_perm_1""#),
+        "denied response-part resume should emit tool-output-denied: {body}"
+    );
+
+    let saved = storage
+        .load_agent_state("th-ai-deny-part")
+        .await
+        .unwrap()
+        .unwrap();
+    let replayed_tool = saved.messages.iter().find(|m| {
+        m.role == tirea_agentos::contracts::thread::Role::Tool
+            && m.tool_call_id.as_deref() == Some("call_1")
+            && m.content.contains("denied-by-approval-part")
+    });
+    assert!(
+        replayed_tool.is_none(),
+        "denied tool-approval-response must not replay original backend tool call"
+    );
+}
+
+#[tokio::test]
 async fn test_ai_sdk_ask_output_available_replays_with_frontend_payload() {
     let storage = Arc::new(MemoryStore::new());
     storage

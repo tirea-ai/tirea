@@ -452,6 +452,98 @@ mod tests {
     }
 
     #[test]
+    fn output_error_part_maps_to_error_response() {
+        let req: AiSdkV6RunRequest = serde_json::from_value(json!({
+            "id": "t4",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "parts": [{
+                        "type": "dynamic-tool",
+                        "toolCallId": "call_err_1",
+                        "state": "output-error",
+                        "errorText": "frontend failed"
+                    }]
+                }
+            ]
+        }))
+        .expect("messages payload should deserialize");
+
+        let responses = req.interaction_responses();
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].interaction_id, "call_err_1");
+        assert_eq!(responses[0].result["approved"], false);
+        assert_eq!(responses[0].result["error"], "frontend failed");
+    }
+
+    #[test]
+    fn approval_responded_without_approval_id_falls_back_to_tool_call_id() {
+        let req: AiSdkV6RunRequest = serde_json::from_value(json!({
+            "id": "t5",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "parts": [{
+                        "type": "tool-echo",
+                        "toolCallId": "fc_perm_fallback",
+                        "state": "approval-responded",
+                        "approval": {
+                            "approved": true
+                        }
+                    }]
+                }
+            ]
+        }))
+        .expect("messages payload should deserialize");
+
+        let responses = req.interaction_responses();
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].interaction_id, "fc_perm_fallback");
+        assert_eq!(responses[0].result["approved"], true);
+    }
+
+    #[test]
+    fn latest_interaction_response_wins_for_same_interaction_id() {
+        let req: AiSdkV6RunRequest = serde_json::from_value(json!({
+            "id": "t6",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "parts": [{
+                        "type": "tool-PermissionConfirm",
+                        "toolCallId": "fc_perm_9",
+                        "state": "approval-responded",
+                        "approval": {
+                            "id": "fc_perm_9",
+                            "approved": true
+                        }
+                    }]
+                },
+                {
+                    "role": "assistant",
+                    "parts": [{
+                        "type": "tool-PermissionConfirm",
+                        "toolCallId": "fc_perm_9",
+                        "state": "approval-responded",
+                        "approval": {
+                            "id": "fc_perm_9",
+                            "approved": false,
+                            "reason": "user changed mind"
+                        }
+                    }]
+                }
+            ]
+        }))
+        .expect("messages payload should deserialize");
+
+        let responses = req.interaction_responses();
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].interaction_id, "fc_perm_9");
+        assert_eq!(responses[0].result["approved"], false);
+        assert_eq!(responses[0].result["reason"], "user changed mind");
+    }
+
+    #[test]
     fn interaction_only_messages_generate_empty_run_messages() {
         let req: AiSdkV6RunRequest = serde_json::from_value(json!({
             "id": "thread-int-only",

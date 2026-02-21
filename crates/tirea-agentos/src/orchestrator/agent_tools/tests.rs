@@ -598,6 +598,65 @@ async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
 }
 
 #[tokio::test]
+async fn agent_run_tool_resume_injects_prompt_into_child_thread() {
+    let os = AgentOs::builder()
+        .with_registered_plugin("slow_skip", Arc::new(SlowSkipPlugin))
+        .with_agent(
+            "worker",
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
+                .with_plugin_id("slow_skip"),
+        )
+        .build()
+        .unwrap();
+    let manager = Arc::new(AgentRunManager::new());
+    let run_tool = AgentRunTool::new(os, manager.clone());
+
+    let child_thread = crate::contracts::thread::Thread::new("child-run")
+        .with_message(crate::contracts::thread::Message::user("seed"));
+    let doc = json!({
+        "agent_runs": {
+            "runs": {
+                "run-1": {
+                    "run_id": "run-1",
+                    "target_agent_id": "worker",
+                    "status": "stopped",
+                    "thread": serde_json::to_value(&child_thread).unwrap()
+                }
+            }
+        }
+    });
+    let mut fix = TestFixture::new_with_state(doc.clone());
+    fix.run_config = caller_scope_with_state(doc);
+    let resumed = run_tool
+        .execute(
+            json!({
+                "run_id":"run-1",
+                "prompt":"resume-prompt",
+                "background": false
+            }),
+            &fix.ctx_with("call-run", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resumed.status, ToolStatus::Success);
+    assert_eq!(resumed.data["status"], json!("completed"));
+
+    let resumed_thread = manager
+        .owned_record("owner-thread", "run-1")
+        .await
+        .expect("resumed run should be tracked");
+    let prompt_message = resumed_thread
+        .messages
+        .last()
+        .expect("resumed child thread should contain prompt message");
+    assert_eq!(
+        prompt_message.role,
+        crate::contracts::thread::Role::User
+    );
+    assert_eq!(prompt_message.content, "resume-prompt");
+}
+
+#[tokio::test]
 async fn agent_run_tool_resume_updates_parent_run_lineage() {
     let os = AgentOs::builder()
         .with_registered_plugin("slow_skip", Arc::new(SlowSkipPlugin))
