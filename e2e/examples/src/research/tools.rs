@@ -1,9 +1,13 @@
 use async_trait::async_trait;
+use serde_json::{json, Value};
 use tirea_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_agentos::contracts::ToolCallContext;
-use serde_json::{json, Value};
 
 use super::state::{LogEntry, ResearchState, Resource};
+
+fn state_write_error(action: &str, err: impl std::fmt::Display) -> ToolError {
+    ToolError::ExecutionFailed(format!("failed to {action}: {err}"))
+}
 
 /// Search the web for information on a research topic.
 ///
@@ -30,7 +34,11 @@ impl Tool for SearchTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let query = args["query"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'query'".into()))?;
@@ -44,7 +52,9 @@ impl Tool for SearchTool {
             level: "info".into(),
             step: "search".into(),
         });
-        state.set_logs(logs.clone());
+        state
+            .set_logs(logs.clone())
+            .map_err(|e| state_write_error("persist logs", e))?;
 
         // Mock search results
         let results = mock_search_results(query);
@@ -54,7 +64,9 @@ impl Tool for SearchTool {
             level: "info".into(),
             step: "search".into(),
         });
-        state.set_logs(logs);
+        state
+            .set_logs(logs)
+            .map_err(|e| state_write_error("persist logs", e))?;
 
         Ok(ToolResult::success(
             "search",
@@ -89,13 +101,19 @@ impl Tool for WriteReportTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let report = args["report"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'report'".into()))?;
 
         let state = ctx.state::<ResearchState>("");
-        state.set_report(report.to_string());
+        state
+            .set_report(report.to_string())
+            .map_err(|e| state_write_error("persist report", e))?;
 
         let mut logs = state.logs().unwrap_or_default();
         logs.push(LogEntry {
@@ -103,7 +121,9 @@ impl Tool for WriteReportTool {
             level: "info".into(),
             step: "write_report".into(),
         });
-        state.set_logs(logs);
+        state
+            .set_logs(logs)
+            .map_err(|e| state_write_error("persist logs", e))?;
 
         Ok(ToolResult::success(
             "write_report",
@@ -135,13 +155,19 @@ impl Tool for SetQuestionTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let question = args["question"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'question'".into()))?;
 
         let state = ctx.state::<ResearchState>("");
-        state.set_research_question(question.to_string());
+        state
+            .set_research_question(question.to_string())
+            .map_err(|e| state_write_error("persist research_question", e))?;
 
         let mut logs = state.logs().unwrap_or_default();
         logs.push(LogEntry {
@@ -149,7 +175,9 @@ impl Tool for SetQuestionTool {
             level: "info".into(),
             step: "set_question".into(),
         });
-        state.set_logs(logs);
+        state
+            .set_logs(logs)
+            .map_err(|e| state_write_error("persist logs", e))?;
 
         Ok(ToolResult::success(
             "set_research_question",
@@ -185,7 +213,11 @@ impl Tool for DeleteResourcesTool {
         .with_confirmation(true)
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let ids: Vec<&str> = args["resource_ids"]
             .as_array()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'resource_ids' array".into()))?
@@ -198,7 +230,9 @@ impl Tool for DeleteResourcesTool {
         let before = resources.len();
         resources.retain(|r| !ids.contains(&r.id.as_str()));
         let deleted = before - resources.len();
-        state.set_resources(resources);
+        state
+            .set_resources(resources)
+            .map_err(|e| state_write_error("persist resources", e))?;
 
         let mut logs = state.logs().unwrap_or_default();
         logs.push(LogEntry {
@@ -206,7 +240,9 @@ impl Tool for DeleteResourcesTool {
             level: "info".into(),
             step: "delete_resources".into(),
         });
-        state.set_logs(logs);
+        state
+            .set_logs(logs)
+            .map_err(|e| state_write_error("persist logs", e))?;
 
         Ok(ToolResult::success(
             "delete_resources",
@@ -248,7 +284,11 @@ impl Tool for ExtractResourcesTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let raw = args["resources"]
             .as_array()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'resources' array".into()))?;
@@ -265,7 +305,9 @@ impl Tool for ExtractResourcesTool {
             });
         }
 
-        state.set_resources(resources.clone());
+        state
+            .set_resources(resources.clone())
+            .map_err(|e| state_write_error("persist resources", e))?;
 
         let mut logs = state.logs().unwrap_or_default();
         logs.push(LogEntry {
@@ -273,7 +315,9 @@ impl Tool for ExtractResourcesTool {
             level: "info".into(),
             step: "extract_resources".into(),
         });
-        state.set_logs(logs);
+        state
+            .set_logs(logs)
+            .map_err(|e| state_write_error("persist logs", e))?;
 
         Ok(ToolResult::success(
             "extract_resources",

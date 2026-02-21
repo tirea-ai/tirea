@@ -5,8 +5,9 @@
 use super::interaction_response::InteractionResponsePlugin;
 use super::INTERACTION_PLUGIN_ID;
 use async_trait::async_trait;
-use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::plugin::phase::{Phase, StepContext};
+use tirea_contract::plugin::AgentPlugin;
+use tirea_contract::InteractionResponse;
 /// Unified interaction mechanism plugin.
 pub struct InteractionPlugin {
     static_response: InteractionResponsePlugin,
@@ -23,6 +24,13 @@ impl InteractionPlugin {
     /// Build combined plugin from interaction responses only.
     pub fn with_responses(approved_ids: Vec<String>, denied_ids: Vec<String>) -> Self {
         Self::new(approved_ids, denied_ids)
+    }
+
+    /// Build plugin from explicit interaction response payloads.
+    pub fn from_interaction_responses(responses: Vec<InteractionResponse>) -> Self {
+        Self {
+            static_response: InteractionResponsePlugin::from_responses(responses),
+        }
     }
 
     /// Whether this plugin should be installed for the current request.

@@ -15,7 +15,7 @@ use tirea_contract::plugin::phase::{Phase, StepContext};
 use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::runtime::control::LoopControlState;
 use tirea_contract::{Interaction, InteractionResponse};
-use tirea_state::{Patch, State, TrackedPatch};
+use tirea_state::{Patch, State, TireaError, TrackedPatch};
 
 /// Plugin that handles interaction responses from client.
 ///
@@ -125,14 +125,44 @@ impl InteractionResponsePlugin {
             .and_then(|v| serde_json::from_value::<FrontendToolInvocation>(v).ok())
     }
 
-    fn push_resolution(step: &StepContext<'_>, interaction_id: String, result: serde_json::Value) {
+    fn push_resolution(
+        step: &StepContext<'_>,
+        interaction_id: String,
+        result: serde_json::Value,
+    ) -> Result<(), String> {
         let outbox = step.ctx().state_of::<InteractionOutbox>();
-        outbox.interaction_resolutions_push(InteractionResponse::new(interaction_id, result));
+        outbox
+            .interaction_resolutions_push(InteractionResponse::new(interaction_id, result))
+            .map_err(|e| format!("failed to persist interaction resolution: {e}"))
     }
 
-    fn queue_replay_call(step: &StepContext<'_>, call: tirea_contract::thread::ToolCall) {
+    fn queue_replay_call(
+        step: &StepContext<'_>,
+        call: tirea_contract::thread::ToolCall,
+    ) -> Result<(), String> {
         let outbox = step.ctx().state_of::<InteractionOutbox>();
-        outbox.replay_tool_calls_push(call);
+        outbox
+            .replay_tool_calls_push(call)
+            .map_err(|e| format!("failed to persist replay tool call: {e}"))
+    }
+
+    fn clear_pending_interaction_state(step: &StepContext<'_>) -> Result<(), String> {
+        let state = step.state_of::<LoopControlState>();
+        if let Err(err) = state.pending_interaction_none() {
+            if !matches!(err, TireaError::PathNotFound { .. }) {
+                return Err(format!(
+                    "failed to clear loop_control.pending_interaction: {err}"
+                ));
+            }
+        }
+        if let Err(err) = state.pending_frontend_invocation_none() {
+            if !matches!(err, TireaError::PathNotFound { .. }) {
+                return Err(format!(
+                    "failed to clear loop_control.pending_frontend_invocation: {err}"
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// During RunStart, detect pending interaction and schedule replay if approved.
@@ -146,17 +176,19 @@ impl InteractionResponsePlugin {
             let pending_id = pending.id.as_str();
 
             if self.is_denied(pending_id) {
-                step.state_of::<LoopControlState>()
-                    .pending_interaction_none();
-                step.state_of::<LoopControlState>()
-                    .pending_frontend_invocation_none();
-                Self::push_resolution(
+                if let Err(err) = Self::clear_pending_interaction_state(step) {
+                    step.block(err);
+                    return;
+                }
+                if let Err(err) = Self::push_resolution(
                     step,
                     pending.id.clone(),
                     self.result_for(pending_id)
                         .cloned()
                         .unwrap_or(serde_json::Value::Bool(false)),
-                );
+                ) {
+                    step.block(err);
+                }
                 return;
             }
 
@@ -164,13 +196,16 @@ impl InteractionResponsePlugin {
                 return;
             }
 
-            Self::push_resolution(
+            if let Err(err) = Self::push_resolution(
                 step,
                 pending.id.clone(),
                 self.result_for(pending_id)
                     .cloned()
                     .unwrap_or(serde_json::Value::Bool(true)),
-            );
+            ) {
+                step.block(err);
+                return;
+            }
 
             let run_id = pending
                 .parameters
@@ -184,8 +219,19 @@ impl InteractionResponsePlugin {
                         .map(str::to_string)
                 });
             let Some(run_id) = run_id else {
-                step.state_of::<LoopControlState>()
-                    .pending_interaction_none();
+                let clear_result = {
+                    let state = step.state_of::<LoopControlState>();
+                    match state.pending_interaction_none() {
+                        Ok(()) => Ok(()),
+                        Err(TireaError::PathNotFound { .. }) => Ok(()),
+                        Err(err) => Err(format!(
+                            "failed to clear loop_control.pending_interaction: {err}"
+                        )),
+                    }
+                };
+                if let Err(err) = clear_result {
+                    step.block(err);
+                }
                 return;
             };
 
@@ -197,7 +243,9 @@ impl InteractionResponsePlugin {
                     "background": false
                 }),
             );
-            Self::queue_replay_call(step, replay_call);
+            if let Err(err) = Self::queue_replay_call(step, replay_call) {
+                step.block(err);
+            }
             return;
         }
 
@@ -210,17 +258,19 @@ impl InteractionResponsePlugin {
         let pending_id = pending_id_owned.as_str();
 
         if self.is_denied(pending_id) {
-            step.state_of::<LoopControlState>()
-                .pending_interaction_none();
-            step.state_of::<LoopControlState>()
-                .pending_frontend_invocation_none();
-            Self::push_resolution(
+            if let Err(err) = Self::clear_pending_interaction_state(step) {
+                step.block(err);
+                return;
+            }
+            if let Err(err) = Self::push_resolution(
                 step,
                 pending_id_owned.clone(),
                 self.result_for(pending_id)
                     .cloned()
                     .unwrap_or(serde_json::Value::Bool(false)),
-            );
+            ) {
+                step.block(err);
+            }
             return;
         }
 
@@ -234,13 +284,16 @@ impl InteractionResponsePlugin {
         if !is_approved && !should_continue_use_as_result {
             return;
         }
-        Self::push_resolution(
+        if let Err(err) = Self::push_resolution(
             step,
             pending_id_owned.clone(),
             result_payload
                 .clone()
                 .unwrap_or(serde_json::Value::Bool(true)),
-        );
+        ) {
+            step.block(err);
+            return;
+        }
 
         self.route_frontend_invocation(step, &invocation, result_payload.as_ref());
     }
@@ -272,7 +325,9 @@ impl InteractionResponsePlugin {
                             backend_tool_name.clone(),
                             backend_arguments.clone(),
                         );
-                        Self::queue_replay_call(step, replay_call);
+                        if let Err(err) = Self::queue_replay_call(step, replay_call) {
+                            step.block(err);
+                        }
                     }
                     InvocationOrigin::PluginInitiated { .. } => {
                         // PluginInitiated with ReplayOriginalTool is unusual but
@@ -282,7 +337,9 @@ impl InteractionResponsePlugin {
                             inv.tool_name.clone(),
                             inv.arguments.clone(),
                         );
-                        Self::queue_replay_call(step, replay_call);
+                        if let Err(err) = Self::queue_replay_call(step, replay_call) {
+                            step.block(err);
+                        }
                     }
                 }
             }
@@ -294,7 +351,9 @@ impl InteractionResponsePlugin {
                     inv.tool_name.clone(),
                     normalize_frontend_tool_result(response, &inv.arguments),
                 );
-                Self::queue_replay_call(step, replay_call);
+                if let Err(err) = Self::queue_replay_call(step, replay_call) {
+                    step.block(err);
+                }
             }
             ResponseRouting::PassToLLM => {
                 // Future: pass the result to LLM as an independent message.
@@ -304,7 +363,9 @@ impl InteractionResponsePlugin {
                     inv.tool_name.clone(),
                     normalize_frontend_tool_result(response, &inv.arguments),
                 );
-                Self::queue_replay_call(step, replay_call);
+                if let Err(err) = Self::queue_replay_call(step, replay_call) {
+                    step.block(err);
+                }
             }
         }
     }
@@ -384,20 +445,28 @@ impl AgentPlugin for InteractionResponsePlugin {
         if is_denied {
             step.confirm();
             step.block("User denied the action".to_string());
-            step.state_of::<LoopControlState>()
-                .pending_interaction_none();
-            step.state_of::<LoopControlState>()
-                .pending_frontend_invocation_none();
+            if let Err(err) = Self::clear_pending_interaction_state(step) {
+                step.block(err);
+                return;
+            }
             let resolved_id = persisted_id.unwrap_or(effective_id);
-            Self::push_resolution(step, resolved_id, serde_json::Value::Bool(false));
+            if let Err(err) =
+                Self::push_resolution(step, resolved_id, serde_json::Value::Bool(false))
+            {
+                step.block(err);
+            }
         } else if is_approved {
             step.confirm();
-            step.state_of::<LoopControlState>()
-                .pending_interaction_none();
-            step.state_of::<LoopControlState>()
-                .pending_frontend_invocation_none();
+            if let Err(err) = Self::clear_pending_interaction_state(step) {
+                step.block(err);
+                return;
+            }
             let resolved_id = persisted_id.unwrap_or(effective_id);
-            Self::push_resolution(step, resolved_id, serde_json::Value::Bool(true));
+            if let Err(err) =
+                Self::push_resolution(step, resolved_id, serde_json::Value::Bool(true))
+            {
+                step.block(err);
+            }
         }
     }
 }
@@ -420,9 +489,7 @@ mod tests {
             .unwrap_or_default()
     }
 
-    fn interaction_resolutions_from_state(
-        state: &serde_json::Value,
-    ) -> Vec<InteractionResponse> {
+    fn interaction_resolutions_from_state(state: &serde_json::Value) -> Vec<InteractionResponse> {
         state
             .get("interaction_outbox")
             .and_then(|agent| agent.get("interaction_resolutions"))

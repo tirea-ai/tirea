@@ -11,21 +11,21 @@
 //! ```
 
 use async_trait::async_trait;
-use tirea_extension_skills::{FsSkill, InMemorySkillRegistry, SkillRegistry, SkillSubsystem};
-use tirea_agent_loop::contracts::AgentEvent;
-use tirea_agent_loop::contracts::thread::Thread as ConversationAgentState;
-use tirea_agent_loop::contracts::thread::Message;
-use tirea_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
-use tirea_agent_loop::contracts::ToolCallContext;
-use tirea_agent_loop::contracts::RunContext;
-use tirea_agent_loop::runtime::loop_runner::{
-    run_loop, run_loop_stream, tool_map_from_arc, AgentConfig,
-};
-use tirea_state::State;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
+use tirea_agent_loop::contracts::thread::Message;
+use tirea_agent_loop::contracts::thread::Thread as ConversationAgentState;
+use tirea_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use tirea_agent_loop::contracts::AgentEvent;
+use tirea_agent_loop::contracts::RunContext;
+use tirea_agent_loop::contracts::ToolCallContext;
+use tirea_agent_loop::runtime::loop_runner::{
+    run_loop, run_loop_stream, tool_map_from_arc, AgentConfig,
+};
+use tirea_extension_skills::{FsSkill, InMemorySkillRegistry, SkillRegistry, SkillSubsystem};
+use tirea_state::State;
 
 // ---------------------------------------------------------------------------
 // Tools (reused from live_deepseek example, kept minimal)
@@ -121,7 +121,11 @@ impl Tool for CounterTool {
             }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let action = args["action"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'action'".to_string()))?;
@@ -148,7 +152,9 @@ impl Tool for CounterTool {
             }
         };
 
-        state.set_counter(new_value);
+        state
+            .set_counter(new_value)
+            .map_err(|e| ToolError::ExecutionFailed(format!("failed to update counter: {e}")))?;
         Ok(ToolResult::success(
             "counter",
             json!({ "previous": current, "current": new_value, "action": action }),
@@ -370,7 +376,10 @@ async fn test_multi_skill(
     let final_state = outcome.run_ctx.snapshot()?;
     println!("\nSession summary:");
     println!("  Total messages: {}", outcome.run_ctx.messages().len());
-    println!("  Total patches: {}", outcome.run_ctx.thread_patches().len());
+    println!(
+        "  Total patches: {}",
+        outcome.run_ctx.thread_patches().len()
+    );
     println!(
         "  Final state: {}",
         serde_json::to_string_pretty(&final_state)?

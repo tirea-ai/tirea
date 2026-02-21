@@ -7,24 +7,24 @@
 //! ```
 
 use async_trait::async_trait;
-use tirea_agent_loop::contracts::AgentEvent;
-use tirea_agent_loop::contracts::thread::Thread as ConversationAgentState;
-use tirea_agent_loop::contracts::thread::Message;
+use futures::StreamExt;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use tirea_agent_loop::contracts::storage::{AgentStateReader, AgentStateWriter};
+use tirea_agent_loop::contracts::thread::Message;
+use tirea_agent_loop::contracts::thread::Thread as ConversationAgentState;
 use tirea_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
-use tirea_agent_loop::contracts::ToolCallContext;
+use tirea_agent_loop::contracts::AgentEvent;
 use tirea_agent_loop::contracts::RunContext;
+use tirea_agent_loop::contracts::ToolCallContext;
 use tirea_agent_loop::runtime::loop_runner::{
     run_loop, run_loop_stream, tool_map_from_arc, AgentConfig,
 };
 use tirea_state::State;
 use tirea_store_adapters::{FileStore, MemoryStore};
-use futures::StreamExt;
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::collections::HashMap;
-use std::sync::Arc;
 
 /// A simple calculator tool for testing.
 struct CalculatorTool;
@@ -49,7 +49,11 @@ impl Tool for CalculatorTool {
         }))
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let expr = args["expression"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'expression'".to_string()))?;
@@ -131,7 +135,11 @@ impl Tool for WeatherTool {
         }))
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let city = args["city"].as_str().unwrap_or("Unknown");
         // Simulate weather data
         Ok(ToolResult::success(
@@ -177,7 +185,11 @@ impl Tool for UnreliableTool {
             }))
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let query = args["query"].as_str().unwrap_or("unknown");
         let count = self.fail_count.fetch_add(1, Ordering::SeqCst);
 
@@ -219,7 +231,11 @@ impl Tool for InfiniteLoopTool {
         )
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let component = args["component"].as_str().unwrap_or("unknown");
         // Always return "needs more checks" to trigger max_rounds
         Ok(ToolResult::success(
@@ -257,7 +273,11 @@ impl Tool for CounterTool {
             }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let action = args["action"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'action'".to_string()))?;
@@ -293,7 +313,9 @@ impl Tool for CounterTool {
         };
 
         // Update state
-        state.set_counter(new_value);
+        state
+            .set_counter(new_value)
+            .map_err(|e| ToolError::ExecutionFailed(format!("failed to update counter: {e}")))?;
 
         Ok(ToolResult::success(
             "counter",
@@ -394,8 +416,7 @@ async fn test_simple_conversation() -> Result<(), Box<dyn std::error::Error>> {
 async fn test_calculator(
     tools: &std::collections::HashMap<String, Arc<dyn Tool>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let config = AgentConfig::new("deepseek-chat")
-        .with_max_rounds(3);
+    let config = AgentConfig::new("deepseek-chat").with_max_rounds(3);
 
     let thread = ConversationAgentState::new("test-calc")
         .with_message(Message::system("You are a helpful assistant. Use the calculator tool when asked to perform calculations."))
@@ -408,7 +429,10 @@ async fn test_calculator(
     println!("User: Please calculate 15 * 7 + 23 using the calculator tool.");
     println!("Assistant: {}", response);
     println!("Messages in thread: {}", outcome.run_ctx.messages().len());
-    println!("Patches in thread: {}", outcome.run_ctx.thread_patches().len());
+    println!(
+        "Patches in thread: {}",
+        outcome.run_ctx.thread_patches().len()
+    );
 
     // Show tool calls from messages
     for msg in outcome.run_ctx.messages() {
@@ -463,8 +487,7 @@ async fn test_counter_with_state() -> Result<(), Box<dyn std::error::Error>> {
     let counter_tool: Arc<dyn Tool> = Arc::new(CounterTool);
     let tools = tool_map_from_arc([counter_tool]);
 
-    let config = AgentConfig::new("deepseek-chat")
-        .with_max_rounds(5);
+    let config = AgentConfig::new("deepseek-chat").with_max_rounds(5);
 
     // Create session with initial state
     let thread = ConversationAgentState::with_initial_state("test-counter", json!({ "counter": 0 }))
@@ -478,7 +501,10 @@ async fn test_counter_with_state() -> Result<(), Box<dyn std::error::Error>> {
     println!("User: Please increment the counter by 5, then increment it by 3 more. Tell me the final value.");
     println!("Assistant: {}", response);
     println!("Messages in thread: {}", outcome.run_ctx.messages().len());
-    println!("Patches in thread: {}", outcome.run_ctx.thread_patches().len());
+    println!(
+        "Patches in thread: {}",
+        outcome.run_ctx.thread_patches().len()
+    );
 
     // Rebuild state to see final counter value
     let final_state = outcome.run_ctx.snapshot()?;
@@ -526,7 +552,10 @@ async fn test_multi_run() -> Result<(), Box<dyn std::error::Error>> {
     let response = outcome.response.as_deref().unwrap_or_default();
     println!("Run 3 - User: Say my name backwards.");
     println!("Run 3 - Assistant: {}", response);
-    println!("Total messages in thread: {}", outcome.run_ctx.messages().len());
+    println!(
+        "Total messages in thread: {}",
+        outcome.run_ctx.messages().len()
+    );
 
     // Verify context was maintained
     let response_lower = response.to_lowercase();
@@ -543,8 +572,7 @@ async fn test_multi_run_with_tools() -> Result<(), Box<dyn std::error::Error>> {
     let counter_tool: Arc<dyn Tool> = Arc::new(CounterTool);
     let tools = tool_map_from_arc([counter_tool]);
 
-    let config = AgentConfig::new("deepseek-chat")
-        .with_max_rounds(3);
+    let config = AgentConfig::new("deepseek-chat").with_max_rounds(3);
 
     // Start with initial state
     let thread =
@@ -599,7 +627,10 @@ async fn test_multi_run_with_tools() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\nSession summary:");
     println!("  Total messages: {}", outcome.run_ctx.messages().len());
-    println!("  Total patches: {}", outcome.run_ctx.thread_patches().len());
+    println!(
+        "  Total patches: {}",
+        outcome.run_ctx.thread_patches().len()
+    );
     println!(
         "  Final counter: {} (expected: 12 = 10 + 5 - 3)",
         final_counter
@@ -621,8 +652,7 @@ async fn test_session_persistence() -> Result<(), Box<dyn std::error::Error>> {
     let counter_tool: Arc<dyn Tool> = Arc::new(CounterTool);
     let tools = tool_map_from_arc([counter_tool]);
 
-    let config = AgentConfig::new("deepseek-chat")
-        .with_max_rounds(3);
+    let config = AgentConfig::new("deepseek-chat").with_max_rounds(3);
 
     // Create a temporary directory for storage
     let temp_dir = std::env::temp_dir().join(format!("tirea-test-{}", std::process::id()));
@@ -666,7 +696,8 @@ async fn test_session_persistence() -> Result<(), Box<dyn std::error::Error>> {
     // by replaying messages from the run_ctx.
     // Since Thread persistence operations need a Thread, we build one from the
     // original thread's initial state and append messages from run_ctx.
-    let mut persist_thread = ConversationAgentState::with_initial_state("persist-test", json!({ "counter": 100 }));
+    let mut persist_thread =
+        ConversationAgentState::with_initial_state("persist-test", json!({ "counter": 100 }));
     for msg in outcome.run_ctx.messages() {
         persist_thread = persist_thread.with_message((*msg.as_ref()).clone());
     }
@@ -831,8 +862,7 @@ async fn test_max_rounds_limit() -> Result<(), Box<dyn std::error::Error>> {
     let loop_tool: Arc<dyn Tool> = Arc::new(InfiniteLoopTool);
     let tools = tool_map_from_arc([loop_tool]);
 
-    let config = AgentConfig::new("deepseek-chat")
-        .with_max_rounds(max_rounds);
+    let config = AgentConfig::new("deepseek-chat").with_max_rounds(max_rounds);
 
     let thread = ConversationAgentState::new("test-max-rounds")
         .with_message(Message::system(
@@ -867,10 +897,7 @@ async fn test_max_rounds_limit() -> Result<(), Box<dyn std::error::Error>> {
             tool_calls
         );
     } else {
-        println!(
-            "Made {} tool calls, expected <= {}",
-            tool_calls, max_rounds
-        );
+        println!("Made {} tool calls, expected <= {}", tool_calls, max_rounds);
     }
 
     Ok(())
@@ -882,8 +909,7 @@ async fn test_tool_failure_recovery() -> Result<(), Box<dyn std::error::Error>> 
     let unreliable_tool: Arc<dyn Tool> = Arc::new(UnreliableTool::new(2));
     let tools = tool_map_from_arc([unreliable_tool]);
 
-    let config = AgentConfig::new("deepseek-chat")
-        .with_max_rounds(5);
+    let config = AgentConfig::new("deepseek-chat").with_max_rounds(5);
 
     let thread = ConversationAgentState::new("test-failure-recovery")
         .with_message(Message::system(
@@ -936,8 +962,7 @@ async fn test_session_snapshot() -> Result<(), Box<dyn std::error::Error>> {
     let counter_tool: Arc<dyn Tool> = Arc::new(CounterTool);
     let tools = tool_map_from_arc([counter_tool]);
 
-    let config = AgentConfig::new("deepseek-chat")
-        .with_max_rounds(5);
+    let config = AgentConfig::new("deepseek-chat").with_max_rounds(5);
 
     // Phase 1: Create session with multiple operations
     println!("[Phase 1: Build up patches]");
@@ -961,7 +986,8 @@ async fn test_session_snapshot() -> Result<(), Box<dyn std::error::Error>> {
 
     // Phase 2: Snapshot to collapse patches - need a Thread for this
     println!("\n[Phase 2: Snapshot]");
-    let mut snapshot_thread = ConversationAgentState::with_initial_state("test-snapshot", json!({ "counter": 0 }));
+    let mut snapshot_thread =
+        ConversationAgentState::with_initial_state("test-snapshot", json!({ "counter": 0 }));
     for msg in outcome.run_ctx.messages() {
         snapshot_thread = snapshot_thread.with_message((*msg.as_ref()).clone());
     }
@@ -979,7 +1005,8 @@ async fn test_session_snapshot() -> Result<(), Box<dyn std::error::Error>> {
 
     // Phase 3: Continue after snapshot
     println!("\n[Phase 3: Continue after snapshot]");
-    let snapshot_thread = snapshot_thread.with_message(Message::user("What is the counter now? Then add 5 more."));
+    let snapshot_thread =
+        snapshot_thread.with_message(Message::user("What is the counter now? Then add 5 more."));
 
     let run_ctx = RunContext::from_thread(&snapshot_thread, tirea_contract::RunConfig::default())?;
     let outcome = run_loop(&config, tools, run_ctx, None, None).await;
@@ -1006,17 +1033,15 @@ async fn test_state_replay() -> Result<(), Box<dyn std::error::Error>> {
     let counter_tool: Arc<dyn Tool> = Arc::new(CounterTool);
     let tools = tool_map_from_arc([counter_tool]);
 
-    let config = AgentConfig::new("deepseek-chat")
-        .with_max_rounds(3);
+    let config = AgentConfig::new("deepseek-chat").with_max_rounds(3);
 
     // Build session with multiple state changes
     println!("[Building state history]");
-    let thread =
-        ConversationAgentState::with_initial_state("test-replay", json!({ "counter": 0 }))
-            .with_message(Message::system(
-                "You are a helpful assistant. Use the counter tool.",
-            ))
-            .with_message(Message::user("Set the counter to 10."));
+    let thread = ConversationAgentState::with_initial_state("test-replay", json!({ "counter": 0 }))
+        .with_message(Message::system(
+            "You are a helpful assistant. Use the counter tool.",
+        ))
+        .with_message(Message::user("Set the counter to 10."));
 
     // Run 1: Set counter to 10
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default())?;
@@ -1056,7 +1081,8 @@ async fn test_state_replay() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // For replay we need a Thread - reconstruct one
-    let mut replay_thread = ConversationAgentState::with_initial_state("test-replay", json!({ "counter": 0 }));
+    let mut replay_thread =
+        ConversationAgentState::with_initial_state("test-replay", json!({ "counter": 0 }));
     for msg in outcome.run_ctx.messages() {
         replay_thread = replay_thread.with_message((*msg.as_ref()).clone());
     }

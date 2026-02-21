@@ -1,11 +1,15 @@
 use async_trait::async_trait;
-use tirea_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult, TypedTool};
-use tirea_agentos::contracts::ToolCallContext;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tirea_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult, TypedTool};
+use tirea_agentos::contracts::ToolCallContext;
 
 use super::state::{Place, SearchProgress, TravelState, Trip};
+
+fn state_write_error(action: &str, err: impl std::fmt::Display) -> ToolError {
+    ToolError::ExecutionFailed(format!("failed to {action}: {err}"))
+}
 
 /// Add one or more trips to the travel plan.
 ///
@@ -39,7 +43,11 @@ impl Tool for AddTripTool {
             .with_confirmation(true)
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let raw_trips = args["trips"]
             .as_array()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'trips' array".into()))?;
@@ -57,7 +65,9 @@ impl Tool for AddTripTool {
             current.push(trip);
         }
 
-        state.set_trips(current.clone());
+        state
+            .set_trips(current.clone())
+            .map_err(|e| state_write_error("persist trips", e))?;
 
         Ok(ToolResult::success(
             "add_trips",
@@ -98,7 +108,11 @@ impl Tool for UpdateTripTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let updates = args["trips"]
             .as_array()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'trips' array".into()))?;
@@ -123,7 +137,9 @@ impl Tool for UpdateTripTool {
             }
         }
 
-        state.set_trips(current);
+        state
+            .set_trips(current)
+            .map_err(|e| state_write_error("persist trips", e))?;
 
         Ok(ToolResult::success(
             "update_trips",
@@ -157,7 +173,11 @@ impl Tool for DeleteTripTool {
         .with_confirmation(true)
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let ids: Vec<&str> = args["trip_ids"]
             .as_array()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'trip_ids' array".into()))?
@@ -170,12 +190,16 @@ impl Tool for DeleteTripTool {
         let before = current.len();
         current.retain(|t| !ids.contains(&t.id.as_str()));
         let deleted = before - current.len();
-        state.set_trips(current);
+        state
+            .set_trips(current)
+            .map_err(|e| state_write_error("persist trips", e))?;
 
         // Clear selection if the selected trip was deleted
         if let Ok(Some(ref sel)) = state.selected_trip_id() {
             if ids.contains(&sel.as_str()) {
-                state.set_selected_trip_id(None);
+                state
+                    .set_selected_trip_id(None)
+                    .map_err(|e| state_write_error("clear selected_trip_id", e))?;
             }
         }
 
@@ -200,9 +224,15 @@ pub struct SelectTripTool;
 impl TypedTool for SelectTripTool {
     type Args = SelectTripArgs;
 
-    fn tool_id(&self) -> &str { "select_trip" }
-    fn name(&self) -> &str { "Select Trip" }
-    fn description(&self) -> &str { "Select a trip as the currently active trip" }
+    fn tool_id(&self) -> &str {
+        "select_trip"
+    }
+    fn name(&self) -> &str {
+        "Select Trip"
+    }
+    fn description(&self) -> &str {
+        "Select a trip as the currently active trip"
+    }
 
     async fn execute(
         &self,
@@ -210,7 +240,9 @@ impl TypedTool for SelectTripTool {
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         let state = ctx.state::<TravelState>("");
-        state.set_selected_trip_id(Some(args.trip_id.clone()));
+        state
+            .set_selected_trip_id(Some(args.trip_id.clone()))
+            .map_err(|e| state_write_error("set selected_trip_id", e))?;
 
         Ok(ToolResult::success(
             "select_trip",
@@ -253,7 +285,11 @@ impl Tool for SearchPlacesTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let destination = args["destination"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'destination'".into()))?;
@@ -265,11 +301,13 @@ impl Tool for SearchPlacesTool {
         let state = ctx.state::<TravelState>("");
 
         // Emit search progress
-        state.set_search_progress(vec![SearchProgress {
-            query: format!("{} {}", category, destination),
-            status: "searching".into(),
-            results_count: 0,
-        }]);
+        state
+            .set_search_progress(vec![SearchProgress {
+                query: format!("{} {}", category, destination),
+                status: "searching".into(),
+                results_count: 0,
+            }])
+            .map_err(|e| state_write_error("set search progress", e))?;
 
         // Mock places based on destination
         let places = mock_places(destination, category);
@@ -279,14 +317,18 @@ impl Tool for SearchPlacesTool {
         if let Some(trip) = trips.iter_mut().find(|t| t.id == trip_id) {
             trip.places.extend(places.clone());
         }
-        state.set_trips(trips);
+        state
+            .set_trips(trips)
+            .map_err(|e| state_write_error("persist trips", e))?;
 
         // Update search progress to complete
-        state.set_search_progress(vec![SearchProgress {
-            query: format!("{} {}", category, destination),
-            status: "complete".into(),
-            results_count: places.len(),
-        }]);
+        state
+            .set_search_progress(vec![SearchProgress {
+                query: format!("{} {}", category, destination),
+                status: "complete".into(),
+                results_count: places.len(),
+            }])
+            .map_err(|e| state_write_error("set search progress", e))?;
 
         Ok(ToolResult::success(
             "search_for_places",

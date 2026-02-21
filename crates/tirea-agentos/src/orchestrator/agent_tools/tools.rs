@@ -18,6 +18,14 @@ fn tool_error(tool_name: &str, code: &str, message: impl Into<String>) -> ToolRe
     ToolResult::error_with_code(tool_name, code, message)
 }
 
+fn state_write_failed(tool_name: &str, err: impl std::fmt::Display) -> ToolResult {
+    tool_error(
+        tool_name,
+        "state_error",
+        format!("failed to persist delegation state: {err}"),
+    )
+}
+
 fn scope_string(scope: Option<&tirea_contract::RunConfig>, key: &str) -> Option<String> {
     scope
         .and_then(|scope: &tirea_contract::RunConfig| scope.value(key))
@@ -150,7 +158,12 @@ impl AgentRunTool {
     ) -> ToolResult {
         let thread = self.manager.owned_record(owner_thread_id, run_id).await;
         let agent = ctx.state_of::<DelegationState>();
-        agent.runs_insert(run_id.to_string(), as_delegation_record(&summary, parent_run_id, thread));
+        if let Err(err) = agent.runs_insert(
+            run_id.to_string(),
+            as_delegation_record(&summary, parent_run_id, thread),
+        ) {
+            return state_write_failed(tool_name, err);
+        }
         to_tool_result(tool_name, summary)
     }
 
@@ -205,7 +218,12 @@ impl AgentRunTool {
                 error: None,
                 agent_state: Some(thread),
             };
-            ctx.state_of::<DelegationState>().runs_insert(run_id.to_string(), running.clone());
+            if let Err(err) = ctx
+                .state_of::<DelegationState>()
+                .runs_insert(run_id.to_string(), running.clone())
+            {
+                return state_write_failed(tool_name, err);
+            }
             return to_tool_result(tool_name, as_agent_run_summary(&run_id, &running));
         }
 
@@ -236,7 +254,12 @@ impl AgentRunTool {
             .update_after_completion(&run_id, epoch, completion)
             .await
             .unwrap_or_else(|| as_agent_run_summary(&run_id, &completion_state));
-        ctx.state_of::<DelegationState>().runs_insert(run_id.to_string(), completion_state);
+        if let Err(err) = ctx
+            .state_of::<DelegationState>()
+            .runs_insert(run_id.to_string(), completion_state)
+        {
+            return state_write_failed(tool_name, err);
+        }
         to_tool_result(tool_name, summary)
     }
 }
@@ -290,7 +313,9 @@ impl Tool for AgentRunTool {
                 .await
             {
                 match existing.status {
-                    DelegationStatus::Running | DelegationStatus::Completed | DelegationStatus::Failed => {
+                    DelegationStatus::Running
+                    | DelegationStatus::Completed
+                    | DelegationStatus::Failed => {
                         let result = self
                             .persist_existing_live_summary(
                                 ctx,
@@ -322,10 +347,8 @@ impl Tool for AgentRunTool {
                             return Ok(error);
                         }
 
-                        let mut child_thread = bind_child_lineage(
-                            record.thread,
-                            Some(&owner_thread_id),
-                        );
+                        let mut child_thread =
+                            bind_child_lineage(record.thread, Some(&owner_thread_id));
                         if let Some(prompt) = optional_string(&args, "prompt") {
                             child_thread = child_thread.with_message(Message::user(prompt));
                         }
@@ -342,7 +365,13 @@ impl Tool for AgentRunTool {
                 }
             }
 
-            let Some(mut persisted) = ctx.state_of::<DelegationState>().runs().ok().unwrap_or_default().remove(&run_id) else {
+            let Some(mut persisted) = ctx
+                .state_of::<DelegationState>()
+                .runs()
+                .ok()
+                .unwrap_or_default()
+                .remove(&run_id)
+            else {
                 return Ok(tool_error(
                     tool_name,
                     "unknown_run",
@@ -353,7 +382,12 @@ impl Tool for AgentRunTool {
             let orphaned_running = persisted.status == DelegationStatus::Running;
             if orphaned_running {
                 persisted = make_orphaned_running_state(&persisted);
-                ctx.state_of::<DelegationState>().runs_insert(run_id.to_string(), persisted.clone());
+                if let Err(err) = ctx
+                    .state_of::<DelegationState>()
+                    .runs_insert(run_id.to_string(), persisted.clone())
+                {
+                    return Ok(state_write_failed(tool_name, err));
+                }
                 return Ok(to_tool_result(
                     tool_name,
                     as_agent_run_summary(&run_id, &persisted),
@@ -361,7 +395,9 @@ impl Tool for AgentRunTool {
             }
 
             match persisted.status {
-                DelegationStatus::Running | DelegationStatus::Completed | DelegationStatus::Failed => {
+                DelegationStatus::Running
+                | DelegationStatus::Completed
+                | DelegationStatus::Failed => {
                     return Ok(to_tool_result(
                         tool_name,
                         as_agent_run_summary(&run_id, &persisted),
@@ -389,10 +425,7 @@ impl Tool for AgentRunTool {
                             ))
                         }
                     };
-                    child_thread = bind_child_lineage(
-                        child_thread,
-                        Some(&owner_thread_id),
-                    );
+                    child_thread = bind_child_lineage(child_thread, Some(&owner_thread_id));
 
                     if let Some(prompt) = optional_string(&args, "prompt") {
                         child_thread = child_thread.with_message(Message::user(prompt));
@@ -446,10 +479,7 @@ impl Tool for AgentRunTool {
             crate::contracts::thread::Thread::new(thread_id)
         };
         child_thread = child_thread.with_message(Message::user(prompt));
-        child_thread = bind_child_lineage(
-            child_thread,
-            Some(&owner_thread_id),
-        );
+        child_thread = bind_child_lineage(child_thread, Some(&owner_thread_id));
 
         let launch = RunLaunch {
             run_id,
@@ -513,7 +543,11 @@ impl Tool for AgentStopTool {
             ));
         };
 
-        let mut persisted_runs = ctx.state_of::<DelegationState>().runs().ok().unwrap_or_default();
+        let mut persisted_runs = ctx
+            .state_of::<DelegationState>()
+            .runs()
+            .ok()
+            .unwrap_or_default();
         let mut tree_ids = collect_descendant_run_ids_from_state(&persisted_runs, &run_id, true);
         if tree_ids.is_empty() {
             tree_ids.push(run_id.clone());
@@ -555,7 +589,12 @@ impl Tool for AgentStopTool {
                 *run = stopped;
             }
             stopped_any = true;
-            ctx.state_of::<DelegationState>().runs_insert(id.to_string(), run.clone());
+            if let Err(err) = ctx
+                .state_of::<DelegationState>()
+                .runs_insert(id.to_string(), run.clone())
+            {
+                return Ok(state_write_failed(tool_name, err));
+            }
         }
 
         if !stopped_any {

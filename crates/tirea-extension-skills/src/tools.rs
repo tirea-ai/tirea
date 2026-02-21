@@ -5,13 +5,13 @@ use crate::{
     SkillResourceKind, SkillState, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID,
     SKILL_SCRIPT_TOOL_ID,
 };
-use tirea_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
-use tirea_contract::tool::context::ToolCallContext;
-use tirea_extension_permission::PermissionContextExt;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
 use std::sync::Arc;
+use tirea_contract::tool::context::ToolCallContext;
+use tirea_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
+use tirea_extension_permission::PermissionContextExt;
 use tracing::{debug, warn};
 
 #[derive(Clone)]
@@ -53,7 +53,11 @@ impl Tool for SkillActivateTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let key = match required_string_arg(&args, "skill", SKILL_ACTIVATE_TOOL_ID) {
             Ok(v) => v,
             Err(r) => return Ok(r),
@@ -110,9 +114,21 @@ impl Tool for SkillActivateTool {
         let state = ctx.state_of::<SkillState>();
         let active = state.active().ok().unwrap_or_default();
         if !active.iter().any(|s| s == &meta.id) {
-            state.active_push(meta.id.clone());
+            if let Err(err) = state.active_push(meta.id.clone()) {
+                return Ok(state_write_error(
+                    SKILL_ACTIVATE_TOOL_ID,
+                    "append skills.active",
+                    err,
+                ));
+            }
         }
-        state.instructions_insert(meta.id.clone(), instructions);
+        if let Err(err) = state.instructions_insert(meta.id.clone(), instructions) {
+            return Ok(state_write_error(
+                SKILL_ACTIVATE_TOOL_ID,
+                "persist skill instructions",
+                err,
+            ));
+        }
 
         let mut applied_tool_ids: Vec<String> = Vec::new();
         let mut skipped_tokens: Vec<String> = Vec::new();
@@ -153,10 +169,16 @@ impl Tool for SkillActivateTool {
 
         if !instruction_for_message.trim().is_empty() {
             let skill_state = ctx.state_of::<SkillState>();
-            skill_state.append_user_messages_insert(
+            if let Err(err) = skill_state.append_user_messages_insert(
                 ctx.call_id().to_string(),
                 vec![instruction_for_message.clone()],
-            );
+            ) {
+                return Ok(state_write_error(
+                    SKILL_ACTIVATE_TOOL_ID,
+                    "persist append_user_messages",
+                    err,
+                ));
+            }
         }
 
         let result = ToolResult {
@@ -181,7 +203,8 @@ pub struct LoadSkillResourceTool {
 
 impl std::fmt::Debug for LoadSkillResourceTool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LoadSkillResourceTool").finish_non_exhaustive()
+        f.debug_struct("LoadSkillResourceTool")
+            .finish_non_exhaustive()
     }
 }
 
@@ -214,7 +237,11 @@ impl Tool for LoadSkillResourceTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let tool_name = SKILL_LOAD_RESOURCE_TOOL_ID;
         let key = match required_string_arg(&args, "skill", tool_name) {
             Ok(v) => v,
@@ -263,7 +290,9 @@ impl Tool for LoadSkillResourceTool {
             SkillResource::Reference(mat) => {
                 let key = material_key(&meta.id, &mat.path);
                 let state = ctx.state_of::<SkillState>();
-                state.references_insert(key, mat.clone());
+                if let Err(err) = state.references_insert(key, mat.clone()) {
+                    return Ok(state_write_error(tool_name, "persist skill reference", err));
+                }
 
                 debug!(
                     call_id = %ctx.call_id(),
@@ -290,7 +319,9 @@ impl Tool for LoadSkillResourceTool {
             SkillResource::Asset(asset) => {
                 let key = material_key(&meta.id, &asset.path);
                 let state = ctx.state_of::<SkillState>();
-                state.assets_insert(key, asset.clone());
+                if let Err(err) = state.assets_insert(key, asset.clone()) {
+                    return Ok(state_write_error(tool_name, "persist skill asset", err));
+                }
 
                 debug!(
                     call_id = %ctx.call_id(),
@@ -361,7 +392,11 @@ impl Tool for SkillScriptTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let key = match required_string_arg(&args, "skill", SKILL_SCRIPT_TOOL_ID) {
             Ok(v) => v,
             Err(r) => return Ok(r),
@@ -416,7 +451,13 @@ impl Tool for SkillScriptTool {
 
         let key = material_key(&meta.id, &res.script);
         let state = ctx.state_of::<SkillState>();
-        state.scripts_insert(key, res.clone());
+        if let Err(err) = state.scripts_insert(key, res.clone()) {
+            return Ok(state_write_error(
+                SKILL_SCRIPT_TOOL_ID,
+                "persist script result",
+                err,
+            ));
+        }
 
         debug!(
             call_id = %ctx.call_id(),
@@ -534,6 +575,14 @@ fn is_obviously_invalid_relative_path(path: &str) -> bool {
 
 fn tool_error(tool_name: &str, code: &str, message: impl Into<String>) -> ToolResult {
     ToolResult::error_with_code(tool_name, code, message)
+}
+
+fn state_write_error(tool_name: &str, action: &str, err: impl std::fmt::Display) -> ToolResult {
+    tool_error(
+        tool_name,
+        "state_error",
+        format!("failed to {action}: {err}"),
+    )
 }
 
 fn map_skill_error(tool_name: &str, e: SkillError) -> ToolResult {
