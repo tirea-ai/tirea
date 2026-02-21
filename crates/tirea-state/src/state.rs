@@ -3,7 +3,7 @@
 //! The `State` trait provides a unified interface for typed access to JSON documents.
 //! It is typically implemented via the derive macro `#[derive(State)]`.
 
-use crate::{TireaResult, DocCell, Op, Patch, Path, TrackedPatch};
+use crate::{DocCell, Op, Patch, Path, TireaResult, TrackedPatch};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 
@@ -42,6 +42,17 @@ impl<'a> PatchSink<'a> {
         Self {
             ops: Some(ops),
             on_collect: Some(hook),
+        }
+    }
+
+    /// Create a child sink that shares the same collector and hook.
+    ///
+    /// Nested state refs use this so write-through behavior is preserved.
+    #[doc(hidden)]
+    pub fn child(&self) -> Self {
+        Self {
+            ops: self.ops,
+            on_collect: self.on_collect.clone(),
         }
     }
 
@@ -97,11 +108,7 @@ impl<'a> StateContext<'a> {
         let hook: CollectHook<'_> = Arc::new(|op: &Op| {
             self.doc.apply(op);
         });
-        T::state_ref(
-            self.doc,
-            base,
-            PatchSink::new_with_hook(&self.ops, hook),
-        )
+        T::state_ref(self.doc, base, PatchSink::new_with_hook(&self.ops, hook))
     }
 
     /// Get a typed state reference at the type's canonical path.
@@ -251,6 +258,31 @@ mod tests {
         let collected = ops.lock().unwrap();
         assert_eq!(collected.len(), 2);
         assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_patch_sink_child_preserves_collect_and_hook() {
+        let ops = Mutex::new(Vec::new());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_hook = seen.clone();
+        let hook = Arc::new(move |op: &Op| {
+            seen_hook.lock().unwrap().push(format!("{:?}", op));
+        });
+        let sink = PatchSink::new_with_hook(&ops, hook);
+        let child = sink.child();
+
+        child.collect(Op::set(Path::root().key("nested"), Value::from(1)));
+
+        assert_eq!(ops.lock().unwrap().len(), 1);
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "read-only sink")]
+    fn test_patch_sink_read_only_child_collect_panics() {
+        let sink = PatchSink::read_only();
+        let child = sink.child();
+        child.collect(Op::set(Path::root().key("x"), Value::from(1)));
     }
 
     #[test]

@@ -1,10 +1,10 @@
 //! Integration tests for SealedState: set-once semantics and thread-safety.
 
-use tirea_state::{SealedState, SealedStateError};
-use tirea_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::thread;
+use tirea_state::{SealedState, SealedStateError};
+use tirea_state_derive::State;
 
 // ============================================================================
 // Test state types
@@ -20,6 +20,12 @@ struct UserInfo {
 struct NestedConfig {
     timeout_ms: i64,
     retry: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, State)]
+struct EnvelopeConfig {
+    #[tirea(nested)]
+    config: NestedConfig,
 }
 
 // ============================================================================
@@ -46,6 +52,21 @@ fn test_scope_get_at_typed_read() {
     let cfg = rt.get_at::<NestedConfig>("config");
     assert_eq!(cfg.timeout_ms().unwrap(), 5000);
     assert_eq!(cfg.retry().unwrap(), true);
+}
+
+#[test]
+fn test_scope_get_nested_typed_read() {
+    let mut rt = SealedState::new();
+    rt.set(
+        "config",
+        json!({"config": {"timeout_ms": 2000, "retry": true}}),
+    )
+    .unwrap();
+
+    let env = rt.get_at::<EnvelopeConfig>("config");
+    let nested = env.config();
+    assert_eq!(nested.timeout_ms().unwrap(), 2000);
+    assert!(nested.retry().unwrap());
 }
 
 #[test]
@@ -117,6 +138,16 @@ fn test_set_sensitive_marks_only_specified_keys() {
 }
 
 #[test]
+fn test_set_sensitive_existing_key_does_not_mark_sensitive() {
+    let mut rt = SealedState::new();
+    rt.set("token", "public-token").unwrap();
+
+    let err = rt.set_sensitive("token", "secret-token").unwrap_err();
+    assert!(matches!(err, SealedStateError::AlreadySet(_)));
+    assert!(!rt.is_sensitive("token"));
+}
+
+#[test]
 fn test_clone_preserves_set_once_and_sensitivity() {
     let mut rt = SealedState::new();
     rt.set("a", 1).unwrap();
@@ -155,7 +186,10 @@ fn test_scope_error_display() {
     assert_eq!(err.to_string(), "sealed state key already set: my_key");
 
     let err = SealedStateError::SerializationError("bad json".to_string());
-    assert_eq!(err.to_string(), "sealed state serialization error: bad json");
+    assert_eq!(
+        err.to_string(),
+        "sealed state serialization error: bad json"
+    );
 }
 
 // ============================================================================

@@ -31,10 +31,11 @@ impl DocCell {
 
     /// Apply a single operation to the document in-place.
     ///
-    /// Errors from the operation are silently ignored — the op is still
-    /// recorded in the `PatchSink` ops vec for later patch extraction.
+    /// This panics if applying the operation fails. In `StateContext` write-through
+    /// flows, an invalid operation is a programming error and should fail fast.
     pub fn apply(&self, op: &Op) {
-        let _ = apply_op(&mut self.0.lock().unwrap(), op);
+        apply_op(&mut self.0.lock().unwrap(), op)
+            .expect("DocCell::apply failed while applying collected operation");
     }
 
     /// Consume the `DocCell` and return the inner value.

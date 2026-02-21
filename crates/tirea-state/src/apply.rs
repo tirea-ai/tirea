@@ -43,12 +43,16 @@ use serde_json::{Map, Value};
 /// ```
 pub fn apply_patch(doc: &Value, patch: &Patch) -> TireaResult<Value> {
     let mut result = doc.clone();
-
-    for op in patch.ops() {
-        apply_op(&mut result, op)?;
-    }
-
+    apply_patch_in_place(&mut result, patch)?;
     Ok(result)
+}
+
+/// Apply a patch directly to an existing document.
+pub(crate) fn apply_patch_in_place(doc: &mut Value, patch: &Patch) -> TireaResult<()> {
+    for op in patch.ops() {
+        apply_op(doc, op)?;
+    }
+    Ok(())
 }
 
 /// Apply multiple patches to a JSON document in sequence (pure function).
@@ -84,9 +88,11 @@ pub fn apply_patches<'a>(
     doc: &Value,
     patches: impl IntoIterator<Item = &'a Patch>,
 ) -> TireaResult<Value> {
-    patches
-        .into_iter()
-        .try_fold(doc.clone(), |acc, patch| apply_patch(&acc, patch))
+    let mut result = doc.clone();
+    for patch in patches {
+        apply_patch_in_place(&mut result, patch)?;
+    }
+    Ok(result)
 }
 
 /// Apply a single operation to a document (mutating).

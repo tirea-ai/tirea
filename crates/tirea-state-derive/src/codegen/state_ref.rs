@@ -77,7 +77,7 @@ pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
             }
 
             fn to_value(&self) -> ::serde_json::Value {
-                ::serde_json::to_value(self).unwrap_or(::serde_json::Value::Null)
+                ::serde_json::to_value(self).expect("State::to_value serialization failed")
             }
         }
     })
@@ -111,7 +111,7 @@ fn generate_read_method(field: &FieldInput) -> syn::Result<TokenStream> {
                         <#field_ty as ::tirea_state::State>::state_ref(
                             self.doc,
                             self.base.clone(),
-                            ::tirea_state::PatchSink::new(self.sink.inner()),
+                            self.sink.child(),
                         )
                     }
                 }
@@ -123,7 +123,7 @@ fn generate_read_method(field: &FieldInput) -> syn::Result<TokenStream> {
                         <#field_ty as ::tirea_state::State>::state_ref(
                             self.doc,
                             path,
-                            ::tirea_state::PatchSink::new(self.sink.inner()),
+                            self.sink.child(),
                         )
                     }
                 }
@@ -139,7 +139,7 @@ fn generate_read_method(field: &FieldInput) -> syn::Result<TokenStream> {
                     <#inner_ty as ::tirea_state::State>::state_ref(
                         self.doc,
                         path,
-                        ::tirea_state::PatchSink::new(self.sink.inner()),
+                        self.sink.child(),
                     )
                 }
 
@@ -274,7 +274,8 @@ fn generate_write_method(field: &FieldInput) -> syn::Result<TokenStream> {
                     let path = self.base.clone().key(#json_key);
                     self.sink.collect(::tirea_state::Op::Set {
                         path,
-                        value: ::serde_json::to_value(&value).unwrap_or(::serde_json::Value::Null),
+                        value: ::serde_json::to_value(&value)
+                            .expect("state setter serialization failed"),
                     });
                 }
 
@@ -297,7 +298,8 @@ fn generate_write_method(field: &FieldInput) -> syn::Result<TokenStream> {
                     let path = self.base.clone().key(#json_key);
                     self.sink.collect(::tirea_state::Op::Set {
                         path,
-                        value: ::serde_json::to_value(&value).unwrap_or(::serde_json::Value::Null),
+                        value: ::serde_json::to_value(&value)
+                            .expect("state setter serialization failed"),
                     });
                 }
 
@@ -323,7 +325,8 @@ fn generate_write_method(field: &FieldInput) -> syn::Result<TokenStream> {
                         let path = self.base.clone().key(#json_key);
                         self.sink.collect(::tirea_state::Op::Set {
                             path,
-                            value: ::serde_json::to_value(&value).unwrap_or(::serde_json::Value::Null),
+                            value: ::serde_json::to_value(&value)
+                                .expect("state setter serialization failed"),
                         });
                     }
 
@@ -332,7 +335,8 @@ fn generate_write_method(field: &FieldInput) -> syn::Result<TokenStream> {
                         let path = self.base.clone().key(#json_key);
                         self.sink.collect(::tirea_state::Op::Append {
                             path,
-                            value: ::serde_json::to_value(&value).unwrap_or(::serde_json::Value::Null),
+                            value: ::serde_json::to_value(&value)
+                                .expect("state setter serialization failed"),
                         });
                     }
                 }
@@ -343,7 +347,8 @@ fn generate_write_method(field: &FieldInput) -> syn::Result<TokenStream> {
                         let path = self.base.clone().key(#json_key);
                         self.sink.collect(::tirea_state::Op::Set {
                             path,
-                            value: ::serde_json::to_value(&value).unwrap_or(::serde_json::Value::Null),
+                            value: ::serde_json::to_value(&value)
+                                .expect("state setter serialization failed"),
                         });
                     }
 
@@ -353,7 +358,8 @@ fn generate_write_method(field: &FieldInput) -> syn::Result<TokenStream> {
                         let v: #inner_ty = value.into();
                         self.sink.collect(::tirea_state::Op::Append {
                             path,
-                            value: ::serde_json::to_value(&v).unwrap_or(::serde_json::Value::Null),
+                            value: ::serde_json::to_value(&v)
+                                .expect("state setter serialization failed"),
                         });
                     }
                 }
@@ -375,7 +381,8 @@ fn generate_write_method(field: &FieldInput) -> syn::Result<TokenStream> {
                         let v: #value_ty = value.into();
                         self.sink.collect(::tirea_state::Op::Set {
                             path,
-                            value: ::serde_json::to_value(&v).unwrap_or(::serde_json::Value::Null),
+                            value: ::serde_json::to_value(&v)
+                                .expect("state setter serialization failed"),
                         });
                     }
                 }
@@ -389,7 +396,8 @@ fn generate_write_method(field: &FieldInput) -> syn::Result<TokenStream> {
                     let path = self.base.clone().key(#json_key);
                     self.sink.collect(::tirea_state::Op::Set {
                         path,
-                        value: ::serde_json::to_value(&value).unwrap_or(::serde_json::Value::Null),
+                        value: ::serde_json::to_value(&value)
+                            .expect("state setter serialization failed"),
                     });
                 }
 
@@ -419,7 +427,8 @@ fn generate_write_method(field: &FieldInput) -> syn::Result<TokenStream> {
                         let path = self.base.clone().key(#json_key);
                         self.sink.collect(::tirea_state::Op::Set {
                             path,
-                            value: ::serde_json::to_value(&value).unwrap_or(::serde_json::Value::Null),
+                            value: ::serde_json::to_value(&value)
+                                .expect("state setter serialization failed"),
                         });
                     }
                 }

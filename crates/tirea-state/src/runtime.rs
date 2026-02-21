@@ -65,7 +65,10 @@ impl SealedState {
         value: impl serde::Serialize,
     ) -> Result<(), SealedStateError> {
         let key = key.into();
-        let obj = self.doc.as_object_mut().expect("sealed state doc is object");
+        let obj = self
+            .doc
+            .as_object_mut()
+            .expect("sealed state doc is object");
         if obj.contains_key(&key) {
             return Err(SealedStateError::AlreadySet(key));
         }
@@ -84,8 +87,9 @@ impl SealedState {
         value: impl serde::Serialize,
     ) -> Result<(), SealedStateError> {
         let key = key.into();
-        self.sensitive_keys.insert(key.clone());
-        self.put_once(key, value)
+        self.put_once(key.clone(), value)?;
+        self.sensitive_keys.insert(key);
+        Ok(())
     }
 
     /// Backward-compatible alias for `put_once`.

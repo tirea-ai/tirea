@@ -3,11 +3,11 @@
 //! These tests verify the core API design where developers use typed state references
 //! through StateContext, and all operations are automatically collected.
 
-use tirea_state::{apply_patch, DocCell, State as StateTrait, StateContext};
-use tirea_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
+use tirea_state::{apply_patch, DocCell, State as StateTrait, StateContext};
+use tirea_state_derive::State;
 
 // ============================================================================
 // Test state types
@@ -644,8 +644,16 @@ fn test_state_context_write_through_read_same_ref() {
 
     // Write then read from the same ref
     counter.set_value(42);
-    assert_eq!(counter.value().unwrap(), 42, "same-ref read must see the write");
-    assert_eq!(counter.label().unwrap(), "Original", "untouched field unchanged");
+    assert_eq!(
+        counter.value().unwrap(),
+        42,
+        "same-ref read must see the write"
+    );
+    assert_eq!(
+        counter.label().unwrap(),
+        "Original",
+        "untouched field unchanged"
+    );
 }
 
 #[test]
@@ -662,7 +670,52 @@ fn test_state_context_write_through_read_cross_ref() {
 
     // Read via second state ref — must see the writes
     let counter2 = ctx.state::<CounterState>("counter");
-    assert_eq!(counter2.value().unwrap(), 100, "cross-ref read must see the write");
+    assert_eq!(
+        counter2.value().unwrap(),
+        100,
+        "cross-ref read must see the write"
+    );
     assert_eq!(counter2.label().unwrap(), "Updated");
 }
 
+#[test]
+fn test_state_context_nested_write_through_read_same_ref() {
+    let doc = DocCell::new(json!({
+        "account": {
+            "username": "alice",
+            "profile": {"bio": "Old", "avatar_url": null}
+        }
+    }));
+    let ctx = StateContext::new(&doc);
+
+    let account = ctx.state::<AccountState>("account");
+    let profile = account.profile();
+    profile.set_bio("New");
+
+    assert_eq!(
+        profile.bio().unwrap(),
+        "New",
+        "nested same-ref read must see the write"
+    );
+}
+
+#[test]
+fn test_state_context_nested_write_through_read_cross_ref() {
+    let doc = DocCell::new(json!({
+        "account": {
+            "username": "alice",
+            "profile": {"bio": "Old", "avatar_url": null}
+        }
+    }));
+    let ctx = StateContext::new(&doc);
+
+    let account1 = ctx.state::<AccountState>("account");
+    account1.profile().set_bio("Cross Updated");
+
+    let account2 = ctx.state::<AccountState>("account");
+    assert_eq!(
+        account2.profile().bio().unwrap(),
+        "Cross Updated",
+        "nested cross-ref read must see the write"
+    );
+}

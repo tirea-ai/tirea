@@ -1,12 +1,14 @@
 //! Integration tests for State derive macro.
 #![allow(missing_docs)]
 
-use tirea_state::{apply_patch, path, TireaResult, DocCell, PatchSink, Path, State as StateTrait, StateExt};
-use tirea_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
+use tirea_state::{
+    apply_patch, path, DocCell, PatchSink, Path, State as StateTrait, StateExt, TireaResult,
+};
+use tirea_state_derive::State;
 
 /// Helper to create a state ref and collect patches for testing.
 fn with_state_ref<T: StateTrait, F>(doc: &serde_json::Value, path: Path, f: F) -> tirea_state::Patch
@@ -794,4 +796,53 @@ fn test_state_ext_at_root_equivalent_to_state_ref_root() {
     let result2 = apply_patch(&doc_value, &patch2).unwrap();
 
     assert_eq!(result1, result2);
+}
+
+// ============================================================================
+// Serialization failure behavior
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq)]
+struct FailingSerialize;
+
+impl Serialize for FailingSerialize {
+    fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        Err(serde::ser::Error::custom("intentional serialize failure"))
+    }
+}
+
+impl<'de> Deserialize<'de> for FailingSerialize {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let _ = serde_json::Value::deserialize(deserializer)?;
+        Ok(Self)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, State)]
+struct WithFailingSerialize {
+    bad: FailingSerialize,
+}
+
+#[test]
+#[should_panic(expected = "state setter serialization failed")]
+fn test_setter_serialization_failure_panics() {
+    let doc = json!({});
+    let _ = with_state_ref::<WithFailingSerialize, _>(&doc, Path::root(), |state| {
+        state.set_bad(FailingSerialize);
+    });
+}
+
+#[test]
+#[should_panic(expected = "State::to_value serialization failed")]
+fn test_to_value_serialization_failure_panics() {
+    let state = WithFailingSerialize {
+        bad: FailingSerialize,
+    };
+    let _ = state.to_value();
 }

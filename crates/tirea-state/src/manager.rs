@@ -5,7 +5,10 @@
 //! - State replay to any point in history
 //! - Batch application with conflict detection
 
-use crate::{apply_patch, TireaError, Conflict, ConflictKind, Patch, PatchExt, Path, TrackedPatch};
+use crate::apply::apply_patch_in_place;
+use crate::{
+    detect_conflicts, Conflict, ConflictKind, Patch, PatchExt, Path, TireaError, TrackedPatch,
+};
 use serde_json::Value;
 use std::sync::Arc;
 use thiserror::Error;
@@ -116,7 +119,8 @@ impl StateManager {
 
         let mut state = self.state.write().await;
         let mut history = self.history.write().await;
-        let new_state = apply_patch(&state, patch.patch())?;
+        let mut new_state = state.clone();
+        apply_patch_in_place(&mut new_state, patch.patch())?;
         *state = new_state;
         history.push(patch);
 
@@ -157,7 +161,7 @@ impl StateManager {
 
         for patch in &patches {
             total_ops += patch.patch().len();
-            new_state = apply_patch(&new_state, patch.patch())?;
+            apply_patch_in_place(&mut new_state, patch.patch())?;
         }
         *state = new_state;
         let patches_count = patches.len();
@@ -177,7 +181,8 @@ impl StateManager {
     /// Useful for validation, dry-runs, or showing users what changes would occur.
     pub async fn preview_patch(&self, patch: &Patch) -> Result<Value, StateError> {
         let state = self.state.read().await;
-        let preview = apply_patch(&state, patch)?;
+        let mut preview = state.clone();
+        apply_patch_in_place(&mut preview, patch)?;
         Ok(preview)
     }
 
@@ -208,7 +213,7 @@ impl StateManager {
 
         let mut state = self.initial.read().await.clone();
         for patch in history.iter().take(index + 1) {
-            state = apply_patch(&state, patch.patch())?;
+            apply_patch_in_place(&mut state, patch.patch())?;
         }
 
         Ok(state)
@@ -257,7 +262,7 @@ impl StateManager {
         // Compute the new initial state by applying the patches to be removed
         let mut new_initial = self.initial.read().await.clone();
         for patch in history.iter().take(to_remove) {
-            new_initial = apply_patch(&new_initial, patch.patch())?;
+            apply_patch_in_place(&mut new_initial, patch.patch())?;
         }
 
         // Update initial state and remove old patches
@@ -274,11 +279,14 @@ impl StateManager {
 }
 
 fn first_batch_conflict(patches: &[TrackedPatch]) -> Option<(usize, usize, Conflict)> {
-    for (left_idx, left_patch) in patches.iter().enumerate() {
-        for (right_idx, right_patch) in patches.iter().enumerate().skip(left_idx + 1) {
-            if let Some(conflict) = left_patch
-                .patch()
-                .conflicts_with(right_patch.patch())
+    let touched: Vec<_> = patches
+        .iter()
+        .map(|patch| patch.patch().touched(false))
+        .collect();
+
+    for left_idx in 0..patches.len() {
+        for right_idx in (left_idx + 1)..patches.len() {
+            if let Some(conflict) = detect_conflicts(&touched[left_idx], &touched[right_idx])
                 .into_iter()
                 .next()
             {
