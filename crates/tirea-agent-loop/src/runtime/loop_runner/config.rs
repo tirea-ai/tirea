@@ -2,9 +2,9 @@ use super::tool_exec::{ParallelToolExecutor, SequentialToolExecutor};
 use super::AgentLoopError;
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::{LlmExecutor, StopPolicy, ToolExecutor};
-use crate::contracts::StopConditionSpec;
-use crate::contracts::RunContext;
 use crate::contracts::tool::{Tool, ToolDescriptor};
+use crate::contracts::RunContext;
+use crate::contracts::StopConditionSpec;
 use async_trait::async_trait;
 use genai::chat::ChatOptions;
 use genai::Client;
@@ -190,6 +190,7 @@ impl Default for AgentConfig {
             chat_options: Some(
                 ChatOptions::default()
                     .with_capture_usage(true)
+                    .with_capture_reasoning_content(true)
                     .with_capture_tool_calls(true),
             ),
             fallback_models: Vec::new(),

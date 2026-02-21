@@ -1,7 +1,6 @@
 use crate::event::interaction::Interaction;
-use crate::tool::contract::ToolResult;
 use crate::event::termination::TerminationReason;
-use tirea_state::TrackedPatch;
+use crate::tool::contract::ToolResult;
 use genai::chat::Usage;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -9,6 +8,7 @@ use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
+use tirea_state::TrackedPatch;
 
 /// Agent loop events for streaming execution.
 #[derive(Debug, Clone)]
@@ -30,6 +30,10 @@ pub enum AgentEvent {
 
     /// LLM text delta.
     TextDelta { delta: String },
+    /// LLM reasoning delta.
+    ReasoningDelta { delta: String },
+    /// Opaque reasoning signature/token delta from provider.
+    ReasoningEncryptedValue { encrypted_value: String },
 
     /// Tool call started.
     ToolCallStart { id: String, name: String },
@@ -119,6 +123,8 @@ impl AgentEvent {
             Self::RunStart { .. } => AgentEventType::RunStart,
             Self::RunFinish { .. } => AgentEventType::RunFinish,
             Self::TextDelta { .. } => AgentEventType::TextDelta,
+            Self::ReasoningDelta { .. } => AgentEventType::ReasoningDelta,
+            Self::ReasoningEncryptedValue { .. } => AgentEventType::ReasoningEncryptedValue,
             Self::ToolCallStart { .. } => AgentEventType::ToolCallStart,
             Self::ToolCallDelta { .. } => AgentEventType::ToolCallDelta,
             Self::ToolCallReady { .. } => AgentEventType::ToolCallReady,
@@ -145,6 +151,8 @@ enum AgentEventType {
     RunStart,
     RunFinish,
     TextDelta,
+    ReasoningDelta,
+    ReasoningEncryptedValue,
     ToolCallStart,
     ToolCallDelta,
     ToolCallReady,
@@ -283,6 +291,16 @@ struct RunFinishData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TextDeltaData {
     delta: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ReasoningDeltaData {
+    delta: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ReasoningEncryptedValueData {
+    encrypted_value: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -472,6 +490,30 @@ impl Serialize for AgentEvent {
                 step_id: meta_step_id(),
                 data: to_data_value(&TextDeltaData {
                     delta: delta.clone(),
+                })
+                .map_err(serde::ser::Error::custom)?,
+            },
+            Self::ReasoningDelta { delta } => EventEnvelope {
+                event_type: AgentEventType::ReasoningDelta,
+                run_id: meta_run_id(),
+                thread_id: meta_thread_id(),
+                seq: meta_seq(),
+                timestamp_ms: meta_timestamp_ms(),
+                step_id: meta_step_id(),
+                data: to_data_value(&ReasoningDeltaData {
+                    delta: delta.clone(),
+                })
+                .map_err(serde::ser::Error::custom)?,
+            },
+            Self::ReasoningEncryptedValue { encrypted_value } => EventEnvelope {
+                event_type: AgentEventType::ReasoningEncryptedValue,
+                run_id: meta_run_id(),
+                thread_id: meta_thread_id(),
+                seq: meta_seq(),
+                timestamp_ms: meta_timestamp_ms(),
+                step_id: meta_step_id(),
+                data: to_data_value(&ReasoningEncryptedValueData {
+                    encrypted_value: encrypted_value.clone(),
                 })
                 .map_err(serde::ser::Error::custom)?,
             },
@@ -783,6 +825,16 @@ impl<'de> Deserialize<'de> for AgentEvent {
                 let data: TextDeltaData = from_data_value(envelope.data)?;
                 Ok(Self::TextDelta { delta: data.delta })
             }
+            AgentEventType::ReasoningDelta => {
+                let data: ReasoningDeltaData = from_data_value(envelope.data)?;
+                Ok(Self::ReasoningDelta { delta: data.delta })
+            }
+            AgentEventType::ReasoningEncryptedValue => {
+                let data: ReasoningEncryptedValueData = from_data_value(envelope.data)?;
+                Ok(Self::ReasoningEncryptedValue {
+                    encrypted_value: data.encrypted_value,
+                })
+            }
             AgentEventType::ToolCallStart => {
                 let data: ToolCallStartData = from_data_value(envelope.data)?;
                 Ok(Self::ToolCallStart {
@@ -888,5 +940,34 @@ impl<'de> Deserialize<'de> for AgentEvent {
                 })
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reasoning_delta_roundtrip() {
+        let event = AgentEvent::ReasoningDelta {
+            delta: "think".to_string(),
+        };
+        let raw = serde_json::to_string(&event).expect("serialize reasoning delta");
+        let restored: AgentEvent = serde_json::from_str(&raw).expect("deserialize reasoning delta");
+        assert!(matches!(restored, AgentEvent::ReasoningDelta { delta } if delta == "think"));
+    }
+
+    #[test]
+    fn reasoning_encrypted_value_roundtrip() {
+        let event = AgentEvent::ReasoningEncryptedValue {
+            encrypted_value: "opaque".to_string(),
+        };
+        let raw = serde_json::to_string(&event).expect("serialize reasoning encrypted value");
+        let restored: AgentEvent =
+            serde_json::from_str(&raw).expect("deserialize reasoning encrypted value");
+        assert!(matches!(
+            restored,
+            AgentEvent::ReasoningEncryptedValue { encrypted_value } if encrypted_value == "opaque"
+        ));
     }
 }

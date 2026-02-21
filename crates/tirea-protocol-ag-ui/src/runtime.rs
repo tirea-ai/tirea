@@ -18,11 +18,36 @@ use tirea_extension_interaction::InteractionPlugin;
 
 use crate::{build_context_addendum, RunAgentRequest};
 
+/// Run-config key carrying AG-UI request `config`.
+pub const AGUI_CONFIG_KEY: &str = "agui_config";
+/// Run-config key carrying AG-UI request `forwardedProps`.
+pub const AGUI_FORWARDED_PROPS_KEY: &str = "agui_forwarded_props";
+
 /// Apply AG-UI–specific extensions to a [`ResolvedRun`].
 ///
 /// Injects frontend tool stubs, pending-interaction plugins, context
 /// injection, and interaction-response replay wiring.
 pub fn apply_agui_extensions(resolved: &mut ResolvedRun, request: &RunAgentRequest) {
+    if let Some(model) = request.model.as_ref().filter(|m| !m.trim().is_empty()) {
+        resolved.config.model = model.clone();
+    }
+    if let Some(system_prompt) = request
+        .system_prompt
+        .as_ref()
+        .filter(|prompt| !prompt.trim().is_empty())
+    {
+        resolved.config.system_prompt = system_prompt.clone();
+    }
+    if let Some(config) = request.config.clone() {
+        apply_agui_chat_options_overrides(resolved, &config);
+        let _ = resolved.run_config.set(AGUI_CONFIG_KEY, config);
+    }
+    if let Some(forwarded_props) = request.forwarded_props.clone() {
+        let _ = resolved
+            .run_config
+            .set(AGUI_FORWARDED_PROPS_KEY, forwarded_props);
+    }
+
     let frontend_defs = request.frontend_tools();
     let frontend_tool_names: HashSet<String> =
         frontend_defs.iter().map(|tool| tool.name.clone()).collect();
@@ -59,6 +84,55 @@ pub fn apply_agui_extensions(resolved: &mut ResolvedRun, request: &RunAgentReque
     if interaction_plugin.is_active() {
         resolved.config.plugins.push(Arc::new(interaction_plugin));
     }
+}
+
+fn apply_agui_chat_options_overrides(resolved: &mut ResolvedRun, config: &Value) {
+    let mut chat_options = resolved.config.chat_options.clone().unwrap_or_default();
+    let mut changed = false;
+
+    if let Some(map) = config.as_object() {
+        if let Some(value) = get_bool(map, "captureReasoningContent", "capture_reasoning_content") {
+            chat_options.capture_reasoning_content = Some(value);
+            changed = true;
+        }
+        if let Some(value) = get_bool(
+            map,
+            "normalizeReasoningContent",
+            "normalize_reasoning_content",
+        ) {
+            chat_options.normalize_reasoning_content = Some(value);
+            changed = true;
+        }
+    }
+
+    if let Some(map) = config
+        .get("chatOptions")
+        .and_then(Value::as_object)
+        .or_else(|| config.get("chat_options").and_then(Value::as_object))
+    {
+        if let Some(value) = get_bool(map, "captureReasoningContent", "capture_reasoning_content") {
+            chat_options.capture_reasoning_content = Some(value);
+            changed = true;
+        }
+        if let Some(value) = get_bool(
+            map,
+            "normalizeReasoningContent",
+            "normalize_reasoning_content",
+        ) {
+            chat_options.normalize_reasoning_content = Some(value);
+            changed = true;
+        }
+    }
+
+    if changed {
+        resolved.config.chat_options = Some(chat_options);
+    }
+}
+
+fn get_bool(map: &serde_json::Map<String, Value>, primary: &str, alias: &str) -> Option<bool> {
+    map.get(primary)
+        .or_else(|| map.get(alias))
+        .and_then(Value::as_bool)
 }
 
 /// Runtime-only frontend tool descriptor stub.
@@ -222,6 +296,7 @@ mod tests {
             model: None,
             system_prompt: None,
             config: None,
+            forwarded_props: None,
         };
 
         let mut resolved = empty_resolved();
@@ -254,6 +329,7 @@ mod tests {
             model: None,
             system_prompt: None,
             config: None,
+            forwarded_props: None,
         };
 
         let mut resolved = empty_resolved();
@@ -295,6 +371,7 @@ mod tests {
             model: None,
             system_prompt: None,
             config: None,
+            forwarded_props: None,
         };
 
         let mut resolved = empty_resolved();
@@ -326,6 +403,7 @@ mod tests {
             model: None,
             system_prompt: None,
             config: None,
+            forwarded_props: None,
         };
 
         let mut resolved = empty_resolved();
@@ -353,6 +431,7 @@ mod tests {
             model: None,
             system_prompt: None,
             config: None,
+            forwarded_props: None,
         };
 
         let mut resolved = empty_resolved();
@@ -435,6 +514,7 @@ mod tests {
             model: None,
             system_prompt: None,
             config: None,
+            forwarded_props: None,
         };
 
         let mut resolved = empty_resolved();
@@ -462,6 +542,7 @@ mod tests {
             model: None,
             system_prompt: None,
             config: None,
+            forwarded_props: None,
         };
 
         let mut resolved = empty_resolved();
@@ -500,5 +581,93 @@ mod tests {
             .plugins
             .iter()
             .any(|p| p.id() == "agui_context_injection"));
+    }
+
+    #[test]
+    fn applies_request_model_and_system_prompt_overrides() {
+        let request = RunAgentRequest::new("t1", "r1")
+            .with_message(AGUIMessage::user("hello"))
+            .with_model("gpt-4.1")
+            .with_system_prompt("You are precise.");
+
+        let mut resolved = empty_resolved();
+        resolved.config.model = "base-model".to_string();
+        resolved.config.system_prompt = "base-prompt".to_string();
+
+        apply_agui_extensions(&mut resolved, &request);
+
+        assert_eq!(resolved.config.model, "gpt-4.1");
+        assert_eq!(resolved.config.system_prompt, "You are precise.");
+    }
+
+    #[test]
+    fn writes_config_and_forwarded_props_into_run_config() {
+        let request = RunAgentRequest::new("t1", "r1")
+            .with_message(AGUIMessage::user("hello"))
+            .with_state(json!({"k":"v"}))
+            .with_forwarded_props(json!({"session":"abc"}));
+        let mut request = request;
+        request.config = Some(json!({"temperature": 0.2}));
+
+        let mut resolved = empty_resolved();
+        apply_agui_extensions(&mut resolved, &request);
+
+        assert_eq!(
+            resolved.run_config.value(AGUI_CONFIG_KEY),
+            Some(&json!({"temperature": 0.2}))
+        );
+        assert_eq!(
+            resolved.run_config.value(AGUI_FORWARDED_PROPS_KEY),
+            Some(&json!({"session":"abc"}))
+        );
+    }
+
+    #[test]
+    fn applies_chat_options_overrides_from_agui_config() {
+        let mut request = RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("hello"));
+        request.config = Some(json!({
+            "captureReasoningContent": true,
+            "normalizeReasoningContent": true,
+            "reasoningEffort": "high"
+        }));
+
+        let mut resolved = empty_resolved();
+        apply_agui_extensions(&mut resolved, &request);
+
+        let options = resolved
+            .config
+            .chat_options
+            .expect("chat options should exist");
+        assert_eq!(options.capture_reasoning_content, Some(true));
+        assert_eq!(options.normalize_reasoning_content, Some(true));
+        assert_eq!(
+            resolved.run_config.value(AGUI_CONFIG_KEY),
+            Some(&json!({
+                "captureReasoningContent": true,
+                "normalizeReasoningContent": true,
+                "reasoningEffort": "high"
+            }))
+        );
+    }
+
+    #[test]
+    fn applies_nested_chat_options_overrides_from_agui_config() {
+        let mut request = RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("hello"));
+        request.config = Some(json!({
+            "chat_options": {
+                "capture_reasoning_content": false,
+                "reasoning_effort": 256
+            }
+        }));
+
+        let mut resolved = empty_resolved();
+        apply_agui_extensions(&mut resolved, &request);
+
+        let options = resolved
+            .config
+            .chat_options
+            .expect("chat options should exist");
+        assert_eq!(options.capture_reasoning_content, Some(false));
+        assert_eq!(options.normalize_reasoning_content, None);
     }
 }

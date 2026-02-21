@@ -1,5 +1,5 @@
-use crate::contracts::StopConditionSpec;
 use crate::contracts::runtime::{StopPolicy, ToolExecutor};
+use crate::contracts::StopConditionSpec;
 use crate::runtime::loop_runner::{
     AgentConfig, LlmRetryPolicy, ParallelToolExecutor, SequentialToolExecutor,
 };
@@ -62,6 +62,7 @@ impl Default for AgentDefinition {
             chat_options: Some(
                 ChatOptions::default()
                     .with_capture_usage(true)
+                    .with_capture_reasoning_content(true)
                     .with_capture_tool_calls(true),
             ),
             fallback_models: Vec::new(),

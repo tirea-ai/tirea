@@ -9,11 +9,11 @@
 //! - `tirea_protocol_ai_sdk_v6::AiSdkEncoder::on_agent_event()`: AI SDK v6 events
 
 use crate::contracts::thread::ToolCall;
-use tirea_contract::StreamResult;
 use genai::chat::{ChatStreamEvent, Usage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use tirea_contract::StreamResult;
 
 /// Partial tool call being collected during streaming.
 #[derive(Debug, Clone)]
@@ -51,6 +51,18 @@ impl StreamCollector {
                 if !chunk.content.is_empty() {
                     self.text.push_str(&chunk.content);
                     return Some(StreamOutput::TextDelta(chunk.content));
+                }
+                None
+            }
+            ChatStreamEvent::ReasoningChunk(chunk) => {
+                if !chunk.content.is_empty() {
+                    return Some(StreamOutput::ReasoningDelta(chunk.content));
+                }
+                None
+            }
+            ChatStreamEvent::ThoughtSignatureChunk(chunk) => {
+                if !chunk.content.is_empty() {
+                    return Some(StreamOutput::ReasoningEncryptedValue(chunk.content));
                 }
                 None
             }
@@ -196,6 +208,10 @@ impl StreamCollector {
 pub enum StreamOutput {
     /// Text content delta.
     TextDelta(String),
+    /// Reasoning content delta.
+    ReasoningDelta(String),
+    /// Opaque reasoning token/signature delta.
+    ReasoningEncryptedValue(String),
     /// Tool call started with name.
     ToolCallStart { id: String, name: String },
     /// Tool call arguments delta.
@@ -205,9 +221,9 @@ pub enum StreamOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contracts::tool::ToolResult;
     use crate::contracts::AgentEvent;
     use crate::contracts::TerminationReason;
-    use crate::contracts::tool::ToolResult;
     use serde_json::json;
 
     #[test]
@@ -298,6 +314,18 @@ mod tests {
             }
             _ => panic!("Expected ToolCallDelta"),
         }
+
+        let reasoning_delta = StreamOutput::ReasoningDelta("analysis".to_string());
+        match reasoning_delta {
+            StreamOutput::ReasoningDelta(s) => assert_eq!(s, "analysis"),
+            _ => panic!("Expected ReasoningDelta"),
+        }
+
+        let reasoning_token = StreamOutput::ReasoningEncryptedValue("opaque".to_string());
+        match reasoning_token {
+            StreamOutput::ReasoningEncryptedValue(s) => assert_eq!(s, "opaque"),
+            _ => panic!("Expected ReasoningEncryptedValue"),
+        }
     }
 
     #[test]
@@ -309,6 +337,14 @@ mod tests {
         match event {
             AgentEvent::TextDelta { delta } => assert_eq!(delta, "Hello"),
             _ => panic!("Expected TextDelta"),
+        }
+
+        let event = AgentEvent::ReasoningDelta {
+            delta: "thinking".to_string(),
+        };
+        match event {
+            AgentEvent::ReasoningDelta { delta } => assert_eq!(delta, "thinking"),
+            _ => panic!("Expected ReasoningDelta"),
         }
 
         // Test ToolCallStart
@@ -541,6 +577,38 @@ mod tests {
         }
 
         assert_eq!(collector.text(), "Hello ");
+    }
+
+    #[test]
+    fn test_stream_collector_process_reasoning_chunk() {
+        let mut collector = StreamCollector::new();
+
+        let chunk = ChatStreamEvent::ReasoningChunk(StreamChunk {
+            content: "chain".to_string(),
+        });
+        let output = collector.process(chunk);
+
+        if let Some(StreamOutput::ReasoningDelta(delta)) = output {
+            assert_eq!(delta, "chain");
+        } else {
+            panic!("Expected ReasoningDelta");
+        }
+    }
+
+    #[test]
+    fn test_stream_collector_process_thought_signature_chunk() {
+        let mut collector = StreamCollector::new();
+
+        let chunk = ChatStreamEvent::ThoughtSignatureChunk(StreamChunk {
+            content: "opaque-token".to_string(),
+        });
+        let output = collector.process(chunk);
+
+        if let Some(StreamOutput::ReasoningEncryptedValue(value)) = output {
+            assert_eq!(value, "opaque-token");
+        } else {
+            panic!("Expected ReasoningEncryptedValue");
+        }
     }
 
     #[test]

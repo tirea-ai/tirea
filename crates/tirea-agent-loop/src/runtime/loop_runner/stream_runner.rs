@@ -64,9 +64,16 @@ async fn drain_run_start_outbox_and_replay(
 
         // Preserve reminder emission semantics for replayed tool calls.
         if !replay_result.reminders.is_empty() {
-            let msgs: Vec<Arc<Message>> = replay_result.reminders.iter().map(|reminder| {
-                Arc::new(Message::internal_system(format!("<system-reminder>{}</system-reminder>", reminder)))
-            }).collect();
+            let msgs: Vec<Arc<Message>> = replay_result
+                .reminders
+                .iter()
+                .map(|reminder| {
+                    Arc::new(Message::internal_system(format!(
+                        "<system-reminder>{}</system-reminder>",
+                        reminder
+                    )))
+                })
+                .collect();
             run_ctx.add_messages(msgs);
         }
 
@@ -96,8 +103,11 @@ async fn drain_run_start_outbox_and_replay(
                     tool_call.id
                 )
             })?;
-            let patch =
-                set_agent_pending_interaction(&state, new_interaction.clone(), new_frontend_invocation.clone());
+            let patch = set_agent_pending_interaction(
+                &state,
+                new_interaction.clone(),
+                new_frontend_invocation.clone(),
+            );
             if !patch.patch().is_empty() {
                 run_ctx.add_thread_patch(patch);
             }
@@ -235,6 +245,8 @@ fn event_type_name(event: &AgentEvent) -> &'static str {
         AgentEvent::RunStart { .. } => "run_start",
         AgentEvent::RunFinish { .. } => "run_finish",
         AgentEvent::TextDelta { .. } => "text_delta",
+        AgentEvent::ReasoningDelta { .. } => "reasoning_delta",
+        AgentEvent::ReasoningEncryptedValue { .. } => "reasoning_encrypted_value",
         AgentEvent::ToolCallStart { .. } => "tool_call_start",
         AgentEvent::ToolCallDelta { .. } => "tool_call_delta",
         AgentEvent::ToolCallReady { .. } => "tool_call_ready",
@@ -556,6 +568,12 @@ pub(super) fn run_loop_stream_impl(
                             match output {
                                 crate::runtime::streaming::StreamOutput::TextDelta(delta) => {
                                     yield emitter.emit_existing(AgentEvent::TextDelta { delta });
+                                }
+                                crate::runtime::streaming::StreamOutput::ReasoningDelta(delta) => {
+                                    yield emitter.emit_existing(AgentEvent::ReasoningDelta { delta });
+                                }
+                                crate::runtime::streaming::StreamOutput::ReasoningEncryptedValue(encrypted_value) => {
+                                    yield emitter.emit_existing(AgentEvent::ReasoningEncryptedValue { encrypted_value });
                                 }
                                 crate::runtime::streaming::StreamOutput::ToolCallStart { id, name } => {
                                     yield emitter.emit_existing(AgentEvent::ToolCallStart { id, name });

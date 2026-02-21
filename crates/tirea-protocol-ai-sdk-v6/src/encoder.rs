@@ -1,8 +1,7 @@
 use super::UIStreamEvent;
 use serde_json::Value;
 use std::collections::HashSet;
-use tirea_contract::{AgentEvent, StopReason, TerminationReason};
-use tracing::warn;
+use tirea_contract::{AgentEvent, Interaction, StopReason, TerminationReason};
 
 /// Data event name for a full state snapshot payload.
 pub const DATA_EVENT_STATE_SNAPSHOT: &str = "state-snapshot";
@@ -14,12 +13,6 @@ pub const DATA_EVENT_MESSAGES_SNAPSHOT: &str = "messages-snapshot";
 pub const DATA_EVENT_ACTIVITY_SNAPSHOT: &str = "activity-snapshot";
 /// Data event name for activity patch payload.
 pub const DATA_EVENT_ACTIVITY_DELTA: &str = "activity-delta";
-/// Data event name for pending interaction payload.
-pub const DATA_EVENT_INTERACTION: &str = "interaction";
-/// Data event name for interaction-requested payload.
-pub const DATA_EVENT_INTERACTION_REQUESTED: &str = "interaction-requested";
-/// Data event name for interaction-resolved payload.
-pub const DATA_EVENT_INTERACTION_RESOLVED: &str = "interaction-resolved";
 /// Data event name for inference-complete payload (token usage).
 pub const DATA_EVENT_INFERENCE_COMPLETE: &str = "inference-complete";
 
@@ -134,6 +127,8 @@ impl AiSdkEncoder {
                 events.push(UIStreamEvent::text_delta(self.text_id(), delta));
                 events
             }
+            AgentEvent::ReasoningDelta { .. } => Vec::new(),
+            AgentEvent::ReasoningEncryptedValue { .. } => Vec::new(),
 
             AgentEvent::ToolCallStart { id, name } => {
                 let mut events = Vec::new();
@@ -151,11 +146,15 @@ impl AiSdkEncoder {
                 name,
                 arguments,
             } => {
-                vec![UIStreamEvent::tool_input_available(
+                let mut events = vec![UIStreamEvent::tool_input_available(
                     id,
                     name,
                     arguments.clone(),
-                )]
+                )];
+                if Self::is_permission_confirmation_tool(name) {
+                    events.push(UIStreamEvent::tool_approval_request(id.clone(), id.clone()));
+                }
+                events
             }
             AgentEvent::ToolCallDone { id, result, .. } => {
                 vec![UIStreamEvent::tool_output_available(id, result.to_json())]
@@ -263,47 +262,14 @@ impl AiSdkEncoder {
                 events.push(UIStreamEvent::data(DATA_EVENT_ACTIVITY_DELTA, payload));
                 events
             }
-            AgentEvent::Pending { interaction } => {
-                let payload = match serde_json::to_value(interaction) {
-                    Ok(payload) => payload,
-                    Err(err) => {
-                        warn!(error = %err, interaction_id = %interaction.id, "failed to serialize pending interaction for AI SDK");
-                        serde_json::json!({
-                            "id": interaction.id,
-                            "error": "failed to serialize interaction",
-                        })
-                    }
-                };
-                vec![UIStreamEvent::data(DATA_EVENT_INTERACTION, payload)]
-            }
+            AgentEvent::Pending { .. } => Vec::new(),
             AgentEvent::InteractionRequested { interaction } => {
-                let payload = match serde_json::to_value(interaction) {
-                    Ok(payload) => payload,
-                    Err(err) => {
-                        warn!(error = %err, interaction_id = %interaction.id, "failed to serialize interaction-requested event for AI SDK");
-                        serde_json::json!({
-                            "id": interaction.id,
-                            "error": "failed to serialize interaction",
-                        })
-                    }
-                };
-                vec![UIStreamEvent::data(
-                    DATA_EVENT_INTERACTION_REQUESTED,
-                    payload,
-                )]
+                self.map_interaction_requested(interaction)
             }
             AgentEvent::InteractionResolved {
                 interaction_id,
                 result,
-            } => {
-                vec![UIStreamEvent::data(
-                    DATA_EVENT_INTERACTION_RESOLVED,
-                    serde_json::json!({
-                        "interactionId": interaction_id,
-                        "result": result,
-                    }),
-                )]
-            }
+            } => self.map_interaction_resolved(interaction_id, result),
         }
     }
 
@@ -401,6 +367,46 @@ impl AiSdkEncoder {
         }
 
         events
+    }
+
+    fn map_interaction_requested(&self, interaction: &Interaction) -> Vec<UIStreamEvent> {
+        let tool_name = interaction
+            .action
+            .strip_prefix("tool:")
+            .unwrap_or(interaction.action.as_str())
+            .to_string();
+        let mut events = vec![
+            UIStreamEvent::tool_input_start(interaction.id.clone(), tool_name.clone()),
+            UIStreamEvent::tool_input_available(
+                interaction.id.clone(),
+                tool_name.clone(),
+                interaction.parameters.clone(),
+            ),
+        ];
+        if Self::is_permission_confirmation_tool(&tool_name) {
+            events.push(UIStreamEvent::tool_approval_request(
+                interaction.id.clone(),
+                interaction.id.clone(),
+            ));
+        }
+        events
+    }
+
+    fn map_interaction_resolved(&self, interaction_id: &str, result: &Value) -> Vec<UIStreamEvent> {
+        if let Some(err) = result.get("error").and_then(Value::as_str) {
+            return vec![UIStreamEvent::tool_output_error(interaction_id, err)];
+        }
+        if tirea_contract::InteractionResponse::is_denied(result) {
+            return vec![UIStreamEvent::tool_output_denied(interaction_id)];
+        }
+        vec![UIStreamEvent::tool_output_available(
+            interaction_id,
+            result.clone(),
+        )]
+    }
+
+    fn is_permission_confirmation_tool(tool_name: &str) -> bool {
+        tool_name.eq_ignore_ascii_case("PermissionConfirm")
     }
 }
 
@@ -589,6 +595,75 @@ mod tests {
                     if tool_call_id == "call_1" && output["data"]["items"][0] == 1)
             ),
             "tool done should map to tool-output-available"
+        );
+    }
+
+    #[test]
+    fn permission_tool_ready_emits_tool_approval_request() {
+        let mut enc = AiSdkEncoder::new("run_perm".into());
+        let ready = enc.on_agent_event(&AgentEvent::ToolCallReady {
+            id: "fc_perm_1".to_string(),
+            name: "PermissionConfirm".to_string(),
+            arguments: json!({ "tool_name": "echo", "tool_args": { "message": "x" } }),
+        });
+        assert!(
+            ready.iter().any(|ev| matches!(
+                ev,
+                UIStreamEvent::ToolApprovalRequest { approval_id, tool_call_id }
+                if approval_id == "fc_perm_1" && tool_call_id == "fc_perm_1"
+            )),
+            "permission tool should emit tool-approval-request"
+        );
+    }
+
+    #[test]
+    fn interaction_resolved_denied_emits_tool_output_denied() {
+        let mut enc = AiSdkEncoder::new("run_deny".into());
+        let events = enc.on_agent_event(&AgentEvent::InteractionResolved {
+            interaction_id: "fc_perm_1".to_string(),
+            result: json!({ "approved": false, "reason": "nope" }),
+        });
+        assert!(
+            events.iter().any(|ev| matches!(
+                ev,
+                UIStreamEvent::ToolOutputDenied { tool_call_id }
+                if tool_call_id == "fc_perm_1"
+            )),
+            "denied interaction should emit tool-output-denied"
+        );
+    }
+
+    #[test]
+    fn interaction_resolved_error_emits_tool_output_error() {
+        let mut enc = AiSdkEncoder::new("run_err".into());
+        let events = enc.on_agent_event(&AgentEvent::InteractionResolved {
+            interaction_id: "ask_call_2".to_string(),
+            result: json!({ "approved": false, "error": "frontend validation failed" }),
+        });
+        assert!(
+            events.iter().any(|ev| matches!(
+                ev,
+                UIStreamEvent::ToolOutputError { tool_call_id, error_text }
+                if tool_call_id == "ask_call_2" && error_text == "frontend validation failed"
+            )),
+            "errored interaction should emit tool-output-error"
+        );
+    }
+
+    #[test]
+    fn interaction_resolved_output_payload_emits_tool_output_available() {
+        let mut enc = AiSdkEncoder::new("run_ask".into());
+        let events = enc.on_agent_event(&AgentEvent::InteractionResolved {
+            interaction_id: "ask_call_1".to_string(),
+            result: json!({ "message": "blue" }),
+        });
+        assert!(
+            events.iter().any(|ev| matches!(
+                ev,
+                UIStreamEvent::ToolOutputAvailable { tool_call_id, output }
+                if tool_call_id == "ask_call_1" && output["message"] == "blue"
+            )),
+            "ask interaction resolution should emit tool-output-available"
         );
     }
 

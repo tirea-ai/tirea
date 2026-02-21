@@ -1,7 +1,7 @@
-use crate::protocol::{AGUIEvent, interaction_to_ag_ui_events};
-use tirea_contract::{AgentEvent, TerminationReason};
+use crate::protocol::{interaction_to_ag_ui_events, AGUIEvent, ReasoningEncryptedValueSubtype};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use tirea_contract::{AgentEvent, TerminationReason};
 use tracing::warn;
 use uuid::Uuid;
 
@@ -23,6 +23,8 @@ pub struct AGUIContext {
     step_counter: u32,
     /// Whether text message stream has started.
     pub(super) text_started: bool,
+    /// Whether reasoning stream has started.
+    reasoning_started: bool,
     /// Whether text has ever been ended (used to detect restarts).
     text_ever_ended: bool,
     /// Current step name.
@@ -54,6 +56,7 @@ impl AGUIContext {
             message_id,
             step_counter: 0,
             text_started: false,
+            reasoning_started: false,
             text_ever_ended: false,
             current_step: None,
             stopped: false,
@@ -114,6 +117,20 @@ impl AGUIContext {
         self.text_started
     }
 
+    /// Mark reasoning stream as started.
+    pub fn start_reasoning(&mut self) -> bool {
+        let was_started = self.reasoning_started;
+        self.reasoning_started = true;
+        !was_started
+    }
+
+    /// Mark reasoning stream as ended and return whether it was active.
+    pub fn end_reasoning(&mut self) -> bool {
+        let was_started = self.reasoning_started;
+        self.reasoning_started = false;
+        was_started
+    }
+
     /// Reset text lifecycle state for a new step with a pre-generated message ID.
     ///
     /// This ensures that the streaming message ID matches the stored `Message.id`
@@ -121,6 +138,7 @@ impl AGUIContext {
     pub fn reset_for_step(&mut self, message_id: String) {
         self.message_id = message_id;
         self.text_started = false;
+        self.reasoning_started = false;
         self.text_ever_ended = false;
     }
 
@@ -159,6 +177,10 @@ impl AGUIContext {
                 }
                 self.emitted_tool_call_ids.insert(interaction.id.clone());
                 let mut events = Vec::new();
+                if self.end_reasoning() {
+                    events.push(AGUIEvent::reasoning_message_end(&self.message_id));
+                    events.push(AGUIEvent::reasoning_end(&self.message_id));
+                }
                 if self.end_text() {
                     events.push(AGUIEvent::text_message_end(&self.message_id));
                 }
@@ -169,6 +191,10 @@ impl AGUIContext {
             // The pending interaction is communicated via STATE_SNAPSHOT (emitted separately).
             AgentEvent::Pending { .. } => {
                 let mut events = Vec::new();
+                if self.end_reasoning() {
+                    events.push(AGUIEvent::reasoning_message_end(&self.message_id));
+                    events.push(AGUIEvent::reasoning_end(&self.message_id));
+                }
                 if self.end_text() {
                     events.push(AGUIEvent::text_message_end(&self.message_id));
                 }
@@ -196,6 +222,10 @@ impl AGUIContext {
                 termination,
             } => {
                 let mut events = vec![];
+                if self.end_reasoning() {
+                    events.push(AGUIEvent::reasoning_message_end(&self.message_id));
+                    events.push(AGUIEvent::reasoning_end(&self.message_id));
+                }
                 if self.end_text() {
                     events.push(AGUIEvent::text_message_end(&self.message_id));
                 }
@@ -227,10 +257,33 @@ impl AGUIContext {
                 events.push(AGUIEvent::text_message_content(&self.message_id, delta));
                 events
             }
+            AgentEvent::ReasoningDelta { delta } => {
+                let mut events = vec![];
+                if self.start_reasoning() {
+                    events.push(AGUIEvent::reasoning_start(&self.message_id));
+                    events.push(AGUIEvent::reasoning_message_start(&self.message_id));
+                }
+                events.push(AGUIEvent::reasoning_message_content(
+                    &self.message_id,
+                    delta,
+                ));
+                events
+            }
+            AgentEvent::ReasoningEncryptedValue { encrypted_value } => {
+                vec![AGUIEvent::reasoning_encrypted_value(
+                    ReasoningEncryptedValueSubtype::Message,
+                    self.message_id.clone(),
+                    encrypted_value.clone(),
+                )]
+            }
 
             AgentEvent::ToolCallStart { id, name } => {
                 self.emitted_tool_call_ids.insert(id.clone());
                 let mut events = vec![];
+                if self.end_reasoning() {
+                    events.push(AGUIEvent::reasoning_message_end(&self.message_id));
+                    events.push(AGUIEvent::reasoning_end(&self.message_id));
+                }
                 if self.end_text() {
                     events.push(AGUIEvent::text_message_end(&self.message_id));
                 }
@@ -287,7 +340,13 @@ impl AGUIContext {
                 vec![AGUIEvent::step_started(self.next_step_name())]
             }
             AgentEvent::StepEnd => {
-                vec![AGUIEvent::step_finished(self.current_step_name())]
+                let mut events = vec![];
+                if self.end_reasoning() {
+                    events.push(AGUIEvent::reasoning_message_end(&self.message_id));
+                    events.push(AGUIEvent::reasoning_end(&self.message_id));
+                }
+                events.push(AGUIEvent::step_finished(self.current_step_name()));
+                events
             }
 
             AgentEvent::StateSnapshot { snapshot } => {
@@ -344,7 +403,13 @@ impl AGUIContext {
             AgentEvent::Pending { .. } => unreachable!(),
 
             AgentEvent::Error { message } => {
-                vec![AGUIEvent::run_error(message, None)]
+                let mut events = vec![];
+                if self.end_reasoning() {
+                    events.push(AGUIEvent::reasoning_message_end(&self.message_id));
+                    events.push(AGUIEvent::reasoning_end(&self.message_id));
+                }
+                events.push(AGUIEvent::run_error(message, None));
+                events
             }
             AgentEvent::InferenceComplete {
                 model,
@@ -352,7 +417,10 @@ impl AGUIContext {
                 duration_ms,
             } => {
                 let mut content = serde_json::Map::new();
-                content.insert("model".to_string(), serde_json::Value::String(model.clone()));
+                content.insert(
+                    "model".to_string(),
+                    serde_json::Value::String(model.clone()),
+                );
                 content.insert(
                     "duration_ms".to_string(),
                     serde_json::Value::Number((*duration_ms).into()),
@@ -432,6 +500,37 @@ mod tests {
         let content = &json["content"];
         assert_eq!(content["model"], "gpt-4o-mini");
         assert!(content.get("usage").is_none());
+    }
+
+    #[test]
+    fn reasoning_delta_emits_reasoning_events() {
+        let mut ctx = AGUIContext::new("t1".into(), "run_12345678".into());
+        let events = ctx.on_agent_event(&AgentEvent::ReasoningDelta {
+            delta: "step-by-step".into(),
+        });
+        assert_eq!(events.len(), 3);
+
+        let values: Vec<serde_json::Value> = events
+            .iter()
+            .map(|e| serde_json::to_value(e).unwrap())
+            .collect();
+        assert_eq!(values[0]["type"], "REASONING_START");
+        assert_eq!(values[1]["type"], "REASONING_MESSAGE_START");
+        assert_eq!(values[2]["type"], "REASONING_MESSAGE_CONTENT");
+        assert_eq!(values[2]["delta"], "step-by-step");
+    }
+
+    #[test]
+    fn reasoning_encrypted_value_maps_to_message_entity() {
+        let mut ctx = AGUIContext::new("t1".into(), "run_12345678".into());
+        let events = ctx.on_agent_event(&AgentEvent::ReasoningEncryptedValue {
+            encrypted_value: "opaque-token".into(),
+        });
+        assert_eq!(events.len(), 1);
+        let value = serde_json::to_value(&events[0]).unwrap();
+        assert_eq!(value["type"], "REASONING_ENCRYPTED_VALUE");
+        assert_eq!(value["subtype"], "message");
+        assert_eq!(value["encryptedValue"], "opaque-token");
     }
 }
 
