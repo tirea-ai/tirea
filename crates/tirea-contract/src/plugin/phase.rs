@@ -275,11 +275,6 @@ impl<'a> StepContext<'a> {
         self.ctx.config_state::<T>()
     }
 
-    /// Read a run config value by key.
-    pub fn config_value(&self, key: &str) -> Option<&Value> {
-        self.ctx.config_value(key)
-    }
-
     /// Snapshot the current document state.
     pub fn snapshot(&self) -> Value {
         self.ctx.snapshot()

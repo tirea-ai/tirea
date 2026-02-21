@@ -57,8 +57,7 @@ impl AgentRecoveryPlugin {
             ToolPermissionBehavior::Deny => {}
             ToolPermissionBehavior::Ask => {
                 let interaction = build_recovery_interaction(&run_id, run);
-                match set_pending_interaction_patch(&state, interaction, "agent_recovery_pending")
-                {
+                match set_pending_interaction_patch(&state, interaction, "agent_recovery_pending") {
                     Ok(Some(patch)) => {
                         step.pending_patches.push(patch);
                     }
@@ -234,7 +233,8 @@ impl AgentPlugin for AgentToolsPlugin {
         match phase {
             Phase::BeforeInference => {
                 let caller_agent = step
-                    .config_value(SCOPE_CALLER_AGENT_ID_KEY)
+                    .run_config()
+                    .value(SCOPE_CALLER_AGENT_ID_KEY)
                     .and_then(|v| v.as_str());
                 let rendered = self.render_available_agents(caller_agent, Some(step.run_config()));
                 if !rendered.is_empty() {
