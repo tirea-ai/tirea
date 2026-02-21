@@ -20,10 +20,10 @@
 //! ```
 
 use async_trait::async_trait;
-use tirea_contract::tool::context::ToolCallContext;
-use tirea_contract::plugin::AgentPlugin;
-use tirea_state::State;
 use serde::{Deserialize, Serialize};
+use tirea_contract::plugin::AgentPlugin;
+use tirea_contract::tool::context::ToolCallContext;
+use tirea_state::State;
 
 mod system_reminder;
 pub use system_reminder::SystemReminder;
@@ -135,7 +135,12 @@ impl AgentPlugin for ReminderPlugin {
             return;
         }
 
-        let reminders = step.ctx().state_of::<ReminderState>().items().ok().unwrap_or_default();
+        let reminders = step
+            .ctx()
+            .state_of::<ReminderState>()
+            .items()
+            .ok()
+            .unwrap_or_default();
         if reminders.is_empty() {
             return;
         }
@@ -154,9 +159,9 @@ impl AgentPlugin for ReminderPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use tirea_contract::plugin::phase::Phase;
     use tirea_contract::testing::TestFixture;
-    use serde_json::json;
 
     #[test]
     fn test_reminder_state_default() {
@@ -183,7 +188,9 @@ mod tests {
         }));
         let ctx = fixture.ctx();
 
-        ctx.state_of::<ReminderState>().items_push("Test reminder".to_string());
+        ctx.state_of::<ReminderState>()
+            .items_push("Test reminder".to_string())
+            .expect("failed to append reminders.items");
         assert!(fixture.has_changes());
     }
 
@@ -194,7 +201,11 @@ mod tests {
         }));
         let ctx = fixture.ctx();
 
-        let items = ctx.state_of::<ReminderState>().items().ok().unwrap_or_default();
+        let items = ctx
+            .state_of::<ReminderState>()
+            .items()
+            .ok()
+            .unwrap_or_default();
         assert!(items.is_empty());
     }
 
@@ -205,7 +216,11 @@ mod tests {
         }));
         let ctx = fixture.ctx();
 
-        let items = ctx.state_of::<ReminderState>().items().ok().unwrap_or_default();
+        let items = ctx
+            .state_of::<ReminderState>()
+            .items()
+            .ok()
+            .unwrap_or_default();
         assert_eq!(items.len(), 2);
     }
 
@@ -216,9 +231,15 @@ mod tests {
         }));
         let ctx = fixture.ctx();
 
-        let items = ctx.state_of::<ReminderState>().items().ok().unwrap_or_default();
+        let items = ctx
+            .state_of::<ReminderState>()
+            .items()
+            .ok()
+            .unwrap_or_default();
         assert_eq!(items.len(), 2);
-        ctx.state_of::<ReminderState>().set_items(Vec::new());
+        ctx.state_of::<ReminderState>()
+            .set_items(Vec::new())
+            .expect("failed to clear reminders.items");
         assert!(fixture.has_changes());
     }
 
@@ -229,9 +250,15 @@ mod tests {
         }));
         let ctx = fixture.ctx();
 
-        let reminders: Vec<String> = ctx.state_of::<ReminderState>().items().ok().unwrap_or_default();
+        let reminders: Vec<String> = ctx
+            .state_of::<ReminderState>()
+            .items()
+            .ok()
+            .unwrap_or_default();
         let filtered: Vec<String> = reminders.into_iter().filter(|r| r != "Remove").collect();
-        ctx.state_of::<ReminderState>().set_items(filtered);
+        ctx.state_of::<ReminderState>()
+            .set_items(filtered)
+            .expect("failed to update reminders.items");
         assert!(fixture.has_changes());
     }
 
@@ -249,9 +276,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_reminder_plugin_before_inference() {
-        let fixture = TestFixture::new_with_state(
-            json!({ "reminders": { "items": ["Test reminder"] } }),
-        );
+        let fixture =
+            TestFixture::new_with_state(json!({ "reminders": { "items": ["Test reminder"] } }));
 
         let plugin = ReminderPlugin::new();
         let mut step = fixture.step(vec![]);
@@ -284,9 +310,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_reminder_plugin_no_clear_when_disabled() {
-        let fixture = TestFixture::new_with_state(
-            json!({ "reminders": { "items": ["Reminder"] } }),
-        );
+        let fixture =
+            TestFixture::new_with_state(json!({ "reminders": { "items": ["Reminder"] } }));
 
         let plugin = ReminderPlugin::new().with_clear_after_llm_request(false);
         let mut step = fixture.step(vec![]);
@@ -300,9 +325,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_reminder_plugin_empty_reminders() {
-        let fixture = TestFixture::new_with_state(
-            json!({ "reminders": { "items": [] } }),
-        );
+        let fixture = TestFixture::new_with_state(json!({ "reminders": { "items": [] } }));
 
         let plugin = ReminderPlugin::new();
         let mut step = fixture.step(vec![]);

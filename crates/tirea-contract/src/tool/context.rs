@@ -342,7 +342,8 @@ mod tests {
         ctrl.set_inference_error(Some(crate::runtime::control::InferenceError {
             error_type: "rate_limit".into(),
             message: "too many requests".into(),
-        }));
+        }))
+        .expect("failed to set inference_error");
 
         // Read back from same ref
         let err = ctrl.inference_error().unwrap();
@@ -365,12 +366,12 @@ mod tests {
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
         // Write via first ref
-        ctx.state_of::<LoopControlState>().set_inference_error(Some(
-            crate::runtime::control::InferenceError {
+        ctx.state_of::<LoopControlState>()
+            .set_inference_error(Some(crate::runtime::control::InferenceError {
                 error_type: "timeout".into(),
                 message: "timed out".into(),
-            },
-        ));
+            }))
+            .expect("failed to set inference_error");
 
         // Read via second ref
         let err = ctx
@@ -391,12 +392,12 @@ mod tests {
 
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
-        ctx.state_of::<LoopControlState>().set_inference_error(Some(
-            crate::runtime::control::InferenceError {
+        ctx.state_of::<LoopControlState>()
+            .set_inference_error(Some(crate::runtime::control::InferenceError {
                 error_type: "test".into(),
                 message: "test".into(),
-            },
-        ));
+            }))
+            .expect("failed to set inference_error");
 
         assert!(ctx.has_changes());
         assert!(ctx.ops_count() > 0);
@@ -436,7 +437,8 @@ mod tests {
         ctrl.set_inference_error(Some(crate::runtime::control::InferenceError {
             error_type: "call_scoped".into(),
             message: "test".into(),
-        }));
+        }))
+        .expect("failed to set inference_error");
 
         assert!(ctx.has_changes());
     }

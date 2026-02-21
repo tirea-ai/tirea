@@ -1,7 +1,7 @@
 //! Activity management trait for external state updates.
 
-use tirea_state::Op;
 use serde_json::Value;
+use tirea_state::Op;
 
 /// Manager for activity state updates.
 ///
@@ -38,7 +38,8 @@ mod tests {
         ctrl.set_inference_error(Some(crate::runtime::control::InferenceError {
             error_type: "rate_limit".into(),
             message: "too many requests".into(),
-        }));
+        }))
+        .expect("failed to set inference_error");
 
         // Read back from the same ref — must see the written value
         let err = ctrl.inference_error().unwrap();
@@ -54,10 +55,12 @@ mod tests {
 
         // Write via first state_of call
         let ctrl1 = ctx.state_of::<LoopControlState>();
-        ctrl1.set_inference_error(Some(crate::runtime::control::InferenceError {
-            error_type: "timeout".into(),
-            message: "timed out".into(),
-        }));
+        ctrl1
+            .set_inference_error(Some(crate::runtime::control::InferenceError {
+                error_type: "timeout".into(),
+                message: "timed out".into(),
+            }))
+            .expect("failed to set inference_error");
 
         // Read via second state_of call — must see the write
         let ctrl2 = ctx.state_of::<LoopControlState>();
@@ -77,7 +80,8 @@ mod tests {
         ctrl.set_inference_error(Some(crate::runtime::control::InferenceError {
             error_type: "test_error".into(),
             message: "test".into(),
-        }));
+        }))
+        .expect("failed to set inference_error");
 
         // updated_state should return the run_doc snapshot which includes the write
         let rebuilt = fix.updated_state();
