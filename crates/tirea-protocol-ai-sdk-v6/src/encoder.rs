@@ -1,7 +1,7 @@
 use super::UIStreamEvent;
 use serde_json::Value;
 use std::collections::HashSet;
-use tirea_contract::{AgentEvent, Interaction, StopReason, TerminationReason};
+use tirea_contract::{AgentEvent, Interaction, StopReason, TerminationReason, ToolStatus};
 
 /// Data event name for a full state snapshot payload.
 pub const DATA_EVENT_STATE_SNAPSHOT: &str = "state-snapshot";
@@ -15,6 +15,8 @@ pub const DATA_EVENT_ACTIVITY_SNAPSHOT: &str = "activity-snapshot";
 pub const DATA_EVENT_ACTIVITY_DELTA: &str = "activity-delta";
 /// Data event name for inference-complete payload (token usage).
 pub const DATA_EVENT_INFERENCE_COMPLETE: &str = "inference-complete";
+/// Data event name for encrypted reasoning payload.
+pub const DATA_EVENT_REASONING_ENCRYPTED: &str = "reasoning-encrypted";
 
 /// Stateful encoder for AI SDK v6 UI Message Stream protocol.
 ///
@@ -127,8 +129,21 @@ impl AiSdkEncoder {
                 events.push(UIStreamEvent::text_delta(self.text_id(), delta));
                 events
             }
-            AgentEvent::ReasoningDelta { .. } => Vec::new(),
-            AgentEvent::ReasoningEncryptedValue { .. } => Vec::new(),
+            AgentEvent::ReasoningDelta { delta } => {
+                let reasoning_id = reasoning_id_for(&self.message_id, None);
+                let mut events = Vec::new();
+                self.start_reasoning_if_needed(&reasoning_id, &mut events);
+                events.push(UIStreamEvent::reasoning_delta(reasoning_id, delta));
+                events
+            }
+            AgentEvent::ReasoningEncryptedValue { encrypted_value } => {
+                vec![UIStreamEvent::data_with_options(
+                    DATA_EVENT_REASONING_ENCRYPTED,
+                    serde_json::json!({ "encryptedValue": encrypted_value }),
+                    Some(reasoning_id_for(&self.message_id, None)),
+                    Some(true),
+                )]
+            }
 
             AgentEvent::ToolCallStart { id, name } => {
                 let mut events = Vec::new();
@@ -156,9 +171,26 @@ impl AiSdkEncoder {
                 }
                 events
             }
-            AgentEvent::ToolCallDone { id, result, .. } => {
-                vec![UIStreamEvent::tool_output_available(id, result.to_json())]
-            }
+            AgentEvent::ToolCallDone { id, result, .. } => match result.status {
+                ToolStatus::Success | ToolStatus::Warning | ToolStatus::Pending => {
+                    vec![UIStreamEvent::tool_output_available(id, result.to_json())]
+                }
+                ToolStatus::Error => {
+                    let error_text = result
+                        .message
+                        .clone()
+                        .or_else(|| {
+                            result
+                                .data
+                                .get("error")
+                                .and_then(|v| v.get("message"))
+                                .and_then(Value::as_str)
+                                .map(str::to_string)
+                        })
+                        .unwrap_or_else(|| "tool output error".to_string());
+                    vec![UIStreamEvent::tool_output_error(id, error_text)]
+                }
+            },
 
             AgentEvent::RunFinish { termination, .. } => {
                 self.finished = true;
@@ -459,7 +491,13 @@ fn map_source_url_snapshot(message_id: &str, content: &Value) -> Option<UIStream
         .get("title")
         .and_then(Value::as_str)
         .map(str::to_string);
-    Some(UIStreamEvent::source_url(source_id, url, title))
+    let provider_metadata = content.get("providerMetadata").cloned();
+    Some(UIStreamEvent::SourceUrl {
+        source_id: source_id.to_string(),
+        url: url.to_string(),
+        title,
+        provider_metadata,
+    })
 }
 
 fn map_source_document_snapshot(message_id: &str, content: &Value) -> Option<UIStreamEvent> {
@@ -477,9 +515,14 @@ fn map_source_document_snapshot(message_id: &str, content: &Value) -> Option<UIS
         .get("filename")
         .and_then(Value::as_str)
         .map(str::to_string);
-    Some(UIStreamEvent::source_document(
-        source_id, media_type, title, filename,
-    ))
+    let provider_metadata = content.get("providerMetadata").cloned();
+    Some(UIStreamEvent::SourceDocument {
+        source_id: source_id.to_string(),
+        media_type: media_type.to_string(),
+        title: title.to_string(),
+        filename,
+        provider_metadata,
+    })
 }
 
 fn map_file_snapshot(content: &Value) -> Option<UIStreamEvent> {
@@ -488,7 +531,12 @@ fn map_file_snapshot(content: &Value) -> Option<UIStreamEvent> {
         .get("mediaType")
         .or_else(|| content.get("media_type"))
         .and_then(Value::as_str)?;
-    Some(UIStreamEvent::file(url, media_type))
+    let provider_metadata = content.get("providerMetadata").cloned();
+    Some(UIStreamEvent::File {
+        url: url.to_string(),
+        media_type: media_type.to_string(),
+        provider_metadata,
+    })
 }
 
 #[cfg(test)]
@@ -512,7 +560,9 @@ mod tests {
         let events = enc.on_agent_event(&ev);
         assert_eq!(events.len(), 1);
         match &events[0] {
-            UIStreamEvent::Data { data_type, data } => {
+            UIStreamEvent::Data {
+                data_type, data, ..
+            } => {
                 assert_eq!(data_type, &format!("data-{DATA_EVENT_INFERENCE_COMPLETE}"));
                 assert_eq!(data["model"], "gpt-4o");
                 assert_eq!(data["duration_ms"], 1234);
@@ -533,13 +583,70 @@ mod tests {
         let events = enc.on_agent_event(&ev);
         assert_eq!(events.len(), 1);
         match &events[0] {
-            UIStreamEvent::Data { data_type, data } => {
+            UIStreamEvent::Data {
+                data_type, data, ..
+            } => {
                 assert_eq!(data_type, &format!("data-{DATA_EVENT_INFERENCE_COMPLETE}"));
                 assert_eq!(data["model"], "gpt-4o-mini");
                 assert!(data["usage"].is_null());
             }
             other => panic!("expected Data event, got: {:?}", other),
         }
+    }
+
+    #[test]
+    fn reasoning_agent_event_emits_reasoning_stream_events() {
+        let mut enc = AiSdkEncoder::new("run_reasoning_event".into());
+        let events = enc.on_agent_event(&AgentEvent::ReasoningDelta {
+            delta: "thinking".to_string(),
+        });
+
+        assert!(events
+            .iter()
+            .any(|ev| matches!(ev, UIStreamEvent::ReasoningStart { .. })));
+        assert!(events.iter().any(
+            |ev| matches!(ev, UIStreamEvent::ReasoningDelta { delta, .. } if delta == "thinking")
+        ));
+    }
+
+    #[test]
+    fn reasoning_encrypted_event_emits_transient_data_event() {
+        let mut enc = AiSdkEncoder::new("run_reasoning_encrypted".into());
+        let events = enc.on_agent_event(&AgentEvent::ReasoningEncryptedValue {
+            encrypted_value: "opaque-token".to_string(),
+        });
+
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            UIStreamEvent::Data {
+                data_type,
+                data,
+                transient: Some(true),
+                ..
+            } if data_type == "data-reasoning-encrypted"
+                && data["encryptedValue"] == "opaque-token"
+        ));
+    }
+
+    #[test]
+    fn tool_call_done_with_error_status_emits_tool_output_error() {
+        let mut enc = AiSdkEncoder::new("run_tool_error".into());
+        let events = enc.on_agent_event(&AgentEvent::ToolCallDone {
+            id: "call_error_1".to_string(),
+            result: tirea_contract::ToolResult::error("search", "tool backend failed"),
+            patch: None,
+            message_id: "msg_tool_error_1".to_string(),
+        });
+
+        assert!(events.iter().any(|ev| matches!(
+            ev,
+            UIStreamEvent::ToolOutputError {
+                tool_call_id,
+                error_text,
+                ..
+            } if tool_call_id == "call_error_1" && error_text == "tool backend failed"
+        )));
     }
 
     #[test]
@@ -552,7 +659,7 @@ mod tests {
         });
         assert!(
             start.iter().any(
-                |ev| matches!(ev, UIStreamEvent::ToolInputStart { tool_call_id, tool_name }
+                |ev| matches!(ev, UIStreamEvent::ToolInputStart { tool_call_id, tool_name, .. }
                     if tool_call_id == "call_1" && tool_name == "search")
             ),
             "tool start should map to tool-input-start"
@@ -577,7 +684,7 @@ mod tests {
         });
         assert!(
             ready.iter().any(
-                |ev| matches!(ev, UIStreamEvent::ToolInputAvailable { tool_call_id, tool_name, input }
+                |ev| matches!(ev, UIStreamEvent::ToolInputAvailable { tool_call_id, tool_name, input, .. }
                     if tool_call_id == "call_1" && tool_name == "search" && input["q"] == "rust")
             ),
             "tool ready should map to tool-input-available"
@@ -591,7 +698,7 @@ mod tests {
         });
         assert!(
             done.iter().any(
-                |ev| matches!(ev, UIStreamEvent::ToolOutputAvailable { tool_call_id, output }
+                |ev| matches!(ev, UIStreamEvent::ToolOutputAvailable { tool_call_id, output, .. }
                     if tool_call_id == "call_1" && output["data"]["items"][0] == 1)
             ),
             "tool done should map to tool-output-available"
@@ -643,7 +750,7 @@ mod tests {
         assert!(
             events.iter().any(|ev| matches!(
                 ev,
-                UIStreamEvent::ToolOutputError { tool_call_id, error_text }
+                UIStreamEvent::ToolOutputError { tool_call_id, error_text, .. }
                 if tool_call_id == "ask_call_2" && error_text == "frontend validation failed"
             )),
             "errored interaction should emit tool-output-error"
@@ -660,7 +767,7 @@ mod tests {
         assert!(
             events.iter().any(|ev| matches!(
                 ev,
-                UIStreamEvent::ToolOutputAvailable { tool_call_id, output }
+                UIStreamEvent::ToolOutputAvailable { tool_call_id, output, .. }
                 if tool_call_id == "ask_call_1" && output["message"] == "blue"
             )),
             "ask interaction resolution should emit tool-output-available"
@@ -804,7 +911,8 @@ mod tests {
                 source_id,
                 media_type,
                 title,
-                filename
+                filename,
+                ..
             } if source_id == "doc_1"
                 && media_type == "application/pdf"
                 && title == "Doc"

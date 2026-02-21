@@ -15,7 +15,11 @@ fn interaction_resolved_error_maps_to_tool_output_error_event() {
     assert!(
         events.iter().any(|ev| matches!(
             ev,
-            UIStreamEvent::ToolOutputError { tool_call_id, error_text }
+            UIStreamEvent::ToolOutputError {
+                tool_call_id,
+                error_text,
+                ..
+            }
             if tool_call_id == "ask_call_2" && error_text == "frontend validation failed"
         )),
         "errored interaction should emit tool-output-error"

@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::de::Error as DeError;
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 /// Stream event types compatible with AI SDK v6.
@@ -31,6 +32,9 @@ pub enum UIStreamEvent {
     TextStart {
         /// Unique identifier for this text block.
         id: String,
+        /// Optional provider metadata.
+        #[serde(rename = "providerMetadata", skip_serializing_if = "Option::is_none")]
+        provider_metadata: Option<Value>,
     },
 
     /// Contains incremental text content for the text block.
@@ -39,21 +43,30 @@ pub enum UIStreamEvent {
         id: String,
         /// Incremental text content.
         delta: String,
+        /// Optional provider metadata.
+        #[serde(rename = "providerMetadata", skip_serializing_if = "Option::is_none")]
+        provider_metadata: Option<Value>,
     },
 
     /// Indicates the end of a text block.
     TextEnd {
         /// Identifier matching the text-start event.
         id: String,
+        /// Optional provider metadata.
+        #[serde(rename = "providerMetadata", skip_serializing_if = "Option::is_none")]
+        provider_metadata: Option<Value>,
     },
 
     // ========================================================================
-    // Reasoning Streaming (for models like DeepSeek, o1)
+    // Reasoning Streaming
     // ========================================================================
     /// Indicates the beginning of a reasoning block.
     ReasoningStart {
         /// Unique identifier for this reasoning block.
         id: String,
+        /// Optional provider metadata.
+        #[serde(rename = "providerMetadata", skip_serializing_if = "Option::is_none")]
+        provider_metadata: Option<Value>,
     },
 
     /// Contains incremental reasoning content.
@@ -62,12 +75,18 @@ pub enum UIStreamEvent {
         id: String,
         /// Incremental reasoning content.
         delta: String,
+        /// Optional provider metadata.
+        #[serde(rename = "providerMetadata", skip_serializing_if = "Option::is_none")]
+        provider_metadata: Option<Value>,
     },
 
     /// Indicates the end of a reasoning block.
     ReasoningEnd {
         /// Identifier matching the reasoning-start event.
         id: String,
+        /// Optional provider metadata.
+        #[serde(rename = "providerMetadata", skip_serializing_if = "Option::is_none")]
+        provider_metadata: Option<Value>,
     },
 
     // ========================================================================
@@ -81,6 +100,15 @@ pub enum UIStreamEvent {
         /// Name of the tool being called.
         #[serde(rename = "toolName")]
         tool_name: String,
+        /// Whether the provider executed this tool directly.
+        #[serde(rename = "providerExecuted", skip_serializing_if = "Option::is_none")]
+        provider_executed: Option<bool>,
+        /// Whether this is a dynamic tool part.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dynamic: Option<bool>,
+        /// Optional UI title.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
     },
 
     /// Contains incremental chunks of tool input as it's being generated.
@@ -103,6 +131,55 @@ pub enum UIStreamEvent {
         tool_name: String,
         /// Complete tool input as JSON.
         input: Value,
+        /// Whether the provider executed this tool directly.
+        #[serde(rename = "providerExecuted", skip_serializing_if = "Option::is_none")]
+        provider_executed: Option<bool>,
+        /// Optional provider metadata.
+        #[serde(rename = "providerMetadata", skip_serializing_if = "Option::is_none")]
+        provider_metadata: Option<Value>,
+        /// Whether this is a dynamic tool part.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dynamic: Option<bool>,
+        /// Optional UI title.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
+
+    /// Indicates tool input validation failed before execution.
+    ToolInputError {
+        /// Identifier matching the tool-input-start event.
+        #[serde(rename = "toolCallId")]
+        tool_call_id: String,
+        /// Name of the tool being called.
+        #[serde(rename = "toolName")]
+        tool_name: String,
+        /// Tool input payload.
+        input: Value,
+        /// Whether the provider executed this tool directly.
+        #[serde(rename = "providerExecuted", skip_serializing_if = "Option::is_none")]
+        provider_executed: Option<bool>,
+        /// Optional provider metadata.
+        #[serde(rename = "providerMetadata", skip_serializing_if = "Option::is_none")]
+        provider_metadata: Option<Value>,
+        /// Whether this is a dynamic tool part.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dynamic: Option<bool>,
+        /// Error text.
+        #[serde(rename = "errorText")]
+        error_text: String,
+        /// Optional UI title.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
+
+    /// Requests user approval for a tool call.
+    ToolApprovalRequest {
+        /// Approval request ID.
+        #[serde(rename = "approvalId")]
+        approval_id: String,
+        /// Tool call ID this approval applies to.
+        #[serde(rename = "toolCallId")]
+        tool_call_id: String,
     },
 
     // ========================================================================
@@ -115,6 +192,38 @@ pub enum UIStreamEvent {
         tool_call_id: String,
         /// Tool execution result as JSON.
         output: Value,
+        /// Whether the provider executed this tool directly.
+        #[serde(rename = "providerExecuted", skip_serializing_if = "Option::is_none")]
+        provider_executed: Option<bool>,
+        /// Whether this is a dynamic tool part.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dynamic: Option<bool>,
+        /// Marks provisional tool output.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        preliminary: Option<bool>,
+    },
+
+    /// Indicates the tool output was denied by user approval.
+    ToolOutputDenied {
+        /// Identifier matching the tool-input-start event.
+        #[serde(rename = "toolCallId")]
+        tool_call_id: String,
+    },
+
+    /// Indicates tool output failed with an execution error.
+    ToolOutputError {
+        /// Identifier matching the tool-input-start event.
+        #[serde(rename = "toolCallId")]
+        tool_call_id: String,
+        /// Error text.
+        #[serde(rename = "errorText")]
+        error_text: String,
+        /// Whether the provider executed this tool directly.
+        #[serde(rename = "providerExecuted", skip_serializing_if = "Option::is_none")]
+        provider_executed: Option<bool>,
+        /// Whether this is a dynamic tool part.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dynamic: Option<bool>,
     },
 
     // ========================================================================
@@ -139,6 +248,9 @@ pub enum UIStreamEvent {
         /// Optional title for the source.
         #[serde(skip_serializing_if = "Option::is_none")]
         title: Option<String>,
+        /// Optional provider metadata.
+        #[serde(rename = "providerMetadata", skip_serializing_if = "Option::is_none")]
+        provider_metadata: Option<Value>,
     },
 
     /// References a document or file.
@@ -154,11 +266,12 @@ pub enum UIStreamEvent {
         /// Optional filename.
         #[serde(skip_serializing_if = "Option::is_none")]
         filename: Option<String>,
+        /// Optional provider metadata.
+        #[serde(rename = "providerMetadata", skip_serializing_if = "Option::is_none")]
+        provider_metadata: Option<Value>,
     },
 
     /// Contains a file reference.
-    ///
-    /// AI SDK v6 strict schema only includes `url`, `mediaType`, and optional `providerMetadata`.
     File {
         /// URL to the file.
         url: String,
@@ -190,6 +303,13 @@ pub enum UIStreamEvent {
         reason: Option<String>,
     },
 
+    /// Emits incremental metadata updates for the active message.
+    MessageMetadata {
+        /// Message metadata payload.
+        #[serde(rename = "messageMetadata")]
+        message_metadata: Value,
+    },
+
     /// Appends error messages to stream.
     Error {
         /// Error text.
@@ -203,11 +323,17 @@ pub enum UIStreamEvent {
     /// Custom data event with a type prefix pattern (data-*).
     #[serde(untagged)]
     Data {
-        /// Custom type name (should start with "data-").
-        #[serde(rename = "type")]
+        /// Custom type name (must start with "data-").
+        #[serde(rename = "type", deserialize_with = "deserialize_data_event_type")]
         data_type: String,
+        /// Optional stable data part ID.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
         /// Custom data payload.
         data: Value,
+        /// Whether the data should be treated as transient.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        transient: Option<bool>,
     },
 }
 
@@ -234,7 +360,10 @@ impl UIStreamEvent {
 
     /// Create a text-start event.
     pub fn text_start(id: impl Into<String>) -> Self {
-        Self::TextStart { id: id.into() }
+        Self::TextStart {
+            id: id.into(),
+            provider_metadata: None,
+        }
     }
 
     /// Create a text-delta event.
@@ -242,17 +371,24 @@ impl UIStreamEvent {
         Self::TextDelta {
             id: id.into(),
             delta: delta.into(),
+            provider_metadata: None,
         }
     }
 
     /// Create a text-end event.
     pub fn text_end(id: impl Into<String>) -> Self {
-        Self::TextEnd { id: id.into() }
+        Self::TextEnd {
+            id: id.into(),
+            provider_metadata: None,
+        }
     }
 
     /// Create a reasoning-start event.
     pub fn reasoning_start(id: impl Into<String>) -> Self {
-        Self::ReasoningStart { id: id.into() }
+        Self::ReasoningStart {
+            id: id.into(),
+            provider_metadata: None,
+        }
     }
 
     /// Create a reasoning-delta event.
@@ -260,12 +396,16 @@ impl UIStreamEvent {
         Self::ReasoningDelta {
             id: id.into(),
             delta: delta.into(),
+            provider_metadata: None,
         }
     }
 
     /// Create a reasoning-end event.
     pub fn reasoning_end(id: impl Into<String>) -> Self {
-        Self::ReasoningEnd { id: id.into() }
+        Self::ReasoningEnd {
+            id: id.into(),
+            provider_metadata: None,
+        }
     }
 
     /// Create a tool-input-start event.
@@ -273,6 +413,9 @@ impl UIStreamEvent {
         Self::ToolInputStart {
             tool_call_id: tool_call_id.into(),
             tool_name: tool_name.into(),
+            provider_executed: None,
+            dynamic: None,
+            title: None,
         }
     }
 
@@ -294,6 +437,40 @@ impl UIStreamEvent {
             tool_call_id: tool_call_id.into(),
             tool_name: tool_name.into(),
             input,
+            provider_executed: None,
+            provider_metadata: None,
+            dynamic: None,
+            title: None,
+        }
+    }
+
+    /// Create a tool-input-error event.
+    pub fn tool_input_error(
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        input: Value,
+        error_text: impl Into<String>,
+    ) -> Self {
+        Self::ToolInputError {
+            tool_call_id: tool_call_id.into(),
+            tool_name: tool_name.into(),
+            input,
+            provider_executed: None,
+            provider_metadata: None,
+            dynamic: None,
+            error_text: error_text.into(),
+            title: None,
+        }
+    }
+
+    /// Create a tool-approval-request event.
+    pub fn tool_approval_request(
+        approval_id: impl Into<String>,
+        tool_call_id: impl Into<String>,
+    ) -> Self {
+        Self::ToolApprovalRequest {
+            approval_id: approval_id.into(),
+            tool_call_id: tool_call_id.into(),
         }
     }
 
@@ -302,6 +479,29 @@ impl UIStreamEvent {
         Self::ToolOutputAvailable {
             tool_call_id: tool_call_id.into(),
             output,
+            provider_executed: None,
+            dynamic: None,
+            preliminary: None,
+        }
+    }
+
+    /// Create a tool-output-denied event.
+    pub fn tool_output_denied(tool_call_id: impl Into<String>) -> Self {
+        Self::ToolOutputDenied {
+            tool_call_id: tool_call_id.into(),
+        }
+    }
+
+    /// Create a tool-output-error event.
+    pub fn tool_output_error(
+        tool_call_id: impl Into<String>,
+        error_text: impl Into<String>,
+    ) -> Self {
+        Self::ToolOutputError {
+            tool_call_id: tool_call_id.into(),
+            error_text: error_text.into(),
+            provider_executed: None,
+            dynamic: None,
         }
     }
 
@@ -325,6 +525,7 @@ impl UIStreamEvent {
             source_id: source_id.into(),
             url: url.into(),
             title,
+            provider_metadata: None,
         }
     }
 
@@ -340,6 +541,7 @@ impl UIStreamEvent {
             media_type: media_type.into(),
             title: title.into(),
             filename,
+            provider_metadata: None,
         }
     }
 
@@ -375,6 +577,11 @@ impl UIStreamEvent {
         }
     }
 
+    /// Create a message-metadata event.
+    pub fn message_metadata(message_metadata: Value) -> Self {
+        Self::MessageMetadata { message_metadata }
+    }
+
     /// Create an error event.
     pub fn error(error_text: impl Into<String>) -> Self {
         Self::Error {
@@ -384,7 +591,109 @@ impl UIStreamEvent {
 
     /// Create a custom data event.
     pub fn data(name: impl Into<String>, data: Value) -> Self {
-        let data_type = format!("data-{}", name.into());
-        Self::Data { data_type, data }
+        Self::data_with_options(name, data, None, None)
+    }
+
+    /// Create a custom data event with optional id/transient flags.
+    pub fn data_with_options(
+        name: impl Into<String>,
+        data: Value,
+        id: Option<String>,
+        transient: Option<bool>,
+    ) -> Self {
+        let name = name.into();
+        let data_type = if name.starts_with("data-") {
+            name
+        } else {
+            format!("data-{name}")
+        };
+        Self::Data {
+            data_type,
+            id,
+            data,
+            transient,
+        }
+    }
+}
+
+fn deserialize_data_event_type<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    if value.starts_with("data-") {
+        Ok(value)
+    } else {
+        Err(D::Error::custom(format!(
+            "invalid data event type '{value}', expected 'data-*'"
+        )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn data_event_with_options_serializes_id_and_transient() {
+        let event = UIStreamEvent::data_with_options(
+            "reasoning-encrypted",
+            json!({ "encryptedValue": "opaque" }),
+            Some("reasoning_msg_1".to_string()),
+            Some(true),
+        );
+        let value = serde_json::to_value(event).expect("serialize data event");
+
+        assert_eq!(value["type"], "data-reasoning-encrypted");
+        assert_eq!(value["id"], "reasoning_msg_1");
+        assert_eq!(value["transient"], true);
+    }
+
+    #[test]
+    fn data_event_rejects_non_prefixed_type() {
+        let err = serde_json::from_value::<UIStreamEvent>(json!({
+            "type": "reasoning-encrypted",
+            "data": { "encryptedValue": "opaque" }
+        }))
+        .expect_err("invalid data type must be rejected");
+
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn tool_input_error_roundtrip() {
+        let event = UIStreamEvent::tool_input_error(
+            "call_1",
+            "search",
+            json!({ "q": "rust" }),
+            "invalid args",
+        );
+        let raw = serde_json::to_string(&event).expect("serialize tool-input-error");
+        let restored: UIStreamEvent =
+            serde_json::from_str(&raw).expect("deserialize tool-input-error");
+
+        assert!(matches!(
+            restored,
+            UIStreamEvent::ToolInputError {
+                tool_call_id,
+                tool_name,
+                error_text,
+                ..
+            } if tool_call_id == "call_1" && tool_name == "search" && error_text == "invalid args"
+        ));
+    }
+
+    #[test]
+    fn message_metadata_roundtrip() {
+        let event = UIStreamEvent::message_metadata(json!({ "step": 2 }));
+        let raw = serde_json::to_string(&event).expect("serialize message metadata");
+        let restored: UIStreamEvent =
+            serde_json::from_str(&raw).expect("deserialize message metadata");
+
+        assert!(matches!(
+            restored,
+            UIStreamEvent::MessageMetadata { message_metadata } if message_metadata["step"] == 2
+        ));
     }
 }

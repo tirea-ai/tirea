@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::de::Error as DeError;
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 /// Streaming state for UI parts.
@@ -19,113 +20,311 @@ pub enum ToolState {
     InputStreaming,
     /// Tool input is complete, ready for execution.
     InputAvailable,
+    /// User approval has been requested for this tool call.
+    ApprovalRequested,
+    /// User has responded to the approval request.
+    ApprovalResponded,
     /// Tool execution completed with output.
     OutputAvailable,
     /// Tool execution resulted in error.
     OutputError,
+    /// Tool execution was denied.
+    OutputDenied,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum TextPartType {
+    #[serde(rename = "text")]
+    Text,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum ReasoningPartType {
+    #[serde(rename = "reasoning")]
+    Reasoning,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum SourceUrlPartType {
+    #[serde(rename = "source-url")]
+    SourceUrl,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum SourceDocumentPartType {
+    #[serde(rename = "source-document")]
+    SourceDocument,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum FilePartType {
+    #[serde(rename = "file")]
+    File,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum StepStartPartType {
+    #[serde(rename = "step-start")]
+    StepStart,
+}
+
+/// User approval details attached to a tool invocation part.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolApproval {
+    /// Approval request ID.
+    pub id: String,
+    /// Optional final decision.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approved: Option<bool>,
+    /// Optional reason from the approver.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Text part.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TextUIPart {
+    #[serde(rename = "type")]
+    part_type: TextPartType,
+    /// The text content.
+    pub text: String,
+    /// Optional streaming state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<StreamState>,
+    /// Optional provider metadata.
+    #[serde(rename = "providerMetadata", skip_serializing_if = "Option::is_none")]
+    pub provider_metadata: Option<Value>,
+}
+
+impl TextUIPart {
+    pub fn new(text: impl Into<String>, state: Option<StreamState>) -> Self {
+        Self {
+            part_type: TextPartType::Text,
+            text: text.into(),
+            state,
+            provider_metadata: None,
+        }
+    }
+}
+
+/// Reasoning part.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReasoningUIPart {
+    #[serde(rename = "type")]
+    part_type: ReasoningPartType,
+    /// The reasoning text.
+    pub text: String,
+    /// Optional streaming state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<StreamState>,
+    /// Optional provider metadata.
+    #[serde(rename = "providerMetadata", skip_serializing_if = "Option::is_none")]
+    pub provider_metadata: Option<Value>,
+}
+
+impl ReasoningUIPart {
+    pub fn new(text: impl Into<String>, state: Option<StreamState>) -> Self {
+        Self {
+            part_type: ReasoningPartType::Reasoning,
+            text: text.into(),
+            state,
+            provider_metadata: None,
+        }
+    }
+}
+
+/// Tool invocation part.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolUIPart {
+    /// Part type. Must be `dynamic-tool` or `tool-*`.
+    #[serde(rename = "type", deserialize_with = "deserialize_tool_part_type")]
+    pub part_type: String,
+    /// Tool call identifier.
+    #[serde(rename = "toolCallId")]
+    pub tool_call_id: String,
+    /// Tool name (required for `dynamic-tool`).
+    #[serde(rename = "toolName", skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    /// Optional display title.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Whether the provider executed this tool directly.
+    #[serde(rename = "providerExecuted", skip_serializing_if = "Option::is_none")]
+    pub provider_executed: Option<bool>,
+    /// Tool execution state.
+    pub state: ToolState,
+    /// Tool input payload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<Value>,
+    /// Tool output payload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<Value>,
+    /// Tool error text.
+    #[serde(rename = "errorText", skip_serializing_if = "Option::is_none")]
+    pub error_text: Option<String>,
+    /// Provider metadata associated with the tool input call.
+    #[serde(
+        rename = "callProviderMetadata",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub call_provider_metadata: Option<Value>,
+    /// Raw input when parsing fails (AI SDK compatibility for output-error).
+    #[serde(rename = "rawInput", skip_serializing_if = "Option::is_none")]
+    pub raw_input: Option<Value>,
+    /// Marks provisional tool outputs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preliminary: Option<bool>,
+    /// Optional approval state payload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval: Option<ToolApproval>,
+}
+
+impl ToolUIPart {
+    /// Create a static tool part (`type = tool-{name}`).
+    pub fn static_tool(
+        tool_name: impl Into<String>,
+        tool_call_id: impl Into<String>,
+        state: ToolState,
+    ) -> Self {
+        let tool_name = tool_name.into();
+        Self {
+            part_type: format!("tool-{tool_name}"),
+            tool_call_id: tool_call_id.into(),
+            tool_name: None,
+            title: None,
+            provider_executed: None,
+            state,
+            input: None,
+            output: None,
+            error_text: None,
+            call_provider_metadata: None,
+            raw_input: None,
+            preliminary: None,
+            approval: None,
+        }
+    }
+
+    /// Create a dynamic tool part (`type = dynamic-tool`).
+    pub fn dynamic_tool(
+        tool_name: impl Into<String>,
+        tool_call_id: impl Into<String>,
+        state: ToolState,
+    ) -> Self {
+        Self {
+            part_type: "dynamic-tool".to_string(),
+            tool_call_id: tool_call_id.into(),
+            tool_name: Some(tool_name.into()),
+            title: None,
+            provider_executed: None,
+            state,
+            input: None,
+            output: None,
+            error_text: None,
+            call_provider_metadata: None,
+            raw_input: None,
+            preliminary: None,
+            approval: None,
+        }
+    }
+}
+
+/// URL source reference.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SourceUrlUIPart {
+    #[serde(rename = "type")]
+    part_type: SourceUrlPartType,
+    /// Source identifier.
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    /// The URL.
+    pub url: String,
+    /// Optional title.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Optional provider metadata.
+    #[serde(rename = "providerMetadata", skip_serializing_if = "Option::is_none")]
+    pub provider_metadata: Option<Value>,
+}
+
+/// Document source reference.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SourceDocumentUIPart {
+    #[serde(rename = "type")]
+    part_type: SourceDocumentPartType,
+    /// Source identifier.
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    /// IANA media type.
+    #[serde(rename = "mediaType")]
+    pub media_type: String,
+    /// Document title.
+    pub title: String,
+    /// Optional filename.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    /// Optional provider metadata.
+    #[serde(rename = "providerMetadata", skip_serializing_if = "Option::is_none")]
+    pub provider_metadata: Option<Value>,
+}
+
+/// File attachment.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FileUIPart {
+    #[serde(rename = "type")]
+    part_type: FilePartType,
+    /// File URL.
+    pub url: String,
+    /// IANA media type.
+    #[serde(rename = "mediaType")]
+    pub media_type: String,
+    /// Optional filename.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    /// Optional provider metadata.
+    #[serde(rename = "providerMetadata", skip_serializing_if = "Option::is_none")]
+    pub provider_metadata: Option<Value>,
+}
+
+/// Step start marker.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StepStartUIPart {
+    #[serde(rename = "type")]
+    part_type: StepStartPartType,
+}
+
+/// Custom data part.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DataUIPart {
+    /// Custom type, must start with `data-`.
+    #[serde(rename = "type", deserialize_with = "deserialize_data_part_type")]
+    pub data_type: String,
+    /// Optional stable data part ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Data payload.
+    pub data: Value,
 }
 
 /// A part of a UI message.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", rename_all = "kebab-case")]
+#[serde(untagged)]
 pub enum UIMessagePart {
     /// Text content part.
-    Text {
-        /// The text content.
-        text: String,
-        /// Optional streaming state.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        state: Option<StreamState>,
-    },
-
+    Text(TextUIPart),
     /// Reasoning content part.
-    Reasoning {
-        /// The reasoning text.
-        text: String,
-        /// Optional streaming state.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        state: Option<StreamState>,
-        /// Optional provider metadata.
-        #[serde(rename = "providerMetadata", skip_serializing_if = "Option::is_none")]
-        provider_metadata: Option<Value>,
-    },
-
+    Reasoning(ReasoningUIPart),
     /// Tool invocation part.
-    #[serde(rename = "tool-invocation")]
-    Tool {
-        /// Tool call identifier.
-        #[serde(rename = "toolCallId")]
-        tool_call_id: String,
-        /// Tool name.
-        #[serde(rename = "toolName")]
-        tool_name: String,
-        /// Tool execution state.
-        state: ToolState,
-        /// Tool input (available after input-available).
-        #[serde(skip_serializing_if = "Option::is_none")]
-        input: Option<Value>,
-        /// Tool output (available after output-available).
-        #[serde(skip_serializing_if = "Option::is_none")]
-        output: Option<Value>,
-        /// Error text (if output-error state).
-        #[serde(rename = "errorText", skip_serializing_if = "Option::is_none")]
-        error_text: Option<String>,
-    },
-
+    Tool(ToolUIPart),
     /// URL source reference.
-    SourceUrl {
-        /// Source identifier.
-        #[serde(rename = "sourceId")]
-        source_id: String,
-        /// The URL.
-        url: String,
-        /// Optional title.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        title: Option<String>,
-        /// Optional provider metadata.
-        #[serde(rename = "providerMetadata", skip_serializing_if = "Option::is_none")]
-        provider_metadata: Option<Value>,
-    },
-
+    SourceUrl(SourceUrlUIPart),
     /// Document source reference.
-    SourceDocument {
-        /// Source identifier.
-        #[serde(rename = "sourceId")]
-        source_id: String,
-        /// IANA media type.
-        #[serde(rename = "mediaType")]
-        media_type: String,
-        /// Document title.
-        title: String,
-        /// Optional filename.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        filename: Option<String>,
-        /// Optional provider metadata.
-        #[serde(rename = "providerMetadata", skip_serializing_if = "Option::is_none")]
-        provider_metadata: Option<Value>,
-    },
-
+    SourceDocument(SourceDocumentUIPart),
     /// File attachment.
-    File {
-        /// File URL.
-        url: String,
-        /// IANA media type.
-        #[serde(rename = "mediaType")]
-        media_type: String,
-    },
-
+    File(FileUIPart),
     /// Step start marker.
-    StepStart,
-
+    StepStart(StepStartUIPart),
     /// Custom data part.
-    #[serde(untagged)]
-    Data {
-        /// Custom type.
-        #[serde(rename = "type")]
-        data_type: String,
-        /// Data payload.
-        data: Value,
-    },
+    Data(DataUIPart),
 }
 
 /// Role in the conversation.
@@ -174,10 +373,10 @@ impl UIMessage {
             id: id.into(),
             role: UIRole::User,
             metadata: None,
-            parts: vec![UIMessagePart::Text {
-                text: text.into(),
-                state: Some(StreamState::Done),
-            }],
+            parts: vec![UIMessagePart::Text(TextUIPart::new(
+                text,
+                Some(StreamState::Done),
+            ))],
         }
     }
 
@@ -215,10 +414,10 @@ impl UIMessage {
     /// Add a text part.
     #[must_use]
     pub fn with_text(self, text: impl Into<String>) -> Self {
-        self.with_part(UIMessagePart::Text {
-            text: text.into(),
-            state: Some(StreamState::Done),
-        })
+        self.with_part(UIMessagePart::Text(TextUIPart::new(
+            text,
+            Some(StreamState::Done),
+        )))
     }
 
     /// Get all text content concatenated.
@@ -226,10 +425,88 @@ impl UIMessage {
         self.parts
             .iter()
             .filter_map(|p| match p {
-                UIMessagePart::Text { text, .. } => Some(text.as_str()),
+                UIMessagePart::Text(part) => Some(part.text.as_str()),
                 _ => None,
             })
             .collect::<Vec<_>>()
             .join("")
+    }
+}
+
+fn deserialize_tool_part_type<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    if value == "dynamic-tool" || value.starts_with("tool-") {
+        Ok(value)
+    } else {
+        Err(D::Error::custom(format!(
+            "invalid tool part type '{value}', expected 'dynamic-tool' or 'tool-*'"
+        )))
+    }
+}
+
+fn deserialize_data_part_type<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    if value.starts_with("data-") {
+        Ok(value)
+    } else {
+        Err(D::Error::custom(format!(
+            "invalid data part type '{value}', expected 'data-*'"
+        )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn static_tool_part_serializes_with_tool_prefix_type() {
+        let mut part = ToolUIPart::static_tool("search", "call_1", ToolState::InputAvailable);
+        part.input = Some(json!({ "q": "rust" }));
+        let value = serde_json::to_value(UIMessagePart::Tool(part)).expect("serialize tool part");
+
+        assert_eq!(value["type"], "tool-search");
+        assert_eq!(value["toolCallId"], "call_1");
+        assert!(value.get("toolName").is_none());
+    }
+
+    #[test]
+    fn dynamic_tool_part_serializes_with_tool_name() {
+        let part = ToolUIPart::dynamic_tool("search", "call_2", ToolState::InputStreaming);
+        let value = serde_json::to_value(UIMessagePart::Tool(part)).expect("serialize tool part");
+
+        assert_eq!(value["type"], "dynamic-tool");
+        assert_eq!(value["toolCallId"], "call_2");
+        assert_eq!(value["toolName"], "search");
+    }
+
+    #[test]
+    fn tool_part_rejects_invalid_type() {
+        let err = serde_json::from_value::<ToolUIPart>(json!({
+            "type": "tool",
+            "toolCallId": "call_1",
+            "state": "input-available"
+        }))
+        .expect_err("invalid tool type must be rejected");
+
+        assert!(err.to_string().contains("dynamic-tool"));
+    }
+
+    #[test]
+    fn data_part_rejects_invalid_type_prefix() {
+        let err = serde_json::from_value::<DataUIPart>(json!({
+            "type": "reasoning-encrypted",
+            "data": { "v": 1 }
+        }))
+        .expect_err("invalid data type must be rejected");
+
+        assert!(err.to_string().contains("data-*"));
     }
 }

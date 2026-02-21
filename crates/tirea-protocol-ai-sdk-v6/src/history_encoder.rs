@@ -1,4 +1,4 @@
-use super::{StreamState, ToolState, UIMessage, UIMessagePart, UIRole};
+use super::{StreamState, TextUIPart, ToolState, ToolUIPart, UIMessage, UIMessagePart, UIRole};
 use serde_json::Value;
 use tirea_contract::{Message, ProtocolHistoryEncoder, Role};
 use tracing::warn;
@@ -19,38 +19,36 @@ impl ProtocolHistoryEncoder for AiSdkV6HistoryEncoder {
 
         if msg.role == Role::Tool {
             if let Some(tool_call_id) = &msg.tool_call_id {
-                parts.push(UIMessagePart::Tool {
-                    tool_call_id: tool_call_id.clone(),
-                    tool_name: "tool".to_string(),
-                    state: ToolState::OutputAvailable,
-                    input: None,
-                    output: Some(parse_tool_output(&msg.content)),
-                    error_text: None,
-                });
+                let mut part = ToolUIPart::dynamic_tool(
+                    "tool",
+                    tool_call_id.clone(),
+                    ToolState::OutputAvailable,
+                );
+                part.output = Some(parse_tool_output(&msg.content));
+                parts.push(UIMessagePart::Tool(part));
             } else if !msg.content.is_empty() {
-                parts.push(UIMessagePart::Text {
-                    text: msg.content.clone(),
-                    state: Some(StreamState::Done),
-                });
+                parts.push(UIMessagePart::Text(TextUIPart::new(
+                    msg.content.clone(),
+                    Some(StreamState::Done),
+                )));
             }
         } else {
             if !msg.content.is_empty() {
-                parts.push(UIMessagePart::Text {
-                    text: msg.content.clone(),
-                    state: Some(StreamState::Done),
-                });
+                parts.push(UIMessagePart::Text(TextUIPart::new(
+                    msg.content.clone(),
+                    Some(StreamState::Done),
+                )));
             }
 
             if let Some(ref calls) = msg.tool_calls {
                 for tc in calls {
-                    parts.push(UIMessagePart::Tool {
-                        tool_call_id: tc.id.clone(),
-                        tool_name: tc.name.clone(),
-                        state: ToolState::InputAvailable,
-                        input: Some(tc.arguments.clone()),
-                        output: None,
-                        error_text: None,
-                    });
+                    let mut part = ToolUIPart::static_tool(
+                        tc.name.clone(),
+                        tc.id.clone(),
+                        ToolState::InputAvailable,
+                    );
+                    part.input = Some(tc.arguments.clone());
+                    parts.push(UIMessagePart::Tool(part));
                 }
             }
         }
@@ -109,10 +107,11 @@ mod tests {
         assert_eq!(encoded.parts.len(), 1);
         assert!(matches!(
             &encoded.parts[0],
-            UIMessagePart::Text {
+            UIMessagePart::Text(TextUIPart {
                 text,
-                state: Some(StreamState::Done)
-            } if text == "hello"
+                state: Some(StreamState::Done),
+                ..
+            }) if text == "hello"
         ));
     }
 
@@ -143,17 +142,17 @@ mod tests {
         assert_eq!(encoded.parts.len(), 3);
         assert!(matches!(
             &encoded.parts[0],
-            UIMessagePart::Text { text, .. } if text == "Let me search."
+            UIMessagePart::Text(TextUIPart { text, .. }) if text == "Let me search."
         ));
         assert!(matches!(
             &encoded.parts[1],
-            UIMessagePart::Tool { tool_call_id, tool_name, state: ToolState::InputAvailable, .. }
-            if tool_call_id == "call_1" && tool_name == "search"
+            UIMessagePart::Tool(ToolUIPart { part_type, tool_call_id, state: ToolState::InputAvailable, .. })
+            if tool_call_id == "call_1" && part_type == "tool-search"
         ));
         assert!(matches!(
             &encoded.parts[2],
-            UIMessagePart::Tool { tool_call_id, tool_name, .. }
-            if tool_call_id == "call_2" && tool_name == "fetch"
+            UIMessagePart::Tool(ToolUIPart { part_type, tool_call_id, .. })
+            if tool_call_id == "call_2" && part_type == "tool-fetch"
         ));
     }
 
@@ -173,7 +172,7 @@ mod tests {
         assert_eq!(encoded.parts.len(), 1);
         assert!(matches!(
             &encoded.parts[0],
-            UIMessagePart::Tool { tool_call_id, state: ToolState::OutputAvailable, output: Some(output), .. }
+            UIMessagePart::Tool(ToolUIPart { tool_call_id, state: ToolState::OutputAvailable, output: Some(output), .. })
             if tool_call_id == "call_1" && output["result"] == 42
         ));
     }
@@ -194,7 +193,7 @@ mod tests {
         assert_eq!(encoded.parts.len(), 1);
         assert!(matches!(
             &encoded.parts[0],
-            UIMessagePart::Text { text, .. } if text == "plain output"
+            UIMessagePart::Text(TextUIPart { text, .. }) if text == "plain output"
         ));
     }
 
@@ -215,7 +214,7 @@ mod tests {
         };
         let encoded = AiSdkV6HistoryEncoder::encode_message(&msg);
         assert_eq!(encoded.parts.len(), 1);
-        assert!(matches!(&encoded.parts[0], UIMessagePart::Tool { .. }));
+        assert!(matches!(&encoded.parts[0], UIMessagePart::Tool(_)));
     }
 
     #[test]
@@ -296,7 +295,7 @@ mod tests {
         let encoded = AiSdkV6HistoryEncoder::encode_message(&msg);
         let json = serde_json::to_string(&encoded).unwrap();
         assert!(json.contains("toolCallId"));
-        assert!(json.contains("toolName"));
+        assert!(json.contains("\"type\":\"tool-search\""));
         assert!(!json.contains("tool_call_id"));
         assert!(!json.contains("tool_name"));
     }
