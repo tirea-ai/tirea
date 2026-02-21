@@ -34,9 +34,11 @@
 
 use crate::plugin::phase::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
-    BeforeToolExecuteContext, Phase, RunEndContext, RunStartContext, StepContext, StepEndContext,
+    BeforeToolExecuteContext, RunEndContext, RunStartContext, StepContext, StepEndContext,
     StepStartContext,
 };
+#[cfg(feature = "test-support")]
+use crate::plugin::phase::Phase;
 use async_trait::async_trait;
 
 /// Plugin trait for extending agent behavior.
@@ -145,6 +147,7 @@ pub trait AgentPlugin: Send + Sync {
         }
     }
 
+    #[cfg(feature = "test-support")]
     #[deprecated(note = "implement phase-specific methods instead")]
     async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
 }
@@ -153,6 +156,8 @@ pub trait AgentPlugin: Send + Sync {
 mod tests {
     use super::*;
     use crate::event::Interaction;
+    #[cfg(feature = "test-support")]
+    use crate::plugin::phase::Phase;
     use crate::plugin::phase::ToolContext;
     use crate::testing::TestFixture;
     use crate::thread::ToolCall;
@@ -493,6 +498,7 @@ mod tests {
             "legacy_phase_only"
         }
 
+        #[cfg(feature = "test-support")]
         #[allow(deprecated)]
         async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase == Phase::BeforeInference {

@@ -33,6 +33,7 @@ async-nats = "0.38"
 genai = "0.5"
 
 [dev-dependencies]
+tirea-contract = { path = "../tirea-contract", features = ["test-support"] }
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 async-trait = "0.1"
