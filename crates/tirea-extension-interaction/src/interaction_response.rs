@@ -11,11 +11,14 @@ use std::collections::HashMap;
 use tirea_contract::event::interaction::{
     FrontendToolInvocation, InvocationOrigin, ResponseRouting,
 };
-use tirea_contract::plugin::phase::{Phase, StepContext};
+use tirea_contract::plugin::phase::{
+    BeforeToolExecuteContext, Phase, PluginPhaseContext, RunStartContext, StepContext,
+};
 use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::runtime::control::LoopControlState;
 use tirea_contract::{Interaction, InteractionResponse};
-use tirea_state::{Patch, State, TireaError, TrackedPatch};
+use tirea_extension_permission::PermissionState;
+use tirea_state::{State, TireaError};
 
 /// Plugin that handles interaction responses from client.
 ///
@@ -100,7 +103,7 @@ impl InteractionResponsePlugin {
         !self.responses.is_empty()
     }
 
-    fn pending_interaction_from_step_thread(step: &StepContext<'_>) -> Option<Interaction> {
+    fn pending_interaction_from_step_thread(step: &impl PluginPhaseContext) -> Option<Interaction> {
         let state = step.snapshot();
         state
             .get(LoopControlState::PATH)
@@ -109,14 +112,14 @@ impl InteractionResponsePlugin {
             .and_then(|v| serde_json::from_value::<Interaction>(v).ok())
     }
 
-    fn persisted_pending_interaction(step: &StepContext<'_>) -> Option<Interaction> {
+    fn persisted_pending_interaction(step: &impl PluginPhaseContext) -> Option<Interaction> {
         Self::pending_interaction_from_step_thread(step).or_else(|| {
             let agent = step.state_of::<LoopControlState>();
             agent.pending_interaction().ok().flatten()
         })
     }
 
-    fn persisted_frontend_invocation(step: &StepContext<'_>) -> Option<FrontendToolInvocation> {
+    fn persisted_frontend_invocation(step: &impl PluginPhaseContext) -> Option<FrontendToolInvocation> {
         let state = step.snapshot();
         state
             .get(LoopControlState::PATH)
@@ -126,27 +129,27 @@ impl InteractionResponsePlugin {
     }
 
     fn push_resolution(
-        step: &StepContext<'_>,
+        step: &impl PluginPhaseContext,
         interaction_id: String,
         result: serde_json::Value,
     ) -> Result<(), String> {
-        let outbox = step.ctx().state_of::<InteractionOutbox>();
+        let outbox = step.state_of::<InteractionOutbox>();
         outbox
             .interaction_resolutions_push(InteractionResponse::new(interaction_id, result))
             .map_err(|e| format!("failed to persist interaction resolution: {e}"))
     }
 
     fn queue_replay_call(
-        step: &StepContext<'_>,
+        step: &impl PluginPhaseContext,
         call: tirea_contract::thread::ToolCall,
     ) -> Result<(), String> {
-        let outbox = step.ctx().state_of::<InteractionOutbox>();
+        let outbox = step.state_of::<InteractionOutbox>();
         outbox
             .replay_tool_calls_push(call)
             .map_err(|e| format!("failed to persist replay tool call: {e}"))
     }
 
-    fn clear_pending_interaction_state(step: &StepContext<'_>) -> Result<(), String> {
+    fn clear_pending_interaction_state(step: &impl PluginPhaseContext) -> Result<(), String> {
         let state = step.state_of::<LoopControlState>();
         if let Err(err) = state.pending_interaction_none() {
             if !matches!(err, TireaError::PathNotFound { .. }) {
@@ -166,7 +169,7 @@ impl InteractionResponsePlugin {
     }
 
     /// During RunStart, detect pending interaction and schedule replay if approved.
-    fn on_run_start(&self, step: &mut StepContext<'_>) {
+    fn on_run_start(&self, step: &mut RunStartContext<'_, '_>) {
         let Some(pending) = Self::persisted_pending_interaction(step) else {
             return;
         };
@@ -177,7 +180,7 @@ impl InteractionResponsePlugin {
 
             if self.is_denied(pending_id) {
                 if let Err(err) = Self::clear_pending_interaction_state(step) {
-                    step.deny(err);
+                    let _ = err;
                     return;
                 }
                 if let Err(err) = Self::push_resolution(
@@ -187,7 +190,7 @@ impl InteractionResponsePlugin {
                         .cloned()
                         .unwrap_or(serde_json::Value::Bool(false)),
                 ) {
-                    step.deny(err);
+                    let _ = err;
                 }
                 return;
             }
@@ -203,7 +206,7 @@ impl InteractionResponsePlugin {
                     .cloned()
                     .unwrap_or(serde_json::Value::Bool(true)),
             ) {
-                step.deny(err);
+                let _ = err;
                 return;
             }
 
@@ -230,7 +233,7 @@ impl InteractionResponsePlugin {
                     }
                 };
                 if let Err(err) = clear_result {
-                    step.deny(err);
+                    let _ = err;
                 }
                 return;
             };
@@ -244,7 +247,7 @@ impl InteractionResponsePlugin {
                 }),
             );
             if let Err(err) = Self::queue_replay_call(step, replay_call) {
-                step.deny(err);
+                let _ = err;
             }
             return;
         }
@@ -259,7 +262,7 @@ impl InteractionResponsePlugin {
 
         if self.is_denied(pending_id) {
             if let Err(err) = Self::clear_pending_interaction_state(step) {
-                step.deny(err);
+                let _ = err;
                 return;
             }
             if let Err(err) = Self::push_resolution(
@@ -269,7 +272,7 @@ impl InteractionResponsePlugin {
                     .cloned()
                     .unwrap_or(serde_json::Value::Bool(false)),
             ) {
-                step.deny(err);
+                let _ = err;
             }
             return;
         }
@@ -291,7 +294,7 @@ impl InteractionResponsePlugin {
                 .clone()
                 .unwrap_or(serde_json::Value::Bool(true)),
         ) {
-            step.deny(err);
+            let _ = err;
             return;
         }
 
@@ -301,18 +304,12 @@ impl InteractionResponsePlugin {
     /// Route an approved response using the first-class `FrontendToolInvocation` model.
     fn route_frontend_invocation(
         &self,
-        step: &mut StepContext<'_>,
+        step: &impl PluginPhaseContext,
         inv: &FrontendToolInvocation,
         response: Option<&serde_json::Value>,
     ) {
         match &inv.routing {
-            ResponseRouting::ReplayOriginalTool { state_patches } => {
-                // Apply pre-replay state patches (e.g. permission → allow).
-                if !state_patches.is_empty() {
-                    let patch = TrackedPatch::new(Patch::with_ops(state_patches.clone()))
-                        .with_source("interaction_response");
-                    step.pending_patches.push(patch);
-                }
+            ResponseRouting::ReplayOriginalTool { .. } => {
                 // Queue replay of the original backend tool.
                 match &inv.origin {
                     InvocationOrigin::ToolCallIntercepted {
@@ -325,8 +322,12 @@ impl InteractionResponsePlugin {
                             backend_tool_name.clone(),
                             backend_arguments.clone(),
                         );
+                        let permission = step.state_of::<PermissionState>();
+                        let mut approved = permission.approved_calls().ok().unwrap_or_default();
+                        approved.insert(backend_call_id.clone(), true);
+                        let _ = permission.set_approved_calls(approved);
                         if let Err(err) = Self::queue_replay_call(step, replay_call) {
-                            step.deny(err);
+                            let _ = err;
                         }
                     }
                     InvocationOrigin::PluginInitiated { .. } => {
@@ -338,7 +339,7 @@ impl InteractionResponsePlugin {
                             inv.arguments.clone(),
                         );
                         if let Err(err) = Self::queue_replay_call(step, replay_call) {
-                            step.deny(err);
+                            let _ = err;
                         }
                     }
                 }
@@ -352,7 +353,7 @@ impl InteractionResponsePlugin {
                     normalize_frontend_tool_result(response, &inv.arguments),
                 );
                 if let Err(err) = Self::queue_replay_call(step, replay_call) {
-                    step.deny(err);
+                    let _ = err;
                 }
             }
             ResponseRouting::PassToLLM => {
@@ -364,7 +365,7 @@ impl InteractionResponsePlugin {
                     normalize_frontend_tool_result(response, &inv.arguments),
                 );
                 if let Err(err) = Self::queue_replay_call(step, replay_call) {
-                    step.deny(err);
+                    let _ = err;
                 }
             }
         }
@@ -389,25 +390,19 @@ impl AgentPlugin for InteractionResponsePlugin {
         INTERACTION_RESPONSE_PLUGIN_ID
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        match phase {
-            Phase::RunStart => {
-                self.on_run_start(step);
-                return;
-            }
-            Phase::BeforeToolExecute => {}
-            _ => return,
-        }
+    async fn run_start(&self, ctx: &mut RunStartContext<'_, '_>) {
+        self.on_run_start(ctx);
+    }
 
+    async fn before_tool_execute(&self, step: &mut BeforeToolExecuteContext<'_, '_>) {
         // Check if there's a tool context
-        let Some(tool) = step.tool.as_ref() else {
+        let Some(interaction_id) = step.tool_call_id().map(str::to_string) else {
             return;
         };
 
         // Check both the tool call ID and the frontend invocation call_id.
         // For direct frontend tools, interaction_id == tool.id.
         // For indirect (permission), the frontend invocation has a different call_id.
-        let interaction_id = tool.id.clone();
         let frontend_call_id = Self::persisted_frontend_invocation(step).map(|inv| inv.call_id);
 
         // The client may respond with either the tool call ID or the frontend call ID.
@@ -455,7 +450,8 @@ impl AgentPlugin for InteractionResponsePlugin {
                 step.deny(err);
             }
         } else if is_approved {
-            step.allow();
+            // Override prior ask/deny state and continue execution.
+            step.proceed();
             if let Err(err) = Self::clear_pending_interaction_state(step) {
                 step.deny(err);
                 return;
@@ -466,6 +462,21 @@ impl AgentPlugin for InteractionResponsePlugin {
             {
                 step.deny(err);
             }
+        }
+    }
+
+    #[allow(deprecated)]
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        match phase {
+            Phase::RunStart => {
+                let mut ctx = RunStartContext::new(step);
+                self.run_start(&mut ctx).await;
+            }
+            Phase::BeforeToolExecute => {
+                let mut ctx = BeforeToolExecuteContext::new(step);
+                self.before_tool_execute(&mut ctx).await;
+            }
+            _ => {}
         }
     }
 }
@@ -551,10 +562,15 @@ mod tests {
         assert_eq!(replay_calls[0].id, "call_write");
         assert_eq!(replay_calls[0].name, "write_file");
 
-        // One-shot permission state patch should be emitted
+        // One-shot approval should be persisted for the replayed backend call.
+        let approved = updated
+            .get("permissions")
+            .and_then(|p| p.get("approved_calls"))
+            .and_then(|m| m.get("call_write"))
+            .and_then(|v| v.as_bool());
         assert!(
-            !step.pending_patches.is_empty(),
-            "permission state patch should be emitted"
+            approved == Some(true),
+            "approval for replayed call_write should be persisted"
         );
     }
 
@@ -812,8 +828,13 @@ mod tests {
         assert_eq!(replay_calls[0].name, "write_file");
         assert_eq!(replay_calls[0].arguments["path"], "a.txt");
 
-        // State patches should be applied
-        assert!(!step.pending_patches.is_empty());
+        // One-shot approval should be persisted for the replayed backend call.
+        let approved = updated
+            .get("permissions")
+            .and_then(|p| p.get("approved_calls"))
+            .and_then(|m| m.get("call_write"))
+            .and_then(|v| v.as_bool());
+        assert_eq!(approved, Some(true));
     }
 
     #[tokio::test]

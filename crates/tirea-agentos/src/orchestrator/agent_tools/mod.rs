@@ -5,7 +5,6 @@ use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::thread::{Message, Role, ToolCall};
 use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::contracts::{AgentEvent, Interaction};
-use crate::extensions::permission::PermissionContextExt;
 use crate::extensions::permission::ToolPermissionBehavior;
 pub(super) use crate::runtime::loop_runner::TOOL_SCOPE_CALLER_AGENT_ID_KEY as SCOPE_CALLER_AGENT_ID_KEY;
 use crate::runtime::loop_runner::{

@@ -9,7 +9,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tirea_contract::plugin::phase::{Phase, StepContext};
+use tirea_contract::plugin::phase::{
+    AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
+    BeforeToolExecuteContext, Phase, PluginPhaseContext, RunEndContext, RunStartContext,
+    StepContext,
+};
 use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::runtime::control::{InferenceError, LoopControlState};
 
@@ -387,239 +391,247 @@ impl AgentPlugin for LLMMetryPlugin {
         "llmmetry"
     }
 
+    async fn run_start(&self, _ctx: &mut RunStartContext<'_, '_>) {
+        *lock_unpoison(&self.run_start) = Some(Instant::now());
+    }
+
+    async fn before_inference(&self, _ctx: &mut BeforeInferenceContext<'_, '_>) {
+        *lock_unpoison(&self.inference_start) = Some(Instant::now());
+        let model = lock_unpoison(&self.model).clone();
+        let provider = lock_unpoison(&self.provider).clone();
+        let span_name = format!("{} {}", self.operation, model);
+        let span = tracing::info_span!("gen_ai",
+            "otel.name" = %span_name,
+            "otel.kind" = "client",
+            "otel.status_code" = tracing::field::Empty,
+            "otel.status_description" = tracing::field::Empty,
+            "gen_ai.provider.name" = %provider,
+            "gen_ai.operation.name" = %self.operation,
+            "gen_ai.request.model" = %model,
+            "gen_ai.request.temperature" = tracing::field::Empty,
+            "gen_ai.request.top_p" = tracing::field::Empty,
+            "gen_ai.request.max_tokens" = tracing::field::Empty,
+            "gen_ai.request.stop_sequences" = tracing::field::Empty,
+            "gen_ai.response.model" = tracing::field::Empty,
+            "gen_ai.response.id" = tracing::field::Empty,
+            "gen_ai.usage.input_tokens" = tracing::field::Empty,
+            "gen_ai.usage.output_tokens" = tracing::field::Empty,
+            "gen_ai.response.finish_reasons" = tracing::field::Empty,
+            "gen_ai.usage.cache_read.input_tokens" = tracing::field::Empty,
+            "gen_ai.usage.cache_creation.input_tokens" = tracing::field::Empty,
+            "error.type" = tracing::field::Empty,
+            "error.message" = tracing::field::Empty,
+        );
+        if let Some(t) = *lock_unpoison(&self.temperature) {
+            span.record("gen_ai.request.temperature", t);
+        }
+        if let Some(t) = *lock_unpoison(&self.top_p) {
+            span.record("gen_ai.request.top_p", t);
+        }
+        if let Some(t) = *lock_unpoison(&self.max_tokens) {
+            span.record("gen_ai.request.max_tokens", t as i64);
+        }
+        {
+            let seqs = lock_unpoison(&self.stop_sequences);
+            if !seqs.is_empty() {
+                span.record("gen_ai.request.stop_sequences", format!("{:?}", *seqs).as_str());
+            }
+        }
+        *lock_unpoison(&self.inference_tracing_span) = Some(span);
+    }
+
+    async fn after_inference(&self, ctx: &mut AfterInferenceContext<'_, '_>) {
+        let duration_ms = self
+            .inference_start
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+            .map(|s| s.elapsed().as_millis() as u64)
+            .unwrap_or(0);
+
+        let usage = ctx.response_opt().and_then(|r| r.usage.as_ref());
+        let (input_tokens, output_tokens, total_tokens) = extract_token_counts(usage);
+        let (cache_read_input_tokens, cache_creation_input_tokens) = extract_cache_tokens(usage);
+        let error = inference_error_from_state(ctx);
+
+        let model = lock_unpoison(&self.model).clone();
+        let provider = lock_unpoison(&self.provider).clone();
+        let span = GenAISpan {
+            model,
+            provider,
+            operation: self.operation.clone(),
+            response_model: None,
+            response_id: None,
+            finish_reasons: Vec::new(),
+            error_type: error.as_ref().map(|e| e.error_type.clone()),
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cache_read_input_tokens,
+            cache_creation_input_tokens,
+            temperature: *lock_unpoison(&self.temperature),
+            top_p: *lock_unpoison(&self.top_p),
+            max_tokens: *lock_unpoison(&self.max_tokens),
+            stop_sequences: lock_unpoison(&self.stop_sequences).clone(),
+            duration_ms,
+        };
+
+        if let Some(tracing_span) = lock_unpoison(&self.inference_tracing_span).take() {
+            if let Some(v) = span.input_tokens {
+                tracing_span.record("gen_ai.usage.input_tokens", v);
+            }
+            if let Some(v) = span.output_tokens {
+                tracing_span.record("gen_ai.usage.output_tokens", v);
+            }
+            if let Some(v) = span.cache_read_input_tokens {
+                tracing_span.record("gen_ai.usage.cache_read.input_tokens", v);
+            }
+            if let Some(v) = span.cache_creation_input_tokens {
+                tracing_span.record("gen_ai.usage.cache_creation.input_tokens", v);
+            }
+            if !span.finish_reasons.is_empty() {
+                tracing_span.record(
+                    "gen_ai.response.finish_reasons",
+                    format!("{:?}", span.finish_reasons).as_str(),
+                );
+            }
+            if let Some(ref v) = span.response_model {
+                tracing_span.record("gen_ai.response.model", v.as_str());
+            }
+            if let Some(ref v) = span.response_id {
+                tracing_span.record("gen_ai.response.id", v.as_str());
+            }
+            if let Some(ref err) = error {
+                tracing_span.record("error.type", err.error_type.as_str());
+                tracing_span.record("error.message", err.message.as_str());
+                tracing_span.record("otel.status_code", "ERROR");
+                tracing_span.record("otel.status_description", err.message.as_str());
+            }
+            drop(tracing_span);
+        }
+
+        self.sink.on_inference(&span);
+        lock_unpoison(&self.metrics).inferences.push(span);
+    }
+
+    async fn before_tool_execute(&self, ctx: &mut BeforeToolExecuteContext<'_, '_>) {
+        let tool_name = ctx.tool_name().unwrap_or_default().to_string();
+        let call_id = ctx.tool_call_id().unwrap_or_default().to_string();
+        if !call_id.is_empty() {
+            self.tool_start
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(call_id.clone(), Instant::now());
+        }
+        let provider = lock_unpoison(&self.provider).clone();
+        let span_name = format!("execute_tool {}", tool_name);
+        let span = tracing::info_span!("gen_ai",
+            "otel.name" = %span_name,
+            "otel.kind" = "internal",
+            "otel.status_code" = tracing::field::Empty,
+            "otel.status_description" = tracing::field::Empty,
+            "gen_ai.provider.name" = %provider,
+            "gen_ai.operation.name" = "execute_tool",
+            "gen_ai.tool.name" = %tool_name,
+            "gen_ai.tool.call.id" = %call_id,
+            "gen_ai.tool.type" = "function",
+            "error.type" = tracing::field::Empty,
+            "error.message" = tracing::field::Empty,
+        );
+        if !call_id.is_empty() {
+            lock_unpoison(&self.tool_tracing_span).insert(call_id, span);
+        }
+    }
+
+    async fn after_tool_execute(&self, ctx: &mut AfterToolExecuteContext<'_, '_>) {
+        let call_id_for_span = ctx.tool_call_id().unwrap_or_default().to_string();
+        let duration_ms = self
+            .tool_start
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&call_id_for_span)
+            .map(|s| s.elapsed().as_millis() as u64)
+            .unwrap_or(0);
+
+        let result = ctx.tool_result();
+        let error_type = if result.status == tirea_contract::tool::ToolStatus::Error {
+            Some("tool_error".to_string())
+        } else {
+            None
+        };
+        let error_message = result.message.clone().filter(|_| error_type.is_some());
+        let span = ToolSpan {
+            name: result.tool_name.clone(),
+            operation: "execute_tool".to_string(),
+            call_id: call_id_for_span.clone(),
+            tool_type: "function".to_string(),
+            error_type,
+            duration_ms,
+        };
+
+        let tracing_span = self
+            .tool_tracing_span
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&call_id_for_span);
+        if let Some(tracing_span) = tracing_span {
+            if let (Some(ref v), Some(ref msg)) = (&span.error_type, &error_message) {
+                tracing_span.record("error.type", v.as_str());
+                tracing_span.record("error.message", msg.as_str());
+                tracing_span.record("otel.status_code", "ERROR");
+                tracing_span.record("otel.status_description", msg.as_str());
+            }
+            drop(tracing_span);
+        }
+
+        self.sink.on_tool(&span);
+        lock_unpoison(&self.metrics).tools.push(span);
+    }
+
+    async fn run_end(&self, _ctx: &mut RunEndContext<'_, '_>) {
+        let session_duration_ms = self
+            .run_start
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+            .map(|s| s.elapsed().as_millis() as u64)
+            .unwrap_or(0);
+
+        lock_unpoison(&self.inference_tracing_span).take();
+        lock_unpoison(&self.tool_tracing_span).clear();
+        lock_unpoison(&self.tool_start).clear();
+
+        let mut metrics = lock_unpoison(&self.metrics).clone();
+        metrics.session_duration_ms = session_duration_ms;
+        self.sink.on_run_end(&metrics);
+    }
+
+    #[allow(deprecated)]
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         match phase {
             Phase::RunStart => {
-                *lock_unpoison(&self.run_start) = Some(Instant::now());
+                let mut ctx = RunStartContext::new(step);
+                self.run_start(&mut ctx).await;
             }
             Phase::BeforeInference => {
-                *lock_unpoison(&self.inference_start) = Some(Instant::now());
-                let model = lock_unpoison(&self.model).clone();
-                let provider = lock_unpoison(&self.provider).clone();
-                let span_name = format!("{} {}", self.operation, model);
-                let span = tracing::info_span!("gen_ai",
-                    "otel.name" = %span_name,
-                    "otel.kind" = "client",
-                    "otel.status_code" = tracing::field::Empty,
-                    "otel.status_description" = tracing::field::Empty,
-                    "gen_ai.provider.name" = %provider,
-                    "gen_ai.operation.name" = %self.operation,
-                    "gen_ai.request.model" = %model,
-                    "gen_ai.request.temperature" = tracing::field::Empty,
-                    "gen_ai.request.top_p" = tracing::field::Empty,
-                    "gen_ai.request.max_tokens" = tracing::field::Empty,
-                    "gen_ai.request.stop_sequences" = tracing::field::Empty,
-                    "gen_ai.response.model" = tracing::field::Empty,
-                    "gen_ai.response.id" = tracing::field::Empty,
-                    "gen_ai.usage.input_tokens" = tracing::field::Empty,
-                    "gen_ai.usage.output_tokens" = tracing::field::Empty,
-                    "gen_ai.response.finish_reasons" = tracing::field::Empty,
-                    "gen_ai.usage.cache_read.input_tokens" = tracing::field::Empty,
-                    "gen_ai.usage.cache_creation.input_tokens" = tracing::field::Empty,
-                    "error.type" = tracing::field::Empty,
-                    "error.message" = tracing::field::Empty,
-                );
-                // Record request parameters that are known at span creation time.
-                if let Some(t) = *lock_unpoison(&self.temperature) {
-                    span.record("gen_ai.request.temperature", t);
-                }
-                if let Some(t) = *lock_unpoison(&self.top_p) {
-                    span.record("gen_ai.request.top_p", t);
-                }
-                if let Some(t) = *lock_unpoison(&self.max_tokens) {
-                    span.record("gen_ai.request.max_tokens", t as i64);
-                }
-                {
-                    let seqs = lock_unpoison(&self.stop_sequences);
-                    if !seqs.is_empty() {
-                        span.record(
-                            "gen_ai.request.stop_sequences",
-                            format!("{:?}", *seqs).as_str(),
-                        );
-                    }
-                }
-                *lock_unpoison(&self.inference_tracing_span) = Some(span);
+                let mut ctx = BeforeInferenceContext::new(step);
+                self.before_inference(&mut ctx).await;
             }
             Phase::AfterInference => {
-                let duration_ms = self
-                    .inference_start
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .take()
-                    .map(|s| s.elapsed().as_millis() as u64)
-                    .unwrap_or(0);
-
-                let usage = step.response.as_ref().and_then(|r| r.usage.as_ref());
-                let (input_tokens, output_tokens, total_tokens) = extract_token_counts(usage);
-                let (cache_read_input_tokens, cache_creation_input_tokens) =
-                    extract_cache_tokens(usage);
-                let error = inference_error_from_state(step);
-
-                let model = lock_unpoison(&self.model).clone();
-                let provider = lock_unpoison(&self.provider).clone();
-                let span = GenAISpan {
-                    model,
-                    provider,
-                    operation: self.operation.clone(),
-                    response_model: None,
-                    response_id: None,
-                    finish_reasons: Vec::new(),
-                    error_type: error.as_ref().map(|e| e.error_type.clone()),
-                    input_tokens,
-                    output_tokens,
-                    total_tokens,
-                    cache_read_input_tokens,
-                    cache_creation_input_tokens,
-                    temperature: *lock_unpoison(&self.temperature),
-                    top_p: *lock_unpoison(&self.top_p),
-                    max_tokens: *lock_unpoison(&self.max_tokens),
-                    stop_sequences: lock_unpoison(&self.stop_sequences).clone(),
-                    duration_ms,
-                };
-
-                // Record fields onto the tracing span and drop it (closing the OTel span).
-                if let Some(tracing_span) = lock_unpoison(&self.inference_tracing_span).take() {
-                    if let Some(v) = span.input_tokens {
-                        tracing_span.record("gen_ai.usage.input_tokens", v);
-                    }
-                    if let Some(v) = span.output_tokens {
-                        tracing_span.record("gen_ai.usage.output_tokens", v);
-                    }
-                    if let Some(v) = span.cache_read_input_tokens {
-                        tracing_span.record("gen_ai.usage.cache_read.input_tokens", v);
-                    }
-                    if let Some(v) = span.cache_creation_input_tokens {
-                        tracing_span.record("gen_ai.usage.cache_creation.input_tokens", v);
-                    }
-                    if !span.finish_reasons.is_empty() {
-                        tracing_span.record(
-                            "gen_ai.response.finish_reasons",
-                            format!("{:?}", span.finish_reasons).as_str(),
-                        );
-                    }
-                    if let Some(ref v) = span.response_model {
-                        tracing_span.record("gen_ai.response.model", v.as_str());
-                    }
-                    if let Some(ref v) = span.response_id {
-                        tracing_span.record("gen_ai.response.id", v.as_str());
-                    }
-                    if let Some(ref err) = error {
-                        tracing_span.record("error.type", err.error_type.as_str());
-                        tracing_span.record("error.message", err.message.as_str());
-                        tracing_span.record("otel.status_code", "ERROR");
-                        tracing_span.record("otel.status_description", err.message.as_str());
-                    }
-                    drop(tracing_span);
-                }
-
-                self.sink.on_inference(&span);
-                lock_unpoison(&self.metrics).inferences.push(span);
+                let mut ctx = AfterInferenceContext::new(step);
+                self.after_inference(&mut ctx).await;
             }
             Phase::BeforeToolExecute => {
-                let tool_name = step
-                    .tool
-                    .as_ref()
-                    .map(|t| t.name.clone())
-                    .unwrap_or_default();
-                let call_id = step.tool.as_ref().map(|t| t.id.clone()).unwrap_or_default();
-                if !call_id.is_empty() {
-                    self.tool_start
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .insert(call_id.clone(), Instant::now());
-                }
-                let provider = lock_unpoison(&self.provider).clone();
-                let span_name = format!("execute_tool {}", tool_name);
-                let span = tracing::info_span!("gen_ai",
-                    "otel.name" = %span_name,
-                    "otel.kind" = "internal",
-                    "otel.status_code" = tracing::field::Empty,
-                    "otel.status_description" = tracing::field::Empty,
-                    "gen_ai.provider.name" = %provider,
-                    "gen_ai.operation.name" = "execute_tool",
-                    "gen_ai.tool.name" = %tool_name,
-                    "gen_ai.tool.call.id" = %call_id,
-                    "gen_ai.tool.type" = "function",
-                    "error.type" = tracing::field::Empty,
-                    "error.message" = tracing::field::Empty,
-                );
-                if !call_id.is_empty() {
-                    lock_unpoison(&self.tool_tracing_span).insert(call_id, span);
-                }
+                let mut ctx = BeforeToolExecuteContext::new(step);
+                self.before_tool_execute(&mut ctx).await;
             }
             Phase::AfterToolExecute => {
-                let call_id_for_span = step.tool.as_ref().map(|t| t.id.clone()).unwrap_or_default();
-                let duration_ms = self
-                    .tool_start
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .remove(&call_id_for_span)
-                    .map(|s| s.elapsed().as_millis() as u64)
-                    .unwrap_or(0);
-
-                let (name, call_id, error_message, error_type) = if let Some(ref tc) = step.tool {
-                    let status = tc.result.as_ref().map(|r| r.status.clone());
-                    let message = tc.result.as_ref().and_then(|r| r.message.clone());
-                    let error_type = match status {
-                        Some(tirea_contract::tool::ToolStatus::Error) => {
-                            Some("tool_error".to_string())
-                        }
-                        _ => None,
-                    };
-                    (
-                        tc.name.clone(),
-                        tc.id.clone(),
-                        message.filter(|_| error_type.is_some()),
-                        error_type,
-                    )
-                } else {
-                    ("unknown".to_string(), String::new(), None, None)
-                };
-
-                let span = ToolSpan {
-                    name,
-                    operation: "execute_tool".to_string(),
-                    call_id,
-                    tool_type: "function".to_string(),
-                    error_type,
-                    duration_ms,
-                };
-
-                let tracing_span = self
-                    .tool_tracing_span
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .remove(&call_id_for_span);
-                if let Some(tracing_span) = tracing_span {
-                    if let (Some(ref v), Some(ref msg)) = (&span.error_type, &error_message) {
-                        tracing_span.record("error.type", v.as_str());
-                        tracing_span.record("error.message", msg.as_str());
-                        tracing_span.record("otel.status_code", "ERROR");
-                        tracing_span.record("otel.status_description", msg.as_str());
-                    }
-                    drop(tracing_span);
-                }
-
-                self.sink.on_tool(&span);
-                lock_unpoison(&self.metrics).tools.push(span);
+                let mut ctx = AfterToolExecuteContext::new(step);
+                self.after_tool_execute(&mut ctx).await;
             }
             Phase::RunEnd => {
-                let session_duration_ms = self
-                    .run_start
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .take()
-                    .map(|s| s.elapsed().as_millis() as u64)
-                    .unwrap_or(0);
-
-                // Best-effort cleanup in case some spans never reached their closing phase.
-                lock_unpoison(&self.inference_tracing_span).take();
-                lock_unpoison(&self.tool_tracing_span).clear();
-                lock_unpoison(&self.tool_start).clear();
-
-                let mut metrics = lock_unpoison(&self.metrics).clone();
-                metrics.session_duration_ms = session_duration_ms;
-                self.sink.on_run_end(&metrics);
+                let mut ctx = RunEndContext::new(step);
+                self.run_end(&mut ctx).await;
             }
             _ => {}
         }
@@ -640,8 +652,8 @@ fn extract_cache_tokens(usage: Option<&Usage>) -> (Option<i32>, Option<i32>) {
     }
 }
 
-fn inference_error_from_state(step: &StepContext<'_>) -> Option<InferenceError> {
-    let lc = step.state_of::<LoopControlState>();
+fn inference_error_from_state(ctx: &impl PluginPhaseContext) -> Option<InferenceError> {
+    let lc = ctx.state_of::<LoopControlState>();
     lc.inference_error().ok().flatten()
 }
 

@@ -894,17 +894,9 @@ async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
     let fixture = TestFixture::new_with_state(doc);
     let mut step = fixture.step(vec![]);
     plugin.on_phase(Phase::RunStart, &mut step).await;
-    assert!(
-        !step.pending_patches.is_empty(),
-        "expected reconciliation + pending patches for orphan running entry"
-    );
     assert!(!step.skip_inference);
 
-    let updated = thread
-        .clone()
-        .with_patches(step.pending_patches.clone())
-        .rebuild_state()
-        .unwrap();
+    let updated = fixture.updated_state();
     assert_eq!(
         updated["agent_runs"]["runs"]["run-1"]["status"],
         json!("stopped")
@@ -918,9 +910,7 @@ async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
         json!("run-1")
     );
 
-    let updated_thread = thread.clone().with_patches(step.pending_patches);
-    let updated_doc = updated_thread.rebuild_state().unwrap();
-    let fixture2 = TestFixture::new_with_state(updated_doc);
+    let fixture2 = TestFixture::new_with_state(updated);
     let mut before = fixture2.step(vec![]);
     plugin.on_phase(Phase::BeforeInference, &mut before).await;
     assert!(
@@ -965,11 +955,7 @@ async fn recovery_plugin_does_not_override_existing_pending_interaction() {
         "existing pending interaction should not be replaced"
     );
 
-    let updated = thread
-        .clone()
-        .with_patches(step.pending_patches)
-        .rebuild_state()
-        .unwrap();
+    let updated = fixture.updated_state();
     assert_eq!(
         updated["loop_control"]["pending_interaction"]["id"],
         json!("existing_1")
@@ -1007,11 +993,7 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
     let mut step = fixture.step(vec![]);
     plugin.on_phase(Phase::RunStart, &mut step).await;
 
-    let updated = thread
-        .clone()
-        .with_patches(step.pending_patches)
-        .rebuild_state()
-        .unwrap();
+    let updated = fixture.updated_state();
     let replay_calls: Vec<ToolCall> = updated["interaction_outbox"]
         .get("replay_tool_calls")
         .cloned()
@@ -1061,11 +1043,7 @@ async fn recovery_plugin_auto_deny_when_permission_deny() {
     let mut step = fixture.step(vec![]);
     plugin.on_phase(Phase::RunStart, &mut step).await;
 
-    let updated = thread
-        .clone()
-        .with_patches(step.pending_patches)
-        .rebuild_state()
-        .unwrap();
+    let updated = fixture.updated_state();
     let replay_calls: Vec<ToolCall> = updated["interaction_outbox"]
         .get("replay_tool_calls")
         .cloned()
@@ -1111,11 +1089,7 @@ async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
     let mut step = fixture.step(vec![]);
     plugin.on_phase(Phase::RunStart, &mut step).await;
 
-    let updated = thread
-        .clone()
-        .with_patches(step.pending_patches)
-        .rebuild_state()
-        .unwrap();
+    let updated = fixture.updated_state();
     let replay_calls: Vec<ToolCall> = updated["interaction_outbox"]
         .get("replay_tool_calls")
         .cloned()
@@ -1159,11 +1133,7 @@ async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
     let mut step = fixture.step(vec![]);
     plugin.on_phase(Phase::RunStart, &mut step).await;
 
-    let updated = thread
-        .clone()
-        .with_patches(step.pending_patches)
-        .rebuild_state()
-        .unwrap();
+    let updated = fixture.updated_state();
     let replay_calls: Vec<ToolCall> = updated["interaction_outbox"]
         .get("replay_tool_calls")
         .cloned()
@@ -1210,11 +1180,7 @@ async fn recovery_plugin_tool_rule_overrides_default_behavior() {
     let mut step = fixture.step(vec![]);
     plugin.on_phase(Phase::RunStart, &mut step).await;
 
-    let updated = thread
-        .clone()
-        .with_patches(step.pending_patches)
-        .rebuild_state()
-        .unwrap();
+    let updated = fixture.updated_state();
     let replay_calls: Vec<ToolCall> = updated["interaction_outbox"]
         .get("replay_tool_calls")
         .cloned()

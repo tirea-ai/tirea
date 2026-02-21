@@ -542,6 +542,7 @@ macro_rules! impl_common_phase_context {
                 Self { step }
             }
 
+            #[cfg(feature = "test-support")]
             pub(crate) fn step_mut(&mut self) -> &mut StepContext<'a> {
                 self.step
             }
@@ -623,6 +624,10 @@ pub struct AfterInferenceContext<'s, 'a> {
 impl_common_phase_context!(AfterInferenceContext, Phase::AfterInference);
 
 impl<'s, 'a> AfterInferenceContext<'s, 'a> {
+    pub fn response_opt(&self) -> Option<&StreamResult> {
+        self.step.response.as_ref()
+    }
+
     pub fn response(&self) -> &StreamResult {
         self.step
             .response
@@ -683,6 +688,13 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
         self.step.deny(reason);
     }
 
+    /// Explicitly proceed with tool execution.
+    ///
+    /// This clears any previous deny/ask state set by earlier plugins.
+    pub fn proceed(&mut self) {
+        self.step.allow();
+    }
+
     pub fn ask_confirm(&mut self, interaction: Interaction) {
         self.step.ask(interaction);
     }
@@ -703,6 +715,14 @@ pub struct AfterToolExecuteContext<'s, 'a> {
 impl_common_phase_context!(AfterToolExecuteContext, Phase::AfterToolExecute);
 
 impl<'s, 'a> AfterToolExecuteContext<'s, 'a> {
+    pub fn tool_name(&self) -> Option<&str> {
+        self.step.tool_name()
+    }
+
+    pub fn tool_call_id(&self) -> Option<&str> {
+        self.step.tool_call_id()
+    }
+
     pub fn tool_result(&self) -> &ToolResult {
         self.step
             .tool_result()

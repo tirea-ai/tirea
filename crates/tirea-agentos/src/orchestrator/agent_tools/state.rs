@@ -1,7 +1,7 @@
 use super::*;
-use std::sync::{Arc, Mutex};
-use tirea_contract::tool::context::ToolCallContext;
-use tirea_state::{DocCell, State};
+use tirea_contract::plugin::phase::PluginPhaseContext;
+use tirea_extension_interaction::InteractionOutbox;
+use tirea_state::State;
 pub(super) fn as_delegation_record(
     summary: &AgentRunSummary,
     parent_run_id: Option<String>,
@@ -87,8 +87,6 @@ pub(super) fn build_recovery_interaction(run_id: &str, run: &DelegationRecord) -
     }))
 }
 
-const INTERACTION_OUTBOX_PATH: &str = "interaction_outbox";
-
 pub(super) fn parse_pending_interaction_from_state(state: &Value) -> Option<Interaction> {
     state
         .get(crate::runtime::control::LoopControlState::PATH)
@@ -97,79 +95,9 @@ pub(super) fn parse_pending_interaction_from_state(state: &Value) -> Option<Inte
         .and_then(|v| serde_json::from_value::<Interaction>(v).ok())
 }
 
-pub(super) fn parse_replay_tool_calls_from_state(state: &Value) -> Vec<ToolCall> {
-    state
-        .get(INTERACTION_OUTBOX_PATH)
-        .and_then(|a| a.get("replay_tool_calls"))
-        .cloned()
-        .and_then(|v| serde_json::from_value::<Vec<ToolCall>>(v).ok())
-        .unwrap_or_default()
-}
-
-/// Create storage for a short-lived ToolCallContext used for state patch generation.
-fn patch_context_storage(
-    state: &Value,
-) -> (
-    DocCell,
-    Mutex<Vec<tirea_state::Op>>,
-    tirea_contract::RunConfig,
-    Mutex<Vec<Arc<crate::contracts::thread::Message>>>,
-) {
-    (
-        DocCell::new(state.clone()),
-        Mutex::new(Vec::new()),
-        tirea_contract::RunConfig::default(),
-        Mutex::new(Vec::new()),
-    )
-}
-
-pub(super) fn set_pending_interaction_patch(
-    state: &Value,
-    interaction: Interaction,
-    call_id: &str,
-) -> Result<Option<tirea_state::TrackedPatch>, String> {
-    let (doc, ops, scope, pending_msgs) = patch_context_storage(state);
-    let ctx = ToolCallContext::new(
-        &doc,
-        &ops,
-        call_id,
-        AGENT_RECOVERY_PLUGIN_ID,
-        &scope,
-        &pending_msgs,
-        None,
-    );
-    let lc = ctx.state_of::<crate::runtime::control::LoopControlState>();
-    lc.set_pending_interaction(Some(interaction))
-        .map_err(|e| format!("failed to set loop_control.pending_interaction: {e}"))?;
-    let patch = ctx.take_patch();
-    if patch.patch().is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(patch))
-    }
-}
-
-pub(super) fn set_replay_tool_calls_patch(
-    _state: &Value,
-    replay_calls: Vec<ToolCall>,
-    _call_id: &str,
-) -> Option<tirea_state::TrackedPatch> {
-    // Write to interaction_outbox via raw patch (no type dependency on InteractionOutbox)
-    let outbox_path = tirea_state::Path::root().key(INTERACTION_OUTBOX_PATH);
-    let value = serde_json::to_value(&replay_calls).unwrap_or_default();
-    let patch = tirea_state::Patch::new().with_op(tirea_state::Op::set(
-        outbox_path.key("replay_tool_calls"),
-        value,
-    ));
-    if patch.is_empty() {
-        None
-    } else {
-        Some(tirea_state::TrackedPatch::new(patch).with_source(AGENT_RECOVERY_PLUGIN_ID))
-    }
-}
-
-pub(super) fn schedule_recovery_replay(state: &Value, step: &mut StepContext<'_>, run_id: &str) {
-    let mut replay_calls = parse_replay_tool_calls_from_state(state);
+pub(super) fn schedule_recovery_replay(step: &impl PluginPhaseContext, run_id: &str) {
+    let outbox = step.state_of::<InteractionOutbox>();
+    let mut replay_calls = outbox.replay_tool_calls().ok().unwrap_or_default();
 
     let exists = replay_calls.iter().any(|call| {
         call.name == AGENT_RUN_TOOL_ID
@@ -191,46 +119,13 @@ pub(super) fn schedule_recovery_replay(state: &Value, step: &mut StepContext<'_>
             "background": false
         }),
     ));
-    if let Some(patch) = set_replay_tool_calls_patch(
-        state,
-        replay_calls,
-        &format!("agent_recovery_replay_{run_id}"),
-    ) {
-        step.pending_patches.push(patch);
-    }
+    let _ = outbox.set_replay_tool_calls(replay_calls);
 }
 
 #[derive(Debug, Default, Clone)]
 pub(super) struct ReconcileOutcome {
     pub(super) changed: bool,
     pub(super) orphaned_run_ids: Vec<String>,
-}
-
-pub(super) fn set_agent_runs_patch_from_state_doc(
-    state: &Value,
-    next_runs: HashMap<String, DelegationRecord>,
-    call_id: &str,
-) -> Result<Option<tirea_state::TrackedPatch>, String> {
-    let (doc, ops, scope, pending_msgs) = patch_context_storage(state);
-    let ctx = ToolCallContext::new(
-        &doc,
-        &ops,
-        call_id,
-        AGENT_TOOLS_PLUGIN_ID,
-        &scope,
-        &pending_msgs,
-        None,
-    );
-    let agent = ctx.state_of::<DelegationState>();
-    agent
-        .set_runs(next_runs)
-        .map_err(|e| format!("failed to set delegation.runs: {e}"))?;
-    let patch = ctx.take_patch();
-    if patch.patch().is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(patch))
-    }
 }
 
 pub(super) async fn reconcile_persisted_runs(

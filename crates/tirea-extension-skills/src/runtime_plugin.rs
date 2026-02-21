@@ -1,6 +1,6 @@
 use crate::SKILLS_RUNTIME_PLUGIN_ID;
 use async_trait::async_trait;
-use tirea_contract::plugin::phase::BeforeInferenceContext;
+use tirea_contract::plugin::phase::{BeforeInferenceContext, Phase, StepContext};
 use tirea_contract::plugin::AgentPlugin;
 
 /// Placeholder plugin for activated skill state.
@@ -26,6 +26,15 @@ impl AgentPlugin for SkillRuntimePlugin {
 
     async fn before_inference(&self, _ctx: &mut BeforeInferenceContext<'_, '_>) {
         // No-op: skill content is delivered via append_user_messages and tool results.
+    }
+
+    #[allow(deprecated)]
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        if phase != Phase::BeforeInference {
+            return;
+        }
+        let mut ctx = BeforeInferenceContext::new(step);
+        self.before_inference(&mut ctx).await;
     }
 }
 

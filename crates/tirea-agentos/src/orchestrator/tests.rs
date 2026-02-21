@@ -206,9 +206,8 @@ async fn wire_skills_inserts_tools_and_plugin() {
     });
     let fixture = TestFixture::new_with_state(state);
     let mut step = fixture.step(vec![ToolDescriptor::new("t", "t", "t")]);
-    cfg.plugins[0]
-        .on_phase(Phase::BeforeInference, &mut step)
-        .await;
+    let mut before = crate::contracts::plugin::phase::BeforeInferenceContext::new(&mut step);
+    cfg.plugins[0].before_inference(&mut before).await;
     let merged = step.system_context.join("\n");
     assert!(merged.contains("<available_skills>"));
     assert!(
@@ -248,9 +247,8 @@ async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
     });
     let fixture = TestFixture::new_with_state(state);
     let mut step = fixture.step(vec![ToolDescriptor::new("t", "t", "t")]);
-    cfg.plugins[0]
-        .on_phase(Phase::BeforeInference, &mut step)
-        .await;
+    let mut before = crate::contracts::plugin::phase::BeforeInferenceContext::new(&mut step);
+    cfg.plugins[0].before_inference(&mut before).await;
     let merged = step.system_context.join("\n");
     assert!(!merged.contains("<available_skills>"));
     assert!(

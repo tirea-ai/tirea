@@ -50,44 +50,99 @@ pub trait AgentPlugin: Send + Sync {
     fn id(&self) -> &str;
 
     async fn run_start(&self, ctx: &mut RunStartContext<'_, '_>) {
-        #[allow(deprecated)]
-        self.on_phase(Phase::RunStart, ctx.step_mut()).await;
+        #[cfg(feature = "test-support")]
+        {
+            #[allow(deprecated)]
+            self.on_phase(Phase::RunStart, ctx.step_mut()).await;
+        }
+        #[cfg(not(feature = "test-support"))]
+        {
+            let _ = ctx;
+        }
     }
 
     async fn step_start(&self, ctx: &mut StepStartContext<'_, '_>) {
-        #[allow(deprecated)]
-        self.on_phase(Phase::StepStart, ctx.step_mut()).await;
+        #[cfg(feature = "test-support")]
+        {
+            #[allow(deprecated)]
+            self.on_phase(Phase::StepStart, ctx.step_mut()).await;
+        }
+        #[cfg(not(feature = "test-support"))]
+        {
+            let _ = ctx;
+        }
     }
 
     async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
-        #[allow(deprecated)]
-        self.on_phase(Phase::BeforeInference, ctx.step_mut()).await;
+        #[cfg(feature = "test-support")]
+        {
+            #[allow(deprecated)]
+            self.on_phase(Phase::BeforeInference, ctx.step_mut()).await;
+        }
+        #[cfg(not(feature = "test-support"))]
+        {
+            let _ = ctx;
+        }
     }
 
     async fn after_inference(&self, ctx: &mut AfterInferenceContext<'_, '_>) {
-        #[allow(deprecated)]
-        self.on_phase(Phase::AfterInference, ctx.step_mut()).await;
+        #[cfg(feature = "test-support")]
+        {
+            #[allow(deprecated)]
+            self.on_phase(Phase::AfterInference, ctx.step_mut()).await;
+        }
+        #[cfg(not(feature = "test-support"))]
+        {
+            let _ = ctx;
+        }
     }
 
     async fn before_tool_execute(&self, ctx: &mut BeforeToolExecuteContext<'_, '_>) {
-        #[allow(deprecated)]
-        self.on_phase(Phase::BeforeToolExecute, ctx.step_mut())
-            .await;
+        #[cfg(feature = "test-support")]
+        {
+            #[allow(deprecated)]
+            self.on_phase(Phase::BeforeToolExecute, ctx.step_mut()).await;
+        }
+        #[cfg(not(feature = "test-support"))]
+        {
+            let _ = ctx;
+        }
     }
 
     async fn after_tool_execute(&self, ctx: &mut AfterToolExecuteContext<'_, '_>) {
-        #[allow(deprecated)]
-        self.on_phase(Phase::AfterToolExecute, ctx.step_mut()).await;
+        #[cfg(feature = "test-support")]
+        {
+            #[allow(deprecated)]
+            self.on_phase(Phase::AfterToolExecute, ctx.step_mut()).await;
+        }
+        #[cfg(not(feature = "test-support"))]
+        {
+            let _ = ctx;
+        }
     }
 
     async fn step_end(&self, ctx: &mut StepEndContext<'_, '_>) {
-        #[allow(deprecated)]
-        self.on_phase(Phase::StepEnd, ctx.step_mut()).await;
+        #[cfg(feature = "test-support")]
+        {
+            #[allow(deprecated)]
+            self.on_phase(Phase::StepEnd, ctx.step_mut()).await;
+        }
+        #[cfg(not(feature = "test-support"))]
+        {
+            let _ = ctx;
+        }
     }
 
     async fn run_end(&self, ctx: &mut RunEndContext<'_, '_>) {
-        #[allow(deprecated)]
-        self.on_phase(Phase::RunEnd, ctx.step_mut()).await;
+        #[cfg(feature = "test-support")]
+        {
+            #[allow(deprecated)]
+            self.on_phase(Phase::RunEnd, ctx.step_mut()).await;
+        }
+        #[cfg(not(feature = "test-support"))]
+        {
+            let _ = ctx;
+        }
     }
 
     #[deprecated(note = "implement phase-specific methods instead")]
@@ -98,10 +153,51 @@ pub trait AgentPlugin: Send + Sync {
 mod tests {
     use super::*;
     use crate::event::Interaction;
+    use crate::plugin::phase::ToolContext;
     use crate::testing::TestFixture;
     use crate::thread::ToolCall;
     use crate::tool::contract::ToolDescriptor;
     use serde_json::json;
+
+    async fn run_step_start(plugin: &dyn AgentPlugin, step: &mut StepContext<'_>) {
+        let mut ctx = StepStartContext::new(step);
+        plugin.step_start(&mut ctx).await;
+    }
+
+    async fn run_before_inference(plugin: &dyn AgentPlugin, step: &mut StepContext<'_>) {
+        let mut ctx = BeforeInferenceContext::new(step);
+        plugin.before_inference(&mut ctx).await;
+    }
+
+    async fn run_after_inference(plugin: &dyn AgentPlugin, step: &mut StepContext<'_>) {
+        let mut ctx = AfterInferenceContext::new(step);
+        plugin.after_inference(&mut ctx).await;
+    }
+
+    async fn run_before_tool_execute(plugin: &dyn AgentPlugin, step: &mut StepContext<'_>) {
+        let mut ctx = BeforeToolExecuteContext::new(step);
+        plugin.before_tool_execute(&mut ctx).await;
+    }
+
+    async fn run_after_tool_execute(plugin: &dyn AgentPlugin, step: &mut StepContext<'_>) {
+        let mut ctx = AfterToolExecuteContext::new(step);
+        plugin.after_tool_execute(&mut ctx).await;
+    }
+
+    async fn run_run_start(plugin: &dyn AgentPlugin, step: &mut StepContext<'_>) {
+        let mut ctx = RunStartContext::new(step);
+        plugin.run_start(&mut ctx).await;
+    }
+
+    async fn run_step_end(plugin: &dyn AgentPlugin, step: &mut StepContext<'_>) {
+        let mut ctx = StepEndContext::new(step);
+        plugin.step_end(&mut ctx).await;
+    }
+
+    async fn run_run_end(plugin: &dyn AgentPlugin, step: &mut StepContext<'_>) {
+        let mut ctx = RunEndContext::new(step);
+        plugin.run_end(&mut ctx).await;
+    }
 
     struct TestPlugin {
         id: String,
@@ -119,14 +215,9 @@ mod tests {
             &self.id
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-            match phase {
-                Phase::BeforeInference => {
-                    step.system("Test system context");
-                    step.thread("Test thread context");
-                }
-                _ => {}
-            }
+        async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
+            ctx.add_system_context("Test system context");
+            ctx.add_session_message("Test thread context");
         }
     }
 
@@ -136,10 +227,6 @@ mod tests {
     impl AgentPlugin for NoOpPlugin {
         fn id(&self) -> &str {
             "noop"
-        }
-
-        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {
-            // No-op
         }
     }
 
@@ -151,19 +238,15 @@ mod tests {
             "context_injection"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-            match phase {
-                Phase::BeforeInference => {
-                    step.system("Current time: 2024-01-01");
-                    step.thread("Remember to be helpful.");
-                    step.exclude("dangerous_tool");
-                }
-                Phase::AfterToolExecute => {
-                    if step.tool_name() == Some("read_file") {
-                        step.reminder("Check for sensitive data.");
-                    }
-                }
-                _ => {}
+        async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
+            ctx.add_system_context("Current time: 2024-01-01");
+            ctx.add_session_message("Remember to be helpful.");
+            ctx.exclude_tool("dangerous_tool");
+        }
+
+        async fn after_tool_execute(&self, ctx: &mut AfterToolExecuteContext<'_, '_>) {
+            if ctx.tool_result().tool_name == "read_file" {
+                ctx.add_system_reminder("Check for sensitive data.");
             }
         }
     }
@@ -186,14 +269,10 @@ mod tests {
             "permission"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-            if phase != Phase::BeforeToolExecute {
-                return;
-            }
-
-            if let Some(tool_id) = step.tool_name() {
+        async fn before_tool_execute(&self, ctx: &mut BeforeToolExecuteContext<'_, '_>) {
+            if let Some(tool_id) = ctx.tool_name() {
                 if self.denied_tools.contains(&tool_id.to_string()) {
-                    step.deny("Permission denied");
+                    ctx.deny("Permission denied");
                 }
             }
         }
@@ -217,14 +296,10 @@ mod tests {
             "confirmation"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-            if phase != Phase::BeforeToolExecute {
-                return;
-            }
-
-            if let Some(tool_id) = step.tool_name() {
-                if self.confirm_tools.contains(&tool_id.to_string()) && !step.tool_pending() {
-                    step.ask(
+        async fn before_tool_execute(&self, ctx: &mut BeforeToolExecuteContext<'_, '_>) {
+            if let Some(tool_id) = ctx.tool_name() {
+                if self.confirm_tools.contains(&tool_id.to_string()) {
+                    ctx.ask_confirm(
                         Interaction::new("confirm", "confirm").with_message("Execute this tool?"),
                     );
                 }
@@ -256,7 +331,7 @@ mod tests {
         let fix = TestFixture::new();
         let mut step = fix.step(vec![]);
 
-        plugin.on_phase(Phase::StepStart, &mut step).await;
+        run_step_start(&plugin, &mut step).await;
 
         assert!(step.system_context.is_empty());
         assert!(step.session_context.is_empty());
@@ -268,7 +343,7 @@ mod tests {
         let fix = TestFixture::new();
         let mut step = fix.step(vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        run_before_inference(&plugin, &mut step).await;
 
         assert_eq!(step.system_context.len(), 1);
         assert_eq!(step.system_context[0], "Test system context");
@@ -283,15 +358,19 @@ mod tests {
         let mut step = fix.step(mock_tools());
 
         // BeforeInference - adds prompt context and filters tools
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        run_before_inference(&plugin, &mut step).await;
         assert_eq!(step.system_context[0], "Current time: 2024-01-01");
         assert_eq!(step.session_context[0], "Remember to be helpful.");
         assert!(!step.tools.iter().any(|t| t.id == "dangerous_tool"));
 
         // AfterToolExecute - adds reminder for read_file
         let call = ToolCall::new("call_1", "read_file", json!({}));
-        step.tool = Some(crate::plugin::phase::ToolContext::new(&call));
-        plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+        step.tool = Some(ToolContext::new(&call));
+        step.set_tool_result(crate::tool::contract::ToolResult::success(
+            "read_file",
+            json!({"ok": true}),
+        ));
+        run_after_tool_execute(&plugin, &mut step).await;
         assert_eq!(step.system_reminders[0], "Check for sensitive data.");
     }
 
@@ -302,9 +381,9 @@ mod tests {
         let mut step = fix.step(vec![]);
 
         let call = ToolCall::new("call_1", "dangerous_tool", json!({}));
-        step.tool = Some(crate::plugin::phase::ToolContext::new(&call));
+        step.tool = Some(ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
 
         assert!(step.tool_blocked());
     }
@@ -316,9 +395,9 @@ mod tests {
         let mut step = fix.step(vec![]);
 
         let call = ToolCall::new("call_1", "read_file", json!({}));
-        step.tool = Some(crate::plugin::phase::ToolContext::new(&call));
+        step.tool = Some(ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
 
         assert!(!step.tool_blocked());
     }
@@ -330,9 +409,9 @@ mod tests {
         let mut step = fix.step(vec![]);
 
         let call = ToolCall::new("call_1", "write_file", json!({}));
-        step.tool = Some(crate::plugin::phase::ToolContext::new(&call));
+        step.tool = Some(ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
 
         assert!(step.tool_pending());
     }
@@ -344,9 +423,9 @@ mod tests {
         let mut step = fix.step(vec![]);
 
         let call = ToolCall::new("call_1", "read_file", json!({}));
-        step.tool = Some(crate::plugin::phase::ToolContext::new(&call));
+        step.tool = Some(ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
 
         assert!(!step.tool_pending());
     }
@@ -363,13 +442,13 @@ mod tests {
 
         // Run all plugins for StepStart
         for plugin in &plugins {
-            plugin.on_phase(Phase::StepStart, &mut step).await;
+            run_step_start(plugin.as_ref(), &mut step).await;
         }
         assert!(step.system_context.is_empty());
 
         // Run all plugins for BeforeInference
         for plugin in &plugins {
-            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            run_before_inference(plugin.as_ref(), &mut step).await;
         }
         assert!(!step.system_context.is_empty());
         assert!(!step.session_context.is_empty());
@@ -377,9 +456,9 @@ mod tests {
 
         // Run all plugins for BeforeToolExecute with dangerous tool
         let call = ToolCall::new("call_1", "dangerous_tool", json!({}));
-        step.tool = Some(crate::plugin::phase::ToolContext::new(&call));
+        step.tool = Some(ToolContext::new(&call));
         for plugin in &plugins {
-            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            run_before_tool_execute(plugin.as_ref(), &mut step).await;
         }
         assert!(step.tool_blocked());
     }
@@ -391,18 +470,54 @@ mod tests {
         let mut step = fix.step(vec![]);
 
         // All phases should be callable without panic or side effects
-        plugin.on_phase(Phase::RunStart, &mut step).await;
-        plugin.on_phase(Phase::StepStart, &mut step).await;
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
-        plugin.on_phase(Phase::AfterInference, &mut step).await;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
-        plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
-        plugin.on_phase(Phase::StepEnd, &mut step).await;
-        plugin.on_phase(Phase::RunEnd, &mut step).await;
+        run_run_start(&plugin, &mut step).await;
+        run_step_start(&plugin, &mut step).await;
+        run_before_inference(&plugin, &mut step).await;
+        run_after_inference(&plugin, &mut step).await;
+        run_before_tool_execute(&plugin, &mut step).await;
+        run_after_tool_execute(&plugin, &mut step).await;
+        run_step_end(&plugin, &mut step).await;
+        run_run_end(&plugin, &mut step).await;
 
         // Context should be unchanged
         assert!(step.system_context.is_empty());
         assert!(step.session_context.is_empty());
         assert!(step.system_reminders.is_empty());
+    }
+
+    struct LegacyPhaseOnlyPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for LegacyPhaseOnlyPlugin {
+        fn id(&self) -> &str {
+            "legacy_phase_only"
+        }
+
+        #[allow(deprecated)]
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            if phase == Phase::BeforeInference {
+                step.system("legacy");
+            }
+        }
+    }
+
+    #[cfg(not(feature = "test-support"))]
+    #[tokio::test]
+    async fn test_legacy_on_phase_not_auto_dispatched() {
+        let plugin = LegacyPhaseOnlyPlugin;
+        let fix = TestFixture::new();
+        let mut step = fix.step(vec![]);
+        run_before_inference(&plugin, &mut step).await;
+        assert!(step.system_context.is_empty());
+    }
+
+    #[cfg(feature = "test-support")]
+    #[tokio::test]
+    async fn test_legacy_on_phase_auto_dispatched_in_test_support() {
+        let plugin = LegacyPhaseOnlyPlugin;
+        let fix = TestFixture::new();
+        let mut step = fix.step(vec![]);
+        run_before_inference(&plugin, &mut step).await;
+        assert_eq!(step.system_context, vec!["legacy".to_string()]);
     }
 }

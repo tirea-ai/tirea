@@ -3,7 +3,9 @@ use crate::{SkillMeta, SkillRegistry, SkillState, SKILLS_DISCOVERY_PLUGIN_ID};
 use async_trait::async_trait;
 use std::collections::HashSet;
 use std::sync::Arc;
-use tirea_contract::plugin::phase::{BeforeInferenceContext, PluginPhaseContext};
+use tirea_contract::plugin::phase::{
+    BeforeInferenceContext, Phase, PluginPhaseContext, StepContext,
+};
 use tirea_contract::plugin::AgentPlugin;
 
 /// Injects a skills catalog into the LLM context so the model can discover and activate skills.
@@ -150,6 +152,15 @@ impl AgentPlugin for SkillDiscoveryPlugin {
         }
 
         step.add_system_context(rendered);
+    }
+
+    #[allow(deprecated)]
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        if phase != Phase::BeforeInference {
+            return;
+        }
+        let mut ctx = BeforeInferenceContext::new(step);
+        self.before_inference(&mut ctx).await;
     }
 }
 

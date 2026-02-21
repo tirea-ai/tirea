@@ -1,5 +1,9 @@
 use super::*;
+use crate::contracts::plugin::phase::{
+    AfterToolExecuteContext, BeforeInferenceContext, PluginPhaseContext, RunStartContext,
+};
 use tirea_state::State;
+use tirea_extension_permission::PermissionState;
 pub struct AgentRecoveryPlugin {
     manager: Arc<AgentRunManager>,
 }
@@ -9,7 +13,7 @@ impl AgentRecoveryPlugin {
         Self { manager }
     }
 
-    async fn on_run_start(&self, step: &mut StepContext<'_>) {
+    async fn on_run_start(&self, step: &mut RunStartContext<'_, '_>) {
         let state = step.snapshot();
         let mut runs = parse_persisted_runs_from_doc(&state);
         if runs.is_empty() {
@@ -24,19 +28,9 @@ impl AgentRecoveryPlugin {
         let outcome =
             reconcile_persisted_runs(self.manager.as_ref(), step.thread_id(), &mut runs).await;
         if outcome.changed {
-            match set_agent_runs_patch_from_state_doc(
-                &state,
-                runs.clone(),
-                &format!("agent_recovery_reconcile_{}", step.thread_id()),
-            ) {
-                Ok(Some(patch)) => {
-                    step.pending_patches.push(patch);
-                }
-                Ok(None) => {}
-                Err(err) => {
-                    step.deny(err);
-                    return;
-                }
+            let delegation = step.state_of::<DelegationState>();
+            if delegation.set_runs(runs.clone()).is_err() {
+                return;
             }
         }
 
@@ -49,35 +43,39 @@ impl AgentRecoveryPlugin {
             return;
         };
 
-        let behavior = step.ctx().get_permission(AGENT_RECOVERY_INTERACTION_ACTION);
+        let behavior = {
+            let state = step.state_of::<PermissionState>();
+            if let Ok(tools) = state.tools() {
+                if let Some(permission) = tools.get(AGENT_RECOVERY_INTERACTION_ACTION) {
+                    *permission
+                } else {
+                    state.default_behavior().ok().unwrap_or_default()
+                }
+            } else {
+                state.default_behavior().ok().unwrap_or_default()
+            }
+        };
         match behavior {
             ToolPermissionBehavior::Allow => {
-                schedule_recovery_replay(&state, step, &run_id);
+                schedule_recovery_replay(step, &run_id);
             }
             ToolPermissionBehavior::Deny => {}
             ToolPermissionBehavior::Ask => {
                 let interaction = build_recovery_interaction(&run_id, run);
-                match set_pending_interaction_patch(&state, interaction, "agent_recovery_pending") {
-                    Ok(Some(patch)) => {
-                        step.pending_patches.push(patch);
-                    }
-                    Ok(None) => {}
-                    Err(err) => {
-                        step.deny(err);
-                    }
-                }
+                let lc = step.state_of::<crate::runtime::control::LoopControlState>();
+                let _ = lc.set_pending_interaction(Some(interaction));
             }
         }
     }
 
-    async fn on_before_inference(&self, step: &mut StepContext<'_>) {
+    async fn on_before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
         let state = step.snapshot();
 
         let Some(pending) = parse_pending_interaction_from_state(&state) else {
             return;
         };
         if pending.action == AGENT_RECOVERY_INTERACTION_ACTION {
-            step.skip_inference = true;
+            step.skip_inference();
         }
     }
 }
@@ -88,10 +86,25 @@ impl AgentPlugin for AgentRecoveryPlugin {
         AGENT_RECOVERY_PLUGIN_ID
     }
 
+    async fn run_start(&self, ctx: &mut RunStartContext<'_, '_>) {
+        self.on_run_start(ctx).await;
+    }
+
+    async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
+        self.on_before_inference(ctx).await;
+    }
+
+    #[allow(deprecated)]
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         match phase {
-            Phase::RunStart => self.on_run_start(step).await,
-            Phase::BeforeInference => self.on_before_inference(step).await,
+            Phase::RunStart => {
+                let mut ctx = RunStartContext::new(step);
+                self.run_start(&mut ctx).await;
+            }
+            Phase::BeforeInference => {
+                let mut ctx = BeforeInferenceContext::new(step);
+                self.before_inference(&mut ctx).await;
+            }
             _ => {}
         }
     }
@@ -182,7 +195,7 @@ impl AgentToolsPlugin {
         out.trim_end().to_string()
     }
 
-    async fn maybe_reminder(&self, step: &mut StepContext<'_>) {
+    async fn maybe_reminder(&self, step: &mut AfterToolExecuteContext<'_, '_>) {
         let owner_thread_id = step.thread_id();
         let runs = self
             .manager
@@ -219,7 +232,7 @@ impl AgentToolsPlugin {
         if s.len() > self.max_chars {
             s.truncate(self.max_chars);
         }
-        step.reminder(s);
+        step.add_system_reminder(s);
     }
 }
 
@@ -229,22 +242,33 @@ impl AgentPlugin for AgentToolsPlugin {
         AGENT_TOOLS_PLUGIN_ID
     }
 
+    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
+        let caller_agent = step
+            .run_config()
+            .value(SCOPE_CALLER_AGENT_ID_KEY)
+            .and_then(|v| v.as_str());
+        let rendered = self.render_available_agents(caller_agent, Some(step.run_config()));
+        if !rendered.is_empty() {
+            step.add_system_context(rendered);
+        }
+    }
+
+    async fn after_tool_execute(&self, step: &mut AfterToolExecuteContext<'_, '_>) {
+        // Inject system reminders after tool execution so the reminder is persisted
+        // as internal-system history for subsequent turns.
+        self.maybe_reminder(step).await;
+    }
+
+    #[allow(deprecated)]
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         match phase {
             Phase::BeforeInference => {
-                let caller_agent = step
-                    .run_config()
-                    .value(SCOPE_CALLER_AGENT_ID_KEY)
-                    .and_then(|v| v.as_str());
-                let rendered = self.render_available_agents(caller_agent, Some(step.run_config()));
-                if !rendered.is_empty() {
-                    step.system(rendered);
-                }
+                let mut ctx = BeforeInferenceContext::new(step);
+                self.before_inference(&mut ctx).await;
             }
             Phase::AfterToolExecute => {
-                // Inject system reminders after tool execution so the reminder is persisted
-                // as internal-system history for subsequent turns.
-                self.maybe_reminder(step).await;
+                let mut ctx = AfterToolExecuteContext::new(step);
+                self.after_tool_execute(&mut ctx).await;
             }
             _ => {}
         }
