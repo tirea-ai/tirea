@@ -3,6 +3,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 use tirea_contract::{InteractionResponse, Message, ProtocolInputAdapter, RunRequest};
 
+use crate::message::{ToolState, ToolUIPart};
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(try_from = "AiSdkV6MessagesRunRequest")]
 pub struct AiSdkV6RunRequest {
@@ -35,6 +37,16 @@ struct AiSdkIncomingMessage {
     content: Option<Value>,
     #[serde(default)]
     parts: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ToolApprovalResponsePart {
+    #[serde(rename = "approvalId")]
+    approval_id: String,
+    #[serde(default)]
+    approved: Option<bool>,
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 impl TryFrom<AiSdkV6MessagesRunRequest> for AiSdkV6RunRequest {
@@ -192,68 +204,28 @@ fn message_parts(message: &AiSdkIncomingMessage) -> Vec<&Value> {
 }
 
 fn parse_interaction_response_part(part: &Value) -> Option<(String, Value)> {
-    let part_type = part.get("type").and_then(Value::as_str).unwrap_or_default();
-    let state = part
-        .get("state")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let tool_call_id = part
-        .get("toolCallId")
-        .or_else(|| part.get("tool_call_id"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
-
-    if part_type == "tool-approval-response" {
-        let approval_id = part
-            .get("approvalId")
-            .and_then(Value::as_str)
-            .map(str::to_string)?;
-        let approved = part
-            .get("approved")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let reason = part
-            .get("reason")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        return Some((approval_id, approval_response_value(approved, reason)));
+    if part.get("type").and_then(Value::as_str) == Some("tool-approval-response") {
+        return parse_tool_approval_response_part(part);
+    }
+    if part.get("state").and_then(Value::as_str) == Some("approval-responded") {
+        return parse_approval_responded_part(part);
     }
 
-    match state {
-        "approval-responded" => {
-            let approval = part.get("approval");
-            let interaction_id = approval
-                .and_then(|v| v.get("id"))
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .or(tool_call_id)?;
-            let approved = approval
-                .and_then(|v| v.get("approved"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let reason = approval
-                .and_then(|v| v.get("reason"))
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            Some((interaction_id, approval_response_value(approved, reason)))
-        }
-        "output-available" => {
-            let interaction_id = tool_call_id?;
-            let output = part.get("output").cloned().unwrap_or(Value::Null);
-            Some((interaction_id, output))
-        }
-        "output-denied" => {
-            let interaction_id = tool_call_id?;
-            Some((interaction_id, Value::Bool(false)))
-        }
-        "output-error" => {
-            let interaction_id = tool_call_id?;
-            let error = part
-                .get("errorText")
-                .and_then(Value::as_str)
+    let tool_part = parse_tool_ui_part(part)?;
+    let tool_call_id = tool_part.tool_call_id.clone();
+
+    match tool_part.state {
+        ToolState::ApprovalResponded => None,
+        ToolState::OutputAvailable => Some((tool_call_id, tool_part.output.unwrap_or(Value::Null))),
+        ToolState::OutputDenied => Some((tool_call_id, Value::Bool(false))),
+        ToolState::OutputError => {
+            let error = tool_part
+                .error_text
+                .as_deref()
+                .filter(|value| !value.is_empty())
                 .unwrap_or("tool output error");
             Some((
-                interaction_id,
+                tool_call_id,
                 serde_json::json!({
                     "approved": false,
                     "error": error,
@@ -262,6 +234,48 @@ fn parse_interaction_response_part(part: &Value) -> Option<(String, Value)> {
         }
         _ => None,
     }
+}
+
+fn parse_tool_approval_response_part(part: &Value) -> Option<(String, Value)> {
+    let payload: ToolApprovalResponsePart = serde_json::from_value(part.clone()).ok()?;
+    Some((
+        payload.approval_id,
+        approval_response_value(payload.approved.unwrap_or(false), payload.reason),
+    ))
+}
+
+fn parse_approval_responded_part(part: &Value) -> Option<(String, Value)> {
+    let tool_call_id = part
+        .get("toolCallId")
+        .or_else(|| part.get("tool_call_id"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let approval = part.get("approval");
+    let interaction_id = approval
+        .and_then(|v| v.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or(tool_call_id)?;
+    let approved = approval
+        .and_then(|v| v.get("approved"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let reason = approval
+        .and_then(|v| v.get("reason"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Some((interaction_id, approval_response_value(approved, reason)))
+}
+
+fn parse_tool_ui_part(part: &Value) -> Option<ToolUIPart> {
+    let mut normalized = part.clone();
+    let map = normalized.as_object_mut()?;
+    if !map.contains_key("toolCallId") {
+        if let Some(tool_call_id) = map.get("tool_call_id").cloned() {
+            map.insert("toolCallId".to_string(), tool_call_id);
+        }
+    }
+    serde_json::from_value(normalized).ok()
 }
 
 fn approval_response_value(approved: bool, reason: Option<String>) -> Value {
