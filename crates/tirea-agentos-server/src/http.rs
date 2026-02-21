@@ -22,8 +22,8 @@ use tirea_protocol_ag_ui::{
     RunAgentRequest,
 };
 use tirea_protocol_ai_sdk_v6::{
-    AiSdkV6HistoryEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest,
-    AI_SDK_VERSION,
+    apply_ai_sdk_extensions, AiSdkV6HistoryEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder,
+    AiSdkV6RunRequest, AI_SDK_VERSION,
 };
 use tracing::warn;
 
@@ -344,16 +344,17 @@ async fn run_ai_sdk_sse(
     Path(agent_id): Path<String>,
     Json(req): Json<AiSdkV6RunRequest>,
 ) -> Result<Response, ApiError> {
-    if req.input.trim().is_empty() {
-        return Err(ApiError::BadRequest("input cannot be empty".to_string()));
-    }
     if req.thread_id.trim().is_empty() {
+        return Err(ApiError::BadRequest("id cannot be empty".to_string()));
+    }
+    if !req.has_user_input() && !req.has_interaction_responses() {
         return Err(ApiError::BadRequest(
-            "sessionId cannot be empty".to_string(),
+            "request must include user input or interaction responses".to_string(),
         ));
     }
 
-    let resolved = st.os.resolve(&agent_id).map_err(AgentOsRunError::from)?;
+    let mut resolved = st.os.resolve(&agent_id).map_err(AgentOsRunError::from)?;
+    apply_ai_sdk_extensions(&mut resolved, &req);
     let run_request = AiSdkV6InputAdapter::to_run_request(agent_id, req);
     let cancellation_token = RunCancellationToken::new();
     let prepared = st.os.prepare_run(run_request, resolved).await?;

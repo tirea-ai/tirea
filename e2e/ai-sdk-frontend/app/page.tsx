@@ -91,6 +91,8 @@ function ChatUI({
     [sessionId, agentId],
   );
   const [metrics, setMetrics] = useState<InferenceMetrics[]>([]);
+  const [askAnswers, setAskAnswers] = useState<Record<string, string>>({});
+  const autoSubmittedInteractionIds = useRef<Set<string>>(new Set());
 
   const onData = useCallback((dataPart: { type: string; data: unknown }) => {
     if (dataPart.type === "data-inference-complete") {
@@ -98,10 +100,70 @@ function ChatUI({
     }
   }, []);
 
-  const { messages, sendMessage, status, error } = useChat({
+  const sendAutomaticallyWhen = useCallback(
+    ({ messages }: { messages: UIMessage[] }) => {
+      const last = messages[messages.length - 1];
+      if (!last || last.role !== "assistant") {
+        return false;
+      }
+
+      const interactionIds = last.parts.flatMap((part) => {
+        if (
+          (part.type === "dynamic-tool" || part.type.startsWith("tool-")) &&
+          "state" in part &&
+          typeof part.state === "string"
+        ) {
+          const state = part.state;
+          const toolCallId =
+            "toolCallId" in part && typeof part.toolCallId === "string"
+              ? part.toolCallId
+              : undefined;
+          const toolName =
+            "toolName" in part && typeof part.toolName === "string"
+              ? part.toolName
+              : part.type.startsWith("tool-")
+                ? part.type.slice("tool-".length)
+                : undefined;
+
+          if (state === "approval-responded") {
+            const approval = (part as { approval?: { id?: unknown } }).approval;
+            if (approval && typeof approval.id === "string") {
+              return [approval.id];
+            }
+            if (toolCallId) {
+              return [toolCallId];
+            }
+          }
+
+          if (
+            toolName === "askUserQuestion" &&
+            (state === "output-available" || state === "output-denied" || state === "output-error")
+          ) {
+            if (toolCallId) {
+              return [toolCallId];
+            }
+          }
+        }
+        return [];
+      });
+
+      let shouldSend = false;
+      for (const interactionId of interactionIds) {
+        if (!autoSubmittedInteractionIds.current.has(interactionId)) {
+          autoSubmittedInteractionIds.current.add(interactionId);
+          shouldSend = true;
+        }
+      }
+      return shouldSend;
+    },
+    [],
+  );
+
+  const { messages, sendMessage, status, error, addToolApprovalResponse, addToolOutput } = useChat({
     messages: initialMessages,
     transport,
     onData: onData as never,
+    sendAutomaticallyWhen,
   });
   const [input, setInput] = useState("");
 
@@ -207,8 +269,29 @@ function ChatUI({
                   input?: unknown;
                   output?: unknown;
                   errorText?: string;
+                  approval?: {
+                    id: string;
+                    approved?: boolean;
+                    reason?: string;
+                  };
                 };
                 const name = tool.toolName ?? p.type.replace("tool-", "");
+                const requestedToolName =
+                  name === "PermissionConfirm" &&
+                  tool.input != null &&
+                  typeof tool.input === "object" &&
+                  "tool_name" in (tool.input as Record<string, unknown>) &&
+                  typeof (tool.input as Record<string, unknown>).tool_name === "string"
+                    ? ((tool.input as Record<string, unknown>).tool_name as string)
+                    : name;
+                const askPrompt =
+                  name === "askUserQuestion" &&
+                  tool.input != null &&
+                  typeof tool.input === "object" &&
+                  "message" in (tool.input as Record<string, unknown>) &&
+                  typeof (tool.input as Record<string, unknown>).message === "string"
+                    ? ((tool.input as Record<string, unknown>).message as string)
+                    : "";
                 return (
                   <div
                     key={i}
@@ -238,6 +321,115 @@ function ChatUI({
                     {tool.errorText && (
                       <div style={{ color: "red", marginTop: "0.25rem" }}>
                         Error: {tool.errorText}
+                      </div>
+                    )}
+                    {tool.state === "approval-requested" && tool.approval?.id && (
+                      <div
+                        data-testid="permission-dialog"
+                        style={{
+                          marginTop: "0.5rem",
+                          padding: "0.5rem",
+                          border: "1px solid #ddd",
+                          borderRadius: 4,
+                          background: "#fff",
+                        }}
+                      >
+                        <div style={{ marginBottom: "0.5rem", color: "#333" }}>
+                          Approve tool &apos;{requestedToolName}&apos; execution?
+                        </div>
+                        <div style={{ display: "flex", gap: "0.5rem" }}>
+                          <button
+                            data-testid="permission-allow"
+                            onClick={() =>
+                              addToolApprovalResponse({
+                                id: tool.approval!.id,
+                                approved: true,
+                              })
+                            }
+                            style={{ padding: "0.35rem 0.7rem" }}
+                          >
+                            Allow
+                          </button>
+                          <button
+                            data-testid="permission-deny"
+                            onClick={() =>
+                              addToolApprovalResponse({
+                                id: tool.approval!.id,
+                                approved: false,
+                              })
+                            }
+                            style={{ padding: "0.35rem 0.7rem" }}
+                          >
+                            Deny
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {tool.state === "input-available" && name === "askUserQuestion" && (
+                      <div
+                        data-testid="ask-dialog"
+                        style={{
+                          marginTop: "0.5rem",
+                          padding: "0.5rem",
+                          border: "1px solid #ddd",
+                          borderRadius: 4,
+                          background: "#fff",
+                        }}
+                      >
+                        <div
+                          data-testid="ask-question-prompt"
+                          style={{ marginBottom: "0.5rem", color: "#333" }}
+                        >
+                          {askPrompt || "Please provide your answer:"}
+                        </div>
+                        <div style={{ display: "flex", gap: "0.5rem" }}>
+                          <input
+                            data-testid="ask-question-input"
+                            value={askAnswers[tool.toolCallId] ?? ""}
+                            onChange={(e) =>
+                              setAskAnswers((prev) => ({
+                                ...prev,
+                                [tool.toolCallId]: e.target.value,
+                              }))
+                            }
+                            placeholder="Type your answer..."
+                            style={{
+                              flex: 1,
+                              padding: "0.35rem 0.5rem",
+                              border: "1px solid #ccc",
+                              borderRadius: 4,
+                            }}
+                          />
+                          <button
+                            data-testid="ask-question-submit"
+                            onClick={async () => {
+                              const answer = (askAnswers[tool.toolCallId] ?? "").trim();
+                              if (!answer) return;
+                              await addToolOutput({
+                                tool: name as never,
+                                toolCallId: tool.toolCallId,
+                                state: "output-available",
+                                output: { message: answer } as never,
+                              });
+                              setAskAnswers((prev) => ({
+                                ...prev,
+                                [tool.toolCallId]: "",
+                              }));
+                            }}
+                            disabled={isLoading || !(askAnswers[tool.toolCallId] ?? "").trim()}
+                            style={{ padding: "0.35rem 0.7rem" }}
+                          >
+                            Submit
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {tool.state === "output-denied" && (
+                      <div
+                        data-testid="permission-denied"
+                        style={{ color: "#b91c1c", marginTop: "0.25rem" }}
+                      >
+                        Permission denied
                       </div>
                     )}
                   </div>

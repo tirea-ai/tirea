@@ -18,7 +18,6 @@ export async function POST(req: Request) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         id: sessionId,
-        sessionId,
         messages,
         runId: crypto.randomUUID(),
       }),

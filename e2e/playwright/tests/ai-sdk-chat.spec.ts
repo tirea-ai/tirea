@@ -217,6 +217,337 @@ test.describe("AI SDK Chat", () => {
     });
   });
 
+  test("permission approval allows backend tool execution", async ({ page }) => {
+    await page.route("**/api/history?**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ messages: [] }),
+      });
+    });
+
+    let chatRequestCount = 0;
+    let resumeRequestBody: Record<string, unknown> | null = null;
+
+    await page.route("**/api/chat", async (route) => {
+      chatRequestCount += 1;
+      const payloadText = route.request().postData() ?? "{}";
+      const payload = JSON.parse(payloadText) as Record<string, unknown>;
+
+      if (chatRequestCount === 1) {
+        const sse = [
+          'data: {"type":"start","messageId":"m_perm_1"}',
+          "",
+          'data: {"type":"tool-input-start","toolCallId":"fc_perm_1","toolName":"PermissionConfirm"}',
+          "",
+          'data: {"type":"tool-input-available","toolCallId":"fc_perm_1","toolName":"PermissionConfirm","input":{"tool_name":"serverInfo","tool_args":{"scope":"name"}}}',
+          "",
+          'data: {"type":"tool-approval-request","approvalId":"fc_perm_1","toolCallId":"fc_perm_1"}',
+          "",
+          'data: {"type":"finish","finishReason":"tool-calls"}',
+          "",
+          "data: [DONE]",
+          "",
+        ].join("\n");
+
+        await route.fulfill({
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream",
+            "x-vercel-ai-ui-message-stream": "v1",
+          },
+          body: sse,
+        });
+        return;
+      }
+
+      resumeRequestBody = payload;
+      const sse = [
+        'data: {"type":"start","messageId":"m_perm_2"}',
+        "",
+        'data: {"type":"tool-input-start","toolCallId":"call_server_1","toolName":"serverInfo"}',
+        "",
+        'data: {"type":"tool-input-available","toolCallId":"call_server_1","toolName":"serverInfo","input":{"scope":"name"}}',
+        "",
+        'data: {"type":"tool-output-available","toolCallId":"call_server_1","output":{"data":{"name":"tirea-agentos"}}}',
+        "",
+        'data: {"type":"text-start","id":"txt_perm_2"}',
+        "",
+        'data: {"type":"text-delta","id":"txt_perm_2","delta":"Server is tirea-agentos."}',
+        "",
+        'data: {"type":"text-end","id":"txt_perm_2"}',
+        "",
+        'data: {"type":"finish","finishReason":"stop"}',
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n");
+
+      await route.fulfill({
+        status: 200,
+        headers: {
+          "content-type": "text/event-stream",
+          "x-vercel-ai-ui-message-stream": "v1",
+        },
+        body: sse,
+      });
+    });
+
+    await page.goto("/");
+
+    await expect(page.locator("h1")).toHaveText("Tirea Chat", {
+      timeout: 15_000,
+    });
+
+    const input = page.getByPlaceholder("Type a message...");
+    await input.fill("Use the serverInfo tool to get server information.");
+    await page.getByRole("button", { name: "Send" }).click();
+
+    const dialog = page.getByTestId("permission-dialog");
+    await expect(dialog).toBeVisible({ timeout: 45_000 });
+    await expect(dialog).toContainText("serverInfo");
+
+    const allowBtn = page.getByTestId("permission-allow");
+    await expect(allowBtn).toBeVisible();
+    await allowBtn.click();
+
+    await expect.poll(() => chatRequestCount).toBeGreaterThanOrEqual(2);
+    expect(resumeRequestBody).not.toBeNull();
+    const resumeMessages = (resumeRequestBody?.messages as Array<Record<string, unknown>>) ?? [];
+    const hasApprovalResponse = resumeMessages.some((message) => {
+      const parts = (message.parts as Array<Record<string, unknown>>) ?? [];
+      return parts.some((part) => {
+        const approval = part.approval as { id?: string; approved?: boolean } | undefined;
+        return (
+          (part.type === "tool-approval-response" &&
+            part.approvalId === "fc_perm_1" &&
+            part.approved === true) ||
+          (part.state === "approval-responded" &&
+            approval?.id === "fc_perm_1" &&
+            approval.approved === true)
+        );
+      });
+    });
+    expect(hasApprovalResponse).toBeTruthy();
+
+    const chatArea = page.locator("main");
+    await expect(chatArea).toContainText("Tool: serverInfo", { timeout: 45_000 });
+    await expect(chatArea).toContainText("tirea-agentos", { timeout: 15_000 });
+  });
+
+  test("permission denial blocks backend tool execution", async ({ page }) => {
+    await page.route("**/api/history?**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ messages: [] }),
+      });
+    });
+
+    let chatRequestCount = 0;
+    let resumeRequestBody: Record<string, unknown> | null = null;
+
+    await page.route("**/api/chat", async (route) => {
+      chatRequestCount += 1;
+      const payloadText = route.request().postData() ?? "{}";
+      const payload = JSON.parse(payloadText) as Record<string, unknown>;
+
+      if (chatRequestCount === 1) {
+        const sse = [
+          'data: {"type":"start","messageId":"m_perm_deny_1"}',
+          "",
+          'data: {"type":"tool-input-start","toolCallId":"fc_perm_1","toolName":"PermissionConfirm"}',
+          "",
+          'data: {"type":"tool-input-available","toolCallId":"fc_perm_1","toolName":"PermissionConfirm","input":{"tool_name":"serverInfo","tool_args":{"scope":"name"}}}',
+          "",
+          'data: {"type":"tool-approval-request","approvalId":"fc_perm_1","toolCallId":"fc_perm_1"}',
+          "",
+          'data: {"type":"finish","finishReason":"tool-calls"}',
+          "",
+          "data: [DONE]",
+          "",
+        ].join("\n");
+
+        await route.fulfill({
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream",
+            "x-vercel-ai-ui-message-stream": "v1",
+          },
+          body: sse,
+        });
+        return;
+      }
+
+      resumeRequestBody = payload;
+      const sse = [
+        'data: {"type":"start","messageId":"m_perm_deny_2"}',
+        "",
+        'data: {"type":"tool-output-denied","toolCallId":"fc_perm_1"}',
+        "",
+        'data: {"type":"finish","finishReason":"stop"}',
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n");
+
+      await route.fulfill({
+        status: 200,
+        headers: {
+          "content-type": "text/event-stream",
+          "x-vercel-ai-ui-message-stream": "v1",
+        },
+        body: sse,
+      });
+    });
+
+    await page.goto("/");
+
+    await expect(page.locator("h1")).toHaveText("Tirea Chat", {
+      timeout: 15_000,
+    });
+
+    const input = page.getByPlaceholder("Type a message...");
+    await input.fill("Use the serverInfo tool to get server information.");
+    await page.getByRole("button", { name: "Send" }).click();
+
+    const dialog = page.getByTestId("permission-dialog");
+    await expect(dialog).toBeVisible({ timeout: 45_000 });
+    await expect(dialog).toContainText("serverInfo");
+
+    const denyBtn = page.getByTestId("permission-deny");
+    await expect(denyBtn).toBeVisible();
+    await denyBtn.click();
+
+    await expect.poll(() => chatRequestCount).toBeGreaterThanOrEqual(2);
+    expect(resumeRequestBody).not.toBeNull();
+    const resumeMessages = (resumeRequestBody?.messages as Array<Record<string, unknown>>) ?? [];
+    const hasApprovalResponse = resumeMessages.some((message) => {
+      const parts = (message.parts as Array<Record<string, unknown>>) ?? [];
+      return parts.some((part) => {
+        const approval = part.approval as { id?: string; approved?: boolean } | undefined;
+        return (
+          (part.type === "tool-approval-response" &&
+            part.approvalId === "fc_perm_1" &&
+            part.approved === false) ||
+          (part.state === "approval-responded" &&
+            approval?.id === "fc_perm_1" &&
+            approval.approved === false)
+        );
+      });
+    });
+    expect(hasApprovalResponse).toBeTruthy();
+
+    const denied = page.getByTestId("permission-denied");
+    await expect(denied).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator("main")).not.toContainText("tirea-agentos");
+  });
+
+  test("askUserQuestion submits frontend answer and resumes run", async ({ page }) => {
+    await page.route("**/api/history?**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ messages: [] }),
+      });
+    });
+
+    let chatRequestCount = 0;
+    let resumeRequestBody: Record<string, unknown> | null = null;
+
+    await page.route("**/api/chat", async (route) => {
+      chatRequestCount += 1;
+      const payloadText = route.request().postData() ?? "{}";
+      const payload = JSON.parse(payloadText) as Record<string, unknown>;
+
+      if (chatRequestCount === 1) {
+        const sse = [
+          'data: {"type":"start","messageId":"m_ask_1"}',
+          "",
+          'data: {"type":"tool-input-start","toolCallId":"ask_call_1","toolName":"askUserQuestion"}',
+          "",
+          'data: {"type":"tool-input-available","toolCallId":"ask_call_1","toolName":"askUserQuestion","input":{"message":"What is your favorite color?"}}',
+          "",
+          'data: {"type":"finish","finishReason":"tool-calls"}',
+          "",
+          "data: [DONE]",
+          "",
+        ].join("\n");
+
+        await route.fulfill({
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream",
+            "x-vercel-ai-ui-message-stream": "v1",
+          },
+          body: sse,
+        });
+        return;
+      }
+
+      resumeRequestBody = payload;
+
+      const sse = [
+        'data: {"type":"start","messageId":"m_ask_2"}',
+        "",
+        'data: {"type":"text-start","id":"txt_ask_2"}',
+        "",
+        'data: {"type":"text-delta","id":"txt_ask_2","delta":"You said blue."}',
+        "",
+        'data: {"type":"text-end","id":"txt_ask_2"}',
+        "",
+        'data: {"type":"finish","finishReason":"stop"}',
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n");
+
+      await route.fulfill({
+        status: 200,
+        headers: {
+          "content-type": "text/event-stream",
+          "x-vercel-ai-ui-message-stream": "v1",
+        },
+        body: sse,
+      });
+    });
+
+    await page.goto("/");
+
+    await expect(page.locator("h1")).toHaveText("Tirea Chat", {
+      timeout: 15_000,
+    });
+
+    await page.getByPlaceholder("Type a message...").fill("Please ask me a question.");
+    await page.getByRole("button", { name: "Send" }).click();
+
+    const askDialog = page.getByTestId("ask-dialog");
+    await expect(askDialog).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId("ask-question-prompt")).toContainText("favorite color");
+
+    await page.getByTestId("ask-question-input").fill("blue");
+    await page.getByTestId("ask-question-submit").click();
+
+    await expect(page.locator("main")).toContainText("You said blue.", {
+      timeout: 20_000,
+    });
+
+    await expect.poll(() => chatRequestCount).toBeGreaterThanOrEqual(2);
+    expect(resumeRequestBody).not.toBeNull();
+
+    const resumeMessages = (resumeRequestBody?.messages as Array<Record<string, unknown>>) ?? [];
+    const hasAskOutput = resumeMessages.some((message) => {
+      const parts = (message.parts as Array<Record<string, unknown>>) ?? [];
+      return parts.some(
+        (part) =>
+          (part.type === "tool-askUserQuestion" || part.type === "dynamic-tool") &&
+          part.state === "output-available" &&
+          (part.output as { message?: string } | undefined)?.message === "blue"
+      );
+    });
+    expect(hasAskOutput).toBeTruthy();
+  });
+
   test("StopOnTool terminates agent run", async ({ page }) => {
     await page.goto("/?agentId=stopper");
 

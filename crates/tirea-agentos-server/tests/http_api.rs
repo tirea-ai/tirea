@@ -93,6 +93,34 @@ impl Tool for EchoTool {
     }
 }
 
+struct AskUserQuestionEchoTool;
+
+#[async_trait]
+impl Tool for AskUserQuestionEchoTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new(
+            "askUserQuestion",
+            "Ask User Question",
+            "Echo the resolved frontend response payload",
+        )
+        .with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "message": { "type": "string" }
+            },
+            "required": ["message"]
+        }))
+    }
+
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
+        Ok(ToolResult::success("askUserQuestion", args))
+    }
+}
+
 #[derive(Default)]
 struct RecordingStorage {
     threads: RwLock<HashMap<String, Thread>>,
@@ -251,8 +279,8 @@ async fn test_ai_sdk_sse_and_persists_session() {
     });
 
     let payload = json!({
-        "sessionId": "t1",
-        "input": "hi",
+        "id": "t1",
+        "messages": [{ "role": "user", "content": "hi" }],
         "runId": "run_1"
     });
 
@@ -303,8 +331,7 @@ async fn test_ai_sdk_sse_accepts_messages_request_shape() {
     });
 
     let payload = json!({
-        "id": "t-id-fallback",
-        "sessionId": "t-messages-shape",
+        "id": "t-messages-shape",
         "messages": [
             { "role": "user", "parts": [{ "type": "text", "text": "first input" }] },
             { "role": "assistant", "parts": [{ "type": "text", "text": "ignored assistant text" }] },
@@ -399,8 +426,8 @@ async fn test_ai_sdk_sse_messages_request_requires_thread_identifier() {
         body["error"]
             .as_str()
             .unwrap_or("")
-            .contains("sessionId cannot be empty"),
-        "expected sessionId validation error: {body}"
+            .contains("id cannot be empty"),
+        "expected id validation error: {body}"
     );
 }
 
@@ -453,8 +480,8 @@ async fn test_ai_sdk_sse_sets_expected_headers_and_done_trailer() {
     });
 
     let payload = json!({
-        "sessionId": "t-headers",
-        "input": "hello",
+        "id": "t-headers",
+        "messages": [{ "role": "user", "content": "hello" }],
         "runId": "run-headers"
     });
 
@@ -502,8 +529,8 @@ async fn test_ai_sdk_sse_auto_generated_run_id_is_uuid_v7() {
     });
 
     let payload = json!({
-        "sessionId": "t-v7",
-        "input": "hi"
+        "id": "t-v7",
+        "messages": [{ "role": "user", "content": "hi" }]
     });
 
     let resp = app
@@ -606,8 +633,8 @@ async fn test_industry_common_persistence_saves_user_message_before_run_complete
     });
 
     let payload = json!({
-        "sessionId": "t2",
-        "input": "hi",
+        "id": "t2",
+        "messages": [{ "role": "user", "content": "hi" }],
         "runId": "run_2"
     });
 
@@ -863,12 +890,12 @@ async fn test_ai_sdk_sse_empty_thread_id() {
     let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
-    let payload = json!({ "sessionId": "  ", "input": "hi" });
+    let payload = json!({ "id": "  ", "messages": [{ "role": "user", "content": "hi" }] });
     let (status, body) = post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(
-        body["error"].as_str().unwrap_or("").contains("sessionId"),
-        "expected sessionId error: {body}"
+        body["error"].as_str().unwrap_or("").contains("id"),
+        "expected id error: {body}"
     );
 }
 
@@ -878,7 +905,7 @@ async fn test_ai_sdk_sse_empty_input() {
     let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
-    let payload = json!({ "sessionId": "s1", "input": "  " });
+    let payload = json!({ "id": "s1", "messages": [{ "role": "user", "content": "  " }] });
     let (status, body) = post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(
@@ -893,13 +920,31 @@ async fn test_ai_sdk_sse_agent_not_found() {
     let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
-    let payload = json!({ "sessionId": "s1", "input": "hi" });
+    let payload = json!({ "id": "s1", "messages": [{ "role": "user", "content": "hi" }] });
     let (status, body) = post_json(app, "/v1/ai-sdk/agents/no_such_agent/runs", payload).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(
         body["error"].as_str().unwrap_or("").contains("not found"),
         "expected agent not found error: {body}"
     );
+}
+
+#[tokio::test]
+async fn test_ai_sdk_sse_rejects_legacy_payload_shape() {
+    let os = Arc::new(make_os());
+    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let app = make_app(os, read_store);
+
+    let payload = json!({
+        "sessionId": "legacy-session",
+        "input": "legacy-input"
+    });
+    let (status, body) = post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
+    assert!(
+        status == StatusCode::BAD_REQUEST || status == StatusCode::UNPROCESSABLE_ENTITY,
+        "expected 400/422 for legacy payload rejection, got {status}"
+    );
+    assert!(body == Value::Null || body.get("error").is_some());
 }
 
 #[tokio::test]
@@ -1114,7 +1159,7 @@ async fn test_ai_sdk_sse_storage_load_error() {
     let read_store: Arc<dyn AgentStateReader> = Arc::new(FailingStorage);
     let app = make_app(os, read_store);
 
-    let payload = json!({ "sessionId": "s1", "input": "hi" });
+    let payload = json!({ "id": "s1", "messages": [{ "role": "user", "content": "hi" }] });
     let (status, body) = post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert!(
@@ -1202,7 +1247,7 @@ async fn test_ai_sdk_sse_storage_save_error() {
     let read_store: Arc<dyn AgentStateReader> = Arc::new(SaveFailStorage);
     let app = make_app(os, read_store);
 
-    let payload = json!({ "sessionId": "s1", "input": "hi" });
+    let payload = json!({ "id": "s1", "messages": [{ "role": "user", "content": "hi" }] });
     let (status, body) = post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert!(
@@ -1681,6 +1726,105 @@ fn pending_echo_thread(id: &str, payload: &str) -> Thread {
     ))
 }
 
+fn pending_permission_frontend_thread(id: &str, payload: &str) -> Thread {
+    Thread::with_initial_state(
+        id,
+        json!({
+            "loop_control": {
+                "pending_interaction": {
+                    "id": "fc_perm_1",
+                    "action": "tool:PermissionConfirm",
+                    "parameters": {
+                        "tool_name": "echo",
+                        "tool_args": { "message": payload }
+                    }
+                },
+                "pending_frontend_invocation": {
+                    "call_id": "fc_perm_1",
+                    "tool_name": "PermissionConfirm",
+                    "arguments": {
+                        "tool_name": "echo",
+                        "tool_args": { "message": payload }
+                    },
+                    "origin": {
+                        "type": "tool_call_intercepted",
+                        "backend_call_id": "call_1",
+                        "backend_tool_name": "echo",
+                        "backend_arguments": { "message": payload }
+                    },
+                    "routing": {
+                        "strategy": "replay_original_tool",
+                        "state_patches": [{
+                            "op": "set",
+                            "path": ["permissions", "approved_calls", "call_1"],
+                            "value": true
+                        }]
+                    }
+                }
+            }
+        }),
+    )
+    .with_message(
+        tirea_agentos::contracts::thread::Message::assistant_with_tool_calls(
+            "need permission",
+            vec![tirea_agentos::contracts::thread::ToolCall::new(
+                "call_1",
+                "echo",
+                json!({"message": payload}),
+            )],
+        ),
+    )
+    .with_message(tirea_agentos::contracts::thread::Message::tool(
+        "call_1",
+        "Tool 'echo' is awaiting approval. Execution paused.",
+    ))
+}
+
+fn pending_ask_frontend_thread(id: &str, question: &str) -> Thread {
+    Thread::with_initial_state(
+        id,
+        json!({
+            "loop_control": {
+                "pending_interaction": {
+                    "id": "ask_call_1",
+                    "action": "tool:askUserQuestion",
+                    "parameters": {
+                        "question": question
+                    }
+                },
+                "pending_frontend_invocation": {
+                    "call_id": "ask_call_1",
+                    "tool_name": "askUserQuestion",
+                    "arguments": {
+                        "question": question
+                    },
+                    "origin": {
+                        "type": "plugin_initiated",
+                        "plugin_id": "agui_frontend_tools"
+                    },
+                    "routing": {
+                        "strategy": "use_as_tool_result"
+                    }
+                }
+            }
+        }),
+    )
+    .with_message(
+        tirea_agentos::contracts::thread::Message::assistant_with_tool_calls(
+            "ask user",
+            vec![tirea_agentos::contracts::thread::ToolCall::new(
+                "ask_call_1",
+                "askUserQuestion",
+                json!({"question": question}),
+            )],
+        ),
+    )
+    .with_message(tirea_agentos::contracts::thread::Message::tool(
+        "ask_call_1",
+        "Tool 'askUserQuestion' is awaiting approval. Execution paused.",
+    ))
+}
+
 #[tokio::test]
 async fn test_agui_pending_approval_resumes_and_replays_tool_call() {
     let storage = Arc::new(MemoryStore::new());
@@ -1797,6 +1941,228 @@ async fn test_agui_pending_denial_clears_pending_without_replay() {
     );
 }
 
+#[tokio::test]
+async fn test_ai_sdk_permission_approval_replays_backend_tool_call() {
+    let storage = Arc::new(MemoryStore::new());
+    storage
+        .save(&pending_permission_frontend_thread(
+            "th-ai-approve",
+            "approved-by-ai-sdk",
+        ))
+        .await
+        .unwrap();
+
+    let tools: HashMap<String, Arc<dyn Tool>> =
+        HashMap::from([("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>)]);
+    let os = Arc::new(make_os_with_storage_and_tools(storage.clone(), tools));
+    let app = router(AppState {
+        os,
+        read_store: storage.clone(),
+    });
+
+    let payload = json!({
+        "id": "th-ai-approve",
+        "runId": "resume-ai-approve",
+        "messages": [{
+            "role": "assistant",
+            "parts": [{
+                "type": "tool-PermissionConfirm",
+                "toolCallId": "fc_perm_1",
+                "state": "approval-responded",
+                "approval": {
+                    "id": "fc_perm_1",
+                    "approved": true,
+                    "reason": "approved in ui"
+                }
+            }]
+        }]
+    });
+    let (status, body) = post_sse_text(app, "/v1/ai-sdk/agents/test/runs", payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains(r#""type":"tool-output-available""#),
+        "approved resume should emit tool output events: {body}"
+    );
+    assert!(
+        body.contains(r#""toolCallId":"call_1""#),
+        "approved resume should replay original backend call: {body}"
+    );
+
+    let saved = storage
+        .load_agent_state("th-ai-approve")
+        .await
+        .unwrap()
+        .unwrap();
+    let replayed_tool = saved.messages.iter().find(|m| {
+        m.role == tirea_agentos::contracts::thread::Role::Tool
+            && m.tool_call_id.as_deref() == Some("call_1")
+            && m.content.contains("approved-by-ai-sdk")
+    });
+    assert!(
+        replayed_tool.is_some(),
+        "approved flow should append replayed backend tool result"
+    );
+
+    let rebuilt = saved.rebuild_state().unwrap();
+    assert!(
+        rebuilt
+            .get("loop_control")
+            .and_then(|rt| rt.get("pending_interaction"))
+            .is_none()
+            || rebuilt
+                .get("loop_control")
+                .and_then(|rt| rt.get("pending_interaction"))
+                == Some(&Value::Null),
+        "pending_interaction must be cleared after approval replay"
+    );
+}
+
+#[tokio::test]
+async fn test_ai_sdk_permission_denial_emits_output_denied_without_replay() {
+    let storage = Arc::new(MemoryStore::new());
+    storage
+        .save(&pending_permission_frontend_thread(
+            "th-ai-deny",
+            "denied-by-ai-sdk",
+        ))
+        .await
+        .unwrap();
+
+    let tools: HashMap<String, Arc<dyn Tool>> =
+        HashMap::from([("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>)]);
+    let os = Arc::new(make_os_with_storage_and_tools(storage.clone(), tools));
+    let app = router(AppState {
+        os,
+        read_store: storage.clone(),
+    });
+
+    let payload = json!({
+        "id": "th-ai-deny",
+        "runId": "resume-ai-deny",
+        "messages": [{
+            "role": "assistant",
+            "parts": [{
+                "type": "tool-PermissionConfirm",
+                "toolCallId": "fc_perm_1",
+                "state": "approval-responded",
+                "approval": {
+                    "id": "fc_perm_1",
+                    "approved": false,
+                    "reason": "denied in ui"
+                }
+            }]
+        }]
+    });
+    let (status, body) = post_sse_text(app, "/v1/ai-sdk/agents/test/runs", payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains(r#""type":"tool-output-denied""#)
+            && body.contains(r#""toolCallId":"fc_perm_1""#),
+        "denied resume should emit tool-output-denied: {body}"
+    );
+
+    let saved = storage
+        .load_agent_state("th-ai-deny")
+        .await
+        .unwrap()
+        .unwrap();
+    let replayed_tool = saved.messages.iter().find(|m| {
+        m.role == tirea_agentos::contracts::thread::Role::Tool
+            && m.tool_call_id.as_deref() == Some("call_1")
+            && m.content.contains("denied-by-ai-sdk")
+    });
+    assert!(
+        replayed_tool.is_none(),
+        "denied flow must not replay original backend tool call"
+    );
+
+    let rebuilt = saved.rebuild_state().unwrap();
+    assert!(
+        rebuilt
+            .get("loop_control")
+            .and_then(|rt| rt.get("pending_interaction"))
+            .is_none()
+            || rebuilt
+                .get("loop_control")
+                .and_then(|rt| rt.get("pending_interaction"))
+                == Some(&Value::Null),
+        "pending_interaction must be cleared after denial"
+    );
+}
+
+#[tokio::test]
+async fn test_ai_sdk_ask_output_available_replays_with_frontend_payload() {
+    let storage = Arc::new(MemoryStore::new());
+    storage
+        .save(&pending_ask_frontend_thread(
+            "th-ai-ask",
+            "What is your favorite color?",
+        ))
+        .await
+        .unwrap();
+
+    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::from([(
+        "askUserQuestion".to_string(),
+        Arc::new(AskUserQuestionEchoTool) as Arc<dyn Tool>,
+    )]);
+    let os = Arc::new(make_os_with_storage_and_tools(storage.clone(), tools));
+    let app = router(AppState {
+        os,
+        read_store: storage.clone(),
+    });
+
+    let payload = json!({
+        "id": "th-ai-ask",
+        "runId": "resume-ai-ask",
+        "messages": [{
+            "role": "assistant",
+            "parts": [{
+                "type": "tool-askUserQuestion",
+                "toolCallId": "ask_call_1",
+                "state": "output-available",
+                "output": {
+                    "message": "blue"
+                }
+            }]
+        }]
+    });
+    let (status, body) = post_sse_text(app, "/v1/ai-sdk/agents/test/runs", payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains(r#""type":"tool-output-available""#)
+            && body.contains(r#""toolCallId":"ask_call_1""#),
+        "ask resume should emit tool-output-available: {body}"
+    );
+
+    let saved = storage
+        .load_agent_state("th-ai-ask")
+        .await
+        .unwrap()
+        .unwrap();
+    let replayed_tool = saved.messages.iter().find(|m| {
+        m.role == tirea_agentos::contracts::thread::Role::Tool
+            && m.tool_call_id.as_deref() == Some("ask_call_1")
+            && m.content.contains("blue")
+    });
+    assert!(
+        replayed_tool.is_some(),
+        "ask flow should replay frontend payload as tool input"
+    );
+
+    let rebuilt = saved.rebuild_state().unwrap();
+    assert!(
+        rebuilt
+            .get("loop_control")
+            .and_then(|rt| rt.get("pending_interaction"))
+            .is_none()
+            || rebuilt
+                .get("loop_control")
+                .and_then(|rt| rt.get("pending_interaction"))
+                == Some(&Value::Null),
+        "pending_interaction must be cleared after ask replay"
+    );
+}
+
 // ============================================================================
 // Route restructuring regression tests
 // ============================================================================
@@ -1851,8 +2217,8 @@ async fn test_new_protocol_routes_are_reachable() {
 
     // POST to new AI SDK run endpoint
     let ai_sdk_payload = json!({
-        "sessionId": "route-test-aisdk",
-        "input": "hello",
+        "id": "route-test-aisdk",
+        "messages": [{"role": "user", "content": "hello"}],
     });
     let (status, _) =
         post_sse_text(app.clone(), "/v1/ai-sdk/agents/test/runs", ai_sdk_payload).await;
@@ -1943,8 +2309,8 @@ async fn test_protocol_isolation_no_cross_routing() {
 
     // Run via AI SDK
     let sdk_payload = json!({
-        "sessionId": "cross-route-aisdk",
-        "input": "sdk msg",
+        "id": "cross-route-aisdk",
+        "messages": [{"role": "user", "content": "sdk msg"}],
     });
     let (status, body) =
         post_sse_text(app.clone(), "/v1/ai-sdk/agents/test/runs", sdk_payload).await;
@@ -1986,8 +2352,8 @@ async fn test_ai_sdk_route_sets_protocol_headers() {
     let app = make_app(os, read_store);
 
     let payload = json!({
-        "sessionId": "header-check",
-        "input": "test",
+        "id": "header-check",
+        "messages": [{"role": "user", "content": "test"}],
     });
 
     let resp = app
