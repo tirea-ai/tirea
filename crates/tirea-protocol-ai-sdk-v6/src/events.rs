@@ -696,4 +696,24 @@ mod tests {
             UIStreamEvent::MessageMetadata { message_metadata } if message_metadata["step"] == 2
         ));
     }
+
+    #[test]
+    fn text_delta_roundtrip_preserves_provider_metadata() {
+        let event = UIStreamEvent::TextDelta {
+            id: "txt_1".to_string(),
+            delta: "hello".to_string(),
+            provider_metadata: Some(json!({ "model": "x" })),
+        };
+        let raw = serde_json::to_string(&event).expect("serialize text delta");
+        let restored: UIStreamEvent = serde_json::from_str(&raw).expect("deserialize text delta");
+
+        assert!(matches!(
+            restored,
+            UIStreamEvent::TextDelta {
+                id,
+                delta,
+                provider_metadata: Some(provider_metadata),
+            } if id == "txt_1" && delta == "hello" && provider_metadata["model"] == "x"
+        ));
+    }
 }

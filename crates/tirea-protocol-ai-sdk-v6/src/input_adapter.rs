@@ -189,12 +189,7 @@ fn parse_interaction_response_part(part: &Value) -> Option<(String, Value)> {
             .get("reason")
             .and_then(Value::as_str)
             .map(str::to_string);
-        let mut result = serde_json::Map::new();
-        result.insert("approved".to_string(), Value::Bool(approved));
-        if let Some(reason) = reason {
-            result.insert("reason".to_string(), Value::String(reason));
-        }
-        return Some((approval_id, Value::Object(result)));
+        return Some((approval_id, approval_response_value(approved, reason)));
     }
 
     match state {
@@ -213,12 +208,7 @@ fn parse_interaction_response_part(part: &Value) -> Option<(String, Value)> {
                 .and_then(|v| v.get("reason"))
                 .and_then(Value::as_str)
                 .map(str::to_string);
-            let mut result = serde_json::Map::new();
-            result.insert("approved".to_string(), Value::Bool(approved));
-            if let Some(reason) = reason {
-                result.insert("reason".to_string(), Value::String(reason));
-            }
-            Some((interaction_id, Value::Object(result)))
+            Some((interaction_id, approval_response_value(approved, reason)))
         }
         "output-available" => {
             let interaction_id = tool_call_id?;
@@ -245,6 +235,15 @@ fn parse_interaction_response_part(part: &Value) -> Option<(String, Value)> {
         }
         _ => None,
     }
+}
+
+fn approval_response_value(approved: bool, reason: Option<String>) -> Value {
+    let mut result = serde_json::Map::new();
+    result.insert("approved".to_string(), Value::Bool(approved));
+    if let Some(reason) = reason {
+        result.insert("reason".to_string(), Value::String(reason));
+    }
+    Value::Object(result)
 }
 
 fn extract_text_from_parts(parts: &[Value]) -> String {
@@ -303,7 +302,8 @@ mod tests {
         }))
         .expect_err("legacy payload must be rejected");
         assert!(
-            err.to_string().contains("legacy AI SDK payload shape is no longer supported"),
+            err.to_string()
+                .contains("legacy AI SDK payload shape is no longer supported"),
             "unexpected error: {err}"
         );
     }
@@ -477,6 +477,30 @@ mod tests {
     }
 
     #[test]
+    fn output_error_without_error_text_uses_default_message() {
+        let req: AiSdkV6RunRequest = serde_json::from_value(json!({
+            "id": "t4b",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "parts": [{
+                        "type": "dynamic-tool",
+                        "toolCallId": "call_err_default",
+                        "state": "output-error"
+                    }]
+                }
+            ]
+        }))
+        .expect("messages payload should deserialize");
+
+        let responses = req.interaction_responses();
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].interaction_id, "call_err_default");
+        assert_eq!(responses[0].result["approved"], false);
+        assert_eq!(responses[0].result["error"], "tool output error");
+    }
+
+    #[test]
     fn approval_responded_without_approval_id_falls_back_to_tool_call_id() {
         let req: AiSdkV6RunRequest = serde_json::from_value(json!({
             "id": "t5",
@@ -500,6 +524,30 @@ mod tests {
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0].interaction_id, "fc_perm_fallback");
         assert_eq!(responses[0].result["approved"], true);
+    }
+
+    #[test]
+    fn tool_approval_response_without_reason_only_contains_approved_field() {
+        let req: AiSdkV6RunRequest = serde_json::from_value(json!({
+            "id": "t5b",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "parts": [{
+                        "type": "tool-approval-response",
+                        "approvalId": "fc_perm_10",
+                        "approved": true
+                    }]
+                }
+            ]
+        }))
+        .expect("messages payload should deserialize");
+
+        let responses = req.interaction_responses();
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].interaction_id, "fc_perm_10");
+        assert_eq!(responses[0].result["approved"], true);
+        assert!(responses[0].result.get("reason").is_none());
     }
 
     #[test]

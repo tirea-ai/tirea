@@ -610,6 +610,30 @@ mod tests {
     }
 
     #[test]
+    fn run_finish_closes_reasoning_started_from_reasoning_event() {
+        let mut enc = AiSdkEncoder::new("run_reasoning_finish".into());
+        let open_events = enc.on_agent_event(&AgentEvent::ReasoningDelta {
+            delta: "step-1".to_string(),
+        });
+        assert!(open_events
+            .iter()
+            .any(|ev| matches!(ev, UIStreamEvent::ReasoningStart { .. })));
+
+        let finish_events = enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "thread_1".to_string(),
+            run_id: "run_reasoning_finish".to_string(),
+            result: None,
+            termination: TerminationReason::NaturalEnd,
+        });
+        assert!(
+            finish_events
+                .iter()
+                .any(|ev| matches!(ev, UIStreamEvent::ReasoningEnd { .. })),
+            "run finish should close open reasoning block"
+        );
+    }
+
+    #[test]
     fn reasoning_encrypted_event_emits_transient_data_event() {
         let mut enc = AiSdkEncoder::new("run_reasoning_encrypted".into());
         let events = enc.on_agent_event(&AgentEvent::ReasoningEncryptedValue {

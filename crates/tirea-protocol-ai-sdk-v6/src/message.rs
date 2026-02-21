@@ -509,4 +509,27 @@ mod tests {
 
         assert!(err.to_string().contains("data-*"));
     }
+
+    #[test]
+    fn file_part_roundtrip_preserves_filename_and_provider_metadata() {
+        let part = UIMessagePart::File(FileUIPart {
+            part_type: FilePartType::File,
+            url: "https://example.com/a.png".to_string(),
+            media_type: "image/png".to_string(),
+            filename: Some("a.png".to_string()),
+            provider_metadata: Some(json!({ "source": "upload" })),
+        });
+
+        let raw = serde_json::to_string(&part).expect("serialize file part");
+        let restored: UIMessagePart = serde_json::from_str(&raw).expect("deserialize file part");
+
+        assert!(matches!(
+            restored,
+            UIMessagePart::File(FileUIPart {
+                filename: Some(filename),
+                provider_metadata: Some(provider_metadata),
+                ..
+            }) if filename == "a.png" && provider_metadata["source"] == "upload"
+        ));
+    }
 }
