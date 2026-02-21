@@ -501,7 +501,7 @@ async fn e2e_ai_sdk_multiturn_with_deepseek() {
         saved.messages.len()
     );
 
-    // Turn 2: ask for the number back.
+    // Turn 2: AI SDK client sends full message history.
     let app2 = router(AppState {
         os: os.clone(),
         read_store: storage.clone(),
@@ -510,11 +510,15 @@ async fn e2e_ai_sdk_multiturn_with_deepseek() {
     let (status, text2) = post_sse_with_retry(
         app2,
         "/v1/ai-sdk/agents/chat/runs",
-        ai_sdk_messages_payload(
-            "e2e-sdk-multi",
-            "What secret number did I tell you? Reply with just the number.",
-            Some("r-m2"),
-        ),
+        json!({
+            "id": "e2e-sdk-multi",
+            "runId": "r-m2",
+            "messages": [
+                {"role": "user", "content": "Remember the secret number 42. Just say OK."},
+                {"role": "assistant", "content": "OK."},
+                {"role": "user", "content": "What secret number did I tell you? Reply with just the number."}
+            ]
+        }),
     )
     .await;
 

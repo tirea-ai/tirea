@@ -307,11 +307,14 @@ async fn e2e_http_multiturn_history_endpoints_are_consistent() {
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains(r#""type":"finish""#));
 
-    let second_payload = ai_sdk_messages_payload(
-        "history-e2e-thread",
-        "second-turn",
-        Some("history-r2".to_string()),
-    );
+    let second_payload = json!({
+        "id": "history-e2e-thread",
+        "runId": "history-r2",
+        "messages": [
+            {"role": "user", "content": "first-turn"},
+            {"role": "user", "content": "second-turn"}
+        ]
+    });
     let (status, body) =
         post_json(app.clone(), "/v1/ai-sdk/agents/test/runs", second_payload).await;
     assert_eq!(status, StatusCode::OK);
