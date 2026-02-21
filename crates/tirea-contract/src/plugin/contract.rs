@@ -242,7 +242,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_plugin_on_phase_step_start() {
+    async fn test_plugin_step_start_hook() {
         let plugin = TestPlugin::new("test");
         let fix = TestFixture::new();
         let mut step = fix.step(vec![]);
@@ -254,7 +254,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_plugin_on_phase_before_inference() {
+    async fn test_plugin_before_inference_hook() {
         let plugin = TestPlugin::new("test");
         let fix = TestFixture::new();
         let mut step = fix.step(vec![]);
