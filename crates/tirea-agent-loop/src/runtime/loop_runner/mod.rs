@@ -787,7 +787,7 @@ pub async fn run_loop(
             tool_descriptors: &active_tool_descriptors,
             plugins: &config.plugins,
             activity_manager: None,
-            run_config: Some(&tool_context.run_config),
+            run_config: &tool_context.run_config,
             thread_id: run_ctx.thread_id(),
             thread_messages: &thread_messages_for_tools,
             state_version: thread_version_for_tools,

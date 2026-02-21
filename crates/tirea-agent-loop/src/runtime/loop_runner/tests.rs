@@ -469,6 +469,7 @@ async fn test_activity_event_emitted_before_tool_completion() {
     let descriptors = vec![tool.descriptor()];
     let plugins: Vec<Arc<dyn AgentPlugin>> = Vec::new();
     let state = json!({});
+    let run_config = tirea_contract::RunConfig::default();
 
     let mut tool_future = Box::pin(execute_single_tool_with_phases(
         Some(&tool),
@@ -477,7 +478,7 @@ async fn test_activity_event_emitted_before_tool_completion() {
         &descriptors,
         &plugins,
         Some(activity_manager),
-        None,
+        &run_config,
         "test",
         &[],
         0,
@@ -542,6 +543,7 @@ async fn test_parallel_tools_emit_activity_before_completion() {
         tools.values().map(|t| t.descriptor().clone()).collect();
     let plugins: Vec<Arc<dyn AgentPlugin>> = Vec::new();
     let state = json!({});
+    let run_config = tirea_contract::RunConfig::default();
 
     // Spawn the tool execution so it actually starts running while we await activity events.
     let tools_for_task = tools.clone();
@@ -557,7 +559,7 @@ async fn test_parallel_tools_emit_activity_before_completion() {
             &tool_descriptors_for_task,
             &plugins_for_task,
             Some(activity_manager),
-            None,
+            &run_config,
             "test",
             &[],
             0,
@@ -621,6 +623,7 @@ async fn test_parallel_tool_executor_honors_cancellation_token() {
     let token = CancellationToken::new();
     let token_for_task = token.clone();
     let ready_for_task = ready.clone();
+    let run_config = tirea_contract::RunConfig::default();
 
     let handle = tokio::spawn(async move {
         let result = execute_tools_parallel_with_phases(
@@ -630,7 +633,7 @@ async fn test_parallel_tool_executor_honors_cancellation_token() {
             &tool_descriptors,
             &[],
             None,
-            None,
+            &run_config,
             "cancel-test",
             &[],
             0,
@@ -1050,6 +1053,7 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
     let state = json!({ "plugin": { "allow_exec": true } });
     let tool_descriptors = vec![tool.descriptor()];
     let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(GuardedPlugin)];
+    let run_config = tirea_contract::RunConfig::default();
 
     let result = execute_single_tool_with_phases(
         Some(&tool),
@@ -1058,7 +1062,7 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
         &tool_descriptors,
         &plugins,
         None,
-        None,
+        &run_config,
         "test",
         &[],
         0,
@@ -1111,7 +1115,7 @@ async fn test_plugin_sees_real_session_id_and_scope_in_tool_phase() {
         &tool_descriptors,
         &plugins,
         None,
-        Some(&rt),
+        &rt,
         "real-thread-42",
         &[],
         0,

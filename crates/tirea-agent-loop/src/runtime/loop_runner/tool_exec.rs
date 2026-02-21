@@ -461,7 +461,7 @@ pub async fn execute_tools_with_plugins_and_executor(
             tool_descriptors: &tool_descriptors,
             plugins,
             activity_manager: None,
-            run_config: Some(&rt_for_tools),
+            run_config: &rt_for_tools,
             thread_id: run_ctx.thread_id(),
             thread_messages: run_ctx.messages(),
             state_version: run_ctx.version(),
@@ -501,7 +501,7 @@ pub(super) async fn execute_tools_parallel_with_phases(
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     activity_manager: Option<Arc<dyn ActivityManager>>,
-    scope: Option<&tirea_contract::RunConfig>,
+    run_config: &tirea_contract::RunConfig,
     thread_id: &str,
     thread_messages: &[Arc<Message>],
     state_version: u64,
@@ -520,8 +520,8 @@ pub(super) async fn execute_tools_parallel_with_phases(
         });
     }
 
-    // Clone scope state for parallel tasks (RunConfig is Clone).
-    let scope_owned = scope.cloned();
+    // Clone run config for parallel tasks (RunConfig is Clone).
+    let run_config_owned = run_config.clone();
     let thread_id = thread_id.to_string();
     let thread_messages = Arc::new(thread_messages.to_vec());
 
@@ -532,7 +532,7 @@ pub(super) async fn execute_tools_parallel_with_phases(
         let plugins = plugins.to_vec();
         let tool_descriptors = tool_descriptors.to_vec();
         let activity_manager = activity_manager.clone();
-        let rt = scope_owned.clone();
+        let rt = run_config_owned.clone();
         let sid = thread_id.clone();
         let thread_messages = thread_messages.clone();
 
@@ -544,7 +544,7 @@ pub(super) async fn execute_tools_parallel_with_phases(
                 &tool_descriptors,
                 &plugins,
                 activity_manager,
-                rt.as_ref(),
+                &rt,
                 &sid,
                 thread_messages.as_slice(),
                 state_version,
@@ -608,7 +608,7 @@ pub(super) async fn execute_tools_sequential_with_phases(
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     activity_manager: Option<Arc<dyn ActivityManager>>,
-    scope: Option<&tirea_contract::RunConfig>,
+    run_config: &tirea_contract::RunConfig,
     thread_id: &str,
     thread_messages: &[Arc<Message>],
     state_version: u64,
@@ -649,7 +649,7 @@ pub(super) async fn execute_tools_sequential_with_phases(
                     tool_descriptors,
                     plugins,
                     activity_manager.clone(),
-                    scope,
+                    run_config,
                     thread_id,
                     thread_messages,
                     state_version,
@@ -663,7 +663,7 @@ pub(super) async fn execute_tools_sequential_with_phases(
                 tool_descriptors,
                 plugins,
                 activity_manager.clone(),
-                scope,
+                run_config,
                 thread_id,
                 thread_messages,
                 state_version,
@@ -712,7 +712,7 @@ pub(super) async fn execute_single_tool_with_phases(
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     activity_manager: Option<Arc<dyn ActivityManager>>,
-    scope: Option<&tirea_contract::RunConfig>,
+    run_config: &tirea_contract::RunConfig,
     thread_id: &str,
     thread_messages: &[Arc<Message>],
     _state_version: u64,
@@ -721,8 +721,7 @@ pub(super) async fn execute_single_tool_with_phases(
     let doc = tirea_state::DocCell::new(state.clone());
     let ops = std::sync::Mutex::new(Vec::new());
     let pending_messages = std::sync::Mutex::new(Vec::new());
-    let empty_scope = tirea_contract::RunConfig::default();
-    let plugin_scope = scope.unwrap_or(&empty_scope);
+    let plugin_scope = run_config;
     let plugin_tool_call_ctx = crate::contracts::ToolCallContext::new(
         &doc,
         &ops,
@@ -748,7 +747,7 @@ pub(super) async fn execute_single_tool_with_phases(
     // Check if blocked or pending
     let (execution, pending_interaction, pending_frontend_invocation) =
         if !crate::engine::tool_filter::is_scope_allowed(
-            scope,
+            Some(run_config),
             &call.name,
             SCOPE_ALLOWED_TOOLS_KEY,
             SCOPE_EXCLUDED_TOOLS_KEY,

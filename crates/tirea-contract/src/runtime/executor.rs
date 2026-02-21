@@ -59,7 +59,7 @@ pub struct ToolExecutionRequest<'a> {
     pub tool_descriptors: &'a [ToolDescriptor],
     pub plugins: &'a [Arc<dyn AgentPlugin>],
     pub activity_manager: Option<Arc<dyn ActivityManager>>,
-    pub run_config: Option<&'a RunConfig>,
+    pub run_config: &'a RunConfig,
     pub thread_id: &'a str,
     pub thread_messages: &'a [Arc<Message>],
     pub state_version: u64,
