@@ -12,7 +12,7 @@ use tirea_contract::event::interaction::{
     FrontendToolInvocation, InvocationOrigin, ResponseRouting,
 };
 use tirea_contract::plugin::phase::{
-    BeforeToolExecuteContext, Phase, PluginPhaseContext, RunStartContext, StepContext,
+    BeforeToolExecuteContext, PluginPhaseContext, RunStartContext,
 };
 use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::runtime::control::LoopControlState;
@@ -464,31 +464,71 @@ impl AgentPlugin for InteractionResponsePlugin {
             }
         }
     }
-
-    #[allow(deprecated)]
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        match phase {
-            Phase::RunStart => {
-                let mut ctx = RunStartContext::new(step);
-                self.run_start(&mut ctx).await;
-            }
-            Phase::BeforeToolExecute => {
-                let mut ctx = BeforeToolExecuteContext::new(step);
-                self.before_tool_execute(&mut ctx).await;
-            }
-            _ => {}
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use serde_json::json;
     use std::sync::Arc;
+    use tirea_contract::plugin::phase::{
+        AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
+        BeforeToolExecuteContext, Phase, RunEndContext, RunStartContext, StepContext, StepEndContext,
+        StepStartContext,
+    };
+    use tirea_contract::plugin::AgentPlugin;
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::{Message, ToolCall};
     use tirea_state::DocCell;
+
+    #[async_trait]
+    trait AgentPluginTestDispatch {
+        async fn run_phase(&self, phase: Phase, step: &mut StepContext<'_>);
+    }
+
+    #[async_trait]
+    impl<T> AgentPluginTestDispatch for T
+    where
+        T: AgentPlugin + ?Sized,
+    {
+        async fn run_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            match phase {
+                Phase::RunStart => {
+                    let mut ctx = RunStartContext::new(step);
+                    self.run_start(&mut ctx).await;
+                }
+                Phase::StepStart => {
+                    let mut ctx = StepStartContext::new(step);
+                    self.step_start(&mut ctx).await;
+                }
+                Phase::BeforeInference => {
+                    let mut ctx = BeforeInferenceContext::new(step);
+                    self.before_inference(&mut ctx).await;
+                }
+                Phase::AfterInference => {
+                    let mut ctx = AfterInferenceContext::new(step);
+                    self.after_inference(&mut ctx).await;
+                }
+                Phase::BeforeToolExecute => {
+                    let mut ctx = BeforeToolExecuteContext::new(step);
+                    self.before_tool_execute(&mut ctx).await;
+                }
+                Phase::AfterToolExecute => {
+                    let mut ctx = AfterToolExecuteContext::new(step);
+                    self.after_tool_execute(&mut ctx).await;
+                }
+                Phase::StepEnd => {
+                    let mut ctx = StepEndContext::new(step);
+                    self.step_end(&mut ctx).await;
+                }
+                Phase::RunEnd => {
+                    let mut ctx = RunEndContext::new(step);
+                    self.run_end(&mut ctx).await;
+                }
+            }
+        }
+    }
 
     fn replay_calls_from_state(state: &serde_json::Value) -> Vec<ToolCall> {
         state
@@ -554,7 +594,7 @@ mod tests {
         let plugin = InteractionResponsePlugin::new(vec!["fc_ask_1".to_string()], vec![]);
 
         let mut step = fixture.step(vec![]);
-        plugin.on_phase(Phase::RunStart, &mut step).await;
+        plugin.run_phase(Phase::RunStart, &mut step).await;
 
         let updated = fixture.updated_state();
         let replay_calls = replay_calls_from_state(&updated);
@@ -607,7 +647,7 @@ mod tests {
         let plugin = InteractionResponsePlugin::new(vec!["call_write".to_string()], vec![]);
 
         let mut step = fixture.step(vec![]);
-        plugin.on_phase(Phase::RunStart, &mut step).await;
+        plugin.run_phase(Phase::RunStart, &mut step).await;
 
         let updated = fixture.updated_state();
         let replay_after = replay_calls_from_state(&updated);
@@ -653,7 +693,7 @@ mod tests {
         let plugin = InteractionResponsePlugin::new(vec!["call_copy_1".to_string()], vec![]);
 
         let mut step = fixture.step(vec![]);
-        plugin.on_phase(Phase::RunStart, &mut step).await;
+        plugin.run_phase(Phase::RunStart, &mut step).await;
 
         let updated = fixture.updated_state();
         let replay_after = replay_calls_from_state(&updated);
@@ -689,7 +729,7 @@ mod tests {
         let plugin = InteractionResponsePlugin::new(vec!["call_copy_1".to_string()], vec![]);
 
         let mut step = fixture.step(vec![]);
-        plugin.on_phase(Phase::RunStart, &mut step).await;
+        plugin.run_phase(Phase::RunStart, &mut step).await;
 
         let updated = fixture.updated_state();
         let replay_after = replay_calls_from_state(&updated);
@@ -731,7 +771,7 @@ mod tests {
         let plugin = InteractionResponsePlugin::new(vec!["fc_ask_2".to_string()], vec![]);
 
         let mut step = fixture.step(vec![]);
-        plugin.on_phase(Phase::RunStart, &mut step).await;
+        plugin.run_phase(Phase::RunStart, &mut step).await;
 
         let updated = fixture.updated_state();
         let replay_after = replay_calls_from_state(&updated);
@@ -773,7 +813,7 @@ mod tests {
         let plugin = InteractionResponsePlugin::new(vec!["fc_ask_3".to_string()], vec![]);
 
         let mut step = fixture.step(vec![]);
-        plugin.on_phase(Phase::RunStart, &mut step).await;
+        plugin.run_phase(Phase::RunStart, &mut step).await;
 
         let updated = fixture.updated_state();
         let replay_after = replay_calls_from_state(&updated);
@@ -818,7 +858,7 @@ mod tests {
         let plugin = InteractionResponsePlugin::new(vec!["fc_ask_1".to_string()], vec![]);
 
         let mut step = fixture.step(vec![]);
-        plugin.on_phase(Phase::RunStart, &mut step).await;
+        plugin.run_phase(Phase::RunStart, &mut step).await;
 
         let updated = fixture.updated_state();
         let replay_calls = replay_calls_from_state(&updated);
@@ -864,7 +904,7 @@ mod tests {
         let plugin = InteractionResponsePlugin::new(vec!["call_copy".to_string()], vec![]);
 
         let mut step = fixture.step(vec![]);
-        plugin.on_phase(Phase::RunStart, &mut step).await;
+        plugin.run_phase(Phase::RunStart, &mut step).await;
 
         let updated = fixture.updated_state();
         let replay_calls = replay_calls_from_state(&updated);
@@ -910,7 +950,7 @@ mod tests {
         )]);
 
         let mut step = fixture.step(vec![]);
-        plugin.on_phase(Phase::RunStart, &mut step).await;
+        plugin.run_phase(Phase::RunStart, &mut step).await;
 
         let updated = fixture.updated_state();
         let replay_calls = replay_calls_from_state(&updated);
@@ -945,7 +985,7 @@ mod tests {
             InteractionResponsePlugin::new(vec!["agent_recovery_run-1".to_string()], vec![]);
 
         let mut step = fixture.step(vec![]);
-        plugin.on_phase(Phase::RunStart, &mut step).await;
+        plugin.run_phase(Phase::RunStart, &mut step).await;
 
         let updated = fixture.updated_state();
         let replay_calls = replay_calls_from_state(&updated);
@@ -973,7 +1013,7 @@ mod tests {
             InteractionResponsePlugin::new(vec![], vec!["agent_recovery_run-1".to_string()]);
 
         let mut step = fixture.step(vec![]);
-        plugin.on_phase(Phase::RunStart, &mut step).await;
+        plugin.run_phase(Phase::RunStart, &mut step).await;
 
         assert!(
             fixture.has_changes(),

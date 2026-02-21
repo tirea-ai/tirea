@@ -27,7 +27,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use tirea_contract::event::interaction::ResponseRouting;
 use tirea_contract::plugin::AgentPlugin;
-use tirea_contract::plugin::phase::{BeforeToolExecuteContext, Phase, PluginPhaseContext, StepContext};
+use tirea_contract::plugin::phase::{BeforeToolExecuteContext, PluginPhaseContext};
 use tirea_contract::tool::context::ToolCallContext;
 use tirea_state::{Op, Path, State};
 
@@ -135,7 +135,7 @@ impl AgentPlugin for PermissionPlugin {
 
     async fn before_tool_execute(
         &self,
-        step: &mut tirea_contract::plugin::phase::BeforeToolExecuteContext<'_, '_>,
+        step: &mut BeforeToolExecuteContext<'_, '_>,
     ) {
         if !matches!(
             step.decision(),
@@ -219,14 +219,6 @@ impl AgentPlugin for PermissionPlugin {
         }
     }
 
-    #[allow(deprecated)]
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        if phase != Phase::BeforeToolExecute {
-            return;
-        }
-        let mut ctx = BeforeToolExecuteContext::new(step);
-        self.before_tool_execute(&mut ctx).await;
-    }
 }
 
 #[cfg(test)]

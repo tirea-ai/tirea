@@ -7,8 +7,7 @@ use super::INTERACTION_PLUGIN_ID;
 use async_trait::async_trait;
 use tirea_contract::plugin::phase::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
-    BeforeToolExecuteContext, Phase, RunEndContext, RunStartContext, StepContext,
-    StepEndContext, StepStartContext,
+    BeforeToolExecuteContext, RunEndContext, RunStartContext, StepEndContext, StepStartContext,
 };
 use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::InteractionResponse;
@@ -112,44 +111,6 @@ impl AgentPlugin for InteractionPlugin {
     async fn run_end(&self, ctx: &mut RunEndContext<'_, '_>) {
         let response = self.response_plugin();
         response.run_end(ctx).await;
-    }
-
-    #[allow(deprecated)]
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        match phase {
-            Phase::RunStart => {
-                let mut ctx = RunStartContext::new(step);
-                self.run_start(&mut ctx).await;
-            }
-            Phase::StepStart => {
-                let mut ctx = StepStartContext::new(step);
-                self.step_start(&mut ctx).await;
-            }
-            Phase::BeforeInference => {
-                let mut ctx = BeforeInferenceContext::new(step);
-                self.before_inference(&mut ctx).await;
-            }
-            Phase::AfterInference => {
-                let mut ctx = AfterInferenceContext::new(step);
-                self.after_inference(&mut ctx).await;
-            }
-            Phase::BeforeToolExecute => {
-                let mut ctx = BeforeToolExecuteContext::new(step);
-                self.before_tool_execute(&mut ctx).await;
-            }
-            Phase::AfterToolExecute => {
-                let mut ctx = AfterToolExecuteContext::new(step);
-                self.after_tool_execute(&mut ctx).await;
-            }
-            Phase::StepEnd => {
-                let mut ctx = StepEndContext::new(step);
-                self.step_end(&mut ctx).await;
-            }
-            Phase::RunEnd => {
-                let mut ctx = RunEndContext::new(step);
-                self.run_end(&mut ctx).await;
-            }
-        }
     }
 }
 

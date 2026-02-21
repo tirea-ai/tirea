@@ -22,7 +22,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tirea_contract::plugin::AgentPlugin;
-use tirea_contract::plugin::phase::{BeforeInferenceContext, Phase, PluginPhaseContext, StepContext};
+use tirea_contract::plugin::phase::{BeforeInferenceContext, PluginPhaseContext};
 use tirea_contract::tool::context::ToolCallContext;
 use tirea_state::State;
 
@@ -127,7 +127,7 @@ impl AgentPlugin for ReminderPlugin {
 
     async fn before_inference(
         &self,
-        ctx: &mut tirea_contract::plugin::phase::BeforeInferenceContext<'_, '_>,
+        ctx: &mut BeforeInferenceContext<'_, '_>,
     ) {
         let reminders = ctx.state_of::<ReminderState>().items().ok().unwrap_or_default();
         if reminders.is_empty() {
@@ -144,14 +144,6 @@ impl AgentPlugin for ReminderPlugin {
         }
     }
 
-    #[allow(deprecated)]
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        if phase != Phase::BeforeInference {
-            return;
-        }
-        let mut ctx = BeforeInferenceContext::new(step);
-        self.before_inference(&mut ctx).await;
-    }
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 use super::*;
-use crate::contracts::plugin::phase::{Phase, StepContext};
+use crate::contracts::plugin::phase::{BeforeInferenceContext, Phase, StepContext};
 use crate::contracts::storage::{AgentStateReader, AgentStateWriter};
 use crate::contracts::thread::Thread;
 use crate::contracts::tool::ToolDescriptor;
@@ -1153,10 +1153,8 @@ impl AgentPlugin for TestPlugin {
         self.0
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        if phase == Phase::BeforeInference {
-            step.system(format!("<plugin id=\"{}\"/>", self.0));
-        }
+    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
+        step.add_system_context(format!("<plugin id=\"{}\"/>", self.0));
     }
 }
 
@@ -1177,7 +1175,8 @@ async fn resolve_wires_plugins_from_registry() {
     let fixture = TestFixture::new();
     let mut step = fixture.step(vec![ToolDescriptor::new("t", "t", "t")]);
     for p in &resolved.config.plugins {
-        p.on_phase(Phase::BeforeInference, &mut step).await;
+        let mut before = BeforeInferenceContext::new(&mut step);
+        p.before_inference(&mut before).await;
     }
     assert!(step.system_context.iter().any(|s| s.contains("p1")));
 }

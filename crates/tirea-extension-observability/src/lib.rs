@@ -11,8 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tirea_contract::plugin::phase::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
-    BeforeToolExecuteContext, Phase, PluginPhaseContext, RunEndContext, RunStartContext,
-    StepContext,
+    BeforeToolExecuteContext, PluginPhaseContext, RunEndContext, RunStartContext,
 };
 use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::runtime::control::{InferenceError, LoopControlState};
@@ -606,36 +605,6 @@ impl AgentPlugin for LLMMetryPlugin {
         self.sink.on_run_end(&metrics);
     }
 
-    #[allow(deprecated)]
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        match phase {
-            Phase::RunStart => {
-                let mut ctx = RunStartContext::new(step);
-                self.run_start(&mut ctx).await;
-            }
-            Phase::BeforeInference => {
-                let mut ctx = BeforeInferenceContext::new(step);
-                self.before_inference(&mut ctx).await;
-            }
-            Phase::AfterInference => {
-                let mut ctx = AfterInferenceContext::new(step);
-                self.after_inference(&mut ctx).await;
-            }
-            Phase::BeforeToolExecute => {
-                let mut ctx = BeforeToolExecuteContext::new(step);
-                self.before_tool_execute(&mut ctx).await;
-            }
-            Phase::AfterToolExecute => {
-                let mut ctx = AfterToolExecuteContext::new(step);
-                self.after_tool_execute(&mut ctx).await;
-            }
-            Phase::RunEnd => {
-                let mut ctx = RunEndContext::new(step);
-                self.run_end(&mut ctx).await;
-            }
-            _ => {}
-        }
-    }
 }
 
 fn extract_token_counts(usage: Option<&Usage>) -> (Option<i32>, Option<i32>, Option<i32>) {
@@ -668,11 +637,64 @@ mod tests {
     use genai::chat::PromptTokensDetails;
     use serde_json::json;
     use std::sync::Arc;
-    use tirea_contract::plugin::phase::ToolContext as PhaseToolContext;
+    use tirea_contract::plugin::phase::{
+        AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
+        BeforeToolExecuteContext, Phase, RunEndContext, RunStartContext, StepContext,
+        StepEndContext, StepStartContext, ToolContext as PhaseToolContext,
+    };
+    use tirea_contract::plugin::AgentPlugin;
     use tirea_contract::runtime::StreamResult;
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::ToolCall;
     use tirea_contract::tool::ToolResult;
+
+    #[async_trait::async_trait]
+    trait AgentPluginTestDispatch {
+        async fn run_phase(&self, phase: Phase, step: &mut StepContext<'_>);
+    }
+
+    #[async_trait::async_trait]
+    impl<T> AgentPluginTestDispatch for T
+    where
+        T: AgentPlugin + ?Sized,
+    {
+        async fn run_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            match phase {
+                Phase::RunStart => {
+                    let mut ctx = RunStartContext::new(step);
+                    self.run_start(&mut ctx).await;
+                }
+                Phase::StepStart => {
+                    let mut ctx = StepStartContext::new(step);
+                    self.step_start(&mut ctx).await;
+                }
+                Phase::BeforeInference => {
+                    let mut ctx = BeforeInferenceContext::new(step);
+                    self.before_inference(&mut ctx).await;
+                }
+                Phase::AfterInference => {
+                    let mut ctx = AfterInferenceContext::new(step);
+                    self.after_inference(&mut ctx).await;
+                }
+                Phase::BeforeToolExecute => {
+                    let mut ctx = BeforeToolExecuteContext::new(step);
+                    self.before_tool_execute(&mut ctx).await;
+                }
+                Phase::AfterToolExecute => {
+                    let mut ctx = AfterToolExecuteContext::new(step);
+                    self.after_tool_execute(&mut ctx).await;
+                }
+                Phase::StepEnd => {
+                    let mut ctx = StepEndContext::new(step);
+                    self.step_end(&mut ctx).await;
+                }
+                Phase::RunEnd => {
+                    let mut ctx = RunEndContext::new(step);
+                    self.run_end(&mut ctx).await;
+                }
+            }
+        }
+    }
 
     fn usage(prompt: i32, completion: i32, total: i32) -> Usage {
         Usage {
@@ -823,7 +845,7 @@ mod tests {
 
         let mut step = fix.step(vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        plugin.run_phase(Phase::BeforeInference, &mut step).await;
 
         step.response = Some(StreamResult {
             text: "hello".into(),
@@ -831,7 +853,7 @@ mod tests {
             usage: Some(usage(100, 50, 150)),
         });
 
-        plugin.on_phase(Phase::AfterInference, &mut step).await;
+        plugin.run_phase(Phase::AfterInference, &mut step).await;
 
         let m = sink.metrics();
         assert_eq!(m.inference_count(), 1);
@@ -853,7 +875,7 @@ mod tests {
 
         let mut step = fix.step(vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        plugin.run_phase(Phase::BeforeInference, &mut step).await;
 
         step.response = Some(StreamResult {
             text: "hello".into(),
@@ -861,7 +883,7 @@ mod tests {
             usage: Some(usage_with_cache(100, 50, 150, 30)),
         });
 
-        plugin.on_phase(Phase::AfterInference, &mut step).await;
+        plugin.run_phase(Phase::AfterInference, &mut step).await;
 
         let m = sink.metrics();
         let span = &m.inferences[0];
@@ -880,12 +902,12 @@ mod tests {
         let call = ToolCall::new("c1", "search", json!({}));
         step.tool = Some(PhaseToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
 
         step.tool.as_mut().unwrap().result =
             Some(ToolResult::success("search", json!({"found": true})));
 
-        plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+        plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
 
         let m = sink.metrics();
         assert_eq!(m.tool_count(), 1);
@@ -907,11 +929,11 @@ mod tests {
         let call = ToolCall::new("c1", "write", json!({}));
         step.tool = Some(PhaseToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
 
         step.tool.as_mut().unwrap().result = Some(ToolResult::error("write", "permission denied"));
 
-        plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+        plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
 
         let m = sink.metrics();
         assert!(!m.tools[0].is_success());
@@ -926,11 +948,11 @@ mod tests {
 
         let mut step = fix.step(vec![]);
 
-        plugin.on_phase(Phase::RunStart, &mut step).await;
+        plugin.run_phase(Phase::RunStart, &mut step).await;
 
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        plugin.on_phase(Phase::RunEnd, &mut step).await;
+        plugin.run_phase(Phase::RunEnd, &mut step).await;
 
         let m = sink.metrics();
         assert!(m.session_duration_ms >= 10);
@@ -944,13 +966,13 @@ mod tests {
 
         let mut step = fix.step(vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        plugin.run_phase(Phase::BeforeInference, &mut step).await;
         step.response = Some(StreamResult {
             text: "hi".into(),
             tool_calls: vec![],
             usage: None,
         });
-        plugin.on_phase(Phase::AfterInference, &mut step).await;
+        plugin.run_phase(Phase::AfterInference, &mut step).await;
 
         let m = sink.metrics();
         assert_eq!(m.inference_count(), 1);
@@ -967,13 +989,13 @@ mod tests {
         let mut step = fix.step(vec![]);
 
         for i in 0..3 {
-            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            plugin.run_phase(Phase::BeforeInference, &mut step).await;
             step.response = Some(StreamResult {
                 text: format!("r{i}"),
                 tool_calls: vec![],
                 usage: Some(usage(10 * (i + 1), 5 * (i + 1), 15 * (i + 1))),
             });
-            plugin.on_phase(Phase::AfterInference, &mut step).await;
+            plugin.run_phase(Phase::AfterInference, &mut step).await;
         }
 
         let m = sink.metrics();
@@ -999,8 +1021,8 @@ mod tests {
 
         let mut step = fix.step(vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
-        plugin.on_phase(Phase::AfterInference, &mut step).await;
+        plugin.run_phase(Phase::BeforeInference, &mut step).await;
+        plugin.run_phase(Phase::AfterInference, &mut step).await;
 
         let m = sink.metrics();
         assert_eq!(m.inference_count(), 1);
@@ -1027,12 +1049,12 @@ mod tests {
             async move {
                 let mut step = fix.step(vec![]);
                 step.tool = Some(PhaseToolContext::new(&call));
-                plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+                plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
                 // Stagger completion to maximize the chance of cross-talk.
                 tokio::time::sleep(Duration::from_millis(5 * (3 - i) as u64)).await;
                 step.tool.as_mut().unwrap().result =
                     Some(ToolResult::success(&call.name, json!({"ok": true})));
-                plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+                plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
             }
         });
 
@@ -1356,13 +1378,13 @@ mod tests {
 
         let mut step = fix.step(vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        plugin.run_phase(Phase::BeforeInference, &mut step).await;
         step.response = Some(StreamResult {
             text: "hi".into(),
             tool_calls: vec![],
             usage: Some(usage(10, 20, 30)),
         });
-        plugin.on_phase(Phase::AfterInference, &mut step).await;
+        plugin.run_phase(Phase::AfterInference, &mut step).await;
 
         let spans = captured.lock().unwrap();
         let inference_span = spans.iter().find(|s| s.name == "gen_ai");
@@ -1388,10 +1410,10 @@ mod tests {
         let call = ToolCall::new("c1", "search", json!({}));
         step.tool = Some(PhaseToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
         step.tool.as_mut().unwrap().result =
             Some(ToolResult::success("search", json!({"found": true})));
-        plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+        plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
 
         let spans = captured.lock().unwrap();
         let tool_span = spans.iter().find(|s| s.name == "gen_ai");
@@ -1450,13 +1472,13 @@ mod tests {
 
             let mut step = fix.step(vec![]);
 
-            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            plugin.run_phase(Phase::BeforeInference, &mut step).await;
             step.response = Some(StreamResult {
                 text: "hello".into(),
                 tool_calls: vec![],
                 usage: Some(usage(100, 50, 150)),
             });
-            plugin.on_phase(Phase::AfterInference, &mut step).await;
+            plugin.run_phase(Phase::AfterInference, &mut step).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1519,8 +1541,8 @@ mod tests {
 
             let mut step = fix.step(vec![]);
 
-            plugin.on_phase(Phase::BeforeInference, &mut step).await;
-            plugin.on_phase(Phase::AfterInference, &mut step).await;
+            plugin.run_phase(Phase::BeforeInference, &mut step).await;
+            plugin.run_phase(Phase::AfterInference, &mut step).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1556,14 +1578,14 @@ mod tests {
 
             let mut step = fix.step(vec![]);
 
-            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            plugin.run_phase(Phase::BeforeInference, &mut step).await;
 
             step.response = Some(StreamResult {
                 text: "hello".into(),
                 tool_calls: vec![],
                 usage: Some(usage(100, 50, 150)),
             });
-            plugin.on_phase(Phase::AfterInference, &mut step).await;
+            plugin.run_phase(Phase::AfterInference, &mut step).await;
 
             drop(_parent_guard);
             drop(parent);
@@ -1610,11 +1632,11 @@ mod tests {
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
 
             step.tool.as_mut().unwrap().result =
                 Some(ToolResult::success("search", json!({"found": true})));
-            plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+            plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
 
             drop(_parent_guard);
             drop(parent);
@@ -1654,13 +1676,13 @@ mod tests {
             // No parent span entered — should be a root span
             let mut step = fix.step(vec![]);
 
-            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            plugin.run_phase(Phase::BeforeInference, &mut step).await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
             });
-            plugin.on_phase(Phase::AfterInference, &mut step).await;
+            plugin.run_phase(Phase::AfterInference, &mut step).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1689,13 +1711,13 @@ mod tests {
             // Inference span should be closed (exported) after AfterInference
             {
                 let mut step = fix.step(vec![]);
-                plugin.on_phase(Phase::BeforeInference, &mut step).await;
+                plugin.run_phase(Phase::BeforeInference, &mut step).await;
                 step.response = Some(StreamResult {
                     text: "hi".into(),
                     tool_calls: vec![],
                     usage: None,
                 });
-                plugin.on_phase(Phase::AfterInference, &mut step).await;
+                plugin.run_phase(Phase::AfterInference, &mut step).await;
             }
 
             // Tool span should be closed (exported) after AfterToolExecute
@@ -1703,9 +1725,9 @@ mod tests {
                 let mut step = fix.step(vec![]);
                 let call = ToolCall::new("c1", "test", json!({}));
                 step.tool = Some(PhaseToolContext::new(&call));
-                plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+                plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
                 step.tool.as_mut().unwrap().result = Some(ToolResult::success("test", json!({})));
-                plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+                plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
             }
 
             let _ = provider.force_flush();
@@ -1734,13 +1756,13 @@ mod tests {
             // Inference phase
             {
                 let mut step = fix.step(vec![]);
-                plugin.on_phase(Phase::BeforeInference, &mut step).await;
+                plugin.run_phase(Phase::BeforeInference, &mut step).await;
                 step.response = Some(StreamResult {
                     text: "calling tool".into(),
                     tool_calls: vec![ToolCall::new("c1", "search", json!({}))],
                     usage: Some(usage(10, 5, 15)),
                 });
-                plugin.on_phase(Phase::AfterInference, &mut step).await;
+                plugin.run_phase(Phase::AfterInference, &mut step).await;
             }
 
             // Tool phase
@@ -1748,9 +1770,9 @@ mod tests {
                 let mut step = fix.step(vec![]);
                 let call = ToolCall::new("c1", "search", json!({}));
                 step.tool = Some(PhaseToolContext::new(&call));
-                plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+                plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
                 step.tool.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
-                plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+                plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
             }
 
             drop(_parent_guard);
@@ -1815,10 +1837,10 @@ mod tests {
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
             step.tool.as_mut().unwrap().result =
                 Some(ToolResult::success("search", json!({"found": true})));
-            plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+            plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1861,13 +1883,13 @@ mod tests {
 
             let mut step = fix.step(vec![]);
 
-            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            plugin.run_phase(Phase::BeforeInference, &mut step).await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
             });
-            plugin.on_phase(Phase::AfterInference, &mut step).await;
+            plugin.run_phase(Phase::AfterInference, &mut step).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1897,9 +1919,9 @@ mod tests {
             let call = ToolCall::new("tc1", "web_search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
             step.tool.as_mut().unwrap().result = Some(ToolResult::success("web_search", json!({})));
-            plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+            plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1928,13 +1950,13 @@ mod tests {
 
             let mut step = fix.step(vec![]);
 
-            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            plugin.run_phase(Phase::BeforeInference, &mut step).await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
             });
-            plugin.on_phase(Phase::AfterInference, &mut step).await;
+            plugin.run_phase(Phase::AfterInference, &mut step).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1966,9 +1988,9 @@ mod tests {
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
             step.tool.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
-            plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+            plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1998,9 +2020,9 @@ mod tests {
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
             step.tool.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
-            plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+            plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -2034,10 +2056,10 @@ mod tests {
             let call = ToolCall::new("tc1", "write", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
             step.tool.as_mut().unwrap().result =
                 Some(ToolResult::error("write", "permission denied"));
-            plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+            plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -2072,13 +2094,13 @@ mod tests {
 
             let mut step = fix.step(vec![]);
 
-            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            plugin.run_phase(Phase::BeforeInference, &mut step).await;
             step.response = Some(StreamResult {
                 text: "ok".into(),
                 tool_calls: vec![],
                 usage: Some(usage(10, 5, 15)),
             });
-            plugin.on_phase(Phase::AfterInference, &mut step).await;
+            plugin.run_phase(Phase::AfterInference, &mut step).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -2110,13 +2132,13 @@ mod tests {
 
             let mut step = fix.step(vec![]);
 
-            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            plugin.run_phase(Phase::BeforeInference, &mut step).await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: Some(usage(100, 50, 150)),
             });
-            plugin.on_phase(Phase::AfterInference, &mut step).await;
+            plugin.run_phase(Phase::AfterInference, &mut step).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -2168,13 +2190,13 @@ mod tests {
 
             let mut step = fix.step(vec![]);
 
-            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            plugin.run_phase(Phase::BeforeInference, &mut step).await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
             });
-            plugin.on_phase(Phase::AfterInference, &mut step).await;
+            plugin.run_phase(Phase::AfterInference, &mut step).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -2206,13 +2228,13 @@ mod tests {
             // Test with cache tokens present
             {
                 let mut step = fix.step(vec![]);
-                plugin.on_phase(Phase::BeforeInference, &mut step).await;
+                plugin.run_phase(Phase::BeforeInference, &mut step).await;
                 step.response = Some(StreamResult {
                     text: "hi".into(),
                     tool_calls: vec![],
                     usage: Some(usage_with_cache(100, 50, 150, 30)),
                 });
-                plugin.on_phase(Phase::AfterInference, &mut step).await;
+                plugin.run_phase(Phase::AfterInference, &mut step).await;
             }
 
             let _ = provider.force_flush();
@@ -2255,13 +2277,13 @@ mod tests {
 
             let mut step = fix.step(vec![]);
 
-            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            plugin.run_phase(Phase::BeforeInference, &mut step).await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: Some(usage(10, 5, 15)),
             });
-            plugin.on_phase(Phase::AfterInference, &mut step).await;
+            plugin.run_phase(Phase::AfterInference, &mut step).await;
 
             let m = sink.metrics();
             let span = &m.inferences[0];
@@ -2288,13 +2310,13 @@ mod tests {
 
             let mut step = fix.step(vec![]);
 
-            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            plugin.run_phase(Phase::BeforeInference, &mut step).await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
             });
-            plugin.on_phase(Phase::AfterInference, &mut step).await;
+            plugin.run_phase(Phase::AfterInference, &mut step).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -2329,13 +2351,13 @@ mod tests {
 
             let mut step = fix.step(vec![]);
 
-            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            plugin.run_phase(Phase::BeforeInference, &mut step).await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
             });
-            plugin.on_phase(Phase::AfterInference, &mut step).await;
+            plugin.run_phase(Phase::AfterInference, &mut step).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -2363,9 +2385,9 @@ mod tests {
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
             step.tool.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
-            plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+            plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();

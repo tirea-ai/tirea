@@ -1,6 +1,11 @@
 use super::*;
 use crate::contracts::thread::Thread;
 use crate::contracts::tool::ToolStatus;
+use crate::contracts::plugin::phase::{
+    AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext, BeforeToolExecuteContext,
+    Phase, RunEndContext, RunStartContext, StepContext, StepEndContext, StepStartContext,
+};
+use crate::contracts::plugin::AgentPlugin;
 use crate::orchestrator::InMemoryAgentRegistry;
 use crate::runtime::loop_runner::{
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
@@ -11,6 +16,54 @@ use serde_json::json;
 use std::time::Duration;
 use tirea_contract::testing::TestFixture;
 use tirea_state::apply_patches;
+
+#[async_trait]
+trait AgentPluginTestDispatch {
+    async fn run_phase(&self, phase: Phase, step: &mut StepContext<'_>);
+}
+
+#[async_trait]
+impl<T> AgentPluginTestDispatch for T
+where
+    T: AgentPlugin + ?Sized,
+{
+    async fn run_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        match phase {
+            Phase::RunStart => {
+                let mut ctx = RunStartContext::new(step);
+                self.run_start(&mut ctx).await;
+            }
+            Phase::StepStart => {
+                let mut ctx = StepStartContext::new(step);
+                self.step_start(&mut ctx).await;
+            }
+            Phase::BeforeInference => {
+                let mut ctx = BeforeInferenceContext::new(step);
+                self.before_inference(&mut ctx).await;
+            }
+            Phase::AfterInference => {
+                let mut ctx = AfterInferenceContext::new(step);
+                self.after_inference(&mut ctx).await;
+            }
+            Phase::BeforeToolExecute => {
+                let mut ctx = BeforeToolExecuteContext::new(step);
+                self.before_tool_execute(&mut ctx).await;
+            }
+            Phase::AfterToolExecute => {
+                let mut ctx = AfterToolExecuteContext::new(step);
+                self.after_tool_execute(&mut ctx).await;
+            }
+            Phase::StepEnd => {
+                let mut ctx = StepEndContext::new(step);
+                self.step_end(&mut ctx).await;
+            }
+            Phase::RunEnd => {
+                let mut ctx = RunEndContext::new(step);
+                self.run_end(&mut ctx).await;
+            }
+        }
+    }
+}
 
 #[test]
 fn plugin_filters_out_caller_agent() {
@@ -60,7 +113,7 @@ async fn plugin_adds_reminder_for_running_and_stopped_runs() {
 
     let fixture = TestFixture::new();
     let mut step = StepContext::new(fixture.ctx(), "owner-1", &fixture.messages, vec![]);
-    plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+    plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
     let reminder = step
         .system_reminders
         .first()
@@ -70,7 +123,7 @@ async fn plugin_adds_reminder_for_running_and_stopped_runs() {
     manager.stop_owned_tree("owner-1", "run-1").await.unwrap();
     let fixture2 = TestFixture::new();
     let mut step2 = StepContext::new(fixture2.ctx(), "owner-1", &fixture2.messages, vec![]);
-    plugin.on_phase(Phase::AfterToolExecute, &mut step2).await;
+    plugin.run_phase(Phase::AfterToolExecute, &mut step2).await;
     let reminder2 = step2
         .system_reminders
         .first()
@@ -893,7 +946,7 @@ async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
     let doc = thread.rebuild_state().unwrap();
     let fixture = TestFixture::new_with_state(doc);
     let mut step = fixture.step(vec![]);
-    plugin.on_phase(Phase::RunStart, &mut step).await;
+    plugin.run_phase(Phase::RunStart, &mut step).await;
     assert!(!step.skip_inference);
 
     let updated = fixture.updated_state();
@@ -912,7 +965,7 @@ async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
 
     let fixture2 = TestFixture::new_with_state(updated);
     let mut before = fixture2.step(vec![]);
-    plugin.on_phase(Phase::BeforeInference, &mut before).await;
+    plugin.run_phase(Phase::BeforeInference, &mut before).await;
     assert!(
         before.skip_inference,
         "recovery confirmation should pause inference"
@@ -949,7 +1002,7 @@ async fn recovery_plugin_does_not_override_existing_pending_interaction() {
     let doc = thread.rebuild_state().unwrap();
     let fixture = TestFixture::new_with_state(doc);
     let mut step = fixture.step(vec![]);
-    plugin.on_phase(Phase::RunStart, &mut step).await;
+    plugin.run_phase(Phase::RunStart, &mut step).await;
     assert!(
         !step.skip_inference,
         "existing pending interaction should not be replaced"
@@ -991,7 +1044,7 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
     let doc = thread.rebuild_state().unwrap();
     let fixture = TestFixture::new_with_state(doc);
     let mut step = fixture.step(vec![]);
-    plugin.on_phase(Phase::RunStart, &mut step).await;
+    plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
     let replay_calls: Vec<ToolCall> = updated["interaction_outbox"]
@@ -1041,7 +1094,7 @@ async fn recovery_plugin_auto_deny_when_permission_deny() {
     let doc = thread.rebuild_state().unwrap();
     let fixture = TestFixture::new_with_state(doc);
     let mut step = fixture.step(vec![]);
-    plugin.on_phase(Phase::RunStart, &mut step).await;
+    plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
     let replay_calls: Vec<ToolCall> = updated["interaction_outbox"]
@@ -1087,7 +1140,7 @@ async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
     let doc = thread.rebuild_state().unwrap();
     let fixture = TestFixture::new_with_state(doc);
     let mut step = fixture.step(vec![]);
-    plugin.on_phase(Phase::RunStart, &mut step).await;
+    plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
     let replay_calls: Vec<ToolCall> = updated["interaction_outbox"]
@@ -1131,7 +1184,7 @@ async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
     let doc = thread.rebuild_state().unwrap();
     let fixture = TestFixture::new_with_state(doc);
     let mut step = fixture.step(vec![]);
-    plugin.on_phase(Phase::RunStart, &mut step).await;
+    plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
     let replay_calls: Vec<ToolCall> = updated["interaction_outbox"]
@@ -1178,7 +1231,7 @@ async fn recovery_plugin_tool_rule_overrides_default_behavior() {
     let doc = thread.rebuild_state().unwrap();
     let fixture = TestFixture::new_with_state(doc);
     let mut step = fixture.step(vec![]);
-    plugin.on_phase(Phase::RunStart, &mut step).await;
+    plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
     let replay_calls: Vec<ToolCall> = updated["interaction_outbox"]

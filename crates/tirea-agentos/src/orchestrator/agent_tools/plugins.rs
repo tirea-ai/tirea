@@ -93,21 +93,6 @@ impl AgentPlugin for AgentRecoveryPlugin {
     async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
         self.on_before_inference(ctx).await;
     }
-
-    #[allow(deprecated)]
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        match phase {
-            Phase::RunStart => {
-                let mut ctx = RunStartContext::new(step);
-                self.run_start(&mut ctx).await;
-            }
-            Phase::BeforeInference => {
-                let mut ctx = BeforeInferenceContext::new(step);
-                self.before_inference(&mut ctx).await;
-            }
-            _ => {}
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -257,20 +242,5 @@ impl AgentPlugin for AgentToolsPlugin {
         // Inject system reminders after tool execution so the reminder is persisted
         // as internal-system history for subsequent turns.
         self.maybe_reminder(step).await;
-    }
-
-    #[allow(deprecated)]
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        match phase {
-            Phase::BeforeInference => {
-                let mut ctx = BeforeInferenceContext::new(step);
-                self.before_inference(&mut ctx).await;
-            }
-            Phase::AfterToolExecute => {
-                let mut ctx = AfterToolExecuteContext::new(step);
-                self.after_tool_execute(&mut ctx).await;
-            }
-            _ => {}
-        }
     }
 }
