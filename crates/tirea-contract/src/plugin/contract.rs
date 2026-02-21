@@ -34,11 +34,8 @@
 
 use crate::plugin::phase::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
-    BeforeToolExecuteContext, RunEndContext, RunStartContext, StepContext, StepEndContext,
-    StepStartContext,
+    BeforeToolExecuteContext, RunEndContext, RunStartContext, StepEndContext, StepStartContext,
 };
-#[cfg(feature = "test-support")]
-use crate::plugin::phase::Phase;
 use async_trait::async_trait;
 
 /// Plugin trait for extending agent behavior.
@@ -51,114 +48,28 @@ pub trait AgentPlugin: Send + Sync {
     /// Plugin identifier for logging and debugging.
     fn id(&self) -> &str;
 
-    async fn run_start(&self, ctx: &mut RunStartContext<'_, '_>) {
-        #[cfg(feature = "test-support")]
-        {
-            #[allow(deprecated)]
-            self.on_phase(Phase::RunStart, ctx.step_mut()).await;
-        }
-        #[cfg(not(feature = "test-support"))]
-        {
-            let _ = ctx;
-        }
-    }
+    async fn run_start(&self, _ctx: &mut RunStartContext<'_, '_>) {}
 
-    async fn step_start(&self, ctx: &mut StepStartContext<'_, '_>) {
-        #[cfg(feature = "test-support")]
-        {
-            #[allow(deprecated)]
-            self.on_phase(Phase::StepStart, ctx.step_mut()).await;
-        }
-        #[cfg(not(feature = "test-support"))]
-        {
-            let _ = ctx;
-        }
-    }
+    async fn step_start(&self, _ctx: &mut StepStartContext<'_, '_>) {}
 
-    async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
-        #[cfg(feature = "test-support")]
-        {
-            #[allow(deprecated)]
-            self.on_phase(Phase::BeforeInference, ctx.step_mut()).await;
-        }
-        #[cfg(not(feature = "test-support"))]
-        {
-            let _ = ctx;
-        }
-    }
+    async fn before_inference(&self, _ctx: &mut BeforeInferenceContext<'_, '_>) {}
 
-    async fn after_inference(&self, ctx: &mut AfterInferenceContext<'_, '_>) {
-        #[cfg(feature = "test-support")]
-        {
-            #[allow(deprecated)]
-            self.on_phase(Phase::AfterInference, ctx.step_mut()).await;
-        }
-        #[cfg(not(feature = "test-support"))]
-        {
-            let _ = ctx;
-        }
-    }
+    async fn after_inference(&self, _ctx: &mut AfterInferenceContext<'_, '_>) {}
 
-    async fn before_tool_execute(&self, ctx: &mut BeforeToolExecuteContext<'_, '_>) {
-        #[cfg(feature = "test-support")]
-        {
-            #[allow(deprecated)]
-            self.on_phase(Phase::BeforeToolExecute, ctx.step_mut()).await;
-        }
-        #[cfg(not(feature = "test-support"))]
-        {
-            let _ = ctx;
-        }
-    }
+    async fn before_tool_execute(&self, _ctx: &mut BeforeToolExecuteContext<'_, '_>) {}
 
-    async fn after_tool_execute(&self, ctx: &mut AfterToolExecuteContext<'_, '_>) {
-        #[cfg(feature = "test-support")]
-        {
-            #[allow(deprecated)]
-            self.on_phase(Phase::AfterToolExecute, ctx.step_mut()).await;
-        }
-        #[cfg(not(feature = "test-support"))]
-        {
-            let _ = ctx;
-        }
-    }
+    async fn after_tool_execute(&self, _ctx: &mut AfterToolExecuteContext<'_, '_>) {}
 
-    async fn step_end(&self, ctx: &mut StepEndContext<'_, '_>) {
-        #[cfg(feature = "test-support")]
-        {
-            #[allow(deprecated)]
-            self.on_phase(Phase::StepEnd, ctx.step_mut()).await;
-        }
-        #[cfg(not(feature = "test-support"))]
-        {
-            let _ = ctx;
-        }
-    }
+    async fn step_end(&self, _ctx: &mut StepEndContext<'_, '_>) {}
 
-    async fn run_end(&self, ctx: &mut RunEndContext<'_, '_>) {
-        #[cfg(feature = "test-support")]
-        {
-            #[allow(deprecated)]
-            self.on_phase(Phase::RunEnd, ctx.step_mut()).await;
-        }
-        #[cfg(not(feature = "test-support"))]
-        {
-            let _ = ctx;
-        }
-    }
-
-    #[cfg(feature = "test-support")]
-    #[deprecated(note = "implement phase-specific methods instead")]
-    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
+    async fn run_end(&self, _ctx: &mut RunEndContext<'_, '_>) {}
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::event::Interaction;
-    #[cfg(feature = "test-support")]
-    use crate::plugin::phase::Phase;
-    use crate::plugin::phase::ToolContext;
+    use crate::plugin::phase::{StepContext, ToolContext};
     use crate::testing::TestFixture;
     use crate::thread::ToolCall;
     use crate::tool::contract::ToolDescriptor;
@@ -490,40 +401,4 @@ mod tests {
         assert!(step.system_reminders.is_empty());
     }
 
-    struct LegacyPhaseOnlyPlugin;
-
-    #[async_trait]
-    impl AgentPlugin for LegacyPhaseOnlyPlugin {
-        fn id(&self) -> &str {
-            "legacy_phase_only"
-        }
-
-        #[cfg(feature = "test-support")]
-        #[allow(deprecated)]
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-            if phase == Phase::BeforeInference {
-                step.system("legacy");
-            }
-        }
-    }
-
-    #[cfg(not(feature = "test-support"))]
-    #[tokio::test]
-    async fn test_legacy_on_phase_not_auto_dispatched() {
-        let plugin = LegacyPhaseOnlyPlugin;
-        let fix = TestFixture::new();
-        let mut step = fix.step(vec![]);
-        run_before_inference(&plugin, &mut step).await;
-        assert!(step.system_context.is_empty());
-    }
-
-    #[cfg(feature = "test-support")]
-    #[tokio::test]
-    async fn test_legacy_on_phase_auto_dispatched_in_test_support() {
-        let plugin = LegacyPhaseOnlyPlugin;
-        let fix = TestFixture::new();
-        let mut step = fix.step(vec![]);
-        run_before_inference(&plugin, &mut step).await;
-        assert_eq!(step.system_context, vec!["legacy".to_string()]);
-    }
 }

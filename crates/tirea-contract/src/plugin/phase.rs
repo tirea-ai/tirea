@@ -543,7 +543,7 @@ macro_rules! impl_common_phase_context {
             }
 
             #[cfg(feature = "test-support")]
-            pub(crate) fn step_mut(&mut self) -> &mut StepContext<'a> {
+            pub fn step_mut_for_tests(&mut self) -> &mut StepContext<'a> {
                 self.step
             }
         }

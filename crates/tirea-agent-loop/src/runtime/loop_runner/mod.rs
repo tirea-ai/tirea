@@ -8,7 +8,7 @@
 //!
 //! # Phase Execution
 //!
-//! Each phase emits events to all plugins via `on_phase()`:
+//! Each phase dispatches to its typed plugin hook:
 //!
 //! ```text
 //! RunStart (once)
@@ -73,8 +73,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use uuid::Uuid;
 
-#[cfg(test)]
-use crate::contracts::plugin::phase::StepContext;
 #[cfg(test)]
 use crate::contracts::plugin::AgentPlugin;
 pub use crate::contracts::runtime::{LlmExecutor, ToolExecutor};

@@ -1,7 +1,10 @@
 use super::outcome::LoopFailure;
 use super::*;
 use crate::contracts::event::interaction::ResponseRouting;
-use crate::contracts::plugin::phase::Phase;
+use crate::contracts::plugin::phase::{
+    AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext, BeforeToolExecuteContext,
+    Phase, RunEndContext, RunStartContext, StepEndContext, StepStartContext,
+};
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::LlmExecutor;
 use crate::contracts::storage::VersionPrecondition;
@@ -23,6 +26,308 @@ use tirea_contract::testing::TestFixture;
 use tirea_extension_interaction::InteractionOutbox;
 use tirea_state::{Op, Patch, State};
 use tokio::sync::Notify;
+
+macro_rules! phase_dispatch_methods {
+    (|$this:ident, $phase:ident, $step:ident| $body:block) => {
+        fn run_start<'life0, 'life1, 's, 'a, 'async_trait>(
+            &'life0 self,
+            ctx: &'life1 mut RunStartContext<'s, 'a>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            's: 'async_trait,
+            'a: 'async_trait,
+            Self: Sync + 'async_trait,
+        {
+            Box::pin(async move {
+                let $this = self;
+                let $phase = Phase::RunStart;
+                let $step = ctx.step_mut_for_tests();
+                $body
+            })
+        }
+
+        fn step_start<'life0, 'life1, 's, 'a, 'async_trait>(
+            &'life0 self,
+            ctx: &'life1 mut StepStartContext<'s, 'a>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            's: 'async_trait,
+            'a: 'async_trait,
+            Self: Sync + 'async_trait,
+        {
+            Box::pin(async move {
+                let $this = self;
+                let $phase = Phase::StepStart;
+                let $step = ctx.step_mut_for_tests();
+                $body
+            })
+        }
+
+        fn before_inference<'life0, 'life1, 's, 'a, 'async_trait>(
+            &'life0 self,
+            ctx: &'life1 mut BeforeInferenceContext<'s, 'a>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            's: 'async_trait,
+            'a: 'async_trait,
+            Self: Sync + 'async_trait,
+        {
+            Box::pin(async move {
+                let $this = self;
+                let $phase = Phase::BeforeInference;
+                let $step = ctx.step_mut_for_tests();
+                $body
+            })
+        }
+
+        fn after_inference<'life0, 'life1, 's, 'a, 'async_trait>(
+            &'life0 self,
+            ctx: &'life1 mut AfterInferenceContext<'s, 'a>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            's: 'async_trait,
+            'a: 'async_trait,
+            Self: Sync + 'async_trait,
+        {
+            Box::pin(async move {
+                let $this = self;
+                let $phase = Phase::AfterInference;
+                let $step = ctx.step_mut_for_tests();
+                $body
+            })
+        }
+
+        fn before_tool_execute<'life0, 'life1, 's, 'a, 'async_trait>(
+            &'life0 self,
+            ctx: &'life1 mut BeforeToolExecuteContext<'s, 'a>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            's: 'async_trait,
+            'a: 'async_trait,
+            Self: Sync + 'async_trait,
+        {
+            Box::pin(async move {
+                let $this = self;
+                let $phase = Phase::BeforeToolExecute;
+                let $step = ctx.step_mut_for_tests();
+                $body
+            })
+        }
+
+        fn after_tool_execute<'life0, 'life1, 's, 'a, 'async_trait>(
+            &'life0 self,
+            ctx: &'life1 mut AfterToolExecuteContext<'s, 'a>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            's: 'async_trait,
+            'a: 'async_trait,
+            Self: Sync + 'async_trait,
+        {
+            Box::pin(async move {
+                let $this = self;
+                let $phase = Phase::AfterToolExecute;
+                let $step = ctx.step_mut_for_tests();
+                $body
+            })
+        }
+
+        fn step_end<'life0, 'life1, 's, 'a, 'async_trait>(
+            &'life0 self,
+            ctx: &'life1 mut StepEndContext<'s, 'a>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            's: 'async_trait,
+            'a: 'async_trait,
+            Self: Sync + 'async_trait,
+        {
+            Box::pin(async move {
+                let $this = self;
+                let $phase = Phase::StepEnd;
+                let $step = ctx.step_mut_for_tests();
+                $body
+            })
+        }
+
+        fn run_end<'life0, 'life1, 's, 'a, 'async_trait>(
+            &'life0 self,
+            ctx: &'life1 mut RunEndContext<'s, 'a>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            's: 'async_trait,
+            'a: 'async_trait,
+            Self: Sync + 'async_trait,
+        {
+            Box::pin(async move {
+                let $this = self;
+                let $phase = Phase::RunEnd;
+                let $step = ctx.step_mut_for_tests();
+                $body
+            })
+        }
+    };
+
+    (|$phase:ident, $step:ident| $body:block) => {
+        fn run_start<'life0, 'life1, 's, 'a, 'async_trait>(
+            &'life0 self,
+            ctx: &'life1 mut RunStartContext<'s, 'a>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            's: 'async_trait,
+            'a: 'async_trait,
+            Self: Sync + 'async_trait,
+        {
+            Box::pin(async move {
+                let $phase = Phase::RunStart;
+                let $step = ctx.step_mut_for_tests();
+                $body
+            })
+        }
+
+        fn step_start<'life0, 'life1, 's, 'a, 'async_trait>(
+            &'life0 self,
+            ctx: &'life1 mut StepStartContext<'s, 'a>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            's: 'async_trait,
+            'a: 'async_trait,
+            Self: Sync + 'async_trait,
+        {
+            Box::pin(async move {
+                let $phase = Phase::StepStart;
+                let $step = ctx.step_mut_for_tests();
+                $body
+            })
+        }
+
+        fn before_inference<'life0, 'life1, 's, 'a, 'async_trait>(
+            &'life0 self,
+            ctx: &'life1 mut BeforeInferenceContext<'s, 'a>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            's: 'async_trait,
+            'a: 'async_trait,
+            Self: Sync + 'async_trait,
+        {
+            Box::pin(async move {
+                let $phase = Phase::BeforeInference;
+                let $step = ctx.step_mut_for_tests();
+                $body
+            })
+        }
+
+        fn after_inference<'life0, 'life1, 's, 'a, 'async_trait>(
+            &'life0 self,
+            ctx: &'life1 mut AfterInferenceContext<'s, 'a>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            's: 'async_trait,
+            'a: 'async_trait,
+            Self: Sync + 'async_trait,
+        {
+            Box::pin(async move {
+                let $phase = Phase::AfterInference;
+                let $step = ctx.step_mut_for_tests();
+                $body
+            })
+        }
+
+        fn before_tool_execute<'life0, 'life1, 's, 'a, 'async_trait>(
+            &'life0 self,
+            ctx: &'life1 mut BeforeToolExecuteContext<'s, 'a>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            's: 'async_trait,
+            'a: 'async_trait,
+            Self: Sync + 'async_trait,
+        {
+            Box::pin(async move {
+                let $phase = Phase::BeforeToolExecute;
+                let $step = ctx.step_mut_for_tests();
+                $body
+            })
+        }
+
+        fn after_tool_execute<'life0, 'life1, 's, 'a, 'async_trait>(
+            &'life0 self,
+            ctx: &'life1 mut AfterToolExecuteContext<'s, 'a>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            's: 'async_trait,
+            'a: 'async_trait,
+            Self: Sync + 'async_trait,
+        {
+            Box::pin(async move {
+                let $phase = Phase::AfterToolExecute;
+                let $step = ctx.step_mut_for_tests();
+                $body
+            })
+        }
+
+        fn step_end<'life0, 'life1, 's, 'a, 'async_trait>(
+            &'life0 self,
+            ctx: &'life1 mut StepEndContext<'s, 'a>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            's: 'async_trait,
+            'a: 'async_trait,
+            Self: Sync + 'async_trait,
+        {
+            Box::pin(async move {
+                let $phase = Phase::StepEnd;
+                let $step = ctx.step_mut_for_tests();
+                $body
+            })
+        }
+
+        fn run_end<'life0, 'life1, 's, 'a, 'async_trait>(
+            &'life0 self,
+            ctx: &'life1 mut RunEndContext<'s, 'a>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            's: 'async_trait,
+            'a: 'async_trait,
+            Self: Sync + 'async_trait,
+        {
+            Box::pin(async move {
+                let $phase = Phase::RunEnd;
+                let $step = ctx.step_mut_for_tests();
+                $body
+            })
+        }
+    };
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 struct TestCounterState {
@@ -783,7 +1088,7 @@ impl AgentPlugin for TestPhasePlugin {
         &self.id
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+    phase_dispatch_methods!(|phase, step| {
         match phase {
             Phase::BeforeInference => {
                 step.system("Test system context");
@@ -796,7 +1101,7 @@ impl AgentPlugin for TestPhasePlugin {
             }
             _ => {}
         }
-    }
+    });
 }
 
 #[test]
@@ -816,11 +1121,11 @@ impl AgentPlugin for BlockingPhasePlugin {
         "blocker"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+    phase_dispatch_methods!(|phase, step| {
         if phase == Phase::BeforeToolExecute && step.tool_name() == Some("echo") {
             step.deny("Echo tool is blocked");
         }
-    }
+    });
 }
 
 #[test]
@@ -862,11 +1167,11 @@ impl AgentPlugin for InvalidAfterToolMutationPlugin {
         "invalid_after_tool_mutation"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+    phase_dispatch_methods!(|phase, step| {
         if phase == Phase::AfterToolExecute {
             step.deny("too late");
         }
-    }
+    });
 }
 
 #[test]
@@ -909,7 +1214,7 @@ impl AgentPlugin for InvalidDualToolGatePlugin {
         "invalid_dual_tool_gate"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+    phase_dispatch_methods!(|phase, step| {
         if phase != Phase::BeforeToolExecute {
             return;
         }
@@ -919,7 +1224,7 @@ impl AgentPlugin for InvalidDualToolGatePlugin {
             tool.pending_interaction =
                 Some(Interaction::new("confirm", "confirm").with_message("invalid gate"));
         }
-    }
+    });
 }
 
 #[test]
@@ -962,11 +1267,11 @@ impl AgentPlugin for ReminderPhasePlugin {
         "reminder"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+    phase_dispatch_methods!(|phase, step| {
         if phase == Phase::AfterToolExecute {
             step.reminder("Tool execution completed");
         }
-    }
+    });
 }
 
 #[test]
@@ -1042,11 +1347,11 @@ impl AgentPlugin for ToolFilterPlugin {
         "filter"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+    phase_dispatch_methods!(|phase, step| {
         if phase == Phase::BeforeInference {
             step.exclude("dangerous_tool");
         }
-    }
+    });
 }
 
 #[test]
@@ -1080,7 +1385,7 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
             "guarded"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             if phase != Phase::BeforeToolExecute {
                 return;
             }
@@ -1095,7 +1400,7 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
             if !allow_exec {
                 step.deny("missing plugin.allow_exec in state");
             }
-        }
+        });
     }
 
     let tool = EchoTool;
@@ -1138,13 +1443,13 @@ async fn test_plugin_sees_real_session_id_and_scope_in_tool_phase() {
             "session_check"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeToolExecute {
                 assert_eq!(step.thread_id(), "real-thread-42");
                 assert_eq!(step.run_config().value("user_id"), Some(&json!("u-abc")),);
                 VERIFIED.store(true, Ordering::SeqCst);
             }
-        }
+        });
     }
 
     VERIFIED.store(false, Ordering::SeqCst);
@@ -1188,7 +1493,7 @@ async fn test_plugin_state_patch_visible_in_next_step_before_inference() {
             "state_channel"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             match phase {
                 Phase::BeforeToolExecute => {
                     let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
@@ -1216,7 +1521,7 @@ async fn test_plugin_state_patch_visible_in_next_step_before_inference() {
                 }
                 _ => {}
             }
-        }
+        });
     }
 
     let responses = vec![
@@ -1254,8 +1559,8 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
             "phase_block"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-            self.phases.lock().unwrap().push(phase);
+        phase_dispatch_methods!(|this, phase, step| {
+            this.phases.lock().unwrap().push(phase);
             match phase {
                 Phase::BeforeInference => {
                     step.system("from_before_inference");
@@ -1269,7 +1574,7 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
                 }
                 _ => {}
             }
-        }
+        });
     }
 
     let thread = Thread::with_initial_state("test", json!({}));
@@ -1317,8 +1622,8 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
             "cleanup_plugin"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-            self.phases.lock().unwrap().push(phase);
+        phase_dispatch_methods!(|this, phase, step| {
+            this.phases.lock().unwrap().push(phase);
             match phase {
                 Phase::AfterInference => {
                     let agent = step.state_of::<crate::runtime::control::LoopControlState>();
@@ -1344,7 +1649,7 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
                 }
                 _ => {}
             }
-        }
+        });
     }
 
     let thread = Thread::with_initial_state("test", json!({}));
@@ -1383,7 +1688,7 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
             "run_scoped_state"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             match phase {
                 Phase::RunStart => {
                     let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
@@ -1440,7 +1745,7 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
                 }
                 _ => {}
             }
-        }
+        });
     }
 
     let config = AgentConfig::new("mock")
@@ -1507,7 +1812,6 @@ fn test_agent_config_with_plugins() {
         fn id(&self) -> &str {
             "dummy"
         }
-        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
     }
 
     let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(DummyPlugin), Arc::new(DummyPlugin)];
@@ -1523,12 +1827,12 @@ impl AgentPlugin for PendingPhasePlugin {
         "pending"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+    phase_dispatch_methods!(|phase, step| {
         if phase == Phase::BeforeToolExecute && step.tool_name() == Some("echo") {
             use crate::contracts::Interaction;
             step.ask(Interaction::new("confirm_1", "confirm").with_message("Execute echo?"));
         }
-    }
+    });
 }
 
 #[test]
@@ -2136,7 +2440,7 @@ fn test_execute_tools_sequential_propagates_intermediate_state_apply_errors() {
             "first_call_intermediate_patch"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             if phase != Phase::AfterToolExecute || step.tool_call_id() != Some("call_1") {
                 return;
             }
@@ -2149,7 +2453,7 @@ fn test_execute_tools_sequential_propagates_intermediate_state_apply_errors() {
             )
             .with_source("test:intermediate_apply_error");
             step.pending_patches.push(patch);
-        }
+        });
     }
 
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -2206,12 +2510,12 @@ impl AgentPlugin for RecordAndSkipPlugin {
     fn id(&self) -> &str {
         "record_and_skip"
     }
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        self.phases.lock().unwrap().push(phase);
+    phase_dispatch_methods!(|this, phase, step| {
+        this.phases.lock().unwrap().push(phase);
         if phase == Phase::BeforeInference {
             step.skip_inference = true;
         }
-    }
+    });
 }
 
 /// Collect all events from a stream.
@@ -2308,7 +2612,7 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
             "pending_skip"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             if phase != Phase::BeforeInference {
                 return;
             }
@@ -2322,7 +2626,7 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
             .expect("failed to set pending interaction");
             step.pending_patches.push(patch);
             step.skip_inference = true;
-        }
+        });
     }
 
     let config = AgentConfig::new("gpt-4o-mini")
@@ -2364,11 +2668,11 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
             "skip_inference"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
-        }
+        });
     }
 
     let interaction = tirea_extension_interaction::InteractionPlugin::with_responses(
@@ -2437,11 +2741,11 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
             "skip_inference_for_permission_approval"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
-        }
+        });
     }
 
     let interaction = tirea_extension_interaction::InteractionPlugin::with_responses(
@@ -2568,11 +2872,11 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
             "skip_inference_for_permission_denial"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
-        }
+        });
     }
 
     let interaction = tirea_extension_interaction::InteractionPlugin::with_responses(
@@ -2727,8 +3031,8 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
             "pending_skip_non_stream"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-            self.phases.lock().unwrap().push(phase);
+        phase_dispatch_methods!(|this, phase, step| {
+            this.phases.lock().unwrap().push(phase);
             if phase != Phase::BeforeInference {
                 return;
             }
@@ -2742,7 +3046,7 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
             .expect("failed to set pending interaction");
             step.pending_patches.push(patch);
             step.skip_inference = true;
-        }
+        });
     }
 
     let phases = Arc::new(Mutex::new(Vec::new()));
@@ -2862,11 +3166,11 @@ async fn test_run_loop_rejects_skip_inference_mutation_outside_before_inference(
             "invalid_step_start_skip"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             if phase == Phase::StepStart {
                 step.skip_inference = true;
             }
-        }
+        });
     }
 
     let config = AgentConfig::new("gpt-4o-mini")
@@ -2897,11 +3201,11 @@ async fn test_stream_rejects_skip_inference_mutation_outside_before_inference() 
             "invalid_step_start_skip"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             if phase == Phase::StepStart {
                 step.skip_inference = true;
             }
-        }
+        });
     }
 
     let config = AgentConfig::new("mock")
@@ -2935,11 +3239,11 @@ async fn test_run_loop_rejects_prompt_context_mutation_outside_before_inference(
             "invalid_step_start_prompt"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             if phase == Phase::StepStart {
                 step.system("must not mutate prompt context in StepStart");
             }
-        }
+        });
     }
 
     let config = AgentConfig::new("gpt-4o-mini")
@@ -2970,11 +3274,11 @@ async fn test_run_loop_rejects_non_append_prompt_context_mutation_in_before_infe
             "prompt_append"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
                 step.system("base");
             }
-        }
+        });
     }
 
     struct PromptReplacePlugin;
@@ -2985,11 +3289,11 @@ async fn test_run_loop_rejects_non_append_prompt_context_mutation_in_before_infe
             "prompt_replace"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
                 step.system_context = vec!["replaced".to_string()];
             }
-        }
+        });
     }
 
     let config = AgentConfig::new("gpt-4o-mini")
@@ -3021,11 +3325,11 @@ async fn test_stream_rejects_prompt_context_mutation_outside_before_inference() 
             "invalid_step_start_prompt"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             if phase == Phase::StepStart {
                 step.thread("must not mutate prompt context in StepStart");
             }
-        }
+        });
     }
 
     let config = AgentConfig::new("mock")
@@ -3057,11 +3361,11 @@ impl AgentPlugin for InvalidBeforeToolReminderPlugin {
         "invalid_before_tool_reminder"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+    phase_dispatch_methods!(|phase, step| {
         if phase == Phase::BeforeToolExecute {
             step.reminder("must not mutate reminders in BeforeToolExecute");
         }
-    }
+    });
 }
 
 #[test]
@@ -3104,11 +3408,11 @@ impl AgentPlugin for ReminderAppendPlugin {
         "reminder_append"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+    phase_dispatch_methods!(|phase, step| {
         if phase == Phase::AfterToolExecute {
             step.reminder("first");
         }
-    }
+    });
 }
 
 struct ReminderReplacePlugin;
@@ -3119,12 +3423,12 @@ impl AgentPlugin for ReminderReplacePlugin {
         "reminder_replace"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+    phase_dispatch_methods!(|phase, step| {
         if phase == Phase::AfterToolExecute {
             step.system_reminders.clear();
             step.reminder("second");
         }
-    }
+    });
 }
 
 #[test]
@@ -3405,8 +3709,8 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
             "cleanup_on_llm_error_nonstream"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-            self.phases.lock().expect("lock poisoned").push(phase);
+        phase_dispatch_methods!(|this, phase, step| {
+            this.phases.lock().expect("lock poisoned").push(phase);
             if phase != Phase::AfterInference {
                 return;
             }
@@ -3414,7 +3718,7 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
             let agent = step.state_of::<crate::runtime::control::LoopControlState>();
             let err_type = agent.inference_error().ok().flatten().map(|e| e.error_type);
             assert_eq!(err_type.as_deref(), Some("llm_exec_error"));
-        }
+        });
     }
 
     let phases = Arc::new(Mutex::new(Vec::new()));
@@ -3809,7 +4113,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
             "golden_pending_plugin"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             if phase != Phase::BeforeInference {
                 return;
             }
@@ -3822,7 +4126,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
             .expect("failed to set pending interaction");
             step.pending_patches.push(patch);
             step.skip_inference = true;
-        }
+        });
     }
 
     let thread = Thread::new("golden-resume").with_message(Message::user("continue"));
@@ -3895,11 +4199,11 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
             "skip_inference_replay_idempotent"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
-        }
+        });
     }
 
     fn replay_config() -> AgentConfig {
@@ -4631,7 +4935,7 @@ async fn test_stream_frontend_use_as_tool_result_emits_single_tool_call_start() 
             "frontend_pending_plugin"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             if phase != Phase::BeforeToolExecute || step.tool_call_id() != Some("call_1") {
                 return;
             }
@@ -4641,7 +4945,7 @@ async fn test_stream_frontend_use_as_tool_result_emits_single_tool_call_start() 
                 json!({ "title": "Deploy v2" }),
                 ResponseRouting::UseAsToolResult,
             );
-        }
+        });
     }
 
     let thread = Thread::new("frontend-pending").with_message(Message::user("add task"));
@@ -4718,7 +5022,7 @@ async fn test_stream_replay_invalid_payload_emits_error_and_finish() {
             "invalid_replay_payload"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             if phase == Phase::RunStart {
                 step.pending_patches.push(
                     tirea_state::TrackedPatch::new(Patch::new().with_op(Op::set(
@@ -4728,7 +5032,7 @@ async fn test_stream_replay_invalid_payload_emits_error_and_finish() {
                     .with_source("test:invalid_replay_payload"),
                 );
             }
-        }
+        });
     }
 
     let config = AgentConfig::new("mock")
@@ -4781,7 +5085,7 @@ async fn test_stream_replay_state_failure_emits_error() {
             "replay_state_failure"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             if phase == Phase::RunStart {
                 let outbox = step.state_of::<InteractionOutbox>();
                 outbox
@@ -4792,7 +5096,7 @@ async fn test_stream_replay_state_failure_emits_error() {
                     ))
                     .expect("failed to queue replay call");
             }
-        }
+        });
     }
 
     let broken_patch = tirea_state::TrackedPatch::new(
@@ -4847,7 +5151,7 @@ async fn test_stream_replay_tool_exec_respects_tool_phases() {
             "replay_blocking"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             match phase {
                 Phase::RunStart => {
                     let outbox = step.state_of::<InteractionOutbox>();
@@ -4865,7 +5169,7 @@ async fn test_stream_replay_tool_exec_respects_tool_phases() {
                 }
                 _ => {}
             }
-        }
+        });
     }
 
     BEFORE_TOOL_EXECUTED.store(false, Ordering::SeqCst);
@@ -4915,7 +5219,7 @@ async fn test_stream_replay_without_placeholder_appends_tool_result_message() {
             "replay_without_placeholder"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             if phase == Phase::RunStart {
                 let outbox = step.state_of::<InteractionOutbox>();
                 outbox
@@ -4926,7 +5230,7 @@ async fn test_stream_replay_without_placeholder_appends_tool_result_message() {
                     ))
                     .expect("failed to queue replay call");
             }
-        }
+        });
     }
 
     let config =
@@ -4975,7 +5279,7 @@ async fn test_stream_parallel_multiple_pending_keeps_run_end_and_single_pending(
             "pending_and_run_end"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             match phase {
                 Phase::BeforeToolExecute => {
                     if let Some(call_id) = step.tool_call_id() {
@@ -4990,7 +5294,7 @@ async fn test_stream_parallel_multiple_pending_keeps_run_end_and_single_pending(
                 }
                 _ => {}
             }
-        }
+        });
     }
 
     SESSION_END_RAN.store(false, Ordering::SeqCst);
@@ -5753,12 +6057,12 @@ async fn test_sequential_tools_stop_after_first_pending_interaction() {
             "pending_every_tool"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|this, phase, step| {
             if phase != Phase::BeforeToolExecute {
                 return;
             }
             if let Some(call_id) = step.tool_call_id() {
-                self.seen_calls
+                this.seen_calls
                     .lock()
                     .expect("lock poisoned")
                     .push(call_id.to_string());
@@ -5767,7 +6071,7 @@ async fn test_sequential_tools_stop_after_first_pending_interaction() {
                         .with_message("needs confirmation"),
                 );
             }
-        }
+        });
     }
 
     let seen_calls = Arc::new(Mutex::new(Vec::new()));
@@ -5818,12 +6122,12 @@ async fn test_parallel_tools_allow_single_pending_interaction_per_round() {
             "pending_every_tool_parallel"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|this, phase, step| {
             if phase != Phase::BeforeToolExecute {
                 return;
             }
             if let Some(call_id) = step.tool_call_id() {
-                self.seen_calls
+                this.seen_calls
                     .lock()
                     .expect("lock poisoned")
                     .push(call_id.to_string());
@@ -5832,7 +6136,7 @@ async fn test_parallel_tools_allow_single_pending_interaction_per_round() {
                         .with_message("needs confirmation"),
                 );
             }
-        }
+        });
     }
 
     let seen_calls = Arc::new(Mutex::new(Vec::new()));
@@ -5898,12 +6202,12 @@ impl AgentPlugin for OrderTrackingPlugin {
         self.id
     }
 
-    async fn on_phase(&self, phase: Phase, _step: &mut StepContext<'_>) {
-        self.order_log
+    phase_dispatch_methods!(|this, phase, _step| {
+        this.order_log
             .lock()
             .unwrap()
-            .push(format!("{}:{:?}", self.id, phase));
-    }
+            .push(format!("{}:{:?}", this.id, phase));
+    });
 }
 
 #[test]
@@ -5977,11 +6281,11 @@ impl AgentPlugin for ConditionalBlockPlugin {
         "conditional_block"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+    phase_dispatch_methods!(|phase, step| {
         if phase == Phase::BeforeToolExecute && step.tool_pending() {
             step.deny("Blocked because tool was pending".to_string());
         }
-    }
+    });
 }
 
 #[test]
@@ -6261,7 +6565,7 @@ async fn test_run_step_skip_inference_with_pending_state_returns_pending_interac
             "pending_skip_step"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             if phase != Phase::BeforeInference {
                 return;
             }
@@ -6275,7 +6579,7 @@ async fn test_run_step_skip_inference_with_pending_state_returns_pending_interac
             .expect("failed to set pending interaction");
             step.pending_patches.push(patch);
             step.skip_inference = true;
-        }
+        });
     }
 
     let config = AgentConfig::new("gpt-4o-mini")
@@ -6355,8 +6659,8 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
             "cleanup_on_start_error"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-            self.phases.lock().expect("lock poisoned").push(phase);
+        phase_dispatch_methods!(|this, phase, step| {
+            this.phases.lock().expect("lock poisoned").push(phase);
             match phase {
                 Phase::AfterInference => {
                     let agent = step.state_of::<crate::runtime::control::LoopControlState>();
@@ -6374,7 +6678,7 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
                 }
                 _ => {}
             }
-        }
+        });
     }
 
     let phases = Arc::new(Mutex::new(Vec::new()));
@@ -7510,7 +7814,7 @@ async fn test_stream_permission_intercept_emits_tool_call_start_for_frontend() {
             "permission_intercept_plugin"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        phase_dispatch_methods!(|phase, step| {
             if phase != Phase::BeforeToolExecute || step.tool_call_id() != Some("call_1") {
                 return;
             }
@@ -7522,7 +7826,7 @@ async fn test_stream_permission_intercept_emits_tool_call_start_for_frontend() {
                     state_patches: vec![],
                 },
             );
-        }
+        });
     }
 
     let thread = Thread::new("permission-intercept").with_message(Message::user("get server info"));
