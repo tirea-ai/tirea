@@ -1,7 +1,8 @@
-use tirea_contract::Interaction;
+use crate::types::Role;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use tirea_contract::Interaction;
 use tracing::warn;
 
 // Base Event Fields
@@ -9,7 +10,7 @@ use tracing::warn;
 
 /// Common fields for all AG-UI events (BaseEvent).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct BaseEventFields {
+pub struct BaseEvent {
     /// Event timestamp in milliseconds since epoch.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<u64>,
@@ -18,20 +19,12 @@ pub struct BaseEventFields {
     pub raw_event: Option<Value>,
 }
 
-// ============================================================================
-// Message Role
-// ============================================================================
-
-/// Role for text messages.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum MessageRole {
-    Developer,
-    System,
-    #[default]
-    Assistant,
-    User,
-    Tool,
+/// Entity kind for `REASONING_ENCRYPTED_VALUE`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReasoningEncryptedValueSubtype {
+    ToolCall,
+    Message,
 }
 
 // ============================================================================
@@ -44,7 +37,7 @@ pub enum MessageRole {
 /// See: <https://docs.ag-ui.com/concepts/events>
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
-pub enum AGUIEvent {
+pub enum Event {
     // ========================================================================
     // Lifecycle Events
     // ========================================================================
@@ -60,7 +53,7 @@ pub enum AGUIEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         input: Option<Value>,
         #[serde(flatten)]
-        base: BaseEventFields,
+        base: BaseEvent,
     },
 
     /// Signals successful completion of an agent run.
@@ -73,7 +66,7 @@ pub enum AGUIEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         result: Option<Value>,
         #[serde(flatten)]
-        base: BaseEventFields,
+        base: BaseEvent,
     },
 
     /// Indicates an error occurred during the run.
@@ -83,7 +76,7 @@ pub enum AGUIEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         code: Option<String>,
         #[serde(flatten)]
-        base: BaseEventFields,
+        base: BaseEvent,
     },
 
     /// Marks the beginning of a step within a run.
@@ -92,7 +85,7 @@ pub enum AGUIEvent {
         #[serde(rename = "stepName")]
         step_name: String,
         #[serde(flatten)]
-        base: BaseEventFields,
+        base: BaseEvent,
     },
 
     /// Marks the completion of a step.
@@ -101,7 +94,7 @@ pub enum AGUIEvent {
         #[serde(rename = "stepName")]
         step_name: String,
         #[serde(flatten)]
-        base: BaseEventFields,
+        base: BaseEvent,
     },
 
     // ========================================================================
@@ -113,9 +106,9 @@ pub enum AGUIEvent {
         #[serde(rename = "messageId")]
         message_id: String,
         /// Role is always "assistant" for TEXT_MESSAGE_START.
-        role: MessageRole,
+        role: Role,
         #[serde(flatten)]
-        base: BaseEventFields,
+        base: BaseEvent,
     },
 
     /// Contains incremental text content.
@@ -125,7 +118,7 @@ pub enum AGUIEvent {
         message_id: String,
         delta: String,
         #[serde(flatten)]
-        base: BaseEventFields,
+        base: BaseEvent,
     },
 
     /// Indicates the end of a text message stream.
@@ -134,7 +127,7 @@ pub enum AGUIEvent {
         #[serde(rename = "messageId")]
         message_id: String,
         #[serde(flatten)]
-        base: BaseEventFields,
+        base: BaseEvent,
     },
 
     /// Combined chunk event for text messages (alternative to Start/Content/End).
@@ -143,11 +136,84 @@ pub enum AGUIEvent {
         #[serde(rename = "messageId", skip_serializing_if = "Option::is_none")]
         message_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        role: Option<MessageRole>,
+        role: Option<Role>,
         #[serde(skip_serializing_if = "Option::is_none")]
         delta: Option<String>,
         #[serde(flatten)]
-        base: BaseEventFields,
+        base: BaseEvent,
+    },
+
+    // ========================================================================
+    // Reasoning Events
+    // ========================================================================
+    /// Marks the start of a reasoning phase for a message.
+    #[serde(rename = "REASONING_START")]
+    ReasoningStart {
+        #[serde(rename = "messageId")]
+        message_id: String,
+        #[serde(flatten)]
+        base: BaseEvent,
+    },
+
+    /// Marks the start of a streamed reasoning message.
+    #[serde(rename = "REASONING_MESSAGE_START")]
+    ReasoningMessageStart {
+        #[serde(rename = "messageId")]
+        message_id: String,
+        role: Role,
+        #[serde(flatten)]
+        base: BaseEvent,
+    },
+
+    /// Contains incremental reasoning text.
+    #[serde(rename = "REASONING_MESSAGE_CONTENT")]
+    ReasoningMessageContent {
+        #[serde(rename = "messageId")]
+        message_id: String,
+        delta: String,
+        #[serde(flatten)]
+        base: BaseEvent,
+    },
+
+    /// Marks the end of a streamed reasoning message.
+    #[serde(rename = "REASONING_MESSAGE_END")]
+    ReasoningMessageEnd {
+        #[serde(rename = "messageId")]
+        message_id: String,
+        #[serde(flatten)]
+        base: BaseEvent,
+    },
+
+    /// Combined reasoning chunk event (alternative to Start/Content/End).
+    #[serde(rename = "REASONING_MESSAGE_CHUNK")]
+    ReasoningMessageChunk {
+        #[serde(rename = "messageId", skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        delta: Option<String>,
+        #[serde(flatten)]
+        base: BaseEvent,
+    },
+
+    /// Marks the end of a reasoning phase for a message.
+    #[serde(rename = "REASONING_END")]
+    ReasoningEnd {
+        #[serde(rename = "messageId")]
+        message_id: String,
+        #[serde(flatten)]
+        base: BaseEvent,
+    },
+
+    /// Attaches an encrypted reasoning value to a message or tool call.
+    #[serde(rename = "REASONING_ENCRYPTED_VALUE")]
+    ReasoningEncryptedValue {
+        subtype: ReasoningEncryptedValueSubtype,
+        #[serde(rename = "entityId")]
+        entity_id: String,
+        #[serde(rename = "encryptedValue")]
+        encrypted_value: String,
+        #[serde(flatten)]
+        base: BaseEvent,
     },
 
     // ========================================================================
@@ -163,7 +229,7 @@ pub enum AGUIEvent {
         #[serde(rename = "parentMessageId", skip_serializing_if = "Option::is_none")]
         parent_message_id: Option<String>,
         #[serde(flatten)]
-        base: BaseEventFields,
+        base: BaseEvent,
     },
 
     /// Contains incremental tool arguments.
@@ -173,7 +239,7 @@ pub enum AGUIEvent {
         tool_call_id: String,
         delta: String,
         #[serde(flatten)]
-        base: BaseEventFields,
+        base: BaseEvent,
     },
 
     /// Signals the end of tool argument streaming.
@@ -182,7 +248,7 @@ pub enum AGUIEvent {
         #[serde(rename = "toolCallId")]
         tool_call_id: String,
         #[serde(flatten)]
-        base: BaseEventFields,
+        base: BaseEvent,
     },
 
     /// Contains the result of a tool execution.
@@ -194,9 +260,9 @@ pub enum AGUIEvent {
         tool_call_id: String,
         content: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        role: Option<MessageRole>,
+        role: Option<Role>,
         #[serde(flatten)]
-        base: BaseEventFields,
+        base: BaseEvent,
     },
 
     /// Combined chunk event for tool calls (alternative to Start/Args/End).
@@ -211,7 +277,7 @@ pub enum AGUIEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         delta: Option<String>,
         #[serde(flatten)]
-        base: BaseEventFields,
+        base: BaseEvent,
     },
 
     // ========================================================================
@@ -222,7 +288,7 @@ pub enum AGUIEvent {
     StateSnapshot {
         snapshot: Value,
         #[serde(flatten)]
-        base: BaseEventFields,
+        base: BaseEvent,
     },
 
     /// Contains incremental state changes (RFC 6902 JSON Patch).
@@ -231,7 +297,7 @@ pub enum AGUIEvent {
         /// Array of JSON Patch operations.
         delta: Vec<Value>,
         #[serde(flatten)]
-        base: BaseEventFields,
+        base: BaseEvent,
     },
 
     /// Provides a complete message history snapshot.
@@ -239,7 +305,7 @@ pub enum AGUIEvent {
     MessagesSnapshot {
         messages: Vec<Value>,
         #[serde(flatten)]
-        base: BaseEventFields,
+        base: BaseEvent,
     },
 
     // ========================================================================
@@ -256,7 +322,7 @@ pub enum AGUIEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         replace: Option<bool>,
         #[serde(flatten)]
-        base: BaseEventFields,
+        base: BaseEvent,
     },
 
     /// Contains incremental activity changes (RFC 6902 JSON Patch).
@@ -269,7 +335,7 @@ pub enum AGUIEvent {
         /// Array of JSON Patch operations.
         patch: Vec<Value>,
         #[serde(flatten)]
-        base: BaseEventFields,
+        base: BaseEvent,
     },
 
     // ========================================================================
@@ -282,7 +348,7 @@ pub enum AGUIEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         source: Option<String>,
         #[serde(flatten)]
-        base: BaseEventFields,
+        base: BaseEvent,
     },
 
     /// Custom application-defined event.
@@ -291,11 +357,11 @@ pub enum AGUIEvent {
         name: String,
         value: Value,
         #[serde(flatten)]
-        base: BaseEventFields,
+        base: BaseEvent,
     },
 }
 
-impl AGUIEvent {
+impl Event {
     // ========================================================================
     // Factory Methods - Lifecycle
     // ========================================================================
@@ -311,7 +377,7 @@ impl AGUIEvent {
             run_id: run_id.into(),
             parent_run_id,
             input: None,
-            base: BaseEventFields::default(),
+            base: BaseEvent::default(),
         }
     }
 
@@ -327,7 +393,7 @@ impl AGUIEvent {
             run_id: run_id.into(),
             parent_run_id,
             input: Some(input),
-            base: BaseEventFields::default(),
+            base: BaseEvent::default(),
         }
     }
 
@@ -341,7 +407,7 @@ impl AGUIEvent {
             thread_id: thread_id.into(),
             run_id: run_id.into(),
             result,
-            base: BaseEventFields::default(),
+            base: BaseEvent::default(),
         }
     }
 
@@ -350,7 +416,7 @@ impl AGUIEvent {
         Self::RunError {
             message: message.into(),
             code,
-            base: BaseEventFields::default(),
+            base: BaseEvent::default(),
         }
     }
 
@@ -358,7 +424,7 @@ impl AGUIEvent {
     pub fn step_started(step_name: impl Into<String>) -> Self {
         Self::StepStarted {
             step_name: step_name.into(),
-            base: BaseEventFields::default(),
+            base: BaseEvent::default(),
         }
     }
 
@@ -366,7 +432,7 @@ impl AGUIEvent {
     pub fn step_finished(step_name: impl Into<String>) -> Self {
         Self::StepFinished {
             step_name: step_name.into(),
-            base: BaseEventFields::default(),
+            base: BaseEvent::default(),
         }
     }
 
@@ -378,8 +444,8 @@ impl AGUIEvent {
     pub fn text_message_start(message_id: impl Into<String>) -> Self {
         Self::TextMessageStart {
             message_id: message_id.into(),
-            role: MessageRole::Assistant,
-            base: BaseEventFields::default(),
+            role: Role::Assistant,
+            base: BaseEvent::default(),
         }
     }
 
@@ -388,7 +454,7 @@ impl AGUIEvent {
         Self::TextMessageContent {
             message_id: message_id.into(),
             delta: delta.into(),
-            base: BaseEventFields::default(),
+            base: BaseEvent::default(),
         }
     }
 
@@ -396,21 +462,93 @@ impl AGUIEvent {
     pub fn text_message_end(message_id: impl Into<String>) -> Self {
         Self::TextMessageEnd {
             message_id: message_id.into(),
-            base: BaseEventFields::default(),
+            base: BaseEvent::default(),
         }
     }
 
     /// Create a text-message-chunk event.
     pub fn text_message_chunk(
         message_id: Option<String>,
-        role: Option<MessageRole>,
+        role: Option<Role>,
         delta: Option<String>,
     ) -> Self {
         Self::TextMessageChunk {
             message_id,
             role,
             delta,
-            base: BaseEventFields::default(),
+            base: BaseEvent::default(),
+        }
+    }
+
+    // ========================================================================
+    // Factory Methods - Reasoning
+    // ========================================================================
+
+    /// Create a reasoning-start event.
+    pub fn reasoning_start(message_id: impl Into<String>) -> Self {
+        Self::ReasoningStart {
+            message_id: message_id.into(),
+            base: BaseEvent::default(),
+        }
+    }
+
+    /// Create a reasoning-message-start event.
+    pub fn reasoning_message_start(message_id: impl Into<String>) -> Self {
+        Self::ReasoningMessageStart {
+            message_id: message_id.into(),
+            role: Role::Assistant,
+            base: BaseEvent::default(),
+        }
+    }
+
+    /// Create a reasoning-message-content event.
+    pub fn reasoning_message_content(
+        message_id: impl Into<String>,
+        delta: impl Into<String>,
+    ) -> Self {
+        Self::ReasoningMessageContent {
+            message_id: message_id.into(),
+            delta: delta.into(),
+            base: BaseEvent::default(),
+        }
+    }
+
+    /// Create a reasoning-message-end event.
+    pub fn reasoning_message_end(message_id: impl Into<String>) -> Self {
+        Self::ReasoningMessageEnd {
+            message_id: message_id.into(),
+            base: BaseEvent::default(),
+        }
+    }
+
+    /// Create a reasoning-message-chunk event.
+    pub fn reasoning_message_chunk(message_id: Option<String>, delta: Option<String>) -> Self {
+        Self::ReasoningMessageChunk {
+            message_id,
+            delta,
+            base: BaseEvent::default(),
+        }
+    }
+
+    /// Create a reasoning-end event.
+    pub fn reasoning_end(message_id: impl Into<String>) -> Self {
+        Self::ReasoningEnd {
+            message_id: message_id.into(),
+            base: BaseEvent::default(),
+        }
+    }
+
+    /// Create a reasoning-encrypted-value event.
+    pub fn reasoning_encrypted_value(
+        subtype: ReasoningEncryptedValueSubtype,
+        entity_id: impl Into<String>,
+        encrypted_value: impl Into<String>,
+    ) -> Self {
+        Self::ReasoningEncryptedValue {
+            subtype,
+            entity_id: entity_id.into(),
+            encrypted_value: encrypted_value.into(),
+            base: BaseEvent::default(),
         }
     }
 
@@ -428,7 +566,7 @@ impl AGUIEvent {
             tool_call_id: tool_call_id.into(),
             tool_call_name: tool_call_name.into(),
             parent_message_id,
-            base: BaseEventFields::default(),
+            base: BaseEvent::default(),
         }
     }
 
@@ -437,7 +575,7 @@ impl AGUIEvent {
         Self::ToolCallArgs {
             tool_call_id: tool_call_id.into(),
             delta: delta.into(),
-            base: BaseEventFields::default(),
+            base: BaseEvent::default(),
         }
     }
 
@@ -445,7 +583,7 @@ impl AGUIEvent {
     pub fn tool_call_end(tool_call_id: impl Into<String>) -> Self {
         Self::ToolCallEnd {
             tool_call_id: tool_call_id.into(),
-            base: BaseEventFields::default(),
+            base: BaseEvent::default(),
         }
     }
 
@@ -459,8 +597,8 @@ impl AGUIEvent {
             message_id: message_id.into(),
             tool_call_id: tool_call_id.into(),
             content: content.into(),
-            role: Some(MessageRole::Tool),
-            base: BaseEventFields::default(),
+            role: Some(Role::Tool),
+            base: BaseEvent::default(),
         }
     }
 
@@ -476,7 +614,7 @@ impl AGUIEvent {
             tool_call_name,
             parent_message_id,
             delta,
-            base: BaseEventFields::default(),
+            base: BaseEvent::default(),
         }
     }
 
@@ -488,7 +626,7 @@ impl AGUIEvent {
     pub fn state_snapshot(snapshot: Value) -> Self {
         Self::StateSnapshot {
             snapshot,
-            base: BaseEventFields::default(),
+            base: BaseEvent::default(),
         }
     }
 
@@ -496,7 +634,7 @@ impl AGUIEvent {
     pub fn state_delta(delta: Vec<Value>) -> Self {
         Self::StateDelta {
             delta,
-            base: BaseEventFields::default(),
+            base: BaseEvent::default(),
         }
     }
 
@@ -504,7 +642,7 @@ impl AGUIEvent {
     pub fn messages_snapshot(messages: Vec<Value>) -> Self {
         Self::MessagesSnapshot {
             messages,
-            base: BaseEventFields::default(),
+            base: BaseEvent::default(),
         }
     }
 
@@ -524,7 +662,7 @@ impl AGUIEvent {
             activity_type: activity_type.into(),
             content,
             replace,
-            base: BaseEventFields::default(),
+            base: BaseEvent::default(),
         }
     }
 
@@ -538,7 +676,7 @@ impl AGUIEvent {
             message_id: message_id.into(),
             activity_type: activity_type.into(),
             patch,
-            base: BaseEventFields::default(),
+            base: BaseEvent::default(),
         }
     }
 
@@ -551,7 +689,7 @@ impl AGUIEvent {
         Self::Raw {
             event,
             source,
-            base: BaseEventFields::default(),
+            base: BaseEvent::default(),
         }
     }
 
@@ -560,7 +698,7 @@ impl AGUIEvent {
         Self::Custom {
             name: name.into(),
             value,
-            base: BaseEventFields::default(),
+            base: BaseEvent::default(),
         }
     }
 
@@ -580,6 +718,13 @@ impl AGUIEvent {
             | Self::TextMessageContent { base, .. }
             | Self::TextMessageEnd { base, .. }
             | Self::TextMessageChunk { base, .. }
+            | Self::ReasoningStart { base, .. }
+            | Self::ReasoningMessageStart { base, .. }
+            | Self::ReasoningMessageContent { base, .. }
+            | Self::ReasoningMessageEnd { base, .. }
+            | Self::ReasoningMessageChunk { base, .. }
+            | Self::ReasoningEnd { base, .. }
+            | Self::ReasoningEncryptedValue { base, .. }
             | Self::ToolCallStart { base, .. }
             | Self::ToolCallArgs { base, .. }
             | Self::ToolCallEnd { base, .. }
@@ -613,7 +758,7 @@ impl AGUIEvent {
 // ============================================================================
 
 /// Convert one interaction to AG-UI tool call events.
-pub fn interaction_to_ag_ui_events(interaction: &Interaction) -> Vec<AGUIEvent> {
+pub fn interaction_to_ag_ui_events(interaction: &Interaction) -> Vec<Event> {
     let args = json!({
         "id": interaction.id,
         "message": interaction.message,
@@ -630,8 +775,8 @@ pub fn interaction_to_ag_ui_events(interaction: &Interaction) -> Vec<AGUIEvent> 
         .unwrap_or(&interaction.action);
 
     vec![
-        AGUIEvent::tool_call_start(&interaction.id, tool_name, None),
-        AGUIEvent::tool_call_args(
+        Event::tool_call_start(&interaction.id, tool_name, None),
+        Event::tool_call_args(
             &interaction.id,
             match serde_json::to_string(&args) {
                 Ok(value) => value,
@@ -645,7 +790,7 @@ pub fn interaction_to_ag_ui_events(interaction: &Interaction) -> Vec<AGUIEvent> 
                 }
             },
         ),
-        AGUIEvent::tool_call_end(&interaction.id),
+        Event::tool_call_end(&interaction.id),
     ]
 }
 

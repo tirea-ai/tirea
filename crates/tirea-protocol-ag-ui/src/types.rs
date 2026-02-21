@@ -1,16 +1,29 @@
-use crate::protocol::MessageRole;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use tirea_contract::InteractionResponse;
-use tirea_contract::{gen_message_id, Message, Role, RunRequest, Visibility};
+use tirea_contract::{gen_message_id, RunRequest, Visibility};
 use tracing::warn;
+
+/// Role for AG-UI input/output messages.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    Developer,
+    System,
+    #[default]
+    Assistant,
+    User,
+    Tool,
+    Activity,
+    Reasoning,
+}
 
 /// AG-UI message in a conversation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AGUIMessage {
+pub struct Message {
     /// Message role (user, assistant, system, tool, developer, activity, reasoning).
-    pub role: MessageRole,
+    pub role: Role,
     /// Message content.
     pub content: String,
     /// Optional message ID.
@@ -21,11 +34,11 @@ pub struct AGUIMessage {
     pub tool_call_id: Option<String>,
 }
 
-impl AGUIMessage {
+impl Message {
     /// Create a user message.
     pub fn user(content: impl Into<String>) -> Self {
         Self {
-            role: MessageRole::User,
+            role: Role::User,
             content: content.into(),
             id: None,
             tool_call_id: None,
@@ -35,7 +48,7 @@ impl AGUIMessage {
     /// Create an assistant message.
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
-            role: MessageRole::Assistant,
+            role: Role::Assistant,
             content: content.into(),
             id: None,
             tool_call_id: None,
@@ -45,7 +58,7 @@ impl AGUIMessage {
     /// Create a system message.
     pub fn system(content: impl Into<String>) -> Self {
         Self {
-            role: MessageRole::System,
+            role: Role::System,
             content: content.into(),
             id: None,
             tool_call_id: None,
@@ -55,7 +68,7 @@ impl AGUIMessage {
     /// Create a tool result message.
     pub fn tool(content: impl Into<String>, tool_call_id: impl Into<String>) -> Self {
         Self {
-            role: MessageRole::Tool,
+            role: Role::Tool,
             content: content.into(),
             id: None,
             tool_call_id: Some(tool_call_id.into()),
@@ -65,7 +78,7 @@ impl AGUIMessage {
     /// Create an activity message.
     pub fn activity(content: impl Into<String>) -> Self {
         Self {
-            role: MessageRole::Activity,
+            role: Role::Activity,
             content: content.into(),
             id: None,
             tool_call_id: None,
@@ -75,7 +88,7 @@ impl AGUIMessage {
     /// Create a reasoning message.
     pub fn reasoning(content: impl Into<String>) -> Self {
         Self {
-            role: MessageRole::Reasoning,
+            role: Role::Reasoning,
             content: content.into(),
             id: None,
             tool_call_id: None,
@@ -85,7 +98,7 @@ impl AGUIMessage {
 
 /// AG-UI context entry from frontend readable values.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AGUIContextEntry {
+pub struct Context {
     /// Human-readable description of the context.
     pub description: String,
     /// The context value.
@@ -105,7 +118,7 @@ pub enum ToolExecutionLocation {
 
 /// AG-UI tool definition.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AGUIToolDef {
+pub struct Tool {
     /// Tool name.
     pub name: String,
     /// Tool description.
@@ -122,7 +135,7 @@ fn is_default_frontend(loc: &ToolExecutionLocation) -> bool {
     *loc == ToolExecutionLocation::Frontend
 }
 
-impl AGUIToolDef {
+impl Tool {
     /// Create a new backend tool definition.
     pub fn backend(name: impl Into<String>, description: impl Into<String>) -> Self {
         Self {
@@ -157,7 +170,7 @@ impl AGUIToolDef {
 
 /// Request to run an AG-UI agent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RunAgentRequest {
+pub struct RunAgentInput {
     /// Thread identifier.
     #[serde(rename = "threadId")]
     pub thread_id: String,
@@ -165,13 +178,13 @@ pub struct RunAgentRequest {
     #[serde(rename = "runId")]
     pub run_id: String,
     /// Conversation messages.
-    pub messages: Vec<AGUIMessage>,
+    pub messages: Vec<Message>,
     /// Available tools.
     #[serde(default)]
-    pub tools: Vec<AGUIToolDef>,
+    pub tools: Vec<Tool>,
     /// Frontend readable context entries.
     #[serde(default)]
-    pub context: Vec<AGUIContextEntry>,
+    pub context: Vec<Context>,
     /// Initial state.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<Value>,
@@ -196,7 +209,7 @@ pub struct RunAgentRequest {
     pub forwarded_props: Option<Value>,
 }
 
-impl RunAgentRequest {
+impl RunAgentInput {
     /// Create a new request with minimal required fields.
     pub fn new(thread_id: impl Into<String>, run_id: impl Into<String>) -> Self {
         Self {
@@ -215,13 +228,13 @@ impl RunAgentRequest {
     }
 
     /// Add a message.
-    pub fn with_message(mut self, message: AGUIMessage) -> Self {
+    pub fn with_message(mut self, message: Message) -> Self {
         self.messages.push(message);
         self
     }
 
     /// Add messages.
-    pub fn with_messages(mut self, messages: Vec<AGUIMessage>) -> Self {
+    pub fn with_messages(mut self, messages: Vec<Message>) -> Self {
         self.messages.extend(messages);
         self
     }
@@ -262,7 +275,7 @@ impl RunAgentRequest {
     }
 
     /// Get frontend tools from the request.
-    pub fn frontend_tools(&self) -> Vec<&AGUIToolDef> {
+    pub fn frontend_tools(&self) -> Vec<&Tool> {
         self.tools.iter().filter(|t| t.is_frontend()).collect()
     }
 
@@ -298,7 +311,7 @@ impl RunAgentRequest {
         self.messages
             .iter()
             .enumerate()
-            .filter(|(_, m)| m.role == MessageRole::Tool)
+            .filter(|(_, m)| m.role == Role::Tool)
             .filter_map(|(idx, m)| {
                 m.tool_call_id.as_ref().and_then(|id| {
                     if !expected_ids.is_empty() && !expected_ids.contains(id) {
@@ -375,18 +388,18 @@ fn parse_interaction_result_value(content: &str) -> Value {
 }
 
 /// Convert AG-UI message to internal message.
-pub fn core_message_from_ag_ui(msg: &AGUIMessage) -> Message {
+pub fn core_message_from_ag_ui(msg: &Message) -> tirea_contract::Message {
     let role = match msg.role {
-        MessageRole::System => Role::System,
-        MessageRole::Developer => Role::System,
-        MessageRole::User => Role::User,
-        MessageRole::Assistant => Role::Assistant,
-        MessageRole::Tool => Role::Tool,
-        MessageRole::Activity => Role::Assistant,
-        MessageRole::Reasoning => Role::Assistant,
+        Role::System => tirea_contract::Role::System,
+        Role::Developer => tirea_contract::Role::System,
+        Role::User => tirea_contract::Role::User,
+        Role::Assistant => tirea_contract::Role::Assistant,
+        Role::Tool => tirea_contract::Role::Tool,
+        Role::Activity => tirea_contract::Role::Assistant,
+        Role::Reasoning => tirea_contract::Role::Assistant,
     };
 
-    Message {
+    tirea_contract::Message {
         id: Some(msg.id.clone().unwrap_or_else(gen_message_id)),
         role,
         content: msg.content.clone(),
@@ -398,13 +411,11 @@ pub fn core_message_from_ag_ui(msg: &AGUIMessage) -> Message {
 }
 
 /// Convert AG-UI messages to internal messages.
-pub fn convert_agui_messages(messages: &[AGUIMessage]) -> Vec<Message> {
+pub fn convert_agui_messages(messages: &[Message]) -> Vec<tirea_contract::Message> {
     messages
         .iter()
         .filter(|m| {
-            m.role != MessageRole::Assistant
-                && m.role != MessageRole::Activity
-                && m.role != MessageRole::Reasoning
+            m.role != Role::Assistant && m.role != Role::Activity && m.role != Role::Reasoning
         })
         .map(core_message_from_ag_ui)
         .collect()
@@ -460,7 +471,7 @@ impl From<String> for RequestError {
 }
 
 /// Build a context string from AG-UI context entries to append to the system prompt.
-pub fn build_context_addendum(request: &RunAgentRequest) -> Option<String> {
+pub fn build_context_addendum(request: &RunAgentInput) -> Option<String> {
     if request.context.is_empty() {
         return None;
     }

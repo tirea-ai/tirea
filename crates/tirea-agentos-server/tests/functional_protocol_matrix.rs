@@ -1,6 +1,6 @@
-use tirea_agentos::contracts::Role;
+use tirea_agentos::contracts::Role as CoreRole;
 use tirea_contract::ProtocolInputAdapter;
-use tirea_protocol_ag_ui::{convert_agui_messages, AGUIMessage, MessageRole, RunAgentRequest};
+use tirea_protocol_ag_ui::{convert_agui_messages, Message, Role as UiRole, RunAgentInput};
 use tirea_protocol_ai_sdk_v6::{AiSdkV6InputAdapter, AiSdkV6RunRequest};
 
 #[test]
@@ -15,7 +15,7 @@ fn functional_protocol_scenario_matrix_204() {
 
     for thread_id in thread_cases {
         for run_id in run_cases {
-            let req = RunAgentRequest::new(thread_id.to_string(), run_id.to_string());
+            let req = RunAgentInput::new(thread_id.to_string(), run_id.to_string());
             let expected_ok = !thread_id.is_empty() && !run_id.is_empty();
             assert_eq!(
                 req.validate().is_ok(),
@@ -51,7 +51,7 @@ fn functional_protocol_scenario_matrix_204() {
                 assert_eq!(run.thread_id, expected_thread);
                 assert_eq!(run.run_id, run_id.map(str::to_string));
                 assert_eq!(run.messages.len(), 1);
-                assert_eq!(run.messages[0].role, Role::User);
+                assert_eq!(run.messages[0].role, CoreRole::User);
                 assert_eq!(run.messages[0].content, input);
                 executed += 1;
             }
@@ -62,13 +62,13 @@ fn functional_protocol_scenario_matrix_204() {
     // 3) AG-UI message conversion matrix (60 scenarios)
     // ---------------------------------------------------------------------
     let role_cases = [
-        MessageRole::Developer,
-        MessageRole::System,
-        MessageRole::User,
-        MessageRole::Assistant,
-        MessageRole::Tool,
-        MessageRole::Activity,
-        MessageRole::Reasoning,
+        UiRole::Developer,
+        UiRole::System,
+        UiRole::User,
+        UiRole::Assistant,
+        UiRole::Tool,
+        UiRole::Activity,
+        UiRole::Reasoning,
     ];
     let id_cases = [false, true];
     let tool_call_cases = [false, true];
@@ -78,7 +78,7 @@ fn functional_protocol_scenario_matrix_204() {
         for has_id in id_cases {
             for has_tool_call_id in tool_call_cases {
                 for content in content_cases {
-                    let msg = AGUIMessage {
+                    let msg = Message {
                         role: role.clone(),
                         content: content.to_string(),
                         id: has_id.then(|| "msg-fixed-id".to_string()),
@@ -88,7 +88,7 @@ fn functional_protocol_scenario_matrix_204() {
 
                     if matches!(
                         role,
-                        MessageRole::Assistant | MessageRole::Activity | MessageRole::Reasoning
+                        UiRole::Assistant | UiRole::Activity | UiRole::Reasoning
                     ) {
                         assert!(
                             converted.is_empty(),
@@ -98,12 +98,12 @@ fn functional_protocol_scenario_matrix_204() {
                         assert_eq!(converted.len(), 1);
                         let core = &converted[0];
                         let expected_role = match role {
-                            MessageRole::Developer | MessageRole::System => Role::System,
-                            MessageRole::User => Role::User,
-                            MessageRole::Tool => Role::Tool,
-                            MessageRole::Assistant
-                            | MessageRole::Activity
-                            | MessageRole::Reasoning => unreachable!(),
+                            UiRole::Developer | UiRole::System => CoreRole::System,
+                            UiRole::User => CoreRole::User,
+                            UiRole::Tool => CoreRole::Tool,
+                            UiRole::Assistant | UiRole::Activity | UiRole::Reasoning => {
+                                unreachable!()
+                            }
                         };
                         assert_eq!(core.role, expected_role);
                         assert_eq!(core.content, content);

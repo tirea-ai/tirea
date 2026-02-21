@@ -18,8 +18,7 @@ use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError, RunStream};
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
 use tirea_contract::{ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder};
 use tirea_protocol_ag_ui::{
-    apply_agui_extensions, AgUiHistoryEncoder, AgUiInputAdapter, AgUiProtocolEncoder,
-    RunAgentRequest,
+    apply_agui_extensions, AgUiHistoryEncoder, AgUiInputAdapter, AgUiProtocolEncoder, RunAgentInput,
 };
 use tirea_protocol_ai_sdk_v6::{
     apply_ai_sdk_extensions, AiSdkV6HistoryEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder,
@@ -369,7 +368,7 @@ async fn run_ai_sdk_sse(
 async fn run_ag_ui_sse(
     State(st): State<AppState>,
     Path(agent_id): Path<String>,
-    Json(req): Json<RunAgentRequest>,
+    Json(req): Json<RunAgentInput>,
 ) -> Result<Response, ApiError> {
     req.validate()
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;

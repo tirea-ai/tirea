@@ -4,11 +4,9 @@ use serde_json::{json, Value};
 use tirea_contract::{
     AgentEvent, Interaction, ProtocolInputAdapter, Role, TerminationReason, ToolResult,
 };
-use tirea_protocol_ag_ui::{
-    AGUIContext, AGUIEvent, AGUIMessage, AgUiInputAdapter, RunAgentRequest,
-};
+use tirea_protocol_ag_ui::{AgUiEventContext, AgUiInputAdapter, Event, Message, RunAgentInput};
 
-fn event_type(event: &AGUIEvent) -> String {
+fn event_type(event: &Event) -> String {
     serde_json::to_value(event)
         .ok()
         .and_then(|v| v.get("type").cloned())
@@ -18,16 +16,13 @@ fn event_type(event: &AGUIEvent) -> String {
 
 #[test]
 fn agui_context_pending_closes_text_and_emits_interaction_tool_events() {
-    let mut ctx = AGUIContext::new("thread_1".to_string(), "run_1".to_string());
+    let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
 
     let text_events = ctx.on_agent_event(&AgentEvent::TextDelta {
         delta: "hello".to_string(),
     });
-    assert!(matches!(text_events[0], AGUIEvent::TextMessageStart { .. }));
-    assert!(matches!(
-        text_events[1],
-        AGUIEvent::TextMessageContent { .. }
-    ));
+    assert!(matches!(text_events[0], Event::TextMessageStart { .. }));
+    assert!(matches!(text_events[1], Event::TextMessageContent { .. }));
 
     let pending_events = ctx.on_agent_event(&AgentEvent::Pending {
         interaction: Interaction::new("int_1", "confirm")
@@ -37,15 +32,12 @@ fn agui_context_pending_closes_text_and_emits_interaction_tool_events() {
 
     // Pending closes text stream but no longer emits tool call events
     assert_eq!(pending_events.len(), 1);
-    assert!(matches!(
-        pending_events[0],
-        AGUIEvent::TextMessageEnd { .. }
-    ));
+    assert!(matches!(pending_events[0], Event::TextMessageEnd { .. }));
 }
 
 #[test]
 fn agui_context_interaction_requested_emits_tool_call_events_for_new_ids() {
-    let mut ctx = AGUIContext::new("thread_1".to_string(), "run_1".to_string());
+    let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
 
     // InteractionRequested with a never-seen ID → should emit TOOL_CALL_START/ARGS/END
     let events = ctx.on_agent_event(&AgentEvent::InteractionRequested {
@@ -55,14 +47,14 @@ fn agui_context_interaction_requested_emits_tool_call_events_for_new_ids() {
     });
 
     assert_eq!(events.len(), 3);
-    assert!(matches!(events[0], AGUIEvent::ToolCallStart { .. }));
-    assert!(matches!(events[1], AGUIEvent::ToolCallArgs { .. }));
-    assert!(matches!(events[2], AGUIEvent::ToolCallEnd { .. }));
+    assert!(matches!(events[0], Event::ToolCallStart { .. }));
+    assert!(matches!(events[1], Event::ToolCallArgs { .. }));
+    assert!(matches!(events[2], Event::ToolCallEnd { .. }));
 }
 
 #[test]
 fn agui_context_interaction_requested_skips_already_emitted_tool_call_ids() {
-    let mut ctx = AGUIContext::new("thread_1".to_string(), "run_1".to_string());
+    let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
 
     // First: LLM streams a ToolCallStart for "call_copy"
     let _ = ctx.on_agent_event(&AgentEvent::ToolCallStart {
@@ -81,7 +73,7 @@ fn agui_context_interaction_requested_skips_already_emitted_tool_call_ids() {
 
 #[test]
 fn agui_context_interaction_requested_closes_open_text_stream() {
-    let mut ctx = AGUIContext::new("thread_1".to_string(), "run_1".to_string());
+    let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
 
     // Start text
     let _ = ctx.on_agent_event(&AgentEvent::TextDelta {
@@ -97,17 +89,17 @@ fn agui_context_interaction_requested_closes_open_text_stream() {
 
     // TEXT_MESSAGE_END + TOOL_CALL_START + TOOL_CALL_ARGS + TOOL_CALL_END
     assert_eq!(events.len(), 4);
-    assert!(matches!(events[0], AGUIEvent::TextMessageEnd { .. }));
-    assert!(matches!(events[1], AGUIEvent::ToolCallStart { .. }));
+    assert!(matches!(events[0], Event::TextMessageEnd { .. }));
+    assert!(matches!(events[1], Event::ToolCallStart { .. }));
     assert!(!ctx.is_text_open());
 }
 
 #[test]
 fn agui_input_adapter_converts_messages() {
-    let mut request = RunAgentRequest::new("thread_1", "run_1").with_messages(vec![
-        AGUIMessage::assistant("skip this"),
-        AGUIMessage::user("hello"),
-        AGUIMessage::tool(r#"{"approved":true}"#, "int_1"),
+    let mut request = RunAgentInput::new("thread_1", "run_1").with_messages(vec![
+        Message::assistant("skip this"),
+        Message::user("hello"),
+        Message::tool(r#"{"approved":true}"#, "int_1"),
     ]);
     request.parent_run_id = Some("parent_1".to_string());
 
@@ -124,7 +116,7 @@ fn agui_input_adapter_converts_messages() {
 
 #[test]
 fn agui_context_cancelled_run_finish_maps_to_run_error() {
-    let mut ctx = AGUIContext::new("thread_1".to_string(), "run_1".to_string());
+    let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
 
     let events = ctx.on_agent_event(&AgentEvent::RunFinish {
         thread_id: "thread_1".to_string(),
@@ -135,7 +127,7 @@ fn agui_context_cancelled_run_finish_maps_to_run_error() {
 
     assert_eq!(events.len(), 1);
     match &events[0] {
-        AGUIEvent::RunError { code, .. } => {
+        Event::RunError { code, .. } => {
             assert_eq!(code.as_deref(), Some("CANCELLED"));
         }
         other => panic!("expected RUN_ERROR for cancelled run, got: {other:?}"),
@@ -144,7 +136,7 @@ fn agui_context_cancelled_run_finish_maps_to_run_error() {
 
 #[test]
 fn agui_context_non_cancelled_run_finish_maps_to_run_finished() {
-    let mut ctx = AGUIContext::new("thread_1".to_string(), "run_1".to_string());
+    let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
 
     let events = ctx.on_agent_event(&AgentEvent::RunFinish {
         thread_id: "thread_1".to_string(),
@@ -154,12 +146,12 @@ fn agui_context_non_cancelled_run_finish_maps_to_run_finished() {
     });
 
     assert_eq!(events.len(), 1);
-    assert!(matches!(events[0], AGUIEvent::RunFinished { .. }));
+    assert!(matches!(events[0], Event::RunFinished { .. }));
 }
 
 #[test]
 fn agui_contract_event_order_is_stable_for_text_tool_and_terminal_events() {
-    let mut ctx = AGUIContext::new("thread_1".to_string(), "run_1".to_string());
+    let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
     let mut stream = Vec::new();
 
     stream.extend(ctx.on_agent_event(&AgentEvent::RunStart {
@@ -221,7 +213,7 @@ fn agui_contract_event_order_is_stable_for_text_tool_and_terminal_events() {
 
 #[test]
 fn agui_contract_terminal_event_closes_text_and_suppresses_followup_events() {
-    let mut ctx = AGUIContext::new("thread_1".to_string(), "run_1".to_string());
+    let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
     let _ = ctx.on_agent_event(&AgentEvent::TextDelta {
         delta: "partial".to_string(),
     });
@@ -234,8 +226,8 @@ fn agui_contract_terminal_event_closes_text_and_suppresses_followup_events() {
         termination: TerminationReason::Cancelled,
     });
     assert_eq!(terminal_events.len(), 2);
-    assert!(matches!(terminal_events[0], AGUIEvent::TextMessageEnd { .. }));
-    assert!(matches!(terminal_events[1], AGUIEvent::RunError { .. }));
+    assert!(matches!(terminal_events[0], Event::TextMessageEnd { .. }));
+    assert!(matches!(terminal_events[1], Event::RunError { .. }));
 
     let suppressed = ctx.on_agent_event(&AgentEvent::TextDelta {
         delta: "must-not-emit".to_string(),
@@ -245,7 +237,7 @@ fn agui_contract_terminal_event_closes_text_and_suppresses_followup_events() {
 
 #[test]
 fn agui_contract_hitl_roundtrip_maps_requested_and_response_ids() {
-    let mut ctx = AGUIContext::new("thread_1".to_string(), "run_1".to_string());
+    let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
     let interaction = Interaction::new("perm_1", "tool:confirm_write")
         .with_message("approve this write?")
         .with_parameters(json!({ "path": "notes.md" }));
@@ -254,9 +246,9 @@ fn agui_contract_hitl_roundtrip_maps_requested_and_response_ids() {
         interaction: interaction.clone(),
     });
     assert_eq!(requested_events.len(), 3);
-    assert!(matches!(requested_events[0], AGUIEvent::ToolCallStart { .. }));
-    assert!(matches!(requested_events[1], AGUIEvent::ToolCallArgs { .. }));
-    assert!(matches!(requested_events[2], AGUIEvent::ToolCallEnd { .. }));
+    assert!(matches!(requested_events[0], Event::ToolCallStart { .. }));
+    assert!(matches!(requested_events[1], Event::ToolCallArgs { .. }));
+    assert!(matches!(requested_events[2], Event::ToolCallEnd { .. }));
 
     // InteractionResolved is intentionally consumed by runtime and not emitted as AG-UI event.
     let resolved_events = ctx.on_agent_event(&AgentEvent::InteractionResolved {
@@ -265,9 +257,9 @@ fn agui_contract_hitl_roundtrip_maps_requested_and_response_ids() {
     });
     assert!(resolved_events.is_empty());
 
-    let request = RunAgentRequest::new("thread_1", "run_2").with_messages(vec![
-        AGUIMessage::tool("true", "perm_1"),
-        AGUIMessage::tool("false", "perm_2"),
+    let request = RunAgentInput::new("thread_1", "run_2").with_messages(vec![
+        Message::tool("true", "perm_1"),
+        Message::tool("false", "perm_2"),
     ]);
     assert_eq!(request.approved_interaction_ids(), vec!["perm_1"]);
     assert_eq!(request.denied_interaction_ids(), vec!["perm_2"]);
@@ -275,7 +267,7 @@ fn agui_contract_hitl_roundtrip_maps_requested_and_response_ids() {
 
 #[test]
 fn agui_contract_state_snapshot_delta_is_consistent() {
-    let mut ctx = AGUIContext::new("thread_1".to_string(), "run_1".to_string());
+    let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
     let first = json!({
         "todos": ["a"],
         "meta": { "count": 1 }
@@ -289,17 +281,17 @@ fn agui_contract_state_snapshot_delta_is_consistent() {
         snapshot: first.clone(),
     });
     assert_eq!(first_events.len(), 1);
-    assert!(matches!(first_events[0], AGUIEvent::StateSnapshot { .. }));
+    assert!(matches!(first_events[0], Event::StateSnapshot { .. }));
 
     let second_events = ctx.on_agent_event(&AgentEvent::StateSnapshot {
         snapshot: second.clone(),
     });
     assert_eq!(second_events.len(), 2);
-    assert!(matches!(second_events[0], AGUIEvent::StateDelta { .. }));
-    assert!(matches!(second_events[1], AGUIEvent::StateSnapshot { .. }));
+    assert!(matches!(second_events[0], Event::StateDelta { .. }));
+    assert!(matches!(second_events[1], Event::StateSnapshot { .. }));
 
     let delta = match &second_events[0] {
-        AGUIEvent::StateDelta { delta, .. } => delta.clone(),
+        Event::StateDelta { delta, .. } => delta.clone(),
         _ => unreachable!(),
     };
 

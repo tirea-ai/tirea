@@ -1,4 +1,4 @@
-use crate::protocol::{interaction_to_ag_ui_events, AGUIEvent, ReasoningEncryptedValueSubtype};
+use crate::events::{interaction_to_ag_ui_events, Event, ReasoningEncryptedValueSubtype};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use tirea_contract::{AgentEvent, TerminationReason};
@@ -12,7 +12,7 @@ use uuid::Uuid;
 ///
 /// Maintains state needed for converting internal AgentEvents to AG-UI events.
 #[derive(Debug, Clone)]
-pub struct AGUIContext {
+pub struct AgUiEventContext {
     /// Thread identifier (conversation context).
     pub thread_id: String,
     /// Current run identifier.
@@ -45,7 +45,7 @@ pub struct AGUIContext {
     tool_ids_with_deltas: HashSet<String>,
 }
 
-impl AGUIContext {
+impl AgUiEventContext {
     /// Create a new AG-UI context.
     pub fn new(thread_id: String, run_id: String) -> Self {
         let run_id_prefix: String = run_id.chars().take(8).collect();
@@ -149,11 +149,30 @@ impl AGUIContext {
         self.message_id.clone()
     }
 
+    fn close_reasoning_stream(&mut self) -> Vec<Event> {
+        if self.end_reasoning() {
+            vec![
+                Event::reasoning_message_end(&self.message_id),
+                Event::reasoning_end(&self.message_id),
+            ]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn close_open_streams(&mut self) -> Vec<Event> {
+        let mut events = self.close_reasoning_stream();
+        if self.end_text() {
+            events.push(Event::text_message_end(&self.message_id));
+        }
+        events
+    }
+
     /// Convert an AgentEvent to AG-UI protocol compatible events.
     ///
     /// Handles full stream lifecycle: text start/end pairs, step counters,
     /// terminal event suppression (after Error), and Pending event filtering.
-    pub fn on_agent_event(&mut self, ev: &AgentEvent) -> Vec<AGUIEvent> {
+    pub fn on_agent_event(&mut self, ev: &AgentEvent) -> Vec<Event> {
         // After a terminal event (RunFinish/Error), suppress everything.
         if self.stopped {
             return Vec::new();
@@ -176,29 +195,14 @@ impl AGUIContext {
                     return vec![];
                 }
                 self.emitted_tool_call_ids.insert(interaction.id.clone());
-                let mut events = Vec::new();
-                if self.end_reasoning() {
-                    events.push(AGUIEvent::reasoning_message_end(&self.message_id));
-                    events.push(AGUIEvent::reasoning_end(&self.message_id));
-                }
-                if self.end_text() {
-                    events.push(AGUIEvent::text_message_end(&self.message_id));
-                }
+                let mut events = self.close_open_streams();
                 events.extend(interaction_to_ag_ui_events(interaction));
                 return events;
             }
             // Pending: close current text stream.
             // The pending interaction is communicated via STATE_SNAPSHOT (emitted separately).
             AgentEvent::Pending { .. } => {
-                let mut events = Vec::new();
-                if self.end_reasoning() {
-                    events.push(AGUIEvent::reasoning_message_end(&self.message_id));
-                    events.push(AGUIEvent::reasoning_end(&self.message_id));
-                }
-                if self.end_text() {
-                    events.push(AGUIEvent::text_message_end(&self.message_id));
-                }
-                return events;
+                return self.close_open_streams();
             }
             _ => {}
         }
@@ -209,11 +213,7 @@ impl AGUIContext {
                 run_id,
                 parent_run_id,
             } => {
-                vec![AGUIEvent::run_started(
-                    thread_id,
-                    run_id,
-                    parent_run_id.clone(),
-                )]
+                vec![Event::run_started(thread_id, run_id, parent_run_id.clone())]
             }
             AgentEvent::RunFinish {
                 thread_id,
@@ -221,29 +221,22 @@ impl AGUIContext {
                 result,
                 termination,
             } => {
-                let mut events = vec![];
-                if self.end_reasoning() {
-                    events.push(AGUIEvent::reasoning_message_end(&self.message_id));
-                    events.push(AGUIEvent::reasoning_end(&self.message_id));
-                }
-                if self.end_text() {
-                    events.push(AGUIEvent::text_message_end(&self.message_id));
-                }
+                let mut events = self.close_open_streams();
                 match termination {
                     TerminationReason::Cancelled => {
-                        events.push(AGUIEvent::run_error(
+                        events.push(Event::run_error(
                             "Run cancelled",
                             Some("CANCELLED".to_string()),
                         ));
                     }
                     TerminationReason::Error => {
-                        events.push(AGUIEvent::run_error(
+                        events.push(Event::run_error(
                             "Run terminated with error",
                             Some("ERROR".to_string()),
                         ));
                     }
                     _ => {
-                        events.push(AGUIEvent::run_finished(thread_id, run_id, result.clone()));
+                        events.push(Event::run_finished(thread_id, run_id, result.clone()));
                     }
                 }
                 events
@@ -252,25 +245,22 @@ impl AGUIContext {
             AgentEvent::TextDelta { delta } => {
                 let mut events = vec![];
                 if self.start_text() {
-                    events.push(AGUIEvent::text_message_start(&self.message_id));
+                    events.push(Event::text_message_start(&self.message_id));
                 }
-                events.push(AGUIEvent::text_message_content(&self.message_id, delta));
+                events.push(Event::text_message_content(&self.message_id, delta));
                 events
             }
             AgentEvent::ReasoningDelta { delta } => {
                 let mut events = vec![];
                 if self.start_reasoning() {
-                    events.push(AGUIEvent::reasoning_start(&self.message_id));
-                    events.push(AGUIEvent::reasoning_message_start(&self.message_id));
+                    events.push(Event::reasoning_start(&self.message_id));
+                    events.push(Event::reasoning_message_start(&self.message_id));
                 }
-                events.push(AGUIEvent::reasoning_message_content(
-                    &self.message_id,
-                    delta,
-                ));
+                events.push(Event::reasoning_message_content(&self.message_id, delta));
                 events
             }
             AgentEvent::ReasoningEncryptedValue { encrypted_value } => {
-                vec![AGUIEvent::reasoning_encrypted_value(
+                vec![Event::reasoning_encrypted_value(
                     ReasoningEncryptedValueSubtype::Message,
                     self.message_id.clone(),
                     encrypted_value.clone(),
@@ -279,15 +269,8 @@ impl AGUIContext {
 
             AgentEvent::ToolCallStart { id, name } => {
                 self.emitted_tool_call_ids.insert(id.clone());
-                let mut events = vec![];
-                if self.end_reasoning() {
-                    events.push(AGUIEvent::reasoning_message_end(&self.message_id));
-                    events.push(AGUIEvent::reasoning_end(&self.message_id));
-                }
-                if self.end_text() {
-                    events.push(AGUIEvent::text_message_end(&self.message_id));
-                }
-                events.push(AGUIEvent::tool_call_start(
+                let mut events = self.close_open_streams();
+                events.push(Event::tool_call_start(
                     id,
                     name,
                     Some(self.message_id.clone()),
@@ -296,7 +279,7 @@ impl AGUIContext {
             }
             AgentEvent::ToolCallDelta { id, args_delta } => {
                 self.tool_ids_with_deltas.insert(id.clone());
-                vec![AGUIEvent::tool_call_args(id, args_delta)]
+                vec![Event::tool_call_args(id, args_delta)]
             }
             AgentEvent::ToolCallReady { id, arguments, .. } => {
                 let mut events = Vec::new();
@@ -306,10 +289,10 @@ impl AGUIContext {
                 if !self.tool_ids_with_deltas.contains(id.as_str()) {
                     let args_str = arguments.to_string();
                     if args_str != "{}" && args_str != "null" {
-                        events.push(AGUIEvent::tool_call_args(id.clone(), args_str));
+                        events.push(Event::tool_call_args(id.clone(), args_str));
                     }
                 }
-                events.push(AGUIEvent::tool_call_end(id));
+                events.push(Event::tool_call_end(id));
                 events
             }
             AgentEvent::ToolCallDone {
@@ -330,22 +313,18 @@ impl AGUIContext {
                 } else {
                     message_id.clone()
                 };
-                vec![AGUIEvent::tool_call_result(msg_id, id, content)]
+                vec![Event::tool_call_result(msg_id, id, content)]
             }
 
             AgentEvent::StepStart { message_id } => {
                 if !message_id.is_empty() {
                     self.reset_for_step(message_id.clone());
                 }
-                vec![AGUIEvent::step_started(self.next_step_name())]
+                vec![Event::step_started(self.next_step_name())]
             }
             AgentEvent::StepEnd => {
-                let mut events = vec![];
-                if self.end_reasoning() {
-                    events.push(AGUIEvent::reasoning_message_end(&self.message_id));
-                    events.push(AGUIEvent::reasoning_end(&self.message_id));
-                }
-                events.push(AGUIEvent::step_finished(self.current_step_name()));
+                let mut events = self.close_reasoning_stream();
+                events.push(Event::step_finished(self.current_step_name()));
                 events
             }
 
@@ -360,18 +339,18 @@ impl AGUIContext {
                             .iter()
                             .map(|op| serde_json::to_value(op).expect("RFC 6902 op serializes"))
                             .collect();
-                        events.push(AGUIEvent::state_delta(delta));
+                        events.push(Event::state_delta(delta));
                     }
                 }
                 self.last_state = Some(snapshot.clone());
-                events.push(AGUIEvent::state_snapshot(snapshot.clone()));
+                events.push(Event::state_snapshot(snapshot.clone()));
                 events
             }
             AgentEvent::StateDelta { delta } => {
-                vec![AGUIEvent::state_delta(delta.clone())]
+                vec![Event::state_delta(delta.clone())]
             }
             AgentEvent::MessagesSnapshot { messages } => {
-                vec![AGUIEvent::messages_snapshot(messages.clone())]
+                vec![Event::messages_snapshot(messages.clone())]
             }
 
             AgentEvent::ActivitySnapshot {
@@ -380,7 +359,7 @@ impl AGUIContext {
                 content,
                 replace,
             } => {
-                vec![AGUIEvent::activity_snapshot(
+                vec![Event::activity_snapshot(
                     message_id.clone(),
                     activity_type.clone(),
                     value_to_map(content),
@@ -392,7 +371,7 @@ impl AGUIContext {
                 activity_type,
                 patch,
             } => {
-                vec![AGUIEvent::activity_delta(
+                vec![Event::activity_delta(
                     message_id.clone(),
                     activity_type.clone(),
                     patch.clone(),
@@ -403,12 +382,8 @@ impl AGUIContext {
             AgentEvent::Pending { .. } => unreachable!(),
 
             AgentEvent::Error { message } => {
-                let mut events = vec![];
-                if self.end_reasoning() {
-                    events.push(AGUIEvent::reasoning_message_end(&self.message_id));
-                    events.push(AGUIEvent::reasoning_end(&self.message_id));
-                }
-                events.push(AGUIEvent::run_error(message, None));
+                let mut events = self.close_reasoning_stream();
+                events.push(Event::run_error(message, None));
                 events
             }
             AgentEvent::InferenceComplete {
@@ -430,7 +405,7 @@ impl AGUIContext {
                         content.insert("usage".to_string(), v);
                     }
                 }
-                vec![AGUIEvent::activity_snapshot(
+                vec![Event::activity_snapshot(
                     self.message_id.clone(),
                     "inference_complete".to_string(),
                     content.into_iter().collect(),
@@ -465,7 +440,7 @@ mod tests {
 
     #[test]
     fn inference_complete_emits_activity_snapshot() {
-        let mut ctx = AGUIContext::new("t1".into(), "run_12345678".into());
+        let mut ctx = AgUiEventContext::new("t1".into(), "run_12345678".into());
         let ev = AgentEvent::InferenceComplete {
             model: "gpt-4o".into(),
             usage: Some(Usage {
@@ -487,7 +462,7 @@ mod tests {
 
     #[test]
     fn inference_complete_without_usage() {
-        let mut ctx = AGUIContext::new("t1".into(), "run_12345678".into());
+        let mut ctx = AgUiEventContext::new("t1".into(), "run_12345678".into());
         let ev = AgentEvent::InferenceComplete {
             model: "gpt-4o-mini".into(),
             usage: None,
@@ -504,7 +479,7 @@ mod tests {
 
     #[test]
     fn reasoning_delta_emits_reasoning_events() {
-        let mut ctx = AGUIContext::new("t1".into(), "run_12345678".into());
+        let mut ctx = AgUiEventContext::new("t1".into(), "run_12345678".into());
         let events = ctx.on_agent_event(&AgentEvent::ReasoningDelta {
             delta: "step-by-step".into(),
         });
@@ -522,7 +497,7 @@ mod tests {
 
     #[test]
     fn reasoning_encrypted_value_maps_to_message_entity() {
-        let mut ctx = AGUIContext::new("t1".into(), "run_12345678".into());
+        let mut ctx = AgUiEventContext::new("t1".into(), "run_12345678".into());
         let events = ctx.on_agent_event(&AgentEvent::ReasoningEncryptedValue {
             encrypted_value: "opaque-token".into(),
         });

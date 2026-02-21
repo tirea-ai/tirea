@@ -1,16 +1,16 @@
-use tirea_agentos::contracts::{AgentEvent, RunRequest};
-use tirea_agentos::orchestrator::{AgentOs, ResolvedRun};
-use tirea_protocol_ag_ui::{
-    apply_agui_extensions, AGUIEvent, AgUiInputAdapter, AgUiProtocolEncoder, RunAgentRequest,
-};
-use tirea_protocol_ai_sdk_v6::{
-    AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest, UIStreamEvent,
-};
-use tirea_contract::{ProtocolInputAdapter, ProtocolOutputEncoder};
 use futures::StreamExt;
 use serde::Deserialize;
 use serde::Serialize;
 use std::sync::Arc;
+use tirea_agentos::contracts::{AgentEvent, RunRequest};
+use tirea_agentos::orchestrator::{AgentOs, ResolvedRun};
+use tirea_contract::{ProtocolInputAdapter, ProtocolOutputEncoder};
+use tirea_protocol_ag_ui::{
+    apply_agui_extensions, AgUiInputAdapter, AgUiProtocolEncoder, Event, RunAgentInput,
+};
+use tirea_protocol_ai_sdk_v6::{
+    AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest, UIStreamEvent,
+};
 use tracing;
 
 use crate::transport::pump_encoded_stream;
@@ -86,7 +86,7 @@ impl NatsGateway {
         struct Req {
             #[serde(rename = "agentId")]
             agent_id: String,
-            request: RunAgentRequest,
+            request: RunAgentInput,
             #[serde(rename = "replySubject")]
             reply_subject: Option<String>,
         }
@@ -107,12 +107,16 @@ impl NatsGateway {
         let resolved = match self.os.resolve(&req.agent_id) {
             Ok(r) => r,
             Err(err) => {
-                let event = AGUIEvent::run_error(err.to_string(), None);
+                let event = Event::run_error(err.to_string(), None);
                 let payload = serde_json::to_vec(&event)
-                    .map_err(|e| NatsGatewayError::Run(format!("serialize error event failed: {e}")))?
+                    .map_err(|e| {
+                        NatsGatewayError::Run(format!("serialize error event failed: {e}"))
+                    })?
                     .into();
                 if let Err(publish_err) = self.client.publish(reply, payload).await {
-                    return Err(NatsGatewayError::Run(format!("publish error event failed: {publish_err}")));
+                    return Err(NatsGatewayError::Run(format!(
+                        "publish error event failed: {publish_err}"
+                    )));
                 }
                 return Ok(());
             }
@@ -125,7 +129,7 @@ impl NatsGateway {
             resolved,
             reply,
             |run| AgUiProtocolEncoder::new(run.thread_id.clone(), run.run_id.clone()),
-            |msg| AGUIEvent::run_error(msg, None),
+            |msg| Event::run_error(msg, None),
         )
         .await
     }
@@ -167,21 +171,21 @@ impl NatsGateway {
             Err(err) => {
                 let event = UIStreamEvent::error(err.to_string());
                 let payload = serde_json::to_vec(&event)
-                    .map_err(|e| NatsGatewayError::Run(format!("serialize error event failed: {e}")))?
+                    .map_err(|e| {
+                        NatsGatewayError::Run(format!("serialize error event failed: {e}"))
+                    })?
                     .into();
                 if let Err(publish_err) = self.client.publish(reply, payload).await {
-                    return Err(NatsGatewayError::Run(format!("publish error event failed: {publish_err}")));
+                    return Err(NatsGatewayError::Run(format!(
+                        "publish error event failed: {publish_err}"
+                    )));
                 }
                 return Ok(());
             }
         };
         let run_request = AiSdkV6InputAdapter::to_run_request(
             req.agent_id,
-            AiSdkV6RunRequest {
-                thread_id: req.thread_id,
-                input: req.input,
-                run_id: req.run_id,
-            },
+            AiSdkV6RunRequest::from_thread_input(req.thread_id, req.input, req.run_id),
         );
         self.run_and_publish(
             run_request,
@@ -214,10 +218,14 @@ impl NatsGateway {
                 Err(err) => {
                     let event = build_error_event(err.to_string());
                     let payload = serde_json::to_vec(&event)
-                        .map_err(|e| NatsGatewayError::Run(format!("serialize error event failed: {e}")))?
+                        .map_err(|e| {
+                            NatsGatewayError::Run(format!("serialize error event failed: {e}"))
+                        })?
                         .into();
                     if let Err(publish_err) = self.client.publish(reply, payload).await {
-                        return Err(NatsGatewayError::Run(format!("publish error event failed: {publish_err}")));
+                        return Err(NatsGatewayError::Run(format!(
+                            "publish error event failed: {publish_err}"
+                        )));
                     }
                     return Ok(());
                 }

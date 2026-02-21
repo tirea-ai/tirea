@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tirea_agentos::contracts::thread::Role as ThreadRole;
 use tirea_agentos::contracts::thread::Thread as ConversationAgentState;
 use tirea_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_agentos::contracts::InteractionResponse;
@@ -16,7 +17,7 @@ use tirea_agentos::extensions::reminder::SystemReminder;
 use tirea_agentos::runtime::activity::ActivityHub;
 use tirea_agentos::runtime::loop_runner::AgentLoopError;
 use tirea_contract::testing::TestFixture;
-use tirea_protocol_ag_ui::{interaction_to_ag_ui_events, MessageRole, ToolExecutionLocation};
+use tirea_protocol_ag_ui::{interaction_to_ag_ui_events, Role, ToolExecutionLocation};
 use tirea_state::State;
 use tirea_state::StateManager;
 
@@ -76,7 +77,9 @@ impl Tool for IncrementTool {
 
         let counter = ctx.state::<CounterState>(path);
         let current = counter.value().unwrap_or(0);
-        counter.set_value(current + 1);
+        counter
+            .set_value(current + 1)
+            .expect("state mutation should succeed");
 
         Ok(ToolResult::success(
             "increment",
@@ -104,8 +107,12 @@ impl Tool for AddTaskTool {
 
         let tasks = ctx.state::<TaskState>("tasks");
         let current_count = tasks.count().unwrap_or(0);
-        tasks.items_push(item);
-        tasks.set_count(current_count + 1);
+        tasks
+            .items_push(item)
+            .expect("state mutation should succeed");
+        tasks
+            .set_count(current_count + 1)
+            .expect("state mutation should succeed");
 
         Ok(ToolResult::success(
             "add_task",
@@ -132,8 +139,12 @@ impl Tool for UpdateCallStateTool {
         // Use call_state() for per-call state
         let call_state = ctx.call_state::<CounterState>();
         let step = call_state.value().unwrap_or(0);
-        call_state.set_value(step + 1);
-        call_state.set_label(label);
+        call_state
+            .set_value(step + 1)
+            .expect("state mutation should succeed");
+        call_state
+            .set_label(label)
+            .expect("state mutation should succeed");
 
         Ok(ToolResult::success(
             "update_call",
@@ -169,7 +180,9 @@ impl ContextProvider for CounterContextProvider {
         let counter = ctx.state::<CounterState>("counter");
 
         // Provider can also modify state
-        counter.set_label("context_provided");
+        counter
+            .set_label("context_provided")
+            .expect("state mutation should succeed");
 
         if let Ok(value) = counter.value() {
             if value > 10 {
@@ -645,7 +658,7 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use tirea_agentos::contracts::runtime::StreamResult;
 use tirea_agentos::contracts::storage::{AgentStateReader, AgentStateWriter};
-use tirea_agentos::contracts::thread::{Message, Role};
+use tirea_agentos::contracts::thread::Message;
 use tirea_agentos::runtime::loop_runner::{execute_tools_with_plugins, tool_map, AgentConfig};
 use tirea_state::{path, Op, Patch, TrackedPatch};
 use tirea_store_adapters::{FileStore, MemoryStore};
@@ -865,9 +878,9 @@ async fn test_session_message_types() {
         .with_message(Message::tool("call_1", "Tool result"));
 
     assert_eq!(thread.messages.len(), 3);
-    assert_eq!(thread.messages[0].role, Role::User);
-    assert_eq!(thread.messages[1].role, Role::Assistant);
-    assert_eq!(thread.messages[2].role, Role::Tool);
+    assert_eq!(thread.messages[0].role, ThreadRole::User);
+    assert_eq!(thread.messages[1].role, ThreadRole::Assistant);
+    assert_eq!(thread.messages[2].role, ThreadRole::Tool);
 }
 
 #[tokio::test]
@@ -983,7 +996,9 @@ async fn test_concurrent_tool_execution_stress() {
             let path = format!("counters.c{}", i % 10);
             let counter = ctx.state::<CounterState>(&path);
             let current = counter.value().unwrap_or(0);
-            counter.set_value(current + 1);
+            counter
+                .set_value(current + 1)
+                .expect("state mutation should succeed");
 
             let patch = ctx.take_patch();
             manager.commit(patch).await
@@ -1392,8 +1407,12 @@ async fn test_patch_conflict_same_field() {
     let counter2 = ctx2.state::<CounterState>("");
 
     // Both increment from 0
-    counter1.set_value(1);
-    counter2.set_value(1);
+    counter1
+        .set_value(1)
+        .expect("state mutation should succeed");
+    counter2
+        .set_value(1)
+        .expect("state mutation should succeed");
 
     // First commit succeeds
     let patch1 = ctx1.take_patch();
@@ -1427,11 +1446,11 @@ async fn test_patch_conflict_different_fields() {
     // Modify different fields
     {
         let ops = &ctx1.state::<CounterState>("field_a");
-        ops.set_value(10);
+        ops.set_value(10).expect("state mutation should succeed");
     }
     {
         let ops = &ctx2.state::<CounterState>("field_b");
-        ops.set_value(20);
+        ops.set_value(20).expect("state mutation should succeed");
     }
 
     // Both commits succeed
@@ -1462,11 +1481,15 @@ async fn test_patch_conflict_array_operations() {
     let tasks1 = ctx1.state::<TaskState>("tasks");
     let tasks2 = ctx2.state::<TaskState>("tasks");
 
-    tasks1.items_push("item_a");
-    tasks1.set_count(1);
+    tasks1
+        .items_push("item_a")
+        .expect("state mutation should succeed");
+    tasks1.set_count(1).expect("state mutation should succeed");
 
-    tasks2.items_push("item_b");
-    tasks2.set_count(1);
+    tasks2
+        .items_push("item_b")
+        .expect("state mutation should succeed");
+    tasks2.set_count(1).expect("state mutation should succeed");
 
     // Apply both
     manager.commit(ctx1.take_patch()).await.unwrap();
@@ -1526,7 +1549,7 @@ impl Tool for SlowTool {
         tokio::time::sleep(tokio::time::Duration::from_millis(self.delay_ms)).await;
 
         let counter = ctx.state::<CounterState>("counter");
-        counter.set_value(1);
+        counter.set_value(1).expect("state mutation should succeed");
 
         Ok(ToolResult::success("slow_tool", json!({"completed": true})))
     }
@@ -1784,7 +1807,7 @@ impl Tool for NetworkErrorTool {
             )))
         } else {
             let counter = ctx.state::<CounterState>("counter");
-            counter.set_value(1);
+            counter.set_value(1).expect("state mutation should succeed");
             Ok(ToolResult::success(
                 "network_tool",
                 json!({"success": true}),
@@ -2313,8 +2336,12 @@ async fn test_activity_context_emits_snapshot_on_update() {
     let activity = ctx.activity("stream_1", "progress");
 
     let progress = activity.state::<ProgressState>("");
-    progress.set_progress(0.25);
-    progress.set_status("running");
+    progress
+        .set_progress(0.25)
+        .expect("state mutation should succeed");
+    progress
+        .set_status("running")
+        .expect("state mutation should succeed");
 
     let first = rx.recv().await.expect("first activity event");
     let second = rx.recv().await.expect("second activity event");
@@ -2364,7 +2391,9 @@ async fn test_activity_context_snapshot_reused_across_contexts() {
     );
     let activity = ctx.activity("stream_2", "progress");
     let progress = activity.state::<ProgressState>("");
-    progress.set_progress(0.9);
+    progress
+        .set_progress(0.9)
+        .expect("state mutation should succeed");
 
     let ctx2 = ToolCallContext::new(
         &fix.doc,
@@ -2403,10 +2432,14 @@ async fn test_activity_context_multiple_streams_emit_separately() {
     let activity_b = ctx.activity("stream_b", "progress");
 
     let state_a = activity_a.state::<ProgressState>("");
-    state_a.set_progress(0.1);
+    state_a
+        .set_progress(0.1)
+        .expect("state mutation should succeed");
 
     let state_b = activity_b.state::<ProgressState>("");
-    state_b.set_progress(0.9);
+    state_b
+        .set_progress(0.9)
+        .expect("state mutation should succeed");
 
     let first = rx.recv().await.expect("first event");
     let second = rx.recv().await.expect("second event");
@@ -2431,18 +2464,18 @@ async fn test_activity_context_multiple_streams_emit_separately() {
 fn test_message_role_coverage() {
     // Test all Role variants through Message creation
     let user_msg = Message::user("User content");
-    assert_eq!(user_msg.role, Role::User);
+    assert_eq!(user_msg.role, ThreadRole::User);
     assert!(user_msg.tool_calls.is_none());
     assert!(user_msg.tool_call_id.is_none());
 
     let assistant_msg = Message::assistant("Assistant content");
-    assert_eq!(assistant_msg.role, Role::Assistant);
+    assert_eq!(assistant_msg.role, ThreadRole::Assistant);
 
     let system_msg = Message::system("System prompt");
-    assert_eq!(system_msg.role, Role::System);
+    assert_eq!(system_msg.role, ThreadRole::System);
 
     let tool_msg = Message::tool("call_123", "Tool result");
-    assert_eq!(tool_msg.role, Role::Tool);
+    assert_eq!(tool_msg.role, ThreadRole::Tool);
     assert_eq!(tool_msg.tool_call_id, Some("call_123".to_string()));
 }
 
@@ -2566,7 +2599,9 @@ impl Tool for NestedStateTool {
         // Modify deeply nested state
         let nested = ctx.state::<NestedState>("deeply.nested");
         let current = nested.value().unwrap_or(0);
-        nested.set_value(current + 10);
+        nested
+            .set_value(current + 10)
+            .expect("state mutation should succeed");
 
         Ok(ToolResult::success(
             "nested_state",
@@ -3315,7 +3350,7 @@ async fn test_e2e_tool_failure_handling() {
 
     // Tool response should contain error
     let last_msg = thread.messages.last().unwrap();
-    assert_eq!(last_msg.role, Role::Tool);
+    assert_eq!(last_msg.role, ThreadRole::Tool);
     assert!(last_msg.content.contains("error") || last_msg.content.contains("not found"));
 }
 
@@ -3758,7 +3793,7 @@ async fn test_e2e_conditional_context_provider() {
 
             if value < 0 {
                 // Auto-fix negative values
-                counter.set_value(0);
+                counter.set_value(0).expect("state mutation should succeed");
                 vec!["Warning: Counter was negative, reset to 0".to_string()]
             } else if value > 100 {
                 vec![format!("Note: Counter is very high ({})", value)]
@@ -3949,7 +3984,7 @@ async fn test_e2e_pending_tool_in_session_flow() {
 
     // Check tool response contains pending status
     let tool_msg = thread.messages.last().unwrap();
-    assert_eq!(tool_msg.role, Role::Tool);
+    assert_eq!(tool_msg.role, ThreadRole::Tool);
     assert!(tool_msg.content.contains("pending") || tool_msg.content.contains("confirmation"));
 }
 
@@ -4416,7 +4451,7 @@ async fn test_storage_large_state() {
 fn test_message_empty_content() {
     let msg = Message::user("");
     assert_eq!(msg.content, "");
-    assert_eq!(msg.role, Role::User);
+    assert_eq!(msg.role, ThreadRole::User);
 }
 
 #[test]
@@ -4471,12 +4506,12 @@ fn test_session_with_all_message_types() {
     assert_eq!(thread.message_count(), 5);
 
     // Verify each type
-    assert_eq!(thread.messages[0].role, Role::System);
-    assert_eq!(thread.messages[1].role, Role::User);
-    assert_eq!(thread.messages[2].role, Role::Assistant);
-    assert_eq!(thread.messages[3].role, Role::Assistant);
+    assert_eq!(thread.messages[0].role, ThreadRole::System);
+    assert_eq!(thread.messages[1].role, ThreadRole::User);
+    assert_eq!(thread.messages[2].role, ThreadRole::Assistant);
+    assert_eq!(thread.messages[3].role, ThreadRole::Assistant);
     assert!(thread.messages[3].tool_calls.is_some());
-    assert_eq!(thread.messages[4].role, Role::Tool);
+    assert_eq!(thread.messages[4].role, ThreadRole::Tool);
     assert_eq!(thread.messages[4].tool_call_id, Some("call_1".to_string()));
 }
 
@@ -4521,7 +4556,7 @@ async fn test_e2e_system_prompt_in_session() {
         .unwrap();
 
     // System prompt should be first message
-    assert_eq!(loaded.messages[0].role, Role::System);
+    assert_eq!(loaded.messages[0].role, ThreadRole::System);
     assert!(loaded.messages[0].content.contains("calculator"));
 }
 
@@ -4746,7 +4781,7 @@ fn test_stream_collector_tool_chunk_with_empty_string_arguments() {
 
 use tirea_agentos::contracts::AgentEvent;
 use tirea_agentos::contracts::Interaction;
-use tirea_protocol_ag_ui::{AGUIContext, AGUIEvent};
+use tirea_protocol_ag_ui::{AgUiEventContext, Event};
 
 /// Test complete scenario: Permission confirmation via Interaction → AG-UI
 #[test]
@@ -4768,7 +4803,7 @@ fn test_scenario_permission_confirmation_to_ag_ui() {
     };
 
     // 3. Convert to AG-UI events
-    let mut ctx = AGUIContext::new("thread_123".into(), "run_456".into());
+    let mut ctx = AgUiEventContext::new("thread_123".into(), "run_456".into());
     let ag_ui_events = ctx.on_agent_event(&event);
 
     // 4. Pending no longer emits tool call events (communicated via STATE_SNAPSHOT)
@@ -4806,14 +4841,14 @@ fn test_scenario_custom_frontend_action_to_ag_ui() {
     assert_eq!(ag_ui_events.len(), 3);
 
     match &ag_ui_events[0] {
-        AGUIEvent::ToolCallStart { tool_call_name, .. } => {
+        Event::ToolCallStart { tool_call_name, .. } => {
             assert_eq!(tool_call_name, "file_picker"); // Custom action name
         }
         _ => panic!("Expected ToolCallStart"),
     }
 
     match &ag_ui_events[1] {
-        AGUIEvent::ToolCallArgs { delta, .. } => {
+        Event::ToolCallArgs { delta, .. } => {
             let args: Value = serde_json::from_str(delta).unwrap();
             // Verify response_schema is included for client validation
             assert!(args["response_schema"].is_object());
@@ -4828,7 +4863,7 @@ fn test_scenario_custom_frontend_action_to_ag_ui() {
 /// Test scenario: Text streaming interrupted by pending interaction
 #[test]
 fn test_scenario_text_interrupted_by_interaction() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     // 1. Start text streaming
     let text_event = AgentEvent::TextDelta {
@@ -4837,7 +4872,7 @@ fn test_scenario_text_interrupted_by_interaction() {
     let events1 = ctx.on_agent_event(&text_event);
     assert!(events1
         .iter()
-        .any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+        .any(|e| matches!(e, Event::TextMessageStart { .. })));
 
     // 2. More text
     let text_event2 = AgentEvent::TextDelta {
@@ -4846,7 +4881,7 @@ fn test_scenario_text_interrupted_by_interaction() {
     let events2 = ctx.on_agent_event(&text_event2);
     assert!(events2
         .iter()
-        .any(|e| matches!(e, AGUIEvent::TextMessageContent { .. })));
+        .any(|e| matches!(e, Event::TextMessageContent { .. })));
 
     // 3. Interaction interrupts (e.g., permission needed)
     let interaction =
@@ -4857,7 +4892,7 @@ fn test_scenario_text_interrupted_by_interaction() {
     // Should end text stream (pending no longer emits tool call events)
     assert!(events3.len() >= 1, "Should have TextMessageEnd");
     assert!(
-        matches!(events3[0], AGUIEvent::TextMessageEnd { .. }),
+        matches!(events3[0], Event::TextMessageEnd { .. }),
         "First event should be TextMessageEnd"
     );
 }
@@ -4883,7 +4918,7 @@ fn test_scenario_various_interaction_types() {
         assert_eq!(events.len(), 3);
 
         match &events[0] {
-            AGUIEvent::ToolCallStart {
+            Event::ToolCallStart {
                 tool_call_id,
                 tool_call_name,
                 ..
@@ -4904,9 +4939,9 @@ use std::collections::HashSet;
 use tirea_agentos::contracts::plugin::phase::{Phase, StepContext, ToolContext};
 use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::thread::ToolCall;
-use tirea_protocol_ag_ui::{AGUIToolDef, RunAgentRequest};
+use tirea_protocol_ag_ui::RunAgentInput;
 
-fn interaction_plugin_from_request(request: &RunAgentRequest) -> InteractionPlugin {
+fn interaction_plugin_from_request(request: &RunAgentInput) -> InteractionPlugin {
     InteractionPlugin::with_responses(
         request.approved_interaction_ids(),
         request.denied_interaction_ids(),
@@ -4956,7 +4991,7 @@ impl AgentPlugin for TestFrontendToolPlugin {
     }
 }
 
-fn frontend_plugin_from_request(request: &RunAgentRequest) -> TestFrontendToolPlugin {
+fn frontend_plugin_from_request(request: &RunAgentInput) -> TestFrontendToolPlugin {
     TestFrontendToolPlugin::new(
         request
             .frontend_tools()
@@ -4972,14 +5007,14 @@ async fn test_scenario_frontend_tool_request_to_agui() {
     let doc = json!({});
     let _fix = TestFixture::new_with_state(doc);
     // 1. Client sends request with mixed frontend/backend tools
-    let request = RunAgentRequest {
+    let request = RunAgentInput {
         tools: vec![
-            AGUIToolDef::backend("search", "Search the web"),
-            AGUIToolDef::backend("read_file", "Read a file"),
-            AGUIToolDef::frontend("copyToClipboard", "Copy text to clipboard"),
-            AGUIToolDef::frontend("showNotification", "Show a notification"),
+            tirea_protocol_ag_ui::Tool::backend("search", "Search the web"),
+            tirea_protocol_ag_ui::Tool::backend("read_file", "Read a file"),
+            tirea_protocol_ag_ui::Tool::frontend("copyToClipboard", "Copy text to clipboard"),
+            tirea_protocol_ag_ui::Tool::frontend("showNotification", "Show a notification"),
         ],
-        ..RunAgentRequest::new("thread_1".to_string(), "run_1".to_string())
+        ..RunAgentInput::new("thread_1".to_string(), "run_1".to_string())
     };
 
     // 2. Frontend strategy plugin is created from request
@@ -5022,7 +5057,7 @@ async fn test_scenario_frontend_tool_request_to_agui() {
     assert_eq!(events.len(), 3);
 
     match &events[0] {
-        AGUIEvent::ToolCallStart {
+        Event::ToolCallStart {
             tool_call_id,
             tool_call_name,
             ..
@@ -5034,7 +5069,7 @@ async fn test_scenario_frontend_tool_request_to_agui() {
     }
 
     match &events[1] {
-        AGUIEvent::ToolCallArgs { delta, .. } => {
+        Event::ToolCallArgs { delta, .. } => {
             let args: Value = serde_json::from_str(delta).unwrap();
             assert_eq!(args["parameters"]["text"], "Hello, World!");
             assert_eq!(args["parameters"]["format"], "plain");
@@ -5048,13 +5083,13 @@ async fn test_scenario_frontend_tool_request_to_agui() {
 async fn test_scenario_multiple_frontend_tools_sequence() {
     let doc = json!({});
     let _fix = TestFixture::new_with_state(doc);
-    let request = RunAgentRequest {
+    let request = RunAgentInput {
         tools: vec![
-            AGUIToolDef::frontend("copyToClipboard", "Copy"),
-            AGUIToolDef::frontend("showNotification", "Notify"),
-            AGUIToolDef::frontend("openDialog", "Dialog"),
+            tirea_protocol_ag_ui::Tool::frontend("copyToClipboard", "Copy"),
+            tirea_protocol_ag_ui::Tool::frontend("showNotification", "Notify"),
+            tirea_protocol_ag_ui::Tool::frontend("openDialog", "Dialog"),
         ],
-        ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        ..RunAgentInput::new("t1".to_string(), "r1".to_string())
     };
 
     let plugin = frontend_plugin_from_request(&request);
@@ -5312,7 +5347,7 @@ fn test_scenario_frontend_tool_wire_format() {
         let json_str = serde_json::to_string(event).expect("Event should serialize");
 
         // Verify it can be deserialized back
-        let _: AGUIEvent = serde_json::from_str(&json_str).expect("Event should deserialize");
+        let _: Event = serde_json::from_str(&json_str).expect("Event should deserialize");
 
         // Verify no null/undefined sneaking in for required fields
         let json_val: Value = serde_json::from_str(&json_str).unwrap();
@@ -5324,7 +5359,7 @@ fn test_scenario_frontend_tool_wire_format() {
 
     // Check ToolCallArgs specifically - the main payload
     match &events[1] {
-        AGUIEvent::ToolCallArgs { delta, .. } => {
+        Event::ToolCallArgs { delta, .. } => {
             let args: Value = serde_json::from_str(delta).unwrap();
 
             // Verify structure matches what client expects
@@ -5375,7 +5410,7 @@ async fn test_scenario_frontend_tool_full_event_pipeline() {
     let agent_event = AgentEvent::Pending { interaction };
 
     // 3. Convert to AG-UI events with context
-    let mut agui_ctx = AGUIContext::new("thread_123".into(), "run_456".into());
+    let mut agui_ctx = AgUiEventContext::new("thread_123".into(), "run_456".into());
     let ag_ui_events = agui_ctx.on_agent_event(&agent_event);
 
     // 4. Pending no longer emits tool call events (communicated via STATE_SNAPSHOT).
@@ -5418,13 +5453,13 @@ async fn test_scenario_backend_tool_passthrough() {
 /// Test scenario: Request with no frontend tools creates empty plugin
 #[test]
 fn test_scenario_no_frontend_tools_in_request() {
-    let request = RunAgentRequest {
+    let request = RunAgentInput {
         tools: vec![
-            AGUIToolDef::backend("search", "Search"),
-            AGUIToolDef::backend("read", "Read file"),
-            AGUIToolDef::backend("write", "Write file"),
+            tirea_protocol_ag_ui::Tool::backend("search", "Search"),
+            tirea_protocol_ag_ui::Tool::backend("read", "Read file"),
+            tirea_protocol_ag_ui::Tool::backend("write", "Write file"),
         ],
-        ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        ..RunAgentInput::new("t1".to_string(), "r1".to_string())
     };
 
     let plugin = frontend_plugin_from_request(&request);
@@ -5439,7 +5474,7 @@ fn test_scenario_no_frontend_tools_in_request() {
 /// Test scenario: Empty request creates empty plugin
 #[test]
 fn test_scenario_empty_request() {
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string());
+    let request = RunAgentInput::new("t1".to_string(), "r1".to_string());
 
     let plugin = frontend_plugin_from_request(&request);
 
@@ -5453,7 +5488,6 @@ fn test_scenario_empty_request() {
 // ============================================================================
 
 use tirea_agentos::extensions::permission::PermissionPlugin;
-use tirea_protocol_ag_ui::AGUIMessage;
 
 /// Test scenario: Complete permission approval flow
 /// Agent → Pending → AG-UI Events → Client Approves → Resume
@@ -5494,8 +5528,8 @@ async fn test_scenario_permission_approved_complete_flow() {
 
     // Phase 3: Client receives events and approves
     // (Simulated by creating a new request with tool response)
-    let client_response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::tool("true", &interaction.id));
+    let client_response_request = RunAgentInput::new("t1".to_string(), "r1".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::tool("true", &interaction.id));
 
     // Phase 4: Check approval
     assert!(client_response_request
@@ -5545,8 +5579,10 @@ async fn test_scenario_permission_denied_complete_flow() {
         .unwrap();
 
     // Phase 2-3: Client denies
-    let client_response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::tool("false", &interaction.id));
+    let client_response_request =
+        RunAgentInput::new("t1".to_string(), "r1".to_string()).with_message(
+            tirea_protocol_ag_ui::Message::tool("false", &interaction.id),
+        );
 
     // Phase 4: Check denial
     assert!(client_response_request
@@ -5570,12 +5606,12 @@ async fn test_scenario_permission_denied_complete_flow() {
 #[tokio::test]
 async fn test_scenario_frontend_tool_execution_complete_flow() {
     // Phase 1: Agent calls frontend tool
-    let request = RunAgentRequest {
-        tools: vec![AGUIToolDef::frontend(
+    let request = RunAgentInput {
+        tools: vec![tirea_protocol_ag_ui::Tool::frontend(
             "copyToClipboard",
             "Copy to clipboard",
         )],
-        ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        ..RunAgentInput::new("t1".to_string(), "r1".to_string())
     };
 
     let plugin = frontend_plugin_from_request(&request);
@@ -5607,8 +5643,8 @@ async fn test_scenario_frontend_tool_execution_complete_flow() {
     assert_eq!(ag_ui_events.len(), 3);
 
     // Phase 3: Client executes and returns result
-    let client_response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::tool(
+    let client_response_request = RunAgentInput::new("t1".to_string(), "r1".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::tool(
             r#"{"success":true,"bytes_copied":6}"#,
             &interaction.id,
         ));
@@ -5663,9 +5699,15 @@ async fn test_scenario_multiple_interactions_sequence() {
         .unwrap();
 
     // Client responds to both
-    let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::tool("true", &interaction1.id))
-        .with_message(AGUIMessage::tool("false", &interaction2.id));
+    let response_request = RunAgentInput::new("t1".to_string(), "r1".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::tool(
+            "true",
+            &interaction1.id,
+        ))
+        .with_message(tirea_protocol_ag_ui::Message::tool(
+            "false",
+            &interaction2.id,
+        ));
 
     // Verify responses
     assert!(response_request
@@ -5684,8 +5726,8 @@ async fn test_scenario_multiple_interactions_sequence() {
 /// Test scenario: Frontend tool with complex result
 #[test]
 fn test_scenario_frontend_tool_complex_result() {
-    let client_response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::tool(
+    let client_response_request = RunAgentInput::new("t1".to_string(), "r1".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::tool(
             r#"{
                 "success": true,
                 "selected_files": [
@@ -5722,11 +5764,12 @@ fn test_scenario_frontend_tool_complex_result() {
 #[test]
 fn test_scenario_permission_custom_response_format() {
     // Using object format with reason
-    let request1 =
-        RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_message(AGUIMessage::tool(
+    let request1 = RunAgentInput::new("t1".to_string(), "r1".to_string()).with_message(
+        tirea_protocol_ag_ui::Message::tool(
             r#"{"approved":true,"reason":"User trusts this operation"}"#,
             "perm_1",
-        ));
+        ),
+    );
 
     assert!(request1
         .approved_interaction_ids()
@@ -5734,8 +5777,11 @@ fn test_scenario_permission_custom_response_format() {
         .any(|id| id == "perm_1"));
 
     // Using object format with denied flag
-    let request2 = RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_message(
-        AGUIMessage::tool(r#"{"denied":true,"reason":"User is cautious"}"#, "perm_2"),
+    let request2 = RunAgentInput::new("t1".to_string(), "r1".to_string()).with_message(
+        tirea_protocol_ag_ui::Message::tool(
+            r#"{"denied":true,"reason":"User is cautious"}"#,
+            "perm_2",
+        ),
     );
 
     assert!(request2
@@ -5744,8 +5790,9 @@ fn test_scenario_permission_custom_response_format() {
         .any(|id| id == "perm_2"));
 
     // Using allowed flag
-    let request3 = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::tool(r#"{"allowed":true}"#, "perm_3"));
+    let request3 = RunAgentInput::new("t1".to_string(), "r1".to_string()).with_message(
+        tirea_protocol_ag_ui::Message::tool(r#"{"allowed":true}"#, "perm_3"),
+    );
 
     assert!(request3
         .approved_interaction_ids()
@@ -5757,8 +5804,9 @@ fn test_scenario_permission_custom_response_format() {
 #[test]
 fn test_scenario_input_interaction_response() {
     // User provides text input
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::tool("John Doe", "input_name_1"));
+    let request = RunAgentInput::new("t1".to_string(), "r1".to_string()).with_message(
+        tirea_protocol_ag_ui::Message::tool("John Doe", "input_name_1"),
+    );
 
     let response = request
         .interaction_responses()
@@ -5775,11 +5823,12 @@ fn test_scenario_input_interaction_response() {
 /// Test scenario: Selection interaction response
 #[test]
 fn test_scenario_select_interaction_response() {
-    let request =
-        RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_message(AGUIMessage::tool(
+    let request = RunAgentInput::new("t1".to_string(), "r1".to_string()).with_message(
+        tirea_protocol_ag_ui::Message::tool(
             r#"{"selected_index":2,"selected_value":"Option C"}"#,
             "select_option_1",
-        ));
+        ),
+    );
 
     let response = request
         .interaction_responses()
@@ -5794,13 +5843,15 @@ fn test_scenario_select_interaction_response() {
 #[test]
 fn test_scenario_mixed_messages_with_interaction_response() {
     // Real-world scenario: conversation + tool responses
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::user("Please write to the file"))
-        .with_message(AGUIMessage::assistant(
+    let request = RunAgentInput::new("t1".to_string(), "r1".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::user(
+            "Please write to the file",
+        ))
+        .with_message(tirea_protocol_ag_ui::Message::assistant(
             "I'll write to the file, but need permission",
         ))
-        .with_message(AGUIMessage::tool("true", "perm_write_1"))
-        .with_message(AGUIMessage::assistant("Done!"));
+        .with_message(tirea_protocol_ag_ui::Message::tool("true", "perm_write_1"))
+        .with_message(tirea_protocol_ag_ui::Message::assistant("Done!"));
 
     // Should find the tool response
     assert!(request
@@ -5911,8 +5962,8 @@ async fn test_scenario_e2e_permission_to_response_flow() {
     assert_eq!(interaction.action, "tool:PermissionConfirm");
 
     // Step 2: Client approves
-    let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::tool("true", &interaction.id));
+    let response_request = RunAgentInput::new("t1".to_string(), "r1".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::tool("true", &interaction.id));
     assert!(response_request
         .approved_interaction_ids()
         .iter()
@@ -5961,9 +6012,12 @@ async fn test_scenario_frontend_tool_with_response_plugin() {
     let thread = ConversationAgentState::new("test");
 
     // Setup: Frontend tool request
-    let request = RunAgentRequest {
-        tools: vec![AGUIToolDef::frontend("showDialog", "Show a dialog")],
-        ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
+    let request = RunAgentInput {
+        tools: vec![tirea_protocol_ag_ui::Tool::frontend(
+            "showDialog",
+            "Show a dialog",
+        )],
+        ..RunAgentInput::new("t1".to_string(), "r1".to_string())
     };
 
     // Step 1: InteractionPlugin creates pending for frontend tool
@@ -5989,8 +6043,11 @@ async fn test_scenario_frontend_tool_with_response_plugin() {
     assert_eq!(interaction.action, "tool:showDialog");
 
     // Step 2: Client executes and returns result
-    let response_request = RunAgentRequest::new("t1".to_string(), "r2".to_string()).with_message(
-        AGUIMessage::tool(r#"{"success":true,"user_clicked":"OK"}"#, &interaction.id),
+    let response_request = RunAgentInput::new("t1".to_string(), "r2".to_string()).with_message(
+        tirea_protocol_ag_ui::Message::tool(
+            r#"{"success":true,"user_clicked":"OK"}"#,
+            &interaction.id,
+        ),
     );
 
     // Step 3: On resume, InteractionPlugin processes the result
@@ -6009,7 +6066,7 @@ async fn test_scenario_frontend_tool_with_response_plugin() {
 /// Test scenario: AG-UI context state after pending interaction
 #[test]
 fn test_scenario_agui_context_state_after_pending() {
-    let mut ctx = AGUIContext::new("thread_1".into(), "run_1".into());
+    let mut ctx = AgUiEventContext::new("thread_1".into(), "run_1".into());
 
     // Start text streaming
     let text_event = AgentEvent::TextDelta {
@@ -6019,7 +6076,7 @@ fn test_scenario_agui_context_state_after_pending() {
     // First text delta should produce TextMessageStart
     assert!(events1
         .iter()
-        .any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+        .any(|e| matches!(e, Event::TextMessageStart { .. })));
 
     // More text
     let text_event2 = AgentEvent::TextDelta {
@@ -6029,10 +6086,10 @@ fn test_scenario_agui_context_state_after_pending() {
     // Second text delta should produce only TextMessageContent (not Start)
     assert!(events2
         .iter()
-        .any(|e| matches!(e, AGUIEvent::TextMessageContent { .. })));
+        .any(|e| matches!(e, Event::TextMessageContent { .. })));
     assert!(!events2
         .iter()
-        .any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+        .any(|e| matches!(e, Event::TextMessageStart { .. })));
 
     // Pending interaction arrives
     let interaction = Interaction::new("perm_1", "confirm").with_message("Allow?");
@@ -6042,7 +6099,7 @@ fn test_scenario_agui_context_state_after_pending() {
     // Should have TextMessageEnd only (pending no longer emits tool call events)
     assert!(pending_events.len() >= 1);
     assert!(
-        matches!(pending_events[0], AGUIEvent::TextMessageEnd { .. }),
+        matches!(pending_events[0], Event::TextMessageEnd { .. }),
         "First event should be TextMessageEnd to close the text stream"
     );
 
@@ -6055,7 +6112,7 @@ fn test_scenario_agui_context_state_after_pending() {
     // Should produce TextMessageStart again since previous stream was ended
     assert!(events3
         .iter()
-        .any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+        .any(|e| matches!(e, Event::TextMessageStart { .. })));
 }
 
 // ============================================================================
@@ -6066,28 +6123,28 @@ fn test_scenario_agui_context_state_after_pending() {
 #[test]
 fn test_agui_stream_event_sequence_run_started_first() {
     // Simulate stream events
-    let events: Vec<AGUIEvent> = vec![
-        AGUIEvent::run_started("t1", "r1", None),
-        AGUIEvent::text_message_start("msg_1"),
-        AGUIEvent::text_message_content("msg_1", "Hello"),
-        AGUIEvent::text_message_end("msg_1"),
-        AGUIEvent::run_finished("t1", "r1", None),
+    let events: Vec<Event> = vec![
+        Event::run_started("t1", "r1", None),
+        Event::text_message_start("msg_1"),
+        Event::text_message_content("msg_1", "Hello"),
+        Event::text_message_end("msg_1"),
+        Event::run_finished("t1", "r1", None),
     ];
 
     // First event must be RUN_STARTED
-    assert!(matches!(&events[0], AGUIEvent::RunStarted { .. }));
+    assert!(matches!(&events[0], Event::RunStarted { .. }));
 
     // Last event must be RUN_FINISHED
     assert!(matches!(
         &events[events.len() - 1],
-        AGUIEvent::RunFinished { .. }
+        Event::RunFinished { .. }
     ));
 }
 
 /// Test: Text interrupted by tool call - TEXT_MESSAGE_END before TOOL_CALL_START
 #[test]
 fn test_agui_stream_text_interrupted_by_tool_call() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     // Start text streaming
     let text1 = AgentEvent::TextDelta {
@@ -6110,12 +6167,12 @@ fn test_agui_stream_text_interrupted_by_tool_call() {
     // Should have TEXT_MESSAGE_END followed by TOOL_CALL_START
     assert!(tool_events.len() >= 2);
     assert!(
-        matches!(&tool_events[0], AGUIEvent::TextMessageEnd { .. }),
+        matches!(&tool_events[0], Event::TextMessageEnd { .. }),
         "First event should be TextMessageEnd, got {:?}",
         tool_events[0]
     );
     assert!(
-        matches!(&tool_events[1], AGUIEvent::ToolCallStart { .. }),
+        matches!(&tool_events[1], Event::ToolCallStart { .. }),
         "Second event should be ToolCallStart, got {:?}",
         tool_events[1]
     );
@@ -6124,7 +6181,7 @@ fn test_agui_stream_text_interrupted_by_tool_call() {
 /// Test: Tool call complete sequence - START -> ARGS -> READY(END) -> DONE(RESULT)
 #[test]
 fn test_agui_stream_tool_call_sequence() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     // Collect all events for a tool call
     let start = AgentEvent::ToolCallStart {
@@ -6159,31 +6216,31 @@ fn test_agui_stream_tool_call_sequence() {
     // Verify sequence: Start events contain TOOL_CALL_START
     assert!(start_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
+        .any(|e| matches!(e, Event::ToolCallStart { .. })));
 
     // Args events contain TOOL_CALL_ARGS
     assert!(args_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::ToolCallArgs { .. })));
+        .any(|e| matches!(e, Event::ToolCallArgs { .. })));
 
     // Ready events contain TOOL_CALL_END (end of argument streaming)
     assert!(ready_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::ToolCallEnd { .. })));
+        .any(|e| matches!(e, Event::ToolCallEnd { .. })));
 
     // Done events contain TOOL_CALL_RESULT
     assert!(done_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::ToolCallResult { .. })));
+        .any(|e| matches!(e, Event::ToolCallResult { .. })));
 }
 
 /// Test: Error event ends stream without RUN_FINISHED
 #[test]
 fn test_agui_stream_error_no_run_finished() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     // Start with RUN_STARTED (simulated)
-    let _started = AGUIEvent::run_started("t1", "r1", None);
+    let _started = Event::run_started("t1", "r1", None);
 
     // Error occurs
     let error = AgentEvent::Error {
@@ -6194,18 +6251,18 @@ fn test_agui_stream_error_no_run_finished() {
     // Should emit RUN_ERROR
     assert!(error_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::RunError { .. })));
+        .any(|e| matches!(e, Event::RunError { .. })));
 
     // Should NOT have RUN_FINISHED in the error events
     assert!(!error_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::RunFinished { .. })));
+        .any(|e| matches!(e, Event::RunFinished { .. })));
 }
 
 /// Test: Pending event doesn't emit RUN_FINISHED
 #[test]
 fn test_agui_stream_pending_no_run_finished() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     // Pending interaction
     let interaction = Interaction::new("perm_1", "confirm").with_message("Allow tool execution?");
@@ -6215,18 +6272,18 @@ fn test_agui_stream_pending_no_run_finished() {
     // Pending interactions no longer emit tool call events (communicated via STATE_SNAPSHOT)
     assert!(!pending_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
+        .any(|e| matches!(e, Event::ToolCallStart { .. })));
 
     // Should NOT have RUN_FINISHED
     assert!(!pending_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::RunFinished { .. })));
+        .any(|e| matches!(e, Event::RunFinished { .. })));
 }
 
 /// Test: SSE format validation
 #[test]
 fn test_agui_sse_format() {
-    let event = AGUIEvent::run_started("t1", "r1", None);
+    let event = Event::run_started("t1", "r1", None);
     let json = serde_json::to_string(&event).unwrap();
     let sse = format!("data: {}\n\n", json);
 
@@ -6240,19 +6297,19 @@ fn test_agui_sse_format() {
         .unwrap()
         .strip_suffix("\n\n")
         .unwrap();
-    let parsed: AGUIEvent = serde_json::from_str(json_part).unwrap();
-    assert!(matches!(parsed, AGUIEvent::RunStarted { .. }));
+    let parsed: Event = serde_json::from_str(json_part).unwrap();
+    assert!(matches!(parsed, Event::RunStarted { .. }));
 }
 
 /// Test: Multiple SSE events in sequence
 #[test]
 fn test_agui_sse_multiple_events() {
     let events = [
-        AGUIEvent::run_started("t1", "r1", None),
-        AGUIEvent::text_message_start("m1"),
-        AGUIEvent::text_message_content("m1", "Hello"),
-        AGUIEvent::text_message_end("m1"),
-        AGUIEvent::run_finished("t1", "r1", None),
+        Event::run_started("t1", "r1", None),
+        Event::text_message_start("m1"),
+        Event::text_message_content("m1", "Hello"),
+        Event::text_message_end("m1"),
+        Event::run_finished("t1", "r1", None),
     ];
 
     let mut sse_output = String::new();
@@ -6267,7 +6324,7 @@ fn test_agui_sse_multiple_events() {
 
     for (i, line) in lines.iter().enumerate() {
         let json = line.strip_prefix("data: ").unwrap();
-        let _: AGUIEvent =
+        let _: Event =
             serde_json::from_str(json).unwrap_or_else(|e| panic!("Failed to parse event {i}: {e}"));
     }
 }
@@ -6317,8 +6374,8 @@ async fn test_permission_flow_approval_e2e() {
     assert_eq!(ag_ui_events.len(), 3); // Start, Args, End
 
     // Phase 3: Client approves (simulated by creating response request)
-    let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::tool("true", &interaction.id));
+    let response_request = RunAgentInput::new("t1".to_string(), "r1".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::tool("true", &interaction.id));
 
     assert!(response_request
         .approved_interaction_ids()
@@ -6373,8 +6430,9 @@ async fn test_permission_flow_denial_e2e() {
         .unwrap();
 
     // Phase 2: Client denies
-    let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::tool("false", &interaction.id));
+    let response_request = RunAgentInput::new("t1".to_string(), "r1".to_string()).with_message(
+        tirea_protocol_ag_ui::Message::tool("false", &interaction.id),
+    );
 
     assert!(response_request
         .denied_interaction_ids()
@@ -6445,9 +6503,9 @@ async fn test_permission_flow_multiple_tools_mixed() {
         .unwrap();
 
     // Client responds: approve first, deny second
-    let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::tool("true", &int1.id))
-        .with_message(AGUIMessage::tool("false", &int2.id));
+    let response_request = RunAgentInput::new("t1".to_string(), "r1".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::tool("true", &int1.id))
+        .with_message(tirea_protocol_ag_ui::Message::tool("false", &int2.id));
 
     let response_plugin = interaction_plugin_from_request(&response_request);
 
@@ -6619,8 +6677,9 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
     };
 
     // Phase 2: Client denies
-    let deny_request =
-        RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::tool("false", &interaction.id));
+    let deny_request = RunAgentInput::new("t1", "r1").with_message(
+        tirea_protocol_ag_ui::Message::tool("false", &interaction.id),
+    );
     assert!(deny_request
         .denied_interaction_ids()
         .iter()
@@ -6727,8 +6786,8 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
     };
 
     // Phase 2: Client approves
-    let approve_request =
-        RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::tool("true", &interaction.id));
+    let approve_request = RunAgentInput::new("t1", "r1")
+        .with_message(tirea_protocol_ag_ui::Message::tool("true", &interaction.id));
     assert!(approve_request
         .approved_interaction_ids()
         .iter()
@@ -6792,12 +6851,12 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
 /// Test: Frontend tool creates pending interaction
 #[tokio::test]
 async fn test_frontend_tool_flow_creates_pending() {
-    let request = RunAgentRequest {
-        tools: vec![AGUIToolDef::frontend(
+    let request = RunAgentInput {
+        tools: vec![tirea_protocol_ag_ui::Tool::frontend(
             "copyToClipboard",
             "Copy to clipboard",
         )],
-        ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        ..RunAgentInput::new("t1".to_string(), "r1".to_string())
     };
 
     let plugin = frontend_plugin_from_request(&request);
@@ -6832,8 +6891,11 @@ async fn test_frontend_tool_flow_creates_pending() {
 #[test]
 fn test_frontend_tool_flow_result_from_client() {
     // Client returns result for frontend tool
-    let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_message(
-        AGUIMessage::tool(r#"{"success": true, "bytes_copied": 11}"#, "call_copy"),
+    let response_request = RunAgentInput::new("t1".to_string(), "r1".to_string()).with_message(
+        tirea_protocol_ag_ui::Message::tool(
+            r#"{"success": true, "bytes_copied": 11}"#,
+            "call_copy",
+        ),
     );
 
     let response = response_request
@@ -6848,12 +6910,12 @@ fn test_frontend_tool_flow_result_from_client() {
 /// Test: Mixed frontend and backend tools
 #[tokio::test]
 async fn test_frontend_tool_flow_mixed_with_backend() {
-    let request = RunAgentRequest {
+    let request = RunAgentInput {
         tools: vec![
-            AGUIToolDef::frontend("showDialog", "Show dialog"),
-            AGUIToolDef::backend("search", "Search files"),
+            tirea_protocol_ag_ui::Tool::frontend("showDialog", "Show dialog"),
+            tirea_protocol_ag_ui::Tool::backend("search", "Search files"),
         ],
-        ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        ..RunAgentInput::new("t1".to_string(), "r1".to_string())
     };
 
     let plugin = frontend_plugin_from_request(&request);
@@ -6905,8 +6967,8 @@ fn test_frontend_tool_flow_complex_result() {
         }
     });
 
-    let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_message(
-        AGUIMessage::tool(complex_result.to_string(), "file_picker_call"),
+    let response_request = RunAgentInput::new("t1".to_string(), "r1".to_string()).with_message(
+        tirea_protocol_ag_ui::Message::tool(complex_result.to_string(), "file_picker_call"),
     );
 
     let response = response_request
@@ -6933,7 +6995,7 @@ fn test_frontend_tool_flow_complex_result() {
 /// Test: State snapshot event conversion
 #[test]
 fn test_state_event_snapshot_conversion() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     let state = json!({
         "counter": 42,
@@ -6949,9 +7011,9 @@ fn test_state_event_snapshot_conversion() {
     assert!(!ag_events.is_empty());
     assert!(ag_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::StateSnapshot { .. })));
+        .any(|e| matches!(e, Event::StateSnapshot { .. })));
 
-    if let AGUIEvent::StateSnapshot { snapshot, .. } = &ag_events[0] {
+    if let Event::StateSnapshot { snapshot, .. } = &ag_events[0] {
         assert_eq!(snapshot["counter"], 42);
         assert_eq!(snapshot["user"]["name"], "Alice");
     }
@@ -6960,7 +7022,7 @@ fn test_state_event_snapshot_conversion() {
 /// Test: State delta event conversion
 #[test]
 fn test_state_event_delta_conversion() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     let delta = vec![
         json!({"op": "replace", "path": "/counter", "value": 43}),
@@ -6975,9 +7037,9 @@ fn test_state_event_delta_conversion() {
     assert!(!ag_events.is_empty());
     assert!(ag_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::StateDelta { .. })));
+        .any(|e| matches!(e, Event::StateDelta { .. })));
 
-    if let AGUIEvent::StateDelta { delta: d, .. } = &ag_events[0] {
+    if let Event::StateDelta { delta: d, .. } = &ag_events[0] {
         assert_eq!(d.len(), 2);
         assert_eq!(d[0]["op"], "replace");
         assert_eq!(d[1]["op"], "add");
@@ -6987,7 +7049,7 @@ fn test_state_event_delta_conversion() {
 /// Test: Messages snapshot event conversion
 #[test]
 fn test_state_event_messages_snapshot_conversion() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     let messages = vec![
         json!({"role": "user", "content": "Hello"}),
@@ -7002,9 +7064,9 @@ fn test_state_event_messages_snapshot_conversion() {
     assert!(!ag_events.is_empty());
     assert!(ag_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::MessagesSnapshot { .. })));
+        .any(|e| matches!(e, Event::MessagesSnapshot { .. })));
 
-    if let AGUIEvent::MessagesSnapshot { messages: m, .. } = &ag_events[0] {
+    if let Event::MessagesSnapshot { messages: m, .. } = &ag_events[0] {
         assert_eq!(m.len(), 2);
         assert_eq!(m[0]["role"], "user");
         assert_eq!(m[1]["role"], "assistant");
@@ -7018,7 +7080,7 @@ fn test_state_event_messages_snapshot_conversion() {
 /// Test: Tool execution failure produces correct events
 #[test]
 fn test_error_flow_tool_execution_failure() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     let result = ToolResult::error("read_file", "File not found: /nonexistent");
 
@@ -7034,12 +7096,12 @@ fn test_error_flow_tool_execution_failure() {
     // Should have TOOL_CALL_RESULT with error
     assert!(ag_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::ToolCallResult { .. })));
+        .any(|e| matches!(e, Event::ToolCallResult { .. })));
 
     // Result should contain error
-    if let Some(AGUIEvent::ToolCallResult { content, .. }) = ag_events
+    if let Some(Event::ToolCallResult { content, .. }) = ag_events
         .iter()
-        .find(|e| matches!(e, AGUIEvent::ToolCallResult { .. }))
+        .find(|e| matches!(e, Event::ToolCallResult { .. }))
     {
         assert!(content.contains("error") || content.contains("File not found"));
     }
@@ -7049,22 +7111,22 @@ fn test_error_flow_tool_execution_failure() {
 #[test]
 fn test_error_flow_invalid_request() {
     // Empty thread_id
-    let invalid1 = RunAgentRequest::new("".to_string(), "r1".to_string());
+    let invalid1 = RunAgentInput::new("".to_string(), "r1".to_string());
     assert!(invalid1.validate().is_err());
 
     // Empty run_id
-    let invalid2 = RunAgentRequest::new("t1".to_string(), "".to_string());
+    let invalid2 = RunAgentInput::new("t1".to_string(), "".to_string());
     assert!(invalid2.validate().is_err());
 
     // Valid request
-    let valid = RunAgentRequest::new("t1".to_string(), "r1".to_string());
+    let valid = RunAgentInput::new("t1".to_string(), "r1".to_string());
     assert!(valid.validate().is_ok());
 }
 
 /// Test: Cancelled run finish event
 #[test]
 fn test_error_flow_run_finish_cancelled() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     let event = AgentEvent::RunFinish {
         thread_id: "t1".into(),
@@ -7075,7 +7137,7 @@ fn test_error_flow_run_finish_cancelled() {
     let ag_events = ctx.on_agent_event(&event);
 
     assert_eq!(ag_events.len(), 1);
-    assert!(matches!(ag_events[0], AGUIEvent::RunError { .. }));
+    assert!(matches!(ag_events[0], Event::RunError { .. }));
 }
 
 // ============================================================================
@@ -7089,8 +7151,8 @@ async fn test_resume_flow_with_approval() {
     let interaction_id = "call_x";
 
     // New request includes approval
-    let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
-        .with_message(AGUIMessage::tool("true", interaction_id));
+    let request = RunAgentInput::new("t1".to_string(), "r2".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::tool("true", interaction_id));
 
     let plugin = interaction_plugin_from_request(&request);
     assert!(plugin.has_responses());
@@ -7113,8 +7175,8 @@ async fn test_resume_flow_with_approval() {
 async fn test_resume_flow_with_denial() {
     let interaction_id = "call_dangerous";
 
-    let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
-        .with_message(AGUIMessage::tool("no", interaction_id));
+    let request = RunAgentInput::new("t1".to_string(), "r2".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::tool("no", interaction_id));
 
     let plugin = interaction_plugin_from_request(&request);
     assert!(plugin.is_denied(interaction_id));
@@ -7138,10 +7200,10 @@ async fn test_resume_flow_with_denial() {
 #[tokio::test]
 async fn test_resume_flow_multiple_responses() {
     // Previous run had 3 pending interactions
-    let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
-        .with_message(AGUIMessage::tool("true", "perm_1"))
-        .with_message(AGUIMessage::tool("false", "perm_2"))
-        .with_message(AGUIMessage::tool("yes", "perm_3"));
+    let request = RunAgentInput::new("t1".to_string(), "r2".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::tool("true", "perm_1"))
+        .with_message(tirea_protocol_ag_ui::Message::tool("false", "perm_2"))
+        .with_message(tirea_protocol_ag_ui::Message::tool("yes", "perm_3"));
 
     let plugin = interaction_plugin_from_request(&request);
 
@@ -7174,8 +7236,8 @@ async fn test_resume_flow_multiple_responses() {
 #[tokio::test]
 async fn test_resume_flow_partial_responses() {
     // Only respond to some interactions
-    let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
-        .with_message(AGUIMessage::tool("true", "perm_1"));
+    let request = RunAgentInput::new("t1".to_string(), "r2".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::tool("true", "perm_1"));
     // perm_2 not responded to
 
     let plugin = interaction_plugin_from_request(&request);
@@ -7216,14 +7278,14 @@ async fn test_resume_flow_partial_responses() {
 #[tokio::test]
 async fn test_plugin_interaction_frontend_and_response() {
     // Request has both frontend tools and interaction responses
-    let request = RunAgentRequest {
-        tools: vec![AGUIToolDef::frontend(
+    let request = RunAgentInput {
+        tools: vec![tirea_protocol_ag_ui::Tool::frontend(
             "showNotification",
             "Show notification",
         )],
-        ..RunAgentRequest::new("t1".to_string(), "r2".to_string())
+        ..RunAgentInput::new("t1".to_string(), "r2".to_string())
     }
-    .with_message(AGUIMessage::tool("true", "call_prev"));
+    .with_message(tirea_protocol_ag_ui::Message::tool("true", "call_prev"));
 
     let frontend_plugin = frontend_plugin_from_request(&request);
     let response_plugin = interaction_plugin_from_request(&request);
@@ -7273,11 +7335,14 @@ async fn test_plugin_interaction_frontend_and_response() {
 #[tokio::test]
 async fn test_plugin_interaction_execution_order() {
     // Setup: Frontend tool that was previously denied
-    let request = RunAgentRequest {
-        tools: vec![AGUIToolDef::frontend("dangerousAction", "Dangerous")],
-        ..RunAgentRequest::new("t1".to_string(), "r2".to_string())
+    let request = RunAgentInput {
+        tools: vec![tirea_protocol_ag_ui::Tool::frontend(
+            "dangerousAction",
+            "Dangerous",
+        )],
+        ..RunAgentInput::new("t1".to_string(), "r2".to_string())
     }
-    .with_message(AGUIMessage::tool("false", "call_danger")); // Denied
+    .with_message(tirea_protocol_ag_ui::Message::tool("false", "call_danger")); // Denied
 
     let frontend_plugin = frontend_plugin_from_request(&request);
     let response_plugin = interaction_plugin_from_request(&request);
@@ -7311,9 +7376,12 @@ async fn test_plugin_interaction_execution_order() {
 #[tokio::test]
 async fn test_plugin_interaction_permission_and_frontend() {
     // Frontend tool with permission set to Ask
-    let request = RunAgentRequest {
-        tools: vec![AGUIToolDef::frontend("modifySettings", "Modify settings")],
-        ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
+    let request = RunAgentInput {
+        tools: vec![tirea_protocol_ag_ui::Tool::frontend(
+            "modifySettings",
+            "Modify settings",
+        )],
+        ..RunAgentInput::new("t1".to_string(), "r1".to_string())
     };
 
     let frontend_plugin = frontend_plugin_from_request(&request);
@@ -7379,7 +7447,7 @@ fn test_activity_snapshot_flow() {
         json!({"name": "file.txt", "size": 1024}),
     );
 
-    let event = AGUIEvent::activity_snapshot("activity_1", "file_processing", content, Some(false));
+    let event = Event::activity_snapshot("activity_1", "file_processing", content, Some(false));
 
     // Verify serialization
     let json = serde_json::to_string(&event).unwrap();
@@ -7388,8 +7456,8 @@ fn test_activity_snapshot_flow() {
     assert!(json.contains(r#""progress":0.75"#));
 
     // Roundtrip
-    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
-    assert!(matches!(parsed, AGUIEvent::ActivitySnapshot { .. }));
+    let parsed: Event = serde_json::from_str(&json).unwrap();
+    assert!(matches!(parsed, Event::ActivitySnapshot { .. }));
 }
 
 /// Test: Activity delta event creation and conversion
@@ -7400,14 +7468,14 @@ fn test_activity_delta_flow() {
         json!({"op": "replace", "path": "/status", "value": "almost done"}),
     ];
 
-    let event = AGUIEvent::activity_delta("activity_1", "file_processing", patch);
+    let event = Event::activity_delta("activity_1", "file_processing", patch);
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""type":"ACTIVITY_DELTA""#));
     assert!(json.contains(r#""op":"replace""#));
 
-    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
-    assert!(matches!(parsed, AGUIEvent::ActivityDelta { .. }));
+    let parsed: Event = serde_json::from_str(&json).unwrap();
+    assert!(matches!(parsed, Event::ActivityDelta { .. }));
 }
 
 /// Test: Complete activity streaming flow (snapshot → deltas → final)
@@ -7422,10 +7490,10 @@ fn test_activity_streaming_complete_flow() {
     initial_content.insert("processed_files".to_string(), json!(0));
 
     let snapshot =
-        AGUIEvent::activity_snapshot("act_1", "batch_processing", initial_content, Some(false));
+        Event::activity_snapshot("act_1", "batch_processing", initial_content, Some(false));
 
     // Progress deltas
-    let delta1 = AGUIEvent::activity_delta(
+    let delta1 = Event::activity_delta(
         "act_1",
         "batch_processing",
         vec![
@@ -7434,7 +7502,7 @@ fn test_activity_streaming_complete_flow() {
         ],
     );
 
-    let delta2 = AGUIEvent::activity_delta(
+    let delta2 = Event::activity_delta(
         "act_1",
         "batch_processing",
         vec![
@@ -7443,7 +7511,7 @@ fn test_activity_streaming_complete_flow() {
         ],
     );
 
-    let delta_final = AGUIEvent::activity_delta(
+    let delta_final = Event::activity_delta(
         "act_1",
         "batch_processing",
         vec![
@@ -7457,15 +7525,15 @@ fn test_activity_streaming_complete_flow() {
     let events = [snapshot, delta1, delta2, delta_final];
     for (i, event) in events.iter().enumerate() {
         let json = serde_json::to_string(event).unwrap();
-        let _: AGUIEvent =
+        let _: Event =
             serde_json::from_str(&json).unwrap_or_else(|e| panic!("Event {i} failed: {e}"));
     }
 
     // Verify event types
-    assert!(matches!(&events[0], AGUIEvent::ActivitySnapshot { .. }));
-    assert!(matches!(&events[1], AGUIEvent::ActivityDelta { .. }));
-    assert!(matches!(&events[2], AGUIEvent::ActivityDelta { .. }));
-    assert!(matches!(&events[3], AGUIEvent::ActivityDelta { .. }));
+    assert!(matches!(&events[0], Event::ActivitySnapshot { .. }));
+    assert!(matches!(&events[1], Event::ActivityDelta { .. }));
+    assert!(matches!(&events[2], Event::ActivityDelta { .. }));
+    assert!(matches!(&events[3], Event::ActivityDelta { .. }));
 }
 
 // ============================================================================
@@ -7484,13 +7552,13 @@ fn test_activity_streaming_complete_flow() {
 /// Verifies concurrent tools each have complete START → ARGS → END → RESULT sequence
 #[test]
 fn test_concurrent_tool_calls_event_ordering() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     // Simulate 3 concurrent tool calls
     let tool_ids = ["call_1", "call_2", "call_3"];
     let tool_names = ["search", "read_file", "write_file"];
 
-    let mut all_events: Vec<AGUIEvent> = Vec::new();
+    let mut all_events: Vec<Event> = Vec::new();
 
     // All tools start
     for (id, name) in tool_ids.iter().zip(tool_names.iter()) {
@@ -7533,17 +7601,17 @@ fn test_concurrent_tool_calls_event_ordering() {
 
     // Verify each tool has complete sequence
     for id in &tool_ids {
-        let has_start = all_events.iter().any(
-            |e| matches!(e, AGUIEvent::ToolCallStart { tool_call_id, .. } if tool_call_id == *id),
-        );
-        let has_args = all_events.iter().any(
-            |e| matches!(e, AGUIEvent::ToolCallArgs { tool_call_id, .. } if tool_call_id == *id),
-        );
-        let has_end = all_events.iter().any(
-            |e| matches!(e, AGUIEvent::ToolCallEnd { tool_call_id, .. } if tool_call_id == *id),
-        );
+        let has_start = all_events
+            .iter()
+            .any(|e| matches!(e, Event::ToolCallStart { tool_call_id, .. } if tool_call_id == *id));
+        let has_args = all_events
+            .iter()
+            .any(|e| matches!(e, Event::ToolCallArgs { tool_call_id, .. } if tool_call_id == *id));
+        let has_end = all_events
+            .iter()
+            .any(|e| matches!(e, Event::ToolCallEnd { tool_call_id, .. } if tool_call_id == *id));
         let has_result = all_events.iter().any(
-            |e| matches!(e, AGUIEvent::ToolCallResult { tool_call_id, .. } if tool_call_id == *id),
+            |e| matches!(e, Event::ToolCallResult { tool_call_id, .. } if tool_call_id == *id),
         );
 
         assert!(has_start, "Tool {} missing START", id);
@@ -7556,8 +7624,8 @@ fn test_concurrent_tool_calls_event_ordering() {
 /// Test: Interleaved tool calls with text
 #[test]
 fn test_interleaved_tools_and_text() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
-    let mut all_events: Vec<AGUIEvent> = Vec::new();
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut all_events: Vec<Event> = Vec::new();
 
     // Text starts
     let text1 = AgentEvent::TextDelta {
@@ -7604,16 +7672,16 @@ fn test_interleaved_tools_and_text() {
 
     // Verify sequence: text → tool → text
     // First should have TEXT_MESSAGE_START
-    assert!(matches!(&all_events[0], AGUIEvent::TextMessageStart { .. }));
+    assert!(matches!(&all_events[0], Event::TextMessageStart { .. }));
 
     // Should have TEXT_MESSAGE_END before TOOL_CALL_START
     let text_end_idx = all_events
         .iter()
-        .position(|e| matches!(e, AGUIEvent::TextMessageEnd { .. }))
+        .position(|e| matches!(e, Event::TextMessageEnd { .. }))
         .unwrap();
     let tool_start_idx = all_events
         .iter()
-        .position(|e| matches!(e, AGUIEvent::ToolCallStart { .. }))
+        .position(|e| matches!(e, Event::ToolCallStart { .. }))
         .unwrap();
     assert!(
         text_end_idx < tool_start_idx,
@@ -7624,7 +7692,7 @@ fn test_interleaved_tools_and_text() {
     let text_starts: Vec<_> = all_events
         .iter()
         .enumerate()
-        .filter(|(_, e)| matches!(e, AGUIEvent::TextMessageStart { .. }))
+        .filter(|(_, e)| matches!(e, Event::TextMessageStart { .. }))
         .collect();
     assert_eq!(
         text_starts.len(),
@@ -7651,7 +7719,7 @@ fn test_interleaved_tools_and_text() {
 /// Protocol: STATE_SNAPSHOT event for client state restoration
 #[test]
 fn test_reconnection_state_snapshot() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     // Simulate session state
     let state = json!({
@@ -7672,7 +7740,7 @@ fn test_reconnection_state_snapshot() {
     let ag_events = ctx.on_agent_event(&event);
 
     assert!(!ag_events.is_empty());
-    if let AGUIEvent::StateSnapshot { snapshot, .. } = &ag_events[0] {
+    if let Event::StateSnapshot { snapshot, .. } = &ag_events[0] {
         assert_eq!(snapshot["conversation"]["run_count"], 5);
         assert_eq!(snapshot["user_preferences"]["language"], "en");
     }
@@ -7681,7 +7749,7 @@ fn test_reconnection_state_snapshot() {
 /// Test: Messages snapshot for reconnection
 #[test]
 fn test_reconnection_messages_snapshot() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     let messages = vec![
         json!({"role": "user", "content": "Hello"}),
@@ -7697,7 +7765,7 @@ fn test_reconnection_messages_snapshot() {
     let ag_events = ctx.on_agent_event(&event);
 
     assert!(!ag_events.is_empty());
-    if let AGUIEvent::MessagesSnapshot { messages: m, .. } = &ag_events[0] {
+    if let Event::MessagesSnapshot { messages: m, .. } = &ag_events[0] {
         assert_eq!(m.len(), 5);
         assert_eq!(m[0]["role"], "user");
         assert_eq!(m[4]["role"], "tool");
@@ -7708,11 +7776,11 @@ fn test_reconnection_messages_snapshot() {
 #[test]
 fn test_full_reconnection_scenario() {
     // Client reconnects - server sends snapshots first
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
-    let mut reconnect_events: Vec<AGUIEvent> = Vec::new();
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut reconnect_events: Vec<Event> = Vec::new();
 
     // 1. RUN_STARTED for new connection
-    reconnect_events.push(AGUIEvent::run_started("t1", "r1", None));
+    reconnect_events.push(Event::run_started("t1", "r1", None));
 
     // 2. Messages snapshot (conversation history)
     let messages_event = AgentEvent::MessagesSnapshot {
@@ -7736,16 +7804,16 @@ fn test_full_reconnection_scenario() {
     reconnect_events.extend(ctx.on_agent_event(&text));
 
     // Verify sequence
-    assert!(matches!(&reconnect_events[0], AGUIEvent::RunStarted { .. }));
+    assert!(matches!(&reconnect_events[0], Event::RunStarted { .. }));
     assert!(reconnect_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::MessagesSnapshot { .. })));
+        .any(|e| matches!(e, Event::MessagesSnapshot { .. })));
     assert!(reconnect_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::StateSnapshot { .. })));
+        .any(|e| matches!(e, Event::StateSnapshot { .. })));
     assert!(reconnect_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+        .any(|e| matches!(e, Event::TextMessageStart { .. })));
 }
 
 // ============================================================================
@@ -7763,7 +7831,7 @@ async fn test_multiple_pending_interactions_flow() {
     ];
 
     // Convert all to AG-UI events
-    let mut all_events: Vec<AGUIEvent> = Vec::new();
+    let mut all_events: Vec<Event> = Vec::new();
     for interaction in &interactions {
         all_events.extend(interaction_to_ag_ui_events(&interaction));
     }
@@ -7774,7 +7842,7 @@ async fn test_multiple_pending_interactions_flow() {
     // Verify each interaction has its events
     for interaction in &interactions {
         let has_start = all_events.iter().any(|e| {
-            matches!(e, AGUIEvent::ToolCallStart { tool_call_id, .. } if tool_call_id == &interaction.id)
+            matches!(e, Event::ToolCallStart { tool_call_id, .. } if tool_call_id == &interaction.id)
         });
         assert!(has_start, "Missing ToolCallStart for {}", interaction.id);
     }
@@ -7787,10 +7855,10 @@ async fn test_multiple_interaction_responses() {
     let _fix = TestFixture::new_with_state(doc);
 
     // Client responds to all 3 interactions: approve, deny, approve
-    let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
-        .with_message(AGUIMessage::tool("yes", "perm_read"))
-        .with_message(AGUIMessage::tool("no", "perm_write"))
-        .with_message(AGUIMessage::tool("approved", "perm_exec"));
+    let request = RunAgentInput::new("t1".to_string(), "r2".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::tool("yes", "perm_read"))
+        .with_message(tirea_protocol_ag_ui::Message::tool("no", "perm_write"))
+        .with_message(tirea_protocol_ag_ui::Message::tool("approved", "perm_exec"));
 
     let plugin = interaction_plugin_from_request(&request);
 
@@ -7836,7 +7904,7 @@ async fn test_multiple_interaction_responses() {
 /// Test: Tool timeout produces correct AG-UI events
 #[test]
 fn test_tool_timeout_ag_ui_flow() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     // Tool starts
     let start = AgentEvent::ToolCallStart {
@@ -7846,7 +7914,7 @@ fn test_tool_timeout_ag_ui_flow() {
     let start_events = ctx.on_agent_event(&start);
     assert!(start_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
+        .any(|e| matches!(e, Event::ToolCallStart { .. })));
 
     // Tool times out - simulated by returning timeout error
     let timeout_result = ToolResult::error("slow_operation", "Tool execution timed out after 30s");
@@ -7862,11 +7930,11 @@ fn test_tool_timeout_ag_ui_flow() {
     // Should still have TOOL_CALL_RESULT with error
     assert!(done_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::ToolCallResult { .. })));
+        .any(|e| matches!(e, Event::ToolCallResult { .. })));
 
-    if let Some(AGUIEvent::ToolCallResult { content, .. }) = done_events
+    if let Some(Event::ToolCallResult { content, .. }) = done_events
         .iter()
-        .find(|e| matches!(e, AGUIEvent::ToolCallResult { .. }))
+        .find(|e| matches!(e, Event::ToolCallResult { .. }))
     {
         assert!(content.contains("timed out") || content.contains("error"));
     }
@@ -7879,8 +7947,8 @@ fn test_tool_timeout_ag_ui_flow() {
 /// Test: Rapid text delta burst handling
 #[test]
 fn test_rapid_text_delta_burst() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
-    let mut all_events: Vec<AGUIEvent> = Vec::new();
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut all_events: Vec<Event> = Vec::new();
 
     // Simulate 100 rapid text deltas
     for i in 0..100 {
@@ -7893,14 +7961,14 @@ fn test_rapid_text_delta_burst() {
     // Should have exactly 1 TEXT_MESSAGE_START
     let start_count = all_events
         .iter()
-        .filter(|e| matches!(e, AGUIEvent::TextMessageStart { .. }))
+        .filter(|e| matches!(e, Event::TextMessageStart { .. }))
         .count();
     assert_eq!(start_count, 1, "Should have exactly 1 TEXT_MESSAGE_START");
 
     // Should have 100 TEXT_MESSAGE_CONTENT (one for each delta)
     let content_count = all_events
         .iter()
-        .filter(|e| matches!(e, AGUIEvent::TextMessageContent { .. }))
+        .filter(|e| matches!(e, Event::TextMessageContent { .. }))
         .count();
     assert_eq!(
         content_count, 100,
@@ -7908,7 +7976,7 @@ fn test_rapid_text_delta_burst() {
     );
 
     // First event should be TEXT_MESSAGE_START
-    assert!(matches!(&all_events[0], AGUIEvent::TextMessageStart { .. }));
+    assert!(matches!(&all_events[0], Event::TextMessageStart { .. }));
 }
 
 // ============================================================================
@@ -7918,8 +7986,8 @@ fn test_rapid_text_delta_burst() {
 /// Test: State events ordering with other events
 #[test]
 fn test_state_event_ordering() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
-    let mut all_events: Vec<AGUIEvent> = Vec::new();
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut all_events: Vec<Event> = Vec::new();
 
     // Sequence: text → state snapshot → more text → state delta
     let text1 = AgentEvent::TextDelta {
@@ -7945,16 +8013,16 @@ fn test_state_event_ordering() {
     // Verify presence of all event types
     assert!(all_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+        .any(|e| matches!(e, Event::TextMessageStart { .. })));
     assert!(all_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::TextMessageContent { .. })));
+        .any(|e| matches!(e, Event::TextMessageContent { .. })));
     assert!(all_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::StateSnapshot { .. })));
+        .any(|e| matches!(e, Event::StateSnapshot { .. })));
     assert!(all_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::StateDelta { .. })));
+        .any(|e| matches!(e, Event::StateDelta { .. })));
 }
 
 // ============================================================================
@@ -7965,28 +8033,28 @@ fn test_state_event_ordering() {
 #[test]
 fn test_sequential_runs_in_session() {
     // Run 1
-    let mut ctx1 = AGUIContext::new("t1".into(), "r1".into());
-    let run1_start = AGUIEvent::run_started("t1", "r1", None);
+    let mut ctx1 = AgUiEventContext::new("t1".into(), "r1".into());
+    let run1_start = Event::run_started("t1", "r1", None);
     let text1 = AgentEvent::TextDelta {
         delta: "First run response".into(),
     };
     let text1_events = ctx1.on_agent_event(&text1);
     // Run 2 (same thread, different run)
-    let mut ctx2 = AGUIContext::new("t1".into(), "r2".into());
-    let run2_start = AGUIEvent::run_started("t1", "r2", None);
+    let mut ctx2 = AgUiEventContext::new("t1".into(), "r2".into());
+    let run2_start = Event::run_started("t1", "r2", None);
     let text2 = AgentEvent::TextDelta {
         delta: "Second run response".into(),
     };
     let text2_events = ctx2.on_agent_event(&text2);
 
     // Verify runs are independent
-    if let AGUIEvent::RunStarted {
+    if let Event::RunStarted {
         thread_id: t1,
         run_id: r1,
         ..
     } = &run1_start
     {
-        if let AGUIEvent::RunStarted {
+        if let Event::RunStarted {
             thread_id: t2,
             run_id: r2,
             ..
@@ -8027,14 +8095,14 @@ fn test_raw_event_wrapping() {
         }
     });
 
-    let event = AGUIEvent::raw(external_event.clone(), Some("openai".into()));
+    let event = Event::raw(external_event.clone(), Some("openai".into()));
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""type":"RAW""#));
     assert!(json.contains(r#""provider":"openai""#));
 
-    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
-    if let AGUIEvent::Raw { event: e, .. } = parsed {
+    let parsed: Event = serde_json::from_str(&json).unwrap();
+    if let Event::Raw { event: e, .. } = parsed {
         assert_eq!(e["provider"], "openai");
         assert_eq!(e["data"]["requests_remaining"], 10);
     }
@@ -8050,15 +8118,15 @@ fn test_custom_event_flow() {
         "buttons": ["Cancel", "Confirm"]
     });
 
-    let event = AGUIEvent::custom("ui_action", custom_value.clone());
+    let event = Event::custom("ui_action", custom_value.clone());
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""type":"CUSTOM""#));
     assert!(json.contains(r#""name":"ui_action""#));
     assert!(json.contains(r#""action":"show_modal""#));
 
-    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
-    if let AGUIEvent::Custom { name, value, .. } = parsed {
+    let parsed: Event = serde_json::from_str(&json).unwrap();
+    if let Event::Custom { name, value, .. } = parsed {
         assert_eq!(name, "ui_action");
         assert_eq!(value["modal_type"], "confirmation");
     }
@@ -8080,7 +8148,7 @@ fn test_custom_event_flow() {
 /// Verifies TOOL_CALL_RESULT can handle ~100KB of JSON data
 #[test]
 fn test_large_tool_result_payload() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     // Create a large result (simulate ~100KB of data)
     let large_data: Vec<Value> = (0..1000)
@@ -8115,9 +8183,9 @@ fn test_large_tool_result_payload() {
     assert!(!ag_events.is_empty());
 
     // Verify the result can be serialized and parsed
-    if let Some(AGUIEvent::ToolCallResult { content, .. }) = ag_events
+    if let Some(Event::ToolCallResult { content, .. }) = ag_events
         .iter()
-        .find(|e| matches!(e, AGUIEvent::ToolCallResult { .. }))
+        .find(|e| matches!(e, Event::ToolCallResult { .. }))
     {
         // Content should be valid JSON (it's a serialized ToolResult struct)
         let parsed: Value = serde_json::from_str(content).expect("Should be valid JSON");
@@ -8130,7 +8198,7 @@ fn test_large_tool_result_payload() {
 /// Test: Large state snapshot
 #[test]
 fn test_large_state_snapshot() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     // Create large state
     let large_state = json!({
@@ -8156,7 +8224,7 @@ fn test_large_state_snapshot() {
     let ag_events = ctx.on_agent_event(&event);
 
     assert!(!ag_events.is_empty());
-    if let AGUIEvent::StateSnapshot { snapshot, .. } = &ag_events[0] {
+    if let Event::StateSnapshot { snapshot, .. } = &ag_events[0] {
         assert_eq!(snapshot["users"].as_array().unwrap().len(), 100);
     }
 }
@@ -8182,9 +8250,9 @@ fn test_large_state_snapshot() {
 /// Protocol: TEXT_MESSAGE_CHUNK auto-expands to Start → Content → End
 #[test]
 fn test_text_message_chunk_serialization() {
-    let chunk = AGUIEvent::text_message_chunk(
+    let chunk = Event::text_message_chunk(
         Some("msg_1".into()),
-        Some(MessageRole::Assistant),
+        Some(Role::Assistant),
         Some("Hello, world!".into()),
     );
 
@@ -8195,15 +8263,15 @@ fn test_text_message_chunk_serialization() {
     assert!(json.contains(r#""role":"assistant""#));
 
     // Verify roundtrip
-    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
-    assert!(matches!(parsed, AGUIEvent::TextMessageChunk { .. }));
+    let parsed: Event = serde_json::from_str(&json).unwrap();
+    assert!(matches!(parsed, Event::TextMessageChunk { .. }));
 }
 
 /// Test: ToolCallChunk convenience event serialization
 /// Protocol: TOOL_CALL_CHUNK auto-expands to Start → Args → End
 #[test]
 fn test_tool_call_chunk_serialization() {
-    let chunk = AGUIEvent::tool_call_chunk(
+    let chunk = Event::tool_call_chunk(
         Some("call_1".into()),
         Some("search".into()),
         None,
@@ -8217,15 +8285,15 @@ fn test_tool_call_chunk_serialization() {
     assert!(json.contains(r#""delta":"#));
 
     // Verify roundtrip
-    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
-    assert!(matches!(parsed, AGUIEvent::ToolCallChunk { .. }));
+    let parsed: Event = serde_json::from_str(&json).unwrap();
+    assert!(matches!(parsed, Event::ToolCallChunk { .. }));
 }
 
 /// Test: ToolCallChunk with parentMessageId
 /// Protocol: Optional parentMessageId links tool call to a message
 #[test]
 fn test_tool_call_chunk_with_parent_message() {
-    let chunk = AGUIEvent::tool_call_chunk(
+    let chunk = Event::tool_call_chunk(
         Some("call_1".into()),
         Some("read_file".into()),
         Some("msg_123".into()),
@@ -8247,7 +8315,7 @@ fn test_tool_call_chunk_with_parent_message() {
 #[test]
 fn test_run_started_with_parent_run_id() {
     let event =
-        AGUIEvent::run_started_with_input("t1", "r2", Some("r1".into()), json!({"query": "test"}));
+        Event::run_started_with_input("t1", "r2", Some("r1".into()), json!({"query": "test"}));
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""type":"RUN_STARTED""#));
@@ -8256,8 +8324,8 @@ fn test_run_started_with_parent_run_id() {
     assert!(json.contains(r#""input":"#));
 
     // Roundtrip
-    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
-    if let AGUIEvent::RunStarted { parent_run_id, .. } = parsed {
+    let parsed: Event = serde_json::from_str(&json).unwrap();
+    if let Event::RunStarted { parent_run_id, .. } = parsed {
         assert_eq!(parent_run_id, Some("r1".to_string()));
     } else {
         panic!("Expected RunStarted");
@@ -8268,7 +8336,7 @@ fn test_run_started_with_parent_run_id() {
 /// Protocol: Error code is optional for categorizing errors
 #[test]
 fn test_run_error_with_code() {
-    let event = AGUIEvent::run_error(
+    let event = Event::run_error(
         "Connection timeout".to_string(),
         Some("TIMEOUT".to_string()),
     );
@@ -8278,8 +8346,8 @@ fn test_run_error_with_code() {
     assert!(json.contains(r#""message":"Connection timeout""#));
     assert!(json.contains(r#""code":"TIMEOUT""#));
 
-    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
-    if let AGUIEvent::RunError { code, .. } = parsed {
+    let parsed: Event = serde_json::from_str(&json).unwrap();
+    if let Event::RunError { code, .. } = parsed {
         assert_eq!(code, Some("TIMEOUT".to_string()));
     }
 }
@@ -8287,14 +8355,14 @@ fn test_run_error_with_code() {
 /// Test: RunError without code
 #[test]
 fn test_run_error_without_code() {
-    let event = AGUIEvent::run_error("Unknown error".to_string(), None);
+    let event = Event::run_error("Unknown error".to_string(), None);
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""type":"RUN_ERROR""#));
     assert!(!json.contains(r#""code""#)); // code should be omitted
 
-    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
-    if let AGUIEvent::RunError { code, .. } = parsed {
+    let parsed: Event = serde_json::from_str(&json).unwrap();
+    if let Event::RunError { code, .. } = parsed {
         assert_eq!(code, None);
     }
 }
@@ -8309,16 +8377,16 @@ fn test_run_error_without_code() {
 /// Protocol: StepStarted and StepFinished must have matching stepName
 #[test]
 fn test_step_events_matching_names() {
-    let start = AGUIEvent::step_started("data_processing");
-    let finish = AGUIEvent::step_finished("data_processing");
+    let start = Event::step_started("data_processing");
+    let finish = Event::step_finished("data_processing");
 
     // Verify matching step names
-    if let AGUIEvent::StepStarted {
+    if let Event::StepStarted {
         step_name: start_name,
         ..
     } = &start
     {
-        if let AGUIEvent::StepFinished {
+        if let Event::StepFinished {
             step_name: finish_name,
             ..
         } = &finish
@@ -8340,14 +8408,14 @@ fn test_step_events_matching_names() {
 /// Protocol: Verify correct step name tracking across multiple steps
 #[test]
 fn test_multiple_step_sequences() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     // Step 1
     let step1_start = AgentEvent::StepStart {
         message_id: String::new(),
     };
     let events1 = ctx.on_agent_event(&step1_start);
-    let step1_name = if let AGUIEvent::StepStarted { step_name, .. } = &events1[0] {
+    let step1_name = if let Event::StepStarted { step_name, .. } = &events1[0] {
         step_name.clone()
     } else {
         panic!("Expected StepStarted");
@@ -8355,7 +8423,7 @@ fn test_multiple_step_sequences() {
 
     let step1_end = AgentEvent::StepEnd;
     let events1_end = ctx.on_agent_event(&step1_end);
-    if let AGUIEvent::StepFinished { step_name, .. } = &events1_end[0] {
+    if let Event::StepFinished { step_name, .. } = &events1_end[0] {
         assert_eq!(*step_name, step1_name);
     }
 
@@ -8364,7 +8432,7 @@ fn test_multiple_step_sequences() {
         message_id: String::new(),
     };
     let events2 = ctx.on_agent_event(&step2_start);
-    let step2_name = if let AGUIEvent::StepStarted { step_name, .. } = &events2[0] {
+    let step2_name = if let Event::StepStarted { step_name, .. } = &events2[0] {
         step_name.clone()
     } else {
         panic!("Expected StepStarted");
@@ -8385,7 +8453,7 @@ fn test_multiple_step_sequences() {
 #[test]
 fn test_json_patch_add_operation() {
     let delta = vec![json!({"op": "add", "path": "/newField", "value": "test"})];
-    let event = AGUIEvent::state_delta(delta);
+    let event = Event::state_delta(delta);
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""op":"add""#));
@@ -8397,7 +8465,7 @@ fn test_json_patch_add_operation() {
 #[test]
 fn test_json_patch_replace_operation() {
     let delta = vec![json!({"op": "replace", "path": "/existing", "value": "updated"})];
-    let event = AGUIEvent::state_delta(delta);
+    let event = Event::state_delta(delta);
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""op":"replace""#));
@@ -8408,7 +8476,7 @@ fn test_json_patch_replace_operation() {
 #[test]
 fn test_json_patch_remove_operation() {
     let delta = vec![json!({"op": "remove", "path": "/obsoleteField"})];
-    let event = AGUIEvent::state_delta(delta);
+    let event = Event::state_delta(delta);
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""op":"remove""#));
@@ -8420,7 +8488,7 @@ fn test_json_patch_remove_operation() {
 #[test]
 fn test_json_patch_move_operation() {
     let delta = vec![json!({"op": "move", "from": "/oldPath", "path": "/newPath"})];
-    let event = AGUIEvent::state_delta(delta);
+    let event = Event::state_delta(delta);
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""op":"move""#));
@@ -8433,7 +8501,7 @@ fn test_json_patch_move_operation() {
 #[test]
 fn test_json_patch_copy_operation() {
     let delta = vec![json!({"op": "copy", "from": "/source", "path": "/destination"})];
-    let event = AGUIEvent::state_delta(delta);
+    let event = Event::state_delta(delta);
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""op":"copy""#));
@@ -8445,7 +8513,7 @@ fn test_json_patch_copy_operation() {
 #[test]
 fn test_json_patch_test_operation() {
     let delta = vec![json!({"op": "test", "path": "/version", "value": "1.0"})];
-    let event = AGUIEvent::state_delta(delta);
+    let event = Event::state_delta(delta);
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""op":"test""#));
@@ -8462,9 +8530,9 @@ fn test_json_patch_multiple_operations() {
         json!({"op": "add", "path": "/newFeature", "value": true}),
         json!({"op": "remove", "path": "/deprecatedField"}),
     ];
-    let event = AGUIEvent::state_delta(delta.clone());
+    let event = Event::state_delta(delta.clone());
 
-    if let AGUIEvent::StateDelta { delta: d, .. } = event {
+    if let Event::StateDelta { delta: d, .. } = event {
         assert_eq!(d.len(), 4);
     }
 }
@@ -8486,12 +8554,12 @@ fn test_messages_snapshot_conversation_history() {
         json!({"role": "assistant", "content": "I'll check that for you."}),
     ];
 
-    let event = AGUIEvent::messages_snapshot(messages.clone());
+    let event = Event::messages_snapshot(messages.clone());
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""type":"MESSAGES_SNAPSHOT""#));
 
-    if let AGUIEvent::MessagesSnapshot { messages: m, .. } = event {
+    if let Event::MessagesSnapshot { messages: m, .. } = event {
         assert_eq!(m.len(), 4);
         assert_eq!(m[0]["role"], "user");
         assert_eq!(m[1]["role"], "assistant");
@@ -8509,9 +8577,9 @@ fn test_messages_snapshot_with_tool_messages() {
         json!({"role": "assistant", "content": "I found 10 tutorials about Rust."}),
     ];
 
-    let event = AGUIEvent::messages_snapshot(messages);
+    let event = Event::messages_snapshot(messages);
 
-    if let AGUIEvent::MessagesSnapshot { messages: m, .. } = event {
+    if let Event::MessagesSnapshot { messages: m, .. } = event {
         assert_eq!(m.len(), 4);
         assert_eq!(m[2]["role"], "tool");
         assert_eq!(m[2]["tool_call_id"], "call_1");
@@ -8535,7 +8603,7 @@ fn test_activity_snapshot_replace_true() {
     let mut content = HashMap::new();
     content.insert("status".to_string(), json!("processing"));
 
-    let event = AGUIEvent::activity_snapshot("act_1", "file_upload", content, Some(true));
+    let event = Event::activity_snapshot("act_1", "file_upload", content, Some(true));
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""replace":true"#));
@@ -8550,7 +8618,7 @@ fn test_activity_snapshot_replace_false() {
     let mut content = HashMap::new();
     content.insert("progress".to_string(), json!(0.5));
 
-    let event = AGUIEvent::activity_snapshot("act_1", "download", content, Some(false));
+    let event = Event::activity_snapshot("act_1", "download", content, Some(false));
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""replace":false"#));
@@ -8564,7 +8632,7 @@ fn test_activity_snapshot_replace_none() {
     let mut content = HashMap::new();
     content.insert("data".to_string(), json!("test"));
 
-    let event = AGUIEvent::activity_snapshot("act_1", "process", content, None);
+    let event = Event::activity_snapshot("act_1", "process", content, None);
 
     let json = serde_json::to_string(&event).unwrap();
     // replace field should be omitted when None
@@ -8581,14 +8649,14 @@ fn test_activity_snapshot_replace_none() {
 /// Protocol: Optional parentMessageId for linking tool calls to messages
 #[test]
 fn test_tool_call_start_with_parent_message_id() {
-    let event = AGUIEvent::tool_call_start("call_1", "search", Some("msg_123".into()));
+    let event = Event::tool_call_start("call_1", "search", Some("msg_123".into()));
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""type":"TOOL_CALL_START""#));
     assert!(json.contains(r#""parentMessageId":"msg_123""#));
 
-    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
-    if let AGUIEvent::ToolCallStart {
+    let parsed: Event = serde_json::from_str(&json).unwrap();
+    if let Event::ToolCallStart {
         parent_message_id, ..
     } = parsed
     {
@@ -8599,7 +8667,7 @@ fn test_tool_call_start_with_parent_message_id() {
 /// Test: ToolCallStart without parentMessageId
 #[test]
 fn test_tool_call_start_without_parent_message_id() {
-    let event = AGUIEvent::tool_call_start("call_1", "read_file", None);
+    let event = Event::tool_call_start("call_1", "read_file", None);
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(!json.contains(r#""parentMessageId""#));
@@ -8615,7 +8683,7 @@ fn test_tool_call_start_without_parent_message_id() {
 /// Protocol: TOOL_CALL_RESULT with messageId, toolCallId, content
 #[test]
 fn test_tool_call_result_structure() {
-    let event = AGUIEvent::tool_call_result(
+    let event = Event::tool_call_result(
         "result_1",
         "call_1",
         r#"{"success": true, "data": "result"}"#,
@@ -8627,8 +8695,8 @@ fn test_tool_call_result_structure() {
     assert!(json.contains(r#""toolCallId":"call_1""#));
     assert!(json.contains(r#""content":"#));
 
-    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
-    if let AGUIEvent::ToolCallResult {
+    let parsed: Event = serde_json::from_str(&json).unwrap();
+    if let Event::ToolCallResult {
         message_id,
         tool_call_id,
         content,
@@ -8649,7 +8717,7 @@ fn test_tool_call_result_error_content() {
         "tool_name": "write_file",
         "message": "Permission denied"
     });
-    let event = AGUIEvent::tool_call_result(
+    let event = Event::tool_call_result(
         "result_err",
         "call_write",
         serde_json::to_string(&error_result).unwrap(),
@@ -8658,8 +8726,8 @@ fn test_tool_call_result_error_content() {
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""toolCallId":"call_write""#));
 
-    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
-    if let AGUIEvent::ToolCallResult { content, .. } = parsed {
+    let parsed: Event = serde_json::from_str(&json).unwrap();
+    if let Event::ToolCallResult { content, .. } = parsed {
         let result: Value = serde_json::from_str(&content).unwrap();
         assert_eq!(result["status"], "error");
     }
@@ -8676,16 +8744,16 @@ fn test_tool_call_result_error_content() {
 #[test]
 fn test_text_message_all_roles() {
     let roles = vec![
-        (MessageRole::Developer, "developer"),
-        (MessageRole::System, "system"),
-        (MessageRole::Assistant, "assistant"),
-        (MessageRole::User, "user"),
-        (MessageRole::Tool, "tool"),
+        (Role::Developer, "developer"),
+        (Role::System, "system"),
+        (Role::Assistant, "assistant"),
+        (Role::User, "user"),
+        (Role::Tool, "tool"),
     ];
 
     for (role, expected) in roles {
         let event =
-            AGUIEvent::text_message_chunk(Some("msg_1".into()), Some(role), Some("test".into()));
+            Event::text_message_chunk(Some("msg_1".into()), Some(role), Some("test".into()));
         let json = serde_json::to_string(&event).unwrap();
         assert!(
             json.contains(&format!(r#""role":"{}""#, expected)),
@@ -8705,7 +8773,7 @@ fn test_text_message_all_roles() {
 /// Protocol: BaseEvent includes optional timestamp
 #[test]
 fn test_event_with_timestamp() {
-    let mut event = AGUIEvent::run_started("t1", "r1", None);
+    let mut event = Event::run_started("t1", "r1", None);
     event = event.with_timestamp(1704067200000); // 2024-01-01 00:00:00 UTC
 
     let json = serde_json::to_string(&event).unwrap();
@@ -8716,12 +8784,12 @@ fn test_event_with_timestamp() {
 #[test]
 fn test_event_timestamp_roundtrip() {
     let timestamp = 1704067200000u64;
-    let event = AGUIEvent::state_snapshot(json!({"test": true})).with_timestamp(timestamp);
+    let event = Event::state_snapshot(json!({"test": true})).with_timestamp(timestamp);
 
     let json = serde_json::to_string(&event).unwrap();
-    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+    let parsed: Event = serde_json::from_str(&json).unwrap();
 
-    if let AGUIEvent::StateSnapshot { base, .. } = parsed {
+    if let Event::StateSnapshot { base, .. } = parsed {
         assert_eq!(base.timestamp, Some(timestamp));
     }
 }
@@ -8737,14 +8805,14 @@ fn test_event_timestamp_roundtrip() {
 #[test]
 fn test_raw_event_with_source() {
     let external = json!({"type": "model_response", "tokens": 150});
-    let event = AGUIEvent::raw(external.clone(), Some("anthropic".into()));
+    let event = Event::raw(external.clone(), Some("anthropic".into()));
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""type":"RAW""#));
     assert!(json.contains(r#""source":"anthropic""#));
 
-    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
-    if let AGUIEvent::Raw { source, .. } = parsed {
+    let parsed: Event = serde_json::from_str(&json).unwrap();
+    if let Event::Raw { source, .. } = parsed {
         assert_eq!(source, Some("anthropic".to_string()));
     }
 }
@@ -8753,7 +8821,7 @@ fn test_raw_event_with_source() {
 #[test]
 fn test_raw_event_without_source() {
     let external = json!({"custom": "data"});
-    let event = AGUIEvent::raw(external, None);
+    let event = Event::raw(external, None);
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(!json.contains(r#""source""#));
@@ -8774,15 +8842,15 @@ fn test_custom_event_structure() {
         "target": "line:42",
         "color": "yellow"
     });
-    let event = AGUIEvent::custom("editor_highlight", value.clone());
+    let event = Event::custom("editor_highlight", value.clone());
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""type":"CUSTOM""#));
     assert!(json.contains(r#""name":"editor_highlight""#));
     assert!(json.contains(r#""action":"highlight""#));
 
-    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
-    if let AGUIEvent::Custom { name, value: v, .. } = parsed {
+    let parsed: Event = serde_json::from_str(&json).unwrap();
+    if let Event::Custom { name, value: v, .. } = parsed {
         assert_eq!(name, "editor_highlight");
         assert_eq!(v["target"], "line:42");
     }
@@ -8798,8 +8866,8 @@ fn test_custom_event_structure() {
 /// Protocol: Full TOOL_CALL flow: START → ARGS → END → RESULT
 #[test]
 fn test_complete_tool_call_protocol_flow() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
-    let mut events: Vec<AGUIEvent> = Vec::new();
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut events: Vec<Event> = Vec::new();
 
     // Start
     let start = AgentEvent::ToolCallStart {
@@ -8841,24 +8909,24 @@ fn test_complete_tool_call_protocol_flow() {
     // Verify complete sequence
     assert!(events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
+        .any(|e| matches!(e, Event::ToolCallStart { .. })));
     assert!(events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::ToolCallArgs { .. })));
+        .any(|e| matches!(e, Event::ToolCallArgs { .. })));
     assert!(events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::ToolCallEnd { .. })));
+        .any(|e| matches!(e, Event::ToolCallEnd { .. })));
     assert!(events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::ToolCallResult { .. })));
+        .any(|e| matches!(e, Event::ToolCallResult { .. })));
 }
 
 /// Test: State sync flow (snapshot then deltas)
 /// Protocol: STATE_SNAPSHOT → STATE_DELTA*
 #[test]
 fn test_state_sync_protocol_flow() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
-    let mut events: Vec<AGUIEvent> = Vec::new();
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut events: Vec<Event> = Vec::new();
 
     // Initial snapshot
     let snapshot = AgentEvent::StateSnapshot {
@@ -8880,17 +8948,17 @@ fn test_state_sync_protocol_flow() {
 
     // Verify flow
     assert_eq!(events.len(), 3);
-    assert!(matches!(&events[0], AGUIEvent::StateSnapshot { .. }));
-    assert!(matches!(&events[1], AGUIEvent::StateDelta { .. }));
-    assert!(matches!(&events[2], AGUIEvent::StateDelta { .. }));
+    assert!(matches!(&events[0], Event::StateSnapshot { .. }));
+    assert!(matches!(&events[1], Event::StateDelta { .. }));
+    assert!(matches!(&events[2], Event::StateDelta { .. }));
 }
 
 /// Test: Mixed content flow (text + tool + text)
 /// Protocol: Verify correct event sequencing with interleaved content
 #[test]
 fn test_mixed_content_protocol_flow() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
-    let mut events: Vec<AGUIEvent> = Vec::new();
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut events: Vec<Event> = Vec::new();
 
     // Text starts
     let text1 = AgentEvent::TextDelta {
@@ -8930,11 +8998,11 @@ fn test_mixed_content_protocol_flow() {
     // Verify TEXT_MESSAGE_END appears before TOOL_CALL_START
     let text_end_idx = events
         .iter()
-        .position(|e| matches!(e, AGUIEvent::TextMessageEnd { .. }))
+        .position(|e| matches!(e, Event::TextMessageEnd { .. }))
         .unwrap();
     let tool_start_idx = events
         .iter()
-        .position(|e| matches!(e, AGUIEvent::ToolCallStart { .. }))
+        .position(|e| matches!(e, Event::ToolCallStart { .. }))
         .unwrap();
     assert!(
         text_end_idx < tool_start_idx,
@@ -8950,13 +9018,13 @@ fn test_mixed_content_protocol_flow() {
 // Reference: https://docs.ag-ui.com/concepts/messages
 //
 
-/// Test: AGUIMessage user message creation
+/// Test: Message user message creation
 /// Protocol: UserMessage with content (string or InputContent[])
 #[test]
 fn test_agui_message_user() {
-    let msg = AGUIMessage::user("Hello, how can you help?");
+    let msg = tirea_protocol_ag_ui::Message::user("Hello, how can you help?");
 
-    assert_eq!(msg.role, MessageRole::User);
+    assert_eq!(msg.role, Role::User);
     assert_eq!(msg.content, "Hello, how can you help?");
     assert!(msg.id.is_none());
     assert!(msg.tool_call_id.is_none());
@@ -8966,39 +9034,40 @@ fn test_agui_message_user() {
     assert!(json.contains(r#""content":"Hello, how can you help?""#));
 }
 
-/// Test: AGUIMessage assistant message creation
+/// Test: Message assistant message creation
 /// Protocol: AssistantMessage with optional content and toolCalls
 #[test]
 fn test_agui_message_assistant() {
-    let msg = AGUIMessage::assistant("I can help you with that.");
+    let msg = tirea_protocol_ag_ui::Message::assistant("I can help you with that.");
 
-    assert_eq!(msg.role, MessageRole::Assistant);
+    assert_eq!(msg.role, Role::Assistant);
     assert_eq!(msg.content, "I can help you with that.");
 
     let json = serde_json::to_string(&msg).unwrap();
     assert!(json.contains(r#""role":"assistant""#));
 }
 
-/// Test: AGUIMessage system message creation
+/// Test: Message system message creation
 /// Protocol: SystemMessage with required content
 #[test]
 fn test_agui_message_system() {
-    let msg = AGUIMessage::system("You are a helpful assistant.");
+    let msg = tirea_protocol_ag_ui::Message::system("You are a helpful assistant.");
 
-    assert_eq!(msg.role, MessageRole::System);
+    assert_eq!(msg.role, Role::System);
     assert_eq!(msg.content, "You are a helpful assistant.");
 
     let json = serde_json::to_string(&msg).unwrap();
     assert!(json.contains(r#""role":"system""#));
 }
 
-/// Test: AGUIMessage tool message creation
+/// Test: Message tool message creation
 /// Protocol: ToolMessage with toolCallId linking to assistant's tool call
 #[test]
 fn test_agui_message_tool() {
-    let msg = AGUIMessage::tool(r#"{"result": "success", "data": 42}"#, "call_123");
+    let msg =
+        tirea_protocol_ag_ui::Message::tool(r#"{"result": "success", "data": 42}"#, "call_123");
 
-    assert_eq!(msg.role, MessageRole::Tool);
+    assert_eq!(msg.role, Role::Tool);
     assert_eq!(msg.tool_call_id, Some("call_123".to_string()));
 
     let json = serde_json::to_string(&msg).unwrap();
@@ -9006,7 +9075,7 @@ fn test_agui_message_tool() {
     assert!(json.contains(r#""toolCallId":"call_123""#));
 }
 
-/// Test: AGUIMessage tool message with error
+/// Test: Message tool message with error
 /// Protocol: ToolMessage can include error information
 #[test]
 fn test_agui_message_tool_with_error() {
@@ -9015,56 +9084,59 @@ fn test_agui_message_tool_with_error() {
         "error": "Connection refused",
         "code": "ECONNREFUSED"
     });
-    let msg = AGUIMessage::tool(serde_json::to_string(&error_content).unwrap(), "call_err");
+    let msg = tirea_protocol_ag_ui::Message::tool(
+        serde_json::to_string(&error_content).unwrap(),
+        "call_err",
+    );
 
-    assert_eq!(msg.role, MessageRole::Tool);
+    assert_eq!(msg.role, Role::Tool);
     let parsed: Value = serde_json::from_str(&msg.content).unwrap();
     assert_eq!(parsed["status"], "error");
     assert_eq!(parsed["code"], "ECONNREFUSED");
 }
 
-/// Test: AGUIMessage with custom ID
+/// Test: Message with custom ID
 /// Protocol: Messages can have unique identifiers
 #[test]
 fn test_agui_message_with_id() {
-    let mut msg = AGUIMessage::user("test");
+    let mut msg = tirea_protocol_ag_ui::Message::user("test");
     msg.id = Some("msg_12345".to_string());
 
     let json = serde_json::to_string(&msg).unwrap();
     assert!(json.contains(r#""id":"msg_12345""#));
 }
 
-/// Test: AGUIMessage roundtrip serialization
+/// Test: Message roundtrip serialization
 #[test]
 fn test_agui_message_roundtrip() {
     let messages = vec![
-        AGUIMessage::user("Hello"),
-        AGUIMessage::assistant("Hi there!"),
-        AGUIMessage::system("Be helpful"),
-        AGUIMessage::tool("result", "call_1"),
+        tirea_protocol_ag_ui::Message::user("Hello"),
+        tirea_protocol_ag_ui::Message::assistant("Hi there!"),
+        tirea_protocol_ag_ui::Message::system("Be helpful"),
+        tirea_protocol_ag_ui::Message::tool("result", "call_1"),
     ];
 
     for msg in messages {
         let json = serde_json::to_string(&msg).unwrap();
-        let parsed: AGUIMessage = serde_json::from_str(&json).unwrap();
+        let parsed: tirea_protocol_ag_ui::Message = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.role, msg.role);
         assert_eq!(parsed.content, msg.content);
     }
 }
 
 // ============================================================================
-// RunAgentRequest Tests
+// RunAgentInput Tests
 // ============================================================================
 //
 // Per AG-UI spec: RunAgentInput contains threadId, runId, messages, tools, state, context
 // Reference: https://docs.ag-ui.com/sdk/js/core/types
 //
 
-/// Test: RunAgentRequest basic creation
+/// Test: RunAgentInput basic creation
 /// Protocol: Required threadId and runId
 #[test]
 fn test_run_agent_request_basic() {
-    let request = RunAgentRequest::new("thread_abc".to_string(), "run_123".to_string());
+    let request = RunAgentInput::new("thread_abc".to_string(), "run_123".to_string());
 
     assert_eq!(request.thread_id, "thread_abc");
     assert_eq!(request.run_id, "run_123");
@@ -9072,37 +9144,37 @@ fn test_run_agent_request_basic() {
     assert!(request.tools.is_empty());
 }
 
-/// Test: RunAgentRequest with messages
+/// Test: RunAgentInput with messages
 /// Protocol: Message array for conversation history
 #[test]
 fn test_run_agent_request_with_messages() {
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::user("Hello"))
-        .with_message(AGUIMessage::assistant("Hi!"))
-        .with_message(AGUIMessage::user("What's 2+2?"));
+    let request = RunAgentInput::new("t1".to_string(), "r1".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::user("Hello"))
+        .with_message(tirea_protocol_ag_ui::Message::assistant("Hi!"))
+        .with_message(tirea_protocol_ag_ui::Message::user("What's 2+2?"));
 
     assert_eq!(request.messages.len(), 3);
-    assert_eq!(request.messages[0].role, MessageRole::User);
-    assert_eq!(request.messages[1].role, MessageRole::Assistant);
-    assert_eq!(request.messages[2].role, MessageRole::User);
+    assert_eq!(request.messages[0].role, Role::User);
+    assert_eq!(request.messages[1].role, Role::Assistant);
+    assert_eq!(request.messages[2].role, Role::User);
 }
 
-/// Test: RunAgentRequest with tools
+/// Test: RunAgentInput with tools
 /// Protocol: Tools array defines available capabilities
 #[test]
 fn test_run_agent_request_with_tools() {
-    let request = RunAgentRequest {
+    let request = RunAgentInput {
         tools: vec![
-            AGUIToolDef::backend("search", "Search the web"),
-            AGUIToolDef::frontend("copyToClipboard", "Copy text"),
+            tirea_protocol_ag_ui::Tool::backend("search", "Search the web"),
+            tirea_protocol_ag_ui::Tool::frontend("copyToClipboard", "Copy text"),
         ],
-        ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        ..RunAgentInput::new("t1".to_string(), "r1".to_string())
     };
 
     assert_eq!(request.tools.len(), 2);
 }
 
-/// Test: RunAgentRequest with initial state
+/// Test: RunAgentInput with initial state
 /// Protocol: State object for agent execution context
 #[test]
 fn test_run_agent_request_with_state() {
@@ -9113,27 +9185,27 @@ fn test_run_agent_request_with_state() {
     });
 
     let request =
-        RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_state(initial_state.clone());
+        RunAgentInput::new("t1".to_string(), "r1".to_string()).with_state(initial_state.clone());
 
     assert_eq!(request.state, Some(initial_state));
 }
 
-/// Test: RunAgentRequest with parent run ID
+/// Test: RunAgentInput with parent run ID
 /// Protocol: parentRunId for branching/sub-agent runs
 #[test]
 fn test_run_agent_request_with_parent_run() {
     // Create request and set parent_run_id directly
-    let mut request = RunAgentRequest::new("t1".to_string(), "r2".to_string());
+    let mut request = RunAgentInput::new("t1".to_string(), "r2".to_string());
     request.parent_run_id = Some("r1".to_string());
 
     assert_eq!(request.parent_run_id, Some("r1".to_string()));
 }
 
-/// Test: RunAgentRequest serialization
+/// Test: RunAgentInput serialization
 #[test]
 fn test_run_agent_request_serialization() {
-    let request = RunAgentRequest::new("thread_1".to_string(), "run_1".to_string())
-        .with_message(AGUIMessage::user("test"))
+    let request = RunAgentInput::new("thread_1".to_string(), "run_1".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::user("test"))
         .with_state(json!({"key": "value"}));
 
     let json = serde_json::to_string(&request).unwrap();
@@ -9142,7 +9214,7 @@ fn test_run_agent_request_serialization() {
     assert!(json.contains(r#""messages":[{"role":"user""#));
 }
 
-/// Test: RunAgentRequest deserialization
+/// Test: RunAgentInput deserialization
 #[test]
 fn test_run_agent_request_deserialization() {
     let json = r#"{
@@ -9156,7 +9228,7 @@ fn test_run_agent_request_deserialization() {
         "state": {"counter": 5}
     }"#;
 
-    let request: RunAgentRequest = serde_json::from_str(json).unwrap();
+    let request: RunAgentInput = serde_json::from_str(json).unwrap();
     assert_eq!(request.thread_id, "t1");
     assert_eq!(request.run_id, "r1");
     assert_eq!(request.messages.len(), 2);
@@ -9164,7 +9236,7 @@ fn test_run_agent_request_deserialization() {
 }
 
 // ============================================================================
-// AGUIToolDef Tests
+// Tool Tests
 // ============================================================================
 //
 // Per AG-UI spec: Tool with name, description, and parameters (JSON Schema)
@@ -9175,7 +9247,7 @@ fn test_run_agent_request_deserialization() {
 /// Protocol: Backend tools execute on agent side
 #[test]
 fn test_agui_tool_def_backend() {
-    let tool = AGUIToolDef::backend("search", "Search for information");
+    let tool = tirea_protocol_ag_ui::Tool::backend("search", "Search for information");
 
     assert_eq!(tool.name, "search");
     assert_eq!(tool.description, "Search for information");
@@ -9190,7 +9262,7 @@ fn test_agui_tool_def_backend() {
 /// Protocol: Frontend tools execute on client side
 #[test]
 fn test_agui_tool_def_frontend() {
-    let tool = AGUIToolDef::frontend("showNotification", "Display a notification");
+    let tool = tirea_protocol_ag_ui::Tool::frontend("showNotification", "Display a notification");
 
     assert_eq!(tool.name, "showNotification");
     assert_eq!(tool.execute, ToolExecutionLocation::Frontend);
@@ -9213,7 +9285,8 @@ fn test_agui_tool_def_with_schema() {
         "required": ["query"]
     });
 
-    let tool = AGUIToolDef::backend("search", "Search").with_parameters(schema.clone());
+    let tool =
+        tirea_protocol_ag_ui::Tool::backend("search", "Search").with_parameters(schema.clone());
 
     assert_eq!(tool.parameters, Some(schema));
 }
@@ -9221,13 +9294,14 @@ fn test_agui_tool_def_with_schema() {
 /// Test: Tool serialization with all fields
 #[test]
 fn test_agui_tool_def_full_serialization() {
-    let tool = AGUIToolDef::frontend("readFile", "Read a file from disk").with_parameters(json!({
-        "type": "object",
-        "properties": {
-            "path": {"type": "string"}
-        },
-        "required": ["path"]
-    }));
+    let tool = tirea_protocol_ag_ui::Tool::frontend("readFile", "Read a file from disk")
+        .with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"}
+            },
+            "required": ["path"]
+        }));
 
     let json = serde_json::to_string(&tool).unwrap();
     assert!(json.contains(r#""name":"readFile""#));
@@ -9249,8 +9323,8 @@ fn test_agui_tool_def_full_serialization() {
 /// Protocol: Run can be canceled, resulting in RUN_ERROR or no RUN_FINISHED
 #[test]
 fn test_event_sequence_canceled_run() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
-    let mut events: Vec<AGUIEvent> = Vec::new();
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut events: Vec<Event> = Vec::new();
 
     // Run starts
     let start = AgentEvent::RunStart {
@@ -9277,20 +9351,16 @@ fn test_event_sequence_canceled_run() {
     events.extend(cancel_events);
 
     // Verify run started
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, AGUIEvent::RunStarted { .. })));
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, AGUIEvent::RunError { .. })));
+    assert!(events.iter().any(|e| matches!(e, Event::RunStarted { .. })));
+    assert!(events.iter().any(|e| matches!(e, Event::RunError { .. })));
 }
 
 /// Test: Error during text streaming
 /// Protocol: Error interrupts text stream
 #[test]
 fn test_error_interrupts_text_stream() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
-    let mut events: Vec<AGUIEvent> = Vec::new();
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut events: Vec<Event> = Vec::new();
 
     // Text starts
     let text = AgentEvent::TextDelta {
@@ -9307,15 +9377,15 @@ fn test_error_interrupts_text_stream() {
     // Should have TEXT_MESSAGE_START and possibly TEXT_MESSAGE_END before error
     assert!(events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+        .any(|e| matches!(e, Event::TextMessageStart { .. })));
 }
 
 /// Test: Multiple text messages in sequence
 /// Protocol: Each new message gets its own START/END pair
 #[test]
 fn test_multiple_text_messages() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
-    let mut events: Vec<AGUIEvent> = Vec::new();
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut events: Vec<Event> = Vec::new();
 
     // First message
     let text1 = AgentEvent::TextDelta {
@@ -9333,7 +9403,7 @@ fn test_multiple_text_messages() {
     events.extend(ctx.on_agent_event(&finish1));
 
     // Reset context for new message
-    ctx = AGUIContext::new("t1".into(), "r2".into());
+    ctx = AgUiEventContext::new("t1".into(), "r2".into());
 
     // Second message
     let text2 = AgentEvent::TextDelta {
@@ -9344,7 +9414,7 @@ fn test_multiple_text_messages() {
     // Count TEXT_MESSAGE_START events
     let start_count = events
         .iter()
-        .filter(|e| matches!(e, AGUIEvent::TextMessageStart { .. }))
+        .filter(|e| matches!(e, Event::TextMessageStart { .. }))
         .count();
     assert_eq!(start_count, 2, "Should have 2 TEXT_MESSAGE_START events");
 }
@@ -9361,7 +9431,7 @@ fn test_multiple_text_messages() {
 /// Protocol: Snapshot can be empty object
 #[test]
 fn test_empty_state_snapshot() {
-    let event = AGUIEvent::state_snapshot(json!({}));
+    let event = Event::state_snapshot(json!({}));
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""type":"STATE_SNAPSHOT""#));
@@ -9372,7 +9442,7 @@ fn test_empty_state_snapshot() {
 /// Protocol: Delta with no operations
 #[test]
 fn test_empty_state_delta() {
-    let event = AGUIEvent::state_delta(vec![]);
+    let event = Event::state_delta(vec![]);
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""type":"STATE_DELTA""#));
@@ -9391,9 +9461,9 @@ fn test_state_with_nested_arrays() {
         ]
     });
 
-    let event = AGUIEvent::state_snapshot(complex_state.clone());
+    let event = Event::state_snapshot(complex_state.clone());
 
-    if let AGUIEvent::StateSnapshot { snapshot, .. } = event {
+    if let Event::StateSnapshot { snapshot, .. } = event {
         assert_eq!(snapshot["matrix"][0][0], 1);
         assert_eq!(snapshot["records"][0]["tags"][1], "b");
     }
@@ -9410,9 +9480,9 @@ fn test_state_delta_array_operations() {
         json!({"op": "remove", "path": "/items/2"}),
     ];
 
-    let event = AGUIEvent::state_delta(delta);
+    let event = Event::state_delta(delta);
 
-    if let AGUIEvent::StateDelta { delta: d, .. } = event {
+    if let Event::StateDelta { delta: d, .. } = event {
         assert_eq!(d.len(), 4);
         assert_eq!(d[0]["path"], "/items/0");
         assert_eq!(d[1]["path"], "/items/-"); // "-" means append
@@ -9430,7 +9500,7 @@ fn test_state_delta_array_operations() {
 /// Protocol: Tool can have no arguments
 #[test]
 fn test_tool_call_empty_args() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     let start = AgentEvent::ToolCallStart {
         id: "call_1".into(),
@@ -9440,14 +9510,14 @@ fn test_tool_call_empty_args() {
 
     assert!(events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
+        .any(|e| matches!(e, Event::ToolCallStart { .. })));
 }
 
 /// Test: Tool call with nested JSON arguments
 /// Protocol: Arguments can be complex JSON
 #[test]
 fn test_tool_call_complex_args() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     let args = AgentEvent::ToolCallDelta {
         id: "call_1".into(),
@@ -9464,7 +9534,7 @@ fn test_tool_call_complex_args() {
     };
     let events = ctx.on_agent_event(&args);
 
-    if let Some(AGUIEvent::ToolCallArgs { delta, .. }) = events.first() {
+    if let Some(Event::ToolCallArgs { delta, .. }) = events.first() {
         let parsed: Value = serde_json::from_str(delta).unwrap();
         assert_eq!(parsed["config"]["nested"]["deep"]["value"][0], 1);
     }
@@ -9474,7 +9544,7 @@ fn test_tool_call_complex_args() {
 /// Protocol: Tool can return with warning status
 #[test]
 fn test_tool_result_with_warning_status() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     let done = AgentEvent::ToolCallDone {
         id: "call_1".into(),
@@ -9486,14 +9556,14 @@ fn test_tool_result_with_warning_status() {
 
     assert!(events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::ToolCallResult { .. })));
+        .any(|e| matches!(e, Event::ToolCallResult { .. })));
 }
 
 /// Test: Tool result with pending status
 /// Protocol: Tool can indicate async/pending execution
 #[test]
 fn test_tool_result_with_pending_status() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     let done = AgentEvent::ToolCallDone {
         id: "call_1".into(),
@@ -9503,7 +9573,7 @@ fn test_tool_result_with_pending_status() {
     };
     let events = ctx.on_agent_event(&done);
 
-    if let Some(AGUIEvent::ToolCallResult { content, .. }) = events.first() {
+    if let Some(Event::ToolCallResult { content, .. }) = events.first() {
         let parsed: Value = serde_json::from_str(content).unwrap();
         assert_eq!(parsed["status"], "pending");
     }
@@ -9513,13 +9583,13 @@ fn test_tool_result_with_pending_status() {
 // Request Validation Edge Cases
 // ============================================================================
 //
-// Per AG-UI spec: Input validation for RunAgentRequest
+// Per AG-UI spec: Input validation for RunAgentInput
 //
 
 /// Test: Request with empty thread ID (should be valid per protocol)
 #[test]
 fn test_request_empty_thread_id() {
-    let request = RunAgentRequest::new("".to_string(), "r1".to_string());
+    let request = RunAgentInput::new("".to_string(), "r1".to_string());
     assert_eq!(request.thread_id, "");
     // Note: Empty thread ID is technically valid JSON, validation is app-level
 }
@@ -9528,7 +9598,7 @@ fn test_request_empty_thread_id() {
 #[test]
 fn test_request_long_ids() {
     let long_id = "x".repeat(1000);
-    let request = RunAgentRequest::new(long_id.clone(), long_id.clone());
+    let request = RunAgentInput::new(long_id.clone(), long_id.clone());
 
     assert_eq!(request.thread_id.len(), 1000);
     assert_eq!(request.run_id.len(), 1000);
@@ -9538,22 +9608,24 @@ fn test_request_long_ids() {
 #[test]
 fn test_request_special_char_ids() {
     let special_id = "thread-123_abc.xyz:456";
-    let request = RunAgentRequest::new(special_id.to_string(), "run-1".to_string());
+    let request = RunAgentInput::new(special_id.to_string(), "run-1".to_string());
 
     let json = serde_json::to_string(&request).unwrap();
-    let parsed: RunAgentRequest = serde_json::from_str(&json).unwrap();
+    let parsed: RunAgentInput = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.thread_id, special_id);
 }
 
 /// Test: Request with Unicode in messages
 #[test]
 fn test_request_unicode_messages() {
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::user("Hello! 你好！こんにちは！🎉"))
-        .with_message(AGUIMessage::assistant("Привет! مرحبا"));
+    let request = RunAgentInput::new("t1".to_string(), "r1".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::user(
+            "Hello! 你好！こんにちは！🎉",
+        ))
+        .with_message(tirea_protocol_ag_ui::Message::assistant("Привет! مرحبا"));
 
     let json = serde_json::to_string(&request).unwrap();
-    let parsed: RunAgentRequest = serde_json::from_str(&json).unwrap();
+    let parsed: RunAgentInput = serde_json::from_str(&json).unwrap();
 
     assert!(parsed.messages[0].content.contains("你好"));
     assert!(parsed.messages[0].content.contains("🎉"));
@@ -9616,11 +9688,11 @@ fn test_interaction_response_with_data() {
 // Per AG-UI spec: Context management across events
 //
 
-/// Test: AGUIContext message ID generation
+/// Test: AgUiEventContext message ID generation
 /// Protocol: Unique message IDs across a run
 #[test]
 fn test_context_message_id_uniqueness() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     let id1 = ctx.new_message_id();
     let id2 = ctx.new_message_id();
@@ -9631,11 +9703,11 @@ fn test_context_message_id_uniqueness() {
     assert_ne!(id1, id3);
 }
 
-/// Test: AGUIContext step name tracking
+/// Test: AgUiEventContext step name tracking
 /// Protocol: Steps are numbered sequentially
 #[test]
 fn test_context_step_name_sequence() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     let step1 = ctx.next_step_name();
     let step2 = ctx.next_step_name();
@@ -9647,11 +9719,11 @@ fn test_context_step_name_sequence() {
     assert_ne!(step2, step3);
 }
 
-/// Test: AGUIContext text stream state tracking
+/// Test: AgUiEventContext text stream state tracking
 /// Protocol: Tracks whether text is currently streaming
 #[test]
 fn test_context_text_stream_state() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     // Start streaming returns true (was not started before)
     let was_started = ctx.start_text();
@@ -9686,9 +9758,9 @@ fn test_context_text_stream_state() {
 #[test]
 fn test_with_timestamp_run_started() {
     let ts = 1704067200000u64; // 2024-01-01 00:00:00 UTC
-    let event = AGUIEvent::run_started("t1", "r1", None).with_timestamp(ts);
+    let event = Event::run_started("t1", "r1", None).with_timestamp(ts);
 
-    if let AGUIEvent::RunStarted { base, .. } = &event {
+    if let Event::RunStarted { base, .. } = &event {
         assert_eq!(base.timestamp, Some(ts));
     } else {
         panic!("Expected RunStarted");
@@ -9703,9 +9775,9 @@ fn test_with_timestamp_run_started() {
 #[test]
 fn test_with_timestamp_run_finished() {
     let ts = 1704067200000u64;
-    let event = AGUIEvent::run_finished("t1", "r1", None).with_timestamp(ts);
+    let event = Event::run_finished("t1", "r1", None).with_timestamp(ts);
 
-    if let AGUIEvent::RunFinished { base, .. } = &event {
+    if let Event::RunFinished { base, .. } = &event {
         assert_eq!(base.timestamp, Some(ts));
     } else {
         panic!("Expected RunFinished");
@@ -9717,9 +9789,9 @@ fn test_with_timestamp_run_finished() {
 #[test]
 fn test_with_timestamp_run_error() {
     let ts = 1704067200000u64;
-    let event = AGUIEvent::run_error("error", None).with_timestamp(ts);
+    let event = Event::run_error("error", None).with_timestamp(ts);
 
-    if let AGUIEvent::RunError { base, .. } = &event {
+    if let Event::RunError { base, .. } = &event {
         assert_eq!(base.timestamp, Some(ts));
     } else {
         panic!("Expected RunError");
@@ -9731,9 +9803,9 @@ fn test_with_timestamp_run_error() {
 #[test]
 fn test_with_timestamp_step_started() {
     let ts = 1704067200000u64;
-    let event = AGUIEvent::step_started("step1").with_timestamp(ts);
+    let event = Event::step_started("step1").with_timestamp(ts);
 
-    if let AGUIEvent::StepStarted { base, .. } = &event {
+    if let Event::StepStarted { base, .. } = &event {
         assert_eq!(base.timestamp, Some(ts));
     } else {
         panic!("Expected StepStarted");
@@ -9745,9 +9817,9 @@ fn test_with_timestamp_step_started() {
 #[test]
 fn test_with_timestamp_step_finished() {
     let ts = 1704067200000u64;
-    let event = AGUIEvent::step_finished("step1").with_timestamp(ts);
+    let event = Event::step_finished("step1").with_timestamp(ts);
 
-    if let AGUIEvent::StepFinished { base, .. } = &event {
+    if let Event::StepFinished { base, .. } = &event {
         assert_eq!(base.timestamp, Some(ts));
     } else {
         panic!("Expected StepFinished");
@@ -9759,9 +9831,9 @@ fn test_with_timestamp_step_finished() {
 #[test]
 fn test_with_timestamp_text_message_start() {
     let ts = 1704067200000u64;
-    let event = AGUIEvent::text_message_start("msg1").with_timestamp(ts);
+    let event = Event::text_message_start("msg1").with_timestamp(ts);
 
-    if let AGUIEvent::TextMessageStart { base, .. } = &event {
+    if let Event::TextMessageStart { base, .. } = &event {
         assert_eq!(base.timestamp, Some(ts));
     } else {
         panic!("Expected TextMessageStart");
@@ -9773,9 +9845,9 @@ fn test_with_timestamp_text_message_start() {
 #[test]
 fn test_with_timestamp_text_message_content() {
     let ts = 1704067200000u64;
-    let event = AGUIEvent::text_message_content("msg1", "hello").with_timestamp(ts);
+    let event = Event::text_message_content("msg1", "hello").with_timestamp(ts);
 
-    if let AGUIEvent::TextMessageContent { base, .. } = &event {
+    if let Event::TextMessageContent { base, .. } = &event {
         assert_eq!(base.timestamp, Some(ts));
     } else {
         panic!("Expected TextMessageContent");
@@ -9787,9 +9859,9 @@ fn test_with_timestamp_text_message_content() {
 #[test]
 fn test_with_timestamp_text_message_end() {
     let ts = 1704067200000u64;
-    let event = AGUIEvent::text_message_end("msg1").with_timestamp(ts);
+    let event = Event::text_message_end("msg1").with_timestamp(ts);
 
-    if let AGUIEvent::TextMessageEnd { base, .. } = &event {
+    if let Event::TextMessageEnd { base, .. } = &event {
         assert_eq!(base.timestamp, Some(ts));
     } else {
         panic!("Expected TextMessageEnd");
@@ -9801,10 +9873,10 @@ fn test_with_timestamp_text_message_end() {
 #[test]
 fn test_with_timestamp_text_message_chunk() {
     let ts = 1704067200000u64;
-    let event = AGUIEvent::text_message_chunk(Some("msg1".into()), None, Some("hi".into()))
-        .with_timestamp(ts);
+    let event =
+        Event::text_message_chunk(Some("msg1".into()), None, Some("hi".into())).with_timestamp(ts);
 
-    if let AGUIEvent::TextMessageChunk { base, .. } = &event {
+    if let Event::TextMessageChunk { base, .. } = &event {
         assert_eq!(base.timestamp, Some(ts));
     } else {
         panic!("Expected TextMessageChunk");
@@ -9816,9 +9888,9 @@ fn test_with_timestamp_text_message_chunk() {
 #[test]
 fn test_with_timestamp_tool_call_start() {
     let ts = 1704067200000u64;
-    let event = AGUIEvent::tool_call_start("call1", "search", None).with_timestamp(ts);
+    let event = Event::tool_call_start("call1", "search", None).with_timestamp(ts);
 
-    if let AGUIEvent::ToolCallStart { base, .. } = &event {
+    if let Event::ToolCallStart { base, .. } = &event {
         assert_eq!(base.timestamp, Some(ts));
     } else {
         panic!("Expected ToolCallStart");
@@ -9830,9 +9902,9 @@ fn test_with_timestamp_tool_call_start() {
 #[test]
 fn test_with_timestamp_tool_call_args() {
     let ts = 1704067200000u64;
-    let event = AGUIEvent::tool_call_args("call1", "{}").with_timestamp(ts);
+    let event = Event::tool_call_args("call1", "{}").with_timestamp(ts);
 
-    if let AGUIEvent::ToolCallArgs { base, .. } = &event {
+    if let Event::ToolCallArgs { base, .. } = &event {
         assert_eq!(base.timestamp, Some(ts));
     } else {
         panic!("Expected ToolCallArgs");
@@ -9844,9 +9916,9 @@ fn test_with_timestamp_tool_call_args() {
 #[test]
 fn test_with_timestamp_tool_call_end() {
     let ts = 1704067200000u64;
-    let event = AGUIEvent::tool_call_end("call1").with_timestamp(ts);
+    let event = Event::tool_call_end("call1").with_timestamp(ts);
 
-    if let AGUIEvent::ToolCallEnd { base, .. } = &event {
+    if let Event::ToolCallEnd { base, .. } = &event {
         assert_eq!(base.timestamp, Some(ts));
     } else {
         panic!("Expected ToolCallEnd");
@@ -9858,9 +9930,9 @@ fn test_with_timestamp_tool_call_end() {
 #[test]
 fn test_with_timestamp_tool_call_result() {
     let ts = 1704067200000u64;
-    let event = AGUIEvent::tool_call_result("msg1", "call1", "result").with_timestamp(ts);
+    let event = Event::tool_call_result("msg1", "call1", "result").with_timestamp(ts);
 
-    if let AGUIEvent::ToolCallResult { base, .. } = &event {
+    if let Event::ToolCallResult { base, .. } = &event {
         assert_eq!(base.timestamp, Some(ts));
     } else {
         panic!("Expected ToolCallResult");
@@ -9872,10 +9944,10 @@ fn test_with_timestamp_tool_call_result() {
 #[test]
 fn test_with_timestamp_tool_call_chunk() {
     let ts = 1704067200000u64;
-    let event = AGUIEvent::tool_call_chunk(Some("call1".into()), None, None, Some("{}".into()))
+    let event = Event::tool_call_chunk(Some("call1".into()), None, None, Some("{}".into()))
         .with_timestamp(ts);
 
-    if let AGUIEvent::ToolCallChunk { base, .. } = &event {
+    if let Event::ToolCallChunk { base, .. } = &event {
         assert_eq!(base.timestamp, Some(ts));
     } else {
         panic!("Expected ToolCallChunk");
@@ -9887,9 +9959,9 @@ fn test_with_timestamp_tool_call_chunk() {
 #[test]
 fn test_with_timestamp_state_snapshot() {
     let ts = 1704067200000u64;
-    let event = AGUIEvent::state_snapshot(json!({})).with_timestamp(ts);
+    let event = Event::state_snapshot(json!({})).with_timestamp(ts);
 
-    if let AGUIEvent::StateSnapshot { base, .. } = &event {
+    if let Event::StateSnapshot { base, .. } = &event {
         assert_eq!(base.timestamp, Some(ts));
     } else {
         panic!("Expected StateSnapshot");
@@ -9901,9 +9973,9 @@ fn test_with_timestamp_state_snapshot() {
 #[test]
 fn test_with_timestamp_state_delta() {
     let ts = 1704067200000u64;
-    let event = AGUIEvent::state_delta(vec![]).with_timestamp(ts);
+    let event = Event::state_delta(vec![]).with_timestamp(ts);
 
-    if let AGUIEvent::StateDelta { base, .. } = &event {
+    if let Event::StateDelta { base, .. } = &event {
         assert_eq!(base.timestamp, Some(ts));
     } else {
         panic!("Expected StateDelta");
@@ -9915,9 +9987,9 @@ fn test_with_timestamp_state_delta() {
 #[test]
 fn test_with_timestamp_messages_snapshot() {
     let ts = 1704067200000u64;
-    let event = AGUIEvent::messages_snapshot(vec![]).with_timestamp(ts);
+    let event = Event::messages_snapshot(vec![]).with_timestamp(ts);
 
-    if let AGUIEvent::MessagesSnapshot { base, .. } = &event {
+    if let Event::MessagesSnapshot { base, .. } = &event {
         assert_eq!(base.timestamp, Some(ts));
     } else {
         panic!("Expected MessagesSnapshot");
@@ -9931,9 +10003,9 @@ fn test_with_timestamp_activity_snapshot() {
     use std::collections::HashMap;
     let ts = 1704067200000u64;
     let event =
-        AGUIEvent::activity_snapshot("act1", "progress", HashMap::new(), None).with_timestamp(ts);
+        Event::activity_snapshot("act1", "progress", HashMap::new(), None).with_timestamp(ts);
 
-    if let AGUIEvent::ActivitySnapshot { base, .. } = &event {
+    if let Event::ActivitySnapshot { base, .. } = &event {
         assert_eq!(base.timestamp, Some(ts));
     } else {
         panic!("Expected ActivitySnapshot");
@@ -9945,9 +10017,9 @@ fn test_with_timestamp_activity_snapshot() {
 #[test]
 fn test_with_timestamp_activity_delta() {
     let ts = 1704067200000u64;
-    let event = AGUIEvent::activity_delta("act1", "progress", vec![]).with_timestamp(ts);
+    let event = Event::activity_delta("act1", "progress", vec![]).with_timestamp(ts);
 
-    if let AGUIEvent::ActivityDelta { base, .. } = &event {
+    if let Event::ActivityDelta { base, .. } = &event {
         assert_eq!(base.timestamp, Some(ts));
     } else {
         panic!("Expected ActivityDelta");
@@ -9959,9 +10031,9 @@ fn test_with_timestamp_activity_delta() {
 #[test]
 fn test_with_timestamp_raw() {
     let ts = 1704067200000u64;
-    let event = AGUIEvent::raw(json!({}), None).with_timestamp(ts);
+    let event = Event::raw(json!({}), None).with_timestamp(ts);
 
-    if let AGUIEvent::Raw { base, .. } = &event {
+    if let Event::Raw { base, .. } = &event {
         assert_eq!(base.timestamp, Some(ts));
     } else {
         panic!("Expected Raw");
@@ -9973,9 +10045,9 @@ fn test_with_timestamp_raw() {
 #[test]
 fn test_with_timestamp_custom() {
     let ts = 1704067200000u64;
-    let event = AGUIEvent::custom("my_event", json!({})).with_timestamp(ts);
+    let event = Event::custom("my_event", json!({})).with_timestamp(ts);
 
-    if let AGUIEvent::Custom { base, .. } = &event {
+    if let Event::Custom { base, .. } = &event {
         assert_eq!(base.timestamp, Some(ts));
     } else {
         panic!("Expected Custom");
@@ -9994,7 +10066,7 @@ fn test_with_timestamp_custom() {
 /// Protocol: Timestamps in milliseconds since epoch per AG-UI spec
 #[test]
 fn test_now_millis_returns_positive() {
-    let ts = AGUIEvent::now_millis();
+    let ts = Event::now_millis();
     // Should be a reasonable Unix timestamp in milliseconds (after 2020)
     assert!(ts > 1577836800000, "Timestamp should be after 2020-01-01");
 }
@@ -10003,9 +10075,9 @@ fn test_now_millis_returns_positive() {
 /// Protocol: Timestamps should be monotonically increasing
 #[test]
 fn test_now_millis_increases() {
-    let ts1 = AGUIEvent::now_millis();
+    let ts1 = Event::now_millis();
     std::thread::sleep(std::time::Duration::from_millis(1));
-    let ts2 = AGUIEvent::now_millis();
+    let ts2 = Event::now_millis();
     assert!(ts2 >= ts1, "Second timestamp should be >= first");
 }
 
@@ -10013,8 +10085,8 @@ fn test_now_millis_increases() {
 /// Protocol: Integration of now_millis with event creation
 #[test]
 fn test_now_millis_with_event() {
-    let ts = AGUIEvent::now_millis();
-    let event = AGUIEvent::run_started("t1", "r1", None).with_timestamp(ts);
+    let ts = Event::now_millis();
+    let event = Event::run_started("t1", "r1", None).with_timestamp(ts);
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(&format!(r#""timestamp":{}"#, ts)));
@@ -10032,7 +10104,7 @@ fn test_now_millis_with_event() {
 /// Protocol: Check if request contains any interaction responses
 #[test]
 fn test_has_any_interaction_responses_empty() {
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string());
+    let request = RunAgentInput::new("t1".to_string(), "r1".to_string());
     let plugin = interaction_plugin_from_request(&request);
 
     assert!(!plugin.has_responses());
@@ -10042,8 +10114,9 @@ fn test_has_any_interaction_responses_empty() {
 /// Protocol: Tool messages in request indicate interaction responses
 #[test]
 fn test_has_any_interaction_responses_with_tool_messages() {
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::tool("approved", "interaction_1"));
+    let request = RunAgentInput::new("t1".to_string(), "r1".to_string()).with_message(
+        tirea_protocol_ag_ui::Message::tool("approved", "interaction_1"),
+    );
 
     let plugin = interaction_plugin_from_request(&request);
     assert!(plugin.has_responses());
@@ -10053,11 +10126,11 @@ fn test_has_any_interaction_responses_with_tool_messages() {
 /// Protocol: Multiple interaction responses in single request
 #[test]
 fn test_has_any_interaction_responses_multiple() {
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::user("Hello"))
-        .with_message(AGUIMessage::tool("yes", "perm_1"))
-        .with_message(AGUIMessage::tool("no", "perm_2"))
-        .with_message(AGUIMessage::assistant("Processing..."));
+    let request = RunAgentInput::new("t1".to_string(), "r1".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::user("Hello"))
+        .with_message(tirea_protocol_ag_ui::Message::tool("yes", "perm_1"))
+        .with_message(tirea_protocol_ag_ui::Message::tool("no", "perm_2"))
+        .with_message(tirea_protocol_ag_ui::Message::assistant("Processing..."));
 
     let plugin = interaction_plugin_from_request(&request);
     assert!(plugin.has_responses());
@@ -10067,48 +10140,48 @@ fn test_has_any_interaction_responses_multiple() {
 /// Protocol: Only tool messages count as interaction responses
 #[test]
 fn test_has_any_interaction_responses_only_counts_tool_messages() {
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::user("Hello"))
-        .with_message(AGUIMessage::assistant("Hi!"))
-        .with_message(AGUIMessage::system("Be helpful"));
+    let request = RunAgentInput::new("t1".to_string(), "r1".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::user("Hello"))
+        .with_message(tirea_protocol_ag_ui::Message::assistant("Hi!"))
+        .with_message(tirea_protocol_ag_ui::Message::system("Be helpful"));
 
     let plugin = interaction_plugin_from_request(&request);
     assert!(!plugin.has_responses());
 }
 
 // ============================================================================
-// AG-UI Protocol Spec Tests - RunAgentRequest.has_any_interaction_responses
+// AG-UI Protocol Spec Tests - RunAgentInput.has_any_interaction_responses
 // ============================================================================
 //
 // AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
-// Method on RunAgentRequest to check for interaction responses directly
+// Method on RunAgentInput to check for interaction responses directly
 //
 
-/// Test: RunAgentRequest.has_any_interaction_responses returns false when empty
+/// Test: RunAgentInput.has_any_interaction_responses returns false when empty
 /// Protocol: Check if request contains any interaction responses
 #[test]
 fn test_run_agent_request_has_any_interaction_responses_empty() {
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string());
+    let request = RunAgentInput::new("t1".to_string(), "r1".to_string());
     assert!(!request.has_any_interaction_responses());
 }
 
-/// Test: RunAgentRequest.has_any_interaction_responses with a tool message
+/// Test: RunAgentInput.has_any_interaction_responses with a tool message
 /// Protocol: Tool messages indicate interaction responses
 #[test]
 fn test_run_agent_request_has_any_interaction_responses_with_tool_message() {
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::tool("approved", "int_1"));
+    let request = RunAgentInput::new("t1".to_string(), "r1".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::tool("approved", "int_1"));
 
     assert!(request.has_any_interaction_responses());
 }
 
-/// Test: RunAgentRequest.has_any_interaction_responses ignores non-tool messages
+/// Test: RunAgentInput.has_any_interaction_responses ignores non-tool messages
 /// Protocol: Only tool messages count as interaction responses
 #[test]
 fn test_run_agent_request_has_any_interaction_responses_non_tool() {
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::user("Hello"))
-        .with_message(AGUIMessage::assistant("Hi!"));
+    let request = RunAgentInput::new("t1".to_string(), "r1".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::user("Hello"))
+        .with_message(tirea_protocol_ag_ui::Message::assistant("Hi!"));
 
     assert!(!request.has_any_interaction_responses());
 }
@@ -10125,12 +10198,12 @@ fn test_run_agent_request_has_any_interaction_responses_non_tool() {
 /// Protocol: DeveloperMessage role per https://docs.ag-ui.com/concepts/messages
 #[test]
 fn test_message_role_developer() {
-    let role = MessageRole::Developer;
+    let role = Role::Developer;
     let json = serde_json::to_string(&role).unwrap();
     assert_eq!(json, r#""developer""#);
 
-    let parsed: MessageRole = serde_json::from_str(r#""developer""#).unwrap();
-    assert_eq!(parsed, MessageRole::Developer);
+    let parsed: Role = serde_json::from_str(r#""developer""#).unwrap();
+    assert_eq!(parsed, Role::Developer);
 }
 
 /// Test: All message roles serialization roundtrip
@@ -10138,18 +10211,18 @@ fn test_message_role_developer() {
 #[test]
 fn test_all_message_roles_roundtrip() {
     let roles = vec![
-        (MessageRole::User, "user"),
-        (MessageRole::Assistant, "assistant"),
-        (MessageRole::System, "system"),
-        (MessageRole::Tool, "tool"),
-        (MessageRole::Developer, "developer"),
+        (Role::User, "user"),
+        (Role::Assistant, "assistant"),
+        (Role::System, "system"),
+        (Role::Tool, "tool"),
+        (Role::Developer, "developer"),
     ];
 
     for (role, expected_str) in roles {
         let json = serde_json::to_string(&role).unwrap();
         assert_eq!(json, format!(r#""{}""#, expected_str));
 
-        let parsed: MessageRole = serde_json::from_str(&json).unwrap();
+        let parsed: Role = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, role);
     }
 }
@@ -10159,8 +10232,8 @@ fn test_all_message_roles_roundtrip() {
 /// Reference: https://docs.ag-ui.com/sdk/js/core/events
 #[test]
 fn test_message_role_default_is_assistant() {
-    let role = MessageRole::default();
-    assert_eq!(role, MessageRole::Assistant);
+    let role = Role::default();
+    assert_eq!(role, Role::Assistant);
 }
 
 // ============================================================================
@@ -10171,13 +10244,13 @@ fn test_message_role_default_is_assistant() {
 // BaseEvent.rawEvent: Optional passthrough for external system events
 //
 
-/// Test: BaseEventFields with rawEvent
+/// Test: BaseEvent with rawEvent
 /// Protocol: rawEvent field in BaseEvent for external system passthrough
 #[test]
 fn test_base_event_fields_with_raw_event() {
-    use tirea_protocol_ag_ui::BaseEventFields;
+    use tirea_protocol_ag_ui::BaseEvent;
 
-    let base = BaseEventFields {
+    let base = BaseEvent {
         timestamp: Some(1234567890),
         raw_event: Some(json!({"external": "data", "model": "gpt-4"})),
     };
@@ -10188,13 +10261,13 @@ fn test_base_event_fields_with_raw_event() {
     assert!(json.contains(r#""external":"data""#));
 }
 
-/// Test: BaseEventFields without rawEvent serializes correctly
+/// Test: BaseEvent without rawEvent serializes correctly
 /// Protocol: rawEvent is optional and omitted when None
 #[test]
 fn test_base_event_fields_without_raw_event() {
-    use tirea_protocol_ag_ui::BaseEventFields;
+    use tirea_protocol_ag_ui::BaseEvent;
 
-    let base = BaseEventFields {
+    let base = BaseEvent {
         timestamp: Some(1234567890),
         raw_event: None,
     };
@@ -10214,10 +10287,10 @@ fn test_event_with_raw_event_passthrough() {
         "usage": {"input_tokens": 100, "output_tokens": 50}
     });
 
-    let event = AGUIEvent::TextMessageContent {
+    let event = Event::TextMessageContent {
         message_id: "msg1".into(),
         delta: "Hello".into(),
-        base: tirea_protocol_ag_ui::BaseEventFields {
+        base: tirea_protocol_ag_ui::BaseEvent {
             timestamp: Some(1234567890),
             raw_event: Some(external_response.clone()),
         },
@@ -10227,8 +10300,8 @@ fn test_event_with_raw_event_passthrough() {
     assert!(json.contains(r#""rawEvent""#));
     assert!(json.contains(r#""model":"claude-3""#));
 
-    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
-    if let AGUIEvent::TextMessageContent { base, .. } = parsed {
+    let parsed: Event = serde_json::from_str(&json).unwrap();
+    if let Event::TextMessageContent { base, .. } = parsed {
         assert!(base.raw_event.is_some());
         let raw = base.raw_event.unwrap();
         assert_eq!(raw["model"], "claude-3");
@@ -10247,8 +10320,8 @@ fn test_event_with_raw_event_passthrough() {
 /// Protocol: Lifecycle constraint per AG-UI spec
 #[test]
 fn test_run_started_is_first_event() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
-    let mut events: Vec<AGUIEvent> = Vec::new();
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut events: Vec<Event> = Vec::new();
 
     // Simulate a complete run
     let run_start = AgentEvent::RunStart {
@@ -10272,17 +10345,17 @@ fn test_run_started_is_first_event() {
     events.extend(ctx.on_agent_event(&finish));
 
     // First event must be RUN_STARTED
-    assert!(matches!(&events[0], AGUIEvent::RunStarted { .. }));
+    assert!(matches!(&events[0], Event::RunStarted { .. }));
 }
 
 /// Test: TEXT_MESSAGE_START role is always "assistant"
 /// Protocol: TEXT_MESSAGE_START.role per https://docs.ag-ui.com/sdk/js/core/events
 #[test]
 fn test_text_message_start_role_is_assistant() {
-    let event = AGUIEvent::text_message_start("msg1");
+    let event = Event::text_message_start("msg1");
 
-    if let AGUIEvent::TextMessageStart { role, .. } = &event {
-        assert_eq!(*role, MessageRole::Assistant);
+    if let Event::TextMessageStart { role, .. } = &event {
+        assert_eq!(*role, Role::Assistant);
     } else {
         panic!("Expected TextMessageStart");
     }
@@ -10296,9 +10369,9 @@ fn test_text_message_start_role_is_assistant() {
 #[test]
 fn test_text_message_content_empty_delta() {
     // Per protocol, delta should typically be non-empty, but empty is valid JSON
-    let event = AGUIEvent::text_message_content("msg1", "");
+    let event = Event::text_message_content("msg1", "");
 
-    if let AGUIEvent::TextMessageContent { delta, .. } = &event {
+    if let Event::TextMessageContent { delta, .. } = &event {
         assert_eq!(delta, "");
     }
 
@@ -10310,8 +10383,8 @@ fn test_text_message_content_empty_delta() {
 /// Protocol: TEXT_MESSAGE events must follow START → CONTENT* → END
 #[test]
 fn test_text_message_sequence_ordering() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
-    let mut events: Vec<AGUIEvent> = Vec::new();
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut events: Vec<Event> = Vec::new();
 
     // Generate a complete text message
     let text1 = AgentEvent::TextDelta {
@@ -10326,21 +10399,21 @@ fn test_text_message_sequence_ordering() {
 
     // End text stream
     ctx.end_text();
-    events.push(AGUIEvent::text_message_end(&ctx.message_id));
+    events.push(Event::text_message_end(&ctx.message_id));
 
     // Find indices
     let start_idx = events
         .iter()
-        .position(|e| matches!(e, AGUIEvent::TextMessageStart { .. }));
+        .position(|e| matches!(e, Event::TextMessageStart { .. }));
     let content_indices: Vec<usize> = events
         .iter()
         .enumerate()
-        .filter(|(_, e)| matches!(e, AGUIEvent::TextMessageContent { .. }))
+        .filter(|(_, e)| matches!(e, Event::TextMessageContent { .. }))
         .map(|(i, _)| i)
         .collect();
     let end_idx = events
         .iter()
-        .position(|e| matches!(e, AGUIEvent::TextMessageEnd { .. }));
+        .position(|e| matches!(e, Event::TextMessageEnd { .. }));
 
     // Verify ordering
     assert!(start_idx.is_some(), "Should have TEXT_MESSAGE_START");
@@ -10368,8 +10441,8 @@ fn test_text_message_sequence_ordering() {
 /// Protocol: TOOL_CALL events must follow START → ARGS* → END → RESULT
 #[test]
 fn test_tool_call_sequence_ordering() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
-    let mut events: Vec<AGUIEvent> = Vec::new();
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut events: Vec<Event> = Vec::new();
 
     let start = AgentEvent::ToolCallStart {
         id: "call_1".into(),
@@ -10401,19 +10474,19 @@ fn test_tool_call_sequence_ordering() {
     // Find indices
     let start_idx = events
         .iter()
-        .position(|e| matches!(e, AGUIEvent::ToolCallStart { .. }))
+        .position(|e| matches!(e, Event::ToolCallStart { .. }))
         .unwrap();
     let args_idx = events
         .iter()
-        .position(|e| matches!(e, AGUIEvent::ToolCallArgs { .. }))
+        .position(|e| matches!(e, Event::ToolCallArgs { .. }))
         .unwrap();
     let end_idx = events
         .iter()
-        .position(|e| matches!(e, AGUIEvent::ToolCallEnd { .. }))
+        .position(|e| matches!(e, Event::ToolCallEnd { .. }))
         .unwrap();
     let result_idx = events
         .iter()
-        .position(|e| matches!(e, AGUIEvent::ToolCallResult { .. }))
+        .position(|e| matches!(e, Event::ToolCallResult { .. }))
         .unwrap();
 
     // Verify ordering: START < ARGS < END < RESULT
@@ -10436,10 +10509,10 @@ fn test_tool_call_sequence_ordering() {
 #[test]
 fn test_run_finished_or_error_mutually_exclusive() {
     // A run should produce either RUN_FINISHED or RUN_ERROR, not both
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     // Simulate successful run
-    let success_events: Vec<AGUIEvent> = [
+    let success_events: Vec<Event> = [
         AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
@@ -10461,18 +10534,18 @@ fn test_run_finished_or_error_mutually_exclusive() {
 
     let has_finished = success_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::RunFinished { .. }));
+        .any(|e| matches!(e, Event::RunFinished { .. }));
     let has_error = success_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::RunError { .. }));
+        .any(|e| matches!(e, Event::RunError { .. }));
 
     // Done event emits RunFinished in AG-UI conversion
     assert!(has_finished, "Successful run should emit RUN_FINISHED");
     assert!(!has_error, "Successful run should not emit RUN_ERROR");
 
     // Simulate error run
-    let mut ctx2 = AGUIContext::new("t1".into(), "r2".into());
-    let error_events: Vec<AGUIEvent> = [
+    let mut ctx2 = AgUiEventContext::new("t1".into(), "r2".into());
+    let error_events: Vec<Event> = [
         AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r2".into(),
@@ -10488,10 +10561,10 @@ fn test_run_finished_or_error_mutually_exclusive() {
 
     let has_finished2 = error_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::RunFinished { .. }));
+        .any(|e| matches!(e, Event::RunFinished { .. }));
     let has_error2 = error_events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::RunError { .. }));
+        .any(|e| matches!(e, Event::RunError { .. }));
 
     assert!(
         !(has_finished2 && has_error2),
@@ -10504,9 +10577,9 @@ fn test_run_finished_or_error_mutually_exclusive() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_run_started_required_fields() {
-    let event = AGUIEvent::run_started("thread_123", "run_456", None);
+    let event = Event::run_started("thread_123", "run_456", None);
 
-    if let AGUIEvent::RunStarted {
+    if let Event::RunStarted {
         thread_id, run_id, ..
     } = &event
     {
@@ -10526,9 +10599,9 @@ fn test_run_started_required_fields() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_run_finished_required_fields() {
-    let event = AGUIEvent::run_finished("thread_123", "run_456", Some(json!({"answer": 42})));
+    let event = Event::run_finished("thread_123", "run_456", Some(json!({"answer": 42})));
 
-    if let AGUIEvent::RunFinished {
+    if let Event::RunFinished {
         thread_id,
         run_id,
         result,
@@ -10548,9 +10621,9 @@ fn test_run_finished_required_fields() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_run_error_required_fields() {
-    let event = AGUIEvent::run_error("Something went wrong", Some("ERR_001".into()));
+    let event = Event::run_error("Something went wrong", Some("ERR_001".into()));
 
-    if let AGUIEvent::RunError { message, code, .. } = &event {
+    if let Event::RunError { message, code, .. } = &event {
         assert!(!message.is_empty(), "message is required");
         assert_eq!(code.as_deref(), Some("ERR_001"));
     } else {
@@ -10558,8 +10631,8 @@ fn test_run_error_required_fields() {
     }
 
     // Without code
-    let event2 = AGUIEvent::run_error("Error message", None);
-    if let AGUIEvent::RunError { message, code, .. } = &event2 {
+    let event2 = Event::run_error("Error message", None);
+    if let Event::RunError { message, code, .. } = &event2 {
         assert!(!message.is_empty());
         assert!(code.is_none(), "code is optional");
     }
@@ -10580,17 +10653,17 @@ fn test_run_error_required_fields() {
 fn test_step_finished_name_matches_started() {
     let step_name = "data_processing";
 
-    let start = AGUIEvent::step_started(step_name);
-    let finish = AGUIEvent::step_finished(step_name);
+    let start = Event::step_started(step_name);
+    let finish = Event::step_finished(step_name);
 
     // Extract and compare step names
-    let start_name = if let AGUIEvent::StepStarted { step_name, .. } = &start {
+    let start_name = if let Event::StepStarted { step_name, .. } = &start {
         step_name.clone()
     } else {
         panic!("Expected StepStarted");
     };
 
-    let finish_name = if let AGUIEvent::StepFinished { step_name, .. } = &finish {
+    let finish_name = if let Event::StepFinished { step_name, .. } = &finish {
         step_name.clone()
     } else {
         panic!("Expected StepFinished");
@@ -10609,13 +10682,13 @@ fn test_step_finished_name_matches_started() {
 fn test_nested_steps_lifo_ordering() {
     // Simulate nested steps: outer → inner → innermost
     let events = vec![
-        AGUIEvent::step_started("outer"),
-        AGUIEvent::step_started("inner"),
-        AGUIEvent::step_started("innermost"),
+        Event::step_started("outer"),
+        Event::step_started("inner"),
+        Event::step_started("innermost"),
         // Must finish in reverse order
-        AGUIEvent::step_finished("innermost"),
-        AGUIEvent::step_finished("inner"),
-        AGUIEvent::step_finished("outer"),
+        Event::step_finished("innermost"),
+        Event::step_finished("inner"),
+        Event::step_finished("outer"),
     ];
 
     // Track step stack to verify LIFO
@@ -10623,10 +10696,10 @@ fn test_nested_steps_lifo_ordering() {
 
     for event in &events {
         match event {
-            AGUIEvent::StepStarted { step_name, .. } => {
+            Event::StepStarted { step_name, .. } => {
                 step_stack.push(step_name.clone());
             }
-            AGUIEvent::StepFinished { step_name, .. } => {
+            Event::StepFinished { step_name, .. } => {
                 let expected = step_stack.pop().expect("Step stack underflow");
                 assert_eq!(
                     step_name, &expected,
@@ -10646,8 +10719,8 @@ fn test_nested_steps_lifo_ordering() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_step_events_step_name_field() {
-    let start = AGUIEvent::step_started("my_step");
-    let finish = AGUIEvent::step_finished("my_step");
+    let start = Event::step_started("my_step");
+    let finish = Event::step_finished("my_step");
 
     let start_json = serde_json::to_string(&start).unwrap();
     let finish_json = serde_json::to_string(&finish).unwrap();
@@ -10672,16 +10745,16 @@ fn test_step_events_step_name_field() {
 fn test_text_content_message_id_references_start() {
     let message_id = "msg_abc123";
 
-    let start = AGUIEvent::text_message_start(message_id);
-    let content = AGUIEvent::text_message_content(message_id, "Hello");
+    let start = Event::text_message_start(message_id);
+    let content = Event::text_message_content(message_id, "Hello");
 
-    let start_id = if let AGUIEvent::TextMessageStart { message_id, .. } = &start {
+    let start_id = if let Event::TextMessageStart { message_id, .. } = &start {
         message_id.clone()
     } else {
         panic!("Expected TextMessageStart");
     };
 
-    let content_id = if let AGUIEvent::TextMessageContent { message_id, .. } = &content {
+    let content_id = if let Event::TextMessageContent { message_id, .. } = &content {
         message_id.clone()
     } else {
         panic!("Expected TextMessageContent");
@@ -10700,16 +10773,16 @@ fn test_text_content_message_id_references_start() {
 fn test_text_end_message_id_matches_start() {
     let message_id = "msg_xyz789";
 
-    let start = AGUIEvent::text_message_start(message_id);
-    let end = AGUIEvent::text_message_end(message_id);
+    let start = Event::text_message_start(message_id);
+    let end = Event::text_message_end(message_id);
 
-    let start_id = if let AGUIEvent::TextMessageStart { message_id, .. } = &start {
+    let start_id = if let Event::TextMessageStart { message_id, .. } = &start {
         message_id.clone()
     } else {
         panic!("Expected TextMessageStart");
     };
 
-    let end_id = if let AGUIEvent::TextMessageEnd { message_id, .. } = &end {
+    let end_id = if let Event::TextMessageEnd { message_id, .. } = &end {
         message_id.clone()
     } else {
         panic!("Expected TextMessageEnd");
@@ -10726,7 +10799,7 @@ fn test_text_end_message_id_matches_start() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_text_message_flow_consistent_message_id() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     let text1 = AgentEvent::TextDelta {
         delta: "Hello ".into(),
@@ -10743,9 +10816,9 @@ fn test_text_message_flow_consistent_message_id() {
 
     for event in events1.iter().chain(events2.iter()) {
         match event {
-            AGUIEvent::TextMessageStart { message_id, .. }
-            | AGUIEvent::TextMessageContent { message_id, .. }
-            | AGUIEvent::TextMessageEnd { message_id, .. } => {
+            Event::TextMessageStart { message_id, .. }
+            | Event::TextMessageContent { message_id, .. }
+            | Event::TextMessageEnd { message_id, .. } => {
                 message_ids.push(message_id.clone());
             }
             _ => {}
@@ -10808,16 +10881,16 @@ fn test_tool_args_concatenate_to_valid_json() {
 fn test_tool_result_references_valid_tool_call() {
     let tool_call_id = "call_abc123";
 
-    let start = AGUIEvent::tool_call_start(tool_call_id, "search", None);
-    let result = AGUIEvent::tool_call_result("msg_1", tool_call_id, r#"{"found": 5}"#);
+    let start = Event::tool_call_start(tool_call_id, "search", None);
+    let result = Event::tool_call_result("msg_1", tool_call_id, r#"{"found": 5}"#);
 
-    let start_id = if let AGUIEvent::ToolCallStart { tool_call_id, .. } = &start {
+    let start_id = if let Event::ToolCallStart { tool_call_id, .. } = &start {
         tool_call_id.clone()
     } else {
         panic!("Expected ToolCallStart");
     };
 
-    let result_id = if let AGUIEvent::ToolCallResult { tool_call_id, .. } = &result {
+    let result_id = if let Event::ToolCallResult { tool_call_id, .. } = &result {
         tool_call_id.clone()
     } else {
         panic!("Expected ToolCallResult");
@@ -10838,19 +10911,19 @@ fn test_tool_call_flow_consistent_tool_call_id() {
     let tool_name = "read_file";
 
     let events = vec![
-        AGUIEvent::tool_call_start(tool_call_id, tool_name, None),
-        AGUIEvent::tool_call_args(tool_call_id, r#"{"path": "/tmp/test.txt"}"#),
-        AGUIEvent::tool_call_end(tool_call_id),
-        AGUIEvent::tool_call_result("msg_1", tool_call_id, "file contents"),
+        Event::tool_call_start(tool_call_id, tool_name, None),
+        Event::tool_call_args(tool_call_id, r#"{"path": "/tmp/test.txt"}"#),
+        Event::tool_call_end(tool_call_id),
+        Event::tool_call_result("msg_1", tool_call_id, "file contents"),
     ];
 
     // Verify all events have the same toolCallId
     for event in &events {
         let event_id = match event {
-            AGUIEvent::ToolCallStart { tool_call_id, .. } => tool_call_id,
-            AGUIEvent::ToolCallArgs { tool_call_id, .. } => tool_call_id,
-            AGUIEvent::ToolCallEnd { tool_call_id, .. } => tool_call_id,
-            AGUIEvent::ToolCallResult { tool_call_id, .. } => tool_call_id,
+            Event::ToolCallStart { tool_call_id, .. } => tool_call_id,
+            Event::ToolCallArgs { tool_call_id, .. } => tool_call_id,
+            Event::ToolCallEnd { tool_call_id, .. } => tool_call_id,
+            Event::ToolCallResult { tool_call_id, .. } => tool_call_id,
             _ => continue,
         };
         assert_eq!(
@@ -10873,9 +10946,9 @@ fn test_tool_call_flow_consistent_tool_call_id() {
 /// Reference: https://docs.ag-ui.com/concepts/messages
 #[test]
 fn test_user_message_content_required() {
-    let msg = AGUIMessage::user("Hello, how can you help?");
+    let msg = tirea_protocol_ag_ui::Message::user("Hello, how can you help?");
 
-    assert_eq!(msg.role, MessageRole::User);
+    assert_eq!(msg.role, Role::User);
     assert!(!msg.content.is_empty(), "UserMessage.content is required");
 
     // Verify serialization includes content
@@ -10888,9 +10961,9 @@ fn test_user_message_content_required() {
 /// Reference: https://docs.ag-ui.com/concepts/messages
 #[test]
 fn test_system_message_content_required() {
-    let msg = AGUIMessage::system("You are a helpful assistant.");
+    let msg = tirea_protocol_ag_ui::Message::system("You are a helpful assistant.");
 
-    assert_eq!(msg.role, MessageRole::System);
+    assert_eq!(msg.role, Role::System);
     assert!(!msg.content.is_empty(), "SystemMessage.content is required");
 
     let json = serde_json::to_string(&msg).unwrap();
@@ -10902,9 +10975,9 @@ fn test_system_message_content_required() {
 /// Reference: https://docs.ag-ui.com/concepts/messages
 #[test]
 fn test_tool_message_requires_tool_call_id() {
-    let msg = AGUIMessage::tool("result data", "call_123");
+    let msg = tirea_protocol_ag_ui::Message::tool("result data", "call_123");
 
-    assert_eq!(msg.role, MessageRole::Tool);
+    assert_eq!(msg.role, Role::Tool);
     assert!(
         msg.tool_call_id.is_some(),
         "ToolMessage requires toolCallId"
@@ -10921,14 +10994,14 @@ fn test_tool_message_requires_tool_call_id() {
 #[test]
 fn test_assistant_message_optional_content() {
     // With content
-    let msg_with_content = AGUIMessage::assistant("I can help with that.");
-    assert_eq!(msg_with_content.role, MessageRole::Assistant);
+    let msg_with_content = tirea_protocol_ag_ui::Message::assistant("I can help with that.");
+    assert_eq!(msg_with_content.role, Role::Assistant);
     assert!(!msg_with_content.content.is_empty());
 
     // Empty content is valid for assistant (when making tool calls)
-    let mut msg_empty = AGUIMessage::assistant("");
+    let mut msg_empty = tirea_protocol_ag_ui::Message::assistant("");
     msg_empty.content = String::new();
-    assert_eq!(msg_empty.role, MessageRole::Assistant);
+    assert_eq!(msg_empty.role, Role::Assistant);
     // Empty content is allowed per protocol when tool calls are present
 }
 
@@ -10937,7 +11010,7 @@ fn test_assistant_message_optional_content() {
 /// Reference: https://docs.ag-ui.com/concepts/messages
 #[test]
 fn test_message_optional_id_field() {
-    let mut msg = AGUIMessage::user("test");
+    let mut msg = tirea_protocol_ag_ui::Message::user("test");
 
     // Without id
     assert!(msg.id.is_none());
@@ -10968,10 +11041,10 @@ fn test_state_snapshot_replaces_entire_state() {
         "items": ["a", "b", "c"]
     });
 
-    let snapshot2 = AGUIEvent::state_snapshot(new_state.clone());
+    let snapshot2 = Event::state_snapshot(new_state.clone());
 
     // Second snapshot should contain only new state, not merged with first
-    if let AGUIEvent::StateSnapshot { snapshot, .. } = &snapshot2 {
+    if let Event::StateSnapshot { snapshot, .. } = &snapshot2 {
         assert_eq!(snapshot["counter"], 10);
         assert!(
             snapshot.get("user").is_none(),
@@ -10996,9 +11069,9 @@ fn test_state_delta_atomic_application() {
         json!({"op": "add", "path": "/step3", "value": "done"}),
     ];
 
-    let event = AGUIEvent::state_delta(delta);
+    let event = Event::state_delta(delta);
 
-    if let AGUIEvent::StateDelta { delta: ops, .. } = &event {
+    if let Event::StateDelta { delta: ops, .. } = &event {
         assert_eq!(ops.len(), 3, "All operations should be in a single delta");
         // All operations are part of one atomic batch
     }
@@ -11016,9 +11089,9 @@ fn test_state_delta_sequential_ordering() {
         json!({"op": "add", "path": "/items/-", "value": "second"}), // 3. Add second item
     ];
 
-    let event = AGUIEvent::state_delta(delta.clone());
+    let event = Event::state_delta(delta.clone());
 
-    if let AGUIEvent::StateDelta { delta: ops, .. } = &event {
+    if let Event::StateDelta { delta: ops, .. } = &event {
         // Verify operations are in expected order
         assert_eq!(ops[0]["path"], "/items");
         assert_eq!(ops[1]["path"], "/items/-");
@@ -11039,9 +11112,9 @@ fn test_patch_test_operation_validates_state() {
         json!({"op": "replace", "path": "/version", "value": "2.0"}),
     ];
 
-    let event = AGUIEvent::state_delta(delta);
+    let event = Event::state_delta(delta);
 
-    if let AGUIEvent::StateDelta { delta: ops, .. } = &event {
+    if let Event::StateDelta { delta: ops, .. } = &event {
         // First operation is a test
         assert_eq!(ops[0]["op"], "test");
         assert_eq!(ops[0]["value"], "1.0");
@@ -11071,21 +11144,21 @@ fn test_activity_delta_type_matches_snapshot() {
     let mut content = HashMap::new();
     content.insert("progress".to_string(), json!(0.0));
 
-    let snapshot = AGUIEvent::activity_snapshot("act_1", activity_type, content, None);
-    let delta = AGUIEvent::activity_delta(
+    let snapshot = Event::activity_snapshot("act_1", activity_type, content, None);
+    let delta = Event::activity_delta(
         "act_1",
         activity_type,
         vec![json!({"op": "replace", "path": "/progress", "value": 0.5})],
     );
 
     // Extract activity types
-    let snapshot_type = if let AGUIEvent::ActivitySnapshot { activity_type, .. } = &snapshot {
+    let snapshot_type = if let Event::ActivitySnapshot { activity_type, .. } = &snapshot {
         activity_type.clone()
     } else {
         panic!("Expected ActivitySnapshot");
     };
 
-    let delta_type = if let AGUIEvent::ActivityDelta { activity_type, .. } = &delta {
+    let delta_type = if let Event::ActivityDelta { activity_type, .. } = &delta {
         activity_type.clone()
     } else {
         panic!("Expected ActivityDelta");
@@ -11108,9 +11181,9 @@ fn test_activity_snapshot_replace_false_behavior() {
     content.insert("status".to_string(), json!("running"));
 
     // replace=false means don't overwrite existing activity
-    let event = AGUIEvent::activity_snapshot("act_1", "processing", content, Some(false));
+    let event = Event::activity_snapshot("act_1", "processing", content, Some(false));
 
-    if let AGUIEvent::ActivitySnapshot { replace, .. } = &event {
+    if let Event::ActivitySnapshot { replace, .. } = &event {
         assert_eq!(*replace, Some(false));
     }
 
@@ -11129,9 +11202,9 @@ fn test_activity_snapshot_replace_true_behavior() {
     content.insert("status".to_string(), json!("completed"));
 
     // replace=true means overwrite existing activity
-    let event = AGUIEvent::activity_snapshot("act_1", "processing", content, Some(true));
+    let event = Event::activity_snapshot("act_1", "processing", content, Some(true));
 
-    if let AGUIEvent::ActivitySnapshot { replace, .. } = &event {
+    if let Event::ActivitySnapshot { replace, .. } = &event {
         assert_eq!(*replace, Some(true));
     }
 
@@ -11151,20 +11224,20 @@ fn test_activity_delta_message_id_matches_snapshot() {
     let mut content = HashMap::new();
     content.insert("count".to_string(), json!(0));
 
-    let snapshot = AGUIEvent::activity_snapshot(message_id, "counter", content, None);
-    let delta = AGUIEvent::activity_delta(
+    let snapshot = Event::activity_snapshot(message_id, "counter", content, None);
+    let delta = Event::activity_delta(
         message_id,
         "counter",
         vec![json!({"op": "replace", "path": "/count", "value": 1})],
     );
 
-    let snapshot_id = if let AGUIEvent::ActivitySnapshot { message_id, .. } = &snapshot {
+    let snapshot_id = if let Event::ActivitySnapshot { message_id, .. } = &snapshot {
         message_id.clone()
     } else {
         panic!("Expected ActivitySnapshot");
     };
 
-    let delta_id = if let AGUIEvent::ActivityDelta { message_id, .. } = &delta {
+    let delta_id = if let Event::ActivityDelta { message_id, .. } = &delta {
         message_id.clone()
     } else {
         panic!("Expected ActivityDelta");
@@ -11206,7 +11279,8 @@ fn test_tool_parameters_json_schema_validation() {
         "required": ["query"]
     });
 
-    let tool = AGUIToolDef::backend("search", "Search the web").with_parameters(schema.clone());
+    let tool = tirea_protocol_ag_ui::Tool::backend("search", "Search the web")
+        .with_parameters(schema.clone());
 
     // Verify schema structure
     assert!(tool.parameters.is_some());
@@ -11230,7 +11304,8 @@ fn test_tool_required_references_valid_properties() {
         "required": ["path"]
     });
 
-    let tool = AGUIToolDef::backend("read_file", "Read a file").with_parameters(schema.clone());
+    let tool = tirea_protocol_ag_ui::Tool::backend("read_file", "Read a file")
+        .with_parameters(schema.clone());
 
     let params = tool.parameters.unwrap();
     let required = params["required"].as_array().unwrap();
@@ -11252,8 +11327,9 @@ fn test_tool_required_references_valid_properties() {
 /// Reference: https://docs.ag-ui.com/concepts/tools
 #[test]
 fn test_tool_execution_location() {
-    let backend_tool = AGUIToolDef::backend("search", "Search");
-    let frontend_tool = AGUIToolDef::frontend("copyToClipboard", "Copy to clipboard");
+    let backend_tool = tirea_protocol_ag_ui::Tool::backend("search", "Search");
+    let frontend_tool =
+        tirea_protocol_ag_ui::Tool::frontend("copyToClipboard", "Copy to clipboard");
 
     assert_eq!(backend_tool.execute, ToolExecutionLocation::Backend);
     assert_eq!(frontend_tool.execute, ToolExecutionLocation::Frontend);
@@ -11264,7 +11340,7 @@ fn test_tool_execution_location() {
 }
 
 // ============================================================================
-// P1 - RunAgentRequest Uncovered Methods (Lines 1081-1141)
+// P1 - RunAgentInput Uncovered Methods (Lines 1081-1141)
 // ============================================================================
 //
 // AG-UI Protocol Reference: https://docs.ag-ui.com/sdk/js/core/types
@@ -11272,30 +11348,30 @@ fn test_tool_execution_location() {
 // Last-user lookup and backend/fronted matching are verified via direct collection traversal.
 //
 
-/// Test: RunAgentRequest.with_messages batch
+/// Test: RunAgentInput.with_messages batch
 /// Protocol: Add multiple messages at once
 /// Reference: https://docs.ag-ui.com/sdk/js/core/types
 #[test]
 fn test_run_agent_request_with_messages_batch() {
     let messages = vec![
-        AGUIMessage::user("Hello"),
-        AGUIMessage::assistant("Hi!"),
-        AGUIMessage::user("How are you?"),
+        tirea_protocol_ag_ui::Message::user("Hello"),
+        tirea_protocol_ag_ui::Message::assistant("Hi!"),
+        tirea_protocol_ag_ui::Message::user("How are you?"),
     ];
 
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_messages(messages);
+    let request = RunAgentInput::new("t1".to_string(), "r1".to_string()).with_messages(messages);
 
     assert_eq!(request.messages.len(), 3);
-    assert_eq!(request.messages[0].role, MessageRole::User);
+    assert_eq!(request.messages[0].role, Role::User);
     assert_eq!(request.messages[2].content, "How are you?");
 }
 
-/// Test: RunAgentRequest.with_model
+/// Test: RunAgentInput.with_model
 /// Protocol: Optional model selection in request
 /// Reference: https://docs.ag-ui.com/sdk/js/core/types
 #[test]
 fn test_run_agent_request_with_model() {
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_model("gpt-4o");
+    let request = RunAgentInput::new("t1".to_string(), "r1".to_string()).with_model("gpt-4o");
 
     assert_eq!(request.model, Some("gpt-4o".to_string()));
 
@@ -11303,12 +11379,12 @@ fn test_run_agent_request_with_model() {
     assert!(json.contains(r#""model":"gpt-4o""#));
 }
 
-/// Test: RunAgentRequest.with_system_prompt
+/// Test: RunAgentInput.with_system_prompt
 /// Protocol: Optional system prompt override
 /// Reference: https://docs.ag-ui.com/sdk/js/core/types
 #[test]
 fn test_run_agent_request_with_system_prompt() {
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+    let request = RunAgentInput::new("t1".to_string(), "r1".to_string())
         .with_system_prompt("You are a coding assistant.");
 
     assert_eq!(
@@ -11322,17 +11398,17 @@ fn test_run_agent_request_with_system_prompt() {
 /// Reference: https://docs.ag-ui.com/sdk/js/core/types
 #[test]
 fn test_run_agent_request_last_user_message_via_messages_scan() {
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::user("First"))
-        .with_message(AGUIMessage::assistant("Response"))
-        .with_message(AGUIMessage::user("Second"));
+    let request = RunAgentInput::new("t1".to_string(), "r1".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::user("First"))
+        .with_message(tirea_protocol_ag_ui::Message::assistant("Response"))
+        .with_message(tirea_protocol_ag_ui::Message::user("Second"));
 
     assert_eq!(
         request
             .messages
             .iter()
             .rev()
-            .find(|message| message.role == MessageRole::User)
+            .find(|message| message.role == Role::User)
             .map(|message| message.content.as_str()),
         Some("Second")
     );
@@ -11343,12 +11419,12 @@ fn test_run_agent_request_last_user_message_via_messages_scan() {
 /// Reference: https://docs.ag-ui.com/sdk/js/core/types
 #[test]
 fn test_run_agent_request_last_user_message_via_messages_scan_empty() {
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string());
+    let request = RunAgentInput::new("t1".to_string(), "r1".to_string());
     assert!(request
         .messages
         .iter()
         .rev()
-        .find(|message| message.role == MessageRole::User)
+        .find(|message| message.role == Role::User)
         .map(|message| message.content.as_str())
         .is_none());
 }
@@ -11358,32 +11434,32 @@ fn test_run_agent_request_last_user_message_via_messages_scan_empty() {
 /// Reference: https://docs.ag-ui.com/sdk/js/core/types
 #[test]
 fn test_run_agent_request_last_user_message_via_messages_scan_no_user() {
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::assistant("Hi"))
-        .with_message(AGUIMessage::system("Be helpful"));
+    let request = RunAgentInput::new("t1".to_string(), "r1".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::assistant("Hi"))
+        .with_message(tirea_protocol_ag_ui::Message::system("Be helpful"));
 
     assert!(request
         .messages
         .iter()
         .rev()
-        .find(|message| message.role == MessageRole::User)
+        .find(|message| message.role == Role::User)
         .map(|message| message.content.as_str())
         .is_none());
 }
 
-/// Test: RunAgentRequest.frontend_tools
+/// Test: RunAgentInput.frontend_tools
 /// Protocol: Filter tools by frontend execution location
 /// Reference: https://docs.ag-ui.com/concepts/tools
 #[test]
 fn test_run_agent_request_frontend_tools() {
-    let request = RunAgentRequest {
+    let request = RunAgentInput {
         tools: vec![
-            AGUIToolDef::backend("search", "Search"),
-            AGUIToolDef::frontend("copyToClipboard", "Copy"),
-            AGUIToolDef::backend("read_file", "Read file"),
-            AGUIToolDef::frontend("showNotification", "Notify"),
+            tirea_protocol_ag_ui::Tool::backend("search", "Search"),
+            tirea_protocol_ag_ui::Tool::frontend("copyToClipboard", "Copy"),
+            tirea_protocol_ag_ui::Tool::backend("read_file", "Read file"),
+            tirea_protocol_ag_ui::Tool::frontend("showNotification", "Notify"),
         ],
-        ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        ..RunAgentInput::new("t1".to_string(), "r1".to_string())
     };
 
     let frontend = request.frontend_tools();
@@ -11398,16 +11474,16 @@ fn test_run_agent_request_frontend_tools() {
 /// Reference: https://docs.ag-ui.com/concepts/tools
 #[test]
 fn test_run_agent_request_backend_tools_via_filter() {
-    let request = RunAgentRequest {
+    let request = RunAgentInput {
         tools: vec![
-            AGUIToolDef::backend("search", "Search"),
-            AGUIToolDef::frontend("copy", "Copy"),
-            AGUIToolDef::backend("read", "Read"),
+            tirea_protocol_ag_ui::Tool::backend("search", "Search"),
+            tirea_protocol_ag_ui::Tool::frontend("copy", "Copy"),
+            tirea_protocol_ag_ui::Tool::backend("read", "Read"),
         ],
-        ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        ..RunAgentInput::new("t1".to_string(), "r1".to_string())
     };
 
-    let backend: Vec<&AGUIToolDef> = request
+    let backend: Vec<&tirea_protocol_ag_ui::Tool> = request
         .tools
         .iter()
         .filter(|tool| !tool.is_frontend())
@@ -11423,12 +11499,12 @@ fn test_run_agent_request_backend_tools_via_filter() {
 /// Reference: https://docs.ag-ui.com/concepts/tools
 #[test]
 fn test_run_agent_request_frontend_tool_lookup_via_frontend_tools() {
-    let request = RunAgentRequest {
+    let request = RunAgentInput {
         tools: vec![
-            AGUIToolDef::backend("search", "Search"),
-            AGUIToolDef::frontend("copy", "Copy"),
+            tirea_protocol_ag_ui::Tool::backend("search", "Search"),
+            tirea_protocol_ag_ui::Tool::frontend("copy", "Copy"),
         ],
-        ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        ..RunAgentInput::new("t1".to_string(), "r1".to_string())
     };
 
     assert!(!request
@@ -11687,9 +11763,9 @@ fn test_request_error_serialization() {
 #[test]
 fn test_text_message_chunk_first_requires_message_id() {
     // First chunk should have messageId and role
-    let first_chunk = AGUIEvent::text_message_chunk(
+    let first_chunk = Event::text_message_chunk(
         Some("msg_1".to_string()),
-        Some(MessageRole::Assistant),
+        Some(Role::Assistant),
         Some("Hello".to_string()),
     );
 
@@ -11704,7 +11780,7 @@ fn test_text_message_chunk_first_requires_message_id() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_text_message_chunk_subsequent_only_delta() {
-    let subsequent_chunk = AGUIEvent::text_message_chunk(None, None, Some(" World".to_string()));
+    let subsequent_chunk = Event::text_message_chunk(None, None, Some(" World".to_string()));
 
     let json = serde_json::to_string(&subsequent_chunk).unwrap();
     assert!(json.contains(r#""delta":" World""#));
@@ -11718,7 +11794,7 @@ fn test_text_message_chunk_subsequent_only_delta() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_text_message_chunk_end_signal() {
-    let end_chunk = AGUIEvent::text_message_chunk(None, None, None);
+    let end_chunk = Event::text_message_chunk(None, None, None);
 
     let json = serde_json::to_string(&end_chunk).unwrap();
     assert!(json.contains(r#""type":"TEXT_MESSAGE_CHUNK""#));
@@ -11740,7 +11816,7 @@ fn test_text_message_chunk_end_signal() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_tool_call_chunk_first_requires_id_and_name() {
-    let first_chunk = AGUIEvent::tool_call_chunk(
+    let first_chunk = Event::tool_call_chunk(
         Some("call_1".to_string()),
         Some("search".to_string()),
         Some("msg_1".to_string()),
@@ -11759,7 +11835,7 @@ fn test_tool_call_chunk_first_requires_id_and_name() {
 #[test]
 fn test_tool_call_chunk_subsequent_only_delta() {
     let subsequent_chunk =
-        AGUIEvent::tool_call_chunk(None, None, None, Some(r#": "rust tutorials"}"#.to_string()));
+        Event::tool_call_chunk(None, None, None, Some(r#": "rust tutorials"}"#.to_string()));
 
     let json = serde_json::to_string(&subsequent_chunk).unwrap();
     assert!(json.contains(r#""delta""#));
@@ -11772,7 +11848,7 @@ fn test_tool_call_chunk_subsequent_only_delta() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_tool_call_chunk_end_signal() {
-    let end_chunk = AGUIEvent::tool_call_chunk(None, None, None, None);
+    let end_chunk = Event::tool_call_chunk(None, None, None, None);
 
     let json = serde_json::to_string(&end_chunk).unwrap();
     assert!(json.contains(r#""type":"TOOL_CALL_CHUNK""#));
@@ -11792,9 +11868,9 @@ fn test_tool_call_chunk_end_signal() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_text_message_content_non_empty_delta() {
-    let event = AGUIEvent::text_message_content("msg1", "Hello World");
+    let event = Event::text_message_content("msg1", "Hello World");
 
-    if let AGUIEvent::TextMessageContent { delta, .. } = &event {
+    if let Event::TextMessageContent { delta, .. } = &event {
         assert!(!delta.is_empty(), "delta should be non-empty");
     }
 }
@@ -11804,9 +11880,9 @@ fn test_text_message_content_non_empty_delta() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_tool_call_args_non_empty_delta() {
-    let event = AGUIEvent::tool_call_args("call_1", r#"{"query":"test"}"#);
+    let event = Event::tool_call_args("call_1", r#"{"query":"test"}"#);
 
-    if let AGUIEvent::ToolCallArgs { delta, .. } = &event {
+    if let Event::ToolCallArgs { delta, .. } = &event {
         assert!(!delta.is_empty(), "args delta should be non-empty");
     }
 }
@@ -11835,7 +11911,7 @@ fn test_out_of_order_events_deserialize() {
 
     // Each event should parse independently
     for json in &events_json {
-        let parsed: Result<AGUIEvent, _> = serde_json::from_str(json);
+        let parsed: Result<Event, _> = serde_json::from_str(json);
         assert!(parsed.is_ok(), "Event should parse: {}", json);
     }
 }
@@ -11845,7 +11921,7 @@ fn test_out_of_order_events_deserialize() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_duplicate_events_handled() {
-    let event = AGUIEvent::text_message_content("msg1", "Hello");
+    let event = Event::text_message_content("msg1", "Hello");
     let json1 = serde_json::to_string(&event).unwrap();
     let json2 = serde_json::to_string(&event).unwrap();
 
@@ -11853,8 +11929,8 @@ fn test_duplicate_events_handled() {
     assert_eq!(json1, json2);
 
     // Both deserialize to equivalent events
-    let parsed1: AGUIEvent = serde_json::from_str(&json1).unwrap();
-    let parsed2: AGUIEvent = serde_json::from_str(&json2).unwrap();
+    let parsed1: Event = serde_json::from_str(&json1).unwrap();
+    let parsed2: Event = serde_json::from_str(&json2).unwrap();
     assert_eq!(parsed1, parsed2);
 }
 
@@ -11872,19 +11948,19 @@ fn test_duplicate_events_handled() {
 #[test]
 fn test_run_branching_parent_child() {
     // Parent run
-    let parent = AGUIEvent::run_started("t1", "run_parent", None);
+    let parent = Event::run_started("t1", "run_parent", None);
 
     // Child runs
-    let child1 = AGUIEvent::run_started("t1", "run_child1", Some("run_parent".to_string()));
-    let child2 = AGUIEvent::run_started("t1", "run_child2", Some("run_parent".to_string()));
+    let child1 = Event::run_started("t1", "run_child1", Some("run_parent".to_string()));
+    let child2 = Event::run_started("t1", "run_child2", Some("run_parent".to_string()));
 
     // Verify parent has no parent
-    if let AGUIEvent::RunStarted { parent_run_id, .. } = &parent {
+    if let Event::RunStarted { parent_run_id, .. } = &parent {
         assert!(parent_run_id.is_none());
     }
 
     // Verify children reference parent
-    if let AGUIEvent::RunStarted {
+    if let Event::RunStarted {
         parent_run_id,
         run_id,
         ..
@@ -11893,7 +11969,7 @@ fn test_run_branching_parent_child() {
         assert_eq!(parent_run_id.as_deref(), Some("run_parent"));
         assert_eq!(run_id, "run_child1");
     }
-    if let AGUIEvent::RunStarted {
+    if let Event::RunStarted {
         parent_run_id,
         run_id,
         ..
@@ -11909,8 +11985,8 @@ fn test_run_branching_parent_child() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_run_branching_serialization() {
-    let without_parent = AGUIEvent::run_started("t1", "r1", None);
-    let with_parent = AGUIEvent::run_started("t1", "r2", Some("r1".to_string()));
+    let without_parent = Event::run_started("t1", "r1", None);
+    let with_parent = Event::run_started("t1", "r2", Some("r1".to_string()));
 
     let json_without = serde_json::to_string(&without_parent).unwrap();
     let json_with = serde_json::to_string(&with_parent).unwrap();
@@ -11935,9 +12011,9 @@ fn test_tool_call_result_content_json_string() {
     let result_data = json!({"status": "success", "count": 42});
     let content = serde_json::to_string(&result_data).unwrap();
 
-    let event = AGUIEvent::tool_call_result("msg_1", "call_1", &content);
+    let event = Event::tool_call_result("msg_1", "call_1", &content);
 
-    if let AGUIEvent::ToolCallResult { content: c, .. } = &event {
+    if let Event::ToolCallResult { content: c, .. } = &event {
         // Content should be a string that parses as JSON
         let parsed: Result<Value, _> = serde_json::from_str(c);
         assert!(parsed.is_ok(), "Content should be valid JSON string");
@@ -11953,9 +12029,9 @@ fn test_tool_call_result_error_content_with_role() {
     let error_data = json!({"status": "error", "error": "File not found", "code": "ENOENT"});
     let content = serde_json::to_string(&error_data).unwrap();
 
-    let event = AGUIEvent::tool_call_result("msg_1", "call_1", &content);
+    let event = Event::tool_call_result("msg_1", "call_1", &content);
 
-    if let AGUIEvent::ToolCallResult {
+    if let Event::ToolCallResult {
         content: c, role, ..
     } = &event
     {
@@ -11963,24 +12039,24 @@ fn test_tool_call_result_error_content_with_role() {
         assert_eq!(parsed["status"], "error");
         assert_eq!(parsed["code"], "ENOENT");
         // Role should be Tool
-        assert_eq!(*role, Some(MessageRole::Tool));
+        assert_eq!(*role, Some(Role::Tool));
     }
 }
 
 // ============================================================================
-// P2 - RunAgentRequest with config
+// P2 - RunAgentInput with config
 // ============================================================================
 //
 // AG-UI Protocol Reference: https://docs.ag-ui.com/sdk/js/core/types
 // Additional configuration can be passed via config field
 //
 
-/// Test: RunAgentRequest with config field
+/// Test: RunAgentInput with config field
 /// Protocol: Additional configuration in request
 /// Reference: https://docs.ag-ui.com/sdk/js/core/types
 #[test]
 fn test_run_agent_request_with_config() {
-    let mut request = RunAgentRequest::new("t1".to_string(), "r1".to_string());
+    let mut request = RunAgentInput::new("t1".to_string(), "r1".to_string());
     request.config = Some(json!({
         "temperature": 0.7,
         "max_tokens": 1000,
@@ -11994,7 +12070,7 @@ fn test_run_agent_request_with_config() {
     assert!(json.contains(r#""temperature":0.7"#));
 }
 
-/// Test: RunAgentRequest deserialization with all optional fields
+/// Test: RunAgentInput deserialization with all optional fields
 /// Protocol: All optional fields deserialize correctly
 /// Reference: https://docs.ag-ui.com/sdk/js/core/types
 #[test]
@@ -12011,7 +12087,7 @@ fn test_run_agent_request_full_deserialization() {
         "config": {"temperature": 0.5}
     }"#;
 
-    let request: RunAgentRequest = serde_json::from_str(json).unwrap();
+    let request: RunAgentInput = serde_json::from_str(json).unwrap();
     assert_eq!(request.thread_id, "t1");
     assert_eq!(request.run_id, "r1");
     assert_eq!(request.messages.len(), 1);
@@ -12024,11 +12100,11 @@ fn test_run_agent_request_full_deserialization() {
 }
 
 // ============================================================================
-// P2 - Complete AgentEvent-to-AGUIEvent Conversion Flows
+// P2 - Complete AgentEvent-to-Event Conversion Flows
 // ============================================================================
 //
 // AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/events
-// Verify all AgentEvent variants convert correctly to AGUIEvents
+// Verify all AgentEvent variants convert correctly to Events
 //
 
 /// Test: AgentEvent::RunFinish produces TEXT_MESSAGE_END + RUN_FINISHED
@@ -12036,7 +12112,7 @@ fn test_run_agent_request_full_deserialization() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_agent_event_run_finish_ends_text_stream() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     // Start text
     let text = AgentEvent::TextDelta {
@@ -12057,24 +12133,24 @@ fn test_agent_event_run_finish_ends_text_stream() {
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })),
+            .any(|e| matches!(e, Event::TextMessageEnd { .. })),
         "Should end text stream"
     );
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, AGUIEvent::RunFinished { .. })),
+            .any(|e| matches!(e, Event::RunFinished { .. })),
         "Should emit RUN_FINISHED"
     );
 
     // TEXT_MESSAGE_END should come before RUN_FINISHED
     let end_idx = events
         .iter()
-        .position(|e| matches!(e, AGUIEvent::TextMessageEnd { .. }))
+        .position(|e| matches!(e, Event::TextMessageEnd { .. }))
         .unwrap();
     let finish_idx = events
         .iter()
-        .position(|e| matches!(e, AGUIEvent::RunFinished { .. }))
+        .position(|e| matches!(e, Event::RunFinished { .. }))
         .unwrap();
     assert!(end_idx < finish_idx);
 }
@@ -12084,7 +12160,7 @@ fn test_agent_event_run_finish_ends_text_stream() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_agent_event_run_finish_ends_text_and_run() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     // Start text
     let text = AgentEvent::TextDelta {
@@ -12103,10 +12179,10 @@ fn test_agent_event_run_finish_ends_text_and_run() {
 
     assert!(events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })));
+        .any(|e| matches!(e, Event::TextMessageEnd { .. })));
     assert!(events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::RunFinished { .. })));
+        .any(|e| matches!(e, Event::RunFinished { .. })));
 }
 
 /// Test: AgentEvent::RunFinish(Cancelled) produces RUN_ERROR with CANCELLED code
@@ -12114,7 +12190,7 @@ fn test_agent_event_run_finish_ends_text_and_run() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_agent_event_run_finish_cancelled_produces_run_error() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     let cancelled = AgentEvent::RunFinish {
         thread_id: "t1".into(),
@@ -12125,7 +12201,7 @@ fn test_agent_event_run_finish_cancelled_produces_run_error() {
     let events = ctx.on_agent_event(&cancelled);
 
     assert_eq!(events.len(), 1);
-    if let AGUIEvent::RunError { message, code, .. } = &events[0] {
+    if let Event::RunError { message, code, .. } = &events[0] {
         assert_eq!(message, "Run cancelled");
         assert_eq!(code.as_deref(), Some("CANCELLED"));
     } else {
@@ -12138,7 +12214,7 @@ fn test_agent_event_run_finish_cancelled_produces_run_error() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_agent_event_error_produces_run_error() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     let error = AgentEvent::Error {
         message: "API rate limit".into(),
@@ -12146,7 +12222,7 @@ fn test_agent_event_error_produces_run_error() {
     let events = ctx.on_agent_event(&error);
 
     assert_eq!(events.len(), 1);
-    if let AGUIEvent::RunError { message, code, .. } = &events[0] {
+    if let Event::RunError { message, code, .. } = &events[0] {
         assert_eq!(message, "API rate limit");
         assert!(code.is_none());
     } else {
@@ -12161,7 +12237,7 @@ fn test_agent_event_error_produces_run_error() {
 fn test_agent_event_pending_ends_text() {
     use tirea_agentos::contracts::Interaction;
 
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     // Start text
     let text = AgentEvent::TextDelta {
@@ -12178,7 +12254,7 @@ fn test_agent_event_pending_ends_text() {
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })),
+            .any(|e| matches!(e, Event::TextMessageEnd { .. })),
         "Should end text stream before pending"
     );
 
@@ -12186,17 +12262,17 @@ fn test_agent_event_pending_ends_text() {
     assert!(
         !events
             .iter()
-            .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })),
+            .any(|e| matches!(e, Event::ToolCallStart { .. })),
         "Should NOT emit duplicate ToolCallStart for pending interaction"
     );
 }
 
-/// Test: AgentEvent::ActivitySnapshot maps to AGUIEvent::ActivitySnapshot
+/// Test: AgentEvent::ActivitySnapshot maps to Event::ActivitySnapshot
 #[test]
 fn test_agent_event_activity_snapshot_to_ag_ui() {
-    use tirea_protocol_ag_ui::{AGUIContext, AGUIEvent};
+    use tirea_protocol_ag_ui::{AgUiEventContext, Event};
 
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
     let event = AgentEvent::ActivitySnapshot {
         message_id: "activity_1".to_string(),
         activity_type: "progress".to_string(),
@@ -12207,7 +12283,7 @@ fn test_agent_event_activity_snapshot_to_ag_ui() {
     let events = ctx.on_agent_event(&event);
     assert_eq!(events.len(), 1);
     match &events[0] {
-        AGUIEvent::ActivitySnapshot {
+        Event::ActivitySnapshot {
             message_id,
             activity_type,
             content,
@@ -12223,12 +12299,12 @@ fn test_agent_event_activity_snapshot_to_ag_ui() {
     }
 }
 
-/// Test: AgentEvent::ActivityDelta maps to AGUIEvent::ActivityDelta
+/// Test: AgentEvent::ActivityDelta maps to Event::ActivityDelta
 #[test]
 fn test_agent_event_activity_delta_to_ag_ui() {
-    use tirea_protocol_ag_ui::{AGUIContext, AGUIEvent};
+    use tirea_protocol_ag_ui::{AgUiEventContext, Event};
 
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
     let event = AgentEvent::ActivityDelta {
         message_id: "activity_1".to_string(),
         activity_type: "progress".to_string(),
@@ -12238,7 +12314,7 @@ fn test_agent_event_activity_delta_to_ag_ui() {
     let events = ctx.on_agent_event(&event);
     assert_eq!(events.len(), 1);
     match &events[0] {
-        AGUIEvent::ActivityDelta {
+        Event::ActivityDelta {
             message_id,
             activity_type,
             patch,
@@ -12258,23 +12334,19 @@ fn test_agent_event_activity_delta_to_ag_ui() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_agent_event_step_events() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     let step_start = AgentEvent::StepStart {
         message_id: String::new(),
     };
     let events = ctx.on_agent_event(&step_start);
     assert_eq!(events.len(), 1);
-    assert!(
-        matches!(&events[0], AGUIEvent::StepStarted { step_name, .. } if step_name == "step_1")
-    );
+    assert!(matches!(&events[0], Event::StepStarted { step_name, .. } if step_name == "step_1"));
 
     let step_end = AgentEvent::StepEnd;
     let events = ctx.on_agent_event(&step_end);
     assert_eq!(events.len(), 1);
-    assert!(
-        matches!(&events[0], AGUIEvent::StepFinished { step_name, .. } if step_name == "step_1")
-    );
+    assert!(matches!(&events[0], Event::StepFinished { step_name, .. } if step_name == "step_1"));
 }
 
 /// Test: ToolCallStart ends active text stream
@@ -12282,7 +12354,7 @@ fn test_agent_event_step_events() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_tool_call_start_ends_active_text() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     // Start text
     let text = AgentEvent::TextDelta {
@@ -12299,14 +12371,14 @@ fn test_tool_call_start_ends_active_text() {
 
     // First event should be TEXT_MESSAGE_END
     assert!(
-        matches!(&events[0], AGUIEvent::TextMessageEnd { .. }),
+        matches!(&events[0], Event::TextMessageEnd { .. }),
         "First event should be TEXT_MESSAGE_END"
     );
 
     // Then TOOL_CALL_START
     assert!(events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
+        .any(|e| matches!(e, Event::ToolCallStart { .. })));
 }
 
 /// Test: ToolCallStart includes parentMessageId from context
@@ -12314,7 +12386,7 @@ fn test_tool_call_start_ends_active_text() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_tool_call_start_includes_parent_message_id() {
-    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     let tool_start = AgentEvent::ToolCallStart {
         id: "call_1".into(),
@@ -12324,9 +12396,9 @@ fn test_tool_call_start_includes_parent_message_id() {
 
     let start_event = events
         .iter()
-        .find(|e| matches!(e, AGUIEvent::ToolCallStart { .. }))
+        .find(|e| matches!(e, Event::ToolCallStart { .. }))
         .unwrap();
-    if let AGUIEvent::ToolCallStart {
+    if let Event::ToolCallStart {
         parent_message_id, ..
     } = start_event
     {
@@ -12350,12 +12422,12 @@ fn test_interaction_to_ag_ui_events() {
     let events = interaction_to_ag_ui_events(&interaction);
 
     assert_eq!(events.len(), 3, "Should produce START, ARGS, END");
-    assert!(matches!(&events[0], AGUIEvent::ToolCallStart { .. }));
-    assert!(matches!(&events[1], AGUIEvent::ToolCallArgs { .. }));
-    assert!(matches!(&events[2], AGUIEvent::ToolCallEnd { .. }));
+    assert!(matches!(&events[0], Event::ToolCallStart { .. }));
+    assert!(matches!(&events[1], Event::ToolCallArgs { .. }));
+    assert!(matches!(&events[2], Event::ToolCallEnd { .. }));
 
     // Verify tool call ID matches interaction ID
-    if let AGUIEvent::ToolCallStart {
+    if let Event::ToolCallStart {
         tool_call_id,
         tool_call_name,
         ..
@@ -12884,8 +12956,8 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
     ));
 
     // Phase 3: Client approves via AG-UI tool message
-    let approve_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::tool("true", &interaction.id));
+    let approve_request = RunAgentInput::new("t1".to_string(), "r1".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::tool("true", &interaction.id));
     assert!(approve_request
         .approved_interaction_ids()
         .iter()
@@ -12936,8 +13008,8 @@ async fn test_hitl_replay_denial_does_not_schedule() {
     );
 
     // Client denies
-    let deny_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::tool("false", pending_id));
+    let deny_request = RunAgentInput::new("t1".to_string(), "r1".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::tool("false", pending_id));
     assert!(!deny_request
         .approved_interaction_ids()
         .iter()
@@ -13010,8 +13082,8 @@ async fn test_hitl_replay_picks_first_tool_call() {
         ),
     );
 
-    let approve_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::tool("true", pending_id));
+    let approve_request = RunAgentInput::new("t1".to_string(), "r1".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::tool("true", pending_id));
 
     let response_plugin = interaction_plugin_from_request(&approve_request);
     let fix = TestFixture::new_with_state(persisted_thread.state.clone());
@@ -13078,8 +13150,8 @@ async fn test_hitl_replay_run_start_does_not_affect_before_tool_execute() {
         ),
     );
 
-    let approve_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::tool("true", pending_id));
+    let approve_request = RunAgentInput::new("t1".to_string(), "r1".to_string())
+        .with_message(tirea_protocol_ag_ui::Message::tool("true", pending_id));
     let response_plugin = interaction_plugin_from_request(&approve_request);
 
     // RunStart sets replay_tool_calls

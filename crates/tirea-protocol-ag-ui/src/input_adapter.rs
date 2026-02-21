@@ -1,10 +1,10 @@
-use super::RunAgentRequest;
+use super::RunAgentInput;
 use tirea_contract::{ProtocolInputAdapter, RunRequest};
 
 pub struct AgUiInputAdapter;
 
 impl ProtocolInputAdapter for AgUiInputAdapter {
-    type Request = RunAgentRequest;
+    type Request = RunAgentInput;
 
     fn to_run_request(agent_id: String, request: Self::Request) -> RunRequest {
         request.into_runtime_run_request(agent_id)

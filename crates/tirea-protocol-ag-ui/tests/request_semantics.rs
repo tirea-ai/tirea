@@ -2,23 +2,23 @@
 
 use serde_json::{json, Value};
 use tirea_protocol_ag_ui::{
-    AGUIMessage, AGUIToolDef, MessageRole, RunAgentRequest, ToolExecutionLocation,
+    convert_agui_messages, Message, Role, RunAgentInput, Tool, ToolExecutionLocation,
 };
 
 #[test]
 fn frontend_tools_filters_backend_tools() {
-    let request = RunAgentRequest {
+    let request = RunAgentInput {
         tools: vec![
-            AGUIToolDef::backend("search", "backend"),
-            AGUIToolDef::frontend("copy_to_clipboard", "frontend"),
-            AGUIToolDef {
+            Tool::backend("search", "backend"),
+            Tool::frontend("copy_to_clipboard", "frontend"),
+            Tool {
                 name: "open_modal".to_string(),
                 description: "frontend by default marker".to_string(),
                 parameters: None,
                 execute: ToolExecutionLocation::Frontend,
             },
         ],
-        ..RunAgentRequest::new("thread_1", "run_1")
+        ..RunAgentInput::new("thread_1", "run_1")
     };
 
     let frontend: Vec<String> = request
@@ -31,16 +31,16 @@ fn frontend_tools_filters_backend_tools() {
 
 #[test]
 fn interaction_responses_ignore_non_tool_messages_and_tool_without_id() {
-    let request = RunAgentRequest::new("thread_1", "run_1")
-        .with_message(AGUIMessage::user("hello"))
-        .with_message(AGUIMessage::assistant("ignored"))
-        .with_message(AGUIMessage {
-            role: MessageRole::Tool,
+    let request = RunAgentInput::new("thread_1", "run_1")
+        .with_message(Message::user("hello"))
+        .with_message(Message::assistant("ignored"))
+        .with_message(Message {
+            role: Role::Tool,
             content: "true".to_string(),
             id: None,
             tool_call_id: None,
         })
-        .with_message(AGUIMessage::tool("false", "interaction_1"));
+        .with_message(Message::tool("false", "interaction_1"));
 
     let responses = request.interaction_responses();
     assert_eq!(responses.len(), 1);
@@ -52,7 +52,7 @@ fn interaction_responses_ignore_non_tool_messages_and_tool_without_id() {
 #[test]
 fn interaction_response_non_json_content_is_preserved_as_string() {
     let request =
-        RunAgentRequest::new("thread_1", "run_1").with_message(AGUIMessage::tool("approved", "i1"));
+        RunAgentInput::new("thread_1", "run_1").with_message(Message::tool("approved", "i1"));
 
     let responses = request.interaction_responses();
     assert_eq!(responses.len(), 1);
@@ -61,12 +61,12 @@ fn interaction_response_non_json_content_is_preserved_as_string() {
 
 #[test]
 fn approved_and_denied_ids_follow_runtime_interaction_semantics() {
-    let request = RunAgentRequest::new("thread_1", "run_1")
-        .with_message(AGUIMessage::tool("true", "approved_bool"))
-        .with_message(AGUIMessage::tool(r#"{"allowed": true}"#, "approved_object"))
-        .with_message(AGUIMessage::tool(r#"{"approved": false}"#, "denied_object"))
-        .with_message(AGUIMessage::tool("no", "denied_string"))
-        .with_message(AGUIMessage::tool("maybe", "neither"));
+    let request = RunAgentInput::new("thread_1", "run_1")
+        .with_message(Message::tool("true", "approved_bool"))
+        .with_message(Message::tool(r#"{"allowed": true}"#, "approved_object"))
+        .with_message(Message::tool(r#"{"approved": false}"#, "denied_object"))
+        .with_message(Message::tool("no", "denied_string"))
+        .with_message(Message::tool("maybe", "neither"));
 
     assert_eq!(
         request.approved_interaction_ids(),
@@ -80,9 +80,9 @@ fn approved_and_denied_ids_follow_runtime_interaction_semantics() {
 
 #[test]
 fn conflicting_results_for_same_interaction_id_use_last_result() {
-    let request = RunAgentRequest::new("thread_1", "run_1")
-        .with_message(AGUIMessage::tool("true", "same_id"))
-        .with_message(AGUIMessage::tool("false", "same_id"));
+    let request = RunAgentInput::new("thread_1", "run_1")
+        .with_message(Message::tool("true", "same_id"))
+        .with_message(Message::tool("false", "same_id"));
 
     assert!(request.approved_interaction_ids().is_empty());
     assert_eq!(request.denied_interaction_ids(), vec!["same_id"]);
@@ -90,15 +90,15 @@ fn conflicting_results_for_same_interaction_id_use_last_result() {
 
 #[test]
 fn interaction_responses_filter_to_pending_ids_when_state_exists() {
-    let request = RunAgentRequest::new("thread_1", "run_1")
+    let request = RunAgentInput::new("thread_1", "run_1")
         .with_state(json!({
             "loop_control": {
                 "pending_interaction": { "id": "call_pending" },
                 "pending_frontend_invocation": { "call_id": "call_pending" }
             }
         }))
-        .with_message(AGUIMessage::tool("true", "call_pending"))
-        .with_message(AGUIMessage::tool("true", "unrelated_tool_result"));
+        .with_message(Message::tool("true", "call_pending"))
+        .with_message(Message::tool("true", "unrelated_tool_result"));
 
     let responses = request.interaction_responses();
     assert_eq!(responses.len(), 1);
@@ -115,10 +115,44 @@ fn interaction_response_preserves_json_values() {
         }
     });
 
-    let request = RunAgentRequest::new("thread_1", "run_1")
-        .with_message(AGUIMessage::tool(payload.to_string(), "interaction_1"));
+    let request = RunAgentInput::new("thread_1", "run_1")
+        .with_message(Message::tool(payload.to_string(), "interaction_1"));
 
     let responses = request.interaction_responses();
     assert_eq!(responses.len(), 1);
     assert_eq!(responses[0].result, payload);
+}
+
+#[test]
+fn run_request_deserializes_forwarded_props_aliases() {
+    let camel: RunAgentInput = serde_json::from_value(json!({
+        "threadId": "t1",
+        "runId": "r1",
+        "messages": [],
+        "forwardedProps": { "foo": 1 }
+    }))
+    .unwrap();
+    assert_eq!(camel.forwarded_props, Some(json!({ "foo": 1 })));
+
+    let snake: RunAgentInput = serde_json::from_value(json!({
+        "threadId": "t1",
+        "runId": "r1",
+        "messages": [],
+        "forwarded_props": { "bar": 2 }
+    }))
+    .unwrap();
+    assert_eq!(snake.forwarded_props, Some(json!({ "bar": 2 })));
+}
+
+#[test]
+fn convert_agui_messages_filters_activity_and_reasoning() {
+    let input = vec![
+        Message::user("hello"),
+        Message::activity("status"),
+        Message::reasoning("thought"),
+    ];
+
+    let messages = convert_agui_messages(&input);
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].content, "hello");
 }

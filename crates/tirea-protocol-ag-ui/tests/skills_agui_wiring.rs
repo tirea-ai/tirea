@@ -1,16 +1,18 @@
 #![allow(missing_docs)]
 
-use tirea_contract::testing::TestFixture;
-use tirea_agentos::contracts::AgentEvent;
-use tirea_agentos::contracts::thread::{Thread as ConversationAgentState, ToolCall};
-use tirea_agentos::contracts::tool::ToolDescriptor;
-use tirea_agentos::engine::tool_execution::execute_single_tool;
-use tirea_agentos::extensions::skills::{FsSkill, InMemorySkillRegistry, SkillRegistry, SkillSubsystem};
-use tirea_protocol_ag_ui::{AGUIContext, AGUIEvent};
 use serde_json::json;
 use std::fs;
 use std::sync::Arc;
 use tempfile::TempDir;
+use tirea_agentos::contracts::thread::{Thread as ConversationAgentState, ToolCall};
+use tirea_agentos::contracts::tool::ToolDescriptor;
+use tirea_agentos::contracts::AgentEvent;
+use tirea_agentos::engine::tool_execution::execute_single_tool;
+use tirea_agentos::extensions::skills::{
+    FsSkill, InMemorySkillRegistry, SkillRegistry, SkillSubsystem,
+};
+use tirea_contract::testing::TestFixture;
+use tirea_protocol_ag_ui::{AgUiEventContext, Event};
 
 #[tokio::test]
 async fn test_skill_tool_result_is_emitted_as_agui_tool_call_result() {
@@ -24,7 +26,9 @@ async fn test_skill_tool_result_is_emitted_as_agui_tool_call_result() {
     .unwrap();
 
     let result = FsSkill::discover(root).unwrap();
-    let registry: Arc<dyn SkillRegistry> = Arc::new(InMemorySkillRegistry::from_skills(FsSkill::into_arc_skills(result.skills)));
+    let registry: Arc<dyn SkillRegistry> = Arc::new(InMemorySkillRegistry::from_skills(
+        FsSkill::into_arc_skills(result.skills),
+    ));
     let skills = SkillSubsystem::new(registry);
     let tools = skills.tools();
     let tool = tools.get("skill").expect("skill tool registered");
@@ -37,7 +41,7 @@ async fn test_skill_tool_result_is_emitted_as_agui_tool_call_result() {
     assert!(exec.result.is_success());
 
     // Simulate tool call lifecycle events being converted to AG-UI.
-    let mut agui_ctx = AGUIContext::new("thread_1".to_string(), "run_1".to_string());
+    let mut agui_ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
     let start = AgentEvent::ToolCallStart {
         id: "call_1".to_string(),
         name: "skill".to_string(),
@@ -66,18 +70,18 @@ async fn test_skill_tool_result_is_emitted_as_agui_tool_call_result() {
 
     assert!(events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
+        .any(|e| matches!(e, Event::ToolCallStart { .. })));
     assert!(events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::ToolCallArgs { .. })));
+        .any(|e| matches!(e, Event::ToolCallArgs { .. })));
     assert!(events
         .iter()
-        .any(|e| matches!(e, AGUIEvent::ToolCallEnd { .. })));
+        .any(|e| matches!(e, Event::ToolCallEnd { .. })));
 
     let args_event = events
         .iter()
         .find_map(|e| {
-            if let AGUIEvent::ToolCallArgs {
+            if let Event::ToolCallArgs {
                 tool_call_id,
                 delta,
                 ..
@@ -96,7 +100,7 @@ async fn test_skill_tool_result_is_emitted_as_agui_tool_call_result() {
     let result_event = events
         .iter()
         .find_map(|e| {
-            if let AGUIEvent::ToolCallResult {
+            if let Event::ToolCallResult {
                 tool_call_id,
                 content,
                 ..
@@ -129,7 +133,9 @@ async fn test_skills_plugin_injection_is_in_system_context_before_inference() {
     .unwrap();
 
     let result = FsSkill::discover(root).unwrap();
-    let registry: Arc<dyn SkillRegistry> = Arc::new(InMemorySkillRegistry::from_skills(FsSkill::into_arc_skills(result.skills)));
+    let registry: Arc<dyn SkillRegistry> = Arc::new(InMemorySkillRegistry::from_skills(
+        FsSkill::into_arc_skills(result.skills),
+    ));
     let skills = SkillSubsystem::new(registry);
     let plugin = skills.plugin();
 

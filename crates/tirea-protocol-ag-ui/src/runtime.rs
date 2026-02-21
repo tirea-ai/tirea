@@ -16,7 +16,7 @@ use tirea_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_contract::ToolCallContext;
 use tirea_extension_interaction::InteractionPlugin;
 
-use crate::{build_context_addendum, RunAgentRequest};
+use crate::{build_context_addendum, RunAgentInput};
 
 /// Run-config key carrying AG-UI request `config`.
 pub const AGUI_CONFIG_KEY: &str = "agui_config";
@@ -27,7 +27,7 @@ pub const AGUI_FORWARDED_PROPS_KEY: &str = "agui_forwarded_props";
 ///
 /// Injects frontend tool stubs, pending-interaction plugins, context
 /// injection, and interaction-response replay wiring.
-pub fn apply_agui_extensions(resolved: &mut ResolvedRun, request: &RunAgentRequest) {
+pub fn apply_agui_extensions(resolved: &mut ResolvedRun, request: &RunAgentInput) {
     if let Some(model) = request.model.as_ref().filter(|m| !m.trim().is_empty()) {
         resolved.config.model = model.clone();
     }
@@ -239,7 +239,7 @@ impl AgentPlugin for FrontendToolPendingPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AGUIContextEntry, AGUIMessage, AGUIToolDef, ToolExecutionLocation};
+    use crate::{Context, Message, ToolExecutionLocation};
     use async_trait::async_trait;
     use serde_json::json;
     use std::collections::HashMap;
@@ -271,12 +271,12 @@ mod tests {
 
     #[test]
     fn injects_frontend_tools_into_resolved() {
-        let request = RunAgentRequest {
+        let request = RunAgentInput {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
-            messages: vec![AGUIMessage::user("hello")],
+            messages: vec![Message::user("hello")],
             tools: vec![
-                AGUIToolDef {
+                crate::Tool {
                     name: "copyToClipboard".to_string(),
                     description: "copy".to_string(),
                     parameters: Some(json!({
@@ -288,7 +288,7 @@ mod tests {
                     })),
                     execute: ToolExecutionLocation::Frontend,
                 },
-                AGUIToolDef::backend("search", "backend search"),
+                crate::Tool::backend("search", "backend search"),
             ],
             context: vec![],
             state: None,
@@ -315,12 +315,12 @@ mod tests {
 
     #[test]
     fn injects_response_only_plugin_when_no_frontend_tools() {
-        let request = RunAgentRequest {
+        let request = RunAgentInput {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
             messages: vec![
-                AGUIMessage::user("hello"),
-                AGUIMessage::tool("true", "interaction_1"),
+                Message::user("hello"),
+                Message::tool("true", "interaction_1"),
             ],
             tools: vec![],
             context: vec![],
@@ -341,12 +341,12 @@ mod tests {
 
     #[test]
     fn injects_response_plugin_for_non_boolean_frontend_tool_payload() {
-        let request = RunAgentRequest {
+        let request = RunAgentInput {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
             messages: vec![
-                AGUIMessage::user("hello"),
-                AGUIMessage::tool(r#"{"todo":"ship starter"}"#, "call_copy_1"),
+                Message::user("hello"),
+                Message::tool(r#"{"todo":"ship starter"}"#, "call_copy_1"),
             ],
             tools: vec![],
             context: vec![],
@@ -384,14 +384,11 @@ mod tests {
 
     #[test]
     fn injects_frontend_and_response_plugins_together() {
-        let request = RunAgentRequest {
+        let request = RunAgentInput {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
-            messages: vec![
-                AGUIMessage::user("hello"),
-                AGUIMessage::tool("true", "call_1"),
-            ],
-            tools: vec![AGUIToolDef {
+            messages: vec![Message::user("hello"), Message::tool("true", "call_1")],
+            tools: vec![crate::Tool {
                 name: "copyToClipboard".to_string(),
                 description: "copy".to_string(),
                 parameters: None,
@@ -415,11 +412,11 @@ mod tests {
 
     #[test]
     fn prepends_frontend_pending_plugin_before_existing_plugins() {
-        let request = RunAgentRequest {
+        let request = RunAgentInput {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
-            messages: vec![AGUIMessage::user("hello")],
-            tools: vec![AGUIToolDef {
+            messages: vec![Message::user("hello")],
+            tools: vec![crate::Tool {
                 name: "copyToClipboard".to_string(),
                 description: "copy".to_string(),
                 parameters: None,
@@ -451,7 +448,7 @@ mod tests {
 
     #[test]
     fn no_changes_without_frontend_or_response_data() {
-        let request = RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("hello"));
+        let request = RunAgentInput::new("t1", "r1").with_message(Message::user("hello"));
         let mut resolved = empty_resolved();
         apply_agui_extensions(&mut resolved, &request);
         assert_eq!(resolved.config.tool_executor.name(), "parallel");
@@ -500,12 +497,12 @@ mod tests {
 
     #[test]
     fn injects_context_injection_plugin_when_context_present() {
-        let request = RunAgentRequest {
+        let request = RunAgentInput {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
-            messages: vec![AGUIMessage::user("hello")],
+            messages: vec![Message::user("hello")],
             tools: vec![],
-            context: vec![AGUIContextEntry {
+            context: vec![Context {
                 description: "Current tasks".to_string(),
                 value: json!(["Review PR", "Write tests"]),
             }],
@@ -528,12 +525,12 @@ mod tests {
 
     #[tokio::test]
     async fn context_injection_plugin_adds_system_context() {
-        let request = RunAgentRequest {
+        let request = RunAgentInput {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
-            messages: vec![AGUIMessage::user("hello")],
+            messages: vec![Message::user("hello")],
             tools: vec![],
-            context: vec![AGUIContextEntry {
+            context: vec![Context {
                 description: "Task list".to_string(),
                 value: json!(["Review PR", "Write tests"]),
             }],
@@ -573,7 +570,7 @@ mod tests {
 
     #[test]
     fn no_context_injection_plugin_when_context_empty() {
-        let request = RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("hello"));
+        let request = RunAgentInput::new("t1", "r1").with_message(Message::user("hello"));
         let mut resolved = empty_resolved();
         apply_agui_extensions(&mut resolved, &request);
         assert!(!resolved
@@ -585,8 +582,8 @@ mod tests {
 
     #[test]
     fn applies_request_model_and_system_prompt_overrides() {
-        let request = RunAgentRequest::new("t1", "r1")
-            .with_message(AGUIMessage::user("hello"))
+        let request = RunAgentInput::new("t1", "r1")
+            .with_message(Message::user("hello"))
             .with_model("gpt-4.1")
             .with_system_prompt("You are precise.");
 
@@ -602,8 +599,8 @@ mod tests {
 
     #[test]
     fn writes_config_and_forwarded_props_into_run_config() {
-        let request = RunAgentRequest::new("t1", "r1")
-            .with_message(AGUIMessage::user("hello"))
+        let request = RunAgentInput::new("t1", "r1")
+            .with_message(Message::user("hello"))
             .with_state(json!({"k":"v"}))
             .with_forwarded_props(json!({"session":"abc"}));
         let mut request = request;
@@ -624,7 +621,7 @@ mod tests {
 
     #[test]
     fn applies_chat_options_overrides_from_agui_config() {
-        let mut request = RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("hello"));
+        let mut request = RunAgentInput::new("t1", "r1").with_message(Message::user("hello"));
         request.config = Some(json!({
             "captureReasoningContent": true,
             "normalizeReasoningContent": true,
@@ -652,7 +649,7 @@ mod tests {
 
     #[test]
     fn applies_nested_chat_options_overrides_from_agui_config() {
-        let mut request = RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("hello"));
+        let mut request = RunAgentInput::new("t1", "r1").with_message(Message::user("hello"));
         request.config = Some(json!({
             "chat_options": {
                 "capture_reasoning_content": false,

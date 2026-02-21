@@ -1,19 +1,18 @@
-use super::{AGUIMessage, MessageRole};
-use tirea_contract::{Message, ProtocolHistoryEncoder, Role};
+use tirea_contract::ProtocolHistoryEncoder;
 
 pub struct AgUiHistoryEncoder;
 
 impl ProtocolHistoryEncoder for AgUiHistoryEncoder {
-    type HistoryMessage = AGUIMessage;
+    type HistoryMessage = crate::Message;
 
-    fn encode_message(msg: &Message) -> AGUIMessage {
-        AGUIMessage {
+    fn encode_message(msg: &tirea_contract::Message) -> crate::Message {
+        crate::Message {
             id: msg.id.clone(),
             role: match msg.role {
-                Role::System => MessageRole::System,
-                Role::User => MessageRole::User,
-                Role::Assistant => MessageRole::Assistant,
-                Role::Tool => MessageRole::Tool,
+                tirea_contract::Role::System => crate::Role::System,
+                tirea_contract::Role::User => crate::Role::User,
+                tirea_contract::Role::Assistant => crate::Role::Assistant,
+                tirea_contract::Role::Tool => crate::Role::Tool,
             },
             content: msg.content.clone(),
             tool_call_id: msg.tool_call_id.clone(),

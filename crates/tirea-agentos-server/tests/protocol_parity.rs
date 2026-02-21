@@ -8,7 +8,7 @@ use tirea_agentos::contracts::{AgentEvent, RunRequest};
 use tirea_agentos::orchestrator::AgentDefinition;
 use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder};
 use tirea_contract::ProtocolInputAdapter;
-use tirea_protocol_ag_ui::{apply_agui_extensions, AGUIMessage, AgUiInputAdapter, RunAgentRequest};
+use tirea_protocol_ag_ui::{apply_agui_extensions, AgUiInputAdapter, Message, RunAgentInput};
 use tirea_protocol_ai_sdk_v6::{AiSdkV6InputAdapter, AiSdkV6RunRequest};
 use tirea_store_adapters::MemoryStore;
 
@@ -83,8 +83,8 @@ fn normalize(run: RunRequest) -> RunRequest {
 #[test]
 fn agui_and_ai_sdk_inputs_map_to_equivalent_run_requests() {
     let agent_id = "test".to_string();
-    let agui = RunAgentRequest::new("thread_parity", "run_parity")
-        .with_message(AGUIMessage::user("hello parity"));
+    let agui = RunAgentInput::new("thread_parity", "run_parity")
+        .with_message(Message::user("hello parity"));
     let aisdk = AiSdkV6RunRequest::from_thread_input(
         "thread_parity",
         "hello parity",
@@ -107,8 +107,8 @@ fn agui_and_ai_sdk_inputs_map_to_equivalent_run_requests() {
 async fn agui_and_ai_sdk_have_equivalent_runtime_event_shape() {
     let os = make_os();
 
-    let agui_req = RunAgentRequest::new("thread_parity_stream", "run_parity_stream")
-        .with_message(AGUIMessage::user("hello parity"));
+    let agui_req = RunAgentInput::new("thread_parity_stream", "run_parity_stream")
+        .with_message(Message::user("hello parity"));
     let mut agui_resolved = os.resolve("test").unwrap();
     apply_agui_extensions(&mut agui_resolved, &agui_req);
     let agui_run_req = AgUiInputAdapter::to_run_request("test".to_string(), agui_req);
