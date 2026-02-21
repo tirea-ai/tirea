@@ -1,14 +1,6 @@
 use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
-use tirea_agentos::contracts::plugin::AgentPlugin;
-use tirea_agentos::contracts::plugin::phase::{Phase, StepContext};
-use tirea_agentos::contracts::storage::{
-    AgentStateReader, AgentStateStore, AgentStateWriter, VersionPrecondition,
-};
-use tirea_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
-use tirea_agentos_server::http::{router, AppState};
-use tirea_store_adapters::{NatsBufferedThreadWriter, PostgresStore};
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -17,6 +9,14 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers::ImageExt;
 use testcontainers_modules::nats::Nats;
 use testcontainers_modules::postgres::Postgres;
+use tirea_agentos::contracts::plugin::phase::{Phase, StepContext};
+use tirea_agentos::contracts::plugin::AgentPlugin;
+use tirea_agentos::contracts::storage::{
+    AgentStateReader, AgentStateStore, AgentStateWriter, VersionPrecondition,
+};
+use tirea_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
+use tirea_agentos_server::http::{router, AppState};
+use tirea_store_adapters::{NatsBufferedThreadWriter, PostgresStore};
 use tower::ServiceExt;
 
 struct SkipInferencePlugin;
@@ -27,11 +27,7 @@ impl AgentPlugin for SkipInferencePlugin {
         "skip_inference_e2e_nats_postgres"
     }
 
-    async fn on_phase(
-        &self,
-        phase: Phase,
-        step: &mut StepContext<'_>,
-    ) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         if phase == Phase::BeforeInference {
             step.skip_inference = true;
         }
@@ -46,7 +42,10 @@ fn make_os(write_store: Arc<dyn AgentStateStore>) -> AgentOs {
     };
 
     AgentOsBuilder::new()
-        .with_registered_plugin("skip_inference_e2e_nats_postgres", Arc::new(SkipInferencePlugin))
+        .with_registered_plugin(
+            "skip_inference_e2e_nats_postgres",
+            Arc::new(SkipInferencePlugin),
+        )
         .with_agent("test", def)
         .with_agent_state_store(write_store)
         .build()
@@ -75,6 +74,26 @@ async fn post_json(
         .expect("response body should be readable");
     let text = String::from_utf8(body.to_vec()).expect("response body must be utf-8");
     (status, text)
+}
+
+fn ai_sdk_messages_payload(
+    thread_id: impl Into<String>,
+    input: impl Into<String>,
+    run_id: Option<String>,
+) -> serde_json::Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "id".to_string(),
+        serde_json::Value::String(thread_id.into()),
+    );
+    payload.insert(
+        "messages".to_string(),
+        json!([{"role": "user", "content": input.into()}]),
+    );
+    if let Some(run_id) = run_id {
+        payload.insert("runId".to_string(), serde_json::Value::String(run_id));
+    }
+    serde_json::Value::Object(payload)
 }
 
 async fn start_nats_js() -> Option<(testcontainers::ContainerAsync<Nats>, String)> {
@@ -249,11 +268,8 @@ async fn e2e_http_ai_sdk_persists_through_nats_buffered_postgres() {
     let read_store: Arc<dyn AgentStateReader> = postgres_store.clone();
     let app = router(AppState { os, read_store });
 
-    let payload = json!({
-        "sessionId": "np-e2e-thread",
-        "input": "hello np",
-        "runId": "np-run-1",
-    });
+    let payload =
+        ai_sdk_messages_payload("np-e2e-thread", "hello np", Some("np-run-1".to_string()));
     let (status, body) = post_json(app.clone(), "/v1/ai-sdk/agents/test/runs", payload).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
@@ -411,11 +427,11 @@ async fn e2e_http_same_thread_concurrent_runs_preserve_all_user_messages() {
         let app = app.clone();
         handles.push(tokio::spawn(async move {
             let input = format!("same-thread-input-{i}");
-            let payload = json!({
-                "sessionId": "np-same-thread",
-                "input": input,
-                "runId": format!("np-same-run-{i}"),
-            });
+            let payload = ai_sdk_messages_payload(
+                "np-same-thread",
+                input.clone(),
+                Some(format!("np-same-run-{i}")),
+            );
             let (status, body) = post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
             (input, status, body)
         }));

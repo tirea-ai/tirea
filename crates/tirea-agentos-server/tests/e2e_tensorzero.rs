@@ -34,7 +34,8 @@ use tower::ServiceExt;
 mod common;
 
 use common::{
-    extract_agui_text, extract_ai_sdk_text, get_json_text as get_json, post_sse, CalculatorTool,
+    ai_sdk_messages_payload, extract_agui_text, extract_ai_sdk_text, get_json_text as get_json,
+    post_sse, CalculatorTool,
 };
 
 /// Trailing slash is required: genai's OpenAI adapter uses Url::join("chat/completions"),
@@ -173,11 +174,11 @@ async fn e2e_tensorzero_ai_sdk_sse() {
         read_store: storage.clone(),
     });
 
-    let payload = json!({
-        "sessionId": "tz-sdk-1",
-        "input": "What is 2+2? Reply with just the number.",
-        "runId": "r1"
-    });
+    let payload = ai_sdk_messages_payload(
+        "tz-sdk-1",
+        "What is 2+2? Reply with just the number.",
+        Some("r1"),
+    );
 
     let resp = app
         .oneshot(
@@ -460,11 +461,11 @@ async fn e2e_tensorzero_ai_sdk_tool_call() {
     let (status, text) = post_sse(
         app,
         "/v1/ai-sdk/agents/calc/runs",
-        json!({
-            "sessionId": "tz-sdk-tool",
-            "input": "Use the calculator tool to compute 25 * 4. Reply with just the number.",
-            "runId": "r-tool-1"
-        }),
+        ai_sdk_messages_payload(
+            "tz-sdk-tool",
+            "Use the calculator tool to compute 25 * 4. Reply with just the number.",
+            Some("r-tool-1"),
+        ),
     )
     .await;
 
@@ -577,11 +578,11 @@ async fn e2e_tensorzero_ai_sdk_multiturn() {
     let (status, text1) = post_sse(
         app1,
         "/v1/ai-sdk/agents/deepseek/runs",
-        json!({
-            "sessionId": "tz-sdk-multi",
-            "input": "Remember the code word: banana. Just say OK.",
-            "runId": "r-m1"
-        }),
+        ai_sdk_messages_payload(
+            "tz-sdk-multi",
+            "Remember the code word: banana. Just say OK.",
+            Some("r-m1"),
+        ),
     )
     .await;
 
@@ -603,11 +604,11 @@ async fn e2e_tensorzero_ai_sdk_multiturn() {
     let (status, text2) = post_sse(
         app2,
         "/v1/ai-sdk/agents/deepseek/runs",
-        json!({
-            "sessionId": "tz-sdk-multi",
-            "input": "What was the code word? Reply with just the word.",
-            "runId": "r-m2"
-        }),
+        ai_sdk_messages_payload(
+            "tz-sdk-multi",
+            "What was the code word? Reply with just the word.",
+            Some("r-m2"),
+        ),
     )
     .await;
 
@@ -669,11 +670,11 @@ async fn e2e_tensorzero_ai_sdk_finish_max_rounds() {
     let (status, text) = post_sse(
         app,
         "/v1/ai-sdk/agents/limited/runs",
-        json!({
-            "sessionId": "tz-sdk-error",
-            "input": "Use the calculator to add 1 and 2.",
-            "runId": "r-err-sdk"
-        }),
+        ai_sdk_messages_payload(
+            "tz-sdk-error",
+            "Use the calculator to add 1 and 2.",
+            Some("r-err-sdk"),
+        ),
     )
     .await;
 
@@ -721,11 +722,11 @@ async fn e2e_tensorzero_ai_sdk_multistep_tool() {
     let (status, text) = post_sse(
         app,
         "/v1/ai-sdk/agents/calc/runs",
-        json!({
-            "sessionId": "tz-sdk-multistep",
-            "input": "Use the calculator to multiply 12 by 5. Reply with just the number.",
-            "runId": "r-ms-sdk"
-        }),
+        ai_sdk_messages_payload(
+            "tz-sdk-multistep",
+            "Use the calculator to multiply 12 by 5. Reply with just the number.",
+            Some("r-ms-sdk"),
+        ),
     )
     .await;
 
@@ -1054,11 +1055,11 @@ async fn e2e_tensorzero_ai_sdk_load_history() {
     let (status, text1) = post_sse(
         app1,
         "/v1/ai-sdk/agents/deepseek/runs",
-        json!({
-            "sessionId": thread_id,
-            "input": "Remember the animal: elephant. Just say OK.",
-            "runId": "r-hist-1"
-        }),
+        ai_sdk_messages_payload(
+            thread_id,
+            "Remember the animal: elephant. Just say OK.",
+            Some("r-hist-1"),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -1228,11 +1229,11 @@ async fn e2e_tensorzero_ai_sdk_multiturn_history() {
     let (status, _) = post_sse(
         app1,
         "/v1/ai-sdk/agents/deepseek/runs",
-        json!({
-            "sessionId": thread_id,
-            "input": "Remember: the secret is mango. Just say OK.",
-            "runId": "r-mth-1"
-        }),
+        ai_sdk_messages_payload(
+            thread_id,
+            "Remember: the secret is mango. Just say OK.",
+            Some("r-mth-1"),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -1247,11 +1248,11 @@ async fn e2e_tensorzero_ai_sdk_multiturn_history() {
     let (status, text2) = post_sse(
         app2,
         "/v1/ai-sdk/agents/deepseek/runs",
-        json!({
-            "sessionId": thread_id,
-            "input": "What was the secret? Reply with just the word.",
-            "runId": "r-mth-2"
-        }),
+        ai_sdk_messages_payload(
+            thread_id,
+            "What was the secret? Reply with just the word.",
+            Some("r-mth-2"),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -1340,11 +1341,7 @@ async fn e2e_tensorzero_raw_message_history() {
     let (status, sse_text) = post_sse(
         app1,
         "/v1/ai-sdk/agents/deepseek/runs",
-        json!({
-            "sessionId": thread_id,
-            "input": "Say hello.",
-            "runId": "r-raw-1"
-        }),
+        ai_sdk_messages_payload(thread_id, "Say hello.", Some("r-raw-1")),
     )
     .await;
     println!("=== SSE Response (status={status}) ===\n{sse_text}");
@@ -1440,11 +1437,11 @@ async fn e2e_tensorzero_tool_call_history() {
     let (status, text) = post_sse(
         app1,
         "/v1/ai-sdk/agents/calc/runs",
-        json!({
-            "sessionId": thread_id,
-            "input": "Use the calculator to add 7 and 8. Reply with just the number.",
-            "runId": "r-tool-hist"
-        }),
+        ai_sdk_messages_payload(
+            thread_id,
+            "Use the calculator to add 7 and 8. Reply with just the number.",
+            Some("r-tool-hist"),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);

@@ -1,22 +1,22 @@
 #![allow(missing_docs)]
 
-use tirea_extension_observability::{InMemorySink, LLMMetryPlugin};
-use tirea_agent_loop::contracts::plugin::AgentPlugin;
-use tirea_agent_loop::contracts::{AgentEvent, runtime::StreamResult};
-use tirea_agent_loop::contracts::thread::{Thread, Message, ToolCall};
-use tirea_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
-use tirea_agent_loop::contracts::{RunContext, ToolCallContext};
-use tirea_agent_loop::runtime::loop_runner::{
-    execute_tools_with_plugins, run_loop, run_loop_stream, AgentConfig, GenaiLlmExecutor,
-};
 use futures::StreamExt;
 use phoenix_test_helpers::{
-    attr_str, ensure_phoenix_healthy, start_single_response_server, start_sse_server,
-    setup_otel_to_phoenix, unique_suffix, wait_for_chat_span, wait_for_span, PhoenixConfig,
+    attr_str, ensure_phoenix_healthy, setup_otel_to_phoenix, start_single_response_server,
+    start_sse_server, unique_suffix, wait_for_chat_span, wait_for_span, PhoenixConfig,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tirea_agent_loop::contracts::plugin::AgentPlugin;
+use tirea_agent_loop::contracts::thread::{Message, Thread, ToolCall};
+use tirea_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use tirea_agent_loop::contracts::{runtime::StreamResult, AgentEvent};
+use tirea_agent_loop::contracts::{RunContext, ToolCallContext};
+use tirea_agent_loop::runtime::loop_runner::{
+    execute_tools_with_plugins, run_loop, run_loop_stream, AgentConfig, GenaiLlmExecutor,
+};
+use tirea_extension_observability::{InMemorySink, LLMMetryPlugin};
 
 #[derive(Debug)]
 struct NoopTool {
@@ -58,10 +58,23 @@ impl Tool for FailingTool {
     }
 }
 
+async fn require_phoenix(test_name: &str) -> Option<PhoenixConfig> {
+    let cfg = PhoenixConfig::from_env();
+    if !ensure_phoenix_healthy(&cfg.base_url).await {
+        eprintln!(
+            "Skipping {test_name}: Phoenix unavailable at {}",
+            cfg.base_url
+        );
+        return None;
+    }
+    Some(cfg)
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn test_llmmetry_exports_to_phoenix_via_otlp() {
-    let cfg = PhoenixConfig::from_env();
-    ensure_phoenix_healthy(&cfg.base_url).await;
+    let Some(cfg) = require_phoenix("test_llmmetry_exports_to_phoenix_via_otlp").await else {
+        return;
+    };
 
     let (base_url, _server) = start_single_response_server(
         "200 OK",
@@ -123,8 +136,10 @@ async fn test_llmmetry_exports_to_phoenix_via_otlp() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_llmmetry_exports_error_span_to_phoenix_via_otlp() {
-    let cfg = PhoenixConfig::from_env();
-    ensure_phoenix_healthy(&cfg.base_url).await;
+    let Some(cfg) = require_phoenix("test_llmmetry_exports_error_span_to_phoenix_via_otlp").await
+    else {
+        return;
+    };
 
     let (base_url, _server) = start_single_response_server("200 OK", "application/json", "{")
         .await
@@ -156,7 +171,10 @@ async fn test_llmmetry_exports_error_span_to_phoenix_via_otlp() {
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None).await;
-    assert!(matches!(outcome.termination, tirea_agent_loop::contracts::TerminationReason::Error));
+    assert!(matches!(
+        outcome.termination,
+        tirea_agent_loop::contracts::TerminationReason::Error
+    ));
 
     let _ = provider.force_flush();
 
@@ -172,11 +190,12 @@ async fn test_llmmetry_exports_error_span_to_phoenix_via_otlp() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_llmmetry_exports_tool_spans_to_phoenix_via_otlp() {
-    let cfg = PhoenixConfig::from_env();
-    ensure_phoenix_healthy(&cfg.base_url).await;
+    let Some(cfg) = require_phoenix("test_llmmetry_exports_tool_spans_to_phoenix_via_otlp").await
+    else {
+        return;
+    };
 
-    let (_guard, provider) =
-        setup_otel_to_phoenix(&cfg.otlp_traces_endpoint, "phoenix-loop-e2e");
+    let (_guard, provider) = setup_otel_to_phoenix(&cfg.otlp_traces_endpoint, "phoenix-loop-e2e");
     let provider_name = format!("phoenix-tool-provider-{}", unique_suffix());
 
     let sink = InMemorySink::new();
@@ -231,8 +250,11 @@ async fn test_llmmetry_exports_tool_spans_to_phoenix_via_otlp() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_llmmetry_exports_streaming_success_span_to_phoenix_via_otlp() {
-    let cfg = PhoenixConfig::from_env();
-    ensure_phoenix_healthy(&cfg.base_url).await;
+    let Some(cfg) =
+        require_phoenix("test_llmmetry_exports_streaming_success_span_to_phoenix_via_otlp").await
+    else {
+        return;
+    };
 
     let (base_url, _server) = start_sse_server(vec![
         "data: {\"choices\":[{\"delta\":{\"content\":\"hello from stream\"}}]}\n\n",
@@ -302,11 +324,13 @@ async fn test_llmmetry_exports_streaming_success_span_to_phoenix_via_otlp() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_llmmetry_exports_tool_error_span_to_phoenix_via_otlp() {
-    let cfg = PhoenixConfig::from_env();
-    ensure_phoenix_healthy(&cfg.base_url).await;
+    let Some(cfg) =
+        require_phoenix("test_llmmetry_exports_tool_error_span_to_phoenix_via_otlp").await
+    else {
+        return;
+    };
 
-    let (_guard, provider) =
-        setup_otel_to_phoenix(&cfg.otlp_traces_endpoint, "phoenix-loop-e2e");
+    let (_guard, provider) = setup_otel_to_phoenix(&cfg.otlp_traces_endpoint, "phoenix-loop-e2e");
     let provider_name = format!("phoenix-tool-err-provider-{}", unique_suffix());
 
     let sink = InMemorySink::new();

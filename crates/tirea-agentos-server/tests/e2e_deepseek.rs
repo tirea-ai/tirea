@@ -21,10 +21,47 @@ use tower::ServiceExt;
 
 mod common;
 
-use common::{extract_agui_text, extract_ai_sdk_text, post_sse, CalculatorTool};
+use common::{
+    ai_sdk_messages_payload, extract_agui_text, extract_ai_sdk_text, post_sse, CalculatorTool,
+};
 
 fn has_deepseek_key() -> bool {
     std::env::var("DEEPSEEK_API_KEY").is_ok()
+}
+
+fn is_transient_upstream_stream_error(status: StatusCode, body: &str) -> bool {
+    if status != StatusCode::OK || !body.contains(r#""type":"error""#) {
+        return false;
+    }
+
+    [
+        "error sending request for url",
+        "connection refused",
+        "Connection reset",
+        "timed out",
+        "timeout",
+        "503 Service Unavailable",
+        "502 Bad Gateway",
+    ]
+    .iter()
+    .any(|needle| body.contains(needle))
+}
+
+async fn post_sse_with_retry(app: axum::Router, uri: &str, payload: Value) -> (StatusCode, String) {
+    let mut last: Option<(StatusCode, String)> = None;
+
+    for attempt in 1..=3 {
+        let (status, body) = post_sse(app.clone(), uri, payload.clone()).await;
+        if !is_transient_upstream_stream_error(status, &body) {
+            return (status, body);
+        }
+
+        eprintln!("transient upstream stream error on {uri} (attempt {attempt}/3), retrying");
+        last = Some((status, body));
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    }
+
+    last.expect("retry loop must produce at least one response")
 }
 
 fn make_os(write_store: Arc<dyn AgentStateStore>) -> tirea_agentos::orchestrator::AgentOs {
@@ -108,13 +145,13 @@ async fn e2e_ai_sdk_sse_with_deepseek() {
         read_store: storage.clone(),
     });
 
-    let payload = json!({
-        "sessionId": "e2e-sdk",
-        "input": "What is 2+2? Reply with just the number.",
-        "runId": "r1"
-    });
+    let payload = ai_sdk_messages_payload(
+        "e2e-sdk",
+        "What is 2+2? Reply with just the number.",
+        Some("r1"),
+    );
 
-    let (status, text) = post_sse(app, "/v1/ai-sdk/agents/deepseek/runs", payload).await;
+    let (status, text) = post_sse_with_retry(app, "/v1/ai-sdk/agents/deepseek/runs", payload).await;
 
     println!("=== AI SDK SSE Response ===\n{text}");
 
@@ -174,7 +211,7 @@ async fn e2e_ag_ui_sse_with_deepseek() {
         "tools": []
     });
 
-    let (status, text) = post_sse(app, "/v1/ag-ui/agents/deepseek/runs", payload).await;
+    let (status, text) = post_sse_with_retry(app, "/v1/ag-ui/agents/deepseek/runs", payload).await;
 
     println!("=== AG-UI SSE Response ===\n{text}");
 
@@ -220,11 +257,11 @@ async fn e2e_ai_sdk_client_disconnect_cancels_inflight_stream() {
         read_store: storage.clone(),
     });
 
-    let payload = json!({
-        "sessionId": "e2e-sdk-cancel",
-        "input": "Write a very long response: output numbers from 1 to 500 with short commentary.",
-        "runId": "r-cancel-1"
-    });
+    let payload = ai_sdk_messages_payload(
+        "e2e-sdk-cancel",
+        "Write a very long response: output numbers from 1 to 500 with short commentary.",
+        Some("r-cancel-1"),
+    );
 
     let resp = app
         .oneshot(
@@ -307,13 +344,13 @@ async fn e2e_ai_sdk_tool_call_with_deepseek() {
         read_store: storage.clone(),
     });
 
-    let payload = json!({
-        "sessionId": "e2e-sdk-tool",
-        "input": "Use the calculator tool to compute 17 * 3. Reply with just the number.",
-        "runId": "r-tool-1"
-    });
+    let payload = ai_sdk_messages_payload(
+        "e2e-sdk-tool",
+        "Use the calculator tool to compute 17 * 3. Reply with just the number.",
+        Some("r-tool-1"),
+    );
 
-    let (status, text) = post_sse(app, "/v1/ai-sdk/agents/calc/runs", payload).await;
+    let (status, text) = post_sse_with_retry(app, "/v1/ai-sdk/agents/calc/runs", payload).await;
 
     println!("=== AI SDK Tool Call Response ===\n{text}");
 
@@ -370,7 +407,7 @@ async fn e2e_ag_ui_tool_call_with_deepseek() {
         "tools": []
     });
 
-    let (status, text) = post_sse(app, "/v1/ag-ui/agents/calc/runs", payload).await;
+    let (status, text) = post_sse_with_retry(app, "/v1/ag-ui/agents/calc/runs", payload).await;
 
     println!("=== AG-UI Tool Call Response ===\n{text}");
 
@@ -431,14 +468,14 @@ async fn e2e_ai_sdk_multiturn_with_deepseek() {
         read_store: storage.clone(),
     });
 
-    let (status, text1) = post_sse(
+    let (status, text1) = post_sse_with_retry(
         app1,
         "/v1/ai-sdk/agents/chat/runs",
-        json!({
-            "sessionId": "e2e-sdk-multi",
-            "input": "Remember the secret number 42. Just say OK.",
-            "runId": "r-m1"
-        }),
+        ai_sdk_messages_payload(
+            "e2e-sdk-multi",
+            "Remember the secret number 42. Just say OK.",
+            Some("r-m1"),
+        ),
     )
     .await;
 
@@ -470,14 +507,14 @@ async fn e2e_ai_sdk_multiturn_with_deepseek() {
         read_store: storage.clone(),
     });
 
-    let (status, text2) = post_sse(
+    let (status, text2) = post_sse_with_retry(
         app2,
         "/v1/ai-sdk/agents/chat/runs",
-        json!({
-            "sessionId": "e2e-sdk-multi",
-            "input": "What secret number did I tell you? Reply with just the number.",
-            "runId": "r-m2"
-        }),
+        ai_sdk_messages_payload(
+            "e2e-sdk-multi",
+            "What secret number did I tell you? Reply with just the number.",
+            Some("r-m2"),
+        ),
     )
     .await;
 
@@ -531,14 +568,14 @@ async fn e2e_ai_sdk_finish_max_rounds_with_deepseek() {
         read_store: storage.clone(),
     });
 
-    let (status, text) = post_sse(
+    let (status, text) = post_sse_with_retry(
         app,
         "/v1/ai-sdk/agents/limited/runs",
-        json!({
-            "sessionId": "e2e-sdk-error",
-            "input": "Use the calculator to add 1 and 2.",
-            "runId": "r-err-sdk"
-        }),
+        ai_sdk_messages_payload(
+            "e2e-sdk-error",
+            "Use the calculator to add 1 and 2.",
+            Some("r-err-sdk"),
+        ),
     )
     .await;
 
@@ -590,14 +627,14 @@ async fn e2e_ai_sdk_multistep_tool_with_deepseek() {
         read_store: storage.clone(),
     });
 
-    let (status, text) = post_sse(
+    let (status, text) = post_sse_with_retry(
         app,
         "/v1/ai-sdk/agents/calc/runs",
-        json!({
-            "sessionId": "e2e-sdk-multistep",
-            "input": "Use the calculator to multiply 11 by 9. Reply with just the number.",
-            "runId": "r-ms-sdk"
-        }),
+        ai_sdk_messages_payload(
+            "e2e-sdk-multistep",
+            "Use the calculator to multiply 11 by 9. Reply with just the number.",
+            Some("r-ms-sdk"),
+        ),
     )
     .await;
 
@@ -679,7 +716,7 @@ async fn e2e_ag_ui_multiturn_with_deepseek() {
         read_store: storage.clone(),
     });
 
-    let (status, text1) = post_sse(
+    let (status, text1) = post_sse_with_retry(
         app1,
         "/v1/ag-ui/agents/chat/runs",
         json!({
@@ -708,7 +745,7 @@ async fn e2e_ag_ui_multiturn_with_deepseek() {
         read_store: storage.clone(),
     });
 
-    let (status, text2) = post_sse(
+    let (status, text2) = post_sse_with_retry(
         app2,
         "/v1/ag-ui/agents/chat/runs",
         json!({
@@ -776,7 +813,7 @@ async fn e2e_ag_ui_frontend_tools_with_deepseek() {
         ]
     });
 
-    let (status, text) = post_sse(app, "/v1/ag-ui/agents/deepseek/runs", payload).await;
+    let (status, text) = post_sse_with_retry(app, "/v1/ag-ui/agents/deepseek/runs", payload).await;
 
     println!("=== AG-UI Frontend Tools Response ===\n{text}");
 
@@ -845,7 +882,7 @@ async fn e2e_ag_ui_context_readable_with_deepseek() {
         ]
     });
 
-    let (status, text) = post_sse(app, "/v1/ag-ui/agents/deepseek/runs", payload).await;
+    let (status, text) = post_sse_with_retry(app, "/v1/ag-ui/agents/deepseek/runs", payload).await;
 
     println!("=== AG-UI Context Response ===\n{text}");
 
@@ -914,7 +951,7 @@ async fn e2e_ag_ui_run_finished_max_rounds_with_deepseek() {
         "tools": []
     });
 
-    let (status, text) = post_sse(app, "/v1/ag-ui/agents/limited/runs", payload).await;
+    let (status, text) = post_sse_with_retry(app, "/v1/ag-ui/agents/limited/runs", payload).await;
 
     println!("=== AG-UI Max-Rounds Response ===\n{text}");
 
@@ -969,7 +1006,7 @@ async fn e2e_ag_ui_multistep_tool_with_deepseek() {
         "tools": []
     });
 
-    let (status, text) = post_sse(app, "/v1/ag-ui/agents/calc/runs", payload).await;
+    let (status, text) = post_sse_with_retry(app, "/v1/ag-ui/agents/calc/runs", payload).await;
 
     println!("=== AG-UI Multi-Step Response ===\n{text}");
 

@@ -1567,28 +1567,35 @@ async fn test_ai_sdk_history_encodes_tool_messages_as_tool_invocation_parts() {
     let messages = body["messages"]
         .as_array()
         .expect("messages should be array");
-    let has_tool_invocation = messages.iter().any(|msg| {
-        msg["parts"]
-            .as_array()
-            .is_some_and(|parts| parts.iter().any(|part| part["type"] == "tool-invocation"))
+    let has_input_available = messages.iter().any(|msg| {
+        msg["parts"].as_array().is_some_and(|parts| {
+            parts.iter().any(|part| {
+                part["type"] == "tool-search"
+                    && part["toolCallId"] == "call_1"
+                    && part["state"] == "input-available"
+                    && part["input"]["q"] == "rust"
+            })
+        })
     });
     assert!(
-        has_tool_invocation,
-        "ai-sdk history should include tool-invocation parts: {body}"
+        has_input_available,
+        "ai-sdk history should include input-available tool-search part: {body}"
     );
 
     let has_tool_output = messages.iter().any(|msg| {
         msg["parts"].as_array().is_some_and(|parts| {
             parts.iter().any(|part| {
-                part["type"] == "tool-invocation"
+                part["type"] == "dynamic-tool"
                     && part["toolCallId"] == "call_1"
+                    && part["toolName"] == "tool"
+                    && part["state"] == "output-available"
                     && part["output"]["result"] == "ok"
             })
         })
     });
     assert!(
         has_tool_output,
-        "tool output should be encoded in tool-invocation part: {body}"
+        "tool output should be encoded in dynamic-tool output-available part: {body}"
     );
 }
 
@@ -1624,7 +1631,7 @@ async fn test_ai_sdk_history_encodes_assistant_tool_call_input_as_input_availabl
     let has_tool_input_available = messages.iter().any(|msg| {
         msg["parts"].as_array().is_some_and(|parts| {
             parts.iter().any(|part| {
-                part["type"] == "tool-invocation"
+                part["type"] == "tool-search"
                     && part["toolCallId"] == "call_input_1"
                     && part["state"] == "input-available"
                     && part["input"]["q"] == "rust ai-sdk"
@@ -1633,7 +1640,7 @@ async fn test_ai_sdk_history_encodes_assistant_tool_call_input_as_input_availabl
     });
     assert!(
         has_tool_input_available,
-        "assistant tool call should encode to input-available tool-invocation part: {body}"
+        "assistant tool call should encode to input-available tool-search part: {body}"
     );
 }
 
@@ -1688,42 +1695,6 @@ async fn test_messages_run_id_cursor_order_combination_boundaries() {
             .map(|m| (m.cursor, m.message.content.clone()))
             .collect::<Vec<_>>()
     );
-}
-
-fn pending_echo_thread(id: &str, payload: &str) -> Thread {
-    Thread::with_initial_state(
-        id,
-        json!({
-            "loop_control": {
-                "pending_interaction": {
-                    "id": "call_1",
-                    "action": "tool:echo",
-                    "parameters": {
-                        "source": "permission",
-                        "origin_tool_call": {
-                            "id": "call_1",
-                            "name": "echo",
-                            "arguments": { "message": payload }
-                        }
-                    }
-                }
-            }
-        }),
-    )
-    .with_message(
-        tirea_agentos::contracts::thread::Message::assistant_with_tool_calls(
-            "need permission",
-            vec![tirea_agentos::contracts::thread::ToolCall::new(
-                "call_1",
-                "echo",
-                json!({"message": payload}),
-            )],
-        ),
-    )
-    .with_message(tirea_agentos::contracts::thread::Message::tool(
-        "call_1",
-        "Tool 'echo' is awaiting approval. Execution paused.",
-    ))
 }
 
 fn pending_permission_frontend_thread(id: &str, payload: &str) -> Thread {
@@ -1829,7 +1800,10 @@ fn pending_ask_frontend_thread(id: &str, question: &str) -> Thread {
 async fn test_agui_pending_approval_resumes_and_replays_tool_call() {
     let storage = Arc::new(MemoryStore::new());
     storage
-        .save(&pending_echo_thread("th-approve", "approved-run"))
+        .save(&pending_permission_frontend_thread(
+            "th-approve",
+            "approved-run",
+        ))
         .await
         .unwrap();
 
@@ -1845,7 +1819,7 @@ async fn test_agui_pending_approval_resumes_and_replays_tool_call() {
         "threadId": "th-approve",
         "runId": "resume-approve-1",
         "messages": [
-            {"role": "tool", "content": "true", "toolCallId": "call_1"}
+            {"role": "tool", "content": "true", "toolCallId": "fc_perm_1"}
         ],
         "tools": []
     });
@@ -1889,7 +1863,7 @@ async fn test_agui_pending_approval_resumes_and_replays_tool_call() {
 async fn test_agui_pending_denial_clears_pending_without_replay() {
     let storage = Arc::new(MemoryStore::new());
     storage
-        .save(&pending_echo_thread("th-deny", "denied-run"))
+        .save(&pending_permission_frontend_thread("th-deny", "denied-run"))
         .await
         .unwrap();
 
@@ -1905,7 +1879,7 @@ async fn test_agui_pending_denial_clears_pending_without_replay() {
         "threadId": "th-deny",
         "runId": "resume-deny-1",
         "messages": [
-            {"role": "tool", "content": "false", "toolCallId": "call_1"}
+            {"role": "tool", "content": "false", "toolCallId": "fc_perm_1"}
         ],
         "tools": []
     });

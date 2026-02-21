@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
+use serde_json::{json, Value};
 use tirea_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_agentos::contracts::ToolCallContext;
-use serde_json::{json, Value};
 use tower::ServiceExt;
 
 /// A deterministic calculator tool for E2E tests.
@@ -105,6 +105,20 @@ pub async fn get_json_text(app: axum::Router, uri: &str) -> (StatusCode, String)
         .expect("response body should be readable");
     let text = String::from_utf8(body.to_vec()).expect("response body must be utf-8");
     (status, text)
+}
+
+/// Build an AI SDK v6 run payload using canonical `id/messages` fields.
+pub fn ai_sdk_messages_payload(thread_id: &str, input: &str, run_id: Option<&str>) -> Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert("id".to_string(), Value::String(thread_id.to_string()));
+    payload.insert(
+        "messages".to_string(),
+        json!([{"role": "user", "content": input}]),
+    );
+    if let Some(run_id) = run_id {
+        payload.insert("runId".to_string(), Value::String(run_id.to_string()));
+    }
+    Value::Object(payload)
 }
 
 pub fn extract_ai_sdk_text(sse: &str) -> String {

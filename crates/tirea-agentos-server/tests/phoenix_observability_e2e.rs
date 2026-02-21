@@ -2,17 +2,17 @@
 
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
-use tirea_agentos::contracts::storage::AgentStateStore;
-use tirea_agentos::extensions::observability::{InMemorySink, LLMMetryPlugin};
-use tirea_agentos::orchestrator::AgentDefinition;
-use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder, ModelDefinition};
-use tirea_agentos_server::http::{router, AppState};
 use phoenix_test_helpers::{
     attr_str, ensure_phoenix_healthy, setup_otel_to_phoenix, start_single_response_server,
     start_sse_server, unique_suffix, wait_for_span_with_model, PhoenixConfig,
 };
 use serde_json::json;
 use std::sync::Arc;
+use tirea_agentos::contracts::storage::AgentStateStore;
+use tirea_agentos::extensions::observability::{InMemorySink, LLMMetryPlugin};
+use tirea_agentos::orchestrator::AgentDefinition;
+use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder, ModelDefinition};
+use tirea_agentos_server::http::{router, AppState};
 use tower::ServiceExt;
 
 fn make_os(
@@ -49,10 +49,35 @@ fn make_os(
         .expect("failed to build AgentOs")
 }
 
+fn ai_sdk_messages_payload(thread_id: &str, input: &str, run_id: &str) -> serde_json::Value {
+    json!({
+        "id": thread_id,
+        "messages": [
+            { "role": "user", "content": input }
+        ],
+        "runId": run_id
+    })
+}
+
+async fn require_phoenix(test_name: &str) -> Option<PhoenixConfig> {
+    let cfg = PhoenixConfig::from_env();
+    if !ensure_phoenix_healthy(&cfg.base_url).await {
+        eprintln!(
+            "Skipping {test_name}: Phoenix unavailable at {}",
+            cfg.base_url
+        );
+        return None;
+    }
+    Some(cfg)
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn e2e_agentos_server_exports_llm_observability_to_phoenix() {
-    let cfg = PhoenixConfig::from_env();
-    ensure_phoenix_healthy(&cfg.base_url).await;
+    let Some(cfg) =
+        require_phoenix("e2e_agentos_server_exports_llm_observability_to_phoenix").await
+    else {
+        return;
+    };
 
     let (base_url, _server) = start_sse_server(vec![
         "data: {\"choices\":[{\"delta\":{\"content\":\"hello from mock llm\"}}]}\n\n",
@@ -91,11 +116,11 @@ async fn e2e_agentos_server_exports_llm_observability_to_phoenix() {
         read_store: storage.clone(),
     });
 
-    let payload = json!({
-        "sessionId": format!("phoenix-server-session-{now_ms}"),
-        "input": "Say hello in one short sentence.",
-        "runId": format!("phoenix-server-run-{now_ms}")
-    });
+    let payload = ai_sdk_messages_payload(
+        &format!("phoenix-server-session-{now_ms}"),
+        "Say hello in one short sentence.",
+        &format!("phoenix-server-run-{now_ms}"),
+    );
     let resp = app
         .oneshot(
             Request::builder()
@@ -127,11 +152,15 @@ async fn e2e_agentos_server_exports_llm_observability_to_phoenix() {
         .expect("span should include attributes");
 
     assert_eq!(
-        attrs.get("gen_ai.request.model").and_then(serde_json::Value::as_str),
+        attrs
+            .get("gen_ai.request.model")
+            .and_then(serde_json::Value::as_str),
         Some(observed_model.as_str())
     );
     assert_eq!(
-        attrs.get("gen_ai.provider.name").and_then(serde_json::Value::as_str),
+        attrs
+            .get("gen_ai.provider.name")
+            .and_then(serde_json::Value::as_str),
         Some(provider_name)
     );
     assert!(
@@ -144,8 +173,11 @@ async fn e2e_agentos_server_exports_llm_observability_to_phoenix() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn e2e_agentos_server_exports_llm_error_observability_to_phoenix() {
-    let cfg = PhoenixConfig::from_env();
-    ensure_phoenix_healthy(&cfg.base_url).await;
+    let Some(cfg) =
+        require_phoenix("e2e_agentos_server_exports_llm_error_observability_to_phoenix").await
+    else {
+        return;
+    };
 
     let (base_url, _server) = start_single_response_server(
         "500 Internal Server Error",
@@ -184,11 +216,11 @@ async fn e2e_agentos_server_exports_llm_error_observability_to_phoenix() {
         read_store: storage.clone(),
     });
 
-    let payload = json!({
-        "sessionId": format!("phoenix-server-session-err-{now_ms}"),
-        "input": "Say hello in one short sentence.",
-        "runId": format!("phoenix-server-run-err-{now_ms}")
-    });
+    let payload = ai_sdk_messages_payload(
+        &format!("phoenix-server-session-err-{now_ms}"),
+        "Say hello in one short sentence.",
+        &format!("phoenix-server-run-err-{now_ms}"),
+    );
     let resp = app
         .oneshot(
             Request::builder()

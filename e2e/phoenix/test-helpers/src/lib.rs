@@ -130,18 +130,29 @@ pub async fn wait_for_span_with_model(project_spans_url: &str, model: &str) -> O
     .await
 }
 
-/// Assert that Phoenix is reachable and healthy.
-pub async fn ensure_phoenix_healthy(phoenix_base_url: &str) {
-    let health_check = reqwest::Client::new()
+/// Check whether Phoenix is reachable and healthy.
+pub async fn ensure_phoenix_healthy(phoenix_base_url: &str) -> bool {
+    let health_check = match reqwest::Client::new()
         .get(format!("{phoenix_base_url}/v1/projects"))
         .send()
         .await
-        .unwrap_or_else(|e| panic!("Phoenix server is not reachable at {phoenix_base_url}: {e}"));
-    assert!(
-        health_check.status().is_success(),
-        "Phoenix health check failed at {phoenix_base_url}/v1/projects with status {}",
-        health_check.status()
-    );
+    {
+        Ok(response) => response,
+        Err(error) => {
+            eprintln!("Phoenix is not reachable at {phoenix_base_url}: {error}");
+            return false;
+        }
+    };
+
+    if !health_check.status().is_success() {
+        eprintln!(
+            "Phoenix health check failed at {phoenix_base_url}/v1/projects with status {}",
+            health_check.status()
+        );
+        return false;
+    }
+
+    true
 }
 
 /// Extract a string attribute from a Phoenix span JSON.

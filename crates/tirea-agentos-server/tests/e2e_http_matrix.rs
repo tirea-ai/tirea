@@ -68,6 +68,26 @@ async fn post_json(
     (status, text)
 }
 
+fn ai_sdk_messages_payload(
+    thread_id: impl Into<String>,
+    input: impl Into<String>,
+    run_id: Option<String>,
+) -> serde_json::Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "id".to_string(),
+        serde_json::Value::String(thread_id.into()),
+    );
+    payload.insert(
+        "messages".to_string(),
+        json!([{"role": "user", "content": input.into()}]),
+    );
+    if let Some(run_id) = run_id {
+        payload.insert("runId".to_string(), serde_json::Value::String(run_id));
+    }
+    serde_json::Value::Object(payload)
+}
+
 async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
     let resp = app
         .oneshot(
@@ -129,11 +149,8 @@ async fn e2e_http_matrix_96() {
                 _ => None,
             };
 
-            let ai_payload = json!({
-                "sessionId": thread_id,
-                "input": content,
-                "runId": ai_run_id,
-            });
+            let ai_payload =
+                ai_sdk_messages_payload(thread_id.clone(), content.to_string(), ai_run_id);
             let (status, body) =
                 post_json(app.clone(), "/v1/ai-sdk/agents/test/runs", ai_payload).await;
             assert_eq!(status, StatusCode::OK);
@@ -213,11 +230,11 @@ async fn e2e_http_concurrent_48_all_persisted() {
         let app_clone = app.clone();
         handles.push(tokio::spawn(async move {
             let thread_id = format!("concurrent-ai-{i}");
-            let payload = json!({
-                "sessionId": thread_id,
-                "input": format!("hi-ai-{i}"),
-                "runId": format!("run-ai-{i}"),
-            });
+            let payload = ai_sdk_messages_payload(
+                thread_id.clone(),
+                format!("hi-ai-{i}"),
+                Some(format!("run-ai-{i}")),
+            );
             post_json(app_clone, "/v1/ai-sdk/agents/test/runs", payload).await
         }));
     }
@@ -281,20 +298,20 @@ async fn e2e_http_multiturn_history_endpoints_are_consistent() {
         read_store: store.clone(),
     });
 
-    let first_payload = json!({
-        "sessionId": "history-e2e-thread",
-        "input": "first-turn",
-        "runId": "history-r1",
-    });
+    let first_payload = ai_sdk_messages_payload(
+        "history-e2e-thread",
+        "first-turn",
+        Some("history-r1".to_string()),
+    );
     let (status, body) = post_json(app.clone(), "/v1/ai-sdk/agents/test/runs", first_payload).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains(r#""type":"finish""#));
 
-    let second_payload = json!({
-        "sessionId": "history-e2e-thread",
-        "input": "second-turn",
-        "runId": "history-r2",
-    });
+    let second_payload = ai_sdk_messages_payload(
+        "history-e2e-thread",
+        "second-turn",
+        Some("history-r2".to_string()),
+    );
     let (status, body) =
         post_json(app.clone(), "/v1/ai-sdk/agents/test/runs", second_payload).await;
     assert_eq!(status, StatusCode::OK);
@@ -336,11 +353,11 @@ async fn e2e_http_ai_sdk_large_payload_roundtrip() {
     });
 
     let large_input = "x".repeat(256 * 1024);
-    let payload = json!({
-        "sessionId": "large-payload-thread",
-        "input": large_input,
-        "runId": "large-payload-run",
-    });
+    let payload = ai_sdk_messages_payload(
+        "large-payload-thread",
+        large_input,
+        Some("large-payload-run".to_string()),
+    );
     let (status, body) = post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
@@ -381,11 +398,11 @@ async fn e2e_http_mixed_large_payload_concurrency_64() {
                 } else {
                     format!("small-ai-{i}")
                 };
-                let payload = json!({
-                    "sessionId": format!("mixed-ai-{i}"),
-                    "input": input.clone(),
-                    "runId": format!("mixed-ai-run-{i}")
-                });
+                let payload = ai_sdk_messages_payload(
+                    format!("mixed-ai-{i}"),
+                    input.clone(),
+                    Some(format!("mixed-ai-run-{i}")),
+                );
                 let (status, body) = post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
                 (format!("mixed-ai-{i}"), input, status, body)
             } else {
