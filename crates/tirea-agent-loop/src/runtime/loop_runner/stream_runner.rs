@@ -7,12 +7,17 @@ use super::*;
 // - emits AgentEvent stream
 // - delegates deterministic state-machine helpers to `stream_core`
 
+struct RunStartDrainOutcome {
+    events: Vec<AgentEvent>,
+    replayed: bool,
+}
+
 async fn drain_run_start_outbox_and_replay(
     run_ctx: &mut RunContext,
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
-) -> Result<Vec<AgentEvent>, String> {
+) -> Result<RunStartDrainOutcome, String> {
     let outbox =
         drain_agent_outbox(run_ctx, "agent_outbox_run_start").map_err(|e| e.to_string())?;
 
@@ -26,7 +31,10 @@ async fn drain_run_start_outbox_and_replay(
 
     let replay_calls = outbox.replay_tool_calls;
     if replay_calls.is_empty() {
-        return Ok(events);
+        return Ok(RunStartDrainOutcome {
+            events,
+            replayed: false,
+        });
     }
 
     let mut replay_state_changed = false;
@@ -119,7 +127,10 @@ async fn drain_run_start_outbox_and_replay(
                 .snapshot()
                 .map_err(|e| format!("failed to rebuild multi-round snapshot: {e}"))?;
             events.push(AgentEvent::StateSnapshot { snapshot });
-            return Ok(events);
+            return Ok(RunStartDrainOutcome {
+                events,
+                replayed: true,
+            });
         }
     }
 
@@ -140,7 +151,10 @@ async fn drain_run_start_outbox_and_replay(
         events.push(AgentEvent::StateSnapshot { snapshot });
     }
 
-    Ok(events)
+    Ok(RunStartDrainOutcome {
+        events,
+        replayed: true,
+    })
 }
 
 fn drain_loop_tick_outbox(run_ctx: &mut RunContext) -> Result<Vec<AgentEvent>, String> {
@@ -400,8 +414,17 @@ pub(super) fn run_loop_stream_impl(
 
         yield emitter.run_start();
 
+        // Persist immediate run-start side effects before replaying any pending tools.
+        if let Err(e) = pending_delta_commit
+            .commit(&mut run_ctx, CheckpointReason::UserMessage, false)
+            .await
+        {
+            let message = e.to_string();
+            terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
+        }
+
         // Resume pending tool execution requested by plugins at run start.
-        let run_start_events = match drain_run_start_outbox_and_replay(
+        let run_start_drain = match drain_run_start_outbox_and_replay(
             &mut run_ctx,
             &active_tool_snapshot.tools,
             &config,
@@ -415,7 +438,19 @@ pub(super) fn run_loop_stream_impl(
                 terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
             }
         };
-        for event in run_start_events {
+
+        // Replay path reuses the regular tool-results checkpoint semantics.
+        if run_start_drain.replayed {
+            if let Err(e) = pending_delta_commit
+                .commit(&mut run_ctx, CheckpointReason::ToolResultsCommitted, false)
+                .await
+            {
+                let message = e.to_string();
+                terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
+            }
+        }
+
+        for event in run_start_drain.events {
             yield emitter.emit_existing(event);
         }
 

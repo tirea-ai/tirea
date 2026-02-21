@@ -1451,9 +1451,7 @@ mod tests {
         let call_id = ctx.ask_frontend_tool(
             "PermissionConfirm",
             json!({"tool_name": "write_file", "tool_args": {"path": "a.txt"}}),
-            ResponseRouting::ReplayOriginalTool {
-                state_patches: vec![],
-            },
+            ResponseRouting::ReplayOriginalTool,
         );
 
         assert!(ctx.tool_pending());
@@ -1476,7 +1474,7 @@ mod tests {
         assert_eq!(invocation.tool_name, "PermissionConfirm");
         assert!(matches!(
             invocation.routing,
-            ResponseRouting::ReplayOriginalTool { .. }
+            ResponseRouting::ReplayOriginalTool
         ));
         match &invocation.origin {
             InvocationOrigin::ToolCallIntercepted {

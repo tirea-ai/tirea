@@ -4644,9 +4644,9 @@ fn test_scenario_various_interaction_types() {
 
 use std::collections::HashSet;
 use tirea_agentos::contracts::plugin::phase::{
-    AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext, BeforeToolExecuteContext,
-    Phase, RunEndContext, RunStartContext, StepContext, StepEndContext, StepStartContext,
-    ToolContext,
+    AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
+    BeforeToolExecuteContext, Phase, RunEndContext, RunStartContext, StepContext, StepEndContext,
+    StepStartContext, ToolContext,
 };
 use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::thread::ToolCall;
@@ -12476,8 +12476,7 @@ async fn test_interaction_response_run_start_sets_replay_on_approval() {
                 "backend_arguments": { "destination": "Beijing" }
             },
             "routing": {
-                "strategy": "replay_original_tool",
-                "state_patches": []
+                "strategy": "replay_original_tool"
             }
         } } }),
     )
@@ -12623,8 +12622,7 @@ async fn test_interaction_response_run_start_no_tool_calls_in_messages() {
                 "backend_arguments": {}
             },
             "routing": {
-                "strategy": "replay_original_tool",
-                "state_patches": []
+                "strategy": "replay_original_tool"
             }
         } } }),
     )
@@ -12828,8 +12826,7 @@ async fn test_hitl_replay_picks_first_tool_call() {
                         "backend_arguments": { "a": 1 }
                     },
                     "routing": {
-                        "strategy": "replay_original_tool",
-                        "state_patches": []
+                        "strategy": "replay_original_tool"
                     }
                 }
             }
@@ -12899,8 +12896,7 @@ async fn test_hitl_replay_run_start_does_not_affect_before_tool_execute() {
                         "backend_arguments": {}
                     },
                     "routing": {
-                        "strategy": "replay_original_tool",
-                        "state_patches": []
+                        "strategy": "replay_original_tool"
                     }
                 }
             }

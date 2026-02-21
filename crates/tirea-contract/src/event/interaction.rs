@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tirea_state::Op;
 
 /// Generic interaction request for client-side actions.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -199,16 +198,28 @@ pub enum InvocationOrigin {
 
 /// How to route the frontend's response after it completes execution.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "strategy", rename_all = "snake_case")]
+#[serde(from = "ResponseRoutingWire", into = "ResponseRoutingWire")]
 pub enum ResponseRouting {
-    /// Replay the original backend tool after applying state patches.
-    /// Used for permission prompts: the frontend result (approved/denied)
-    /// determines whether to replay, and `state_patches` are applied first
-    /// (e.g. setting `permissions.tools.<name> = "allow"`).
+    /// Replay the original backend tool.
+    ///
+    /// Used for permission prompts where approval allows replaying the
+    /// intercepted backend tool call.
+    ReplayOriginalTool,
+    /// The frontend result IS the tool result — inject it directly into
+    /// the LLM message history as the tool call response.
+    /// Used for direct frontend tools (e.g. copyToClipboard).
+    UseAsToolResult,
+    /// Pass the frontend result to the LLM as an independent message.
+    PassToLLM,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "strategy", rename_all = "snake_case")]
+enum ResponseRoutingWire {
+    /// Legacy shape accepted for backward compatibility.
     ReplayOriginalTool {
-        /// State patches to apply before replaying the original tool.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        state_patches: Vec<Op>,
+        state_patches: Vec<Value>,
     },
     /// The frontend result IS the tool result — inject it directly into
     /// the LLM message history as the tool call response.
@@ -216,4 +227,54 @@ pub enum ResponseRouting {
     UseAsToolResult,
     /// Pass the frontend result to the LLM as an independent message.
     PassToLLM,
+}
+
+impl From<ResponseRoutingWire> for ResponseRouting {
+    fn from(value: ResponseRoutingWire) -> Self {
+        match value {
+            ResponseRoutingWire::ReplayOriginalTool { .. } => Self::ReplayOriginalTool,
+            ResponseRoutingWire::UseAsToolResult => Self::UseAsToolResult,
+            ResponseRoutingWire::PassToLLM => Self::PassToLLM,
+        }
+    }
+}
+
+impl From<ResponseRouting> for ResponseRoutingWire {
+    fn from(value: ResponseRouting) -> Self {
+        match value {
+            ResponseRouting::ReplayOriginalTool => Self::ReplayOriginalTool {
+                state_patches: Vec::new(),
+            },
+            ResponseRouting::UseAsToolResult => Self::UseAsToolResult,
+            ResponseRouting::PassToLLM => Self::PassToLLM,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ResponseRouting;
+    use serde_json::json;
+
+    #[test]
+    fn replay_original_tool_serializes_without_state_patches() {
+        let value =
+            serde_json::to_value(ResponseRouting::ReplayOriginalTool).expect("serialize routing");
+        assert_eq!(value, json!({ "strategy": "replay_original_tool" }));
+    }
+
+    #[test]
+    fn replay_original_tool_deserializes_legacy_state_patches_shape() {
+        let value = json!({
+            "strategy": "replay_original_tool",
+            "state_patches": [{
+                "op": "set",
+                "path": ["permissions", "approved_calls", "call_1"],
+                "value": true
+            }]
+        });
+        let routing: ResponseRouting =
+            serde_json::from_value(value).expect("deserialize legacy replay routing");
+        assert_eq!(routing, ResponseRouting::ReplayOriginalTool);
+    }
 }

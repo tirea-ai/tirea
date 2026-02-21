@@ -2,8 +2,9 @@ use super::outcome::LoopFailure;
 use super::*;
 use crate::contracts::event::interaction::ResponseRouting;
 use crate::contracts::plugin::phase::{
-    AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext, BeforeToolExecuteContext,
-    Phase, RunEndContext, RunStartContext, StepEndContext, StepStartContext,
+    AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
+    BeforeToolExecuteContext, Phase, RunEndContext, RunStartContext, StepEndContext,
+    StepStartContext,
 };
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::LlmExecutor;
@@ -2705,8 +2706,7 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
                         "backend_arguments": { "path": "a.txt" }
                     },
                     "routing": {
-                        "strategy": "replay_original_tool",
-                        "state_patches": []
+                        "strategy": "replay_original_tool"
                     }
                 }
             }
@@ -2785,8 +2785,7 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
                         "backend_arguments": { "message": "approved-run" }
                     },
                     "routing": {
-                        "strategy": "replay_original_tool",
-                        "state_patches": []
+                        "strategy": "replay_original_tool"
                     }
                 }
             }
@@ -2863,6 +2862,111 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
 }
 
 #[tokio::test]
+async fn test_stream_permission_approval_replay_commits_before_and_after_replay() {
+    struct SkipInferencePlugin;
+
+    #[async_trait]
+    impl AgentPlugin for SkipInferencePlugin {
+        fn id(&self) -> &str {
+            "skip_inference_for_permission_approval_checkpoint"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::BeforeInference {
+                step.skip_inference = true;
+            }
+        });
+    }
+
+    let committer = Arc::new(RecordingStateCommitter::new(None));
+    let interaction = tirea_extension_interaction::InteractionPlugin::with_responses(
+        vec!["call_1".to_string()],
+        Vec::new(),
+    );
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(interaction))
+        .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>)
+        .with_llm_executor(
+            Arc::new(MockStreamProvider::new(vec![MockResponse::text("unused")]))
+                as Arc<dyn LlmExecutor>,
+        );
+    let thread = Thread::with_initial_state(
+        "test",
+        json!({
+            "loop_control": {
+                "pending_interaction": {
+                    "id": "call_1",
+                    "action": "tool:echo",
+                    "parameters": { "source": "permission" }
+                },
+                "pending_frontend_invocation": {
+                    "call_id": "call_1",
+                    "tool_name": "PermissionConfirm",
+                    "arguments": {
+                        "tool_name": "echo",
+                        "tool_args": { "message": "approved-run" }
+                    },
+                    "origin": {
+                        "type": "tool_call_intercepted",
+                        "backend_call_id": "call_1",
+                        "backend_tool_name": "echo",
+                        "backend_arguments": { "message": "approved-run" }
+                    },
+                    "routing": { "strategy": "replay_original_tool" }
+                }
+            }
+        }),
+    )
+    .with_message(Message::assistant_with_tool_calls(
+        "need permission",
+        vec![crate::contracts::thread::ToolCall::new(
+            "call_1",
+            "echo",
+            json!({"message": "approved-run"}),
+        )],
+    ))
+    .with_message(Message::tool(
+        "call_1",
+        "Tool 'echo' is awaiting approval. Execution paused.",
+    ));
+
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let events = collect_stream_events(run_loop_stream(
+        config,
+        tool_map([EchoTool]),
+        run_ctx,
+        None,
+        Some(committer.clone() as Arc<dyn StateCommitter>),
+    ))
+    .await;
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::InteractionResolved { interaction_id, result }
+                if interaction_id == "call_1" && result == &serde_json::Value::Bool(true)
+        )),
+        "missing approval InteractionResolved event: {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::ToolCallDone { id, .. } if id == "call_1"
+        )),
+        "approved replay must emit ToolCallDone: {events:?}"
+    );
+
+    assert_eq!(
+        committer.reasons(),
+        vec![
+            CheckpointReason::UserMessage,
+            CheckpointReason::ToolResultsCommitted,
+            CheckpointReason::RunFinished
+        ]
+    );
+}
+
+#[tokio::test]
 async fn test_stream_permission_denied_does_not_replay_tool_call() {
     struct SkipInferencePlugin;
 
@@ -2916,8 +3020,7 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
                         "backend_arguments": { "message": "denied-run" }
                     },
                     "routing": {
-                        "strategy": "replay_original_tool",
-                        "state_patches": []
+                        "strategy": "replay_original_tool"
                     }
                 }
             }
@@ -4252,8 +4355,7 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
                         "backend_arguments": { "message": "approved-run" }
                     },
                     "routing": {
-                        "strategy": "replay_original_tool",
-                        "state_patches": []
+                        "strategy": "replay_original_tool"
                     }
                 }
             }
@@ -7822,9 +7924,7 @@ async fn test_stream_permission_intercept_emits_tool_call_start_for_frontend() {
             step.ask_frontend_tool(
                 "PermissionConfirm",
                 json!({ "tool_name": "serverInfo", "tool_args": {} }),
-                ResponseRouting::ReplayOriginalTool {
-                    state_patches: vec![],
-                },
+                ResponseRouting::ReplayOriginalTool,
             );
         });
     }

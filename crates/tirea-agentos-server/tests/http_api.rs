@@ -1755,12 +1755,7 @@ fn pending_permission_frontend_thread(id: &str, payload: &str) -> Thread {
                         "backend_arguments": { "message": payload }
                     },
                     "routing": {
-                        "strategy": "replay_original_tool",
-                        "state_patches": [{
-                            "op": "set",
-                            "path": ["permissions", "approved_calls", "call_1"],
-                            "value": true
-                        }]
+                        "strategy": "replay_original_tool"
                     }
                 }
             }

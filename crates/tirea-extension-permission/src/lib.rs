@@ -26,10 +26,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use tirea_contract::event::interaction::ResponseRouting;
-use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::plugin::phase::{BeforeToolExecuteContext, PluginPhaseContext};
+use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::tool::context::ToolCallContext;
-use tirea_state::{Op, Path, State};
+use tirea_state::State;
 
 /// Tool permission behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -133,10 +133,7 @@ impl AgentPlugin for PermissionPlugin {
         "permission"
     }
 
-    async fn before_tool_execute(
-        &self,
-        step: &mut BeforeToolExecuteContext<'_, '_>,
-    ) {
+    async fn before_tool_execute(&self, step: &mut BeforeToolExecuteContext<'_, '_>) {
         if !matches!(
             step.decision(),
             tirea_contract::plugin::phase::ToolDecision::Proceed
@@ -195,30 +192,18 @@ impl AgentPlugin for PermissionPlugin {
                     step.deny("Permission check requires non-empty tool call id");
                     return;
                 }
-                let tool_args = step
-                    .tool_args()
-                    .cloned()
-                    .unwrap_or_default();
+                let tool_args = step.tool_args().cloned().unwrap_or_default();
                 let arguments = json!({
                     "tool_name": tool_id,
                     "tool_args": tool_args,
                 });
-                // One-shot approval: write to approved_calls keyed by backend
-                // call_id so only this specific replay is allowed.
-                let routing = ResponseRouting::ReplayOriginalTool {
-                    state_patches: vec![Op::set(
-                        Path::root()
-                            .key("permissions")
-                            .key("approved_calls")
-                            .key(&call_id),
-                        json!(true),
-                    )],
-                };
+                // One-shot approval is set by InteractionResponsePlugin when the
+                // frontend confirms this pending invocation.
+                let routing = ResponseRouting::ReplayOriginalTool;
                 step.ask_frontend_tool(PERMISSION_CONFIRM_TOOL_NAME, arguments, routing);
             }
         }
     }
-
 }
 
 #[cfg(test)]
@@ -501,23 +486,17 @@ mod tests {
             _ => panic!("Expected ToolCallIntercepted origin"),
         }
 
-        // Routing should be ReplayOriginalTool with one-shot approved_calls patch
+        // Routing should be ReplayOriginalTool without embedded state patches.
         match &inv.routing {
-            ResponseRouting::ReplayOriginalTool { state_patches } => {
-                assert_eq!(state_patches.len(), 1);
-                // Patch should target approved_calls, NOT tools
-                let patch_debug = format!("{:?}", state_patches[0]);
-                assert!(
-                    patch_debug.contains("approved_calls"),
-                    "state_patch should write to approved_calls, got: {patch_debug}"
-                );
-                assert!(
-                    !patch_debug.contains("\"tools\""),
-                    "state_patch must NOT permanently modify tools permissions, got: {patch_debug}"
-                );
-            }
+            ResponseRouting::ReplayOriginalTool => {}
             _ => panic!("Expected ReplayOriginalTool routing"),
         }
+
+        let routing_json = serde_json::to_value(&inv.routing).expect("routing should serialize");
+        assert!(
+            routing_json.get("state_patches").is_none(),
+            "routing must not serialize legacy state_patches field: {routing_json:?}"
+        );
     }
 
     #[tokio::test]

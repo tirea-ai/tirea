@@ -119,7 +119,9 @@ impl InteractionResponsePlugin {
         })
     }
 
-    fn persisted_frontend_invocation(step: &impl PluginPhaseContext) -> Option<FrontendToolInvocation> {
+    fn persisted_frontend_invocation(
+        step: &impl PluginPhaseContext,
+    ) -> Option<FrontendToolInvocation> {
         let state = step.snapshot();
         state
             .get(LoopControlState::PATH)
@@ -309,7 +311,7 @@ impl InteractionResponsePlugin {
         response: Option<&serde_json::Value>,
     ) {
         match &inv.routing {
-            ResponseRouting::ReplayOriginalTool { .. } => {
+            ResponseRouting::ReplayOriginalTool => {
                 // Queue replay of the original backend tool.
                 match &inv.origin {
                     InvocationOrigin::ToolCallIntercepted {
@@ -474,8 +476,8 @@ mod tests {
     use std::sync::Arc;
     use tirea_contract::plugin::phase::{
         AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
-        BeforeToolExecuteContext, Phase, RunEndContext, RunStartContext, StepContext, StepEndContext,
-        StepStartContext,
+        BeforeToolExecuteContext, Phase, RunEndContext, RunStartContext, StepContext,
+        StepEndContext, StepStartContext,
     };
     use tirea_contract::plugin::AgentPlugin;
     use tirea_contract::testing::TestFixture;
@@ -570,12 +572,7 @@ mod tests {
                         "backend_arguments": { "path": "b.txt" }
                     },
                     "routing": {
-                        "strategy": "replay_original_tool",
-                        "state_patches": [{
-                            "op": "set",
-                            "path": ["permissions", "approved_calls", "call_write"],
-                            "value": true
-                        }]
+                        "strategy": "replay_original_tool"
                     }
                 }
             }
@@ -761,8 +758,7 @@ mod tests {
                         "backend_arguments": { "path": "a.txt" }
                     },
                     "routing": {
-                        "strategy": "replay_original_tool",
-                        "state_patches": []
+                        "strategy": "replay_original_tool"
                     }
                 }
             }
@@ -803,8 +799,7 @@ mod tests {
                         "backend_arguments": { "path": "b.txt" }
                     },
                     "routing": {
-                        "strategy": "replay_original_tool",
-                        "state_patches": []
+                        "strategy": "replay_original_tool"
                     }
                 }
             }
@@ -843,12 +838,7 @@ mod tests {
                         "backend_arguments": { "path": "a.txt" }
                     },
                     "routing": {
-                        "strategy": "replay_original_tool",
-                        "state_patches": [{
-                            "op": "set",
-                            "path": ["permissions", "approved_calls", "call_write"],
-                            "value": true
-                        }]
+                        "strategy": "replay_original_tool"
                     }
                 }
             }
