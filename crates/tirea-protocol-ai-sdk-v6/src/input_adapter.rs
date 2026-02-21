@@ -88,6 +88,33 @@ impl AiSdkV6RunRequest {
     pub fn interaction_responses(&self) -> Vec<InteractionResponse> {
         self.interaction_responses.clone()
     }
+
+    /// Convert this AI SDK request to the internal runtime request.
+    ///
+    /// Mapping rules:
+    /// - `thread_id` is treated as optional when blank/whitespace.
+    /// - `run_id` is forwarded directly.
+    /// - Only extracted user input text is appended as runtime user message.
+    /// - `state`, `parent_run_id`, and `resource_id` are not supplied by AI SDK v6 input.
+    pub fn into_runtime_run_request(self, agent_id: String) -> RunRequest {
+        let mut messages = Vec::new();
+        if self.has_user_input() {
+            messages.push(Message::user(self.input));
+        }
+        RunRequest {
+            agent_id,
+            thread_id: if self.thread_id.trim().is_empty() {
+                None
+            } else {
+                Some(self.thread_id)
+            },
+            run_id: self.run_id,
+            parent_run_id: None,
+            resource_id: None,
+            state: None,
+            messages,
+        }
+    }
 }
 
 fn extract_last_user_text(messages: &[AiSdkIncomingMessage]) -> Option<String> {
@@ -268,23 +295,7 @@ impl ProtocolInputAdapter for AiSdkV6InputAdapter {
     type Request = AiSdkV6RunRequest;
 
     fn to_run_request(agent_id: String, request: Self::Request) -> RunRequest {
-        let mut messages = Vec::new();
-        if request.has_user_input() {
-            messages.push(Message::user(request.input));
-        }
-        RunRequest {
-            agent_id,
-            thread_id: if request.thread_id.trim().is_empty() {
-                None
-            } else {
-                Some(request.thread_id)
-            },
-            run_id: request.run_id,
-            parent_run_id: None,
-            resource_id: None,
-            state: None,
-            messages,
-        }
+        request.into_runtime_run_request(agent_id)
     }
 }
 

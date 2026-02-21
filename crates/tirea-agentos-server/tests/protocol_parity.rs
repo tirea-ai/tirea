@@ -61,6 +61,8 @@ fn collect_kinds(events: &[AgentEvent]) -> Vec<&'static str> {
             AgentEvent::MessagesSnapshot { .. } => "MessagesSnapshot",
             AgentEvent::ActivityDelta { .. } => "ActivityDelta",
             AgentEvent::ActivitySnapshot { .. } => "ActivitySnapshot",
+            AgentEvent::ReasoningDelta { .. } => "ReasoningDelta",
+            AgentEvent::ReasoningEncryptedValue { .. } => "ReasoningEncryptedValue",
             AgentEvent::StepStart { .. } => "StepStart",
             AgentEvent::StepEnd => "StepEnd",
             AgentEvent::InferenceComplete { .. } => "InferenceComplete",
@@ -83,11 +85,11 @@ fn agui_and_ai_sdk_inputs_map_to_equivalent_run_requests() {
     let agent_id = "test".to_string();
     let agui = RunAgentRequest::new("thread_parity", "run_parity")
         .with_message(AGUIMessage::user("hello parity"));
-    let aisdk = AiSdkV6RunRequest {
-        thread_id: "thread_parity".to_string(),
-        input: "hello parity".to_string(),
-        run_id: Some("run_parity".to_string()),
-    };
+    let aisdk = AiSdkV6RunRequest::from_thread_input(
+        "thread_parity",
+        "hello parity",
+        Some("run_parity".to_string()),
+    );
 
     let agui_run = normalize(AgUiInputAdapter::to_run_request(agent_id.clone(), agui));
     let aisdk_run = normalize(AiSdkV6InputAdapter::to_run_request(agent_id, aisdk));
@@ -116,11 +118,11 @@ async fn agui_and_ai_sdk_have_equivalent_runtime_event_shape() {
 
     let aisdk_run_req = AiSdkV6InputAdapter::to_run_request(
         "test".to_string(),
-        AiSdkV6RunRequest {
-            thread_id: "thread_parity_stream".to_string(),
-            input: "hello parity".to_string(),
-            run_id: Some("run_parity_stream".to_string()),
-        },
+        AiSdkV6RunRequest::from_thread_input(
+            "thread_parity_stream",
+            "hello parity",
+            Some("run_parity_stream".to_string()),
+        ),
     );
     let aisdk_run = os.run_stream(aisdk_run_req).await.unwrap();
     let aisdk_events: Vec<AgentEvent> = aisdk_run.events.collect().await;

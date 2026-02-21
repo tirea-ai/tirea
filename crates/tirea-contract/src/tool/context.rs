@@ -7,11 +7,11 @@
 use crate::runtime::activity::ActivityManager;
 use crate::thread::Message;
 use crate::RunConfig;
-use tirea_state::{
-    get_at_path, parse_path, TireaResult, DocCell, Op, Patch, PatchSink, State, TrackedPatch,
-};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
+use tirea_state::{
+    get_at_path, parse_path, DocCell, Op, Patch, PatchSink, State, TireaResult, TrackedPatch,
+};
 
 /// Execution context for tool invocations.
 ///
@@ -98,8 +98,9 @@ impl<'a> ToolCallContext<'a> {
     pub fn state<T: State>(&self, path: &str) -> T::Ref<'_> {
         let base = parse_path(path);
         let doc = self.doc;
-        let hook: Arc<dyn Fn(&Op) + Send + Sync + '_> = Arc::new(|op: &Op| {
-            doc.apply(op);
+        let hook: Arc<dyn Fn(&Op) -> TireaResult<()> + Send + Sync + '_> = Arc::new(|op: &Op| {
+            doc.apply(op)?;
+            Ok(())
         });
         T::state_ref(doc, base, PatchSink::new_with_hook(self.ops, hook))
     }
@@ -265,20 +266,23 @@ impl ActivityContext {
             let stream_id = self.stream_id.clone();
             let activity_type = self.activity_type.clone();
             let doc = &self.doc;
-            let hook: Arc<dyn Fn(&Op) + Send + Sync + '_> = Arc::new(move |op: &Op| {
-                doc.apply(op);
-                manager.on_activity_op(&stream_id, &activity_type, op);
-            });
+            let hook: Arc<dyn Fn(&Op) -> TireaResult<()> + Send + Sync + '_> =
+                Arc::new(move |op: &Op| {
+                    doc.apply(op)?;
+                    manager.on_activity_op(&stream_id, &activity_type, op);
+                    Ok(())
+                });
             T::state_ref(&self.doc, base, PatchSink::new_with_hook(&self.ops, hook))
         } else {
             let doc = &self.doc;
-            let hook: Arc<dyn Fn(&Op) + Send + Sync + '_> = Arc::new(move |op: &Op| {
-                doc.apply(op);
-            });
+            let hook: Arc<dyn Fn(&Op) -> TireaResult<()> + Send + Sync + '_> =
+                Arc::new(move |op: &Op| {
+                    doc.apply(op)?;
+                    Ok(())
+                });
             T::state_ref(&self.doc, base, PatchSink::new_with_hook(&self.ops, hook))
         }
     }
-
 }
 
 #[cfg(test)]
@@ -361,14 +365,18 @@ mod tests {
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
         // Write via first ref
-        ctx.state_of::<LoopControlState>()
-            .set_inference_error(Some(crate::runtime::control::InferenceError {
+        ctx.state_of::<LoopControlState>().set_inference_error(Some(
+            crate::runtime::control::InferenceError {
                 error_type: "timeout".into(),
                 message: "timed out".into(),
-            }));
+            },
+        ));
 
         // Read via second ref
-        let err = ctx.state_of::<LoopControlState>().inference_error().unwrap();
+        let err = ctx
+            .state_of::<LoopControlState>()
+            .inference_error()
+            .unwrap();
         assert_eq!(err.unwrap().error_type, "timeout");
     }
 
@@ -383,11 +391,12 @@ mod tests {
 
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
-        ctx.state_of::<LoopControlState>()
-            .set_inference_error(Some(crate::runtime::control::InferenceError {
+        ctx.state_of::<LoopControlState>().set_inference_error(Some(
+            crate::runtime::control::InferenceError {
                 error_type: "test".into(),
                 message: "test".into(),
-            }));
+            },
+        ));
 
         assert!(ctx.has_changes());
         assert!(ctx.ops_count() > 0);

@@ -3,13 +3,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use tirea_contract::InteractionResponse;
-use tirea_contract::{gen_message_id, Message, Role, Visibility};
+use tirea_contract::{gen_message_id, Message, Role, RunRequest, Visibility};
 use tracing::warn;
 
 /// AG-UI message in a conversation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AGUIMessage {
-    /// Message role (user, assistant, system, tool).
+    /// Message role (user, assistant, system, tool, developer, activity, reasoning).
     pub role: MessageRole,
     /// Message content.
     pub content: String,
@@ -59,6 +59,26 @@ impl AGUIMessage {
             content: content.into(),
             id: None,
             tool_call_id: Some(tool_call_id.into()),
+        }
+    }
+
+    /// Create an activity message.
+    pub fn activity(content: impl Into<String>) -> Self {
+        Self {
+            role: MessageRole::Activity,
+            content: content.into(),
+            id: None,
+            tool_call_id: None,
+        }
+    }
+
+    /// Create a reasoning message.
+    pub fn reasoning(content: impl Into<String>) -> Self {
+        Self {
+            role: MessageRole::Reasoning,
+            content: content.into(),
+            id: None,
+            tool_call_id: None,
         }
     }
 }
@@ -167,6 +187,13 @@ pub struct RunAgentRequest {
     /// Additional configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<Value>,
+    /// Additional forwarded properties from AG-UI client runtimes.
+    #[serde(
+        rename = "forwardedProps",
+        alias = "forwarded_props",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub forwarded_props: Option<Value>,
 }
 
 impl RunAgentRequest {
@@ -183,6 +210,7 @@ impl RunAgentRequest {
             model: None,
             system_prompt: None,
             config: None,
+            forwarded_props: None,
         }
     }
 
@@ -216,6 +244,12 @@ impl RunAgentRequest {
         self
     }
 
+    /// Set forwarded props.
+    pub fn with_forwarded_props(mut self, forwarded_props: Value) -> Self {
+        self.forwarded_props = Some(forwarded_props);
+        self
+    }
+
     /// Validate the request.
     pub fn validate(&self) -> Result<(), RequestError> {
         if self.thread_id.is_empty() {
@@ -235,6 +269,25 @@ impl RunAgentRequest {
     /// Check if any interaction responses exist in this request.
     pub fn has_any_interaction_responses(&self) -> bool {
         !self.interaction_responses().is_empty()
+    }
+
+    /// Convert this AG-UI request to the internal runtime request.
+    ///
+    /// Mapping rules:
+    /// - `thread_id`, `run_id`, `parent_run_id`, `state` are forwarded directly.
+    /// - `messages` are converted via `convert_agui_messages` (assistant/activity/reasoning
+    ///   inbound messages are intentionally skipped at runtime input boundary).
+    /// - `resource_id` is not provided by AG-UI and remains `None`.
+    pub fn into_runtime_run_request(self, agent_id: String) -> RunRequest {
+        RunRequest {
+            agent_id,
+            thread_id: Some(self.thread_id),
+            run_id: Some(self.run_id),
+            parent_run_id: self.parent_run_id,
+            resource_id: None,
+            state: self.state,
+            messages: convert_agui_messages(&self.messages),
+        }
     }
 
     /// Extract all interaction responses from tool messages.
@@ -265,7 +318,10 @@ impl RunAgentRequest {
             .map(|(id, (idx, result))| (idx, InteractionResponse::new(id, result)))
             .collect();
         responses.sort_by_key(|(idx, _)| *idx);
-        responses.into_iter().map(|(_, response)| response).collect()
+        responses
+            .into_iter()
+            .map(|(_, response)| response)
+            .collect()
     }
 
     /// Get all approved interaction IDs.
@@ -326,6 +382,8 @@ pub fn core_message_from_ag_ui(msg: &AGUIMessage) -> Message {
         MessageRole::User => Role::User,
         MessageRole::Assistant => Role::Assistant,
         MessageRole::Tool => Role::Tool,
+        MessageRole::Activity => Role::Assistant,
+        MessageRole::Reasoning => Role::Assistant,
     };
 
     Message {
@@ -343,7 +401,11 @@ pub fn core_message_from_ag_ui(msg: &AGUIMessage) -> Message {
 pub fn convert_agui_messages(messages: &[AGUIMessage]) -> Vec<Message> {
     messages
         .iter()
-        .filter(|m| m.role != MessageRole::Assistant)
+        .filter(|m| {
+            m.role != MessageRole::Assistant
+                && m.role != MessageRole::Activity
+                && m.role != MessageRole::Reasoning
+        })
         .map(core_message_from_ag_ui)
         .collect()
 }

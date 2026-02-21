@@ -4,7 +4,7 @@ use tirea_protocol_ag_ui::{convert_agui_messages, AGUIMessage, MessageRole, RunA
 use tirea_protocol_ai_sdk_v6::{AiSdkV6InputAdapter, AiSdkV6RunRequest};
 
 #[test]
-fn functional_protocol_scenario_matrix_180() {
+fn functional_protocol_scenario_matrix_204() {
     let mut executed = 0usize;
 
     // ---------------------------------------------------------------------
@@ -36,11 +36,11 @@ fn functional_protocol_scenario_matrix_180() {
     for thread_id in aisdk_thread_cases {
         for run_id in aisdk_run_cases {
             for input in aisdk_input_cases {
-                let req = AiSdkV6RunRequest {
-                    thread_id: thread_id.to_string(),
-                    input: input.to_string(),
-                    run_id: run_id.map(str::to_string),
-                };
+                let req = AiSdkV6RunRequest::from_thread_input(
+                    thread_id,
+                    input,
+                    run_id.map(str::to_string),
+                );
                 let run = AiSdkV6InputAdapter::to_run_request("agent".to_string(), req);
                 let expected_thread = if thread_id.trim().is_empty() {
                     None
@@ -67,6 +67,8 @@ fn functional_protocol_scenario_matrix_180() {
         MessageRole::User,
         MessageRole::Assistant,
         MessageRole::Tool,
+        MessageRole::Activity,
+        MessageRole::Reasoning,
     ];
     let id_cases = [false, true];
     let tool_call_cases = [false, true];
@@ -84,10 +86,13 @@ fn functional_protocol_scenario_matrix_180() {
                     };
                     let converted = convert_agui_messages(&[msg]);
 
-                    if role == MessageRole::Assistant {
+                    if matches!(
+                        role,
+                        MessageRole::Assistant | MessageRole::Activity | MessageRole::Reasoning
+                    ) {
                         assert!(
                             converted.is_empty(),
-                            "assistant messages must be filtered out"
+                            "assistant/activity/reasoning messages must be filtered out"
                         );
                     } else {
                         assert_eq!(converted.len(), 1);
@@ -96,7 +101,9 @@ fn functional_protocol_scenario_matrix_180() {
                             MessageRole::Developer | MessageRole::System => Role::System,
                             MessageRole::User => Role::User,
                             MessageRole::Tool => Role::Tool,
-                            MessageRole::Assistant => unreachable!(),
+                            MessageRole::Assistant
+                            | MessageRole::Activity
+                            | MessageRole::Reasoning => unreachable!(),
                         };
                         assert_eq!(core.role, expected_role);
                         assert_eq!(core.content, content);
@@ -117,5 +124,5 @@ fn functional_protocol_scenario_matrix_180() {
         }
     }
 
-    assert_eq!(executed, 180, "functional scenario count drifted");
+    assert_eq!(executed, 204, "functional scenario count drifted");
 }

@@ -1,15 +1,15 @@
 use async_trait::async_trait;
-use tirea_agentos::contracts::plugin::AgentPlugin;
-use tirea_agentos::contracts::plugin::phase::{Phase, StepContext};
-use tirea_agentos::contracts::RunRequest;
-use tirea_agentos::contracts::storage::AgentStateReader;
-use tirea_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
-use tirea_agentos_server::transport::pump_encoded_stream;
-use tirea_protocol_ai_sdk_v6::{AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest};
-use tirea_contract::ProtocolInputAdapter;
-use tirea_store_adapters::MemoryStore;
 use futures::future::ready;
 use std::sync::Arc;
+use tirea_agentos::contracts::plugin::phase::{Phase, StepContext};
+use tirea_agentos::contracts::plugin::AgentPlugin;
+use tirea_agentos::contracts::storage::AgentStateReader;
+use tirea_agentos::contracts::RunRequest;
+use tirea_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
+use tirea_agentos_server::transport::pump_encoded_stream;
+use tirea_contract::ProtocolInputAdapter;
+use tirea_protocol_ai_sdk_v6::{AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest};
+use tirea_store_adapters::MemoryStore;
 
 struct SkipInferencePlugin;
 
@@ -19,11 +19,7 @@ impl AgentPlugin for SkipInferencePlugin {
         "skip_inference_cross_crate_matrix"
     }
 
-    async fn on_phase(
-        &self,
-        phase: Phase,
-        step: &mut StepContext<'_>,
-    ) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         if phase == Phase::BeforeInference {
             step.skip_inference = true;
         }
@@ -38,7 +34,10 @@ fn make_os(store: Arc<MemoryStore>) -> AgentOs {
     };
 
     AgentOsBuilder::new()
-        .with_registered_plugin("skip_inference_cross_crate_matrix", Arc::new(SkipInferencePlugin))
+        .with_registered_plugin(
+            "skip_inference_cross_crate_matrix",
+            Arc::new(SkipInferencePlugin),
+        )
         .with_agent("test", def)
         .with_agent_state_store(store)
         .build()
@@ -59,11 +58,11 @@ async fn cross_crate_integration_matrix_72() {
     for thread_id in thread_cases {
         for run_id in run_cases {
             for input in input_cases {
-                let req = AiSdkV6RunRequest {
-                    thread_id: thread_id.to_string(),
-                    input: input.to_string(),
-                    run_id: run_id.map(str::to_string),
-                };
+                let req = AiSdkV6RunRequest::from_thread_input(
+                    thread_id,
+                    input,
+                    run_id.map(str::to_string),
+                );
                 let run_request: RunRequest =
                     AiSdkV6InputAdapter::to_run_request("test".to_string(), req);
 
