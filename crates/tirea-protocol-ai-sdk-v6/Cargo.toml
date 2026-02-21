@@ -7,6 +7,8 @@ description = "AI SDK v6 protocol types and adapters for tirea"
 
 [dependencies]
 tirea-contract = { path = "../tirea-contract" }
+tirea-agent-loop = { path = "../tirea-agent-loop" }
+tirea-extension-interaction = { path = "../tirea-extension-interaction" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tracing = "0.1"
