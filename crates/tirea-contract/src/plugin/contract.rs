@@ -1,7 +1,7 @@
 //! Agent plugin system with Phase-based execution.
 //!
 //! Plugins extend agent behavior by responding to execution phases.
-//! Each phase receives a mutable `StepContext` for reading/writing state.
+//! Each phase receives its dedicated typed context.
 //!
 //! # Phases
 //!
@@ -21,74 +21,77 @@
 //! impl AgentPlugin for MyPlugin {
 //!     fn id(&self) -> &str { "my_plugin" }
 //!
-//!     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-//!         match phase {
-//!             Phase::BeforeInference => {
-//!                 step.system(format!("Time: {}", chrono::Local::now()));
-//!                 step.exclude("dangerous_tool");
-//!             }
-//!             Phase::AfterToolExecute => {
-//!                 if step.tool_name() == Some("read_file") {
-//!                     step.reminder("Check for sensitive data.");
-//!                 }
-//!             }
-//!             _ => {}
-//!         }
+//!     async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
+//!         ctx.add_system_context(format!("Time: {}", chrono::Local::now()));
+//!         ctx.exclude_tool("dangerous_tool");
+//!     }
+//!
+//!     async fn after_tool_execute(&self, ctx: &mut AfterToolExecuteContext<'_, '_>) {
+//!         ctx.add_system_reminder("Check for sensitive data.");
 //!     }
 //! }
 //! ```
 
-use crate::plugin::phase::{Phase, StepContext};
+use crate::plugin::phase::{
+    AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
+    BeforeToolExecuteContext, Phase, RunEndContext, RunStartContext, StepContext, StepEndContext,
+    StepStartContext,
+};
 use async_trait::async_trait;
 
 /// Plugin trait for extending agent behavior.
 ///
-/// Plugins implement a single `on_phase` method that responds to all
-/// execution phases. This provides a unified, simple interface for
-/// extending the agent loop.
+/// Plugins implement phase-specific methods (`before_inference`, `before_tool_execute`, ...)
+/// for compile-time constrained access to phase capabilities.
 ///
-/// # Phase Handling
-///
-/// Use pattern matching to handle specific phases:
-///
-/// ```ignore
-/// async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-///     match phase {
-///         Phase::RunStart => { /* initialize */ }
-///         Phase::StepStart => { /* state prep only */ }
-///         Phase::BeforeInference => { /* inject context, filter tools */ }
-///         Phase::AfterInference => { /* process response */ }
-///         Phase::BeforeToolExecute => { /* check permissions */ }
-///         Phase::AfterToolExecute => { /* add reminders */ }
-///         Phase::StepEnd => { /* cleanup */ }
-///         Phase::RunEnd => { /* finalize */ }
-///     }
-/// }
-/// ```
-///
-/// # Context Manipulation
-///
-/// Through `StepContext`, plugins can:
-///
-/// - **Inject context**: `step.system()`, `step.thread()`, `step.reminder()`
-/// - **Filter tools**: `step.exclude()`, `step.include_only()`
-/// - **Control execution**: `step.allow()`, `step.deny()`, `step.ask()`
-/// - **Read/write state**: `step.state_of::<T>()`, `step.ctx().state(...)`
 #[async_trait]
 pub trait AgentPlugin: Send + Sync {
     /// Plugin identifier for logging and debugging.
     fn id(&self) -> &str;
 
-    /// Respond to an execution phase.
-    ///
-    /// This is the single entry point for all plugin logic. Use pattern
-    /// matching on `phase` to handle specific phases.
-    ///
-    /// # Arguments
-    ///
-    /// - `phase`: The current execution phase
-    /// - `step`: Mutable context for the current step (includes state access via `step.ctx()`)
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>);
+    async fn run_start(&self, ctx: &mut RunStartContext<'_, '_>) {
+        #[allow(deprecated)]
+        self.on_phase(Phase::RunStart, ctx.step_mut()).await;
+    }
+
+    async fn step_start(&self, ctx: &mut StepStartContext<'_, '_>) {
+        #[allow(deprecated)]
+        self.on_phase(Phase::StepStart, ctx.step_mut()).await;
+    }
+
+    async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
+        #[allow(deprecated)]
+        self.on_phase(Phase::BeforeInference, ctx.step_mut()).await;
+    }
+
+    async fn after_inference(&self, ctx: &mut AfterInferenceContext<'_, '_>) {
+        #[allow(deprecated)]
+        self.on_phase(Phase::AfterInference, ctx.step_mut()).await;
+    }
+
+    async fn before_tool_execute(&self, ctx: &mut BeforeToolExecuteContext<'_, '_>) {
+        #[allow(deprecated)]
+        self.on_phase(Phase::BeforeToolExecute, ctx.step_mut())
+            .await;
+    }
+
+    async fn after_tool_execute(&self, ctx: &mut AfterToolExecuteContext<'_, '_>) {
+        #[allow(deprecated)]
+        self.on_phase(Phase::AfterToolExecute, ctx.step_mut()).await;
+    }
+
+    async fn step_end(&self, ctx: &mut StepEndContext<'_, '_>) {
+        #[allow(deprecated)]
+        self.on_phase(Phase::StepEnd, ctx.step_mut()).await;
+    }
+
+    async fn run_end(&self, ctx: &mut RunEndContext<'_, '_>) {
+        #[allow(deprecated)]
+        self.on_phase(Phase::RunEnd, ctx.step_mut()).await;
+    }
+
+    #[deprecated(note = "implement phase-specific methods instead")]
+    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
 }
 
 #[cfg(test)]

@@ -1,7 +1,10 @@
 use crate::{SkillDiscoveryPlugin, SkillRuntimePlugin, SKILLS_PLUGIN_ID};
 use async_trait::async_trait;
 use std::sync::Arc;
-use tirea_contract::plugin::phase::{Phase, StepContext};
+use tirea_contract::plugin::phase::{
+    AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
+    BeforeToolExecuteContext, RunEndContext, RunStartContext, StepEndContext, StepStartContext,
+};
 use tirea_contract::plugin::AgentPlugin;
 
 /// Single plugin wrapper that injects both:
@@ -39,10 +42,45 @@ impl AgentPlugin for SkillPlugin {
         SKILLS_PLUGIN_ID
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+    async fn run_start(&self, ctx: &mut RunStartContext<'_, '_>) {
+        self.discovery.run_start(ctx).await;
+        self.runtime.run_start(ctx).await;
+    }
+
+    async fn step_start(&self, ctx: &mut StepStartContext<'_, '_>) {
+        self.discovery.step_start(ctx).await;
+        self.runtime.step_start(ctx).await;
+    }
+
+    async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
         // Keep ordering stable: catalog first (enables selection), then active skill content.
-        self.discovery.on_phase(phase, step).await;
-        self.runtime.on_phase(phase, step).await;
+        self.discovery.before_inference(ctx).await;
+        self.runtime.before_inference(ctx).await;
+    }
+
+    async fn after_inference(&self, ctx: &mut AfterInferenceContext<'_, '_>) {
+        self.discovery.after_inference(ctx).await;
+        self.runtime.after_inference(ctx).await;
+    }
+
+    async fn before_tool_execute(&self, ctx: &mut BeforeToolExecuteContext<'_, '_>) {
+        self.discovery.before_tool_execute(ctx).await;
+        self.runtime.before_tool_execute(ctx).await;
+    }
+
+    async fn after_tool_execute(&self, ctx: &mut AfterToolExecuteContext<'_, '_>) {
+        self.discovery.after_tool_execute(ctx).await;
+        self.runtime.after_tool_execute(ctx).await;
+    }
+
+    async fn step_end(&self, ctx: &mut StepEndContext<'_, '_>) {
+        self.discovery.step_end(ctx).await;
+        self.runtime.step_end(ctx).await;
+    }
+
+    async fn run_end(&self, ctx: &mut RunEndContext<'_, '_>) {
+        self.discovery.run_end(ctx).await;
+        self.runtime.run_end(ctx).await;
     }
 }
 
@@ -91,7 +129,8 @@ mod tests {
             }
         }));
         let mut step = fixture.step(vec![ToolDescriptor::new("t", "t", "t")]);
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        let mut before = tirea_contract::plugin::phase::BeforeInferenceContext::new(&mut step);
+        plugin.before_inference(&mut before).await;
 
         // Only discovery catalog is injected; runtime plugin no longer injects system context.
         assert_eq!(step.system_context.len(), 1);

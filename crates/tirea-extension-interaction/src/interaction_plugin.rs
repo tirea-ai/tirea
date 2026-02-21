@@ -5,7 +5,10 @@
 use super::interaction_response::InteractionResponsePlugin;
 use super::INTERACTION_PLUGIN_ID;
 use async_trait::async_trait;
-use tirea_contract::plugin::phase::{Phase, StepContext};
+use tirea_contract::plugin::phase::{
+    AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
+    BeforeToolExecuteContext, RunEndContext, RunStartContext, StepEndContext, StepStartContext,
+};
 use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::InteractionResponse;
 /// Unified interaction mechanism plugin.
@@ -70,9 +73,44 @@ impl AgentPlugin for InteractionPlugin {
         INTERACTION_PLUGIN_ID
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+    async fn run_start(&self, ctx: &mut RunStartContext<'_, '_>) {
         let response = self.response_plugin();
-        response.on_phase(phase, step).await;
+        response.run_start(ctx).await;
+    }
+
+    async fn step_start(&self, ctx: &mut StepStartContext<'_, '_>) {
+        let response = self.response_plugin();
+        response.step_start(ctx).await;
+    }
+
+    async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
+        let response = self.response_plugin();
+        response.before_inference(ctx).await;
+    }
+
+    async fn after_inference(&self, ctx: &mut AfterInferenceContext<'_, '_>) {
+        let response = self.response_plugin();
+        response.after_inference(ctx).await;
+    }
+
+    async fn before_tool_execute(&self, ctx: &mut BeforeToolExecuteContext<'_, '_>) {
+        let response = self.response_plugin();
+        response.before_tool_execute(ctx).await;
+    }
+
+    async fn after_tool_execute(&self, ctx: &mut AfterToolExecuteContext<'_, '_>) {
+        let response = self.response_plugin();
+        response.after_tool_execute(ctx).await;
+    }
+
+    async fn step_end(&self, ctx: &mut StepEndContext<'_, '_>) {
+        let response = self.response_plugin();
+        response.step_end(ctx).await;
+    }
+
+    async fn run_end(&self, ctx: &mut RunEndContext<'_, '_>) {
+        let response = self.response_plugin();
+        response.run_end(ctx).await;
     }
 }
 

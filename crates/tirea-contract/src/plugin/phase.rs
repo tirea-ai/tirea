@@ -110,6 +110,27 @@ pub enum StepOutcome {
     Pending(Interaction),
 }
 
+/// Tool gate decision for `BeforeToolExecute`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolDecision {
+    Proceed,
+    Deny { reason: String },
+    Ask { request: InteractionRequest },
+}
+
+/// Interaction request model for ask decisions.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InteractionRequest {
+    Confirm {
+        interaction: Interaction,
+    },
+    FrontendTool {
+        tool_name: String,
+        arguments: Value,
+        routing: ResponseRouting,
+    },
+}
+
 /// Context for the currently executing tool.
 #[derive(Debug, Clone)]
 pub struct ToolContext {
@@ -500,6 +521,208 @@ impl<'a> StepContext<'a> {
         StepOutcome::Continue
     }
 }
+
+/// Shared read access available to all phase contexts.
+pub trait PluginPhaseContext {
+    fn phase(&self) -> Phase;
+    fn thread_id(&self) -> &str;
+    fn messages(&self) -> &[Arc<Message>];
+    fn run_config(&self) -> &RunConfig;
+    fn config_value(&self, key: &str) -> Option<&Value> {
+        self.run_config().value(key)
+    }
+    fn state_of<T: State>(&self) -> T::Ref<'_>;
+    fn snapshot(&self) -> Value;
+}
+
+macro_rules! impl_common_phase_context {
+    ($name:ident, $phase:expr) => {
+        impl<'s, 'a> $name<'s, 'a> {
+            pub fn new(step: &'s mut StepContext<'a>) -> Self {
+                Self { step }
+            }
+
+            pub(crate) fn step_mut(&mut self) -> &mut StepContext<'a> {
+                self.step
+            }
+        }
+
+        impl<'s, 'a> PluginPhaseContext for $name<'s, 'a> {
+            fn phase(&self) -> Phase {
+                $phase
+            }
+
+            fn thread_id(&self) -> &str {
+                self.step.thread_id()
+            }
+
+            fn messages(&self) -> &[Arc<Message>] {
+                self.step.messages()
+            }
+
+            fn run_config(&self) -> &RunConfig {
+                self.step.run_config()
+            }
+
+            fn state_of<T: State>(&self) -> T::Ref<'_> {
+                self.step.state_of::<T>()
+            }
+
+            fn snapshot(&self) -> Value {
+                self.step.snapshot()
+            }
+        }
+    };
+}
+
+pub struct RunStartContext<'s, 'a> {
+    step: &'s mut StepContext<'a>,
+}
+impl_common_phase_context!(RunStartContext, Phase::RunStart);
+
+pub struct StepStartContext<'s, 'a> {
+    step: &'s mut StepContext<'a>,
+}
+impl_common_phase_context!(StepStartContext, Phase::StepStart);
+
+pub struct BeforeInferenceContext<'s, 'a> {
+    step: &'s mut StepContext<'a>,
+}
+impl_common_phase_context!(BeforeInferenceContext, Phase::BeforeInference);
+
+impl<'s, 'a> BeforeInferenceContext<'s, 'a> {
+    /// Append a system context line.
+    pub fn add_system_context(&mut self, text: impl Into<String>) {
+        self.step.system(text);
+    }
+
+    /// Append a session message.
+    pub fn add_session_message(&mut self, text: impl Into<String>) {
+        self.step.thread(text);
+    }
+
+    /// Exclude tool by id.
+    pub fn exclude_tool(&mut self, tool_id: &str) {
+        self.step.exclude(tool_id);
+    }
+
+    /// Keep only listed tools.
+    pub fn include_only(&mut self, tool_ids: &[&str]) {
+        self.step.include_only(tool_ids);
+    }
+
+    /// Skip current inference.
+    pub fn skip_inference(&mut self) {
+        self.step.skip_inference = true;
+    }
+}
+
+pub struct AfterInferenceContext<'s, 'a> {
+    step: &'s mut StepContext<'a>,
+}
+impl_common_phase_context!(AfterInferenceContext, Phase::AfterInference);
+
+impl<'s, 'a> AfterInferenceContext<'s, 'a> {
+    pub fn response(&self) -> &StreamResult {
+        self.step
+            .response
+            .as_ref()
+            .expect("AfterInferenceContext.response() requires response to be set")
+    }
+}
+
+pub struct BeforeToolExecuteContext<'s, 'a> {
+    step: &'s mut StepContext<'a>,
+}
+impl_common_phase_context!(BeforeToolExecuteContext, Phase::BeforeToolExecute);
+
+impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
+    pub fn tool_name(&self) -> Option<&str> {
+        self.step.tool_name()
+    }
+
+    pub fn tool_call_id(&self) -> Option<&str> {
+        self.step.tool_call_id()
+    }
+
+    pub fn tool_args(&self) -> Option<&Value> {
+        self.step.tool_args()
+    }
+
+    pub fn decision(&self) -> ToolDecision {
+        let Some(tool) = self.step.tool.as_ref() else {
+            return ToolDecision::Proceed;
+        };
+        if tool.blocked {
+            return ToolDecision::Deny {
+                reason: tool.block_reason.clone().unwrap_or_default(),
+            };
+        }
+        if tool.pending {
+            if let Some(inv) = tool.pending_frontend_invocation.as_ref() {
+                return ToolDecision::Ask {
+                    request: InteractionRequest::FrontendTool {
+                        tool_name: inv.tool_name.clone(),
+                        arguments: inv.arguments.clone(),
+                        routing: inv.routing.clone(),
+                    },
+                };
+            }
+            if let Some(interaction) = tool.pending_interaction.as_ref() {
+                return ToolDecision::Ask {
+                    request: InteractionRequest::Confirm {
+                        interaction: interaction.clone(),
+                    },
+                };
+            }
+        }
+        ToolDecision::Proceed
+    }
+
+    pub fn deny(&mut self, reason: impl Into<String>) {
+        self.step.deny(reason);
+    }
+
+    pub fn ask_confirm(&mut self, interaction: Interaction) {
+        self.step.ask(interaction);
+    }
+
+    pub fn ask_frontend_tool(
+        &mut self,
+        tool_name: impl Into<String>,
+        arguments: Value,
+        routing: ResponseRouting,
+    ) -> Option<String> {
+        self.step.ask_frontend_tool(tool_name, arguments, routing)
+    }
+}
+
+pub struct AfterToolExecuteContext<'s, 'a> {
+    step: &'s mut StepContext<'a>,
+}
+impl_common_phase_context!(AfterToolExecuteContext, Phase::AfterToolExecute);
+
+impl<'s, 'a> AfterToolExecuteContext<'s, 'a> {
+    pub fn tool_result(&self) -> &ToolResult {
+        self.step
+            .tool_result()
+            .expect("AfterToolExecuteContext.tool_result() requires tool result")
+    }
+
+    pub fn add_system_reminder(&mut self, text: impl Into<String>) {
+        self.step.reminder(text);
+    }
+}
+
+pub struct StepEndContext<'s, 'a> {
+    step: &'s mut StepContext<'a>,
+}
+impl_common_phase_context!(StepEndContext, Phase::StepEnd);
+
+pub struct RunEndContext<'s, 'a> {
+    step: &'s mut StepContext<'a>,
+}
+impl_common_phase_context!(RunEndContext, Phase::RunEnd);
 
 #[cfg(test)]
 mod tests {

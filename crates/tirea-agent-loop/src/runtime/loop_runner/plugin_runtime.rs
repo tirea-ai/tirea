@@ -1,6 +1,10 @@
 use super::core::{clear_agent_inference_error, set_agent_inference_error};
 use super::AgentLoopError;
-use crate::contracts::plugin::phase::{Phase, StepContext};
+use crate::contracts::plugin::phase::{
+    AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
+    BeforeToolExecuteContext, Phase, RunEndContext, RunStartContext, StepContext, StepEndContext,
+    StepStartContext,
+};
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::tool::ToolDescriptor;
 use crate::contracts::RunContext;
@@ -140,9 +144,50 @@ pub(super) async fn emit_phase_checked(
     step: &mut StepContext<'_>,
     plugins: &[Arc<dyn AgentPlugin>],
 ) -> Result<(), AgentLoopError> {
+    async fn dispatch_phase(
+        plugin: &Arc<dyn AgentPlugin>,
+        phase: Phase,
+        step: &mut StepContext<'_>,
+    ) {
+        match phase {
+            Phase::RunStart => {
+                let mut ctx = RunStartContext::new(step);
+                plugin.run_start(&mut ctx).await;
+            }
+            Phase::StepStart => {
+                let mut ctx = StepStartContext::new(step);
+                plugin.step_start(&mut ctx).await;
+            }
+            Phase::BeforeInference => {
+                let mut ctx = BeforeInferenceContext::new(step);
+                plugin.before_inference(&mut ctx).await;
+            }
+            Phase::AfterInference => {
+                let mut ctx = AfterInferenceContext::new(step);
+                plugin.after_inference(&mut ctx).await;
+            }
+            Phase::BeforeToolExecute => {
+                let mut ctx = BeforeToolExecuteContext::new(step);
+                plugin.before_tool_execute(&mut ctx).await;
+            }
+            Phase::AfterToolExecute => {
+                let mut ctx = AfterToolExecuteContext::new(step);
+                plugin.after_tool_execute(&mut ctx).await;
+            }
+            Phase::StepEnd => {
+                let mut ctx = StepEndContext::new(step);
+                plugin.step_end(&mut ctx).await;
+            }
+            Phase::RunEnd => {
+                let mut ctx = RunEndContext::new(step);
+                plugin.run_end(&mut ctx).await;
+            }
+        }
+    }
+
     for plugin in plugins {
         let before = phase_mutation_snapshot(step);
-        plugin.on_phase(phase, step).await;
+        dispatch_phase(plugin, phase, step).await;
         let after = phase_mutation_snapshot(step);
         validate_phase_mutation(phase, plugin.id(), &before, &after)?;
     }
