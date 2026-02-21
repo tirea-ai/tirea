@@ -38,6 +38,22 @@ impl AgentPlugin for SkipInferencePlugin {
     }
 }
 
+struct SlowSkipInferencePlugin;
+
+#[async_trait]
+impl AgentPlugin for SlowSkipInferencePlugin {
+    fn id(&self) -> &str {
+        "slow_skip_inference_test"
+    }
+
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        if phase == Phase::BeforeInference {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            step.skip_inference = true;
+        }
+    }
+}
+
 fn make_os() -> AgentOs {
     make_os_with_storage(Arc::new(MemoryStore::new()))
 }
@@ -59,6 +75,24 @@ fn make_os_with_storage_and_tools(
     AgentOsBuilder::new()
         .with_registered_plugin("skip_inference_test", Arc::new(SkipInferencePlugin))
         .with_tools(tools)
+        .with_agent("test", def)
+        .with_agent_state_store(write_store)
+        .build()
+        .unwrap()
+}
+
+fn make_os_with_slow_skip_plugin(write_store: Arc<dyn AgentStateStore>) -> AgentOs {
+    let def = AgentDefinition {
+        id: "test".to_string(),
+        plugin_ids: vec!["slow_skip_inference_test".into()],
+        ..Default::default()
+    };
+
+    AgentOsBuilder::new()
+        .with_registered_plugin(
+            "slow_skip_inference_test",
+            Arc::new(SlowSkipInferencePlugin),
+        )
         .with_agent("test", def)
         .with_agent_state_store(write_store)
         .build()
@@ -352,8 +386,10 @@ async fn test_ai_sdk_sse_accepts_messages_request_shape() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(saved.messages.len(), 1);
-    assert_eq!(saved.messages[0].content, "latest input");
+    assert_eq!(saved.messages.len(), 3);
+    assert_eq!(saved.messages[0].content, "first input");
+    assert_eq!(saved.messages[1].content, "ignored assistant text");
+    assert_eq!(saved.messages[2].content, "latest input");
 }
 
 #[tokio::test]
@@ -2464,6 +2500,234 @@ async fn test_ai_sdk_route_sets_protocol_headers() {
         resp.headers().get("x-tirea-ai-sdk-version").is_some(),
         "AI SDK endpoint must set x-tirea-ai-sdk-version header"
     );
+}
+
+#[tokio::test]
+async fn test_ai_sdk_run_syncs_full_ui_message_snapshot() {
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_storage(storage.clone()));
+    let app = make_app(os, storage.clone());
+
+    let payload = json!({
+        "id": "aisdk-sync-thread",
+        "trigger": "submit-message",
+        "messageId": "m_user_2",
+        "messages": [
+            {
+                "id": "m_sys",
+                "role": "system",
+                "metadata": { "runId": "frontend_run_1", "stepIndex": 3 },
+                "parts": [{ "type": "text", "text": "be helpful" }]
+            },
+            {
+                "id": "m_user_1",
+                "role": "user",
+                "parts": [
+                    { "type": "text", "text": "hello" },
+                    { "type": "file", "mediaType": "text/plain", "url": "data:text/plain,hello" }
+                ]
+            },
+            {
+                "id": "m_assistant_1",
+                "role": "assistant",
+                "parts": [
+                    { "type": "text", "text": "let me search" },
+                    {
+                        "type": "tool-search",
+                        "toolCallId": "call_1",
+                        "state": "input-available",
+                        "input": { "q": "rust" }
+                    }
+                ]
+            },
+            {
+                "id": "m_user_2",
+                "role": "user",
+                "parts": [{ "type": "text", "text": "latest question" }]
+            }
+        ]
+    });
+
+    let (status, body) = post_sse_text(app.clone(), "/v1/ai-sdk/agents/test/runs", payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(r#""type":"finish""#));
+
+    let saved = storage
+        .load_agent_state("aisdk-sync-thread")
+        .await
+        .expect("load should not fail")
+        .expect("thread should exist");
+    assert_eq!(saved.messages.len(), 4);
+    assert_eq!(saved.messages[0].id.as_deref(), Some("m_sys"));
+    assert_eq!(saved.messages[1].id.as_deref(), Some("m_user_1"));
+    assert_eq!(saved.messages[2].id.as_deref(), Some("m_assistant_1"));
+    assert_eq!(saved.messages[3].id.as_deref(), Some("m_user_2"));
+    assert_eq!(saved.messages[2].content, "let me search");
+    let tool_calls = saved.messages[2]
+        .tool_calls
+        .as_ref()
+        .expect("assistant tool calls should be present");
+    assert_eq!(tool_calls.len(), 1);
+    assert_eq!(tool_calls[0].id, "call_1");
+    assert_eq!(tool_calls[0].name, "search");
+    assert_eq!(tool_calls[0].arguments["q"], "rust");
+
+    assert_eq!(
+        saved.state["protocol"]["ai_sdk"]["trigger"],
+        "submit-message"
+    );
+    assert_eq!(saved.state["protocol"]["ai_sdk"]["messageId"], "m_user_2");
+    assert_eq!(
+        saved.state["protocol"]["ai_sdk"]["messages"]
+            .as_array()
+            .expect("protocol messages snapshot should be array")
+            .len(),
+        4
+    );
+}
+
+#[tokio::test]
+async fn test_ai_sdk_regenerate_request_replaces_snapshot() {
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_storage(storage.clone()));
+    let app = make_app(os, storage.clone());
+
+    let first = json!({
+        "id": "aisdk-regenerate-thread",
+        "trigger": "submit-message",
+        "messages": [
+            { "id": "m_user_1", "role": "user", "parts": [{ "type": "text", "text": "question one" }] },
+            { "id": "m_assistant_1", "role": "assistant", "parts": [{ "type": "text", "text": "answer one" }] },
+            { "id": "m_user_2", "role": "user", "parts": [{ "type": "text", "text": "question two" }] }
+        ]
+    });
+    let (status, _) = post_sse_text(app.clone(), "/v1/ai-sdk/agents/test/runs", first).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let regenerate = json!({
+        "id": "aisdk-regenerate-thread",
+        "trigger": "regenerate-message",
+        "messageId": "m_assistant_1",
+        "messages": [
+            { "id": "m_user_1", "role": "user", "parts": [{ "type": "text", "text": "question one" }] },
+            { "id": "m_assistant_1", "role": "assistant", "parts": [{ "type": "text", "text": "answer one" }] }
+        ]
+    });
+    let (status, _) = post_sse_text(app.clone(), "/v1/ai-sdk/agents/test/runs", regenerate).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let saved = storage
+        .load_agent_state("aisdk-regenerate-thread")
+        .await
+        .expect("load should not fail")
+        .expect("thread should exist");
+    assert_eq!(saved.messages.len(), 2);
+    assert!(
+        saved.messages.iter().all(|m| m.content != "question two"),
+        "regenerate snapshot should replace removed trailing messages"
+    );
+}
+
+#[tokio::test]
+async fn test_ai_sdk_regenerate_requires_message_id() {
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_storage(storage.clone()));
+    let app = make_app(os, storage);
+
+    let payload = json!({
+        "id": "aisdk-regenerate-missing-id",
+        "trigger": "regenerate-message",
+        "messages": [
+            { "id": "m_user_1", "role": "user", "parts": [{ "type": "text", "text": "question one" }] },
+            { "id": "m_assistant_1", "role": "assistant", "parts": [{ "type": "text", "text": "answer one" }] }
+        ]
+    });
+
+    let (status, body) = post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("messageId is required"),
+        "expected regenerate messageId validation error: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_ai_sdk_resume_stream_routes_match_expected_behavior() {
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_slow_skip_plugin(storage.clone()));
+    let app = make_app(os, storage);
+
+    let no_active = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/ai-sdk/agents/test/runs/no-active-chat/stream")
+                .body(axum::body::Body::empty())
+                .expect("request should build"),
+        )
+        .await
+        .expect("request should succeed");
+    assert_eq!(no_active.status(), StatusCode::NO_CONTENT);
+
+    let post_payload = json!({
+        "id": "resume-active-chat",
+        "messages": [{ "role": "user", "content": "hello resume" }]
+    });
+    let post_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ai-sdk/agents/test/runs")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(post_payload.to_string()))
+                .expect("request should build"),
+        )
+        .await
+        .expect("request should succeed");
+    assert_eq!(post_response.status(), StatusCode::OK);
+
+    let resume_active = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/ai-sdk/agents/test/runs/resume-active-chat/stream")
+                .body(axum::body::Body::empty())
+                .expect("request should build"),
+        )
+        .await
+        .expect("request should succeed");
+    assert_eq!(resume_active.status(), StatusCode::OK);
+    assert!(
+        resume_active
+            .headers()
+            .get("x-vercel-ai-ui-message-stream")
+            .is_some(),
+        "resume stream should expose ai-sdk stream header"
+    );
+
+    drop(resume_active);
+    drop(post_response);
+
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+
+    let finished = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/ai-sdk/agents/test/runs/resume-active-chat/stream")
+                .body(axum::body::Body::empty())
+                .expect("request should build"),
+        )
+        .await
+        .expect("request should succeed");
+    assert_eq!(finished.status(), StatusCode::NO_CONTENT);
 }
 
 /// Generic thread endpoints remain accessible without protocol prefix.

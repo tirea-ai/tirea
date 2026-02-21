@@ -6,11 +6,14 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tirea_agentos::contracts::storage::{
-    AgentStateListPage, AgentStateListQuery, AgentStateReader, MessagePage, MessageQuery, SortOrder,
+    AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStore, MessagePage,
+    MessageQuery, SortOrder,
 };
 use tirea_agentos::contracts::thread::{Thread, Visibility};
 use tirea_agentos::contracts::AgentEvent;
@@ -21,9 +24,10 @@ use tirea_protocol_ag_ui::{
     apply_agui_extensions, AgUiHistoryEncoder, AgUiInputAdapter, AgUiProtocolEncoder, RunAgentInput,
 };
 use tirea_protocol_ai_sdk_v6::{
-    apply_ai_sdk_extensions, AiSdkV6HistoryEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder,
-    AiSdkV6RunRequest, AI_SDK_VERSION,
+    apply_ai_sdk_extensions, AiSdkTrigger, AiSdkV6HistoryEncoder, AiSdkV6InputAdapter,
+    AiSdkV6ProtocolEncoder, AiSdkV6RunRequest, AI_SDK_VERSION,
 };
+use tokio::sync::{broadcast, RwLock};
 use tracing::warn;
 
 use crate::transport::pump_encoded_stream;
@@ -32,6 +36,41 @@ use crate::transport::pump_encoded_stream;
 pub struct AppState {
     pub os: Arc<AgentOs>,
     pub read_store: Arc<dyn AgentStateReader>,
+}
+
+#[derive(Default)]
+struct AiSdkStreamRegistry {
+    streams: RwLock<HashMap<String, broadcast::Sender<Bytes>>>,
+}
+
+impl AiSdkStreamRegistry {
+    async fn register(&self, key: String) -> broadcast::Sender<Bytes> {
+        let (tx, _) = broadcast::channel(128);
+        self.streams.write().await.insert(key, tx.clone());
+        tx
+    }
+
+    async fn subscribe(&self, key: &str) -> Option<broadcast::Receiver<Bytes>> {
+        self.streams
+            .read()
+            .await
+            .get(key)
+            .map(|sender| sender.subscribe())
+    }
+
+    async fn remove(&self, key: &str) {
+        self.streams.write().await.remove(key);
+    }
+}
+
+static AI_SDK_STREAM_REGISTRY: OnceLock<AiSdkStreamRegistry> = OnceLock::new();
+
+fn ai_sdk_stream_registry() -> &'static AiSdkStreamRegistry {
+    AI_SDK_STREAM_REGISTRY.get_or_init(AiSdkStreamRegistry::default)
+}
+
+fn ai_sdk_stream_key(agent_id: &str, chat_id: &str) -> String {
+    format!("{agent_id}:{chat_id}")
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -96,6 +135,10 @@ fn ag_ui_router() -> Router<AppState> {
 fn ai_sdk_router() -> Router<AppState> {
     Router::new()
         .route("/agents/:agent_id/runs", post(run_ai_sdk_sse))
+        .route(
+            "/agents/:agent_id/runs/:chat_id/stream",
+            get(resume_ai_sdk_stream),
+        )
         .route("/threads/:id/messages", get(get_thread_messages_ai_sdk))
 }
 
@@ -278,6 +321,9 @@ fn encoded_sse_body<E>(
     encoder: E,
     cancellation_token: RunCancellationToken,
     trailer: Option<&'static str>,
+    fanout: Option<broadcast::Sender<Bytes>>,
+    stream_key: Option<String>,
+    cancel_on_downstream_close: bool,
 ) -> impl futures::Stream<Item = Result<Bytes, Infallible>> + Send + 'static
 where
     E: ProtocolOutputEncoder<InputEvent = AgentEvent> + Send + 'static,
@@ -288,35 +334,46 @@ where
     tokio::spawn(async move {
         let tx_events = tx.clone();
         let event_cancel_token = cancellation_token.clone();
+        let fanout_events = fanout.clone();
         let downstream_closed = Arc::new(AtomicBool::new(false));
         let send_state = downstream_closed.clone();
         pump_encoded_stream(run.events, encoder, move |event| {
             let tx = tx_events.clone();
             let token = event_cancel_token.clone();
+            let fanout = fanout_events.clone();
             let closed = send_state.clone();
             async move {
+                let json = match serde_json::to_string(&event) {
+                    Ok(json) => json,
+                    Err(err) => {
+                        warn!(error = %err, "failed to serialize SSE protocol event");
+                        closed.store(true, Ordering::Relaxed);
+                        if cancel_on_downstream_close {
+                            token.cancel();
+                        }
+                        return Ok(());
+                    }
+                };
+                let chunk = Bytes::from(format!("data: {json}\n\n"));
+                if let Some(fanout) = fanout.as_ref() {
+                    let _ = fanout.send(chunk.clone());
+                }
+
                 if closed.load(Ordering::Relaxed) {
                     // Client connection is already gone. Keep draining run events
                     // so loop cancellation/finalization can complete cleanly.
                     return Ok(());
                 }
 
-                let json = match serde_json::to_string(&event) {
-                    Ok(json) => json,
-                    Err(err) => {
-                        warn!(error = %err, "failed to serialize SSE protocol event");
-                        closed.store(true, Ordering::Relaxed);
-                        token.cancel();
-                        return Ok(());
-                    }
-                };
-                match tx.send(Bytes::from(format!("data: {json}\n\n"))).await {
+                match tx.send(chunk).await {
                     Ok(_) => Ok(()),
                     Err(_) => {
                         // Receiver dropped (client disconnected / aborted request).
-                        // Cancel run cooperatively so loop/runtime are transport-agnostic.
                         closed.store(true, Ordering::Relaxed);
-                        token.cancel();
+                        if cancel_on_downstream_close {
+                            // Cancel run cooperatively so loop/runtime are transport-agnostic.
+                            token.cancel();
+                        }
                         Ok(())
                     }
                 }
@@ -325,9 +382,17 @@ where
         .await;
 
         if let Some(trailer) = trailer {
-            if tx.send(Bytes::from(trailer)).await.is_err() {
+            let trailer_chunk = Bytes::from(trailer);
+            if let Some(fanout) = fanout.as_ref() {
+                let _ = fanout.send(trailer_chunk.clone());
+            }
+            if tx.send(trailer_chunk).await.is_err() && cancel_on_downstream_close {
                 cancellation_token.cancel();
             }
+        }
+
+        if let Some(stream_key) = stream_key {
+            ai_sdk_stream_registry().remove(&stream_key).await;
         }
     });
 
@@ -346,21 +411,49 @@ async fn run_ai_sdk_sse(
     if req.thread_id.trim().is_empty() {
         return Err(ApiError::BadRequest("id cannot be empty".to_string()));
     }
+    if req.trigger == Some(AiSdkTrigger::RegenerateMessage) {
+        let message_id = req.message_id.as_deref().ok_or_else(|| {
+            ApiError::BadRequest("messageId is required for regenerate-message".to_string())
+        })?;
+        if message_id.trim().is_empty() {
+            return Err(ApiError::BadRequest(
+                "messageId cannot be empty for regenerate-message".to_string(),
+            ));
+        }
+        if !req.contains_message_id(message_id) {
+            return Err(ApiError::BadRequest(
+                "messageId must reference a message in messages for regenerate-message".to_string(),
+            ));
+        }
+    }
     if !req.has_user_input() && !req.has_interaction_responses() {
         return Err(ApiError::BadRequest(
             "request must include user input or interaction responses".to_string(),
         ));
     }
 
+    sync_ai_sdk_thread_snapshot(&st, &req).await?;
+
     let mut resolved = st.os.resolve(&agent_id).map_err(AgentOsRunError::from)?;
     apply_ai_sdk_extensions(&mut resolved, &req);
-    let run_request = AiSdkV6InputAdapter::to_run_request(agent_id, req);
+    let mut run_request = AiSdkV6InputAdapter::to_run_request(agent_id.clone(), req);
+    run_request.messages.clear();
     let cancellation_token = RunCancellationToken::new();
     let prepared = st.os.prepare_run(run_request, resolved).await?;
     let run =
         AgentOs::execute_prepared(prepared.with_cancellation_token(cancellation_token.clone()))?;
     let enc = AiSdkV6ProtocolEncoder::new(run.run_id.clone(), Some(run.thread_id.clone()));
-    let body_stream = encoded_sse_body(run, enc, cancellation_token, Some("data: [DONE]\n\n"));
+    let stream_key = ai_sdk_stream_key(&agent_id, &run.thread_id);
+    let fanout = ai_sdk_stream_registry().register(stream_key.clone()).await;
+    let body_stream = encoded_sse_body(
+        run,
+        enc,
+        cancellation_token,
+        Some("data: [DONE]\n\n"),
+        Some(fanout),
+        Some(stream_key),
+        false,
+    );
 
     Ok(ai_sdk_sse_response(body_stream))
 }
@@ -381,9 +474,78 @@ async fn run_ag_ui_sse(
     let run =
         AgentOs::execute_prepared(prepared.with_cancellation_token(cancellation_token.clone()))?;
     let enc = AgUiProtocolEncoder::new(run.thread_id.clone(), run.run_id.clone());
-    let body_stream = encoded_sse_body(run, enc, cancellation_token, None);
+    let body_stream = encoded_sse_body(run, enc, cancellation_token, None, None, None, true);
 
     Ok(sse_response(body_stream))
+}
+
+async fn resume_ai_sdk_stream(Path((agent_id, chat_id)): Path<(String, String)>) -> Response {
+    let stream_key = ai_sdk_stream_key(&agent_id, &chat_id);
+    let Some(mut receiver) = ai_sdk_stream_registry().subscribe(&stream_key).await else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    let stream = async_stream::stream! {
+        loop {
+            match receiver.recv().await {
+                Ok(chunk) => yield Ok::<Bytes, Infallible>(chunk),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    };
+    ai_sdk_sse_response(stream)
+}
+
+async fn sync_ai_sdk_thread_snapshot(
+    st: &AppState,
+    req: &AiSdkV6RunRequest,
+) -> Result<(), ApiError> {
+    let store: Arc<dyn AgentStateStore> = st
+        .os
+        .agent_state_store()
+        .cloned()
+        .ok_or_else(|| ApiError::Internal("agent state store not configured".to_string()))?;
+
+    let mut thread = match store
+        .load(&req.thread_id)
+        .await
+        .map_err(|err| ApiError::Internal(err.to_string()))?
+    {
+        Some(head) => head.agent_state,
+        None => Thread::new(req.thread_id.clone()),
+    };
+
+    thread.messages = req
+        .to_thread_message_snapshot()
+        .into_iter()
+        .map(Arc::new)
+        .collect();
+    upsert_ai_sdk_protocol_state(&mut thread.state, req.to_protocol_snapshot());
+
+    store
+        .save(&thread)
+        .await
+        .map_err(|err| ApiError::Internal(err.to_string()))
+}
+
+fn upsert_ai_sdk_protocol_state(state: &mut Value, snapshot: Value) {
+    if !state.is_object() {
+        *state = Value::Object(serde_json::Map::new());
+    }
+    let Some(root) = state.as_object_mut() else {
+        return;
+    };
+
+    let protocol_entry = root
+        .entry("protocol".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !protocol_entry.is_object() {
+        *protocol_entry = Value::Object(serde_json::Map::new());
+    }
+    let Some(protocol_map) = protocol_entry.as_object_mut() else {
+        return;
+    };
+    protocol_map.insert("ai_sdk".to_string(), snapshot);
 }
 
 fn sse_response<S>(stream: S) -> Response
