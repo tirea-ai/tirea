@@ -2961,6 +2961,57 @@ async fn test_run_loop_rejects_prompt_context_mutation_outside_before_inference(
 }
 
 #[tokio::test]
+async fn test_run_loop_rejects_non_append_prompt_context_mutation_in_before_inference() {
+    struct PromptAppendPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for PromptAppendPlugin {
+        fn id(&self) -> &str {
+            "prompt_append"
+        }
+
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            if phase == Phase::BeforeInference {
+                step.system("base");
+            }
+        }
+    }
+
+    struct PromptReplacePlugin;
+
+    #[async_trait]
+    impl AgentPlugin for PromptReplacePlugin {
+        fn id(&self) -> &str {
+            "prompt_replace"
+        }
+
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            if phase == Phase::BeforeInference {
+                step.set_system("replaced");
+            }
+        }
+    }
+
+    let config = AgentConfig::new("gpt-4o-mini")
+        .with_plugin(Arc::new(PromptAppendPlugin) as Arc<dyn AgentPlugin>)
+        .with_plugin(Arc::new(PromptReplacePlugin) as Arc<dyn AgentPlugin>);
+    let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
+    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+    assert!(
+        matches!(outcome.termination, TerminationReason::Error),
+        "expected phase mutation state error, got: {:?}",
+        outcome.termination
+    );
+    assert!(
+        outcome.failure.as_ref().map_or(false, |f| matches!(f, LoopFailure::State(msg) if msg.contains("non-append prompt context mutation"))),
+        "expected non-append prompt context mutation error in failure"
+    );
+}
+
+#[tokio::test]
 async fn test_stream_rejects_prompt_context_mutation_outside_before_inference() {
     struct InvalidStepStartPromptPlugin;
 
@@ -3039,6 +3090,72 @@ fn test_execute_tools_rejects_reminder_mutation_outside_after_tool_execute() {
                 err,
                 AgentLoopError::StateError(ref message)
                 if message.contains("mutated system reminders outside AfterToolExecute")
+            ),
+            "unexpected error: {err:?}"
+        );
+    });
+}
+
+struct ReminderAppendPlugin;
+
+#[async_trait]
+impl AgentPlugin for ReminderAppendPlugin {
+    fn id(&self) -> &str {
+        "reminder_append"
+    }
+
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        if phase == Phase::AfterToolExecute {
+            step.reminder("first");
+        }
+    }
+}
+
+struct ReminderReplacePlugin;
+
+#[async_trait]
+impl AgentPlugin for ReminderReplacePlugin {
+    fn id(&self) -> &str {
+        "reminder_replace"
+    }
+
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        if phase == Phase::AfterToolExecute {
+            step.clear_reminders();
+            step.reminder("second");
+        }
+    }
+}
+
+#[test]
+fn test_execute_tools_rejects_non_append_reminder_mutation_in_after_tool_execute() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let thread = Thread::new("test");
+        let result = StreamResult {
+            text: "invalid".to_string(),
+            tool_calls: vec![crate::contracts::thread::ToolCall::new(
+                "call_1",
+                "echo",
+                json!({"message": "test"}),
+            )],
+            usage: None,
+        };
+        let tools = tool_map([EchoTool]);
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![
+            Arc::new(ReminderAppendPlugin),
+            Arc::new(ReminderReplacePlugin),
+        ];
+
+        let err = execute_tools_with_plugins(thread, &result, &tools, true, &plugins)
+            .await
+            .expect_err("non-append reminder mutation should fail");
+
+        assert!(
+            matches!(
+                err,
+                AgentLoopError::StateError(ref message)
+                if message.contains("non-append reminder mutation")
             ),
             "unexpected error: {err:?}"
         );

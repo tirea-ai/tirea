@@ -49,6 +49,10 @@ fn validate_phase_mutation(
     before: &PhaseMutationSnapshot,
     after: &PhaseMutationSnapshot,
 ) -> Result<(), AgentLoopError> {
+    fn is_append_only(before: &[String], after: &[String]) -> bool {
+        after.len() >= before.len() && after.starts_with(before)
+    }
+
     let policy = phase.policy();
 
     if before.tool_ids != after.tool_ids && !policy.allow_tool_filter_mutation {
@@ -73,10 +77,27 @@ fn validate_phase_mutation(
             plugin_id
         )));
     }
+    if phase == Phase::BeforeInference
+        && (!is_append_only(&before.system_context, &after.system_context)
+            || !is_append_only(&before.session_context, &after.session_context))
+    {
+        return Err(AgentLoopError::StateError(format!(
+            "plugin '{}' performed non-append prompt context mutation in BeforeInference ({phase})",
+            plugin_id
+        )));
+    }
 
     if before.system_reminders != after.system_reminders && phase != Phase::AfterToolExecute {
         return Err(AgentLoopError::StateError(format!(
             "plugin '{}' mutated system reminders outside AfterToolExecute ({phase})",
+            plugin_id
+        )));
+    }
+    if phase == Phase::AfterToolExecute
+        && !is_append_only(&before.system_reminders, &after.system_reminders)
+    {
+        return Err(AgentLoopError::StateError(format!(
+            "plugin '{}' performed non-append reminder mutation in AfterToolExecute ({phase})",
             plugin_id
         )));
     }
