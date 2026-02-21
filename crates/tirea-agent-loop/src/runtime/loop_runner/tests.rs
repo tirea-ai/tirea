@@ -7055,6 +7055,67 @@ fn build_messages_keeps_tool_results_with_matching_call() {
     );
 }
 
+#[test]
+fn build_messages_drops_superseded_pending_placeholder_for_same_tool_call() {
+    let mut fix = TestFixture::new();
+    fix.messages = vec![
+        Arc::new(Message::user("hi")),
+        Arc::new(Message::assistant_with_tool_calls(
+            "",
+            vec![ToolCall::new("call_1", "copyToClipboard", json!({"text":"hello"}))],
+        )),
+        Arc::new(Message::tool(
+            "call_1",
+            "Tool 'copyToClipboard' is awaiting approval. Execution paused.",
+        )),
+        Arc::new(Message::tool("call_1", r#"{"status":"success","data":{"text":"hello"}}"#)),
+    ];
+    let step = fix.step(vec![]);
+    let msgs = build_messages(&step, "sys");
+
+    let call_1_tool_msgs: Vec<&Message> = msgs
+        .iter()
+        .filter(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("call_1"))
+        .collect();
+
+    assert_eq!(
+        call_1_tool_msgs.len(),
+        1,
+        "superseded pending placeholder should be removed from inference context"
+    );
+    assert!(
+        !call_1_tool_msgs[0].content.contains("awaiting approval"),
+        "remaining tool message must be the real result"
+    );
+}
+
+#[test]
+fn build_messages_keeps_pending_placeholder_when_no_real_tool_result_exists() {
+    let mut fix = TestFixture::new();
+    fix.messages = vec![
+        Arc::new(Message::user("hi")),
+        Arc::new(Message::assistant_with_tool_calls(
+            "",
+            vec![ToolCall::new("call_1", "copyToClipboard", json!({"text":"hello"}))],
+        )),
+        Arc::new(Message::tool(
+            "call_1",
+            "Tool 'copyToClipboard' is awaiting approval. Execution paused.",
+        )),
+    ];
+    let step = fix.step(vec![]);
+    let msgs = build_messages(&step, "sys");
+
+    assert!(
+        msgs.iter().any(|m| {
+            m.role == Role::Tool
+                && m.tool_call_id.as_deref() == Some("call_1")
+                && m.content.contains("awaiting approval")
+        }),
+        "pending placeholder should remain when no resolved result exists"
+    );
+}
+
 #[tokio::test]
 async fn test_stream_permission_intercept_emits_tool_call_start_for_frontend() {
     // A plugin that intercepts a backend tool call and invokes PermissionConfirm

@@ -17,6 +17,10 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+fn is_pending_approval_placeholder(msg: &Message) -> bool {
+    msg.role == Role::Tool && msg.content.contains("is awaiting approval. Execution paused.")
+}
+
 pub(super) fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec<Message> {
     let mut messages = Vec::new();
 
@@ -46,10 +50,37 @@ pub(super) fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec
         .map(|tc| tc.id.as_str())
         .collect();
 
+    // When a frontend tool pending placeholder is followed by a real tool result
+    // for the same call_id, keep only the real result in inference context.
+    // This preserves append-only persisted history while avoiding stale
+    // "awaiting approval" text from biasing subsequent model turns.
+    let mut pending_placeholder_ids = HashSet::new();
+    let mut resolved_result_ids = HashSet::new();
+    for msg in step.messages() {
+        let Some(tc_id) = msg.tool_call_id.as_deref() else {
+            continue;
+        };
+        if !known_tool_call_ids.contains(tc_id) {
+            continue;
+        }
+        if is_pending_approval_placeholder(msg) {
+            pending_placeholder_ids.insert(tc_id.to_string());
+        } else if msg.role == Role::Tool {
+            resolved_result_ids.insert(tc_id.to_string());
+        }
+    }
+    let superseded_pending_ids: HashSet<String> = pending_placeholder_ids
+        .intersection(&resolved_result_ids)
+        .cloned()
+        .collect();
+
     for msg in step.messages() {
         if msg.role == Role::Tool {
             if let Some(ref tc_id) = msg.tool_call_id {
                 if !known_tool_call_ids.contains(tc_id.as_str()) {
+                    continue;
+                }
+                if superseded_pending_ids.contains(tc_id) && is_pending_approval_placeholder(msg) {
                     continue;
                 }
             }
