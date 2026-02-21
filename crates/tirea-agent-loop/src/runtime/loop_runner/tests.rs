@@ -785,10 +785,8 @@ impl AgentPlugin for TestPhasePlugin {
 
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         match phase {
-            Phase::StepStart => {
-                step.system("Test system context");
-            }
             Phase::BeforeInference => {
+                step.system("Test system context");
                 step.thread("Test thread context");
             }
             Phase::AfterToolExecute => {
@@ -1206,10 +1204,8 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
         async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             self.phases.lock().unwrap().push(phase);
             match phase {
-                Phase::StepStart => {
-                    step.system("from_step_start");
-                }
                 Phase::BeforeInference => {
+                    step.system("from_before_inference");
                     step.skip_inference = true;
                     let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
                         tirea_state::path!("debug", "phase_block"),
@@ -1245,7 +1241,7 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
         phases.lock().unwrap().as_slice(),
         &[Phase::StepStart, Phase::BeforeInference]
     );
-    assert_eq!(extracted.0, vec!["from_step_start".to_string()]);
+    assert_eq!(extracted.0, vec!["from_before_inference".to_string()]);
     assert!(extracted.1);
     assert_eq!(pending.len(), 1);
 
@@ -2874,6 +2870,126 @@ async fn test_stream_rejects_skip_inference_mutation_outside_before_inference() 
         matches!(events.last(), Some(AgentEvent::RunFinish { .. })),
         "expected stream termination after mutation error, got: {events:?}"
     );
+}
+
+#[tokio::test]
+async fn test_run_loop_rejects_prompt_context_mutation_outside_before_inference() {
+    struct InvalidStepStartPromptPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for InvalidStepStartPromptPlugin {
+        fn id(&self) -> &str {
+            "invalid_step_start_prompt"
+        }
+
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            if phase == Phase::StepStart {
+                step.system("must not mutate prompt context in StepStart");
+            }
+        }
+    }
+
+    let config = AgentConfig::new("gpt-4o-mini")
+        .with_plugin(Arc::new(InvalidStepStartPromptPlugin) as Arc<dyn AgentPlugin>);
+    let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
+    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+    assert!(
+        matches!(outcome.termination, TerminationReason::Error),
+        "expected phase mutation state error, got: {:?}",
+        outcome.termination
+    );
+    assert!(
+        outcome.failure.as_ref().map_or(false, |f| matches!(f, LoopFailure::State(msg) if msg.contains("mutated prompt context outside BeforeInference"))),
+        "expected prompt context mutation error in failure"
+    );
+}
+
+#[tokio::test]
+async fn test_stream_rejects_prompt_context_mutation_outside_before_inference() {
+    struct InvalidStepStartPromptPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for InvalidStepStartPromptPlugin {
+        fn id(&self) -> &str {
+            "invalid_step_start_prompt"
+        }
+
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            if phase == Phase::StepStart {
+                step.thread("must not mutate prompt context in StepStart");
+            }
+        }
+    }
+
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(InvalidStepStartPromptPlugin) as Arc<dyn AgentPlugin>);
+    let thread = Thread::new("test").with_message(Message::user("hi"));
+    let tools = HashMap::new();
+
+    let events = run_mock_stream(MockStreamProvider::new(vec![]), config, thread, tools).await;
+
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::Error { message }
+            if message.contains("mutated prompt context outside BeforeInference")
+        )),
+        "expected mutation error event, got: {events:?}"
+    );
+    assert!(
+        matches!(events.last(), Some(AgentEvent::RunFinish { .. })),
+        "expected stream termination after mutation error, got: {events:?}"
+    );
+}
+
+struct InvalidBeforeToolReminderPlugin;
+
+#[async_trait]
+impl AgentPlugin for InvalidBeforeToolReminderPlugin {
+    fn id(&self) -> &str {
+        "invalid_before_tool_reminder"
+    }
+
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        if phase == Phase::BeforeToolExecute {
+            step.reminder("must not mutate reminders in BeforeToolExecute");
+        }
+    }
+}
+
+#[test]
+fn test_execute_tools_rejects_reminder_mutation_outside_after_tool_execute() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let thread = Thread::new("test");
+        let result = StreamResult {
+            text: "invalid".to_string(),
+            tool_calls: vec![crate::contracts::thread::ToolCall::new(
+                "call_1",
+                "echo",
+                json!({"message": "test"}),
+            )],
+            usage: None,
+        };
+        let tools = tool_map([EchoTool]);
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(InvalidBeforeToolReminderPlugin)];
+
+        let err = execute_tools_with_plugins(thread, &result, &tools, true, &plugins)
+            .await
+            .expect_err("reminder mutation outside AfterToolExecute should fail");
+
+        assert!(
+            matches!(
+                err,
+                AgentLoopError::StateError(ref message)
+                if message.contains("mutated system reminders outside AfterToolExecute")
+            ),
+            "unexpected error: {err:?}"
+        );
+    });
 }
 
 #[tokio::test]
@@ -7146,13 +7262,20 @@ fn build_messages_drops_superseded_pending_placeholder_for_same_tool_call() {
         Arc::new(Message::user("hi")),
         Arc::new(Message::assistant_with_tool_calls(
             "",
-            vec![ToolCall::new("call_1", "copyToClipboard", json!({"text":"hello"}))],
+            vec![ToolCall::new(
+                "call_1",
+                "copyToClipboard",
+                json!({"text":"hello"}),
+            )],
         )),
         Arc::new(Message::tool(
             "call_1",
             "Tool 'copyToClipboard' is awaiting approval. Execution paused.",
         )),
-        Arc::new(Message::tool("call_1", r#"{"status":"success","data":{"text":"hello"}}"#)),
+        Arc::new(Message::tool(
+            "call_1",
+            r#"{"status":"success","data":{"text":"hello"}}"#,
+        )),
     ];
     let step = fix.step(vec![]);
     let msgs = build_messages(&step, "sys");
@@ -7180,7 +7303,11 @@ fn build_messages_keeps_pending_placeholder_when_no_real_tool_result_exists() {
         Arc::new(Message::user("hi")),
         Arc::new(Message::assistant_with_tool_calls(
             "",
-            vec![ToolCall::new("call_1", "copyToClipboard", json!({"text":"hello"}))],
+            vec![ToolCall::new(
+                "call_1",
+                "copyToClipboard",
+                json!({"text":"hello"}),
+            )],
         )),
         Arc::new(Message::tool(
             "call_1",

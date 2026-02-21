@@ -18,7 +18,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 fn is_pending_approval_placeholder(msg: &Message) -> bool {
-    msg.role == Role::Tool && msg.content.contains("is awaiting approval. Execution paused.")
+    msg.role == Role::Tool
+        && msg
+            .content
+            .contains("is awaiting approval. Execution paused.")
 }
 
 pub(super) fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec<Message> {
@@ -128,10 +131,11 @@ pub(super) fn set_agent_pending_interaction(
     let doc = DocCell::new(state.clone());
     let ctx = StateContext::new(&doc);
     let lc = ctx.state_of::<LoopControlState>();
-    lc.set_pending_interaction(Some(interaction))
-        .map_err(|e| {
-            AgentLoopError::StateError(format!("failed to set loop_control.pending_interaction: {e}"))
-        })?;
+    lc.set_pending_interaction(Some(interaction)).map_err(|e| {
+        AgentLoopError::StateError(format!(
+            "failed to set loop_control.pending_interaction: {e}"
+        ))
+    })?;
     lc.set_pending_frontend_invocation(frontend_invocation)
         .map_err(|e| {
             AgentLoopError::StateError(format!(
@@ -141,7 +145,9 @@ pub(super) fn set_agent_pending_interaction(
     Ok(ctx.take_tracked_patch("agent_loop"))
 }
 
-pub(super) fn clear_agent_pending_interaction(state: &Value) -> Result<TrackedPatch, AgentLoopError> {
+pub(super) fn clear_agent_pending_interaction(
+    state: &Value,
+) -> Result<TrackedPatch, AgentLoopError> {
     let doc = DocCell::new(state.clone());
     let ctx = StateContext::new(&doc);
     let lc = ctx.state_of::<LoopControlState>();
@@ -181,10 +187,9 @@ pub(super) fn set_agent_inference_error(
     let doc = DocCell::new(state.clone());
     let ctx = StateContext::new(&doc);
     let lc = ctx.state_of::<LoopControlState>();
-    lc.set_inference_error(Some(error))
-        .map_err(|e| {
-            AgentLoopError::StateError(format!("failed to set loop_control.inference_error: {e}"))
-        })?;
+    lc.set_inference_error(Some(error)).map_err(|e| {
+        AgentLoopError::StateError(format!("failed to set loop_control.inference_error: {e}"))
+    })?;
     Ok(ctx.take_tracked_patch("agent_loop"))
 }
 

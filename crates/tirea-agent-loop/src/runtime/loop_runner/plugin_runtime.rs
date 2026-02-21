@@ -12,6 +12,9 @@ use tirea_state::{DocCell, TrackedPatch};
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PhaseMutationSnapshot {
     skip_inference: bool,
+    system_context: Vec<String>,
+    session_context: Vec<String>,
+    system_reminders: Vec<String>,
     tool_ids: Vec<String>,
     tool_call_id: Option<String>,
     tool_name: Option<String>,
@@ -24,6 +27,9 @@ struct PhaseMutationSnapshot {
 fn phase_mutation_snapshot(step: &StepContext<'_>) -> PhaseMutationSnapshot {
     PhaseMutationSnapshot {
         skip_inference: step.skip_inference,
+        system_context: step.system_context.clone(),
+        session_context: step.session_context.clone(),
+        system_reminders: step.system_reminders.clone(),
         tool_ids: step.tools.iter().map(|t| t.id.clone()).collect(),
         tool_call_id: step.tool.as_ref().map(|t| t.id.clone()),
         tool_name: step.tool.as_ref().map(|t| t.name.clone()),
@@ -55,6 +61,22 @@ fn validate_phase_mutation(
     if before.skip_inference != after.skip_inference && !policy.allow_skip_inference_mutation {
         return Err(AgentLoopError::StateError(format!(
             "plugin '{}' mutated skip_inference outside BeforeInference ({phase})",
+            plugin_id
+        )));
+    }
+
+    let prompt_context_changed = before.system_context != after.system_context
+        || before.session_context != after.session_context;
+    if prompt_context_changed && phase != Phase::BeforeInference {
+        return Err(AgentLoopError::StateError(format!(
+            "plugin '{}' mutated prompt context outside BeforeInference ({phase})",
+            plugin_id
+        )));
+    }
+
+    if before.system_reminders != after.system_reminders && phase != Phase::AfterToolExecute {
+        return Err(AgentLoopError::StateError(format!(
+            "plugin '{}' mutated system reminders outside AfterToolExecute ({phase})",
             plugin_id
         )));
     }

@@ -260,7 +260,8 @@ pub(super) fn apply_tool_results_impl(
         let state = run_ctx
             .snapshot()
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-        let patch = set_agent_pending_interaction(&state, interaction.clone(), frontend_invocation)?;
+        let patch =
+            set_agent_pending_interaction(&state, interaction.clone(), frontend_invocation)?;
         if !patch.patch().is_empty() {
             state_changed = true;
             run_ctx.add_thread_patch(patch);

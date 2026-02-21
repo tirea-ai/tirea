@@ -172,7 +172,7 @@ impl Tool for FrontendToolStub {
 }
 
 /// Run-scoped plugin that injects AG-UI context (from `useCopilotReadable`)
-/// into the agent's system prompt at each step.
+/// into the agent's system prompt before inference.
 struct ContextInjectionPlugin {
     addendum: String,
 }
@@ -190,7 +190,7 @@ impl AgentPlugin for ContextInjectionPlugin {
     }
 
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        if phase == Phase::StepStart {
+        if phase == Phase::BeforeInference {
             step.system(&self.addendum);
         }
     }
@@ -554,7 +554,7 @@ mod tests {
         let fixture = TestFixture::new();
         let mut step = fixture.step(vec![]);
 
-        plugin.on_phase(Phase::StepStart, &mut step).await;
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
 
         assert!(!step.system_context.is_empty());
         let merged = step.system_context.join("\n");

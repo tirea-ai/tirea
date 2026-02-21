@@ -15,9 +15,9 @@
 //!     │
 //!     ▼
 //! ┌─────────────────────────┐
-//! │      StepStart          │ ← plugins can inject system context
+//! │      StepStart          │ ← plugins can apply state patches
 //! ├─────────────────────────┤
-//! │    BeforeInference      │ ← plugins can filter tools, add session context
+//! │    BeforeInference      │ ← plugins can inject prompt context, filter tools
 //! ├─────────────────────────┤
 //! │      [LLM CALL]         │
 //! ├─────────────────────────┤

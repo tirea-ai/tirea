@@ -23,10 +23,8 @@
 //!
 //!     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
 //!         match phase {
-//!             Phase::StepStart => {
-//!                 step.system(format!("Time: {}", chrono::Local::now()));
-//!             }
 //!             Phase::BeforeInference => {
+//!                 step.system(format!("Time: {}", chrono::Local::now()));
 //!                 step.exclude("dangerous_tool");
 //!             }
 //!             Phase::AfterToolExecute => {
@@ -57,7 +55,7 @@ use async_trait::async_trait;
 /// async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
 ///     match phase {
 ///         Phase::RunStart => { /* initialize */ }
-///         Phase::StepStart => { /* prepare context */ }
+///         Phase::StepStart => { /* state prep only */ }
 ///         Phase::BeforeInference => { /* inject context, filter tools */ }
 ///         Phase::AfterInference => { /* process response */ }
 ///         Phase::BeforeToolExecute => { /* check permissions */ }
@@ -120,10 +118,8 @@ mod tests {
 
         async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             match phase {
-                Phase::StepStart => {
-                    step.system("Test system context");
-                }
                 Phase::BeforeInference => {
+                    step.system("Test system context");
                     step.thread("Test thread context");
                 }
                 _ => {}
@@ -154,10 +150,8 @@ mod tests {
 
         async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             match phase {
-                Phase::StepStart => {
-                    step.system("Current time: 2024-01-01");
-                }
                 Phase::BeforeInference => {
+                    step.system("Current time: 2024-01-01");
                     step.thread("Remember to be helpful.");
                     step.exclude("dangerous_tool");
                 }
@@ -261,8 +255,8 @@ mod tests {
 
         plugin.on_phase(Phase::StepStart, &mut step).await;
 
-        assert_eq!(step.system_context.len(), 1);
-        assert_eq!(step.system_context[0], "Test system context");
+        assert!(step.system_context.is_empty());
+        assert!(step.session_context.is_empty());
     }
 
     #[tokio::test]
@@ -273,6 +267,8 @@ mod tests {
 
         plugin.on_phase(Phase::BeforeInference, &mut step).await;
 
+        assert_eq!(step.system_context.len(), 1);
+        assert_eq!(step.system_context[0], "Test system context");
         assert_eq!(step.session_context.len(), 1);
         assert_eq!(step.session_context[0], "Test thread context");
     }
@@ -283,12 +279,9 @@ mod tests {
         let fix = TestFixture::new();
         let mut step = fix.step(mock_tools());
 
-        // StepStart - adds system context
-        plugin.on_phase(Phase::StepStart, &mut step).await;
-        assert_eq!(step.system_context[0], "Current time: 2024-01-01");
-
-        // BeforeInference - adds session context and filters tools
+        // BeforeInference - adds prompt context and filters tools
         plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        assert_eq!(step.system_context[0], "Current time: 2024-01-01");
         assert_eq!(step.session_context[0], "Remember to be helpful.");
         assert!(!step.tools.iter().any(|t| t.id == "dangerous_tool"));
 
@@ -369,12 +362,13 @@ mod tests {
         for plugin in &plugins {
             plugin.on_phase(Phase::StepStart, &mut step).await;
         }
-        assert!(!step.system_context.is_empty());
+        assert!(step.system_context.is_empty());
 
         // Run all plugins for BeforeInference
         for plugin in &plugins {
             plugin.on_phase(Phase::BeforeInference, &mut step).await;
         }
+        assert!(!step.system_context.is_empty());
         assert!(!step.session_context.is_empty());
         assert!(!step.tools.iter().any(|t| t.id == "dangerous_tool"));
 
