@@ -202,6 +202,36 @@ async fn agent_run_tool_rejects_disallowed_target_agent() {
         .contains("Unknown or unavailable agent_id"));
 }
 
+#[tokio::test]
+async fn agent_run_tool_rejects_self_target_agent() {
+    let os = AgentOs::builder()
+        .with_agent(
+            "caller",
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+        )
+        .with_agent(
+            "worker",
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+        )
+        .build()
+        .unwrap();
+    let tool = AgentRunTool::new(os, Arc::new(AgentRunManager::new()));
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope();
+    let result = tool
+        .execute(
+            json!({"agent_id":"caller","prompt":"hi","background":false}),
+            &fix.ctx_with("call-1", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.status, ToolStatus::Error);
+    assert!(result
+        .message
+        .unwrap_or_default()
+        .contains("Unknown or unavailable agent_id"));
+}
+
 #[derive(Debug)]
 struct SlowSkipPlugin;
 
@@ -473,6 +503,54 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
         updated["agent_runs"]["runs"][&run_id]["parent_run_id"],
         json!("parent-run-42")
     );
+}
+
+#[tokio::test]
+async fn agent_run_tool_injects_prompt_into_child_thread() {
+    let os = AgentOs::builder()
+        .with_registered_plugin("slow_skip", Arc::new(SlowSkipPlugin))
+        .with_agent(
+            "worker",
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
+                .with_plugin_id("slow_skip"),
+        )
+        .build()
+        .unwrap();
+    let manager = Arc::new(AgentRunManager::new());
+    let run_tool = AgentRunTool::new(os, manager.clone());
+
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope();
+    let started = run_tool
+        .execute(
+            json!({
+                "agent_id":"worker",
+                "prompt":"prompt-injected",
+                "background": true
+            }),
+            &fix.ctx_with("call-run", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(started.status, ToolStatus::Success);
+    let run_id = started.data["run_id"]
+        .as_str()
+        .expect("run_id should exist")
+        .to_string();
+
+    let child_thread = manager
+        .owned_record("owner-thread", &run_id)
+        .await
+        .expect("child thread should be tracked");
+    let prompt_message = child_thread
+        .messages
+        .last()
+        .expect("child thread should contain prompt message");
+    assert_eq!(
+        prompt_message.role,
+        crate::contracts::thread::Role::User
+    );
+    assert_eq!(prompt_message.content, "prompt-injected");
 }
 
 #[tokio::test]
