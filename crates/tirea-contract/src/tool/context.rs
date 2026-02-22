@@ -536,4 +536,18 @@ mod tests {
             .expect("cancelled() should resolve after token cancellation");
         assert_eq!(done, ());
     }
+
+    #[tokio::test]
+    async fn test_cancelled_without_token_never_resolves() {
+        let doc = DocCell::new(json!({}));
+        let ops = Mutex::new(Vec::new());
+        let scope = RunConfig::default();
+        let pending = Mutex::new(Vec::new());
+        let ctx = make_ctx(&doc, &ops, &scope, &pending);
+
+        let timed_out = timeout(Duration::from_millis(30), ctx.cancelled())
+            .await
+            .is_err();
+        assert!(timed_out, "cancelled() without token should remain pending");
+    }
 }

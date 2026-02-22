@@ -1431,6 +1431,89 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
 }
 
 #[tokio::test]
+async fn test_execute_single_tool_context_waits_for_run_cancellation() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct ContextCancellationProbeTool {
+        ready: Arc<Notify>,
+        observed_token: Arc<AtomicBool>,
+        observed_cancelled: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl Tool for ContextCancellationProbeTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new(
+                "cancel_probe",
+                "Cancel Probe",
+                "Wait for run cancellation from tool context",
+            )
+        }
+
+        async fn execute(
+            &self,
+            _args: Value,
+            ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolResult, ToolError> {
+            self.observed_token
+                .store(ctx.cancellation_token().is_some(), Ordering::SeqCst);
+            self.ready.notify_one();
+            ctx.cancelled().await;
+            self.observed_cancelled
+                .store(ctx.is_cancelled(), Ordering::SeqCst);
+
+            Ok(ToolResult::success(
+                "cancel_probe",
+                json!({ "cancelled": ctx.is_cancelled() }),
+            ))
+        }
+    }
+
+    let ready = Arc::new(Notify::new());
+    let observed_token = Arc::new(AtomicBool::new(false));
+    let observed_cancelled = Arc::new(AtomicBool::new(false));
+    let tool = ContextCancellationProbeTool {
+        ready: ready.clone(),
+        observed_token: observed_token.clone(),
+        observed_cancelled: observed_cancelled.clone(),
+    };
+    let call = crate::contracts::thread::ToolCall::new("call_1", "cancel_probe", json!({}));
+    let state = json!({});
+    let tool_descriptors = vec![tool.descriptor()];
+    let plugins: Vec<Arc<dyn AgentPlugin>> = Vec::new();
+    let run_config = tirea_contract::RunConfig::default();
+    let token = CancellationToken::new();
+    let token_for_task = token.clone();
+    let ready_for_task = ready.clone();
+    tokio::spawn(async move {
+        ready_for_task.notified().await;
+        token_for_task.cancel();
+    });
+    let phase_ctx = super::tool_exec::ToolPhaseContext {
+        tool_descriptors: &tool_descriptors,
+        plugins: &plugins,
+        activity_manager: None,
+        run_config: &run_config,
+        thread_id: "test",
+        thread_messages: &[],
+        cancellation_token: Some(&token),
+    };
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        execute_single_tool_with_phases(Some(&tool), &call, &state, &phase_ctx),
+    )
+    .await
+    .expect("tool should finish after cancellation signal")
+    .expect("tool execution should succeed");
+
+    assert!(result.execution.result.is_success());
+    assert_eq!(result.execution.result.data["cancelled"], json!(true));
+    assert!(observed_token.load(Ordering::SeqCst));
+    assert!(observed_cancelled.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
 async fn test_plugin_sees_real_session_id_and_scope_in_tool_phase() {
     use std::sync::atomic::{AtomicBool, Ordering};
 
