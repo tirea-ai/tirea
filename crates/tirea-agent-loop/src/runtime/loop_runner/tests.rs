@@ -4182,6 +4182,14 @@ async fn test_nonstream_cancellation_token_during_inference() {
         "expected cancellation during inference, got: {:?}",
         outcome.termination
     );
+    assert!(
+        outcome
+            .run_ctx
+            .messages()
+            .iter()
+            .any(|m| m.role == Role::User && m.content == CANCELLATION_INFERENCE_USER_MESSAGE),
+        "expected persisted user interruption note for inference cancellation"
+    );
 }
 
 #[test]
@@ -4360,6 +4368,224 @@ async fn test_nonstream_cancellation_token_during_tool_execution() {
             .iter()
             .any(|m| m.role == crate::contracts::thread::Role::Tool),
         "tool results should not be committed after cancellation"
+    );
+    assert!(
+        run_ctx
+            .messages()
+            .iter()
+            .any(|m| m.role == Role::User && m.content == CANCELLATION_TOOL_USER_MESSAGE),
+        "expected persisted user interruption note for tool cancellation"
+    );
+}
+
+#[tokio::test]
+async fn test_nonstream_inference_abort_message_persisted_and_visible_next_run() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct ObserveMessagePlugin {
+        expected: &'static str,
+        seen: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl AgentPlugin for ObserveMessagePlugin {
+        fn id(&self) -> &str {
+            "observe_cancellation_message_inference_nonstream"
+        }
+
+        phase_dispatch_methods!(|this, phase, step| {
+            if phase != Phase::BeforeInference {
+                return;
+            }
+            if step
+                .messages()
+                .iter()
+                .any(|m| m.role == Role::User && m.content == this.expected)
+            {
+                this.seen.store(true, Ordering::SeqCst);
+            }
+        });
+    }
+
+    let ready = Arc::new(Notify::new());
+    let proceed = Arc::new(Notify::new());
+    let provider = Arc::new(HangingChatProvider {
+        ready: ready.clone(),
+        proceed: proceed.clone(),
+        response: text_chat_response("never"),
+    });
+    let token = CancellationToken::new();
+    let token_for_run = token.clone();
+    let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
+    let state_committer: Arc<dyn StateCommitter> =
+        Arc::new(ChannelStateCommitter::new(checkpoint_tx));
+
+    let config = AgentConfig::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let initial_thread = Thread::new("cancel-inference").with_message(Message::user("go"));
+    let run_ctx =
+        RunContext::from_thread(&initial_thread, tirea_contract::RunConfig::default()).unwrap();
+
+    let handle = tokio::spawn(async move {
+        run_loop(
+            &config,
+            HashMap::new(),
+            run_ctx,
+            Some(token_for_run),
+            Some(state_committer),
+        )
+        .await
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), ready.notified())
+        .await
+        .expect("inference execution did not reach cancellation checkpoint");
+    token.cancel();
+
+    let first_outcome = tokio::time::timeout(std::time::Duration::from_millis(300), handle)
+        .await
+        .expect("non-stream run should stop shortly after cancellation during inference")
+        .expect("run task should not panic");
+    proceed.notify_waiters();
+    assert_eq!(first_outcome.termination, TerminationReason::Cancelled);
+
+    let mut persisted_thread = initial_thread.clone();
+    while let Some(changeset) = checkpoint_rx.recv().await {
+        changeset.apply_to(&mut persisted_thread);
+    }
+    assert!(
+        persisted_thread
+            .messages
+            .iter()
+            .any(|m| m.role == Role::User && m.content == CANCELLATION_INFERENCE_USER_MESSAGE),
+        "inference cancellation note should be persisted in thread history"
+    );
+
+    let seen = Arc::new(AtomicBool::new(false));
+    let resume_provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("done"))]));
+    let resume_config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(ObserveMessagePlugin {
+            expected: CANCELLATION_INFERENCE_USER_MESSAGE,
+            seen: seen.clone(),
+        }) as Arc<dyn AgentPlugin>)
+        .with_llm_executor(resume_provider as Arc<dyn LlmExecutor>);
+    let resume_run_ctx =
+        RunContext::from_thread(&persisted_thread, tirea_contract::RunConfig::default()).unwrap();
+    let second_outcome = run_loop(&resume_config, HashMap::new(), resume_run_ctx, None, None).await;
+
+    assert_eq!(second_outcome.termination, TerminationReason::NaturalEnd);
+    assert!(
+        seen.load(Ordering::SeqCst),
+        "next inference should observe persisted cancellation message"
+    );
+}
+
+#[tokio::test]
+async fn test_nonstream_tool_abort_message_persisted_and_visible_next_run() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct ObserveMessagePlugin {
+        expected: &'static str,
+        seen: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl AgentPlugin for ObserveMessagePlugin {
+        fn id(&self) -> &str {
+            "observe_cancellation_message_tool_nonstream"
+        }
+
+        phase_dispatch_methods!(|this, phase, step| {
+            if phase != Phase::BeforeInference {
+                return;
+            }
+            if step
+                .messages()
+                .iter()
+                .any(|m| m.role == Role::User && m.content == this.expected)
+            {
+                this.seen.store(true, Ordering::SeqCst);
+            }
+        });
+    }
+
+    let ready = Arc::new(Notify::new());
+    let proceed = Arc::new(Notify::new());
+    let tool = ActivityGateTool {
+        id: "activity_gate".to_string(),
+        stream_id: "nonstream_cancel_persist".to_string(),
+        ready: ready.clone(),
+        proceed,
+    };
+    let provider = Arc::new(MockChatProvider::new(vec![
+        Ok(tool_call_chat_response_object_args(
+            "call_1",
+            "activity_gate",
+            json!({}),
+        )),
+        Ok(text_chat_response("done")),
+    ]));
+    let token = CancellationToken::new();
+    let token_for_run = token.clone();
+    let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
+    let state_committer: Arc<dyn StateCommitter> =
+        Arc::new(ChannelStateCommitter::new(checkpoint_tx));
+
+    let config = AgentConfig::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let tools = tool_map([tool]);
+    let initial_thread = Thread::new("cancel-tool").with_message(Message::user("go"));
+    let run_ctx =
+        RunContext::from_thread(&initial_thread, tirea_contract::RunConfig::default()).unwrap();
+
+    let handle = tokio::spawn(async move {
+        run_loop(
+            &config,
+            tools,
+            run_ctx,
+            Some(token_for_run),
+            Some(state_committer),
+        )
+        .await
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), ready.notified())
+        .await
+        .expect("tool execution did not reach cancellation checkpoint");
+    token.cancel();
+
+    let first_outcome = tokio::time::timeout(std::time::Duration::from_millis(300), handle)
+        .await
+        .expect("non-stream run should stop shortly after cancellation during tool execution")
+        .expect("run task should not panic");
+    assert_eq!(first_outcome.termination, TerminationReason::Cancelled);
+
+    let mut persisted_thread = initial_thread.clone();
+    while let Some(changeset) = checkpoint_rx.recv().await {
+        changeset.apply_to(&mut persisted_thread);
+    }
+    assert!(
+        persisted_thread
+            .messages
+            .iter()
+            .any(|m| m.role == Role::User && m.content == CANCELLATION_TOOL_USER_MESSAGE),
+        "tool cancellation note should be persisted in thread history"
+    );
+
+    let seen = Arc::new(AtomicBool::new(false));
+    let resume_provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("done"))]));
+    let resume_config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(ObserveMessagePlugin {
+            expected: CANCELLATION_TOOL_USER_MESSAGE,
+            seen: seen.clone(),
+        }) as Arc<dyn AgentPlugin>)
+        .with_llm_executor(resume_provider as Arc<dyn LlmExecutor>);
+    let resume_run_ctx =
+        RunContext::from_thread(&persisted_thread, tirea_contract::RunConfig::default()).unwrap();
+    let second_outcome = run_loop(&resume_config, HashMap::new(), resume_run_ctx, None, None).await;
+
+    assert_eq!(second_outcome.termination, TerminationReason::NaturalEnd);
+    assert!(
+        seen.load(Ordering::SeqCst),
+        "next inference should observe persisted tool cancellation message"
     );
 }
 
@@ -6155,11 +6381,22 @@ async fn test_stop_cancellation_token_during_inference_stream() {
     }
 
     let token = CancellationToken::new();
-    let thread = Thread::new("test").with_message(Message::user("go"));
+    let initial_thread = Thread::new("test").with_message(Message::user("go"));
+    let mut final_thread = initial_thread.clone();
+    let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
+    let state_committer: Arc<dyn StateCommitter> =
+        Arc::new(ChannelStateCommitter::new(checkpoint_tx));
     let config = AgentConfig::new("mock")
         .with_llm_executor(Arc::new(HangingStreamProvider) as Arc<dyn LlmExecutor>);
-    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, HashMap::new(), run_ctx, Some(token.clone()), None);
+    let run_ctx =
+        RunContext::from_thread(&initial_thread, tirea_contract::RunConfig::default()).unwrap();
+    let stream = run_loop_stream(
+        config,
+        HashMap::new(),
+        run_ctx,
+        Some(token.clone()),
+        Some(state_committer),
+    );
 
     let collect_task = tokio::spawn(async move { collect_stream_events(stream).await });
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
@@ -6173,6 +6410,17 @@ async fn test_stop_cancellation_token_during_inference_stream() {
     assert_eq!(
         extract_termination(&events),
         Some(TerminationReason::Cancelled)
+    );
+
+    while let Some(changeset) = checkpoint_rx.recv().await {
+        changeset.apply_to(&mut final_thread);
+    }
+    assert!(
+        final_thread
+            .messages
+            .iter()
+            .any(|m| m.role == Role::User && m.content == CANCELLATION_INFERENCE_USER_MESSAGE),
+        "stream inference cancellation note should be persisted in thread history"
     );
 }
 
@@ -7268,12 +7516,23 @@ async fn test_stop_cancellation_token_during_tool_execution_stream() {
         json!({}),
     )];
     let token = CancellationToken::new();
-    let thread = Thread::new("test").with_message(Message::user("go"));
+    let initial_thread = Thread::new("test").with_message(Message::user("go"));
+    let mut final_thread = initial_thread.clone();
+    let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
+    let state_committer: Arc<dyn StateCommitter> =
+        Arc::new(ChannelStateCommitter::new(checkpoint_tx));
     let config = AgentConfig::new("mock")
         .with_llm_executor(Arc::new(MockStreamProvider::new(responses)) as Arc<dyn LlmExecutor>);
     let tools = tool_map([tool]);
-    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, tools, run_ctx, Some(token.clone()), None);
+    let run_ctx =
+        RunContext::from_thread(&initial_thread, tirea_contract::RunConfig::default()).unwrap();
+    let stream = run_loop_stream(
+        config,
+        tools,
+        run_ctx,
+        Some(token.clone()),
+        Some(state_committer),
+    );
 
     let collector = tokio::spawn(async move { collect_stream_events(stream).await });
     tokio::time::timeout(std::time::Duration::from_secs(2), ready.notified())
@@ -7295,6 +7554,16 @@ async fn test_stop_cancellation_token_during_tool_execution_stream() {
             .iter()
             .any(|e| matches!(e, AgentEvent::ToolCallDone { .. })),
         "tool should not report completion after cancellation"
+    );
+    while let Some(changeset) = checkpoint_rx.recv().await {
+        changeset.apply_to(&mut final_thread);
+    }
+    assert!(
+        final_thread
+            .messages
+            .iter()
+            .any(|m| m.role == Role::User && m.content == CANCELLATION_TOOL_USER_MESSAGE),
+        "stream tool cancellation note should be persisted in thread history"
     );
 }
 

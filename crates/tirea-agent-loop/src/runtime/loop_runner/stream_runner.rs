@@ -549,6 +549,7 @@ pub(super) fn run_loop_stream_impl(
                     (value, model)
                 }
                 LlmAttemptOutcome::Cancelled => {
+                    append_cancellation_user_message(&mut run_ctx, CancellationStage::Inference);
                     finish_run!(TerminationReason::Cancelled, None);
                 }
                 LlmAttemptOutcome::Exhausted {
@@ -585,6 +586,7 @@ pub(super) fn run_loop_stream_impl(
                 let next_event = if let Some(ref token) = run_cancellation_token {
                     tokio::select! {
                         _ = token.cancelled() => {
+                            append_cancellation_user_message(&mut run_ctx, CancellationStage::Inference);
                             finish_run!(TerminationReason::Cancelled, None);
                         }
                         ev = chat_stream.next() => ev,
@@ -761,6 +763,7 @@ pub(super) fn run_loop_stream_impl(
             let results = match results {
                 Ok(r) => r,
                 Err(AgentLoopError::Cancelled { .. }) => {
+                    append_cancellation_user_message(&mut run_ctx, CancellationStage::ToolExecution);
                     finish_run!(TerminationReason::Cancelled, None);
                 }
                 Err(e) => {

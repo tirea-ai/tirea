@@ -163,6 +163,25 @@ pub(crate) fn current_unix_millis() -> u64 {
         .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CancellationStage {
+    Inference,
+    ToolExecution,
+}
+
+pub(super) const CANCELLATION_INFERENCE_USER_MESSAGE: &str =
+    "The previous run was interrupted during inference. Please continue from the current context.";
+pub(super) const CANCELLATION_TOOL_USER_MESSAGE: &str =
+    "The previous run was interrupted while using tools. Please continue from the current context.";
+
+pub(super) fn append_cancellation_user_message(run_ctx: &mut RunContext, stage: CancellationStage) {
+    let content = match stage {
+        CancellationStage::Inference => CANCELLATION_INFERENCE_USER_MESSAGE,
+        CancellationStage::ToolExecution => CANCELLATION_TOOL_USER_MESSAGE,
+    };
+    run_ctx.add_message(Arc::new(Message::user(content)));
+}
+
 pub(super) fn effective_llm_models(config: &AgentConfig) -> Vec<String> {
     let mut models = Vec::with_capacity(1 + config.fallback_models.len());
     models.push(config.model.clone());
@@ -838,6 +857,7 @@ pub async fn run_loop(
                 value
             }
             LlmAttemptOutcome::Cancelled => {
+                append_cancellation_user_message(&mut run_ctx, CancellationStage::Inference);
                 terminate_run!(TerminationReason::Cancelled, None, None);
             }
             LlmAttemptOutcome::Exhausted {
@@ -950,6 +970,7 @@ pub async fn run_loop(
         let results = match results {
             Ok(r) => r,
             Err(AgentLoopError::Cancelled { .. }) => {
+                append_cancellation_user_message(&mut run_ctx, CancellationStage::ToolExecution);
                 terminate_run!(TerminationReason::Cancelled, None, None);
             }
             Err(e) => {
