@@ -1,5 +1,6 @@
 use crate::event::interaction::Interaction;
 use crate::event::termination::TerminationReason;
+use crate::runtime::ToolCallOutcome;
 use crate::tool::contract::ToolResult;
 use genai::chat::Usage;
 use serde::de::DeserializeOwned;
@@ -330,6 +331,12 @@ struct ToolCallDoneData {
     patch: Option<TrackedPatch>,
     #[serde(default)]
     message_id: String,
+    #[serde(default = "default_tool_call_outcome")]
+    outcome: ToolCallOutcome,
+}
+
+const fn default_tool_call_outcome() -> ToolCallOutcome {
+    ToolCallOutcome::Succeeded
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -578,6 +585,7 @@ impl Serialize for AgentEvent {
                     result: result.clone(),
                     patch: patch.clone(),
                     message_id: message_id.clone(),
+                    outcome: ToolCallOutcome::from_tool_result(result),
                 })
                 .map_err(serde::ser::Error::custom)?,
             },
@@ -859,6 +867,7 @@ impl<'de> Deserialize<'de> for AgentEvent {
             }
             AgentEventType::ToolCallDone => {
                 let data: ToolCallDoneData = from_data_value(envelope.data)?;
+                let _outcome = data.outcome;
                 Ok(Self::ToolCallDone {
                     id: data.id,
                     result: data.result,

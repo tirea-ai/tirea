@@ -319,7 +319,7 @@ mod tests {
 
     #[test]
     fn test_tool_response_from_pending_result() {
-        let result = ToolResult::pending("long_task", "Processing...");
+        let result = ToolResult::suspended("long_task", "Processing...");
         let msg = tool_response("call_pending", &result);
 
         assert_eq!(msg.role, Role::Tool);

@@ -1,6 +1,6 @@
-use crate::event::interaction::{FrontendToolInvocation, Interaction};
 use crate::plugin::contract::AgentPlugin;
 use crate::runtime::activity::ActivityManager;
+use crate::runtime::control::SuspendedCall;
 use crate::thread::{Message, ToolCall};
 use crate::tool::contract::{Tool, ToolDescriptor, ToolResult};
 use crate::RunConfig;
@@ -51,6 +51,32 @@ pub struct ToolExecution {
     pub patch: Option<TrackedPatch>,
 }
 
+/// Canonical outcome for one tool call lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCallOutcome {
+    /// Tool execution was suspended and needs external resume/decision.
+    Suspended,
+    /// Tool execution succeeded.
+    Succeeded,
+    /// Tool execution failed.
+    Failed,
+    /// Tool execution was canceled/denied before completion.
+    Canceled,
+}
+
+impl ToolCallOutcome {
+    /// Derive outcome from a concrete `ToolResult`.
+    pub fn from_tool_result(result: &ToolResult) -> Self {
+        match result.status {
+            crate::tool::contract::ToolStatus::Pending => Self::Suspended,
+            crate::tool::contract::ToolStatus::Error => Self::Failed,
+            crate::tool::contract::ToolStatus::Success
+            | crate::tool::contract::ToolStatus::Warning => Self::Succeeded,
+        }
+    }
+}
+
 /// Input envelope passed to tool execution strategies.
 pub struct ToolExecutionRequest<'a> {
     pub tools: &'a HashMap<String, Arc<dyn Tool>>,
@@ -70,9 +96,10 @@ pub struct ToolExecutionRequest<'a> {
 #[derive(Debug, Clone)]
 pub struct ToolExecutionResult {
     pub execution: ToolExecution,
+    pub outcome: ToolCallOutcome,
+    /// Suspension payload for suspended outcomes.
+    pub suspended_call: Option<SuspendedCall>,
     pub reminders: Vec<String>,
-    pub pending_interaction: Option<Interaction>,
-    pub pending_frontend_invocation: Option<FrontendToolInvocation>,
     pub pending_patches: Vec<TrackedPatch>,
 }
 

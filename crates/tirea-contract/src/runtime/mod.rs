@@ -18,8 +18,8 @@ pub use control::{
 };
 pub use delta::RunDelta;
 pub use executor::{
-    LlmEventStream, LlmExecutor, ToolExecution, ToolExecutionRequest, ToolExecutionResult,
-    ToolExecutor, ToolExecutorError,
+    LlmEventStream, LlmExecutor, ToolCallOutcome, ToolExecution, ToolExecutionRequest,
+    ToolExecutionResult, ToolExecutor, ToolExecutorError,
 };
 pub use policy::{StopPolicy, StopPolicyInput, StopPolicyStats};
 pub use policy_scope::{is_id_allowed, is_scope_allowed, parse_scope_filter};

@@ -100,8 +100,8 @@ impl ToolResult {
         }
     }
 
-    /// Create a pending result (waiting for interaction).
-    pub fn pending(tool_name: impl Into<String>, message: impl Into<String>) -> Self {
+    /// Create a suspended result (waiting for external resume/decision).
+    pub fn suspended(tool_name: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             tool_name: tool_name.into(),
             status: ToolStatus::Pending,
@@ -584,7 +584,7 @@ mod tests {
 
     #[test]
     fn test_tool_result_pending() {
-        let result = ToolResult::pending("my_tool", "Waiting for confirmation");
+        let result = ToolResult::suspended("my_tool", "Waiting for confirmation");
         assert_eq!(result.tool_name, "my_tool");
         assert_eq!(result.status, ToolStatus::Pending);
         assert_eq!(result.data, Value::Null);

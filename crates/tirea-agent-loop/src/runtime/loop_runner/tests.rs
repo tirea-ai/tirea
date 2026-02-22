@@ -516,8 +516,8 @@ fn tool_execution_result(call_id: &str, patch: Option<TrackedPatch>) -> ToolExec
             patch,
         },
         reminders: Vec::new(),
-        pending_interaction: None,
-        pending_frontend_invocation: None,
+        outcome: crate::contracts::ToolCallOutcome::Succeeded,
+        suspended_call: None,
         pending_patches: Vec::new(),
     }
 }
@@ -549,8 +549,8 @@ fn skill_activation_result(
             patch,
         },
         reminders: Vec::new(),
-        pending_interaction: None,
-        pending_frontend_invocation: None,
+        outcome: crate::contracts::ToolCallOutcome::Succeeded,
+        suspended_call: None,
         pending_patches: Vec::new(),
     }
 }
@@ -2031,12 +2031,22 @@ fn test_apply_tool_results_suspends_all_pending_interactions() {
         RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
     let mut first = tool_execution_result("call_1", None);
-    first.pending_interaction =
-        Some(Interaction::new("confirm_1", "confirm").with_message("approve first tool"));
+    first.outcome = crate::contracts::ToolCallOutcome::Suspended;
+    first.suspended_call = Some(crate::contracts::SuspendedCall {
+        call_id: "call_1".to_string(),
+        tool_name: "test_tool".to_string(),
+        interaction: Interaction::new("confirm_1", "confirm").with_message("approve first tool"),
+        frontend_invocation: None,
+    });
 
     let mut second = tool_execution_result("call_2", None);
-    second.pending_interaction =
-        Some(Interaction::new("confirm_2", "confirm").with_message("approve second tool"));
+    second.outcome = crate::contracts::ToolCallOutcome::Suspended;
+    second.suspended_call = Some(crate::contracts::SuspendedCall {
+        call_id: "call_2".to_string(),
+        tool_name: "test_tool".to_string(),
+        interaction: Interaction::new("confirm_2", "confirm").with_message("approve second tool"),
+        frontend_invocation: None,
+    });
 
     let applied = apply_tool_results_to_session(&mut run_ctx, &[first, second], None, false)
         .expect("apply should succeed");
@@ -2147,8 +2157,8 @@ fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
             patch: Some(outbox_patch),
         },
         reminders: Vec::new(),
-        pending_interaction: None,
-        pending_frontend_invocation: None,
+        outcome: crate::contracts::ToolCallOutcome::Succeeded,
+        suspended_call: None,
         pending_patches: Vec::new(),
     };
 
@@ -2194,8 +2204,8 @@ fn test_apply_tool_results_ignores_blank_agent_state_outbox_messages() {
             patch: Some(outbox_patch),
         },
         reminders: Vec::new(),
-        pending_interaction: None,
-        pending_frontend_invocation: None,
+        outcome: crate::contracts::ToolCallOutcome::Succeeded,
+        suspended_call: None,
         pending_patches: Vec::new(),
     };
 

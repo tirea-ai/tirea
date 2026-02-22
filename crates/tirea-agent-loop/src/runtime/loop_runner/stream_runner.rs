@@ -730,14 +730,17 @@ pub(super) fn run_stream(
             };
             if !resolved_call_ids.is_empty() {
                 results.retain(|exec_result| {
-                    !(exec_result.pending_interaction.is_some()
+                    !(matches!(
+                        exec_result.outcome,
+                        crate::contracts::ToolCallOutcome::Suspended
+                    )
                         && resolved_call_ids.contains(&exec_result.execution.call.id))
                 });
             }
 
             // Emit pending interaction event(s) first.
             for exec_result in &results {
-                if let Some(ref interaction) = exec_result.pending_interaction {
+                if let Some(ref suspended_call) = exec_result.suspended_call {
                     // UseAsToolResult frontend tools (e.g. deleteTask) reuse the
                     // LLM's original call_id, so ToolCallStart was already emitted
                     // during the LLM stream. Re-emitting here would duplicate it.
@@ -745,14 +748,14 @@ pub(super) fn run_stream(
                     // Other routings (e.g. ReplayOriginalTool for PermissionConfirm)
                     // use a new fc_xxx call_id that the LLM never streamed, so we
                     // MUST emit ToolCallStart/Ready here for the frontend to see it.
-                    if let Some(ref inv) = exec_result.pending_frontend_invocation {
+                    if let Some(ref inv) = suspended_call.frontend_invocation {
                         if matches!(inv.routing, crate::contracts::event::interaction::ResponseRouting::UseAsToolResult) {
                             continue;
                         }
                     }
                     for event in pending_tool_events(
-                        interaction,
-                        exec_result.pending_frontend_invocation.as_ref(),
+                        &suspended_call.interaction,
+                        suspended_call.frontend_invocation.as_ref(),
                     ) {
                         yield emitter.emit_existing(event);
                     }
@@ -807,7 +810,10 @@ pub(super) fn run_stream(
 
             // Emit non-pending tool results (pending ones pause the run).
             for exec_result in &results {
-                if exec_result.pending_interaction.is_none() {
+                if !matches!(
+                    exec_result.outcome,
+                    crate::contracts::ToolCallOutcome::Suspended
+                ) {
                     yield emitter.emit_existing(AgentEvent::ToolCallDone {
                         id: exec_result.execution.call.id.clone(),
                         result: exec_result.execution.result.clone(),
@@ -824,7 +830,9 @@ pub(super) fn run_stream(
 
             // If ALL tools are suspended (no completed results), terminate immediately.
             if has_suspended_calls(&run_ctx) {
-                let has_completed = results.iter().any(|r| r.pending_interaction.is_none());
+                let has_completed = results.iter().any(|r| {
+                    !matches!(r.outcome, crate::contracts::ToolCallOutcome::Suspended)
+                });
                 if !has_completed {
                     finish_run!(TerminationReason::PendingInteraction, None);
                 }

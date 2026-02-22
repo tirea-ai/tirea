@@ -412,7 +412,7 @@ fn test_tool_result_error() {
 
 #[test]
 fn test_tool_result_pending() {
-    let result = ToolResult::pending("my_tool", "Waiting for user input");
+    let result = ToolResult::suspended("my_tool", "Waiting for user input");
 
     assert!(result.is_pending());
     assert!(!result.is_success());
@@ -3559,7 +3559,7 @@ impl Tool for ConfirmationTool {
                 json!({"status": "executed"}),
             ))
         } else {
-            Ok(ToolResult::pending(
+            Ok(ToolResult::suspended(
                 "dangerous_action",
                 "This action requires confirmation. Please confirm to proceed.",
             ))
@@ -9412,7 +9412,7 @@ fn test_tool_result_with_pending_status() {
 
     let done = AgentEvent::ToolCallDone {
         id: "call_1".into(),
-        result: ToolResult::pending("longRunningTask", "Task queued, check back later"),
+        result: ToolResult::suspended("longRunningTask", "Task queued, check back later"),
         patch: None,
         message_id: String::new(),
     };

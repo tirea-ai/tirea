@@ -705,28 +705,11 @@ async fn drain_run_start_outbox_and_replay(
             message_id: replay_msg_id,
         });
 
-        if let Some(new_interaction) = replay_result.pending_interaction {
-            let new_frontend_invocation = replay_result.pending_frontend_invocation.clone();
+        if let Some(suspended_call) = replay_result.suspended_call.clone() {
             let state = run_ctx
                 .snapshot()
                 .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-            let call_id = new_frontend_invocation
-                .as_ref()
-                .map(|inv| inv.call_id.clone())
-                .unwrap_or_else(|| new_interaction.id.clone());
-            let tool_name = new_frontend_invocation
-                .as_ref()
-                .map(|inv| inv.tool_name.clone())
-                .unwrap_or_default();
-            let patch = set_agent_suspended_calls(
-                &state,
-                vec![SuspendedCall {
-                    call_id,
-                    tool_name,
-                    interaction: new_interaction.clone(),
-                    frontend_invocation: new_frontend_invocation.clone(),
-                }],
-            )?;
+            let patch = set_agent_suspended_calls(&state, vec![suspended_call.clone()])?;
             if !patch.patch().is_empty() {
                 run_ctx.add_thread_patch(patch);
             }
@@ -741,7 +724,10 @@ async fn drain_run_start_outbox_and_replay(
                     run_ctx.add_thread_patch(replay_patch);
                 }
             }
-            for event in pending_tool_events(&new_interaction, new_frontend_invocation.as_ref()) {
+            for event in pending_tool_events(
+                &suspended_call.interaction,
+                suspended_call.frontend_invocation.as_ref(),
+            ) {
                 events.push(event);
             }
             let snapshot = run_ctx
@@ -1498,7 +1484,9 @@ pub async fn run_loop(
 
         // If ALL tools are suspended (no completed results), terminate immediately.
         if has_suspended_calls(&run_ctx) {
-            let has_completed = results.iter().any(|r| r.pending_interaction.is_none());
+            let has_completed = results
+                .iter()
+                .any(|r| !matches!(r.outcome, crate::contracts::ToolCallOutcome::Suspended));
             if !has_completed {
                 terminate_run!(TerminationReason::PendingInteraction, None, None);
             }

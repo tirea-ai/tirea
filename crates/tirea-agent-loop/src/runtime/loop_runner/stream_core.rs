@@ -39,7 +39,7 @@ pub(super) fn preallocate_tool_result_message_ids(
 ) -> HashMap<String, String> {
     results
         .iter()
-        .filter(|result| result.pending_interaction.is_none())
+        .filter(|result| !matches!(result.outcome, crate::contracts::ToolCallOutcome::Suspended))
         .map(|result| (result.execution.call.id.clone(), gen_message_id()))
         .collect()
 }

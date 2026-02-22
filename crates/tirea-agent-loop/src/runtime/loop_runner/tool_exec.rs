@@ -11,8 +11,8 @@ use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::state_paths::SUSPENDED_TOOL_CALLS_STATE_PATH;
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
-    StreamResult, ToolExecution, ToolExecutionRequest, ToolExecutionResult, ToolExecutor,
-    ToolExecutorError,
+    StreamResult, ToolCallOutcome, ToolExecution, ToolExecutionRequest, ToolExecutionResult,
+    ToolExecutor, ToolExecutorError,
 };
 use crate::contracts::thread::Thread;
 use crate::contracts::thread::{Message, MessageMetadata};
@@ -184,14 +184,11 @@ pub(super) fn apply_tool_results_impl(
     let suspended: Vec<SuspendedCall> = results
         .iter()
         .filter_map(|r| {
-            r.pending_interaction
-                .as_ref()
-                .map(|interaction| SuspendedCall {
-                    call_id: r.execution.call.id.clone(),
-                    tool_name: r.execution.call.name.clone(),
-                    interaction: interaction.clone(),
-                    frontend_invocation: r.pending_frontend_invocation.clone(),
-                })
+            if matches!(r.outcome, ToolCallOutcome::Suspended) {
+                r.suspended_call.clone()
+            } else {
+                None
+            }
         })
         .collect();
 
@@ -212,15 +209,11 @@ pub(super) fn apply_tool_results_impl(
     let mut state_changed = !patches.is_empty();
     run_ctx.add_thread_patches(patches);
 
-    // Build a set of suspended call_ids for message generation.
-    let suspended_ids: std::collections::HashSet<&str> =
-        suspended.iter().map(|s| s.call_id.as_str()).collect();
-
     // Add tool result messages for all executions.
     let tool_messages: Vec<Arc<Message>> = results
         .iter()
         .flat_map(|r| {
-            let is_suspended = suspended_ids.contains(r.execution.call.id.as_str());
+            let is_suspended = matches!(r.outcome, ToolCallOutcome::Suspended);
             let mut msgs = if is_suspended {
                 vec![Message::tool(
                     &r.execution.call.id,
@@ -619,8 +612,7 @@ pub(super) async fn execute_tools_sequential_with_phases(
 
         if results
             .last()
-            .and_then(|r| r.pending_interaction.as_ref())
-            .is_some()
+            .is_some_and(|r| matches!(r.outcome, ToolCallOutcome::Suspended))
         {
             break;
         }
@@ -665,123 +657,129 @@ pub(super) async fn execute_single_tool_with_phases(
     emit_phase_checked(Phase::BeforeToolExecute, &mut step, phase_ctx.plugins).await?;
 
     // Check if blocked or pending
-    let (execution, pending_interaction, pending_frontend_invocation) =
-        if !crate::engine::tool_filter::is_scope_allowed(
-            Some(phase_ctx.run_config),
-            &call.name,
-            SCOPE_ALLOWED_TOOLS_KEY,
-            SCOPE_EXCLUDED_TOOLS_KEY,
-        ) {
-            (
-                ToolExecution {
-                    call: call.clone(),
-                    result: ToolResult::error(
-                        &call.name,
-                        format!("Tool '{}' is not allowed by current policy", call.name),
-                    ),
-                    patch: None,
-                },
-                None,
-                None,
-            )
-        } else if step.tool_blocked() {
-            let reason = step
-                .tool
-                .as_ref()
-                .and_then(|t| t.block_reason.clone())
-                .unwrap_or_else(|| "Blocked by plugin".to_string());
-            (
-                ToolExecution {
-                    call: call.clone(),
-                    result: ToolResult::error(&call.name, reason),
-                    patch: None,
-                },
-                None,
-                None,
-            )
-        } else if tool.is_none() {
-            (
-                ToolExecution {
-                    call: call.clone(),
-                    result: ToolResult::error(
-                        &call.name,
-                        format!("Tool '{}' not found", call.name),
-                    ),
-                    patch: None,
-                },
-                None,
-                None,
-            )
-        } else if let Err(e) = tool.unwrap().validate_args(&call.arguments) {
-            // Argument validation failed — return error to the LLM
-            (
-                ToolExecution {
-                    call: call.clone(),
-                    result: ToolResult::error(&call.name, e.to_string()),
-                    patch: None,
-                },
-                None,
-                None,
-            )
-        } else if step.tool_pending() {
-            let interaction = step
-                .tool
-                .as_ref()
-                .and_then(|t| t.pending_interaction.clone());
-            let frontend_invocation = step
-                .tool
-                .as_ref()
-                .and_then(|t| t.pending_frontend_invocation.clone());
-            (
-                ToolExecution {
-                    call: call.clone(),
-                    result: ToolResult::pending(&call.name, "Waiting for user confirmation"),
-                    patch: None,
-                },
-                interaction,
+    let (execution, outcome, suspended_call) = if !crate::engine::tool_filter::is_scope_allowed(
+        Some(phase_ctx.run_config),
+        &call.name,
+        SCOPE_ALLOWED_TOOLS_KEY,
+        SCOPE_EXCLUDED_TOOLS_KEY,
+    ) {
+        (
+            ToolExecution {
+                call: call.clone(),
+                result: ToolResult::error(
+                    &call.name,
+                    format!("Tool '{}' is not allowed by current policy", call.name),
+                ),
+                patch: None,
+            },
+            ToolCallOutcome::Failed,
+            None,
+        )
+    } else if step.tool_blocked() {
+        let reason = step
+            .tool
+            .as_ref()
+            .and_then(|t| t.block_reason.clone())
+            .unwrap_or_else(|| "Blocked by plugin".to_string());
+        (
+            ToolExecution {
+                call: call.clone(),
+                result: ToolResult::error(&call.name, reason),
+                patch: None,
+            },
+            ToolCallOutcome::Canceled,
+            None,
+        )
+    } else if tool.is_none() {
+        (
+            ToolExecution {
+                call: call.clone(),
+                result: ToolResult::error(&call.name, format!("Tool '{}' not found", call.name)),
+                patch: None,
+            },
+            ToolCallOutcome::Failed,
+            None,
+        )
+    } else if let Err(e) = tool.unwrap().validate_args(&call.arguments) {
+        // Argument validation failed — return error to the LLM
+        (
+            ToolExecution {
+                call: call.clone(),
+                result: ToolResult::error(&call.name, e.to_string()),
+                patch: None,
+            },
+            ToolCallOutcome::Failed,
+            None,
+        )
+    } else if step.tool_pending() {
+        let interaction = step
+            .tool
+            .as_ref()
+            .and_then(|t| t.pending_interaction.clone());
+        let frontend_invocation = step
+            .tool
+            .as_ref()
+            .and_then(|t| t.pending_frontend_invocation.clone());
+        let suspended_interaction = interaction.unwrap_or_else(|| {
+            crate::contracts::Interaction::new(call.id.clone(), format!("tool:{}", call.name))
+                .with_message("Waiting for user confirmation")
+        });
+        (
+            ToolExecution {
+                call: call.clone(),
+                result: ToolResult::suspended(&call.name, "Waiting for user confirmation"),
+                patch: None,
+            },
+            ToolCallOutcome::Suspended,
+            Some(SuspendedCall {
+                call_id: call.id.clone(),
+                tool_name: call.name.clone(),
+                interaction: suspended_interaction,
                 frontend_invocation,
-            )
-        } else {
-            // Execute the tool with its own ToolCallContext
-            let tool_doc = tirea_state::DocCell::new(state.clone());
-            let tool_ops = std::sync::Mutex::new(Vec::new());
-            let tool_pending_msgs = std::sync::Mutex::new(Vec::new());
-            let tool_ctx = crate::contracts::ToolCallContext::new_with_cancellation(
-                &tool_doc,
-                &tool_ops,
-                &call.id,
-                format!("tool:{}", call.name),
-                plugin_scope,
-                &tool_pending_msgs,
-                phase_ctx.activity_manager.clone(),
-                phase_ctx.cancellation_token,
-            );
-            let result = match tool
-                .unwrap()
-                .execute(call.arguments.clone(), &tool_ctx)
-                .await
-            {
-                Ok(r) => r,
-                Err(e) => ToolResult::error(&call.name, e.to_string()),
-            };
-
-            let patch = tool_ctx.take_patch();
-            let patch = if patch.patch().is_empty() {
-                None
-            } else {
-                Some(patch)
-            };
-
-            (
-                ToolExecution {
-                    call: call.clone(),
-                    result,
-                    patch,
-                },
-                None,
-                None,
-            )
+            }),
+        )
+    } else {
+        // Execute the tool with its own ToolCallContext
+        let tool_doc = tirea_state::DocCell::new(state.clone());
+        let tool_ops = std::sync::Mutex::new(Vec::new());
+        let tool_pending_msgs = std::sync::Mutex::new(Vec::new());
+        let tool_ctx = crate::contracts::ToolCallContext::new_with_cancellation(
+            &tool_doc,
+            &tool_ops,
+            &call.id,
+            format!("tool:{}", call.name),
+            plugin_scope,
+            &tool_pending_msgs,
+            phase_ctx.activity_manager.clone(),
+            phase_ctx.cancellation_token,
+        );
+        let result = match tool
+            .unwrap()
+            .execute(call.arguments.clone(), &tool_ctx)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => ToolResult::error(&call.name, e.to_string()),
         };
+
+        let patch = tool_ctx.take_patch();
+        let patch = if patch.patch().is_empty() {
+            None
+        } else {
+            Some(patch)
+        };
+        let outcome = ToolCallOutcome::from_tool_result(&result);
+
+        (
+            ToolExecution {
+                call: call.clone(),
+                result,
+                patch,
+            },
+            outcome,
+            None,
+        )
+    };
 
     // Set tool result in context
     step.set_tool_result(execution.result.clone());
@@ -799,9 +797,9 @@ pub(super) async fn execute_single_tool_with_phases(
 
     Ok(ToolExecutionResult {
         execution,
+        outcome,
+        suspended_call,
         reminders: step.system_reminders.clone(),
-        pending_interaction,
-        pending_frontend_invocation,
         pending_patches,
     })
 }
