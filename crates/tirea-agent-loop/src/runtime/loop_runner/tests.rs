@@ -5156,6 +5156,61 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
 }
 
 #[tokio::test]
+async fn test_golden_run_loop_and_stream_no_plugins_pending_state_alignment() {
+    let base_state = json!({});
+    let pending_patch = set_agent_pending_interaction(
+        &base_state,
+        Interaction::new("leftover_confirm", "confirm").with_message("stale pending"),
+        None,
+    )
+    .expect("failed to seed pending interaction");
+    let thread = Thread::with_initial_state("golden-no-plugin-pending", base_state)
+        .with_patch(pending_patch)
+        .with_message(Message::user("go"));
+    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+
+    let nonstream_provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("done"))]));
+    let nonstream_config =
+        AgentConfig::new("mock").with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>);
+    let nonstream_run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let nonstream_outcome = run_loop(
+        &nonstream_config,
+        tools.clone(),
+        nonstream_run_ctx,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(nonstream_outcome.termination, TerminationReason::PendingInteraction);
+    assert_eq!(nonstream_outcome.stats.llm_calls, 1);
+
+    let (stream_events, stream_thread) = run_mock_stream_with_final_thread(
+        MockStreamProvider::new(vec![MockResponse::text("done")]),
+        AgentConfig::new("mock"),
+        thread,
+        tools,
+    )
+    .await;
+    assert_eq!(
+        extract_termination(&stream_events),
+        Some(TerminationReason::PendingInteraction)
+    );
+    let stream_inference_count = stream_events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::InferenceComplete { .. }))
+        .count();
+    assert_eq!(stream_inference_count, 1);
+
+    assert_eq!(
+        compact_canonical_messages_from_slice(nonstream_outcome.run_ctx.messages()),
+        compact_canonical_messages(&stream_thread),
+        "no-plugin flow should remain semantically aligned between stream and non-stream"
+    );
+}
+
+#[tokio::test]
 async fn test_stream_replay_is_idempotent_across_reruns() {
     struct SkipInferencePlugin;
 
@@ -5290,6 +5345,162 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
         .and_then(|a| a.get("suspended_calls"))
         .and_then(|v| v.as_object());
     assert!(suspended.is_none() || suspended.is_some_and(|calls| calls.is_empty()));
+}
+
+#[tokio::test]
+async fn test_nonstream_replay_is_idempotent_across_reruns() {
+    struct SkipInferencePlugin;
+
+    #[async_trait]
+    impl AgentPlugin for SkipInferencePlugin {
+        fn id(&self) -> &str {
+            "skip_inference_replay_idempotent_nonstream"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::BeforeInference {
+                step.skip_inference = true;
+            }
+        });
+    }
+
+    fn replay_config(provider: Arc<dyn LlmExecutor>) -> AgentConfig {
+        let interaction = tirea_extension_interaction::InteractionPlugin::with_responses(
+            vec!["call_1".to_string()],
+            Vec::new(),
+        );
+        AgentConfig::new("mock")
+            .with_plugin(Arc::new(interaction))
+            .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>)
+            .with_llm_executor(provider)
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counting_tool: Arc<dyn Tool> = Arc::new(CountingEchoTool {
+        calls: calls.clone(),
+    });
+    let tools = tool_map_from_arc([counting_tool]);
+
+    let seed_thread = Thread::with_initial_state(
+        "idempotent-replay-nonstream",
+        json!({
+            "loop_control": {
+                "suspended_calls": {
+                    "call_1": {
+                        "call_id": "call_1",
+                        "tool_name": "counting_echo",
+                        "interaction": {
+                            "id": "call_1",
+                            "action": "tool:counting_echo",
+                            "parameters": {
+                                "source": "permission",
+                                "origin_tool_call": {
+                                    "id": "call_1",
+                                    "name": "counting_echo",
+                                    "arguments": { "message": "approved-run" }
+                                }
+                            }
+                        },
+                        "frontend_invocation": {
+                            "call_id": "call_1",
+                            "tool_name": "PermissionConfirm",
+                            "arguments": {
+                                "tool_name": "counting_echo",
+                                "tool_args": { "message": "approved-run" }
+                            },
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "call_1",
+                                "backend_tool_name": "counting_echo",
+                                "backend_arguments": { "message": "approved-run" }
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    )
+    .with_message(Message::assistant_with_tool_calls(
+        "need permission",
+        vec![crate::contracts::thread::ToolCall::new(
+            "call_1",
+            "counting_echo",
+            json!({"message": "approved-run"}),
+        )],
+    ))
+    .with_message(Message::tool(
+        "call_1",
+        "Tool 'counting_echo' is awaiting approval. Execution paused.",
+    ));
+
+    let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
+    let state_committer: Arc<dyn StateCommitter> =
+        Arc::new(ChannelStateCommitter::new(checkpoint_tx));
+    let first_run_ctx =
+        RunContext::from_thread(&seed_thread, tirea_contract::RunConfig::default()).unwrap();
+    let first_provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("unused"))]));
+    let first_outcome = run_loop(
+        &replay_config(first_provider as Arc<dyn LlmExecutor>),
+        tools.clone(),
+        first_run_ctx,
+        None,
+        Some(state_committer),
+        None,
+    )
+    .await;
+    assert!(
+        first_outcome.run_ctx.messages().iter().any(|message| {
+            message.role == Role::Tool
+                && message.tool_call_id.as_deref() == Some("call_1")
+                && !message.content.contains("awaiting approval")
+        }),
+        "first run should replay and execute pending command"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "replayed command should execute exactly once in first run"
+    );
+
+    let mut persisted_thread = seed_thread.clone();
+    while let Some(changeset) = checkpoint_rx.recv().await {
+        changeset.apply_to(&mut persisted_thread);
+    }
+
+    let second_provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("unused"))]));
+    let second_run_ctx =
+        RunContext::from_thread(&persisted_thread, tirea_contract::RunConfig::default()).unwrap();
+    let second_outcome = run_loop(
+        &replay_config(second_provider as Arc<dyn LlmExecutor>),
+        tools,
+        second_run_ctx,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "second run must not replay already-executed command_id"
+    );
+    let done_tool_messages = second_outcome
+        .run_ctx
+        .messages()
+        .iter()
+        .filter(|message| {
+            message.role == Role::Tool
+                && message.tool_call_id.as_deref() == Some("call_1")
+                && message.content.contains("\"echoed\":\"approved-run\"")
+        })
+        .count();
+    assert_eq!(
+        done_tool_messages, 1,
+        "non-stream rerun must not append duplicate replayed tool result"
+    );
 }
 
 // ========================================================================
@@ -9190,6 +9401,151 @@ async fn test_stream_permission_intercept_emits_tool_call_start_for_frontend() {
 // ---------------------------------------------------------------------------
 // HOL-blocking fix: mixed pending/completed tools should not block entire run
 // ---------------------------------------------------------------------------
+
+/// Non-stream parity for mixed pending/completed tools:
+/// one call is pending, others complete, and loop continues to next inference.
+#[tokio::test]
+async fn test_nonstream_mixed_pending_and_completed_tools_continues_loop() {
+    struct PendingOnlyCall2Plugin;
+
+    #[async_trait]
+    impl AgentPlugin for PendingOnlyCall2Plugin {
+        fn id(&self) -> &str {
+            "pending_only_call_2_nonstream"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::BeforeToolExecute {
+                if let Some(call_id) = step.tool_call_id() {
+                    if call_id == "call_2" {
+                        step.ask(
+                            Interaction::new("confirm_call_2", "confirm")
+                                .with_message("approve delete?"),
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    let mut first = text_chat_response("");
+    first.content = MessageContent::from_tool_calls(vec![
+        genai::chat::ToolCall {
+            call_id: "call_1".to_string(),
+            fn_name: "echo".to_string(),
+            fn_arguments: json!({"message": "a"}),
+            thought_signatures: None,
+        },
+        genai::chat::ToolCall {
+            call_id: "call_2".to_string(),
+            fn_name: "echo".to_string(),
+            fn_arguments: json!({"message": "b"}),
+            thought_signatures: None,
+        },
+        genai::chat::ToolCall {
+            call_id: "call_3".to_string(),
+            fn_name: "echo".to_string(),
+            fn_arguments: json!({"message": "c"}),
+            thought_signatures: None,
+        },
+    ]);
+    let provider = Arc::new(MockChatProvider::new(vec![
+        Ok(first),
+        Ok(text_chat_response("I got results for a and c, delete needs approval")),
+    ]));
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(PendingOnlyCall2Plugin) as Arc<dyn AgentPlugin>)
+        .with_parallel_tools(true)
+        .with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let thread = Thread::new("test").with_message(Message::user("run tools"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+
+    let outcome = run_loop(&config, tool_map([EchoTool]), run_ctx, None, None, None).await;
+    assert_eq!(outcome.termination, TerminationReason::PendingInteraction);
+    assert_eq!(
+        outcome.stats.llm_calls, 2,
+        "non-stream should continue to a second inference round when partial tool results are available"
+    );
+
+    let suspended = outcome.run_ctx.suspended_calls();
+    assert_eq!(suspended.len(), 1, "only call_2 should remain suspended");
+    assert!(suspended.contains_key("call_2"));
+
+    assert!(
+        outcome.run_ctx.messages().iter().any(|message| {
+            message.role == Role::Tool
+                && message.tool_call_id.as_deref() == Some("call_1")
+                && !message.content.contains("awaiting approval")
+        }),
+        "call_1 should produce a completed tool result"
+    );
+    assert!(
+        outcome.run_ctx.messages().iter().any(|message| {
+            message.role == Role::Tool
+                && message.tool_call_id.as_deref() == Some("call_3")
+                && !message.content.contains("awaiting approval")
+        }),
+        "call_3 should produce a completed tool result"
+    );
+}
+
+/// Non-stream single pending tool should enter waiting immediately.
+#[tokio::test]
+async fn test_nonstream_single_pending_tool_enters_waiting() {
+    struct PendingAllToolsPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for PendingAllToolsPlugin {
+        fn id(&self) -> &str {
+            "pending_single_tool_nonstream"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::BeforeToolExecute {
+                if let Some(call_id) = step.tool_call_id() {
+                    step.ask(
+                        Interaction::new(format!("confirm_{call_id}"), "confirm")
+                            .with_message("needs confirmation"),
+                    );
+                }
+            }
+        });
+    }
+
+    let provider = Arc::new(MockChatProvider::new(vec![
+        Ok(tool_call_chat_response_object_args(
+            "call_1",
+            "echo",
+            json!({"message": "a"}),
+        )),
+        Ok(text_chat_response("unused")),
+    ]));
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(PendingAllToolsPlugin) as Arc<dyn AgentPlugin>)
+        .with_parallel_tools(true)
+        .with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let thread = Thread::new("test").with_message(Message::user("run tool"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+
+    let outcome = run_loop(&config, tool_map([EchoTool]), run_ctx, None, None, None).await;
+    assert_eq!(outcome.termination, TerminationReason::PendingInteraction);
+    assert_eq!(
+        outcome.stats.llm_calls, 1,
+        "single pending tool should pause without entering a second inference round"
+    );
+
+    let suspended = outcome.run_ctx.suspended_calls();
+    assert_eq!(suspended.len(), 1);
+    assert!(suspended.contains_key("call_1"));
+    assert!(
+        outcome.run_ctx.messages().iter().any(|message| {
+            message.role == Role::Tool
+                && message.tool_call_id.as_deref() == Some("call_1")
+                && message.content.contains("awaiting approval")
+        }),
+        "pending call should leave a waiting placeholder message"
+    );
+}
 
 /// When some tool calls complete and one is pending, the run should continue
 /// to the next inference round so the LLM sees the completed results. The run
