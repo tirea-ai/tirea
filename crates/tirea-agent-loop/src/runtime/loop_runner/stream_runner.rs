@@ -320,47 +320,24 @@ pub(super) fn run_stream(
         }
 
         loop {
-            let decisions_applied = match drain_decision_channel(&mut run_ctx, &mut decision_rx) {
-                Ok(applied) => applied,
+            let decision_events = match apply_decisions_and_replay(
+                &mut run_ctx,
+                &mut decision_rx,
+                &step_tool_provider,
+                &config,
+                &mut active_tool_descriptors,
+                &pending_delta_commit,
+            )
+            .await
+            {
+                Ok(events) => events,
                 Err(e) => {
                     let message = e.to_string();
                     terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
                 }
             };
-            if decisions_applied {
-                active_tool_snapshot = match resolve_step_tool_snapshot(&step_tool_provider, &run_ctx).await {
-                    Ok(snapshot) => snapshot,
-                    Err(e) => {
-                        let message = e.to_string();
-                        terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
-                    }
-                };
-                active_tool_descriptors = active_tool_snapshot.descriptors.clone();
-
-                let decision_drain = match drain_run_start_outbox_and_replay(
-                    &mut run_ctx,
-                    &active_tool_snapshot.tools,
-                    &config,
-                    &active_tool_descriptors,
-                )
-                .await
-                {
-                    Ok(v) => v,
-                    Err(e) => {
-                        let message = e.to_string();
-                        terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
-                    }
-                };
-
-                if let Err(e) = pending_delta_commit
-                    .commit(&mut run_ctx, CheckpointReason::ToolResultsCommitted, false)
-                    .await
-                {
-                    let message = e.to_string();
-                    terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
-                }
-
-                for event in decision_drain.events {
+            if !decision_events.is_empty() {
+                for event in decision_events {
                     yield emitter.emit_existing(event);
                 }
             }

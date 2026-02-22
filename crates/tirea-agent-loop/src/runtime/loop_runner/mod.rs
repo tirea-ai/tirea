@@ -607,12 +607,12 @@ fn assistant_turn_message(
     msg
 }
 
-pub(super) struct RunStartDrainOutcome {
-    pub(super) events: Vec<AgentEvent>,
-    pub(super) replayed: bool,
+struct RunStartDrainOutcome {
+    events: Vec<AgentEvent>,
+    replayed: bool,
 }
 
-pub(super) async fn drain_run_start_outbox_and_replay(
+async fn drain_run_start_outbox_and_replay(
     run_ctx: &mut RunContext,
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
@@ -945,6 +945,37 @@ pub(super) fn drain_decision_channel(
     Ok(resolved_any)
 }
 
+async fn apply_decisions_and_replay(
+    run_ctx: &mut RunContext,
+    decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
+    step_tool_provider: &Arc<dyn StepToolProvider>,
+    config: &AgentConfig,
+    active_tool_descriptors: &mut Vec<crate::contracts::tool::ToolDescriptor>,
+    pending_delta_commit: &PendingDeltaCommitContext<'_>,
+) -> Result<Vec<AgentEvent>, AgentLoopError> {
+    let decisions_applied = drain_decision_channel(run_ctx, decision_rx)?;
+    if !decisions_applied {
+        return Ok(Vec::new());
+    }
+
+    let decision_tools = resolve_step_tool_snapshot(step_tool_provider, run_ctx).await?;
+    *active_tool_descriptors = decision_tools.descriptors.clone();
+
+    let decision_drain = drain_run_start_outbox_and_replay(
+        run_ctx,
+        &decision_tools.tools,
+        config,
+        active_tool_descriptors,
+    )
+    .await?;
+
+    pending_delta_commit
+        .commit(run_ctx, CheckpointReason::ToolResultsCommitted, false)
+        .await?;
+
+    Ok(decision_drain.events)
+}
+
 /// Run the full agent loop until completion or a stop condition is met.
 ///
 /// This is the primary non-streaming entry point. Tools are passed directly
@@ -1090,53 +1121,21 @@ pub async fn run_loop(
         }
     }
     loop {
-        let decisions_applied = match drain_decision_channel(&mut run_ctx, &mut decision_rx) {
-            Ok(applied) => applied,
-            Err(error) => {
-                terminate_run!(
-                    TerminationReason::Error,
-                    None,
-                    Some(outcome::LoopFailure::State(error.to_string()))
-                );
-            }
-        };
-        if decisions_applied {
-            let decision_tools =
-                match resolve_step_tool_snapshot(&step_tool_provider, &run_ctx).await {
-                    Ok(snapshot) => snapshot,
-                    Err(error) => {
-                        terminate_run!(
-                            TerminationReason::Error,
-                            None,
-                            Some(outcome::LoopFailure::State(error.to_string()))
-                        );
-                    }
-                };
-            active_tool_descriptors = decision_tools.descriptors.clone();
-            if let Err(error) = drain_run_start_outbox_and_replay(
-                &mut run_ctx,
-                &decision_tools.tools,
-                config,
-                &active_tool_descriptors,
-            )
-            .await
-            {
-                terminate_run!(
-                    TerminationReason::Error,
-                    None,
-                    Some(outcome::LoopFailure::State(error.to_string()))
-                );
-            }
-            if let Err(error) = pending_delta_commit
-                .commit(&mut run_ctx, CheckpointReason::ToolResultsCommitted, false)
-                .await
-            {
-                terminate_run!(
-                    TerminationReason::Error,
-                    None,
-                    Some(outcome::LoopFailure::State(error.to_string()))
-                );
-            }
+        if let Err(error) = apply_decisions_and_replay(
+            &mut run_ctx,
+            &mut decision_rx,
+            &step_tool_provider,
+            config,
+            &mut active_tool_descriptors,
+            &pending_delta_commit,
+        )
+        .await
+        {
+            terminate_run!(
+                TerminationReason::Error,
+                None,
+                Some(outcome::LoopFailure::State(error.to_string()))
+            );
         }
 
         if is_run_cancelled(run_cancellation_token.as_ref()) {
