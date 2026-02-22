@@ -13,7 +13,12 @@ fn drain_loop_tick_outbox(run_ctx: &mut RunContext) -> Result<Vec<AgentEvent>, S
         drain_agent_outbox(run_ctx, "agent_outbox_loop_tick").map_err(|e| e.to_string())?;
 
     if !outbox.replay_tool_calls.is_empty() {
-        return Err("unexpected replay_tool_calls outside run start".to_string());
+        let state = run_ctx.snapshot().map_err(|e| e.to_string())?;
+        let patch = enqueue_replay_tool_calls(&state, outbox.replay_tool_calls.clone())
+            .map_err(|e| e.to_string())?;
+        if !patch.patch().is_empty() {
+            run_ctx.add_thread_patch(patch);
+        }
     }
 
     let events = outbox

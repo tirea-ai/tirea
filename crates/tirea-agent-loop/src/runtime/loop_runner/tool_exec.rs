@@ -257,12 +257,20 @@ pub(super) fn apply_tool_results_impl(
     if appended_count > 0 {
         state_changed = true;
     }
+    let existing_suspended = run_ctx.suspended_calls();
 
     if !suspended.is_empty() {
+        let mut merged_suspended = existing_suspended;
+        for call in &suspended {
+            merged_suspended.insert(call.call_id.clone(), call.clone());
+        }
         let state = run_ctx
             .snapshot()
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-        let patch = set_agent_suspended_calls(&state, suspended.clone())?;
+        let patch = set_agent_suspended_calls(
+            &state,
+            merged_suspended.into_values().collect::<Vec<_>>(),
+        )?;
         if !patch.patch().is_empty() {
             state_changed = true;
             run_ctx.add_thread_patch(patch);
@@ -282,21 +290,25 @@ pub(super) fn apply_tool_results_impl(
         });
     }
 
-    // If a previous run left persisted suspended calls, clear them once we successfully
-    // complete tool execution without creating new suspensions.
+    // Keep unresolved suspended calls until explicit resolution. Only clear stale
+    // compatibility fields when no suspended map is present.
     let state = run_ctx
         .snapshot()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let has_persisted = state
+    let has_persisted_suspended = state
+        .get(LoopControlState::PATH)
+        .and_then(|v| v.get("suspended_calls"))
+        .and_then(|v| v.as_object())
+        .is_some_and(|m| !m.is_empty());
+    let has_compat_only = state
         .get(LoopControlState::PATH)
         .and_then(|v| v.get("pending_interaction"))
         .is_some()
         || state
             .get(LoopControlState::PATH)
-            .and_then(|v| v.get("suspended_calls"))
-            .and_then(|v| v.as_object())
-            .is_some_and(|m| !m.is_empty());
-    if has_persisted {
+            .and_then(|v| v.get("pending_frontend_invocation"))
+            .is_some();
+    if !has_persisted_suspended && has_compat_only {
         let patch = clear_all_suspended_calls(&state)?;
         if !patch.patch().is_empty() {
             state_changed = true;

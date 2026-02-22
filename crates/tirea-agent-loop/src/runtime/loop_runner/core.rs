@@ -154,13 +154,9 @@ pub(super) fn set_agent_suspended_calls(
     let ctx = StateContext::new(&doc);
     let lc = ctx.state_of::<LoopControlState>();
 
-    // Backward-compatible views: first entry → pending_interaction/pending_frontend_invocation
-    let first = calls.first();
-    let compat_interaction = first.map(|c| c.interaction.clone());
-    let compat_frontend = first.and_then(|c| c.frontend_invocation.clone());
-
     let map: HashMap<String, SuspendedCall> =
         calls.into_iter().map(|c| (c.call_id.clone(), c)).collect();
+    let (compat_interaction, compat_frontend) = compat_views_from_suspended_map(&map);
     lc.set_suspended_calls(map).map_err(|e| {
         AgentLoopError::StateError(format!("failed to set loop_control.suspended_calls: {e}"))
     })?;
@@ -434,6 +430,41 @@ pub(super) fn enqueue_interaction_resolution(
         ));
     }
 
+    Ok(TrackedPatch::new(patch).with_source("agent_loop"))
+}
+
+pub(super) fn enqueue_replay_tool_calls(
+    state: &Value,
+    replay_calls: Vec<crate::contracts::thread::ToolCall>,
+) -> Result<TrackedPatch, AgentLoopError> {
+    if replay_calls.is_empty() {
+        return Ok(TrackedPatch::new(tirea_state::Patch::new()).with_source("agent_loop"));
+    }
+
+    let mut existing = match state
+        .get(INTERACTION_OUTBOX_STATE_PATH)
+        .and_then(|outbox| outbox.get("replay_tool_calls"))
+        .cloned()
+    {
+        Some(raw) => serde_json::from_value::<Vec<crate::contracts::thread::ToolCall>>(raw)
+            .map_err(|e| {
+                AgentLoopError::StateError(format!(
+                    "failed to parse interaction_outbox.replay_tool_calls: {e}"
+                ))
+            })?,
+        None => Vec::new(),
+    };
+    existing.extend(replay_calls);
+
+    let outbox_path = tirea_state::Path::root().key(INTERACTION_OUTBOX_STATE_PATH);
+    let patch = tirea_state::Patch::new().with_op(tirea_state::Op::set(
+        outbox_path.key("replay_tool_calls"),
+        serde_json::to_value(existing).map_err(|e| {
+            AgentLoopError::StateError(format!(
+                "failed to serialize interaction_outbox.replay_tool_calls: {e}"
+            ))
+        })?,
+    ));
     Ok(TrackedPatch::new(patch).with_source("agent_loop"))
 }
 

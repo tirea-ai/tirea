@@ -94,7 +94,8 @@ use core::build_messages;
 use core::set_agent_pending_interaction;
 use core::{
     build_request_for_filtered_tools, clear_all_suspended_calls, clear_suspended_call,
-    drain_agent_outbox, enqueue_interaction_resolution, inference_inputs_from_step,
+    drain_agent_outbox, enqueue_interaction_resolution, enqueue_replay_tool_calls,
+    inference_inputs_from_step,
     set_agent_suspended_calls, suspended_calls_from_ctx,
 };
 pub use outcome::{tool_map, tool_map_from_arc, AgentLoopError};
@@ -651,7 +652,7 @@ async fn drain_run_start_outbox_and_replay(
     }
 
     let mut replay_state_changed = false;
-    for tool_call in &replay_calls {
+    for (index, tool_call) in replay_calls.iter().enumerate() {
         let state = run_ctx
             .snapshot()
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
@@ -729,6 +730,17 @@ async fn drain_run_start_outbox_and_replay(
             )?;
             if !patch.patch().is_empty() {
                 run_ctx.add_thread_patch(patch);
+            }
+            let remaining_replay_calls = replay_calls
+                .iter()
+                .skip(index + 1)
+                .cloned()
+                .collect::<Vec<_>>();
+            if !remaining_replay_calls.is_empty() {
+                let replay_patch = enqueue_replay_tool_calls(&state, remaining_replay_calls)?;
+                if !replay_patch.patch().is_empty() {
+                    run_ctx.add_thread_patch(replay_patch);
+                }
             }
             for event in pending_tool_events(&new_interaction, new_frontend_invocation.as_ref()) {
                 events.push(event);
