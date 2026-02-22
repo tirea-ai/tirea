@@ -143,6 +143,7 @@ impl AgentOs {
             prepared.run_ctx,
             prepared.cancellation_token,
             prepared.state_committer,
+            None,
         );
         Ok(RunStream {
             thread_id: prepared.thread_id,
@@ -217,6 +218,7 @@ impl AgentOs {
             run_ctx,
             cancellation_token,
             state_committer,
+            None,
         ))
     }
 }

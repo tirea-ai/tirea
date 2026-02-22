@@ -242,7 +242,7 @@ async fn test_unit_converter(
         ));
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default())?;
-    let outcome = run_loop(&config, tools.clone(), run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools.clone(), run_ctx, None, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
     println!("User: Convert 100 miles to kilometers.");
@@ -301,7 +301,7 @@ async fn test_todo_manager_streaming(
 
     print!("User: Add 3 tasks to todo list.\nAssistant: ");
 
-    let mut stream = run_loop_stream(config, tools.clone(), run_ctx, None, None);
+    let mut stream = run_loop_stream(config, tools.clone(), run_ctx, None, None, None);
 
     let mut final_text = String::new();
     while let Some(event) = stream.next().await {
@@ -353,7 +353,7 @@ async fn test_multi_skill(
 
     // Turn 1: Use unit converter
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default())?;
-    let outcome = run_loop(&config, tools.clone(), run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools.clone(), run_ctx, None, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
     println!("Turn 1 - User: Convert 5 pounds to kilograms.");
@@ -366,7 +366,7 @@ async fn test_multi_skill(
          Use the counter to track tasks.",
     )));
 
-    let outcome = run_loop(&config, tools.clone(), run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools.clone(), run_ctx, None, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
     println!("\nTurn 2 - User: Add a task using todo-manager skill.");

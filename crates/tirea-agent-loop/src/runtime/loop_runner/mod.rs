@@ -58,7 +58,7 @@ use crate::contracts::thread::{gen_message_id, Message, MessageMetadata};
 use crate::contracts::tool::Tool;
 use crate::contracts::RunContext;
 use crate::contracts::StopReason;
-use crate::contracts::{AgentEvent, FrontendToolInvocation, Interaction, TerminationReason};
+use crate::contracts::{AgentEvent, FrontendToolInvocation, Interaction, InteractionResponse, TerminationReason};
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
 use crate::engine::stop_conditions::check_stop_policies;
 use crate::runtime::activity::ActivityHub;
@@ -692,6 +692,7 @@ pub async fn run_loop(
     mut run_ctx: RunContext,
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
+    _decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
 ) -> LoopOutcome {
     let executor = llm_executor_for_run(config);
     let mut run_state = RunState::new();
@@ -1080,6 +1081,7 @@ pub fn run_loop_stream(
     run_ctx: RunContext,
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
+    _decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     stream_runner::run_loop_stream_impl(config, tools, run_ctx, cancellation_token, state_committer)
 }

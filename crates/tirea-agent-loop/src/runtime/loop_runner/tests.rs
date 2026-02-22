@@ -2674,7 +2674,7 @@ async fn test_stream_skip_inference_emits_run_end_phase() {
     let tools = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, tools, run_ctx, None, None);
+    let stream = run_loop_stream(config, tools, run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
     // Verify events include RunStart and RunFinish
@@ -2719,7 +2719,7 @@ async fn test_stream_skip_inference_emits_run_start_and_finish() {
     let tools = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, tools, run_ctx, None, None);
+    let stream = run_loop_stream(config, tools, run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
     let event_names: Vec<&str> = events
@@ -2769,7 +2769,7 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
     let tools = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let events = collect_stream_events(run_loop_stream(config, tools, run_ctx, None, None)).await;
+    let events = collect_stream_events(run_loop_stream(config, tools, run_ctx, None, None, None)).await;
 
     assert!(matches!(events.first(), Some(AgentEvent::RunStart { .. })));
     assert!(matches!(
@@ -2849,7 +2849,7 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
     let tools = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let events = collect_stream_events(run_loop_stream(config, tools, run_ctx, None, None)).await;
+    let events = collect_stream_events(run_loop_stream(config, tools, run_ctx, None, None, None)).await;
 
     assert!(matches!(events.first(), Some(AgentEvent::RunStart { .. })));
     assert!(
@@ -3073,7 +3073,7 @@ async fn test_run_loop_permission_approval_replays_tool_and_clears_outbox() {
 
     let tools = tool_map([EchoTool]);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
 
     assert_eq!(outcome.termination, TerminationReason::PluginRequested);
 
@@ -3191,6 +3191,7 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
         run_ctx,
         None,
         Some(committer.clone() as Arc<dyn StateCommitter>),
+        None,
     ))
     .await;
 
@@ -3353,7 +3354,7 @@ async fn test_run_loop_skip_inference_emits_run_end_phase() {
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     // skip_inference in run_loop terminates with PluginRequested (not NaturalEnd)
     assert!(matches!(
         outcome.termination,
@@ -3414,7 +3415,7 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     assert!(matches!(
         outcome.termination,
         TerminationReason::PendingInteraction
@@ -3454,7 +3455,7 @@ async fn test_run_loop_auto_generated_run_id_is_rfc4122_uuid_v7() {
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     // skip_inference in run_loop terminates with PluginRequested
     assert!(matches!(
         outcome.termination,
@@ -3492,7 +3493,7 @@ async fn test_run_loop_phase_sequence_on_skip_inference() {
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     // skip_inference in run_loop terminates with PluginRequested
     assert!(matches!(
         outcome.termination,
@@ -3536,7 +3537,7 @@ async fn test_run_loop_rejects_skip_inference_mutation_outside_before_inference(
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     assert!(
         matches!(outcome.termination, TerminationReason::Error),
         "expected phase mutation state error, got: {:?}",
@@ -3609,7 +3610,7 @@ async fn test_run_loop_rejects_prompt_context_mutation_outside_before_inference(
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     assert!(
         matches!(outcome.termination, TerminationReason::Error),
         "expected phase mutation state error, got: {:?}",
@@ -3660,7 +3661,7 @@ async fn test_run_loop_rejects_non_append_prompt_context_mutation_in_before_infe
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     assert!(
         matches!(outcome.termination, TerminationReason::Error),
         "expected phase mutation state error, got: {:?}",
@@ -3834,7 +3835,7 @@ async fn test_stream_run_finish_has_matching_thread_id() {
     let tools = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, tools, run_ctx, None, None);
+    let stream = run_loop_stream(config, tools, run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
     // Extract thread_id from RunStart and RunFinish
@@ -4032,7 +4033,7 @@ async fn test_nonstream_uses_fallback_model_after_primary_failures() {
     let thread = Thread::new("test").with_message(Message::user("go"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
-    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None).await;
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
     assert_eq!(outcome.termination, TerminationReason::NaturalEnd);
     assert_eq!(outcome.response.as_deref(), Some("ok"));
@@ -4096,7 +4097,7 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
     let thread = Thread::new("test").with_message(Message::user("go"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
-    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None).await;
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
     assert_eq!(outcome.termination, TerminationReason::Error);
     assert!(
         matches!(outcome.failure, Some(outcome::LoopFailure::Llm(ref message)) if message.contains("429")),
@@ -4132,7 +4133,7 @@ async fn test_nonstream_stop_timeout_condition_triggers_on_natural_end_path() {
     let thread = Thread::new("test").with_message(Message::user("go"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
-    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None).await;
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
     assert_eq!(
         outcome.termination,
@@ -4165,7 +4166,7 @@ async fn test_nonstream_cancellation_token_during_inference() {
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
     let handle = tokio::spawn(async move {
-        run_loop(&config, HashMap::new(), run_ctx, Some(token_for_run), None).await
+        run_loop(&config, HashMap::new(), run_ctx, Some(token_for_run), None, None).await
     });
 
     tokio::time::timeout(std::time::Duration::from_secs(1), ready.notified())
@@ -4267,7 +4268,7 @@ async fn test_nonstream_loop_outcome_collects_usage_and_stats() {
     let thread = Thread::new("usage-stats").with_message(Message::user("go"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
-    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None).await;
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
     assert_eq!(outcome.termination, TerminationReason::NaturalEnd);
     assert_eq!(outcome.response.as_deref(), Some("done"));
@@ -4303,7 +4304,7 @@ async fn test_nonstream_loop_outcome_llm_error_tracks_attempts_and_failure_kind(
     let thread = Thread::new("error-stats").with_message(Message::user("go"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
-    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None).await;
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
     assert_eq!(outcome.termination, TerminationReason::Error);
     assert_eq!(outcome.stats.llm_calls, 2);
@@ -4343,7 +4344,7 @@ async fn test_nonstream_cancellation_token_during_tool_execution() {
 
     let handle =
         tokio::spawn(
-            async move { run_loop(&config, tools, run_ctx, Some(token_for_run), None).await },
+            async move { run_loop(&config, tools, run_ctx, Some(token_for_run), None, None).await },
         );
 
     tokio::time::timeout(std::time::Duration::from_secs(2), ready.notified())
@@ -4435,6 +4436,7 @@ async fn test_nonstream_inference_abort_message_persisted_and_visible_next_run()
             run_ctx,
             Some(token_for_run),
             Some(state_committer),
+            None,
         )
         .await
     });
@@ -4473,7 +4475,7 @@ async fn test_nonstream_inference_abort_message_persisted_and_visible_next_run()
         .with_llm_executor(resume_provider as Arc<dyn LlmExecutor>);
     let resume_run_ctx =
         RunContext::from_thread(&persisted_thread, tirea_contract::RunConfig::default()).unwrap();
-    let second_outcome = run_loop(&resume_config, HashMap::new(), resume_run_ctx, None, None).await;
+    let second_outcome = run_loop(&resume_config, HashMap::new(), resume_run_ctx, None, None, None).await;
 
     assert_eq!(second_outcome.termination, TerminationReason::NaturalEnd);
     assert!(
@@ -4546,6 +4548,7 @@ async fn test_nonstream_tool_abort_message_persisted_and_visible_next_run() {
             run_ctx,
             Some(token_for_run),
             Some(state_committer),
+            None,
         )
         .await
     });
@@ -4583,7 +4586,7 @@ async fn test_nonstream_tool_abort_message_persisted_and_visible_next_run() {
         .with_llm_executor(resume_provider as Arc<dyn LlmExecutor>);
     let resume_run_ctx =
         RunContext::from_thread(&persisted_thread, tirea_contract::RunConfig::default()).unwrap();
-    let second_outcome = run_loop(&resume_config, HashMap::new(), resume_run_ctx, None, None).await;
+    let second_outcome = run_loop(&resume_config, HashMap::new(), resume_run_ctx, None, None, None).await;
 
     assert_eq!(second_outcome.termination, TerminationReason::NaturalEnd);
     assert!(
@@ -4608,7 +4611,7 @@ async fn test_golden_run_loop_and_stream_natural_end_alignment() {
         AgentConfig::new("mock").with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
-    let nonstream_outcome = run_loop(&nonstream_config, tools.clone(), run_ctx, None, None).await;
+    let nonstream_outcome = run_loop(&nonstream_config, tools.clone(), run_ctx, None, None, None).await;
     assert_eq!(nonstream_outcome.termination, TerminationReason::NaturalEnd);
     let nonstream_response = nonstream_outcome.response.clone().unwrap_or_default();
 
@@ -4657,6 +4660,7 @@ async fn test_golden_run_loop_and_stream_cancelled_alignment() {
         tools.clone(),
         run_ctx,
         Some(nonstream_token),
+        None,
         None,
     )
     .await;
@@ -4726,7 +4730,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
         .with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
-    let nonstream_outcome = run_loop(&nonstream_config, tools.clone(), run_ctx, None, None).await;
+    let nonstream_outcome = run_loop(&nonstream_config, tools.clone(), run_ctx, None, None, None).await;
     assert_eq!(
         nonstream_outcome.termination,
         TerminationReason::PendingInteraction
@@ -5090,7 +5094,7 @@ async fn run_mock_stream(
 ) -> Vec<AgentEvent> {
     let config = config.with_llm_executor(Arc::new(provider));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, tools, run_ctx, None, None);
+    let stream = run_loop_stream(config, tools, run_ctx, None, None, None);
     collect_stream_events(stream).await
 }
 
@@ -5160,7 +5164,7 @@ async fn test_stream_retries_startup_error_then_succeeds() {
 
     let config = config.with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, tools, run_ctx, None, None);
+    let stream = run_loop_stream(config, tools, run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
     assert_eq!(
@@ -5187,7 +5191,7 @@ async fn test_stream_uses_fallback_model_after_primary_failures() {
 
     let config = config.with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, tools, run_ctx, None, None);
+    let stream = run_loop_stream(config, tools, run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
     assert_eq!(
@@ -5234,7 +5238,7 @@ async fn run_mock_stream_with_final_thread_with_context(
     let committer: Arc<dyn StateCommitter> = Arc::new(ChannelStateCommitter::new(checkpoint_tx));
     let config = config.with_llm_executor(Arc::new(provider));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, tools, run_ctx, cancellation_token, Some(committer));
+    let stream = run_loop_stream(config, tools, run_ctx, cancellation_token, Some(committer), None);
     let events = collect_stream_events(stream).await;
     while let Some(changeset) = checkpoint_rx.recv().await {
         changeset.apply_to(&mut final_thread);
@@ -5448,6 +5452,7 @@ async fn test_stream_state_commit_failure_on_assistant_turn_emits_error_and_run_
         run_ctx,
         None,
         Some(committer.clone() as Arc<dyn StateCommitter>),
+        None,
     );
     let events = collect_stream_events(stream).await;
 
@@ -5484,6 +5489,7 @@ async fn test_nonstream_checkpoints_include_run_start_side_effects() {
         run_ctx,
         None,
         Some(committer.clone() as Arc<dyn StateCommitter>),
+        None,
     )
     .await;
 
@@ -5515,6 +5521,7 @@ async fn test_nonstream_checkpoints_include_run_start_replay() {
         run_ctx,
         None,
         Some(committer.clone() as Arc<dyn StateCommitter>),
+        None,
     )
     .await;
 
@@ -5547,6 +5554,7 @@ async fn test_nonstream_state_commit_failure_on_assistant_turn_returns_error() {
         run_ctx,
         None,
         Some(committer.clone() as Arc<dyn StateCommitter>),
+        None,
     )
     .await;
 
@@ -5581,6 +5589,7 @@ async fn test_stream_state_commit_failure_on_tool_results_emits_error_before_too
         run_ctx,
         None,
         Some(committer.clone() as Arc<dyn StateCommitter>),
+        None,
     );
     let events = collect_stream_events(stream).await;
 
@@ -5623,6 +5632,7 @@ async fn test_stream_run_finished_commit_failure_emits_error_without_run_finish_
         run_ctx,
         None,
         Some(committer.clone() as Arc<dyn StateCommitter>),
+        None,
     );
     let events = collect_stream_events(stream).await;
 
@@ -5724,6 +5734,7 @@ async fn test_stream_skip_inference_force_commits_run_finished_delta() {
         run_ctx,
         None,
         Some(committer.clone() as Arc<dyn StateCommitter>),
+        None,
     );
     let events = collect_stream_events(stream).await;
 
@@ -5842,7 +5853,7 @@ async fn test_stream_replay_state_failure_emits_error() {
 
     let provider = MockStreamProvider::new(vec![MockResponse::text("should not run")]);
     let config = config.with_llm_executor(Arc::new(provider));
-    let stream = run_loop_stream(config, tools, run_ctx, None, None);
+    let stream = run_loop_stream(config, tools, run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
     assert!(
@@ -6340,7 +6351,7 @@ async fn test_stop_cancellation_token() {
 
     let config = config.with_llm_executor(Arc::new(provider) as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, tools, run_ctx, Some(token), None);
+    let stream = run_loop_stream(config, tools, run_ctx, Some(token), None, None);
     let events = collect_stream_events(stream).await;
     assert_eq!(
         extract_termination(&events),
@@ -6401,6 +6412,7 @@ async fn test_stop_cancellation_token_during_inference_stream() {
         run_ctx,
         Some(token.clone()),
         Some(state_committer),
+        None,
     );
 
     let collect_task = tokio::spawn(async move { collect_stream_events(stream).await });
@@ -6458,7 +6470,7 @@ async fn test_run_loop_with_context_cancellation_token() {
     token.cancel();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let outcome = run_loop(&config, tools, run_ctx, Some(token), None).await;
+    let outcome = run_loop(&config, tools, run_ctx, Some(token), None, None).await;
 
     assert!(
         matches!(outcome.termination, TerminationReason::Cancelled),
@@ -7280,7 +7292,7 @@ async fn test_run_step_skip_inference_returns_empty_result_without_assistant_mes
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
 
     // skip_inference in run_loop terminates with PluginRequested
     assert!(matches!(
@@ -7336,7 +7348,7 @@ async fn test_run_step_skip_inference_with_pending_state_returns_pending_interac
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     assert!(matches!(
         outcome.termination,
         TerminationReason::PendingInteraction
@@ -7457,6 +7469,7 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
         run_ctx,
         None,
         Some(state_committer),
+        None,
     ))
     .await;
 
@@ -7539,6 +7552,7 @@ async fn test_stop_cancellation_token_during_tool_execution_stream() {
         run_ctx,
         Some(token.clone()),
         Some(state_committer),
+        None,
     );
 
     let collector = tokio::spawn(async move { collect_stream_events(stream).await });
@@ -7946,7 +7960,7 @@ async fn test_run_loop_patches_accumulate_across_steps() {
 
     let config = AgentConfig::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
 
     assert!(
         matches!(outcome.termination, TerminationReason::NaturalEnd),
@@ -8889,7 +8903,7 @@ async fn test_stream_mixed_pending_persists_interaction_state() {
     let config = config.with_llm_executor(Arc::new(provider));
     let run_ctx =
         RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, tools, run_ctx, None, None);
+    let stream = run_loop_stream(config, tools, run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
     // Run should terminate with PendingInteraction.
@@ -9042,7 +9056,7 @@ async fn test_run_loop_rejects_termination_request_mutation_outside_before_infer
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     assert!(
         matches!(outcome.termination, TerminationReason::Error),
         "expected phase mutation state error, got: {:?}",
@@ -9125,7 +9139,7 @@ async fn test_run_loop_plugin_termination_request_stops_loop() {
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
 
     assert_eq!(
         outcome.termination,

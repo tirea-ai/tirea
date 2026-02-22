@@ -403,7 +403,7 @@ async fn test_simple_conversation() -> Result<(), Box<dyn std::error::Error>> {
         .with_message(Message::user("What is 2 + 2? Reply briefly."));
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default())?;
-    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None).await;
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
     println!("User: What is 2 + 2? Reply briefly.");
@@ -423,7 +423,7 @@ async fn test_calculator(
         .with_message(Message::user("Please calculate 15 * 7 + 23 using the calculator tool."));
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default())?;
-    let outcome = run_loop(&config, tools.clone(), run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools.clone(), run_ctx, None, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
     println!("User: Please calculate 15 * 7 + 23 using the calculator tool.");
@@ -457,7 +457,7 @@ async fn test_streaming() -> Result<(), Box<dyn std::error::Error>> {
     println!("User: Count from 1 to 5, one number per line.");
     print!("Assistant: ");
 
-    let mut stream = run_loop_stream(config, HashMap::new(), run_ctx, None, None);
+    let mut stream = run_loop_stream(config, HashMap::new(), run_ctx, None, None, None);
 
     while let Some(event) = stream.next().await {
         match event {
@@ -495,7 +495,7 @@ async fn test_counter_with_state() -> Result<(), Box<dyn std::error::Error>> {
         .with_message(Message::user("Please increment the counter by 5, then increment it by 3 more. Tell me the final value."));
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default())?;
-    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
     println!("User: Please increment the counter by 5, then increment it by 3 more. Tell me the final value.");
@@ -527,7 +527,7 @@ async fn test_multi_run() -> Result<(), Box<dyn std::error::Error>> {
         .with_message(Message::user("My name is Alice. Remember it."));
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default())?;
-    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None).await;
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
     println!("Run 1 - User: My name is Alice. Remember it.");
@@ -537,7 +537,7 @@ async fn test_multi_run() -> Result<(), Box<dyn std::error::Error>> {
     let mut run_ctx = outcome.run_ctx;
     run_ctx.add_message(Arc::new(Message::user("What is my name?")));
 
-    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None).await;
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
     println!("Run 2 - User: What is my name?");
@@ -547,7 +547,7 @@ async fn test_multi_run() -> Result<(), Box<dyn std::error::Error>> {
     let mut run_ctx = outcome.run_ctx;
     run_ctx.add_message(Arc::new(Message::user("Say my name backwards.")));
 
-    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None).await;
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
     println!("Run 3 - User: Say my name backwards.");
@@ -585,7 +585,7 @@ async fn test_multi_run_with_tools() -> Result<(), Box<dyn std::error::Error>> {
 
     // Run 1: Get current value
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default())?;
-    let outcome = run_loop(&config, tools.clone(), run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools.clone(), run_ctx, None, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
     println!("Run 1 - User: What is the current counter value?");
@@ -595,7 +595,7 @@ async fn test_multi_run_with_tools() -> Result<(), Box<dyn std::error::Error>> {
     let mut run_ctx = outcome.run_ctx;
     run_ctx.add_message(Arc::new(Message::user("Add 5 to it.")));
 
-    let outcome = run_loop(&config, tools.clone(), run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools.clone(), run_ctx, None, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
     println!("Run 2 - User: Add 5 to it.");
@@ -605,7 +605,7 @@ async fn test_multi_run_with_tools() -> Result<(), Box<dyn std::error::Error>> {
     let mut run_ctx = outcome.run_ctx;
     run_ctx.add_message(Arc::new(Message::user("Now subtract 3.")));
 
-    let outcome = run_loop(&config, tools.clone(), run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools.clone(), run_ctx, None, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
     println!("Run 3 - User: Now subtract 3.");
@@ -615,7 +615,7 @@ async fn test_multi_run_with_tools() -> Result<(), Box<dyn std::error::Error>> {
     let mut run_ctx = outcome.run_ctx;
     run_ctx.add_message(Arc::new(Message::user("What is the final value?")));
 
-    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
     println!("Run 4 - User: What is the final value?");
@@ -674,7 +674,7 @@ async fn test_session_persistence() -> Result<(), Box<dyn std::error::Error>> {
             ));
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default())?;
-    let outcome = run_loop(&config, tools.clone(), run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools.clone(), run_ctx, None, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
     println!("User: My favorite number is 42. Remember it. Also, what is the counter?");
@@ -686,7 +686,7 @@ async fn test_session_persistence() -> Result<(), Box<dyn std::error::Error>> {
         "Increment the counter by my favorite number.",
     )));
 
-    let outcome = run_loop(&config, tools.clone(), run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools.clone(), run_ctx, None, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
     println!("User: Increment the counter by my favorite number.");
@@ -744,7 +744,7 @@ async fn test_session_persistence() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     let run_ctx = RunContext::from_thread(&loaded_thread, tirea_contract::RunConfig::default())?;
-    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
     println!("\nUser: What was my favorite number? And what is the counter now?");
@@ -812,7 +812,7 @@ async fn test_parallel_tool_calls() -> Result<(), Box<dyn std::error::Error>> {
         ));
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default())?;
-    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
     println!("User: Calculate 15*8+20 AND get Tokyo weather (at the same time)");
@@ -874,7 +874,7 @@ async fn test_max_rounds_limit() -> Result<(), Box<dyn std::error::Error>> {
         ));
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default())?;
-    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
     println!("User: Check the status (triggers potential infinite loop)");
@@ -921,7 +921,7 @@ async fn test_tool_failure_recovery() -> Result<(), Box<dyn std::error::Error>> 
         ));
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default())?;
-    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
     println!("User: Process 'hello world' with unreliable API");
@@ -976,7 +976,7 @@ async fn test_session_snapshot() -> Result<(), Box<dyn std::error::Error>> {
             ));
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default())?;
-    let outcome = run_loop(&config, tools.clone(), run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools.clone(), run_ctx, None, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
     println!("After increments:");
@@ -1009,7 +1009,7 @@ async fn test_session_snapshot() -> Result<(), Box<dyn std::error::Error>> {
         snapshot_thread.with_message(Message::user("What is the counter now? Then add 5 more."));
 
     let run_ctx = RunContext::from_thread(&snapshot_thread, tirea_contract::RunConfig::default())?;
-    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
     let final_state = outcome.run_ctx.snapshot()?;
@@ -1045,7 +1045,7 @@ async fn test_state_replay() -> Result<(), Box<dyn std::error::Error>> {
 
     // Run 1: Set counter to 10
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default())?;
-    let outcome = run_loop(&config, tools.clone(), run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools.clone(), run_ctx, None, None, None).await;
 
     let state_after_1 = outcome.run_ctx.snapshot()?;
     let patches_after_1 = outcome.run_ctx.thread_patches().len();
@@ -1058,7 +1058,7 @@ async fn test_state_replay() -> Result<(), Box<dyn std::error::Error>> {
     let mut run_ctx = outcome.run_ctx;
     run_ctx.add_message(Arc::new(Message::user("Now add 20 to the counter.")));
 
-    let outcome = run_loop(&config, tools.clone(), run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools.clone(), run_ctx, None, None, None).await;
 
     let state_after_2 = outcome.run_ctx.snapshot()?;
     let patches_after_2 = outcome.run_ctx.thread_patches().len();
@@ -1071,7 +1071,7 @@ async fn test_state_replay() -> Result<(), Box<dyn std::error::Error>> {
     let mut run_ctx = outcome.run_ctx;
     run_ctx.add_message(Arc::new(Message::user("Add 30 more.")));
 
-    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+    let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
 
     let state_after_3 = outcome.run_ctx.snapshot()?;
     let patches_after_3 = outcome.run_ctx.thread_patches().len();
@@ -1161,7 +1161,7 @@ async fn test_long_conversation() -> Result<(), Box<dyn std::error::Error>> {
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default())?;
 
     let request_start = std::time::Instant::now();
-    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None).await;
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
     let request_time = request_start.elapsed();
 
     let response = outcome.response.as_deref().unwrap_or_default();
