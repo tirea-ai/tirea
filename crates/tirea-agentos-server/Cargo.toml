@@ -47,4 +47,3 @@ opentelemetry_sdk = { version = "0.28", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.28", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace"] }
 tracing-opentelemetry = "0.29"
 tracing-subscriber = { version = "0.3", features = ["registry"] }
-phoenix-test-helpers = { version = "0.1.0", path = "../../e2e/phoenix/test-helpers" }
