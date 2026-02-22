@@ -111,25 +111,41 @@ pub enum StepOutcome {
     Pending(Interaction),
 }
 
-/// Tool gate decision for `BeforeToolExecute`.
+/// Suspension payload for `ToolGateDecision::Suspend`.
 #[derive(Debug, Clone, PartialEq)]
-pub enum ToolDecision {
-    Proceed,
-    Deny { reason: String },
-    Ask { request: InteractionRequest },
+pub struct SuspendTicket {
+    pub interaction: Interaction,
+    pub frontend_invocation: Option<FrontendToolInvocation>,
 }
 
-/// Interaction request model for ask decisions.
+impl SuspendTicket {
+    pub fn new(interaction: Interaction) -> Self {
+        Self {
+            interaction,
+            frontend_invocation: None,
+        }
+    }
+
+    pub fn from_frontend_invocation(frontend_invocation: FrontendToolInvocation) -> Self {
+        let interaction = frontend_invocation.to_interaction();
+        Self {
+            interaction,
+            frontend_invocation: Some(frontend_invocation),
+        }
+    }
+
+    pub fn with_frontend_invocation(mut self, frontend_invocation: FrontendToolInvocation) -> Self {
+        self.frontend_invocation = Some(frontend_invocation);
+        self
+    }
+}
+
+/// Tool gate decision for `BeforeToolExecute`.
 #[derive(Debug, Clone, PartialEq)]
-pub enum InteractionRequest {
-    Confirm {
-        interaction: Interaction,
-    },
-    FrontendTool {
-        tool_name: String,
-        arguments: Value,
-        routing: ResponseRouting,
-    },
+pub enum ToolGateDecision {
+    Proceed,
+    Suspend(SuspendTicket),
+    Cancel { reason: String },
 }
 
 /// Context for the currently executing tool.
@@ -403,8 +419,8 @@ impl<'a> StepContext<'a> {
 
     /// Mark the current tool as explicitly allowed.
     ///
-    /// This clears any prior deny/pending state.
-    pub fn allow(&mut self) {
+    /// This clears any prior cancel/suspend state.
+    pub fn proceed(&mut self) {
         if let Some(ref mut tool) = self.tool {
             tool.blocked = false;
             tool.block_reason = None;
@@ -414,10 +430,10 @@ impl<'a> StepContext<'a> {
         }
     }
 
-    /// Mark the current tool as denied with a reason.
+    /// Mark the current tool as canceled with a reason.
     ///
-    /// This clears any prior pending state.
-    pub fn deny(&mut self, reason: impl Into<String>) {
+    /// This clears any prior suspend state.
+    pub fn cancel(&mut self, reason: impl Into<String>) {
         if let Some(ref mut tool) = self.tool {
             tool.blocked = true;
             tool.block_reason = Some(reason.into());
@@ -427,29 +443,37 @@ impl<'a> StepContext<'a> {
         }
     }
 
-    /// Mark the current tool as requiring user confirmation.
+    /// Mark the current tool as suspended with a ticket.
     ///
-    /// This clears any prior deny state.
-    pub fn ask(&mut self, interaction: Interaction) {
+    /// This clears any prior cancel state.
+    pub fn suspend(&mut self, ticket: SuspendTicket) {
         if let Some(ref mut tool) = self.tool {
             tool.blocked = false;
             tool.block_reason = None;
             tool.pending = true;
-            tool.pending_interaction = Some(interaction);
-            tool.pending_frontend_invocation = None;
+            tool.pending_interaction = Some(ticket.interaction);
+            tool.pending_frontend_invocation = ticket.frontend_invocation;
         }
     }
 
-    /// Ask a frontend tool, suspending the current tool execution.
+    /// Internal compat helper while migrating plugins to gate decisions.
+    pub fn allow(&mut self) {
+        self.proceed();
+    }
+
+    /// Internal compat helper while migrating plugins to gate decisions.
+    pub fn deny(&mut self, reason: impl Into<String>) {
+        self.cancel(reason);
+    }
+
+    /// Internal compat helper while migrating plugins to gate decisions.
+    pub fn ask(&mut self, interaction: Interaction) {
+        self.suspend(SuspendTicket::new(interaction));
+    }
+
+    /// Internal compat helper while migrating plugins to `SuspendTicket`.
     ///
-    /// This is the first-class API for calling frontend tools. It:
-    /// - Auto-determines the invocation origin from the current tool context
-    /// - Generates a unique `call_id` for indirect invocations (ReplayOriginalTool),
-    ///   or reuses the current tool call ID for direct invocations (UseAsToolResult)
-    /// - Sets the tool to pending with both the structured `FrontendToolInvocation`
-    ///   and a backward-compatible `Interaction`
-    ///
-    /// Returns the generated `call_id`, or `None` if no tool context is active.
+    /// Returns the generated frontend call id when tool context is present.
     pub fn ask_frontend_tool(
         &mut self,
         tool_name: impl Into<String>,
@@ -458,16 +482,10 @@ impl<'a> StepContext<'a> {
     ) -> Option<String> {
         let tool = self.tool.as_mut()?;
         let tool_name = tool_name.into();
-
-        // Determine call_id: for UseAsToolResult the frontend call IS the backend
-        // call, so reuse the same ID. For other strategies, generate a new ID to
-        // avoid conflating frontend and backend call identities.
         let call_id = match &routing {
             ResponseRouting::UseAsToolResult => tool.id.clone(),
             _ => format!("fc_{}", Uuid::new_v4().simple()),
         };
-
-        // Auto-determine origin from current tool context.
         let origin = match &routing {
             ResponseRouting::UseAsToolResult => InvocationOrigin::PluginInitiated {
                 plugin_id: "agui_frontend_tools".to_string(),
@@ -478,19 +496,9 @@ impl<'a> StepContext<'a> {
                 backend_arguments: tool.args.clone(),
             },
         };
-
         let invocation =
-            FrontendToolInvocation::new(&call_id, &tool_name, arguments.clone(), origin, routing);
-
-        // Set backward-compatible Interaction from the invocation.
-        let interaction = invocation.to_interaction();
-
-        tool.blocked = false;
-        tool.block_reason = None;
-        tool.pending = true;
-        tool.pending_interaction = Some(interaction);
-        tool.pending_frontend_invocation = Some(invocation);
-
+            FrontendToolInvocation::new(&call_id, &tool_name, arguments, origin, routing);
+        self.suspend(SuspendTicket::from_frontend_invocation(invocation));
         Some(call_id)
     }
 
@@ -668,58 +676,43 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
         self.step.tool_args()
     }
 
-    pub fn decision(&self) -> ToolDecision {
+    pub fn decision(&self) -> ToolGateDecision {
         let Some(tool) = self.step.tool.as_ref() else {
-            return ToolDecision::Proceed;
+            return ToolGateDecision::Proceed;
         };
         if tool.blocked {
-            return ToolDecision::Deny {
+            return ToolGateDecision::Cancel {
                 reason: tool.block_reason.clone().unwrap_or_default(),
             };
         }
         if tool.pending {
-            if let Some(inv) = tool.pending_frontend_invocation.as_ref() {
-                return ToolDecision::Ask {
-                    request: InteractionRequest::FrontendTool {
-                        tool_name: inv.tool_name.clone(),
-                        arguments: inv.arguments.clone(),
-                        routing: inv.routing.clone(),
-                    },
-                };
-            }
             if let Some(interaction) = tool.pending_interaction.as_ref() {
-                return ToolDecision::Ask {
-                    request: InteractionRequest::Confirm {
-                        interaction: interaction.clone(),
-                    },
-                };
+                return ToolGateDecision::Suspend(SuspendTicket {
+                    interaction: interaction.clone(),
+                    frontend_invocation: tool.pending_frontend_invocation.clone(),
+                });
             }
+            return ToolGateDecision::Suspend(SuspendTicket::new(Interaction::new(
+                tool.id.clone(),
+                format!("tool:{}", tool.name),
+            )));
         }
-        ToolDecision::Proceed
+        ToolGateDecision::Proceed
     }
 
-    pub fn deny(&mut self, reason: impl Into<String>) {
-        self.step.deny(reason);
+    pub fn cancel(&mut self, reason: impl Into<String>) {
+        self.step.cancel(reason);
     }
 
     /// Explicitly proceed with tool execution.
     ///
-    /// This clears any previous deny/ask state set by earlier plugins.
+    /// This clears any previous cancel/suspend state set by earlier plugins.
     pub fn proceed(&mut self) {
-        self.step.allow();
+        self.step.proceed();
     }
 
-    pub fn ask_confirm(&mut self, interaction: Interaction) {
-        self.step.ask(interaction);
-    }
-
-    pub fn ask_frontend_tool(
-        &mut self,
-        tool_name: impl Into<String>,
-        arguments: Value,
-        routing: ResponseRouting,
-    ) -> Option<String> {
-        self.step.ask_frontend_tool(tool_name, arguments, routing)
+    pub fn suspend(&mut self, ticket: SuspendTicket) {
+        self.step.suspend(ticket);
     }
 }
 

@@ -470,27 +470,27 @@ impl AgentPlugin for InteractionResponsePlugin {
         suspended_calls.remove(&entry_id);
 
         if is_denied {
-            step.deny("User denied the action".to_string());
+            step.cancel("User denied the action".to_string());
             if let Err(err) = Self::set_suspended_calls_state(step, suspended_calls) {
-                step.deny(err);
+                step.cancel(err);
                 return;
             }
             if let Err(err) =
                 Self::push_resolution(step, resolution_id, serde_json::Value::Bool(false))
             {
-                step.deny(err);
+                step.cancel(err);
             }
         } else if is_approved {
             // Override prior ask/deny state and continue execution.
             step.proceed();
             if let Err(err) = Self::set_suspended_calls_state(step, suspended_calls) {
-                step.deny(err);
+                step.cancel(err);
                 return;
             }
             if let Err(err) =
                 Self::push_resolution(step, resolution_id, serde_json::Value::Bool(true))
             {
-                step.deny(err);
+                step.cancel(err);
             }
         }
     }

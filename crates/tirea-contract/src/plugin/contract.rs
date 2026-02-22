@@ -69,7 +69,7 @@ pub trait AgentPlugin: Send + Sync {
 mod tests {
     use super::*;
     use crate::event::Interaction;
-    use crate::plugin::phase::{StepContext, ToolContext};
+    use crate::plugin::phase::{StepContext, SuspendTicket, ToolContext};
     use crate::testing::TestFixture;
     use crate::thread::ToolCall;
     use crate::tool::contract::ToolDescriptor;
@@ -188,7 +188,7 @@ mod tests {
         async fn before_tool_execute(&self, ctx: &mut BeforeToolExecuteContext<'_, '_>) {
             if let Some(tool_id) = ctx.tool_name() {
                 if self.denied_tools.contains(&tool_id.to_string()) {
-                    ctx.deny("Permission denied");
+                    ctx.cancel("Permission denied");
                 }
             }
         }
@@ -215,9 +215,9 @@ mod tests {
         async fn before_tool_execute(&self, ctx: &mut BeforeToolExecuteContext<'_, '_>) {
             if let Some(tool_id) = ctx.tool_name() {
                 if self.confirm_tools.contains(&tool_id.to_string()) {
-                    ctx.ask_confirm(
+                    ctx.suspend(SuspendTicket::new(
                         Interaction::new("confirm", "confirm").with_message("Execute this tool?"),
-                    );
+                    ));
                 }
             }
         }

@@ -25,8 +25,12 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
-use tirea_contract::event::interaction::ResponseRouting;
-use tirea_contract::plugin::phase::{BeforeToolExecuteContext, PluginPhaseContext};
+use tirea_contract::event::interaction::{
+    FrontendToolInvocation, InvocationOrigin, ResponseRouting,
+};
+use tirea_contract::plugin::phase::{
+    BeforeToolExecuteContext, PluginPhaseContext, SuspendTicket, ToolGateDecision,
+};
 use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::tool::context::ToolCallContext;
 use tirea_state::State;
@@ -134,10 +138,7 @@ impl AgentPlugin for PermissionPlugin {
     }
 
     async fn before_tool_execute(&self, step: &mut BeforeToolExecuteContext<'_, '_>) {
-        if !matches!(
-            step.decision(),
-            tirea_contract::plugin::phase::ToolDecision::Proceed
-        ) {
+        if !matches!(step.decision(), ToolGateDecision::Proceed) {
             return;
         }
 
@@ -185,22 +186,32 @@ impl AgentPlugin for PermissionPlugin {
                 // Allowed - do nothing
             }
             ToolPermissionBehavior::Deny => {
-                step.deny(format!("Tool '{}' is denied", tool_id));
+                step.cancel(format!("Tool '{}' is denied", tool_id));
             }
             ToolPermissionBehavior::Ask => {
                 if call_id.is_empty() {
-                    step.deny("Permission check requires non-empty tool call id");
+                    step.cancel("Permission check requires non-empty tool call id");
                     return;
                 }
                 let tool_args = step.tool_args().cloned().unwrap_or_default();
                 let arguments = json!({
                     "tool_name": tool_id,
-                    "tool_args": tool_args,
+                    "tool_args": tool_args.clone(),
                 });
                 // One-shot approval is set by InteractionResponsePlugin when the
                 // frontend confirms this pending invocation.
-                let routing = ResponseRouting::ReplayOriginalTool;
-                step.ask_frontend_tool(PERMISSION_CONFIRM_TOOL_NAME, arguments, routing);
+                let invocation = FrontendToolInvocation::new(
+                    format!("fc_{call_id}"),
+                    PERMISSION_CONFIRM_TOOL_NAME,
+                    arguments,
+                    InvocationOrigin::ToolCallIntercepted {
+                        backend_call_id: call_id,
+                        backend_tool_name: tool_id.to_string(),
+                        backend_arguments: tool_args,
+                    },
+                    ResponseRouting::ReplayOriginalTool,
+                );
+                step.suspend(SuspendTicket::from_frontend_invocation(invocation));
             }
         }
     }
