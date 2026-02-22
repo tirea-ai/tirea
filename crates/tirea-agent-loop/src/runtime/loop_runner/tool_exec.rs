@@ -23,6 +23,7 @@ use crate::engine::convert::tool_response;
 use crate::engine::tool_execution::collect_patches;
 use crate::engine::tool_filter::{SCOPE_ALLOWED_TOOLS_KEY, SCOPE_EXCLUDED_TOOLS_KEY};
 use crate::runtime::control::LoopControlState;
+use crate::runtime::run_context::{await_or_cancel, is_cancelled, CancelAware};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -506,18 +507,8 @@ pub(super) async fn execute_tools_parallel_with_phases(
 ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
     use futures::future::join_all;
 
-    if phase_ctx
-        .cancellation_token
-        .is_some_and(|token| token.is_cancelled())
-    {
-        return Err(AgentLoopError::Cancelled {
-            run_ctx: Box::new(RunContext::new(
-                phase_ctx.thread_id,
-                serde_json::json!({}),
-                vec![],
-                tirea_contract::RunConfig::default(),
-            )),
-        });
+    if is_cancelled(phase_ctx.cancellation_token) {
+        return Err(cancelled_error(phase_ctx.thread_id));
     }
 
     // Clone run config for parallel tasks (RunConfig is Clone).
@@ -558,20 +549,9 @@ pub(super) async fn execute_tools_parallel_with_phases(
     });
 
     let join_future = join_all(futures);
-    let results = if let Some(token) = phase_ctx.cancellation_token {
-        tokio::select! {
-            _ = token.cancelled() => {
-                return Err(AgentLoopError::Cancelled {
-                    run_ctx: Box::new(RunContext::new(
-                        thread_id.clone(), serde_json::json!({}), vec![],
-                        tirea_contract::RunConfig::default(),
-                    )),
-                });
-            }
-            results = join_future => results,
-        }
-    } else {
-        join_future.await
+    let results = match await_or_cancel(phase_ctx.cancellation_token, join_future).await {
+        CancelAware::Cancelled => return Err(cancelled_error(&thread_id)),
+        CancelAware::Value(results) => results,
     };
     let mut results: Vec<ToolExecutionResult> = results.into_iter().collect::<Result<_, _>>()?;
     coalesce_pending_interactions(&mut results);
@@ -613,18 +593,8 @@ pub(super) async fn execute_tools_sequential_with_phases(
 ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
     use tirea_state::apply_patch;
 
-    if phase_ctx
-        .cancellation_token
-        .is_some_and(|token| token.is_cancelled())
-    {
-        return Err(AgentLoopError::Cancelled {
-            run_ctx: Box::new(RunContext::new(
-                phase_ctx.thread_id,
-                serde_json::json!({}),
-                vec![],
-                tirea_contract::RunConfig::default(),
-            )),
-        });
+    if is_cancelled(phase_ctx.cancellation_token) {
+        return Err(cancelled_error(phase_ctx.thread_id));
     }
 
     let mut state = initial_state.clone();
@@ -641,25 +611,14 @@ pub(super) async fn execute_tools_sequential_with_phases(
             thread_messages: phase_ctx.thread_messages,
             cancellation_token: None,
         };
-        let result = if let Some(token) = phase_ctx.cancellation_token {
-            tokio::select! {
-                _ = token.cancelled() => {
-                    return Err(AgentLoopError::Cancelled {
-                        run_ctx: Box::new(RunContext::new(
-                            phase_ctx.thread_id, serde_json::json!({}), vec![],
-                            tirea_contract::RunConfig::default(),
-                        )),
-                    });
-                }
-                result = execute_single_tool_with_phases(
-                    tool.as_deref(),
-                    call,
-                    &state,
-                    &call_phase_ctx,
-                ) => result?
-            }
-        } else {
-            execute_single_tool_with_phases(tool.as_deref(), call, &state, &call_phase_ctx).await?
+        let result = match await_or_cancel(
+            phase_ctx.cancellation_token,
+            execute_single_tool_with_phases(tool.as_deref(), call, &state, &call_phase_ctx),
+        )
+        .await
+        {
+            CancelAware::Cancelled => return Err(cancelled_error(phase_ctx.thread_id)),
+            CancelAware::Value(result) => result?,
         };
 
         // Apply patch to state for next tool
@@ -707,7 +666,7 @@ pub(super) async fn execute_single_tool_with_phases(
     let ops = std::sync::Mutex::new(Vec::new());
     let pending_messages = std::sync::Mutex::new(Vec::new());
     let plugin_scope = phase_ctx.run_config;
-    let plugin_tool_call_ctx = crate::contracts::ToolCallContext::new(
+    let plugin_tool_call_ctx = crate::contracts::ToolCallContext::new_with_cancellation(
         &doc,
         &ops,
         "plugin_phase",
@@ -715,6 +674,7 @@ pub(super) async fn execute_single_tool_with_phases(
         plugin_scope,
         &pending_messages,
         None,
+        phase_ctx.cancellation_token,
     );
 
     // Create StepContext for this tool
@@ -811,7 +771,7 @@ pub(super) async fn execute_single_tool_with_phases(
             let tool_doc = tirea_state::DocCell::new(state.clone());
             let tool_ops = std::sync::Mutex::new(Vec::new());
             let tool_pending_msgs = std::sync::Mutex::new(Vec::new());
-            let tool_ctx = crate::contracts::ToolCallContext::new(
+            let tool_ctx = crate::contracts::ToolCallContext::new_with_cancellation(
                 &tool_doc,
                 &tool_ops,
                 &call.id,
@@ -819,6 +779,7 @@ pub(super) async fn execute_single_tool_with_phases(
                 plugin_scope,
                 &tool_pending_msgs,
                 phase_ctx.activity_manager.clone(),
+                phase_ctx.cancellation_token,
             );
             let result = match tool
                 .unwrap()
@@ -868,4 +829,15 @@ pub(super) async fn execute_single_tool_with_phases(
         pending_frontend_invocation,
         pending_patches,
     })
+}
+
+fn cancelled_error(thread_id: &str) -> AgentLoopError {
+    AgentLoopError::Cancelled {
+        run_ctx: Box::new(RunContext::new(
+            thread_id,
+            serde_json::json!({}),
+            vec![],
+            tirea_contract::RunConfig::default(),
+        )),
+    }
 }

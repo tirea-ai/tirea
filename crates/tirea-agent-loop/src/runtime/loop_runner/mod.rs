@@ -77,8 +77,9 @@ use uuid::Uuid;
 use crate::contracts::plugin::AgentPlugin;
 pub use crate::contracts::runtime::{LlmExecutor, ToolExecutor};
 pub use crate::runtime::run_context::{
-    RunCancellationToken, StateCommitError, StateCommitter, TOOL_SCOPE_CALLER_AGENT_ID_KEY,
-    TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
+    await_or_cancel, is_cancelled, CancelAware, RunCancellationToken, StateCommitError,
+    StateCommitter, TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY,
+    TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use config::StaticStepToolProvider;
 pub use config::{AgentConfig, GenaiLlmExecutor, LlmRetryPolicy};
@@ -237,14 +238,14 @@ pub(super) async fn wait_retry_backoff(
     run_cancellation_token: Option<&RunCancellationToken>,
 ) -> bool {
     let wait_ms = retry_backoff_ms(config, retry_index);
-    if let Some(token) = run_cancellation_token {
-        tokio::select! {
-            _ = token.cancelled() => true,
-            _ = tokio::time::sleep(std::time::Duration::from_millis(wait_ms)) => false,
-        }
-    } else {
-        tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
-        false
+    match await_or_cancel(
+        run_cancellation_token,
+        tokio::time::sleep(std::time::Duration::from_millis(wait_ms)),
+    )
+    .await
+    {
+        CancelAware::Cancelled => true,
+        CancelAware::Value(_) => false,
     }
 }
 
@@ -262,7 +263,7 @@ pub(super) enum LlmAttemptOutcome<T> {
 }
 
 fn is_run_cancelled(token: Option<&RunCancellationToken>) -> bool {
-    token.is_some_and(|t| t.is_cancelled())
+    is_cancelled(token)
 }
 
 pub(super) fn step_tool_provider_for_run(
@@ -340,14 +341,11 @@ where
     for model in model_candidates {
         for attempt in 1..=max_attempts {
             total_attempts = total_attempts.saturating_add(1);
-            let response_res = if let Some(token) = run_cancellation_token {
-                tokio::select! {
-                    _ = token.cancelled() => return LlmAttemptOutcome::Cancelled,
-                    resp = invoke(model.clone()) => resp,
-                }
-            } else {
-                invoke(model.clone()).await
-            };
+            let response_res =
+                match await_or_cancel(run_cancellation_token, invoke(model.clone())).await {
+                    CancelAware::Cancelled => return LlmAttemptOutcome::Cancelled,
+                    CancelAware::Value(resp) => resp,
+                };
 
             match response_res {
                 Ok(value) => {

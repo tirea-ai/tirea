@@ -7,11 +7,13 @@
 use crate::runtime::activity::ActivityManager;
 use crate::thread::Message;
 use crate::RunConfig;
+use futures::future::pending;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use tirea_state::{
     get_at_path, parse_path, DocCell, Op, Patch, PatchSink, State, TireaResult, TrackedPatch,
 };
+use tokio_util::sync::CancellationToken;
 
 type PatchHook<'a> = Arc<dyn Fn(&Op) -> TireaResult<()> + Send + Sync + 'a>;
 
@@ -28,6 +30,7 @@ pub struct ToolCallContext<'a> {
     run_config: &'a RunConfig,
     pending_messages: &'a Mutex<Vec<Arc<Message>>>,
     activity_manager: Option<Arc<dyn ActivityManager>>,
+    cancellation_token: Option<&'a CancellationToken>,
 }
 
 impl<'a> ToolCallContext<'a> {
@@ -41,6 +44,29 @@ impl<'a> ToolCallContext<'a> {
         pending_messages: &'a Mutex<Vec<Arc<Message>>>,
         activity_manager: Option<Arc<dyn ActivityManager>>,
     ) -> Self {
+        Self::new_with_cancellation(
+            doc,
+            ops,
+            call_id,
+            source,
+            run_config,
+            pending_messages,
+            activity_manager,
+            None,
+        )
+    }
+
+    /// Create a new tool call context with an optional run cancellation token.
+    pub fn new_with_cancellation(
+        doc: &'a DocCell,
+        ops: &'a Mutex<Vec<Op>>,
+        call_id: impl Into<String>,
+        source: impl Into<String>,
+        run_config: &'a RunConfig,
+        pending_messages: &'a Mutex<Vec<Arc<Message>>>,
+        activity_manager: Option<Arc<dyn ActivityManager>>,
+        cancellation_token: Option<&'a CancellationToken>,
+    ) -> Self {
         Self {
             doc,
             ops,
@@ -49,6 +75,7 @@ impl<'a> ToolCallContext<'a> {
             run_config,
             pending_messages,
             activity_manager,
+            cancellation_token,
         }
     }
 
@@ -71,6 +98,28 @@ impl<'a> ToolCallContext<'a> {
     /// Source identifier used for tracked patches.
     pub fn source(&self) -> &str {
         &self.source
+    }
+
+    /// Whether the run cancellation token has already been cancelled.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation_token
+            .is_some_and(CancellationToken::is_cancelled)
+    }
+
+    /// Await cancellation for this context.
+    ///
+    /// If no cancellation token is available, this future never resolves.
+    pub async fn cancelled(&self) {
+        if let Some(token) = self.cancellation_token {
+            token.cancelled().await;
+        } else {
+            pending::<()>().await;
+        }
+    }
+
+    /// Borrow the cancellation token when present.
+    pub fn cancellation_token(&self) -> Option<&CancellationToken> {
+        self.cancellation_token
     }
 
     // =========================================================================
@@ -290,6 +339,8 @@ mod tests {
     use super::*;
     use crate::runtime::control::LoopControlState;
     use serde_json::json;
+    use tokio::time::{timeout, Duration};
+    use tokio_util::sync::CancellationToken;
 
     fn make_ctx<'a>(
         doc: &'a DocCell,
@@ -441,5 +492,48 @@ mod tests {
         .expect("failed to set inference_error");
 
         assert!(ctx.has_changes());
+    }
+
+    #[test]
+    fn test_cancellation_token_absent_by_default() {
+        let doc = DocCell::new(json!({}));
+        let ops = Mutex::new(Vec::new());
+        let scope = RunConfig::default();
+        let pending = Mutex::new(Vec::new());
+        let ctx = make_ctx(&doc, &ops, &scope, &pending);
+
+        assert!(!ctx.is_cancelled());
+        assert!(ctx.cancellation_token().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_cancelled_waits_for_attached_token() {
+        let doc = DocCell::new(json!({}));
+        let ops = Mutex::new(Vec::new());
+        let scope = RunConfig::default();
+        let pending = Mutex::new(Vec::new());
+        let token = CancellationToken::new();
+
+        let ctx = ToolCallContext::new_with_cancellation(
+            &doc,
+            &ops,
+            "call-1",
+            "test",
+            &scope,
+            &pending,
+            None,
+            Some(&token),
+        );
+
+        let token_for_task = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            token_for_task.cancel();
+        });
+
+        let done = timeout(Duration::from_millis(300), ctx.cancelled())
+            .await
+            .expect("cancelled() should resolve after token cancellation");
+        assert_eq!(done, ());
     }
 }
