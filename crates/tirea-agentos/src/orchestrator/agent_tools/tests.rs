@@ -303,17 +303,25 @@ fn caller_scope_with_state_and_run(
     state: serde_json::Value,
     run_id: &str,
 ) -> tirea_contract::RunConfig {
+    caller_scope_with_state_run_and_messages(
+        state,
+        run_id,
+        vec![crate::contracts::thread::Message::user("seed message")],
+    )
+}
+
+fn caller_scope_with_state_run_and_messages(
+    state: serde_json::Value,
+    run_id: &str,
+    messages: Vec<crate::contracts::thread::Message>,
+) -> tirea_contract::RunConfig {
     let mut rt = tirea_contract::RunConfig::new();
     rt.set(TOOL_SCOPE_CALLER_THREAD_ID_KEY, "owner-thread")
         .unwrap();
     rt.set(TOOL_SCOPE_CALLER_AGENT_ID_KEY, "caller").unwrap();
     rt.set(SCOPE_RUN_ID_KEY, run_id).unwrap();
     rt.set(TOOL_SCOPE_CALLER_STATE_KEY, state).unwrap();
-    rt.set(
-        TOOL_SCOPE_CALLER_MESSAGES_KEY,
-        vec![crate::contracts::thread::Message::user("seed message")],
-    )
-    .unwrap();
+    rt.set(TOOL_SCOPE_CALLER_MESSAGES_KEY, messages).unwrap();
     rt
 }
 
@@ -323,6 +331,140 @@ fn caller_scope_with_state(state: serde_json::Value) -> tirea_contract::RunConfi
 
 fn caller_scope() -> tirea_contract::RunConfig {
     caller_scope_with_state(json!({"forked": true}))
+}
+
+#[tokio::test]
+async fn agent_run_tool_fork_context_passes_non_system_messages_and_filters_unpaired_tool_calls() {
+    let os = AgentOs::builder()
+        .with_registered_plugin("slow_skip", Arc::new(SlowSkipPlugin))
+        .with_agent(
+            "worker",
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini").with_plugin_id("slow_skip"),
+        )
+        .build()
+        .unwrap();
+    let manager = Arc::new(AgentRunManager::new());
+    let run_tool = AgentRunTool::new(os, manager.clone());
+
+    let fork_messages = vec![
+        crate::contracts::thread::Message::system("parent-system"),
+        crate::contracts::thread::Message::internal_system("parent-internal-system"),
+        crate::contracts::thread::Message::user("parent-user-1"),
+        crate::contracts::thread::Message::assistant_with_tool_calls(
+            "parent-assistant-tool-call",
+            vec![
+                crate::contracts::thread::ToolCall::new(
+                    "call-paired",
+                    "search",
+                    json!({"q":"paired"}),
+                ),
+                crate::contracts::thread::ToolCall::new(
+                    "call-missing",
+                    "search",
+                    json!({"q":"missing"}),
+                ),
+            ],
+        ),
+        crate::contracts::thread::Message::tool("call-paired", "tool paired result"),
+        crate::contracts::thread::Message::tool("call-orphan", "tool orphan result"),
+        crate::contracts::thread::Message::assistant_with_tool_calls(
+            "assistant-unpaired-only",
+            vec![crate::contracts::thread::ToolCall::new(
+                "call-only-assistant",
+                "search",
+                json!({"q":"only-assistant"}),
+            )],
+        ),
+        crate::contracts::thread::Message::assistant("parent-assistant-plain"),
+    ];
+
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope_with_state_run_and_messages(
+        json!({"forked": true}),
+        "parent-run-42",
+        fork_messages,
+    );
+
+    let started = run_tool
+        .execute(
+            json!({
+                "agent_id":"worker",
+                "prompt":"child-prompt",
+                "background": true,
+                "fork_context": true
+            }),
+            &fix.ctx_with("call-run", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(started.status, ToolStatus::Success);
+    let run_id = started.data["run_id"]
+        .as_str()
+        .expect("run_id should exist")
+        .to_string();
+
+    let child_thread = manager
+        .owned_record("owner-thread", &run_id)
+        .await
+        .expect("child thread should be tracked");
+
+    assert!(
+        !child_thread.messages.iter().any(|m| m.role == Role::System),
+        "forked child should not contain parent system messages"
+    );
+
+    assert!(
+        child_thread
+            .messages
+            .iter()
+            .any(|m| m.role == Role::User && m.content == "parent-user-1"),
+        "parent non-system user message should be forked"
+    );
+    assert!(
+        child_thread
+            .messages
+            .iter()
+            .any(|m| m.role == Role::User && m.content == "child-prompt"),
+        "new child prompt should be appended"
+    );
+
+    let assistant_tool_msg = child_thread
+        .messages
+        .iter()
+        .find(|m| m.content == "parent-assistant-tool-call")
+        .expect("assistant tool call message should be forked");
+    let tool_calls = assistant_tool_msg
+        .tool_calls
+        .as_ref()
+        .expect("paired tool call should be preserved");
+    assert_eq!(tool_calls.len(), 1, "only paired tool call should be kept");
+    assert_eq!(tool_calls[0].id, "call-paired");
+
+    let unpaired_assistant = child_thread
+        .messages
+        .iter()
+        .find(|m| m.content == "assistant-unpaired-only")
+        .expect("assistant message without paired tool result should remain");
+    assert!(
+        unpaired_assistant.tool_calls.is_none(),
+        "unpaired assistant tool_calls should be removed"
+    );
+
+    assert!(
+        child_thread.messages.iter().any(|m| m.role == Role::Tool
+            && m.tool_call_id.as_deref() == Some("call-paired")
+            && m.content == "tool paired result"),
+        "paired tool result should be kept"
+    );
+    assert!(
+        !child_thread.messages.iter().any(|m| {
+            m.role == Role::Tool
+                && (m.tool_call_id.as_deref() == Some("call-orphan")
+                    || m.tool_call_id.as_deref() == Some("call-missing")
+                    || m.tool_call_id.as_deref() == Some("call-only-assistant"))
+        }),
+        "unpaired tool messages should be filtered out"
+    );
 }
 
 #[tokio::test]
