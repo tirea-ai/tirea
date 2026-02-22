@@ -1,15 +1,15 @@
 [package]
 name = "tirea-protocol-ai-sdk-v6"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository.workspace = true
 description = "AI SDK v6 protocol types and adapters for tirea"
 
 [dependencies]
-tirea-contract = { version = "0.1.0", path = "../tirea-contract" }
-tirea-agent-loop = { version = "0.1.0", path = "../tirea-agent-loop" }
-tirea-extension-interaction = { version = "0.1.0", path = "../tirea-extension-interaction" }
+tirea-contract = { version = "0.1.1", path = "../tirea-contract" }
+tirea-agent-loop = { version = "0.1.1", path = "../tirea-agent-loop" }
+tirea-extension-interaction = { version = "0.1.1", path = "../tirea-extension-interaction" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tracing = "0.1"

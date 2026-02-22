@@ -1,13 +1,13 @@
 [package]
 name = "tirea-agent-loop"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "Core agent execution loop and runtime for tirea"
 license = "MIT OR Apache-2.0"
 repository.workspace = true
 
 [dependencies]
-tirea-state = { version = "0.1.0", path = "../tirea-state" }
+tirea-state = { version = "0.1.1", path = "../tirea-state" }
 tirea-contract = { version = "0.1.1", path = "../tirea-contract" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -24,11 +24,11 @@ json-patch = "3"
 
 [dev-dependencies]
 tirea-contract = { version = "0.1.1", path = "../tirea-contract", features = ["test-support"] }
-tirea-state = { version = "0.1.0", path = "../tirea-state", features = ["derive"] }
-tirea-extension-interaction = { version = "0.1.0", path = "../tirea-extension-interaction" }
-tirea-extension-observability = { version = "0.1.0", path = "../tirea-extension-observability" }
-tirea-extension-skills = { version = "0.1.0", path = "../tirea-extension-skills" }
-tirea-store-adapters = { version = "0.1.0", path = "../tirea-store-adapters" }
+tirea-state = { version = "0.1.1", path = "../tirea-state", features = ["derive"] }
+tirea-extension-interaction = { version = "0.1.1", path = "../tirea-extension-interaction" }
+tirea-extension-observability = { version = "0.1.1", path = "../tirea-extension-observability" }
+tirea-extension-skills = { version = "0.1.1", path = "../tirea-extension-skills" }
+tirea-store-adapters = { version = "0.1.1", path = "../tirea-store-adapters" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
 tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["fmt", "registry"] }

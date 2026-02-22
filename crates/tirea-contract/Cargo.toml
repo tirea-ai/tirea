@@ -1,13 +1,13 @@
 [package]
 name = "tirea-contract"
-version = "0.1.1"
+version.workspace = true
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository.workspace = true
 description = "Shared agent contracts: runtime, extension SPI, and composition registries"
 
 [dependencies]
-tirea-state = { version = "0.1.0", path = "../tirea-state", features = ["derive"] }
+tirea-state = { version = "0.1.1", path = "../tirea-state", features = ["derive"] }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
 schemars = { workspace = true }
