@@ -251,6 +251,7 @@ pub(super) fn clear_suspended_call(
 }
 
 /// Backward-compatible alias: set single pending interaction via suspended_calls.
+#[cfg(test)]
 pub(super) fn set_agent_pending_interaction(
     state: &Value,
     interaction: Interaction,
@@ -276,26 +277,9 @@ pub(super) fn set_agent_pending_interaction(
     )
 }
 
-/// Backward-compatible alias: clear all suspended calls.
-pub(super) fn clear_agent_pending_interaction(
-    state: &Value,
-) -> Result<TrackedPatch, AgentLoopError> {
-    clear_all_suspended_calls(state)
-}
-
-pub(super) fn pending_interaction_from_ctx(run_ctx: &RunContext) -> Option<Interaction> {
-    run_ctx.pending_interaction()
-}
-
 #[allow(dead_code)]
 pub(super) fn suspended_calls_from_ctx(run_ctx: &RunContext) -> HashMap<String, SuspendedCall> {
     run_ctx.suspended_calls()
-}
-
-pub(super) fn pending_frontend_invocation_from_ctx(
-    run_ctx: &RunContext,
-) -> Option<crate::contracts::FrontendToolInvocation> {
-    run_ctx.pending_frontend_invocation()
 }
 
 pub(super) fn set_agent_inference_error(

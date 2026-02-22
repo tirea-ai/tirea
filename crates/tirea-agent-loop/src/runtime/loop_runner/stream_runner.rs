@@ -230,10 +230,10 @@ pub(super) fn run_stream(
         macro_rules! finish_run {
             ($termination_expr:expr, $response_expr:expr) => {{
                 let reason: TerminationReason = $termination_expr;
-                // Thin backward-compat boundary: if state has pending_interaction
-                // and the reason is not Error/Cancelled, override to PendingInteraction.
+                // When suspended calls exist, unresolved external input should keep
+                // the run in PendingInteraction regardless of plugin termination hint.
                 let final_termination = if !matches!(reason, TerminationReason::Error | TerminationReason::Cancelled)
-                    && pending_interaction_from_ctx(&run_ctx).is_some()
+                    && has_suspended_calls(&run_ctx)
                 {
                     TerminationReason::PendingInteraction
                 } else {
@@ -380,13 +380,9 @@ pub(super) fn run_stream(
 
             // Plugin-requested termination takes precedence over plain skip_inference.
             if let Some(reason) = prepared.termination_request {
-                // Emit pending events from state at the boundary (thin event helper).
                 if matches!(reason, TerminationReason::PendingInteraction) {
-                    if let Some(interaction) = pending_interaction_from_ctx(&run_ctx) {
-                        let frontend_inv = pending_frontend_invocation_from_ctx(&run_ctx);
-                        for event in pending_tool_events(&interaction, frontend_inv.as_ref()) {
-                            yield emitter.emit_existing(event);
-                        }
+                    for event in suspended_call_pending_events(&run_ctx) {
+                        yield emitter.emit_existing(event);
                     }
                 }
                 finish_run!(reason, Some(last_text.clone()));

@@ -90,11 +90,12 @@ pub use config::{AgentConfig, GenaiLlmExecutor, LlmRetryPolicy};
 pub use config::{StepToolInput, StepToolProvider, StepToolSnapshot};
 #[cfg(test)]
 use core::build_messages;
+#[cfg(test)]
+use core::set_agent_pending_interaction;
 use core::{
-    build_request_for_filtered_tools, clear_agent_pending_interaction, clear_suspended_call,
+    build_request_for_filtered_tools, clear_all_suspended_calls, clear_suspended_call,
     drain_agent_outbox, enqueue_interaction_resolution, inference_inputs_from_step,
-    pending_frontend_invocation_from_ctx, pending_interaction_from_ctx,
-    set_agent_pending_interaction, suspended_calls_from_ctx,
+    set_agent_suspended_calls, suspended_calls_from_ctx,
 };
 pub use outcome::{tool_map, tool_map_from_arc, AgentLoopError};
 pub use outcome::{LoopOutcome, LoopStats, LoopUsage};
@@ -542,6 +543,19 @@ pub(super) fn pending_tool_events(
     }
 }
 
+pub(super) fn has_suspended_calls(run_ctx: &RunContext) -> bool {
+    !suspended_calls_from_ctx(run_ctx).is_empty()
+}
+
+pub(super) fn suspended_call_pending_events(run_ctx: &RunContext) -> Vec<AgentEvent> {
+    let mut calls: Vec<SuspendedCall> = suspended_calls_from_ctx(run_ctx).into_values().collect();
+    calls.sort_by(|left, right| left.call_id.cmp(&right.call_id));
+    calls
+        .into_iter()
+        .flat_map(|call| pending_tool_events(&call.interaction, call.frontend_invocation.as_ref()))
+        .collect()
+}
+
 pub(super) struct ToolExecutionContext {
     pub(super) state: serde_json::Value,
     pub(super) run_config: tirea_contract::RunConfig,
@@ -696,10 +710,22 @@ async fn drain_run_start_outbox_and_replay(
             let state = run_ctx
                 .snapshot()
                 .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-            let patch = set_agent_pending_interaction(
+            let call_id = new_frontend_invocation
+                .as_ref()
+                .map(|inv| inv.call_id.clone())
+                .unwrap_or_else(|| new_interaction.id.clone());
+            let tool_name = new_frontend_invocation
+                .as_ref()
+                .map(|inv| inv.tool_name.clone())
+                .unwrap_or_default();
+            let patch = set_agent_suspended_calls(
                 &state,
-                new_interaction.clone(),
-                new_frontend_invocation.clone(),
+                vec![SuspendedCall {
+                    call_id,
+                    tool_name,
+                    interaction: new_interaction.clone(),
+                    frontend_invocation: new_frontend_invocation.clone(),
+                }],
             )?;
             if !patch.patch().is_empty() {
                 run_ctx.add_thread_patch(patch);
@@ -721,7 +747,7 @@ async fn drain_run_start_outbox_and_replay(
     let state = run_ctx
         .snapshot()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let clear_patch = clear_agent_pending_interaction(&state)?;
+    let clear_patch = clear_all_suspended_calls(&state)?;
     if !clear_patch.patch().is_empty() {
         replay_state_changed = true;
         run_ctx.add_thread_patch(clear_patch);
@@ -1021,12 +1047,12 @@ pub async fn run_loop(
     macro_rules! terminate_run {
         ($termination:expr, $response:expr, $failure:expr) => {{
             let reason: TerminationReason = $termination;
-            // Thin backward-compat boundary: if state has pending_interaction
-            // and the reason is not Error/Cancelled, override to PendingInteraction.
+            // When suspended calls exist, unresolved external input should keep
+            // the run in PendingInteraction regardless of plugin termination hint.
             let final_termination = if !matches!(
                 reason,
                 TerminationReason::Error | TerminationReason::Cancelled
-            ) && pending_interaction_from_ctx(&run_ctx).is_some()
+            ) && has_suspended_calls(&run_ctx)
             {
                 TerminationReason::PendingInteraction
             } else {

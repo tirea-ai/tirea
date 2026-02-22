@@ -2808,6 +2808,72 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
 }
 
 #[tokio::test]
+async fn test_stream_termination_request_with_suspended_only_state_emits_pending_events() {
+    struct PendingTerminatePlugin;
+
+    #[async_trait]
+    impl AgentPlugin for PendingTerminatePlugin {
+        fn id(&self) -> &str {
+            "pending_terminate_suspended_only_stream"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::BeforeInference {
+                step.termination_request = Some(TerminationReason::PendingInteraction);
+                step.skip_inference = true;
+            }
+        });
+    }
+
+    let config = AgentConfig::new("gpt-4o-mini")
+        .with_plugin(Arc::new(PendingTerminatePlugin) as Arc<dyn AgentPlugin>);
+    let thread = Thread::with_initial_state(
+        "test",
+        json!({
+            "loop_control": {
+                "suspended_calls": {
+                    "recover_1": {
+                        "call_id": "recover_1",
+                        "tool_name": "recover_agent_run",
+                        "interaction": {
+                            "id": "recover_1",
+                            "action": "recover_agent_run",
+                            "message": "resume?",
+                            "parameters": {}
+                        }
+                    }
+                }
+            }
+        }),
+    )
+    .with_message(crate::contracts::thread::Message::user("hello"));
+    let tools = HashMap::new();
+
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let events =
+        collect_stream_events(run_loop_stream(config, tools, run_ctx, None, None, None)).await;
+
+    assert!(matches!(events.first(), Some(AgentEvent::RunStart { .. })));
+    assert!(matches!(
+        events.get(1),
+        Some(AgentEvent::InteractionRequested { interaction })
+            if interaction.action == "recover_agent_run"
+    ));
+    assert!(matches!(
+        events.get(2),
+        Some(AgentEvent::Pending { interaction })
+            if interaction.action == "recover_agent_run"
+    ));
+    assert!(matches!(
+        events.get(3),
+        Some(AgentEvent::RunFinish {
+            termination: TerminationReason::PendingInteraction,
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
 async fn test_stream_emits_interaction_resolved_on_denied_response() {
     struct SkipInferencePlugin;
 
@@ -3492,6 +3558,55 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
     );
     let run_end_count = recorded.iter().filter(|p| **p == Phase::RunEnd).count();
     assert_eq!(run_end_count, 1, "RunEnd should be emitted exactly once");
+}
+
+#[tokio::test]
+async fn test_run_loop_skip_inference_with_suspended_only_state_returns_pending_interaction() {
+    struct SkipInferencePlugin;
+
+    #[async_trait]
+    impl AgentPlugin for SkipInferencePlugin {
+        fn id(&self) -> &str {
+            "skip_inference_non_stream_suspended_only"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::BeforeInference {
+                step.skip_inference = true;
+            }
+        });
+    }
+
+    let config = AgentConfig::new("gpt-4o-mini")
+        .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+    let thread = Thread::with_initial_state(
+        "test",
+        json!({
+            "loop_control": {
+                "suspended_calls": {
+                    "recover_1": {
+                        "call_id": "recover_1",
+                        "tool_name": "recover_agent_run",
+                        "interaction": {
+                            "id": "recover_1",
+                            "action": "recover_agent_run",
+                            "message": "resume?",
+                            "parameters": {}
+                        }
+                    }
+                }
+            }
+        }),
+    )
+    .with_message(crate::contracts::thread::Message::user("hello"));
+    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
+    assert!(matches!(
+        outcome.termination,
+        TerminationReason::PendingInteraction
+    ));
 }
 
 #[tokio::test]
