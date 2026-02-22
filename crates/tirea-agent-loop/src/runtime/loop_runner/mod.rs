@@ -567,6 +567,86 @@ fn assistant_turn_message(
     msg
 }
 
+async fn drain_run_start_outbox_and_replay_nonstream(
+    run_ctx: &mut RunContext,
+    tools: &HashMap<String, Arc<dyn Tool>>,
+    config: &AgentConfig,
+    tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
+) -> Result<(), AgentLoopError> {
+    let outbox = drain_agent_outbox(run_ctx, "agent_outbox_run_start_nonstream")?;
+    if outbox.replay_tool_calls.is_empty() {
+        return Ok(());
+    }
+
+    for tool_call in &outbox.replay_tool_calls {
+        let state = run_ctx
+            .snapshot()
+            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+        let tool = tools.get(&tool_call.name).cloned();
+        let rt_for_replay = scope_with_tool_caller_context(run_ctx, &state, Some(config))?;
+        let replay_result = execute_single_tool_with_phases(
+            tool.as_deref(),
+            tool_call,
+            &state,
+            tool_descriptors,
+            &config.plugins,
+            None,
+            &rt_for_replay,
+            run_ctx.thread_id(),
+            run_ctx.messages(),
+            run_ctx.version(),
+        )
+        .await?;
+
+        let replay_msg = tool_response(&tool_call.id, &replay_result.execution.result);
+        run_ctx.add_message(Arc::new(replay_msg));
+
+        if !replay_result.reminders.is_empty() {
+            let msgs: Vec<Arc<Message>> = replay_result
+                .reminders
+                .iter()
+                .map(|reminder| {
+                    Arc::new(Message::internal_system(format!(
+                        "<system-reminder>{}</system-reminder>",
+                        reminder
+                    )))
+                })
+                .collect();
+            run_ctx.add_messages(msgs);
+        }
+
+        if let Some(patch) = replay_result.execution.patch {
+            run_ctx.add_thread_patch(patch);
+        }
+        if !replay_result.pending_patches.is_empty() {
+            run_ctx.add_thread_patches(replay_result.pending_patches);
+        }
+
+        if let Some(new_interaction) = replay_result.pending_interaction {
+            let new_frontend_invocation = replay_result.pending_frontend_invocation;
+            let state = run_ctx
+                .snapshot()
+                .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+            let patch =
+                set_agent_pending_interaction(&state, new_interaction, new_frontend_invocation)?;
+            if !patch.patch().is_empty() {
+                run_ctx.add_thread_patch(patch);
+            }
+            return Ok(());
+        }
+    }
+
+    let state = run_ctx
+        .snapshot()
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    let clear_patch = clear_agent_pending_interaction(&state)?;
+    if !clear_patch.patch().is_empty() {
+        run_ctx.add_thread_patch(clear_patch);
+    }
+
+    Ok(())
+}
+
 /// Run the full agent loop until completion or a stop condition is met.
 ///
 /// This is the primary non-streaming entry point. Tools are passed directly
@@ -598,7 +678,11 @@ pub async fn run_loop(
             );
         }
     };
-    let mut active_tool_descriptors = initial_step_tools.descriptors;
+    let StepToolSnapshot {
+        tools: initial_tools,
+        descriptors: initial_descriptors,
+    } = initial_step_tools;
+    let mut active_tool_descriptors = initial_descriptors;
 
     macro_rules! terminate_run {
         ($termination:expr, $response:expr, $failure:expr) => {{
@@ -627,6 +711,23 @@ pub async fn run_loop(
         }
     };
     run_ctx.add_thread_patches(pending);
+    if let Err(error) = drain_run_start_outbox_and_replay_nonstream(
+        &mut run_ctx,
+        &initial_tools,
+        config,
+        &active_tool_descriptors,
+    )
+    .await
+    {
+        terminate_run!(
+            TerminationReason::Error,
+            None,
+            Some(outcome::LoopFailure::State(error.to_string()))
+        );
+    }
+    if pending_interaction_from_ctx(&run_ctx).is_some() {
+        terminate_run!(TerminationReason::PendingInteraction, None, None);
+    }
 
     loop {
         if is_run_cancelled(run_cancellation_token.as_ref()) {

@@ -2862,6 +2862,128 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
 }
 
 #[tokio::test]
+async fn test_run_loop_permission_approval_replays_tool_and_clears_outbox() {
+    struct SkipInferencePlugin;
+
+    #[async_trait]
+    impl AgentPlugin for SkipInferencePlugin {
+        fn id(&self) -> &str {
+            "skip_inference_for_permission_approval_nonstream"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::BeforeInference {
+                step.skip_inference = true;
+            }
+        });
+    }
+
+    let interaction = tirea_extension_interaction::InteractionPlugin::with_responses(
+        vec!["call_1".to_string()],
+        Vec::new(),
+    );
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(interaction))
+        .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>)
+        .with_llm_executor(
+            Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("unused"))]))
+                as Arc<dyn LlmExecutor>,
+        );
+
+    let thread = Thread::with_initial_state(
+        "test",
+        json!({
+            "loop_control": {
+                "pending_interaction": {
+                    "id": "call_1",
+                    "action": "tool:echo",
+                    "parameters": {
+                        "source": "permission",
+                        "origin_tool_call": {
+                            "id": "call_1",
+                            "name": "echo",
+                            "arguments": { "message": "approved-run" }
+                        }
+                    }
+                },
+                "pending_frontend_invocation": {
+                    "call_id": "call_1",
+                    "tool_name": "PermissionConfirm",
+                    "arguments": {
+                        "tool_name": "echo",
+                        "tool_args": { "message": "approved-run" }
+                    },
+                    "origin": {
+                        "type": "tool_call_intercepted",
+                        "backend_call_id": "call_1",
+                        "backend_tool_name": "echo",
+                        "backend_arguments": { "message": "approved-run" }
+                    },
+                    "routing": {
+                        "strategy": "replay_original_tool"
+                    }
+                }
+            }
+        }),
+    )
+    .with_message(Message::assistant_with_tool_calls(
+        "need permission",
+        vec![crate::contracts::thread::ToolCall::new(
+            "call_1",
+            "echo",
+            json!({"message": "approved-run"}),
+        )],
+    ))
+    .with_message(Message::tool(
+        "call_1",
+        "Tool 'echo' is awaiting approval. Execution paused.",
+    ));
+
+    let tools = tool_map([EchoTool]);
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+
+    assert_eq!(outcome.termination, TerminationReason::PluginRequested);
+
+    let tool_msgs: Vec<&Arc<Message>> = outcome
+        .run_ctx
+        .messages()
+        .iter()
+        .filter(|m| {
+            m.role == crate::contracts::thread::Role::Tool
+                && m.tool_call_id.as_deref() == Some("call_1")
+        })
+        .collect();
+    assert!(!tool_msgs.is_empty(), "expected tool messages for call_1");
+    let placeholder_index = tool_msgs
+        .iter()
+        .position(|m| m.content.contains("awaiting approval"))
+        .expect("placeholder must remain immutable in append-only log");
+    let replay_index = tool_msgs
+        .iter()
+        .position(|m| m.content.contains("\"echoed\":\"approved-run\""))
+        .expect("missing replayed tool result content");
+    assert!(
+        replay_index > placeholder_index,
+        "replayed tool output must be appended after placeholder"
+    );
+
+    let state = outcome.run_ctx.snapshot().expect("state should rebuild");
+    let pending = state
+        .get("loop_control")
+        .and_then(|a| a.get("pending_interaction"));
+    assert!(pending.is_none() || pending == Some(&Value::Null));
+
+    let replay_outbox = state
+        .get("interaction_outbox")
+        .and_then(|o| o.get("replay_tool_calls"));
+    assert!(
+        replay_outbox.is_none() || replay_outbox == Some(&json!([])),
+        "run_loop should drain replay outbox after run-start replay"
+    );
+}
+
+#[tokio::test]
 async fn test_stream_permission_approval_replay_commits_before_and_after_replay() {
     struct SkipInferencePlugin;
 
