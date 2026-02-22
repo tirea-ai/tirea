@@ -1,6 +1,7 @@
 use super::state_commit::PendingDeltaCommitContext;
 use super::stream_core::{preallocate_tool_result_message_ids, resolve_stream_run_identity};
 use super::*;
+use std::collections::HashSet;
 
 // Stream adapter layer:
 // - drives provider I/O and plugin phases
@@ -446,6 +447,64 @@ pub(super) fn run_stream(
                             append_cancellation_user_message(&mut run_ctx, CancellationStage::Inference);
                             finish_run!(TerminationReason::Cancelled, None);
                         }
+                        decision = recv_decision(&mut decision_rx), if decision_rx.is_some() => {
+                            let Some(response) = decision else {
+                                decision_rx = None;
+                                continue;
+                            };
+                            let decision_outcome = match apply_decision_and_replay(
+                                &mut run_ctx,
+                                response,
+                                &mut decision_rx,
+                                &step_tool_provider,
+                                &config,
+                                &mut active_tool_descriptors,
+                                &pending_delta_commit,
+                            )
+                            .await
+                            {
+                                Ok(outcome) => outcome,
+                                Err(e) => {
+                                    let message = e.to_string();
+                                    terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
+                                }
+                            };
+                            for event in decision_outcome.events {
+                                yield emitter.emit_existing(event);
+                            }
+                            continue;
+                        }
+                        ev = chat_stream.next() => ev,
+                    }
+                } else if decision_rx.is_some() {
+                    tokio::select! {
+                        decision = recv_decision(&mut decision_rx), if decision_rx.is_some() => {
+                            let Some(response) = decision else {
+                                decision_rx = None;
+                                continue;
+                            };
+                            let decision_outcome = match apply_decision_and_replay(
+                                &mut run_ctx,
+                                response,
+                                &mut decision_rx,
+                                &step_tool_provider,
+                                &config,
+                                &mut active_tool_descriptors,
+                                &pending_delta_commit,
+                            )
+                            .await
+                            {
+                                Ok(outcome) => outcome,
+                                Err(e) => {
+                                    let message = e.to_string();
+                                    terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
+                                }
+                            };
+                            for event in decision_outcome.events {
+                                yield emitter.emit_existing(event);
+                            }
+                            continue;
+                        }
                         ev = chat_stream.next() => ev,
                     }
                 } else {
@@ -573,6 +632,7 @@ pub(super) fn run_stream(
             let sid_for_tools = run_ctx.thread_id().to_string();
             let thread_messages_for_tools = run_ctx.messages().to_vec();
             let thread_version_for_tools = run_ctx.version();
+            let tool_descriptors_for_exec = active_tool_descriptors.clone();
             let mut tool_future: Pin<
                 Box<dyn Future<Output = Result<Vec<ToolExecutionResult>, AgentLoopError>> + Send>,
             > = Box::pin(async {
@@ -582,7 +642,7 @@ pub(super) fn run_stream(
                         tools: &active_tool_snapshot.tools,
                         calls: &result.tool_calls,
                         state: &tool_context.state,
-                        tool_descriptors: &active_tool_descriptors,
+                        tool_descriptors: &tool_descriptors_for_exec,
                         plugins: &config.plugins,
                         activity_manager: Some(activity_manager.clone()),
                         run_config: &tool_context.run_config,
@@ -595,6 +655,7 @@ pub(super) fn run_stream(
                     .map_err(AgentLoopError::from)
             });
             let mut activity_closed = false;
+            let mut resolved_call_ids = HashSet::new();
             let results = loop {
                 tokio::select! {
                     activity = activity_rx.recv(), if !activity_closed => {
@@ -607,6 +668,35 @@ pub(super) fn run_stream(
                             }
                         }
                     }
+                    decision = recv_decision(&mut decision_rx), if decision_rx.is_some() => {
+                        let Some(response) = decision else {
+                            decision_rx = None;
+                            continue;
+                        };
+                        let decision_outcome = match apply_decision_and_replay(
+                            &mut run_ctx,
+                            response,
+                            &mut decision_rx,
+                            &step_tool_provider,
+                            &config,
+                            &mut active_tool_descriptors,
+                            &pending_delta_commit,
+                        )
+                        .await
+                        {
+                            Ok(outcome) => outcome,
+                            Err(e) => {
+                                let message = e.to_string();
+                                terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
+                            }
+                        };
+                        for call_id in decision_outcome.resolved_call_ids {
+                            resolved_call_ids.insert(call_id);
+                        }
+                        for event in decision_outcome.events {
+                            yield emitter.emit_existing(event);
+                        }
+                    }
                     res = &mut tool_future => {
                         break res;
                     }
@@ -617,7 +707,7 @@ pub(super) fn run_stream(
                 yield emitter.emit_existing(event);
             }
 
-            let results = match results {
+            let mut results = match results {
                 Ok(r) => r,
                 Err(AgentLoopError::Cancelled { .. }) => {
                     append_cancellation_user_message(&mut run_ctx, CancellationStage::ToolExecution);
@@ -628,6 +718,12 @@ pub(super) fn run_stream(
                     terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
                 }
             };
+            if !resolved_call_ids.is_empty() {
+                results.retain(|exec_result| {
+                    !(exec_result.pending_interaction.is_some()
+                        && resolved_call_ids.contains(&exec_result.execution.call.id))
+                });
+            }
 
             // Emit pending interaction event(s) first.
             for exec_result in &results {

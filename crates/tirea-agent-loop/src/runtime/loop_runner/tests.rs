@@ -9762,6 +9762,109 @@ async fn test_run_loop_stream_decision_channel_emits_resolution_and_replay() {
 }
 
 #[tokio::test]
+async fn test_stream_decision_channel_drains_while_inference_stream_is_running() {
+    struct HangingStreamProvider;
+
+    #[async_trait]
+    impl LlmExecutor for HangingStreamProvider {
+        async fn exec_chat_response(
+            &self,
+            _model: &str,
+            _chat_req: genai::chat::ChatRequest,
+            _options: Option<&ChatOptions>,
+        ) -> genai::Result<genai::chat::ChatResponse> {
+            unimplemented!("stream-only provider")
+        }
+
+        async fn exec_chat_stream_events(
+            &self,
+            _model: &str,
+            _chat_req: genai::chat::ChatRequest,
+            _options: Option<&ChatOptions>,
+        ) -> genai::Result<crate::contracts::runtime::LlmEventStream> {
+            let stream = async_stream::stream! {
+                yield Ok(ChatStreamEvent::Start);
+                yield Ok(ChatStreamEvent::Chunk(StreamChunk {
+                    content: "streaming".to_string(),
+                }));
+                let _: () = futures::future::pending().await;
+            };
+            Ok(Box::pin(stream))
+        }
+
+        fn name(&self) -> &'static str {
+            "hanging_stream_for_decision"
+        }
+    }
+
+    let pending_interaction = json!({
+        "id": "call_pending",
+        "action": "confirm",
+        "parameters": { "message": "approved during stream" }
+    });
+    let state = json!({
+        "loop_control": {
+            "suspended_calls": {
+                "call_pending": {
+                    "call_id": "call_pending",
+                    "tool_name": "echo",
+                    "interaction": pending_interaction.clone()
+                }
+            },
+            "pending_interaction": pending_interaction
+        }
+    });
+    let thread = Thread::with_initial_state("test", state).with_message(Message::user("resume"));
+    let run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).expect("run ctx");
+    let config = AgentConfig::new("mock")
+        .with_llm_executor(Arc::new(HangingStreamProvider) as Arc<dyn LlmExecutor>);
+    let tools = tool_map([EchoTool]);
+    let token = CancellationToken::new();
+
+    let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
+    let stream = run_loop_stream(
+        config,
+        tools,
+        run_ctx,
+        Some(token.clone()),
+        None,
+        Some(decision_rx),
+    );
+    let collect_task = tokio::spawn(async move { collect_stream_events(stream).await });
+
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    decision_tx
+        .send(crate::contracts::InteractionResponse::new(
+            "call_pending",
+            json!(true),
+        ))
+        .expect("send decision");
+    tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+    token.cancel();
+
+    let events = tokio::time::timeout(std::time::Duration::from_millis(400), collect_task)
+        .await
+        .expect("stream should terminate after cancellation")
+        .expect("collector task should not panic");
+
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::InteractionResolved { interaction_id, .. } if interaction_id == "call_pending"
+        )),
+        "decision should be drained while inference stream is still active: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolCallDone { id, .. } if id == "call_pending"
+        )),
+        "replay result should be emitted after in-flight decision drain: {events:?}"
+    );
+}
+
+#[tokio::test]
 async fn test_run_loop_decision_channel_replay_original_tool_sets_permission_one_shot_approval() {
     struct OneShotPermissionPlugin;
 

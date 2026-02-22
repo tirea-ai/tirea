@@ -1673,7 +1673,9 @@ async fn run_stream_exposes_decision_sender_and_replays_suspended_calls() {
     let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
     tools.insert("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>);
     let os = AgentOs::builder()
-        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>)
+        .with_agent_state_store(
+            storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
+        )
         .with_tools(tools)
         .with_registered_plugin("skip", Arc::new(SkipPlugin))
         .with_agent(

@@ -71,7 +71,7 @@ use crate::runtime::streaming::StreamCollector;
 use async_stream::stream;
 use futures::{Stream, StreamExt};
 use genai::Client;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -928,10 +928,10 @@ fn set_permission_one_shot_approval(
 pub(super) fn resolve_suspended_call(
     run_ctx: &mut RunContext,
     response: &InteractionResponse,
-) -> Result<bool, AgentLoopError> {
+) -> Result<Option<String>, AgentLoopError> {
     let suspended_calls = suspended_calls_from_ctx(run_ctx);
     if suspended_calls.is_empty() {
-        return Ok(false);
+        return Ok(None);
     }
 
     let suspended_call = suspended_calls
@@ -944,7 +944,7 @@ pub(super) fn resolve_suspended_call(
                 .cloned()
         });
     let Some(suspended_call) = suspended_call else {
-        return Ok(false);
+        return Ok(None);
     };
 
     if let Some(approved_call_id) = one_shot_approval_call_id(&suspended_call, response) {
@@ -968,41 +968,43 @@ pub(super) fn resolve_suspended_call(
         run_ctx.add_thread_patch(clear_patch);
     }
 
-    Ok(true)
+    Ok(Some(suspended_call.call_id))
 }
 
 pub(super) fn drain_decision_channel(
     run_ctx: &mut RunContext,
     decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
-) -> Result<bool, AgentLoopError> {
+) -> Result<Vec<String>, AgentLoopError> {
     let Some(rx) = decision_rx.as_mut() else {
-        return Ok(false);
+        return Ok(Vec::new());
     };
 
-    let mut resolved_any = false;
+    let mut resolved_call_ids = Vec::new();
+    let mut seen = HashSet::new();
     loop {
         match rx.try_recv() {
             Ok(response) => {
-                if resolve_suspended_call(run_ctx, &response)? {
-                    resolved_any = true;
+                if let Some(call_id) = resolve_suspended_call(run_ctx, &response)? {
+                    if seen.insert(call_id.clone()) {
+                        resolved_call_ids.push(call_id);
+                    }
                 }
             }
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
             | Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
         }
     }
-    Ok(resolved_any)
+    Ok(resolved_call_ids)
 }
 
-async fn apply_decisions_and_replay(
+async fn replay_after_decisions(
     run_ctx: &mut RunContext,
-    decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
+    decisions_applied: bool,
     step_tool_provider: &Arc<dyn StepToolProvider>,
     config: &AgentConfig,
     active_tool_descriptors: &mut Vec<crate::contracts::tool::ToolDescriptor>,
     pending_delta_commit: &PendingDeltaCommitContext<'_>,
 ) -> Result<Vec<AgentEvent>, AgentLoopError> {
-    let decisions_applied = drain_decision_channel(run_ctx, decision_rx)?;
     if !decisions_applied {
         return Ok(Vec::new());
     }
@@ -1023,6 +1025,78 @@ async fn apply_decisions_and_replay(
         .await?;
 
     Ok(decision_drain.events)
+}
+
+async fn apply_decisions_and_replay(
+    run_ctx: &mut RunContext,
+    decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
+    step_tool_provider: &Arc<dyn StepToolProvider>,
+    config: &AgentConfig,
+    active_tool_descriptors: &mut Vec<crate::contracts::tool::ToolDescriptor>,
+    pending_delta_commit: &PendingDeltaCommitContext<'_>,
+) -> Result<Vec<AgentEvent>, AgentLoopError> {
+    let decisions_applied = !drain_decision_channel(run_ctx, decision_rx)?.is_empty();
+    replay_after_decisions(
+        run_ctx,
+        decisions_applied,
+        step_tool_provider,
+        config,
+        active_tool_descriptors,
+        pending_delta_commit,
+    )
+    .await
+}
+
+struct DecisionReplayOutcome {
+    events: Vec<AgentEvent>,
+    resolved_call_ids: Vec<String>,
+}
+
+async fn apply_decision_and_replay(
+    run_ctx: &mut RunContext,
+    response: InteractionResponse,
+    decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
+    step_tool_provider: &Arc<dyn StepToolProvider>,
+    config: &AgentConfig,
+    active_tool_descriptors: &mut Vec<crate::contracts::tool::ToolDescriptor>,
+    pending_delta_commit: &PendingDeltaCommitContext<'_>,
+) -> Result<DecisionReplayOutcome, AgentLoopError> {
+    let mut resolved_call_ids = Vec::new();
+    let mut seen = HashSet::new();
+
+    if let Some(call_id) = resolve_suspended_call(run_ctx, &response)? {
+        if seen.insert(call_id.clone()) {
+            resolved_call_ids.push(call_id);
+        }
+    }
+
+    for call_id in drain_decision_channel(run_ctx, decision_rx)? {
+        if seen.insert(call_id.clone()) {
+            resolved_call_ids.push(call_id);
+        }
+    }
+
+    let events = replay_after_decisions(
+        run_ctx,
+        !resolved_call_ids.is_empty(),
+        step_tool_provider,
+        config,
+        active_tool_descriptors,
+        pending_delta_commit,
+    )
+    .await?;
+
+    Ok(DecisionReplayOutcome {
+        events,
+        resolved_call_ids,
+    })
+}
+
+async fn recv_decision(
+    decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
+) -> Option<InteractionResponse> {
+    let rx = decision_rx.as_mut()?;
+    rx.recv().await
 }
 
 /// Run the full agent loop until completion or a stop condition is met.
