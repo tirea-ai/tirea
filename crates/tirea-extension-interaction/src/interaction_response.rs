@@ -85,16 +85,6 @@ impl InteractionResponsePlugin {
         self.responses.get(interaction_id)
     }
 
-    /// Return all configured responses.
-    pub(crate) fn responses(&self) -> Vec<InteractionResponse> {
-        self.responses
-            .iter()
-            .map(|(interaction_id, result)| {
-                InteractionResponse::new(interaction_id.clone(), result.clone())
-            })
-            .collect()
-    }
-
     /// Check if an interaction was approved.
     pub(crate) fn is_approved(&self, interaction_id: &str) -> bool {
         self.result_for(interaction_id)

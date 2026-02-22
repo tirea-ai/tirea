@@ -56,9 +56,6 @@ impl InteractionPlugin {
         self.static_response.is_denied(interaction_id)
     }
 
-    fn response_plugin(&self) -> InteractionResponsePlugin {
-        InteractionResponsePlugin::from_responses(self.static_response.responses())
-    }
 }
 
 impl Default for InteractionPlugin {
@@ -74,43 +71,35 @@ impl AgentPlugin for InteractionPlugin {
     }
 
     async fn run_start(&self, ctx: &mut RunStartContext<'_, '_>) {
-        let response = self.response_plugin();
-        response.run_start(ctx).await;
+        self.static_response.run_start(ctx).await;
     }
 
     async fn step_start(&self, ctx: &mut StepStartContext<'_, '_>) {
-        let response = self.response_plugin();
-        response.step_start(ctx).await;
+        self.static_response.step_start(ctx).await;
     }
 
     async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
-        let response = self.response_plugin();
-        response.before_inference(ctx).await;
+        self.static_response.before_inference(ctx).await;
     }
 
     async fn after_inference(&self, ctx: &mut AfterInferenceContext<'_, '_>) {
-        let response = self.response_plugin();
-        response.after_inference(ctx).await;
+        self.static_response.after_inference(ctx).await;
     }
 
     async fn before_tool_execute(&self, ctx: &mut BeforeToolExecuteContext<'_, '_>) {
-        let response = self.response_plugin();
-        response.before_tool_execute(ctx).await;
+        self.static_response.before_tool_execute(ctx).await;
     }
 
     async fn after_tool_execute(&self, ctx: &mut AfterToolExecuteContext<'_, '_>) {
-        let response = self.response_plugin();
-        response.after_tool_execute(ctx).await;
+        self.static_response.after_tool_execute(ctx).await;
     }
 
     async fn step_end(&self, ctx: &mut StepEndContext<'_, '_>) {
-        let response = self.response_plugin();
-        response.step_end(ctx).await;
+        self.static_response.step_end(ctx).await;
     }
 
     async fn run_end(&self, ctx: &mut RunEndContext<'_, '_>) {
-        let response = self.response_plugin();
-        response.run_end(ctx).await;
+        self.static_response.run_end(ctx).await;
     }
 }
 
