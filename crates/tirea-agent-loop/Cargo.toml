@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 tirea-state = { version = "0.1.0", path = "../tirea-state" }
-tirea-contract = { version = "0.1.0", path = "../tirea-contract" }
+tirea-contract = { version = "0.1.1", path = "../tirea-contract" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
@@ -23,7 +23,7 @@ tokio-util = "0.7"
 json-patch = "3"
 
 [dev-dependencies]
-tirea-contract = { version = "0.1.0", path = "../tirea-contract", features = ["test-support"] }
+tirea-contract = { version = "0.1.1", path = "../tirea-contract", features = ["test-support"] }
 tirea-state = { version = "0.1.0", path = "../tirea-state", features = ["derive"] }
 tirea-extension-interaction = { version = "0.1.0", path = "../tirea-extension-interaction" }
 tirea-extension-observability = { version = "0.1.0", path = "../tirea-extension-observability" }
