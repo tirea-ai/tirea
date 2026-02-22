@@ -764,24 +764,6 @@ pub(super) async fn execute_single_tool_with_phases(
                 None,
                 None,
             )
-        } else if step.tool_pending() {
-            let interaction = step
-                .tool
-                .as_ref()
-                .and_then(|t| t.pending_interaction.clone());
-            let frontend_invocation = step
-                .tool
-                .as_ref()
-                .and_then(|t| t.pending_frontend_invocation.clone());
-            (
-                ToolExecution {
-                    call: call.clone(),
-                    result: ToolResult::pending(&call.name, "Waiting for user confirmation"),
-                    patch: None,
-                },
-                interaction,
-                frontend_invocation,
-            )
         } else if tool.is_none() {
             (
                 ToolExecution {
@@ -805,6 +787,24 @@ pub(super) async fn execute_single_tool_with_phases(
                 },
                 None,
                 None,
+            )
+        } else if step.tool_pending() {
+            let interaction = step
+                .tool
+                .as_ref()
+                .and_then(|t| t.pending_interaction.clone());
+            let frontend_invocation = step
+                .tool
+                .as_ref()
+                .and_then(|t| t.pending_frontend_invocation.clone());
+            (
+                ToolExecution {
+                    call: call.clone(),
+                    result: ToolResult::pending(&call.name, "Waiting for user confirmation"),
+                    patch: None,
+                },
+                interaction,
+                frontend_invocation,
             )
         } else {
             // Execute the tool with its own ToolCallContext

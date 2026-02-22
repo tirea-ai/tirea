@@ -1878,6 +1878,58 @@ fn test_execute_tools_with_pending_phase_plugin() {
 }
 
 #[test]
+fn test_invalid_args_are_returned_as_tool_error_before_pending_confirmation() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let thread = Thread::new("test");
+        let result = StreamResult {
+            text: "Pending".to_string(),
+            tool_calls: vec![crate::contracts::thread::ToolCall::new(
+                "call_1",
+                "echo",
+                json!({}),
+            )],
+            usage: None,
+        };
+        let tools = tool_map([EchoTool]);
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(PendingPhasePlugin)];
+
+        let thread = execute_tools_with_plugins(thread, &result, &tools, true, &plugins)
+            .await
+            .expect("invalid args should return a tool error instead of pending interaction");
+
+        assert_eq!(thread.messages.len(), 1);
+        let msg = &thread.messages[0];
+        assert_eq!(msg.role, crate::contracts::thread::Role::Tool);
+        assert!(
+            !msg.content.contains("awaiting approval"),
+            "invalid args should not produce pending placeholder: {}",
+            msg.content
+        );
+
+        let payload: Value = serde_json::from_str(&msg.content).expect("tool result must be json");
+        assert_eq!(payload["status"], "error");
+        assert_eq!(payload["tool_name"], "echo");
+        assert!(
+            payload["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("Invalid arguments")),
+            "tool error message should report invalid arguments: {}",
+            msg.content
+        );
+
+        let final_state = thread.rebuild_state().expect("state should rebuild");
+        let pending = final_state
+            .get("loop_control")
+            .and_then(|a| a.get("pending_interaction"));
+        assert!(
+            pending.is_none() || pending == Some(&Value::Null),
+            "invalid args should not persist pending interaction: {pending:?}"
+        );
+    });
+}
+
+#[test]
 fn test_apply_tool_results_keeps_first_pending_interaction_when_multiple_exist() {
     let thread = Thread::new("test");
     let mut run_ctx =
@@ -8084,6 +8136,56 @@ fn build_messages_keeps_tool_results_with_matching_call() {
         2,
         "both matching tool results should be kept"
     );
+}
+
+#[test]
+fn build_messages_keeps_error_tool_results_for_matching_calls() {
+    let invalid_args_result = serde_json::to_string(&ToolResult::error(
+        "echo",
+        "Invalid arguments: missing required field 'message'",
+    ))
+    .expect("serialize invalid args tool result");
+    let denied_result = serde_json::to_string(&ToolResult::error("echo", "User denied the action"))
+        .expect("serialize denied tool result");
+
+    let mut fix = TestFixture::new();
+    fix.messages = vec![
+        Arc::new(Message::user("hi")),
+        Arc::new(Message::assistant_with_tool_calls(
+            "",
+            vec![
+                ToolCall::new("call_invalid", "echo", json!({})),
+                ToolCall::new("call_denied", "echo", json!({"message":"x"})),
+            ],
+        )),
+        Arc::new(Message::tool("call_invalid", invalid_args_result)),
+        Arc::new(Message::tool("call_denied", denied_result)),
+    ];
+    let step = fix.step(vec![]);
+    let msgs = build_messages(&step, "sys");
+
+    let error_tool_msgs: Vec<&Message> = msgs
+        .iter()
+        .filter(|m| {
+            m.role == Role::Tool
+                && matches!(
+                    m.tool_call_id.as_deref(),
+                    Some("call_invalid") | Some("call_denied")
+                )
+        })
+        .collect();
+
+    assert_eq!(
+        error_tool_msgs.len(),
+        2,
+        "matching error tool results should be kept in inference context"
+    );
+    assert!(error_tool_msgs.iter().any(|m| {
+        m.tool_call_id.as_deref() == Some("call_invalid") && m.content.contains("Invalid arguments")
+    }));
+    assert!(error_tool_msgs.iter().any(|m| {
+        m.tool_call_id.as_deref() == Some("call_denied") && m.content.contains("User denied")
+    }));
 }
 
 #[test]
