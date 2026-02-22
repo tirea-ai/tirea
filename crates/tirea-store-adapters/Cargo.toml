@@ -3,10 +3,11 @@ name = "tirea-store-adapters"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+repository.workspace = true
 description = "Thread store adapter implementations for tirea"
 
 [dependencies]
-tirea-contract = { path = "../tirea-contract" }
+tirea-contract = { version = "0.1.0", path = "../tirea-contract" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 async-trait = "0.1"
@@ -25,7 +26,7 @@ postgres = ["dep:sqlx"]
 nats = ["dep:async-nats"]
 
 [dev-dependencies]
-tirea-state = { path = "../tirea-state" }
+tirea-state = { version = "0.1.0", path = "../tirea-state" }
 tempfile = "3"
 async-trait = "0.1"
 serde_json = { workspace = true }

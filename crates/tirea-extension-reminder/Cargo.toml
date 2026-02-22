@@ -4,14 +4,15 @@ version = "0.1.0"
 edition = "2021"
 description = "Reminder extension for tirea"
 license = "MIT OR Apache-2.0"
+repository.workspace = true
 
 [dependencies]
-tirea-state = { path = "../tirea-state", features = ["derive"] }
-tirea-contract = { path = "../tirea-contract" }
+tirea-state = { version = "0.1.0", path = "../tirea-state", features = ["derive"] }
+tirea-contract = { version = "0.1.0", path = "../tirea-contract" }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]
-tirea-contract = { path = "../tirea-contract", features = ["test-support"] }
+tirea-contract = { version = "0.1.0", path = "../tirea-contract", features = ["test-support"] }
 tokio = { version = "1", features = ["rt", "macros"] }

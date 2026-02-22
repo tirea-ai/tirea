@@ -3,12 +3,13 @@ name = "tirea-protocol-ag-ui"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+repository.workspace = true
 description = "AG-UI protocol types and adapters for tirea"
 
 [dependencies]
-tirea-contract = { path = "../tirea-contract" }
-tirea-agent-loop = { path = "../tirea-agent-loop" }
-tirea-extension-interaction = { path = "../tirea-extension-interaction" }
+tirea-contract = { version = "0.1.0", path = "../tirea-contract" }
+tirea-agent-loop = { version = "0.1.0", path = "../tirea-agent-loop" }
+tirea-extension-interaction = { version = "0.1.0", path = "../tirea-extension-interaction" }
 async-trait = "0.1"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -17,10 +18,10 @@ tracing = "0.1"
 uuid = { version = "1", features = ["v4", "v7"] }
 
 [dev-dependencies]
-tirea-contract = { path = "../tirea-contract", features = ["test-support"] }
-tirea-agentos = { path = "../tirea-agentos" }
-tirea-state = { path = "../tirea-state", features = ["derive"] }
-tirea-store-adapters = { path = "../tirea-store-adapters" }
+tirea-contract = { version = "0.1.0", path = "../tirea-contract", features = ["test-support"] }
+tirea-agentos = { version = "0.1.0", path = "../tirea-agentos" }
+tirea-state = { version = "0.1.0", path = "../tirea-state", features = ["derive"] }
+tirea-store-adapters = { version = "0.1.0", path = "../tirea-store-adapters" }
 futures = "0.3"
 genai = "0.5"
 tempfile = "3"
