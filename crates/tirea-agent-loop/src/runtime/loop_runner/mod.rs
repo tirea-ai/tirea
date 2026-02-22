@@ -56,7 +56,7 @@ use crate::contracts::runtime::{
 };
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
-use crate::contracts::tool::Tool;
+use crate::contracts::tool::{Tool, ToolResult};
 use crate::contracts::RunContext;
 use crate::contracts::StopReason;
 use crate::contracts::{
@@ -633,20 +633,31 @@ async fn drain_run_start_outbox_and_replay(
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
 ) -> Result<RunStartDrainOutcome, AgentLoopError> {
     let outbox = drain_agent_outbox(run_ctx, "agent_outbox_run_start")?;
-    let mut events = outbox
-        .interaction_resolutions
-        .into_iter()
-        .map(|resolution| AgentEvent::InteractionResolved {
-            interaction_id: resolution.interaction_id,
-            result: resolution.result,
-        })
-        .collect::<Vec<_>>();
+    let mut events = Vec::new();
+    let mut synthesized_denied_result = false;
+    for resolution in outbox.interaction_resolutions {
+        let interaction_id = resolution.interaction_id;
+        let result = resolution.result;
+        events.push(AgentEvent::InteractionResolved {
+            interaction_id: interaction_id.clone(),
+            result: result.clone(),
+        });
+        if InteractionResponse::is_denied(&result) {
+            events.push(append_denied_tool_result_message(
+                run_ctx,
+                &interaction_id,
+                None,
+                &result,
+            ));
+            synthesized_denied_result = true;
+        }
+    }
 
     let replay_calls = outbox.replay_tool_calls;
     if replay_calls.is_empty() {
         return Ok(RunStartDrainOutcome {
             events,
-            replayed: false,
+            replayed: synthesized_denied_result,
         });
     }
 
@@ -796,6 +807,53 @@ fn normalize_frontend_tool_result(
     }
 }
 
+fn denied_reason_from_response(result: &serde_json::Value) -> Option<String> {
+    match result {
+        serde_json::Value::String(text) if !text.trim().is_empty() => Some(text.clone()),
+        serde_json::Value::Object(obj) => obj
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| obj.get("message").and_then(serde_json::Value::as_str))
+            .map(str::to_string),
+        _ => None,
+    }
+}
+
+fn denied_tool_result_for_call(
+    run_ctx: &RunContext,
+    call_id: &str,
+    fallback_tool_name: Option<&str>,
+    response_result: &serde_json::Value,
+) -> ToolResult {
+    let tool_name = fallback_tool_name
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .or_else(|| find_tool_call_in_messages(run_ctx, call_id).map(|call| call.name))
+        .unwrap_or_else(|| "tool".to_string());
+    let reason = denied_reason_from_response(response_result)
+        .unwrap_or_else(|| "User denied the action".to_string());
+    ToolResult::error(tool_name, reason)
+}
+
+fn append_denied_tool_result_message(
+    run_ctx: &mut RunContext,
+    call_id: &str,
+    fallback_tool_name: Option<&str>,
+    response_result: &serde_json::Value,
+) -> AgentEvent {
+    let denied_result =
+        denied_tool_result_for_call(run_ctx, call_id, fallback_tool_name, response_result);
+    let message_id = gen_message_id();
+    let denied_message = tool_response(call_id, &denied_result).with_id(message_id.clone());
+    run_ctx.add_message(Arc::new(denied_message));
+    AgentEvent::ToolCallDone {
+        id: call_id.to_string(),
+        result: denied_result,
+        patch: None,
+        message_id,
+    }
+}
+
 fn find_tool_call_in_messages(run_ctx: &RunContext, call_id: &str) -> Option<ToolCall> {
     run_ctx.messages().iter().rev().find_map(|message| {
         message
@@ -925,7 +983,7 @@ fn set_permission_one_shot_approval(
 pub(super) fn resolve_suspended_call(
     run_ctx: &mut RunContext,
     response: &InteractionResponse,
-) -> Result<Option<String>, AgentLoopError> {
+) -> Result<Option<DecisionReplayOutcome>, AgentLoopError> {
     let suspended_calls = suspended_calls_from_ctx(run_ctx);
     if suspended_calls.is_empty() {
         return Ok(None);
@@ -943,6 +1001,15 @@ pub(super) fn resolve_suspended_call(
     let Some(suspended_call) = suspended_call else {
         return Ok(None);
     };
+    let mut events = Vec::new();
+    if InteractionResponse::is_denied(&response.result) {
+        events.push(append_denied_tool_result_message(
+            run_ctx,
+            &suspended_call.call_id,
+            Some(&suspended_call.tool_name),
+            &response.result,
+        ));
+    }
 
     if let Some(approved_call_id) = one_shot_approval_call_id(&suspended_call, response) {
         set_permission_one_shot_approval(run_ctx, &approved_call_id)?;
@@ -965,14 +1032,17 @@ pub(super) fn resolve_suspended_call(
         run_ctx.add_thread_patch(clear_patch);
     }
 
-    Ok(Some(suspended_call.call_id))
+    Ok(Some(DecisionReplayOutcome {
+        events,
+        resolved_call_ids: vec![suspended_call.call_id],
+    }))
 }
 
 pub(super) fn drain_decision_channel(
     run_ctx: &mut RunContext,
     decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
     pending_decisions: &mut VecDeque<InteractionResponse>,
-) -> Result<Vec<String>, AgentLoopError> {
+) -> Result<DecisionReplayOutcome, AgentLoopError> {
     let mut disconnected = false;
     if let Some(rx) = decision_rx.as_mut() {
         loop {
@@ -991,25 +1061,35 @@ pub(super) fn drain_decision_channel(
     }
 
     if pending_decisions.is_empty() {
-        return Ok(Vec::new());
+        return Ok(DecisionReplayOutcome {
+            events: Vec::new(),
+            resolved_call_ids: Vec::new(),
+        });
     }
 
     let mut unresolved = VecDeque::new();
+    let mut events = Vec::new();
     let mut resolved_call_ids = Vec::new();
     let mut seen = HashSet::new();
 
     while let Some(response) = pending_decisions.pop_front() {
-        if let Some(call_id) = resolve_suspended_call(run_ctx, &response)? {
-            if seen.insert(call_id.clone()) {
-                resolved_call_ids.push(call_id);
+        if let Some(outcome) = resolve_suspended_call(run_ctx, &response)? {
+            for call_id in outcome.resolved_call_ids {
+                if seen.insert(call_id.clone()) {
+                    resolved_call_ids.push(call_id);
+                }
             }
+            events.extend(outcome.events);
         } else {
             unresolved.push_back(response);
         }
     }
     *pending_decisions = unresolved;
 
-    Ok(resolved_call_ids)
+    Ok(DecisionReplayOutcome {
+        events,
+        resolved_call_ids,
+    })
 }
 
 async fn replay_after_decisions(
@@ -1051,20 +1131,22 @@ async fn apply_decisions_and_replay(
     active_tool_descriptors: &mut Vec<crate::contracts::tool::ToolDescriptor>,
     pending_delta_commit: &PendingDeltaCommitContext<'_>,
 ) -> Result<Vec<AgentEvent>, AgentLoopError> {
-    let decisions_applied =
-        !drain_decision_channel(run_ctx, decision_rx, pending_decisions)?.is_empty();
-    replay_after_decisions(
+    let decision_drain = drain_decision_channel(run_ctx, decision_rx, pending_decisions)?;
+    let mut events = decision_drain.events;
+    let replay_events = replay_after_decisions(
         run_ctx,
-        decisions_applied,
+        !decision_drain.resolved_call_ids.is_empty(),
         step_tool_provider,
         config,
         active_tool_descriptors,
         pending_delta_commit,
     )
-    .await
+    .await?;
+    events.extend(replay_events);
+    Ok(events)
 }
 
-struct DecisionReplayOutcome {
+pub(super) struct DecisionReplayOutcome {
     events: Vec<AgentEvent>,
     resolved_call_ids: Vec<String>,
 }
@@ -1080,21 +1162,22 @@ async fn apply_decision_and_replay(
     pending_delta_commit: &PendingDeltaCommitContext<'_>,
 ) -> Result<DecisionReplayOutcome, AgentLoopError> {
     pending_decisions.push_back(response);
-    let resolved_call_ids = drain_decision_channel(run_ctx, decision_rx, pending_decisions)?;
-
-    let events = replay_after_decisions(
+    let decision_drain = drain_decision_channel(run_ctx, decision_rx, pending_decisions)?;
+    let mut events = decision_drain.events;
+    let replay_events = replay_after_decisions(
         run_ctx,
-        !resolved_call_ids.is_empty(),
+        !decision_drain.resolved_call_ids.is_empty(),
         step_tool_provider,
         config,
         active_tool_descriptors,
         pending_delta_commit,
     )
     .await?;
+    events.extend(replay_events);
 
     Ok(DecisionReplayOutcome {
         events,
-        resolved_call_ids,
+        resolved_call_ids: decision_drain.resolved_call_ids,
     })
 }
 

@@ -3508,28 +3508,32 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
         "missing denied InteractionResolved event: {events:?}"
     );
     assert!(
-        !events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::ToolCallDone { id, .. } if id == "call_1")),
-        "denied flow must not replay or execute original tool call: {events:?}"
+        events.iter().any(|event| {
+            matches!(
+                event,
+                AgentEvent::ToolCallDone { id, result, .. }
+                    if id == "call_1"
+                        && result.is_error()
+                        && result
+                            .message
+                            .as_ref()
+                            .is_some_and(|message| message.contains("denied"))
+            )
+        }),
+        "denied flow should synthesize a tool error result for the original call: {events:?}"
     );
 
-    let tool_msg = final_thread
+    let denied_tool_msg = final_thread
         .messages
         .iter()
-        .find(|m| {
+        .filter(|m| {
             m.role == crate::contracts::thread::Role::Tool
                 && m.tool_call_id.as_deref() == Some("call_1")
+                && m.content.contains("denied")
         })
-        .expect("placeholder tool message should remain when denied");
-    assert!(
-        tool_msg.content.contains("awaiting approval"),
-        "denied flow should not replace placeholder with successful tool output"
-    );
-    assert!(
-        !tool_msg.content.contains("User denied the action"),
-        "denied session-start flow currently does not synthesize tool-denied message"
-    );
+        .next()
+        .expect("denied flow should append a tool error message for call_1");
+    assert!(denied_tool_msg.content.contains("denied"));
 
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
     let suspended = final_state
@@ -3537,6 +3541,100 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
         .and_then(|a| a.get("calls"))
         .and_then(|v| v.as_object());
     assert!(suspended.map_or(true, |calls| calls.is_empty()));
+}
+
+#[tokio::test]
+async fn test_run_loop_permission_denied_appends_tool_result_for_model_context() {
+    struct SkipInferencePlugin;
+
+    #[async_trait]
+    impl AgentPlugin for SkipInferencePlugin {
+        fn id(&self) -> &str {
+            "skip_inference_for_permission_denial_nonstream"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::BeforeInference {
+                step.skip_inference = true;
+            }
+        });
+    }
+
+    let interaction = tirea_extension_interaction::InteractionPlugin::with_responses(
+        Vec::new(),
+        vec!["call_1".to_string()],
+    );
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(interaction))
+        .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+
+    let thread = Thread::with_initial_state(
+        "test",
+        json!({
+            "__suspended_tool_calls": {
+                "calls": {
+                    "call_1": {
+                        "call_id": "call_1",
+                        "tool_name": "echo",
+                        "interaction": {
+                            "id": "call_1",
+                            "action": "tool:echo"
+                        },
+                        "frontend_invocation": {
+                            "call_id": "call_1",
+                            "tool_name": "PermissionConfirm",
+                            "arguments": {
+                                "tool_name": "echo",
+                                "tool_args": { "message": "denied-run" }
+                            },
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "call_1",
+                                "backend_tool_name": "echo",
+                                "backend_arguments": { "message": "denied-run" }
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    )
+    .with_message(Message::assistant_with_tool_calls(
+        "need permission",
+        vec![crate::contracts::thread::ToolCall::new(
+            "call_1",
+            "echo",
+            json!({"message": "denied-run"}),
+        )],
+    ))
+    .with_message(Message::tool(
+        "call_1",
+        "Tool 'echo' is awaiting approval. Execution paused.",
+    ));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
+
+    assert!(matches!(
+        outcome.termination,
+        TerminationReason::PluginRequested
+    ));
+    let denied_count = outcome
+        .run_ctx
+        .messages()
+        .iter()
+        .filter(|message| {
+            message.role == Role::Tool
+                && message.tool_call_id.as_deref() == Some("call_1")
+                && message.content.contains("denied")
+        })
+        .count();
+    assert_eq!(
+        denied_count, 1,
+        "non-stream denied flow should append one denied tool message for model context"
+    );
 }
 
 #[tokio::test]
@@ -4753,6 +4851,84 @@ async fn test_nonstream_cancellation_token_during_tool_execution() {
             .iter()
             .any(|m| m.role == Role::User && m.content == CANCELLATION_TOOL_USER_MESSAGE),
         "expected persisted user interruption note for tool cancellation"
+    );
+}
+
+#[tokio::test]
+async fn test_nonstream_parallel_tool_cancellation_appends_single_user_note() {
+    let ready = Arc::new(Notify::new());
+    let proceed = Arc::new(Notify::new());
+    let tool_a = ActivityGateTool {
+        id: "activity_gate_a".to_string(),
+        stream_id: "nonstream_cancel_multi_a".to_string(),
+        ready: ready.clone(),
+        proceed: proceed.clone(),
+    };
+    let tool_b = ActivityGateTool {
+        id: "activity_gate_b".to_string(),
+        stream_id: "nonstream_cancel_multi_b".to_string(),
+        ready: ready.clone(),
+        proceed,
+    };
+
+    let model_iden = genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "mock");
+    let first_response = genai::chat::ChatResponse {
+        content: MessageContent::from_tool_calls(vec![
+            genai::chat::ToolCall {
+                call_id: "call_1".to_string(),
+                fn_name: "activity_gate_a".to_string(),
+                fn_arguments: json!({}),
+                thought_signatures: None,
+            },
+            genai::chat::ToolCall {
+                call_id: "call_2".to_string(),
+                fn_name: "activity_gate_b".to_string(),
+                fn_arguments: json!({}),
+                thought_signatures: None,
+            },
+        ]),
+        reasoning_content: None,
+        model_iden: model_iden.clone(),
+        provider_model_iden: model_iden,
+        usage: Usage::default(),
+        captured_raw_body: None,
+    };
+    let provider = Arc::new(MockChatProvider::new(vec![
+        Ok(first_response),
+        Ok(text_chat_response("done")),
+    ]));
+    let token = CancellationToken::new();
+    let token_for_run = token.clone();
+    let config = AgentConfig::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let tools = tool_map([tool_a, tool_b]);
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+
+    let handle = tokio::spawn(async move {
+        run_loop(&config, tools, run_ctx, Some(token_for_run), None, None).await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), ready.notified())
+        .await
+        .expect("parallel tool execution did not reach cancellation checkpoint");
+    token.cancel();
+
+    let outcome = tokio::time::timeout(std::time::Duration::from_millis(300), handle)
+        .await
+        .expect("run should stop shortly after cancellation during parallel tool execution")
+        .expect("run task should not panic");
+
+    assert_eq!(outcome.termination, TerminationReason::Cancelled);
+    let cancellation_count = outcome
+        .run_ctx
+        .messages()
+        .iter()
+        .filter(|message| {
+            message.role == Role::User && message.content == CANCELLATION_TOOL_USER_MESSAGE
+        })
+        .count();
+    assert_eq!(
+        cancellation_count, 1,
+        "parallel cancellation must append exactly one interruption note"
     );
 }
 
@@ -8293,12 +8469,14 @@ async fn test_stop_cancellation_token_during_tool_execution_stream() {
     while let Some(changeset) = checkpoint_rx.recv().await {
         changeset.apply_to(&mut final_thread);
     }
-    assert!(
-        final_thread
-            .messages
-            .iter()
-            .any(|m| m.role == Role::User && m.content == CANCELLATION_TOOL_USER_MESSAGE),
-        "stream tool cancellation note should be persisted in thread history"
+    let cancellation_count = final_thread
+        .messages
+        .iter()
+        .filter(|m| m.role == Role::User && m.content == CANCELLATION_TOOL_USER_MESSAGE)
+        .count();
+    assert_eq!(
+        cancellation_count, 1,
+        "stream tool cancellation should persist exactly one interruption note"
     );
 }
 
