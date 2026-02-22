@@ -147,7 +147,7 @@ impl SealedState {
     pub fn contains_key(&self, key: &str) -> bool {
         self.doc
             .as_object()
-            .map_or(false, |obj| obj.contains_key(key))
+            .is_some_and(|obj| obj.contains_key(key))
     }
 }
 

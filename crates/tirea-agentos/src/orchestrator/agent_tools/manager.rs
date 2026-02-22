@@ -354,9 +354,9 @@ pub(super) fn collect_descendant_run_ids_by_parent(
     root_run_id: &str,
     include_root: bool,
 ) -> Vec<String> {
-    if !runs
+    if runs
         .get(root_run_id)
-        .is_some_and(|rec| rec.owner_thread_id == owner_thread_id)
+        .is_none_or(|rec| rec.owner_thread_id != owner_thread_id)
     {
         return Vec::new();
     }

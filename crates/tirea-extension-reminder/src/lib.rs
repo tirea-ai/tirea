@@ -21,8 +21,8 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::plugin::phase::{BeforeInferenceContext, PluginPhaseContext};
+use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::tool::context::ToolCallContext;
 use tirea_state::State;
 
@@ -125,11 +125,12 @@ impl AgentPlugin for ReminderPlugin {
         "reminder"
     }
 
-    async fn before_inference(
-        &self,
-        ctx: &mut BeforeInferenceContext<'_, '_>,
-    ) {
-        let reminders = ctx.state_of::<ReminderState>().items().ok().unwrap_or_default();
+    async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
+        let reminders = ctx
+            .state_of::<ReminderState>()
+            .items()
+            .ok()
+            .unwrap_or_default();
         if reminders.is_empty() {
             return;
         }
@@ -143,7 +144,6 @@ impl AgentPlugin for ReminderPlugin {
             let _ = state.set_items(Vec::new());
         }
     }
-
 }
 
 #[cfg(test)]

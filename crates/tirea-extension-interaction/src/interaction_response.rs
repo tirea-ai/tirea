@@ -15,7 +15,7 @@ use tirea_contract::plugin::phase::{
     BeforeToolExecuteContext, PluginPhaseContext, RunStartContext,
 };
 use tirea_contract::plugin::AgentPlugin;
-use tirea_contract::runtime::control::LoopControlState;
+use tirea_contract::runtime::control::{InferenceError, LoopControlState};
 use tirea_contract::{Interaction, InteractionResponse};
 use tirea_extension_permission::PermissionState;
 use tirea_state::{State, TireaError};
@@ -170,6 +170,35 @@ impl InteractionResponsePlugin {
         Ok(())
     }
 
+    fn report_run_start_error(step: &impl PluginPhaseContext, message: impl Into<String>) {
+        let message = message.into();
+        tracing::error!(
+            plugin = INTERACTION_RESPONSE_PLUGIN_ID,
+            error = %message,
+            "interaction response run_start handling failed"
+        );
+
+        if let Err(err) = Self::clear_pending_interaction_state(step) {
+            tracing::error!(
+                plugin = INTERACTION_RESPONSE_PLUGIN_ID,
+                error = %err,
+                "failed to clear pending interaction state after run_start error"
+            );
+        }
+
+        let state = step.state_of::<LoopControlState>();
+        if let Err(err) = state.set_inference_error(Some(InferenceError {
+            error_type: "interaction_response_error".to_string(),
+            message,
+        })) {
+            tracing::error!(
+                plugin = INTERACTION_RESPONSE_PLUGIN_ID,
+                error = %err,
+                "failed to persist interaction response error"
+            );
+        }
+    }
+
     /// During RunStart, detect pending interaction and schedule replay if approved.
     fn on_run_start(&self, step: &mut RunStartContext<'_, '_>) {
         let Some(pending) = Self::persisted_pending_interaction(step) else {
@@ -182,7 +211,7 @@ impl InteractionResponsePlugin {
 
             if self.is_denied(pending_id) {
                 if let Err(err) = Self::clear_pending_interaction_state(step) {
-                    let _ = err;
+                    Self::report_run_start_error(step, err);
                     return;
                 }
                 if let Err(err) = Self::push_resolution(
@@ -192,7 +221,7 @@ impl InteractionResponsePlugin {
                         .cloned()
                         .unwrap_or(serde_json::Value::Bool(false)),
                 ) {
-                    let _ = err;
+                    Self::report_run_start_error(step, err);
                 }
                 return;
             }
@@ -208,7 +237,7 @@ impl InteractionResponsePlugin {
                     .cloned()
                     .unwrap_or(serde_json::Value::Bool(true)),
             ) {
-                let _ = err;
+                Self::report_run_start_error(step, err);
                 return;
             }
 
@@ -224,19 +253,10 @@ impl InteractionResponsePlugin {
                         .map(str::to_string)
                 });
             let Some(run_id) = run_id else {
-                let clear_result = {
-                    let state = step.state_of::<LoopControlState>();
-                    match state.pending_interaction_none() {
-                        Ok(()) => Ok(()),
-                        Err(TireaError::PathNotFound { .. }) => Ok(()),
-                        Err(err) => Err(format!(
-                            "failed to clear loop_control.pending_interaction: {err}"
-                        )),
-                    }
-                };
-                if let Err(err) = clear_result {
-                    let _ = err;
-                }
+                Self::report_run_start_error(
+                    step,
+                    "missing run_id in recovery interaction payload",
+                );
                 return;
             };
 
@@ -249,7 +269,7 @@ impl InteractionResponsePlugin {
                 }),
             );
             if let Err(err) = Self::queue_replay_call(step, replay_call) {
-                let _ = err;
+                Self::report_run_start_error(step, err);
             }
             return;
         }
@@ -264,7 +284,7 @@ impl InteractionResponsePlugin {
 
         if self.is_denied(pending_id) {
             if let Err(err) = Self::clear_pending_interaction_state(step) {
-                let _ = err;
+                Self::report_run_start_error(step, err);
                 return;
             }
             if let Err(err) = Self::push_resolution(
@@ -274,7 +294,7 @@ impl InteractionResponsePlugin {
                     .cloned()
                     .unwrap_or(serde_json::Value::Bool(false)),
             ) {
-                let _ = err;
+                Self::report_run_start_error(step, err);
             }
             return;
         }
@@ -296,11 +316,14 @@ impl InteractionResponsePlugin {
                 .clone()
                 .unwrap_or(serde_json::Value::Bool(true)),
         ) {
-            let _ = err;
+            Self::report_run_start_error(step, err);
             return;
         }
 
-        self.route_frontend_invocation(step, &invocation, result_payload.as_ref());
+        if let Err(err) = self.route_frontend_invocation(step, &invocation, result_payload.as_ref())
+        {
+            Self::report_run_start_error(step, err);
+        }
     }
 
     /// Route an approved response using the first-class `FrontendToolInvocation` model.
@@ -309,7 +332,7 @@ impl InteractionResponsePlugin {
         step: &impl PluginPhaseContext,
         inv: &FrontendToolInvocation,
         response: Option<&serde_json::Value>,
-    ) {
+    ) -> Result<(), String> {
         match &inv.routing {
             ResponseRouting::ReplayOriginalTool => {
                 // Queue replay of the original backend tool.
@@ -327,10 +350,10 @@ impl InteractionResponsePlugin {
                         let permission = step.state_of::<PermissionState>();
                         let mut approved = permission.approved_calls().ok().unwrap_or_default();
                         approved.insert(backend_call_id.clone(), true);
-                        let _ = permission.set_approved_calls(approved);
-                        if let Err(err) = Self::queue_replay_call(step, replay_call) {
-                            let _ = err;
-                        }
+                        permission
+                            .set_approved_calls(approved)
+                            .map_err(|e| format!("failed to persist one-shot approval: {e}"))?;
+                        Self::queue_replay_call(step, replay_call)?;
                     }
                     InvocationOrigin::PluginInitiated { .. } => {
                         // PluginInitiated with ReplayOriginalTool is unusual but
@@ -340,9 +363,7 @@ impl InteractionResponsePlugin {
                             inv.tool_name.clone(),
                             inv.arguments.clone(),
                         );
-                        if let Err(err) = Self::queue_replay_call(step, replay_call) {
-                            let _ = err;
-                        }
+                        Self::queue_replay_call(step, replay_call)?;
                     }
                 }
             }
@@ -354,9 +375,7 @@ impl InteractionResponsePlugin {
                     inv.tool_name.clone(),
                     normalize_frontend_tool_result(response, &inv.arguments),
                 );
-                if let Err(err) = Self::queue_replay_call(step, replay_call) {
-                    let _ = err;
-                }
+                Self::queue_replay_call(step, replay_call)?;
             }
             ResponseRouting::PassToLLM => {
                 // Future: pass the result to LLM as an independent message.
@@ -366,11 +385,10 @@ impl InteractionResponsePlugin {
                     inv.tool_name.clone(),
                     normalize_frontend_tool_result(response, &inv.arguments),
                 );
-                if let Err(err) = Self::queue_replay_call(step, replay_call) {
-                    let _ = err;
-                }
+                Self::queue_replay_call(step, replay_call)?;
             }
         }
+        Ok(())
     }
 }
 
@@ -480,6 +498,9 @@ mod tests {
         StepEndContext, StepStartContext,
     };
     use tirea_contract::plugin::AgentPlugin;
+    use tirea_contract::runtime::state_paths::{
+        INTERACTION_OUTBOX_STATE_PATH, PERMISSIONS_STATE_PATH,
+    };
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::{Message, ToolCall};
     use tirea_state::DocCell;
@@ -534,7 +555,7 @@ mod tests {
 
     fn replay_calls_from_state(state: &serde_json::Value) -> Vec<ToolCall> {
         state
-            .get("interaction_outbox")
+            .get(INTERACTION_OUTBOX_STATE_PATH)
             .and_then(|agent| agent.get("replay_tool_calls"))
             .cloned()
             .and_then(|v| serde_json::from_value::<Vec<ToolCall>>(v).ok())
@@ -543,7 +564,7 @@ mod tests {
 
     fn interaction_resolutions_from_state(state: &serde_json::Value) -> Vec<InteractionResponse> {
         state
-            .get("interaction_outbox")
+            .get(INTERACTION_OUTBOX_STATE_PATH)
             .and_then(|agent| agent.get("interaction_resolutions"))
             .cloned()
             .and_then(|v| serde_json::from_value::<Vec<InteractionResponse>>(v).ok())
@@ -601,7 +622,7 @@ mod tests {
 
         // One-shot approval should be persisted for the replayed backend call.
         let approved = updated
-            .get("permissions")
+            .get(PERMISSIONS_STATE_PATH)
             .and_then(|p| p.get("approved_calls"))
             .and_then(|m| m.get("call_write"))
             .and_then(|v| v.as_bool());
@@ -860,7 +881,7 @@ mod tests {
 
         // One-shot approval should be persisted for the replayed backend call.
         let approved = updated
-            .get("permissions")
+            .get(PERMISSIONS_STATE_PATH)
             .and_then(|p| p.get("approved_calls"))
             .and_then(|m| m.get("call_write"))
             .and_then(|v| v.as_bool());
@@ -955,6 +976,62 @@ mod tests {
         assert_eq!(resolutions[0].interaction_id, "call_copy");
         assert_eq!(resolutions[0].result["ok"], true);
         assert_eq!(resolutions[0].result["copied"], "hello");
+    }
+
+    #[tokio::test]
+    async fn run_start_replay_failure_sets_inference_error_and_clears_pending() {
+        let state = json!({
+            "loop_control": {
+                "pending_interaction": {
+                    "id": "fc_ask_fail",
+                    "action": "tool:write_file",
+                    "parameters": {}
+                },
+                "pending_frontend_invocation": {
+                    "call_id": "fc_ask_fail",
+                    "tool_name": "PermissionConfirm",
+                    "arguments": { "tool_name": "write_file", "tool_args": { "path": "a.txt" } },
+                    "origin": {
+                        "type": "tool_call_intercepted",
+                        "backend_call_id": "call_write",
+                        "backend_tool_name": "write_file",
+                        "backend_arguments": { "path": "a.txt" }
+                    },
+                    "routing": {
+                        "strategy": "replay_original_tool"
+                    }
+                }
+            },
+            "interaction_outbox": {
+                "replay_tool_calls": "invalid_type"
+            }
+        });
+        let fixture = TestFixture::new_with_state(state);
+        let plugin = InteractionResponsePlugin::new(vec!["fc_ask_fail".to_string()], vec![]);
+
+        let mut step = fixture.step(vec![]);
+        plugin.run_phase(Phase::RunStart, &mut step).await;
+
+        let updated = fixture.updated_state();
+        assert!(
+            updated["loop_control"]["pending_interaction"].is_null(),
+            "pending interaction should be cleared on run_start failure"
+        );
+        assert!(
+            updated["loop_control"]["pending_frontend_invocation"].is_null(),
+            "pending frontend invocation should be cleared on run_start failure"
+        );
+        assert_eq!(
+            updated["loop_control"]["inference_error"]["type"],
+            "interaction_response_error"
+        );
+        assert!(
+            updated["loop_control"]["inference_error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("failed to persist replay tool call"),
+            "expected queue replay failure message in inference_error"
+        );
     }
 
     #[tokio::test]

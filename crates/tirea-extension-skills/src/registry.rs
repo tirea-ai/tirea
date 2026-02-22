@@ -39,6 +39,10 @@ pub struct DiscoveryResult {
 pub trait SkillRegistry: Send + Sync {
     fn len(&self) -> usize;
 
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     fn get(&self, id: &str) -> Option<Arc<dyn Skill>>;
 
     fn ids(&self) -> Vec<String>;
@@ -327,9 +331,11 @@ fn is_periodic_refresh_running(state: &SkillRegistryState) -> bool {
     runtime.is_some()
 }
 
+type DiscoverSnapshot = (HashMap<String, Arc<dyn Skill>>, Vec<SkillWarning>);
+
 fn discover_snapshot_from_roots(
     roots: &[PathBuf],
-) -> Result<(HashMap<String, Arc<dyn Skill>>, Vec<SkillWarning>), SkillRegistryManagerError> {
+) -> Result<DiscoverSnapshot, SkillRegistryManagerError> {
     let discovered = FsSkill::discover_roots(roots.to_vec())?;
     let mut map: HashMap<String, Arc<dyn Skill>> = HashMap::new();
     for skill in discovered.skills {
@@ -743,7 +749,7 @@ fn read_frontmatter_from_skill_md_path(skill_md: &Path) -> Result<SkillFrontmatt
 }
 
 fn trim_line_ending(line: &str) -> &str {
-    line.trim_end_matches(|c| c == '\n' || c == '\r')
+    line.trim_end_matches(['\n', '\r'])
 }
 
 fn normalize_name(s: &str) -> String {

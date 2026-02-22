@@ -35,6 +35,31 @@ pub(super) struct AppliedToolResults {
     pub(super) state_snapshot: Option<Value>,
 }
 
+#[derive(Clone)]
+pub(super) struct ToolPhaseContext<'a> {
+    pub(super) tool_descriptors: &'a [ToolDescriptor],
+    pub(super) plugins: &'a [Arc<dyn AgentPlugin>],
+    pub(super) activity_manager: Option<Arc<dyn ActivityManager>>,
+    pub(super) run_config: &'a tirea_contract::RunConfig,
+    pub(super) thread_id: &'a str,
+    pub(super) thread_messages: &'a [Arc<Message>],
+    pub(super) cancellation_token: Option<&'a RunCancellationToken>,
+}
+
+impl<'a> ToolPhaseContext<'a> {
+    pub(super) fn from_request(request: &'a ToolExecutionRequest<'a>) -> Self {
+        Self {
+            tool_descriptors: request.tool_descriptors,
+            plugins: request.plugins,
+            activity_manager: request.activity_manager.clone(),
+            run_config: request.run_config,
+            thread_id: request.thread_id,
+            thread_messages: request.thread_messages,
+            cancellation_token: request.cancellation_token,
+        }
+    }
+}
+
 fn map_tool_executor_error(err: AgentLoopError) -> ToolExecutorError {
     match err {
         AgentLoopError::Cancelled { run_ctx } => ToolExecutorError::Cancelled {
@@ -56,21 +81,10 @@ impl ToolExecutor for ParallelToolExecutor {
         &self,
         request: ToolExecutionRequest<'_>,
     ) -> Result<Vec<ToolExecutionResult>, ToolExecutorError> {
-        execute_tools_parallel_with_phases(
-            request.tools,
-            request.calls,
-            request.state,
-            request.tool_descriptors,
-            request.plugins,
-            request.activity_manager,
-            request.run_config,
-            request.thread_id,
-            request.thread_messages,
-            request.state_version,
-            request.cancellation_token,
-        )
-        .await
-        .map_err(map_tool_executor_error)
+        let phase_ctx = ToolPhaseContext::from_request(&request);
+        execute_tools_parallel_with_phases(request.tools, request.calls, request.state, phase_ctx)
+            .await
+            .map_err(map_tool_executor_error)
     }
 
     fn name(&self) -> &'static str {
@@ -92,21 +106,10 @@ impl ToolExecutor for SequentialToolExecutor {
         &self,
         request: ToolExecutionRequest<'_>,
     ) -> Result<Vec<ToolExecutionResult>, ToolExecutorError> {
-        execute_tools_sequential_with_phases(
-            request.tools,
-            request.calls,
-            request.state,
-            request.tool_descriptors,
-            request.plugins,
-            request.activity_manager,
-            request.run_config,
-            request.thread_id,
-            request.thread_messages,
-            request.state_version,
-            request.cancellation_token,
-        )
-        .await
-        .map_err(map_tool_executor_error)
+        let phase_ctx = ToolPhaseContext::from_request(&request);
+        execute_tools_sequential_with_phases(request.tools, request.calls, request.state, phase_ctx)
+            .await
+            .map_err(map_tool_executor_error)
     }
 
     fn name(&self) -> &'static str {
@@ -499,21 +502,17 @@ pub(super) async fn execute_tools_parallel_with_phases(
     tools: &HashMap<String, Arc<dyn Tool>>,
     calls: &[crate::contracts::thread::ToolCall],
     state: &Value,
-    tool_descriptors: &[ToolDescriptor],
-    plugins: &[Arc<dyn AgentPlugin>],
-    activity_manager: Option<Arc<dyn ActivityManager>>,
-    run_config: &tirea_contract::RunConfig,
-    thread_id: &str,
-    thread_messages: &[Arc<Message>],
-    state_version: u64,
-    cancellation_token: Option<&RunCancellationToken>,
+    phase_ctx: ToolPhaseContext<'_>,
 ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
     use futures::future::join_all;
 
-    if cancellation_token.is_some_and(|token| token.is_cancelled()) {
+    if phase_ctx
+        .cancellation_token
+        .is_some_and(|token| token.is_cancelled())
+    {
         return Err(AgentLoopError::Cancelled {
             run_ctx: Box::new(RunContext::new(
-                thread_id,
+                phase_ctx.thread_id,
                 serde_json::json!({}),
                 vec![],
                 tirea_contract::RunConfig::default(),
@@ -522,17 +521,19 @@ pub(super) async fn execute_tools_parallel_with_phases(
     }
 
     // Clone run config for parallel tasks (RunConfig is Clone).
-    let run_config_owned = run_config.clone();
-    let thread_id = thread_id.to_string();
-    let thread_messages = Arc::new(thread_messages.to_vec());
+    let run_config_owned = phase_ctx.run_config.clone();
+    let thread_id = phase_ctx.thread_id.to_string();
+    let thread_messages = Arc::new(phase_ctx.thread_messages.to_vec());
+    let tool_descriptors = phase_ctx.tool_descriptors.to_vec();
+    let plugins = phase_ctx.plugins.to_vec();
 
     let futures = calls.iter().map(|call| {
         let tool = tools.get(&call.name).cloned();
         let state = state.clone();
         let call = call.clone();
-        let plugins = plugins.to_vec();
-        let tool_descriptors = tool_descriptors.to_vec();
-        let activity_manager = activity_manager.clone();
+        let plugins = plugins.clone();
+        let tool_descriptors = tool_descriptors.clone();
+        let activity_manager = phase_ctx.activity_manager.clone();
         let rt = run_config_owned.clone();
         let sid = thread_id.clone();
         let thread_messages = thread_messages.clone();
@@ -542,20 +543,22 @@ pub(super) async fn execute_tools_parallel_with_phases(
                 tool.as_deref(),
                 &call,
                 &state,
-                &tool_descriptors,
-                &plugins,
-                activity_manager,
-                &rt,
-                &sid,
-                thread_messages.as_slice(),
-                state_version,
+                &ToolPhaseContext {
+                    tool_descriptors: &tool_descriptors,
+                    plugins: &plugins,
+                    activity_manager,
+                    run_config: &rt,
+                    thread_id: &sid,
+                    thread_messages: thread_messages.as_slice(),
+                    cancellation_token: None,
+                },
             )
             .await
         }
     });
 
     let join_future = join_all(futures);
-    let results = if let Some(token) = cancellation_token {
+    let results = if let Some(token) = phase_ctx.cancellation_token {
         tokio::select! {
             _ = token.cancelled() => {
                 return Err(AgentLoopError::Cancelled {
@@ -606,21 +609,17 @@ pub(super) async fn execute_tools_sequential_with_phases(
     tools: &HashMap<String, Arc<dyn Tool>>,
     calls: &[crate::contracts::thread::ToolCall],
     initial_state: &Value,
-    tool_descriptors: &[ToolDescriptor],
-    plugins: &[Arc<dyn AgentPlugin>],
-    activity_manager: Option<Arc<dyn ActivityManager>>,
-    run_config: &tirea_contract::RunConfig,
-    thread_id: &str,
-    thread_messages: &[Arc<Message>],
-    state_version: u64,
-    cancellation_token: Option<&RunCancellationToken>,
+    phase_ctx: ToolPhaseContext<'_>,
 ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
     use tirea_state::apply_patch;
 
-    if cancellation_token.is_some_and(|token| token.is_cancelled()) {
+    if phase_ctx
+        .cancellation_token
+        .is_some_and(|token| token.is_cancelled())
+    {
         return Err(AgentLoopError::Cancelled {
             run_ctx: Box::new(RunContext::new(
-                thread_id,
+                phase_ctx.thread_id,
                 serde_json::json!({}),
                 vec![],
                 tirea_contract::RunConfig::default(),
@@ -633,12 +632,21 @@ pub(super) async fn execute_tools_sequential_with_phases(
 
     for call in calls {
         let tool = tools.get(&call.name).cloned();
-        let result = if let Some(token) = cancellation_token {
+        let call_phase_ctx = ToolPhaseContext {
+            tool_descriptors: phase_ctx.tool_descriptors,
+            plugins: phase_ctx.plugins,
+            activity_manager: phase_ctx.activity_manager.clone(),
+            run_config: phase_ctx.run_config,
+            thread_id: phase_ctx.thread_id,
+            thread_messages: phase_ctx.thread_messages,
+            cancellation_token: None,
+        };
+        let result = if let Some(token) = phase_ctx.cancellation_token {
             tokio::select! {
                 _ = token.cancelled() => {
                     return Err(AgentLoopError::Cancelled {
                         run_ctx: Box::new(RunContext::new(
-                            thread_id, serde_json::json!({}), vec![],
+                            phase_ctx.thread_id, serde_json::json!({}), vec![],
                             tirea_contract::RunConfig::default(),
                         )),
                     });
@@ -647,29 +655,11 @@ pub(super) async fn execute_tools_sequential_with_phases(
                     tool.as_deref(),
                     call,
                     &state,
-                    tool_descriptors,
-                    plugins,
-                    activity_manager.clone(),
-                    run_config,
-                    thread_id,
-                    thread_messages,
-                    state_version,
+                    &call_phase_ctx,
                 ) => result?
             }
         } else {
-            execute_single_tool_with_phases(
-                tool.as_deref(),
-                call,
-                &state,
-                tool_descriptors,
-                plugins,
-                activity_manager.clone(),
-                run_config,
-                thread_id,
-                thread_messages,
-                state_version,
-            )
-            .await?
+            execute_single_tool_with_phases(tool.as_deref(), call, &state, &call_phase_ctx).await?
         };
 
         // Apply patch to state for next tool
@@ -710,19 +700,13 @@ pub(super) async fn execute_single_tool_with_phases(
     tool: Option<&dyn Tool>,
     call: &crate::contracts::thread::ToolCall,
     state: &Value,
-    tool_descriptors: &[ToolDescriptor],
-    plugins: &[Arc<dyn AgentPlugin>],
-    activity_manager: Option<Arc<dyn ActivityManager>>,
-    run_config: &tirea_contract::RunConfig,
-    thread_id: &str,
-    thread_messages: &[Arc<Message>],
-    _state_version: u64,
+    phase_ctx: &ToolPhaseContext<'_>,
 ) -> Result<ToolExecutionResult, AgentLoopError> {
     // Create ToolCallContext for plugin phases
     let doc = tirea_state::DocCell::new(state.clone());
     let ops = std::sync::Mutex::new(Vec::new());
     let pending_messages = std::sync::Mutex::new(Vec::new());
-    let plugin_scope = run_config;
+    let plugin_scope = phase_ctx.run_config;
     let plugin_tool_call_ctx = crate::contracts::ToolCallContext::new(
         &doc,
         &ops,
@@ -736,19 +720,19 @@ pub(super) async fn execute_single_tool_with_phases(
     // Create StepContext for this tool
     let mut step = StepContext::new(
         plugin_tool_call_ctx,
-        thread_id,
-        thread_messages,
-        tool_descriptors.to_vec(),
+        phase_ctx.thread_id,
+        phase_ctx.thread_messages,
+        phase_ctx.tool_descriptors.to_vec(),
     );
     step.tool = Some(ToolContext::new(call));
 
     // Phase: BeforeToolExecute
-    emit_phase_checked(Phase::BeforeToolExecute, &mut step, plugins).await?;
+    emit_phase_checked(Phase::BeforeToolExecute, &mut step, phase_ctx.plugins).await?;
 
     // Check if blocked or pending
     let (execution, pending_interaction, pending_frontend_invocation) =
         if !crate::engine::tool_filter::is_scope_allowed(
-            Some(run_config),
+            Some(phase_ctx.run_config),
             &call.name,
             SCOPE_ALLOWED_TOOLS_KEY,
             SCOPE_EXCLUDED_TOOLS_KEY,
@@ -834,7 +818,7 @@ pub(super) async fn execute_single_tool_with_phases(
                 format!("tool:{}", call.name),
                 plugin_scope,
                 &tool_pending_msgs,
-                activity_manager,
+                phase_ctx.activity_manager.clone(),
             );
             let result = match tool
                 .unwrap()
@@ -867,7 +851,7 @@ pub(super) async fn execute_single_tool_with_phases(
     step.set_tool_result(execution.result.clone());
 
     // Phase: AfterToolExecute
-    emit_phase_checked(Phase::AfterToolExecute, &mut step, plugins).await?;
+    emit_phase_checked(Phase::AfterToolExecute, &mut step, phase_ctx.plugins).await?;
 
     // Flush plugin state ops into pending patches
     let plugin_patch = step.ctx().take_patch();

@@ -159,7 +159,7 @@ impl AgentOs {
     pub async fn run_stream(&self, request: RunRequest) -> Result<RunStream, AgentOsRunError> {
         let resolved = self.resolve(&request.agent_id)?;
         let prepared = self.prepare_run(request, resolved).await?;
-        Ok(Self::execute_prepared(prepared)?)
+        Self::execute_prepared(prepared)
     }
 
     /// Deduplicate incoming messages against existing thread messages.

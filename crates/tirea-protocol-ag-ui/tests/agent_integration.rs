@@ -4003,7 +4003,7 @@ async fn test_file_storage_concurrent_writes_different_sessions() {
         let s = Arc::clone(&storage);
         handles.push(tokio::spawn(async move {
             let thread = ConversationAgentState::new(format!("session_{}", i))
-                .with_message(Message::user(&format!("Message from thread {}", i)));
+                .with_message(Message::user(format!("Message from thread {}", i)));
             s.save(&thread).await.unwrap();
         }));
     }
@@ -4038,7 +4038,7 @@ async fn test_file_storage_concurrent_writes_same_session() {
         let s = Arc::clone(&storage);
         handles.push(tokio::spawn(async move {
             let thread = ConversationAgentState::new("shared_session")
-                .with_message(Message::user(&format!("Write {}", i)));
+                .with_message(Message::user(format!("Write {}", i)));
             s.save(&thread).await.unwrap();
         }));
     }
@@ -4076,7 +4076,7 @@ async fn test_file_storage_read_write_interleaved() {
             // Writers
             handles.push(tokio::spawn(async move {
                 let thread = ConversationAgentState::new("interleaved")
-                    .with_message(Message::user(&format!("update {}", i)));
+                    .with_message(Message::user(format!("update {}", i)));
                 s.save(&thread).await.unwrap();
             }));
         } else {
@@ -4597,7 +4597,7 @@ fn test_scenario_text_interrupted_by_interaction() {
     let events3 = ctx.on_agent_event(&pending_event);
 
     // Should end text stream (pending no longer emits tool call events)
-    assert!(events3.len() >= 1, "Should have TextMessageEnd");
+    assert!(!events3.is_empty(), "Should have TextMessageEnd");
     assert!(
         matches!(events3[0], Event::TextMessageEnd { .. }),
         "First event should be TextMessageEnd"
@@ -5860,7 +5860,7 @@ fn test_scenario_agui_context_state_after_pending() {
     let pending_events = ctx.on_agent_event(&pending_event);
 
     // Should have TextMessageEnd only (pending no longer emits tool call events)
-    assert!(pending_events.len() >= 1);
+    assert!(!pending_events.is_empty());
     assert!(
         matches!(pending_events[0], Event::TextMessageEnd { .. }),
         "First event should be TextMessageEnd to close the text stream"
@@ -7596,7 +7596,7 @@ async fn test_multiple_pending_interactions_flow() {
     // Convert all to AG-UI events
     let mut all_events: Vec<Event> = Vec::new();
     for interaction in &interactions {
-        all_events.extend(interaction_to_ag_ui_events(&interaction));
+        all_events.extend(interaction_to_ag_ui_events(interaction));
     }
 
     // Each interaction should produce 3 events (Start, Args, End)

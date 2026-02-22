@@ -114,24 +114,19 @@ impl NatsBufferedThreadWriter {
             .await
             .map_err(|e| NatsBufferedThreadWriterError::JetStream(e.to_string()))?;
 
-        loop {
-            match tokio::time::timeout(DRAIN_TIMEOUT, messages.next()).await {
-                Ok(Some(Ok(msg))) => {
-                    let subject = msg.subject.to_string();
-                    let parts: Vec<&str> = subject.split('.').collect();
-                    if parts.len() != 3 {
-                        let _ = msg.double_ack().await;
-                        continue;
-                    }
-                    let thread_id = parts[1].to_string();
-                    match serde_json::from_slice::<ThreadChangeSet>(&msg.payload) {
-                        Ok(delta) => pending.entry(thread_id).or_default().push((delta, msg)),
-                        Err(_) => {
-                            let _ = msg.double_ack().await;
-                        }
-                    }
+        while let Ok(Some(Ok(msg))) = tokio::time::timeout(DRAIN_TIMEOUT, messages.next()).await {
+            let subject = msg.subject.to_string();
+            let parts: Vec<&str> = subject.split('.').collect();
+            if parts.len() != 3 {
+                let _ = msg.double_ack().await;
+                continue;
+            }
+            let thread_id = parts[1].to_string();
+            match serde_json::from_slice::<ThreadChangeSet>(&msg.payload) {
+                Ok(delta) => pending.entry(thread_id).or_default().push((delta, msg)),
+                Err(_) => {
+                    let _ = msg.double_ack().await;
                 }
-                Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
             }
         }
 
@@ -214,17 +209,12 @@ impl NatsBufferedThreadWriter {
             .await
             .map_err(|e| NatsBufferedThreadWriterError::JetStream(e.to_string()))?;
 
-        loop {
-            match tokio::time::timeout(DRAIN_TIMEOUT, messages.next()).await {
-                Ok(Some(Ok(msg))) => {
-                    match serde_json::from_slice::<ThreadChangeSet>(&msg.payload) {
-                        Ok(delta) => deltas_with_msgs.push((delta, msg)),
-                        Err(_) => {
-                            let _ = msg.double_ack().await;
-                        }
-                    }
+        while let Ok(Some(Ok(msg))) = tokio::time::timeout(DRAIN_TIMEOUT, messages.next()).await {
+            match serde_json::from_slice::<ThreadChangeSet>(&msg.payload) {
+                Ok(delta) => deltas_with_msgs.push((delta, msg)),
+                Err(_) => {
+                    let _ = msg.double_ack().await;
                 }
-                Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
             }
         }
 
@@ -259,13 +249,9 @@ impl AgentStateWriter for NatsBufferedThreadWriter {
         self.jetstream
             .publish(delta_subject(thread_id), payload.into())
             .await
-            .map_err(|e| {
-                AgentStateStoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
-            })?
+            .map_err(|e| AgentStateStoreError::Io(std::io::Error::other(e)))?
             .await
-            .map_err(|e| {
-                AgentStateStoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
-            })?;
+            .map_err(|e| AgentStateStoreError::Io(std::io::Error::other(e)))?;
 
         if delta.reason == CheckpointReason::RunFinished {
             self.flush_thread_buffer(thread_id)

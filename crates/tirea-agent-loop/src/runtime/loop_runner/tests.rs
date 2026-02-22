@@ -776,18 +776,21 @@ async fn test_activity_event_emitted_before_tool_completion() {
     let plugins: Vec<Arc<dyn AgentPlugin>> = Vec::new();
     let state = json!({});
     let run_config = tirea_contract::RunConfig::default();
+    let phase_ctx = super::tool_exec::ToolPhaseContext {
+        tool_descriptors: &descriptors,
+        plugins: &plugins,
+        activity_manager: Some(activity_manager),
+        run_config: &run_config,
+        thread_id: "test",
+        thread_messages: &[],
+        cancellation_token: None,
+    };
 
     let mut tool_future = Box::pin(execute_single_tool_with_phases(
         Some(&tool),
         &call,
         &state,
-        &descriptors,
-        &plugins,
-        Some(activity_manager),
-        &run_config,
-        "test",
-        &[],
-        0,
+        &phase_ctx,
     ));
 
     tokio::select! {
@@ -858,18 +861,20 @@ async fn test_parallel_tools_emit_activity_before_completion() {
     let plugins_for_task = plugins.clone();
     let state_for_task = state.clone();
     let handle = tokio::spawn(async move {
+        let phase_ctx = super::tool_exec::ToolPhaseContext {
+            tool_descriptors: &tool_descriptors_for_task,
+            plugins: &plugins_for_task,
+            activity_manager: Some(activity_manager),
+            run_config: &run_config,
+            thread_id: "test",
+            thread_messages: &[],
+            cancellation_token: None,
+        };
         execute_tools_parallel_with_phases(
             &tools_for_task,
             &calls_for_task,
             &state_for_task,
-            &tool_descriptors_for_task,
-            &plugins_for_task,
-            Some(activity_manager),
-            &run_config,
-            "test",
-            &[],
-            0,
-            None,
+            phase_ctx,
         )
         .await
         .expect("parallel tool execution should succeed")
@@ -932,20 +937,17 @@ async fn test_parallel_tool_executor_honors_cancellation_token() {
     let run_config = tirea_contract::RunConfig::default();
 
     let handle = tokio::spawn(async move {
-        let result = execute_tools_parallel_with_phases(
-            &tools,
-            &calls,
-            &json!({}),
-            &tool_descriptors,
-            &[],
-            None,
-            &run_config,
-            "cancel-test",
-            &[],
-            0,
-            Some(&token_for_task),
-        )
-        .await;
+        let phase_ctx = super::tool_exec::ToolPhaseContext {
+            tool_descriptors: &tool_descriptors,
+            plugins: &[],
+            activity_manager: None,
+            run_config: &run_config,
+            thread_id: "cancel-test",
+            thread_messages: &[],
+            cancellation_token: Some(&token_for_task),
+        };
+        let result =
+            execute_tools_parallel_with_phases(&tools, &calls, &json!({}), phase_ctx).await;
         ready_for_task.notify_one();
         result
     });
@@ -1411,21 +1413,19 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
     let tool_descriptors = vec![tool.descriptor()];
     let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(GuardedPlugin)];
     let run_config = tirea_contract::RunConfig::default();
+    let phase_ctx = super::tool_exec::ToolPhaseContext {
+        tool_descriptors: &tool_descriptors,
+        plugins: &plugins,
+        activity_manager: None,
+        run_config: &run_config,
+        thread_id: "test",
+        thread_messages: &[],
+        cancellation_token: None,
+    };
 
-    let result = execute_single_tool_with_phases(
-        Some(&tool),
-        &call,
-        &state,
-        &tool_descriptors,
-        &plugins,
-        None,
-        &run_config,
-        "test",
-        &[],
-        0,
-    )
-    .await
-    .expect("tool execution should succeed");
+    let result = execute_single_tool_with_phases(Some(&tool), &call, &state, &phase_ctx)
+        .await
+        .expect("tool execution should succeed");
 
     assert!(result.execution.result.is_success());
 }
@@ -1464,21 +1464,19 @@ async fn test_plugin_sees_real_session_id_and_scope_in_tool_phase() {
 
     let mut rt = tirea_contract::RunConfig::new();
     rt.set("user_id", "u-abc").unwrap();
+    let phase_ctx = super::tool_exec::ToolPhaseContext {
+        tool_descriptors: &tool_descriptors,
+        plugins: &plugins,
+        activity_manager: None,
+        run_config: &rt,
+        thread_id: "real-thread-42",
+        thread_messages: &[],
+        cancellation_token: None,
+    };
 
-    let result = execute_single_tool_with_phases(
-        Some(&tool),
-        &call,
-        &state,
-        &tool_descriptors,
-        &plugins,
-        None,
-        &rt,
-        "real-thread-42",
-        &[],
-        0,
-    )
-    .await
-    .expect("tool execution should succeed");
+    let result = execute_single_tool_with_phases(Some(&tool), &call, &state, &phase_ctx)
+        .await
+        .expect("tool execution should succeed");
 
     assert!(result.execution.result.is_success());
     assert!(VERIFIED.load(Ordering::SeqCst), "plugin did not run");
@@ -1562,18 +1560,15 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
 
         phase_dispatch_methods!(|this, phase, step| {
             this.phases.lock().unwrap().push(phase);
-            match phase {
-                Phase::BeforeInference => {
-                    step.system("from_before_inference");
-                    step.skip_inference = true;
-                    let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
-                        tirea_state::path!("debug", "phase_block"),
-                        json!(true),
-                    )))
-                    .with_source("test:phase_block");
-                    step.pending_patches.push(patch);
-                }
-                _ => {}
+            if phase == Phase::BeforeInference {
+                step.system("from_before_inference");
+                step.skip_inference = true;
+                let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
+                    tirea_state::path!("debug", "phase_block"),
+                    json!(true),
+                )))
+                .with_source("test:phase_block");
+                step.pending_patches.push(patch);
             }
         });
     }
@@ -2638,7 +2633,7 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let events = collect_stream_events(run_loop_stream(config, tools, run_ctx, None, None)).await;
 
-    assert!(matches!(events.get(0), Some(AgentEvent::RunStart { .. })));
+    assert!(matches!(events.first(), Some(AgentEvent::RunStart { .. })));
     assert!(matches!(
         events.get(1),
         Some(AgentEvent::InteractionRequested { interaction })
@@ -2885,10 +2880,9 @@ async fn test_run_loop_permission_approval_replays_tool_and_clears_outbox() {
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(interaction))
         .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>)
-        .with_llm_executor(
-            Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("unused"))]))
-                as Arc<dyn LlmExecutor>,
-        );
+        .with_llm_executor(Arc::new(MockChatProvider::new(vec![Ok(text_chat_response(
+            "unused",
+        ))])) as Arc<dyn LlmExecutor>);
 
     let thread = Thread::with_initial_state(
         "test",
@@ -3411,7 +3405,7 @@ async fn test_run_loop_rejects_skip_inference_mutation_outside_before_inference(
         outcome.termination
     );
     assert!(
-        outcome.failure.as_ref().map_or(false, |f| matches!(f, LoopFailure::State(msg) if msg.contains("mutated skip_inference outside BeforeInference"))),
+        outcome.failure.as_ref().is_some_and(|f| matches!(f, LoopFailure::State(msg) if msg.contains("mutated skip_inference outside BeforeInference"))),
         "expected skip_inference mutation error in failure"
     );
 }
@@ -3484,7 +3478,7 @@ async fn test_run_loop_rejects_prompt_context_mutation_outside_before_inference(
         outcome.termination
     );
     assert!(
-        outcome.failure.as_ref().map_or(false, |f| matches!(f, LoopFailure::State(msg) if msg.contains("mutated prompt context outside BeforeInference"))),
+        outcome.failure.as_ref().is_some_and(|f| matches!(f, LoopFailure::State(msg) if msg.contains("mutated prompt context outside BeforeInference"))),
         "expected prompt context mutation error in failure"
     );
 }
@@ -3535,7 +3529,7 @@ async fn test_run_loop_rejects_non_append_prompt_context_mutation_in_before_infe
         outcome.termination
     );
     assert!(
-        outcome.failure.as_ref().map_or(false, |f| matches!(f, LoopFailure::State(msg) if msg.contains("non-append prompt context mutation"))),
+        outcome.failure.as_ref().is_some_and(|f| matches!(f, LoopFailure::State(msg) if msg.contains("non-append prompt context mutation"))),
         "expected non-append prompt context mutation error in failure"
     );
 }
@@ -4933,6 +4927,48 @@ impl StateCommitter for RecordingStateCommitter {
     }
 }
 
+struct RunStartSideEffectPlugin;
+
+#[async_trait]
+impl AgentPlugin for RunStartSideEffectPlugin {
+    fn id(&self) -> &str {
+        "run_start_side_effect_plugin"
+    }
+
+    phase_dispatch_methods!(|_this, phase, step| {
+        if phase == Phase::RunStart {
+            let patch = Patch::new().with_op(Op::set(
+                tirea_state::path!("debug", "run_start_side_effect"),
+                json!(true),
+            ));
+            step.pending_patches
+                .push(tirea_state::TrackedPatch::new(patch).with_source("test:run_start"));
+        }
+    });
+}
+
+struct RunStartReplayPlugin;
+
+#[async_trait]
+impl AgentPlugin for RunStartReplayPlugin {
+    fn id(&self) -> &str {
+        "run_start_replay_plugin"
+    }
+
+    phase_dispatch_methods!(|_this, phase, step| {
+        if phase == Phase::RunStart {
+            let outbox = step.state_of::<InteractionOutbox>();
+            outbox
+                .replay_tool_calls_push(ToolCall::new(
+                    "replay_call_1",
+                    "echo",
+                    json!({"message": "from replay"}),
+                ))
+                .expect("queue replay tool call");
+        }
+    });
+}
+
 /// Extract the termination from the RunFinish event.
 fn extract_termination(events: &[AgentEvent]) -> Option<TerminationReason> {
     events.iter().find_map(|e| match e {
@@ -5057,6 +5093,103 @@ async fn test_stream_state_commit_failure_on_assistant_turn_emits_error_and_run_
             .any(|e| matches!(e, AgentEvent::Error { message } if message.contains("state commit failed"))),
         "expected state commit error event, got: {events:?}"
     );
+    assert_eq!(
+        committer.reasons(),
+        vec![
+            CheckpointReason::AssistantTurnCommitted,
+            CheckpointReason::RunFinished
+        ]
+    );
+}
+
+#[tokio::test]
+async fn test_nonstream_checkpoints_include_run_start_side_effects() {
+    let committer = Arc::new(RecordingStateCommitter::new(None));
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let config = AgentConfig::new("mock")
+        .with_llm_executor(
+            Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("done"))]))
+                as Arc<dyn LlmExecutor>,
+        )
+        .with_plugin(Arc::new(RunStartSideEffectPlugin) as Arc<dyn AgentPlugin>);
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let outcome = run_loop(
+        &config,
+        HashMap::new(),
+        run_ctx,
+        None,
+        Some(committer.clone() as Arc<dyn StateCommitter>),
+    )
+    .await;
+
+    assert_eq!(outcome.termination, TerminationReason::NaturalEnd);
+    assert_eq!(
+        committer.reasons(),
+        vec![
+            CheckpointReason::UserMessage,
+            CheckpointReason::AssistantTurnCommitted,
+            CheckpointReason::RunFinished
+        ]
+    );
+}
+
+#[tokio::test]
+async fn test_nonstream_checkpoints_include_run_start_replay() {
+    let committer = Arc::new(RecordingStateCommitter::new(None));
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let config = AgentConfig::new("mock")
+        .with_llm_executor(
+            Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("done"))]))
+                as Arc<dyn LlmExecutor>,
+        )
+        .with_plugin(Arc::new(RunStartReplayPlugin) as Arc<dyn AgentPlugin>);
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let outcome = run_loop(
+        &config,
+        tool_map([EchoTool]),
+        run_ctx,
+        None,
+        Some(committer.clone() as Arc<dyn StateCommitter>),
+    )
+    .await;
+
+    assert_eq!(outcome.termination, TerminationReason::NaturalEnd);
+    assert_eq!(
+        committer.reasons(),
+        vec![
+            CheckpointReason::UserMessage,
+            CheckpointReason::ToolResultsCommitted,
+            CheckpointReason::AssistantTurnCommitted,
+            CheckpointReason::RunFinished
+        ]
+    );
+}
+
+#[tokio::test]
+async fn test_nonstream_state_commit_failure_on_assistant_turn_returns_error() {
+    let committer = Arc::new(RecordingStateCommitter::new(Some(
+        CheckpointReason::AssistantTurnCommitted,
+    )));
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let config =
+        AgentConfig::new("mock").with_llm_executor(Arc::new(MockChatProvider::new(vec![Ok(
+            text_chat_response("done"),
+        )])) as Arc<dyn LlmExecutor>);
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let outcome = run_loop(
+        &config,
+        HashMap::new(),
+        run_ctx,
+        None,
+        Some(committer.clone() as Arc<dyn StateCommitter>),
+    )
+    .await;
+
+    assert_eq!(outcome.termination, TerminationReason::Error);
+    assert!(matches!(
+        outcome.failure,
+        Some(LoopFailure::State(message)) if message.contains("state commit failed")
+    ));
     assert_eq!(
         committer.reasons(),
         vec![
@@ -6113,8 +6246,8 @@ async fn test_run_state_caps_history_at_20() {
     let mut state = RunState::new();
     for i in 0..25 {
         let tool_calls = vec![crate::contracts::thread::ToolCall::new(
-            &format!("c{i}"),
-            &format!("tool_{i}"),
+            format!("c{i}"),
+            format!("tool_{i}"),
             json!({}),
         )];
         state.record_tool_step(&tool_calls, 0);
@@ -6764,7 +6897,7 @@ async fn test_run_step_skip_inference_returns_empty_result_without_assistant_mes
         outcome.termination,
         TerminationReason::PluginRequested
     ));
-    assert!(outcome.response.as_ref().map_or(true, |s| s.is_empty()));
+    assert!(outcome.response.as_ref().is_none_or(|s| s.is_empty()));
     assert_eq!(outcome.run_ctx.messages().len(), 1);
 
     let recorded = phases.lock().expect("lock poisoned").clone();

@@ -22,9 +22,10 @@ The runtime executes one run as a phase-driven loop.
 - Run termination is explicit via `TerminationReason`.
 - Step-local control (tool filtering, pending interactions) is deterministic.
 
-## Checkpoint Points (Streaming Path)
+## Checkpoint Points
 
-`run_loop_stream` persists incremental checkpoints at stable boundaries:
+Both `run_loop` and `run_loop_stream` use the same checkpoint boundaries when a
+`StateCommitter` is provided:
 
 1. `RunStart` side effects committed as `UserMessage`.
 2. RunStart replay (if any) committed as `ToolResultsCommitted`.

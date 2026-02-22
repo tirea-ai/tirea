@@ -99,16 +99,16 @@ use plugin_runtime::{
 };
 use run_state::{effective_stop_conditions, RunState};
 pub use state_commit::ChannelStateCommitter;
+use state_commit::PendingDeltaCommitContext;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tirea_state::TrackedPatch;
-#[cfg(test)]
 #[cfg(test)]
 use tokio_util::sync::CancellationToken;
 #[cfg(test)]
 use tool_exec::execute_tools_parallel_with_phases;
 use tool_exec::{
     apply_tool_results_impl, apply_tool_results_to_session, execute_single_tool_with_phases,
-    scope_with_tool_caller_context, step_metadata,
+    scope_with_tool_caller_context, step_metadata, ToolPhaseContext,
 };
 pub use tool_exec::{
     execute_tools, execute_tools_with_config, execute_tools_with_plugins,
@@ -572,10 +572,10 @@ async fn drain_run_start_outbox_and_replay_nonstream(
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
-) -> Result<(), AgentLoopError> {
+) -> Result<bool, AgentLoopError> {
     let outbox = drain_agent_outbox(run_ctx, "agent_outbox_run_start_nonstream")?;
     if outbox.replay_tool_calls.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
 
     for tool_call in &outbox.replay_tool_calls {
@@ -584,19 +584,18 @@ async fn drain_run_start_outbox_and_replay_nonstream(
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
         let tool = tools.get(&tool_call.name).cloned();
         let rt_for_replay = scope_with_tool_caller_context(run_ctx, &state, Some(config))?;
-        let replay_result = execute_single_tool_with_phases(
-            tool.as_deref(),
-            tool_call,
-            &state,
+        let replay_phase_ctx = ToolPhaseContext {
             tool_descriptors,
-            &config.plugins,
-            None,
-            &rt_for_replay,
-            run_ctx.thread_id(),
-            run_ctx.messages(),
-            run_ctx.version(),
-        )
-        .await?;
+            plugins: &config.plugins,
+            activity_manager: None,
+            run_config: &rt_for_replay,
+            thread_id: run_ctx.thread_id(),
+            thread_messages: run_ctx.messages(),
+            cancellation_token: None,
+        };
+        let replay_result =
+            execute_single_tool_with_phases(tool.as_deref(), tool_call, &state, &replay_phase_ctx)
+                .await?;
 
         let replay_msg = tool_response(&tool_call.id, &replay_result.execution.result);
         run_ctx.add_message(Arc::new(replay_msg));
@@ -632,7 +631,7 @@ async fn drain_run_start_outbox_and_replay_nonstream(
             if !patch.patch().is_empty() {
                 run_ctx.add_thread_patch(patch);
             }
-            return Ok(());
+            return Ok(true);
         }
     }
 
@@ -644,7 +643,7 @@ async fn drain_run_start_outbox_and_replay_nonstream(
         run_ctx.add_thread_patch(clear_patch);
     }
 
-    Ok(())
+    Ok(true)
 }
 
 /// Run the full agent loop until completion or a stop condition is met.
@@ -657,7 +656,7 @@ pub async fn run_loop(
     tools: HashMap<String, Arc<dyn Tool>>,
     mut run_ctx: RunContext,
     cancellation_token: Option<RunCancellationToken>,
-    _state_committer: Option<Arc<dyn StateCommitter>>,
+    state_committer: Option<Arc<dyn StateCommitter>>,
 ) -> LoopOutcome {
     let executor = llm_executor_for_run(config);
     let mut run_state = RunState::new();
@@ -665,7 +664,11 @@ pub async fn run_loop(
     let run_cancellation_token = cancellation_token;
     let mut last_text = String::new();
     let step_tool_provider = step_tool_provider_for_run(config, tools);
-    let run_id = stream_core::resolve_stream_run_identity(&mut run_ctx).run_id;
+    let run_identity = stream_core::resolve_stream_run_identity(&mut run_ctx);
+    let run_id = run_identity.run_id;
+    let parent_run_id = run_identity.parent_run_id;
+    let pending_delta_commit =
+        PendingDeltaCommitContext::new(&run_id, parent_run_id.as_deref(), state_committer.as_ref());
     let initial_step_tools = match resolve_step_tool_snapshot(&step_tool_provider, &run_ctx).await {
         Ok(snapshot) => snapshot,
         Err(error) => {
@@ -687,6 +690,18 @@ pub async fn run_loop(
     macro_rules! terminate_run {
         ($termination:expr, $response:expr, $failure:expr) => {{
             finalize_run_end(&mut run_ctx, &active_tool_descriptors, &config.plugins).await;
+            if let Err(error) = pending_delta_commit
+                .commit(&mut run_ctx, CheckpointReason::RunFinished, true)
+                .await
+            {
+                return build_loop_outcome(
+                    run_ctx,
+                    TerminationReason::Error,
+                    None,
+                    &run_state,
+                    Some(outcome::LoopFailure::State(error.to_string())),
+                );
+            }
             return build_loop_outcome(run_ctx, $termination, $response, &run_state, $failure);
         }};
     }
@@ -711,7 +726,18 @@ pub async fn run_loop(
         }
     };
     run_ctx.add_thread_patches(pending);
-    if let Err(error) = drain_run_start_outbox_and_replay_nonstream(
+    if let Err(error) = pending_delta_commit
+        .commit(&mut run_ctx, CheckpointReason::UserMessage, false)
+        .await
+    {
+        terminate_run!(
+            TerminationReason::Error,
+            None,
+            Some(outcome::LoopFailure::State(error.to_string()))
+        );
+    }
+
+    let replayed_at_run_start = match drain_run_start_outbox_and_replay_nonstream(
         &mut run_ctx,
         &initial_tools,
         config,
@@ -719,11 +745,26 @@ pub async fn run_loop(
     )
     .await
     {
-        terminate_run!(
-            TerminationReason::Error,
-            None,
-            Some(outcome::LoopFailure::State(error.to_string()))
-        );
+        Ok(replayed) => replayed,
+        Err(error) => {
+            terminate_run!(
+                TerminationReason::Error,
+                None,
+                Some(outcome::LoopFailure::State(error.to_string()))
+            );
+        }
+    };
+    if replayed_at_run_start {
+        if let Err(error) = pending_delta_commit
+            .commit(&mut run_ctx, CheckpointReason::ToolResultsCommitted, false)
+            .await
+        {
+            terminate_run!(
+                TerminationReason::Error,
+                None,
+                Some(outcome::LoopFailure::State(error.to_string()))
+            );
+        }
     }
     if pending_interaction_from_ctx(&run_ctx).is_some() {
         terminate_run!(TerminationReason::PendingInteraction, None, None);
@@ -852,6 +893,20 @@ pub async fn run_loop(
                 Some(outcome::LoopFailure::State(e.to_string()))
             );
         }
+        if let Err(error) = pending_delta_commit
+            .commit(
+                &mut run_ctx,
+                CheckpointReason::AssistantTurnCommitted,
+                false,
+            )
+            .await
+        {
+            terminate_run!(
+                TerminationReason::Error,
+                None,
+                Some(outcome::LoopFailure::State(error.to_string()))
+            );
+        }
 
         mark_step_completed(&mut run_state);
 
@@ -926,6 +981,16 @@ pub async fn run_loop(
                 );
             }
         };
+        if let Err(error) = pending_delta_commit
+            .commit(&mut run_ctx, CheckpointReason::ToolResultsCommitted, false)
+            .await
+        {
+            terminate_run!(
+                TerminationReason::Error,
+                None,
+                Some(outcome::LoopFailure::State(error.to_string()))
+            );
+        }
 
         // Pause if any tool is waiting for client response.
         if let Some(_interaction) = applied.pending_interaction {

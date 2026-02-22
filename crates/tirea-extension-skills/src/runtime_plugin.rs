@@ -27,7 +27,6 @@ impl AgentPlugin for SkillRuntimePlugin {
     async fn before_inference(&self, _ctx: &mut BeforeInferenceContext<'_, '_>) {
         // No-op: skill content is delivered via append_user_messages and tool results.
     }
-
 }
 
 #[cfg(test)]

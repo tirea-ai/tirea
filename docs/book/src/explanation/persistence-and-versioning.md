@@ -40,9 +40,9 @@ Before loop execution starts:
   - deduplicated inbound messages
   - optional full `snapshot` when request state replaces thread state
 
-### B) Runtime checkpoints (stream path)
+### B) Runtime checkpoints (loop execution path)
 
-During `run_loop_stream` execution:
+During `run_loop` / `run_loop_stream` execution:
 
 1. After `RunStart` phase side effects are applied:
    - Reason: `UserMessage`
@@ -67,11 +67,8 @@ During `run_loop_stream` execution:
   - emits error
   - terminal run-finish event may be suppressed, because final durability was not confirmed
 
-## Non-Streaming Note
-
-`run_loop` follows the same phase/state transition model, including RunStart replay
-behavior. Durable checkpointing is wired in the streaming execution path used by
-`AgentOs::run_stream`.
+`AgentOs::run_stream` uses `run_loop_stream`, so production persistence follows
+the same checkpoint schedule shown above.
 
 ## Why It Matters
 

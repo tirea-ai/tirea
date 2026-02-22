@@ -14,6 +14,27 @@ use tirea_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStat
 use tirea_extension_permission::PermissionContextExt;
 use tracing::{debug, warn};
 
+#[derive(Debug)]
+struct ToolArgError {
+    code: &'static str,
+    message: String,
+}
+
+type ToolArgResult<T> = Result<T, ToolArgError>;
+
+impl ToolArgError {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    fn into_tool_result(self, tool_name: &str) -> ToolResult {
+        tool_error(tool_name, self.code, self.message)
+    }
+}
+
 #[derive(Clone)]
 pub struct SkillActivateTool {
     registry: Arc<dyn SkillRegistry>,
@@ -58,9 +79,9 @@ impl Tool for SkillActivateTool {
         args: Value,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
-        let key = match required_string_arg(&args, "skill", SKILL_ACTIVATE_TOOL_ID) {
+        let key = match required_string_arg(&args, "skill") {
             Ok(v) => v,
-            Err(r) => return Ok(r),
+            Err(err) => return Ok(err.into_tool_result(SKILL_ACTIVATE_TOOL_ID)),
         };
 
         let skill = self.resolve(&key).ok_or_else(|| {
@@ -243,17 +264,17 @@ impl Tool for LoadSkillResourceTool {
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         let tool_name = SKILL_LOAD_RESOURCE_TOOL_ID;
-        let key = match required_string_arg(&args, "skill", tool_name) {
+        let key = match required_string_arg(&args, "skill") {
             Ok(v) => v,
-            Err(r) => return Ok(r),
+            Err(err) => return Ok(err.into_tool_result(tool_name)),
         };
-        let path = match required_string_arg(&args, "path", tool_name) {
+        let path = match required_string_arg(&args, "path") {
             Ok(v) => v,
-            Err(r) => return Ok(r),
+            Err(err) => return Ok(err.into_tool_result(tool_name)),
         };
         let kind = match parse_resource_kind(args.get("kind"), &path) {
             Ok(v) => v,
-            Err(r) => return Ok(r),
+            Err(err) => return Ok(err.into_tool_result(tool_name)),
         };
 
         let skill = self
@@ -397,13 +418,13 @@ impl Tool for SkillScriptTool {
         args: Value,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
-        let key = match required_string_arg(&args, "skill", SKILL_SCRIPT_TOOL_ID) {
+        let key = match required_string_arg(&args, "skill") {
             Ok(v) => v,
-            Err(r) => return Ok(r),
+            Err(err) => return Ok(err.into_tool_result(SKILL_SCRIPT_TOOL_ID)),
         };
-        let script = match required_string_arg(&args, "script", SKILL_SCRIPT_TOOL_ID) {
+        let script = match required_string_arg(&args, "script") {
             Ok(v) => v,
-            Err(r) => return Ok(r),
+            Err(err) => return Ok(err.into_tool_result(SKILL_SCRIPT_TOOL_ID)),
         };
         let argv: Vec<String> = args
             .get("args")
@@ -483,28 +504,22 @@ impl Tool for SkillScriptTool {
     }
 }
 
-fn required_string_arg(args: &Value, key: &str, tool_name: &str) -> Result<String, ToolResult> {
+fn required_string_arg(args: &Value, key: &str) -> ToolArgResult<String> {
     let value = args.get(key).and_then(|v| v.as_str()).map(str::trim);
     match value {
         Some(v) if !v.is_empty() => Ok(v.to_string()),
-        _ => Err(tool_error(
-            tool_name,
+        _ => Err(ToolArgError::new(
             "invalid_arguments",
             format!("missing '{key}'"),
         )),
     }
 }
 
-fn parse_resource_kind(kind: Option<&Value>, path: &str) -> Result<SkillResourceKind, ToolResult> {
-    let tool_name = SKILL_LOAD_RESOURCE_TOOL_ID;
+fn parse_resource_kind(kind: Option<&Value>, path: &str) -> ToolArgResult<SkillResourceKind> {
     let from_kind = kind.and_then(|v| v.as_str()).map(str::trim);
 
     if is_obviously_invalid_relative_path(path) {
-        return Err(tool_error(
-            tool_name,
-            "invalid_path",
-            "invalid relative path",
-        ));
+        return Err(ToolArgError::new("invalid_path", "invalid relative path"));
     }
 
     let from_path = if path.starts_with("references/") {
@@ -519,8 +534,7 @@ fn parse_resource_kind(kind: Option<&Value>, path: &str) -> Result<SkillResource
         Some("reference") => Some(SkillResourceKind::Reference),
         Some("asset") => Some(SkillResourceKind::Asset),
         Some(other) => {
-            return Err(tool_error(
-                tool_name,
+            return Err(ToolArgError::new(
                 "invalid_arguments",
                 format!("invalid 'kind': {other}"),
             ));
@@ -529,8 +543,7 @@ fn parse_resource_kind(kind: Option<&Value>, path: &str) -> Result<SkillResource
     };
 
     let Some(kind) = parsed_kind.or(from_path) else {
-        return Err(tool_error(
-            tool_name,
+        return Err(ToolArgError::new(
             "unsupported_path",
             "path must start with 'references/' or 'assets/'",
         ));
@@ -539,8 +552,7 @@ fn parse_resource_kind(kind: Option<&Value>, path: &str) -> Result<SkillResource
     if let Some(expected) = parsed_kind {
         if let Some(inferred) = from_path {
             if expected != inferred {
-                return Err(tool_error(
-                    tool_name,
+                return Err(ToolArgError::new(
                     "invalid_arguments",
                     format!(
                         "kind '{}' does not match path prefix for '{}'",

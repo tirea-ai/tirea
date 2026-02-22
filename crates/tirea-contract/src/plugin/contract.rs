@@ -400,5 +400,4 @@ mod tests {
         assert!(step.session_context.is_empty());
         assert!(step.system_reminders.is_empty());
     }
-
 }

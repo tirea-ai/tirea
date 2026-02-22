@@ -288,8 +288,6 @@ fn wire_plugins_into_orders_plugin_ids() {
         fn id(&self) -> &str {
             self.0
         }
-
-        
     }
 
     let os = AgentOs::builder()
@@ -317,8 +315,6 @@ fn wire_plugins_into_rejects_duplicate_plugin_ids_after_assembly() {
         fn id(&self) -> &str {
             self.0
         }
-
-        
     }
 
     // Register two different plugins with the same id — this is normally prevented
@@ -346,8 +342,6 @@ impl AgentPlugin for FakeSkillsPlugin {
     fn id(&self) -> &str {
         "skills"
     }
-
-    
 }
 
 #[test]
@@ -384,8 +378,6 @@ impl AgentPlugin for FakeAgentToolsPlugin {
     fn id(&self) -> &str {
         "agent_tools"
     }
-
-    
 }
 
 #[test]
@@ -414,8 +406,6 @@ impl AgentPlugin for FakeAgentRecoveryPlugin {
     fn id(&self) -> &str {
         "agent_recovery"
     }
-
-    
 }
 
 #[test]
@@ -1939,8 +1929,6 @@ async fn prepare_run_scope_appends_plugins() {
         fn id(&self) -> &str {
             "run_scoped"
         }
-
-        
     }
 
     let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
@@ -1994,8 +1982,6 @@ async fn prepare_run_scope_rejects_duplicate_plugin_id() {
         fn id(&self) -> &str {
             "agent_tools"
         }
-
-        
     }
 
     let storage = Arc::new(tirea_store_adapters::MemoryStore::new());

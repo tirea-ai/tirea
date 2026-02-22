@@ -18,6 +18,25 @@ fn tool_error(tool_name: &str, code: &str, message: impl Into<String>) -> ToolRe
     ToolResult::error_with_code(tool_name, code, message)
 }
 
+#[derive(Debug)]
+struct ToolArgError {
+    code: &'static str,
+    message: String,
+}
+
+impl ToolArgError {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    fn into_tool_result(self, tool_name: &str) -> ToolResult {
+        tool_error(tool_name, self.code, self.message)
+    }
+}
+
 fn state_write_failed(tool_name: &str, err: impl std::fmt::Display) -> ToolResult {
     tool_error(
         tool_name,
@@ -59,9 +78,9 @@ fn optional_string(args: &Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn required_string(args: &Value, key: &str, tool_name: &str) -> Result<String, ToolResult> {
+fn required_string(args: &Value, key: &str) -> Result<String, ToolArgError> {
     optional_string(args, key)
-        .ok_or_else(|| tool_error(tool_name, "invalid_arguments", format!("missing '{key}'")))
+        .ok_or_else(|| ToolArgError::new("invalid_arguments", format!("missing '{key}'")))
 }
 
 fn parse_caller_messages(scope: Option<&tirea_contract::RunConfig>) -> Option<Vec<Message>> {
@@ -129,8 +148,7 @@ impl AgentRunTool {
         target_agent_id: &str,
         caller_agent_id: Option<&str>,
         scope: Option<&tirea_contract::RunConfig>,
-        tool_name: &str,
-    ) -> Result<(), ToolResult> {
+    ) -> Result<(), ToolArgError> {
         if is_target_agent_visible(
             self.os.agents_registry().as_ref(),
             target_agent_id,
@@ -140,8 +158,7 @@ impl AgentRunTool {
             return Ok(());
         }
 
-        Err(tool_error(
-            tool_name,
+        Err(ToolArgError::new(
             "unknown_agent",
             format!("Unknown or unavailable agent_id: {target_agent_id}"),
         ))
@@ -342,9 +359,8 @@ impl Tool for AgentRunTool {
                             &record.target_agent_id,
                             caller_agent_id.as_deref(),
                             Some(scope),
-                            tool_name,
                         ) {
-                            return Ok(error);
+                            return Ok(error.into_tool_result(tool_name));
                         }
 
                         let mut child_thread =
@@ -408,9 +424,8 @@ impl Tool for AgentRunTool {
                         &persisted.target_agent_id,
                         caller_agent_id.as_deref(),
                         Some(scope),
-                        tool_name,
                     ) {
-                        return Ok(error);
+                        return Ok(error.into_tool_result(tool_name));
                     }
 
                     let mut child_thread = match persisted.agent_state {
@@ -443,22 +458,19 @@ impl Tool for AgentRunTool {
             }
         }
 
-        let target_agent_id = match required_string(&args, "agent_id", tool_name) {
+        let target_agent_id = match required_string(&args, "agent_id") {
             Ok(v) => v,
-            Err(r) => return Ok(r),
+            Err(err) => return Ok(err.into_tool_result(tool_name)),
         };
-        let prompt = match required_string(&args, "prompt", tool_name) {
+        let prompt = match required_string(&args, "prompt") {
             Ok(v) => v,
-            Err(r) => return Ok(r),
+            Err(err) => return Ok(err.into_tool_result(tool_name)),
         };
 
-        if let Err(error) = self.ensure_target_visible(
-            &target_agent_id,
-            caller_agent_id.as_deref(),
-            Some(scope),
-            tool_name,
-        ) {
-            return Ok(error);
+        if let Err(error) =
+            self.ensure_target_visible(&target_agent_id, caller_agent_id.as_deref(), Some(scope))
+        {
+            return Ok(error.into_tool_result(tool_name));
         }
 
         let run_id = uuid::Uuid::now_v7().to_string();
@@ -526,9 +538,9 @@ impl Tool for AgentStopTool {
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, crate::contracts::tool::ToolError> {
         let tool_name = AGENT_STOP_TOOL_ID;
-        let run_id = match required_string(&args, "run_id", tool_name) {
+        let run_id = match required_string(&args, "run_id") {
             Ok(v) => v,
-            Err(r) => return Ok(r),
+            Err(err) => return Ok(err.into_tool_result(tool_name)),
         };
         let owner_thread_id = ctx
             .run_config()

@@ -13,6 +13,8 @@ use tirea_state::{
     get_at_path, parse_path, DocCell, Op, Patch, PatchSink, State, TireaResult, TrackedPatch,
 };
 
+type PatchHook<'a> = Arc<dyn Fn(&Op) -> TireaResult<()> + Send + Sync + 'a>;
+
 /// Execution context for tool invocations.
 ///
 /// Provides typed state access (read/write), run config access, identity,
@@ -98,7 +100,7 @@ impl<'a> ToolCallContext<'a> {
     pub fn state<T: State>(&self, path: &str) -> T::Ref<'_> {
         let base = parse_path(path);
         let doc = self.doc;
-        let hook: Arc<dyn Fn(&Op) -> TireaResult<()> + Send + Sync + '_> = Arc::new(|op: &Op| {
+        let hook: PatchHook<'_> = Arc::new(|op: &Op| {
             doc.apply(op)?;
             Ok(())
         });
@@ -266,20 +268,18 @@ impl ActivityContext {
             let stream_id = self.stream_id.clone();
             let activity_type = self.activity_type.clone();
             let doc = &self.doc;
-            let hook: Arc<dyn Fn(&Op) -> TireaResult<()> + Send + Sync + '_> =
-                Arc::new(move |op: &Op| {
-                    doc.apply(op)?;
-                    manager.on_activity_op(&stream_id, &activity_type, op);
-                    Ok(())
-                });
+            let hook: PatchHook<'_> = Arc::new(move |op: &Op| {
+                doc.apply(op)?;
+                manager.on_activity_op(&stream_id, &activity_type, op);
+                Ok(())
+            });
             T::state_ref(&self.doc, base, PatchSink::new_with_hook(&self.ops, hook))
         } else {
             let doc = &self.doc;
-            let hook: Arc<dyn Fn(&Op) -> TireaResult<()> + Send + Sync + '_> =
-                Arc::new(move |op: &Op| {
-                    doc.apply(op)?;
-                    Ok(())
-                });
+            let hook: PatchHook<'_> = Arc::new(move |op: &Op| {
+                doc.apply(op)?;
+                Ok(())
+            });
             T::state_ref(&self.doc, base, PatchSink::new_with_hook(&self.ops, hook))
         }
     }

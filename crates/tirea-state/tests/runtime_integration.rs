@@ -51,7 +51,7 @@ fn test_scope_get_at_typed_read() {
 
     let cfg = rt.get_at::<NestedConfig>("config");
     assert_eq!(cfg.timeout_ms().unwrap(), 5000);
-    assert_eq!(cfg.retry().unwrap(), true);
+    assert!(cfg.retry().unwrap());
 }
 
 #[test]

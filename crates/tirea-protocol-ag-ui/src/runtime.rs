@@ -227,7 +227,11 @@ impl AgentPlugin for FrontendToolPendingPlugin {
         }
 
         let args = ctx.tool_args().cloned().unwrap_or_default();
-        ctx.ask_frontend_tool(tool_name.to_string(), args, ResponseRouting::UseAsToolResult);
+        ctx.ask_frontend_tool(
+            tool_name.to_string(),
+            args,
+            ResponseRouting::UseAsToolResult,
+        );
     }
 }
 
@@ -245,10 +249,7 @@ mod tests {
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::ToolCall;
 
-    async fn run_before_tool_execute(
-        plugin: &dyn AgentPlugin,
-        step: &mut StepContext<'_>,
-    ) {
+    async fn run_before_tool_execute(plugin: &dyn AgentPlugin, step: &mut StepContext<'_>) {
         let mut ctx = tirea_contract::plugin::phase::BeforeToolExecuteContext::new(step);
         plugin.before_tool_execute(&mut ctx).await;
     }

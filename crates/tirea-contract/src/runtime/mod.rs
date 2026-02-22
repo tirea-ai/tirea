@@ -8,6 +8,7 @@ pub mod executor;
 pub mod policy;
 pub mod policy_scope;
 pub mod result;
+pub mod state_paths;
 
 pub use activity::ActivityManager;
 pub use context::RunContext;

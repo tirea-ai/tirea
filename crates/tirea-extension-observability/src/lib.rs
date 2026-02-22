@@ -433,7 +433,10 @@ impl AgentPlugin for LLMMetryPlugin {
         {
             let seqs = lock_unpoison(&self.stop_sequences);
             if !seqs.is_empty() {
-                span.record("gen_ai.request.stop_sequences", format!("{:?}", *seqs).as_str());
+                span.record(
+                    "gen_ai.request.stop_sequences",
+                    format!("{:?}", *seqs).as_str(),
+                );
             }
         }
         *lock_unpoison(&self.inference_tracing_span) = Some(span);
@@ -604,7 +607,6 @@ impl AgentPlugin for LLMMetryPlugin {
         metrics.session_duration_ms = session_duration_ms;
         self.sink.on_run_end(&metrics);
     }
-
 }
 
 fn extract_token_counts(usage: Option<&Usage>) -> (Option<i32>, Option<i32>, Option<i32>) {

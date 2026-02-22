@@ -1,17 +1,12 @@
 use super::AgentLoopError;
 use crate::contracts::plugin::phase::StepContext;
+use crate::contracts::runtime::state_paths::{INTERACTION_OUTBOX_STATE_PATH, SKILLS_STATE_PATH};
 use crate::contracts::thread::{Message, MessageMetadata, Role};
 use crate::contracts::tool::Tool;
 use crate::contracts::RunContext;
 use crate::contracts::{FrontendToolInvocation, Interaction, InteractionResponse};
 use crate::runtime::control::{InferenceError, LoopControlState};
 use tirea_state::{DocCell, StateContext, TireaError, TrackedPatch};
-
-/// Skills state path — matches `SkillState::PATH` (avoids type dependency).
-const SKILLS_STATE_PATH: &str = "skills";
-
-/// Interaction outbox path — matches `InteractionOutbox::PATH` (avoids type dependency).
-const INTERACTION_OUTBOX_PATH: &str = "interaction_outbox";
 
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -115,9 +110,10 @@ pub(super) fn build_request_for_filtered_tools(
     tools: &HashMap<String, Arc<dyn Tool>>,
     filtered_tools: &[String],
 ) -> genai::chat::ChatRequest {
+    let filtered: HashSet<&str> = filtered_tools.iter().map(String::as_str).collect();
     let filtered_tool_refs: Vec<&dyn Tool> = tools
         .values()
-        .filter(|t| filtered_tools.contains(&t.descriptor().id))
+        .filter(|t| filtered.contains(t.descriptor().id.as_str()))
         .map(|t| t.as_ref())
         .collect();
     crate::engine::convert::build_request(messages, &filtered_tool_refs)
@@ -223,7 +219,7 @@ pub(super) fn drain_agent_outbox(
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
 
     let interaction_resolutions = match state
-        .get(INTERACTION_OUTBOX_PATH)
+        .get(INTERACTION_OUTBOX_STATE_PATH)
         .and_then(|outbox| outbox.get("interaction_resolutions"))
         .cloned()
     {
@@ -235,7 +231,7 @@ pub(super) fn drain_agent_outbox(
         None => Vec::new(),
     };
     let replay_tool_calls = match state
-        .get(INTERACTION_OUTBOX_PATH)
+        .get(INTERACTION_OUTBOX_STATE_PATH)
         .and_then(|outbox| outbox.get("replay_tool_calls"))
         .cloned()
     {
@@ -253,7 +249,7 @@ pub(super) fn drain_agent_outbox(
     }
 
     // Clear consumed fields via raw patch (no type dependency on InteractionOutbox)
-    let outbox_path = tirea_state::Path::root().key(INTERACTION_OUTBOX_PATH);
+    let outbox_path = tirea_state::Path::root().key(INTERACTION_OUTBOX_STATE_PATH);
     let mut clear_patch = tirea_state::Patch::new();
     if !interaction_resolutions.is_empty() {
         clear_patch = clear_patch.with_op(tirea_state::Op::set(

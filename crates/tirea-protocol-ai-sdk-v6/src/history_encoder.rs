@@ -270,7 +270,7 @@ mod tests {
 
     #[test]
     fn test_ai_sdk_encode_messages_batch() {
-        let msgs = vec![Message::user("hello"), Message::assistant("world")];
+        let msgs = [Message::user("hello"), Message::assistant("world")];
         let encoded = AiSdkV6HistoryEncoder::encode_messages(msgs.iter());
         assert_eq!(encoded.len(), 2);
         assert_eq!(encoded[0].role, UIRole::User);

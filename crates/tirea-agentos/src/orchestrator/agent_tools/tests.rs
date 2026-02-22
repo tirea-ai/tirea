@@ -1,11 +1,12 @@
 use super::*;
-use crate::contracts::thread::Thread;
-use crate::contracts::tool::ToolStatus;
 use crate::contracts::plugin::phase::{
-    AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext, BeforeToolExecuteContext,
-    Phase, RunEndContext, RunStartContext, StepContext, StepEndContext, StepStartContext,
+    AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
+    BeforeToolExecuteContext, Phase, RunEndContext, RunStartContext, StepContext, StepEndContext,
+    StepStartContext,
 };
 use crate::contracts::plugin::AgentPlugin;
+use crate::contracts::thread::Thread;
+use crate::contracts::tool::ToolStatus;
 use crate::orchestrator::InMemoryAgentRegistry;
 use crate::runtime::loop_runner::{
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,

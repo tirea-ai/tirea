@@ -151,7 +151,6 @@ impl AgentPlugin for SkillDiscoveryPlugin {
 
         step.add_system_context(rendered);
     }
-
 }
 
 #[cfg(test)]

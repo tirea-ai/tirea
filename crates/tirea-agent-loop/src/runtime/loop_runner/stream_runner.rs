@@ -49,20 +49,19 @@ async fn drain_run_start_outbox_and_replay(
         let tool = tools.get(&tool_call.name).cloned();
         let rt_for_replay = scope_with_tool_caller_context(run_ctx, &state, Some(config))
             .map_err(|e| e.to_string())?;
-        let replay_result = execute_single_tool_with_phases(
-            tool.as_deref(),
-            tool_call,
-            &state,
+        let replay_phase_ctx = super::tool_exec::ToolPhaseContext {
             tool_descriptors,
-            &config.plugins,
-            None,
-            &rt_for_replay,
-            run_ctx.thread_id(),
-            run_ctx.messages(),
-            run_ctx.version(),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+            plugins: &config.plugins,
+            activity_manager: None,
+            run_config: &rt_for_replay,
+            thread_id: run_ctx.thread_id(),
+            thread_messages: run_ctx.messages(),
+            cancellation_token: None,
+        };
+        let replay_result =
+            execute_single_tool_with_phases(tool.as_deref(), tool_call, &state, &replay_phase_ctx)
+                .await
+                .map_err(|e| e.to_string())?;
 
         // Append real replay tool result as a new tool message (append-only log).
         let replay_msg_id = gen_message_id();

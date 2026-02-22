@@ -98,10 +98,10 @@ pub async fn execute_tools_parallel(
     calls: &[ToolCall],
     state: &Value,
 ) -> Vec<ToolExecution> {
-    let tasks = calls.iter().cloned().map(|call| {
+    let tasks = calls.iter().map(|call| {
         let tool = tools.get(&call.name).cloned();
         let state = state.clone();
-        async move { execute_single_tool(tool.as_deref(), &call, &state).await }
+        async move { execute_single_tool(tool.as_deref(), call, &state).await }
     });
     join_all(tasks).await
 }

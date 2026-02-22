@@ -1,6 +1,7 @@
 //! Performance benchmarks for tirea-state operations.
 //!
 //! Run with: cargo bench --package tirea-state
+#![allow(missing_docs)]
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use serde_json::{json, Value};

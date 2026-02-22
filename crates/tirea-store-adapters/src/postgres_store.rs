@@ -302,7 +302,7 @@ impl AgentStateWriter for PostgresStore {
         let new_messages: Vec<&Message> = thread
             .messages
             .iter()
-            .filter(|m| m.id.as_ref().map_or(true, |id| !existing_ids.contains(id)))
+            .filter(|m| m.id.as_ref().is_none_or(|id| !existing_ids.contains(id)))
             .map(|m| m.as_ref())
             .collect();
 
@@ -399,7 +399,7 @@ impl AgentStateReader for PostgresStore {
             return Err(AgentStateStoreError::NotFound(thread_id.to_string()));
         }
 
-        let limit = query.limit.min(200).max(1);
+        let limit = query.limit.clamp(1, 200);
         // Fetch limit+1 rows to determine has_more.
         let fetch_limit = (limit + 1) as i64;
 
