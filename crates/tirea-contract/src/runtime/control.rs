@@ -8,6 +8,7 @@ use crate::event::interaction::{FrontendToolInvocation, Interaction, Interaction
 use crate::thread::Thread;
 use crate::thread::ToolCall;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use tirea_state::State;
 
@@ -46,6 +47,41 @@ pub struct SuspendedToolCallsState {
     #[serde(default)]
     #[tirea(default = "HashMap::new()")]
     pub calls: HashMap<String, SuspendedCall>,
+}
+
+/// Action to apply for a suspended tool call.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResumeDecisionAction {
+    Resume,
+    Cancel,
+}
+
+/// One pending decision waiting to be applied to a suspended tool call.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResumeDecision {
+    /// Idempotency key for the external decision.
+    pub decision_id: String,
+    /// Resume or cancel action.
+    pub action: ResumeDecisionAction,
+    /// Raw response payload from interaction frontend.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub result: Value,
+    /// Optional human-readable reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Last write timestamp (unix millis).
+    pub updated_at: u64,
+}
+
+/// Durable rendezvous for resume/cancel decisions keyed by `call_id`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[tirea(path = "__resume_decisions")]
+pub struct ResumeDecisionsState {
+    /// Pending decisions to apply.
+    #[serde(default)]
+    #[tirea(default = "HashMap::new()")]
+    pub calls: HashMap<String, ResumeDecision>,
 }
 
 /// Durable resume queue persisted at `state["__resume_tool_calls"]`.
@@ -118,6 +154,9 @@ mod tests {
     fn test_loop_control_state_defaults() {
         let suspended = SuspendedToolCallsState::default();
         assert!(suspended.calls.is_empty());
+
+        let resume_decisions = ResumeDecisionsState::default();
+        assert!(resume_decisions.calls.is_empty());
 
         let resume = ResumeToolCallsState::default();
         assert!(resume.calls.is_empty());

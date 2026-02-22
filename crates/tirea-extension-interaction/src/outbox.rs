@@ -1,7 +1,8 @@
-//! Internal suspension mailboxes used by interaction extensions.
+//! Internal suspension mailbox used by interaction extensions.
 //!
-//! These are durable runtime states managed by the loop and interaction plugins:
-//! - `__resume_tool_calls`
-//! - `__resolved_suspensions`
+//! Durable runtime rendezvous:
+//! - `__resume_decisions`
 
-pub use tirea_contract::runtime::control::{ResolvedSuspensionsState, ResumeToolCallsState};
+pub use tirea_contract::runtime::control::{
+    ResolvedSuspensionsState, ResumeDecisionsState, ResumeToolCallsState,
+};

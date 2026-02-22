@@ -435,10 +435,6 @@ pub async fn execute_tools_with_plugins_and_executor(
     executor: &dyn ToolExecutor,
     plugins: &[Arc<dyn AgentPlugin>],
 ) -> Result<Thread, AgentLoopError> {
-    if result.tool_calls.is_empty() {
-        return Ok(thread);
-    }
-
     // Build RunContext from thread for internal use
     let rebuilt_state = thread
         .rebuild_state()
@@ -452,12 +448,66 @@ pub async fn execute_tools_with_plugins_and_executor(
 
     let tool_descriptors: Vec<ToolDescriptor> =
         tools.values().map(|t| t.descriptor().clone()).collect();
-    let rt_for_tools = scope_with_tool_caller_context(&run_ctx, &rebuilt_state, None)?;
+    let (_, run_start_patches) = super::run_phase_block(
+        &run_ctx,
+        &tool_descriptors,
+        plugins,
+        &[Phase::RunStart],
+        |_| {},
+        |_| (),
+    )
+    .await?;
+    if !run_start_patches.is_empty() {
+        run_ctx.add_thread_patches(run_start_patches);
+    }
+
+    let replay_config = AgentConfig {
+        plugins: plugins.to_vec(),
+        ..AgentConfig::default()
+    };
+    let replay = super::drain_resume_decisions_and_replay(
+        &mut run_ctx,
+        tools,
+        &replay_config,
+        &tool_descriptors,
+    )
+    .await?;
+
+    if replay.replayed {
+        if let Some(first) = run_ctx.suspended_calls().values().next().cloned() {
+            return Err(AgentLoopError::PendingInteraction {
+                run_ctx: Box::new(run_ctx),
+                interaction: Box::new(first.interaction),
+            });
+        }
+        let delta = run_ctx.take_delta();
+        let mut out_thread = thread;
+        for msg in delta.messages {
+            out_thread = out_thread.with_message((*msg).clone());
+        }
+        out_thread = out_thread.with_patches(delta.patches);
+        return Ok(out_thread);
+    }
+
+    if result.tool_calls.is_empty() {
+        let delta = run_ctx.take_delta();
+        let mut out_thread = thread;
+        for msg in delta.messages {
+            out_thread = out_thread.with_message((*msg).clone());
+        }
+        out_thread = out_thread.with_patches(delta.patches);
+        return Ok(out_thread);
+    }
+
+    let current_state = run_ctx
+        .snapshot()
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    let rt_for_tools = scope_with_tool_caller_context(&run_ctx, &current_state, None)?;
     let results = executor
         .execute(ToolExecutionRequest {
             tools,
             calls: &result.tool_calls,
-            state: &rebuilt_state,
+            state: &current_state,
             tool_descriptors: &tool_descriptors,
             plugins,
             activity_manager: None,

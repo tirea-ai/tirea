@@ -2,27 +2,24 @@
 //!
 //! Handles client responses to pending interactions (approvals/denials).
 
-use super::{INTERACTION_RESPONSE_PLUGIN_ID, RECOVERY_RESUME_TOOL_ID};
-use crate::outbox::{ResolvedSuspensionsState, ResumeToolCallsState};
-use crate::{AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX};
+use super::INTERACTION_RESPONSE_PLUGIN_ID;
+use crate::outbox::ResumeDecisionsState;
+use crate::AGENT_RECOVERY_INTERACTION_ACTION;
 use async_trait::async_trait;
-use serde_json::json;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tirea_contract::event::interaction::{
-    FrontendToolInvocation, InvocationOrigin, ResponseRouting,
-};
+use tirea_contract::event::interaction::ResponseRouting;
 use tirea_contract::event::termination::TerminationReason;
 use tirea_contract::plugin::phase::{
     BeforeInferenceContext, BeforeToolExecuteContext, PluginPhaseContext, RunStartContext,
 };
 use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::runtime::control::{
-    InferenceError, InferenceErrorState, SuspendedToolCallsState,
+    InferenceError, InferenceErrorState, ResumeDecision, ResumeDecisionAction,
+    SuspendedToolCallsState,
 };
 use tirea_contract::runtime::state_paths::SUSPENDED_TOOL_CALLS_STATE_PATH;
 use tirea_contract::{InteractionResponse, SuspendedCall};
-use tirea_extension_permission::PermissionState;
 
 /// Plugin that handles interaction responses from client.
 ///
@@ -127,39 +124,23 @@ impl InteractionResponsePlugin {
         state.calls().ok().unwrap_or_default()
     }
 
-    fn push_resolution(
+    fn upsert_resume_decision(
         step: &impl PluginPhaseContext,
-        interaction_id: String,
-        result: serde_json::Value,
+        call_id: String,
+        decision: ResumeDecision,
     ) -> Result<(), String> {
-        let outbox = step.state_of::<ResolvedSuspensionsState>();
-        outbox
-            .resolutions_push(InteractionResponse::new(interaction_id, result))
-            .map_err(|e| format!("failed to persist interaction resolution: {e}"))
+        let mailbox = step.state_of::<ResumeDecisionsState>();
+        let mut calls = mailbox.calls().ok().unwrap_or_default();
+        calls.insert(call_id, decision);
+        mailbox
+            .set_calls(calls)
+            .map_err(|err| format!("failed to persist resume decision: {err}"))
     }
 
-    fn queue_replay_call(
-        step: &impl PluginPhaseContext,
-        call: tirea_contract::thread::ToolCall,
-    ) -> Result<(), String> {
-        let outbox = step.state_of::<ResumeToolCallsState>();
-        outbox
-            .calls_push(call)
-            .map_err(|e| format!("failed to persist replay tool call: {e}"))
-    }
-
-    fn clear_suspended_calls_state(step: &impl PluginPhaseContext) -> Result<(), String> {
-        Self::set_suspended_calls_state(step, HashMap::new())
-    }
-
-    fn set_suspended_calls_state(
-        step: &impl PluginPhaseContext,
-        suspended_calls: HashMap<String, SuspendedCall>,
-    ) -> Result<(), String> {
-        let state = step.state_of::<SuspendedToolCallsState>();
-        state
-            .set_calls(suspended_calls)
-            .map_err(|err| format!("failed to set {SUSPENDED_TOOL_CALLS_STATE_PATH}.calls: {err}"))
+    fn current_unix_millis() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64)
     }
 
     fn resolve_response_key(&self, call: &SuspendedCall) -> Option<String> {
@@ -190,14 +171,6 @@ impl InteractionResponsePlugin {
             "interaction response run_start handling failed"
         );
 
-        if let Err(err) = Self::clear_suspended_calls_state(step) {
-            tracing::error!(
-                plugin = INTERACTION_RESPONSE_PLUGIN_ID,
-                error = %err,
-                "failed to clear suspended calls state after run_start error"
-            );
-        }
-
         let state = step.state_of::<InferenceErrorState>();
         if let Err(err) = state.set_error(Some(InferenceError {
             error_type: "interaction_response_error".to_string(),
@@ -213,7 +186,7 @@ impl InteractionResponsePlugin {
 
     /// During RunStart, resolve suspended calls and schedule replay when needed.
     fn on_run_start(&self, step: &mut RunStartContext<'_, '_>) {
-        let mut suspended_calls = Self::persisted_suspended_calls(step);
+        let suspended_calls = Self::persisted_suspended_calls(step);
         if suspended_calls.is_empty() {
             return;
         }
@@ -233,60 +206,14 @@ impl InteractionResponsePlugin {
             let is_approved = result_payload
                 .as_ref()
                 .is_some_and(InteractionResponse::is_approved);
-            let resolution_id = response_key.clone();
             let resolution_value = result_payload
                 .clone()
                 .unwrap_or(serde_json::Value::Bool(!is_denied));
 
-            if is_denied {
-                if let Err(err) = Self::push_resolution(step, resolution_id, resolution_value) {
-                    Self::report_run_start_error(step, err);
-                    return;
-                }
-                suspended_calls.remove(&call_id);
-                continue;
-            }
-
-            if call.interaction.action == AGENT_RECOVERY_INTERACTION_ACTION {
-                if !is_approved {
-                    continue;
-                }
-                if let Err(err) = Self::push_resolution(step, resolution_id, resolution_value) {
-                    Self::report_run_start_error(step, err);
-                    return;
-                }
-                let run_id = call
-                    .interaction
-                    .parameters
-                    .get("run_id")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string)
-                    .or_else(|| {
-                        call.interaction
-                            .id
-                            .strip_prefix(AGENT_RECOVERY_INTERACTION_PREFIX)
-                            .map(str::to_string)
-                    });
-                let Some(run_id) = run_id else {
-                    Self::report_run_start_error(
-                        step,
-                        "missing run_id in recovery interaction payload",
-                    );
-                    return;
-                };
-                let replay_call = tirea_contract::thread::ToolCall::new(
-                    format!("recovery_resume_{run_id}"),
-                    RECOVERY_RESUME_TOOL_ID,
-                    json!({
-                        "run_id": run_id,
-                        "background": false
-                    }),
-                );
-                if let Err(err) = Self::queue_replay_call(step, replay_call) {
-                    Self::report_run_start_error(step, err);
-                    return;
-                }
-                suspended_calls.remove(&call_id);
+            if call.interaction.action == AGENT_RECOVERY_INTERACTION_ACTION
+                && !is_denied
+                && !is_approved
+            {
                 continue;
             }
 
@@ -297,104 +224,49 @@ impl InteractionResponsePlugin {
                         ResponseRouting::UseAsToolResult | ResponseRouting::PassToLLM
                     )
                 });
-            if !is_approved && !should_continue_use_as_result {
+            let permission_source_without_channel = call.frontend_invocation.is_none()
+                && call
+                    .interaction
+                    .parameters
+                    .get("source")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|source| source == "permission");
+            if permission_source_without_channel && !is_denied {
                 continue;
             }
-            if let Err(err) = Self::push_resolution(step, resolution_id, resolution_value) {
+            if !is_denied && !is_approved && !should_continue_use_as_result {
+                continue;
+            }
+
+            let reason = if is_denied {
+                result_payload
+                    .as_ref()
+                    .and_then(|payload| {
+                        payload
+                            .get("reason")
+                            .and_then(serde_json::Value::as_str)
+                            .or_else(|| payload.get("message").and_then(serde_json::Value::as_str))
+                    })
+                    .map(str::to_string)
+            } else {
+                None
+            };
+            let decision = ResumeDecision {
+                decision_id: response_key,
+                action: if is_denied {
+                    ResumeDecisionAction::Cancel
+                } else {
+                    ResumeDecisionAction::Resume
+                },
+                result: resolution_value,
+                reason,
+                updated_at: Self::current_unix_millis(),
+            };
+            if let Err(err) = Self::upsert_resume_decision(step, call.call_id.clone(), decision) {
                 Self::report_run_start_error(step, err);
                 return;
             }
-            if let Some(invocation) = call.frontend_invocation.as_ref() {
-                if let Err(err) =
-                    self.route_frontend_invocation(step, invocation, result_payload.as_ref())
-                {
-                    Self::report_run_start_error(step, err);
-                    return;
-                }
-            }
-            suspended_calls.remove(&call_id);
         }
-
-        if let Err(err) = Self::set_suspended_calls_state(step, suspended_calls) {
-            Self::report_run_start_error(step, err);
-        }
-    }
-
-    /// Route an approved response using the first-class `FrontendToolInvocation` model.
-    fn route_frontend_invocation(
-        &self,
-        step: &impl PluginPhaseContext,
-        inv: &FrontendToolInvocation,
-        response: Option<&serde_json::Value>,
-    ) -> Result<(), String> {
-        match &inv.routing {
-            ResponseRouting::ReplayOriginalTool => {
-                // Queue replay of the original backend tool.
-                match &inv.origin {
-                    InvocationOrigin::ToolCallIntercepted {
-                        backend_call_id,
-                        backend_tool_name,
-                        backend_arguments,
-                    } => {
-                        let replay_call = tirea_contract::thread::ToolCall::new(
-                            backend_call_id.clone(),
-                            backend_tool_name.clone(),
-                            backend_arguments.clone(),
-                        );
-                        let permission = step.state_of::<PermissionState>();
-                        let mut approved = permission.approved_calls().ok().unwrap_or_default();
-                        approved.insert(backend_call_id.clone(), true);
-                        permission
-                            .set_approved_calls(approved)
-                            .map_err(|e| format!("failed to persist one-shot approval: {e}"))?;
-                        Self::queue_replay_call(step, replay_call)?;
-                    }
-                    InvocationOrigin::PluginInitiated { .. } => {
-                        // PluginInitiated with ReplayOriginalTool is unusual but
-                        // fallback to replaying the frontend tool itself.
-                        let replay_call = tirea_contract::thread::ToolCall::new(
-                            inv.call_id.clone(),
-                            inv.tool_name.clone(),
-                            inv.arguments.clone(),
-                        );
-                        Self::queue_replay_call(step, replay_call)?;
-                    }
-                }
-            }
-            ResponseRouting::UseAsToolResult => {
-                // The frontend result is the tool result. Replay the tool call
-                // so the result enters LLM message history.
-                let replay_call = tirea_contract::thread::ToolCall::new(
-                    inv.call_id.clone(),
-                    inv.tool_name.clone(),
-                    normalize_frontend_tool_result(response, &inv.arguments),
-                );
-                Self::queue_replay_call(step, replay_call)?;
-            }
-            ResponseRouting::PassToLLM => {
-                // Future: pass the result to LLM as an independent message.
-                // For now, fallback to replay.
-                let replay_call = tirea_contract::thread::ToolCall::new(
-                    inv.call_id.clone(),
-                    inv.tool_name.clone(),
-                    normalize_frontend_tool_result(response, &inv.arguments),
-                );
-                Self::queue_replay_call(step, replay_call)?;
-            }
-        }
-        Ok(())
-    }
-}
-
-fn normalize_frontend_tool_result(
-    response: Option<&serde_json::Value>,
-    fallback_arguments: &serde_json::Value,
-) -> serde_json::Value {
-    match response {
-        // Boolean responses represent decision-only payloads.
-        // For result-routing modes, keep original tool arguments in that case.
-        Some(serde_json::Value::Bool(_)) | None => fallback_arguments.clone(),
-        Some(value) => value.clone(),
     }
 }
 
@@ -428,73 +300,15 @@ impl AgentPlugin for InteractionResponsePlugin {
         }
     }
 
-    async fn before_tool_execute(&self, step: &mut BeforeToolExecuteContext<'_, '_>) {
-        // Check if there's a tool context
-        let Some(tool_call_id) = step.tool_call_id().map(str::to_string) else {
-            return;
-        };
-        let mut suspended_calls = Self::persisted_suspended_calls(step);
-        if suspended_calls.is_empty() {
-            return;
-        }
-        let matched = suspended_calls.iter().find_map(|(entry_id, call)| {
-            let frontend_id = call
-                .frontend_invocation
-                .as_ref()
-                .map(|inv| inv.call_id.as_str());
-            if call.call_id == tool_call_id
-                || call.interaction.id == tool_call_id
-                || frontend_id == Some(tool_call_id.as_str())
-            {
-                Some((entry_id.clone(), call.clone()))
-            } else {
-                None
-            }
-        });
-        let Some((entry_id, matched_call)) = matched else {
-            return;
-        };
-        let Some(response_key) = self.resolve_response_key(&matched_call) else {
-            return;
-        };
-        let response_payload = self
-            .result_for(&response_key)
-            .cloned()
-            .unwrap_or(serde_json::Value::Bool(true));
-        let is_approved = InteractionResponse::is_approved(&response_payload);
-        let is_denied = InteractionResponse::is_denied(&response_payload);
-        if !is_approved && !is_denied {
-            return;
-        }
-        let resolution_id = response_key;
-        suspended_calls.remove(&entry_id);
-
-        if is_denied {
-            step.cancel("User denied the action".to_string());
-            if let Err(err) = Self::set_suspended_calls_state(step, suspended_calls) {
-                step.cancel(err);
-                return;
-            }
-            if let Err(err) = Self::push_resolution(step, resolution_id, response_payload.clone()) {
-                step.cancel(err);
-            }
-        } else if is_approved {
-            // Override prior ask/deny state and continue execution.
-            step.proceed();
-            if let Err(err) = Self::set_suspended_calls_state(step, suspended_calls) {
-                step.cancel(err);
-                return;
-            }
-            if let Err(err) = Self::push_resolution(step, resolution_id, response_payload) {
-                step.cancel(err);
-            }
-        }
+    async fn before_tool_execute(&self, _step: &mut BeforeToolExecuteContext<'_, '_>) {
+        // Decision application is handled by the loop-level resume mailbox.
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{AGENT_RECOVERY_INTERACTION_PREFIX, RECOVERY_RESUME_TOOL_ID};
     use async_trait::async_trait;
     use serde_json::json;
     use std::sync::Arc;
@@ -505,10 +319,13 @@ mod tests {
     };
     use tirea_contract::plugin::AgentPlugin;
     use tirea_contract::runtime::state_paths::{
-        PERMISSIONS_STATE_PATH, RESOLVED_SUSPENSIONS_STATE_PATH, RESUME_TOOL_CALLS_STATE_PATH,
+        RESOLVED_SUSPENSIONS_STATE_PATH, RESUME_DECISIONS_STATE_PATH, RESUME_TOOL_CALLS_STATE_PATH,
+        SUSPENDED_TOOL_CALLS_STATE_PATH,
     };
+    use tirea_contract::runtime::{ResumeDecision, ResumeDecisionAction};
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::{Message, ToolCall};
+    use tirea_contract::SuspendedCall;
     use tirea_state::DocCell;
 
     #[async_trait]
@@ -560,21 +377,152 @@ mod tests {
     }
 
     fn replay_calls_from_state(state: &serde_json::Value) -> Vec<ToolCall> {
-        state
+        let legacy = state
             .get(RESUME_TOOL_CALLS_STATE_PATH)
             .and_then(|agent| agent.get("calls"))
             .cloned()
             .and_then(|v| serde_json::from_value::<Vec<ToolCall>>(v).ok())
+            .unwrap_or_default();
+        if !legacy.is_empty() {
+            return legacy;
+        }
+
+        let decisions = resume_decisions_from_state(state);
+        if decisions.is_empty() {
+            return Vec::new();
+        }
+        let suspended = state
+            .get(SUSPENDED_TOOL_CALLS_STATE_PATH)
+            .and_then(|agent| agent.get("calls"))
+            .cloned()
+            .and_then(|v| serde_json::from_value::<HashMap<String, SuspendedCall>>(v).ok())
+            .unwrap_or_default();
+
+        let mut call_ids: Vec<String> = decisions.keys().cloned().collect();
+        call_ids.sort();
+        call_ids
+            .into_iter()
+            .filter_map(|call_id| {
+                let decision = decisions.get(&call_id)?;
+                if !matches!(decision.action, ResumeDecisionAction::Resume) {
+                    return None;
+                }
+                let call = suspended.get(&call_id)?;
+                if call.interaction.action == AGENT_RECOVERY_INTERACTION_ACTION {
+                    let run_id = call
+                        .interaction
+                        .parameters
+                        .get("run_id")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                        .or_else(|| {
+                            call.interaction
+                                .id
+                                .strip_prefix(AGENT_RECOVERY_INTERACTION_PREFIX)
+                                .map(str::to_string)
+                        })?;
+                    return Some(ToolCall::new(
+                        format!("recovery_resume_{run_id}"),
+                        RECOVERY_RESUME_TOOL_ID,
+                        json!({
+                            "run_id": run_id,
+                            "background": false
+                        }),
+                    ));
+                }
+                if let Some(inv) = call.frontend_invocation.as_ref() {
+                    return match &inv.routing {
+                        ResponseRouting::ReplayOriginalTool => match &inv.origin {
+                            tirea_contract::InvocationOrigin::ToolCallIntercepted {
+                                backend_call_id,
+                                backend_tool_name,
+                                backend_arguments,
+                            } => Some(ToolCall::new(
+                                backend_call_id.clone(),
+                                backend_tool_name.clone(),
+                                backend_arguments.clone(),
+                            )),
+                            tirea_contract::InvocationOrigin::PluginInitiated { .. } => {
+                                Some(ToolCall::new(
+                                    inv.call_id.clone(),
+                                    inv.tool_name.clone(),
+                                    inv.arguments.clone(),
+                                ))
+                            }
+                        },
+                        ResponseRouting::UseAsToolResult | ResponseRouting::PassToLLM => {
+                            let args = if decision.result.is_null()
+                                || matches!(decision.result, serde_json::Value::Bool(_))
+                            {
+                                inv.arguments.clone()
+                            } else {
+                                decision.result.clone()
+                            };
+                            Some(ToolCall::new(
+                                inv.call_id.clone(),
+                                inv.tool_name.clone(),
+                                args,
+                            ))
+                        }
+                    };
+                }
+                Some(ToolCall::new(
+                    call.call_id.clone(),
+                    call.tool_name.clone(),
+                    call.interaction.parameters.clone(),
+                ))
+            })
+            .collect()
+    }
+
+    fn resume_decisions_from_state(state: &serde_json::Value) -> HashMap<String, ResumeDecision> {
+        state
+            .get(RESUME_DECISIONS_STATE_PATH)
+            .and_then(|agent| agent.get("calls"))
+            .cloned()
+            .and_then(|v| serde_json::from_value::<HashMap<String, ResumeDecision>>(v).ok())
             .unwrap_or_default()
     }
 
     fn interaction_resolutions_from_state(state: &serde_json::Value) -> Vec<InteractionResponse> {
-        state
+        let legacy = state
             .get(RESOLVED_SUSPENSIONS_STATE_PATH)
             .and_then(|agent| agent.get("resolutions"))
             .cloned()
             .and_then(|v| serde_json::from_value::<Vec<InteractionResponse>>(v).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if !legacy.is_empty() {
+            return legacy;
+        }
+
+        let decisions = resume_decisions_from_state(state);
+        if decisions.is_empty() {
+            return Vec::new();
+        }
+        let suspended = state
+            .get(SUSPENDED_TOOL_CALLS_STATE_PATH)
+            .and_then(|agent| agent.get("calls"))
+            .cloned()
+            .and_then(|v| serde_json::from_value::<HashMap<String, SuspendedCall>>(v).ok())
+            .unwrap_or_default();
+        let mut call_ids: Vec<String> = decisions.keys().cloned().collect();
+        call_ids.sort();
+        call_ids
+            .into_iter()
+            .filter_map(|call_id| {
+                let decision = decisions.get(&call_id)?;
+                let interaction_id = suspended
+                    .get(&call_id)
+                    .map(|call| call.interaction.id.clone())
+                    .unwrap_or(call_id.clone());
+                let result = if decision.result.is_null() {
+                    serde_json::Value::Bool(matches!(decision.action, ResumeDecisionAction::Resume))
+                } else {
+                    decision.result.clone()
+                };
+                Some(InteractionResponse::new(interaction_id, result))
+            })
+            .collect()
     }
 
     #[tokio::test]
@@ -632,15 +580,10 @@ mod tests {
         assert_eq!(replay_calls[0].id, "call_write");
         assert_eq!(replay_calls[0].name, "write_file");
 
-        // One-shot approval should be persisted for the replayed backend call.
-        let approved = updated
-            .get(PERMISSIONS_STATE_PATH)
-            .and_then(|p| p.get("approved_calls"))
-            .and_then(|m| m.get("call_write"))
-            .and_then(|v| v.as_bool());
+        let decisions = resume_decisions_from_state(&updated);
         assert!(
-            approved == Some(true),
-            "approval for replayed call_write should be persisted"
+            decisions.contains_key("call_write"),
+            "decision rendezvous should be persisted for call_write"
         );
     }
 
@@ -927,13 +870,11 @@ mod tests {
         assert_eq!(replay_calls[0].name, "write_file");
         assert_eq!(replay_calls[0].arguments["path"], "a.txt");
 
-        // One-shot approval should be persisted for the replayed backend call.
-        let approved = updated
-            .get(PERMISSIONS_STATE_PATH)
-            .and_then(|p| p.get("approved_calls"))
-            .and_then(|m| m.get("call_write"))
-            .and_then(|v| v.as_bool());
-        assert_eq!(approved, Some(true));
+        let decisions = resume_decisions_from_state(&updated);
+        assert!(
+            decisions.contains_key("call_write"),
+            "decision rendezvous should be persisted for call_write"
+        );
     }
 
     #[tokio::test]
@@ -1039,7 +980,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_start_replay_failure_sets_inference_error_and_clears_suspended_calls() {
+    async fn run_start_legacy_outbox_corruption_does_not_break_decision_enqueue() {
         let state = json!({
             "__suspended_tool_calls": {
                 "calls": {
@@ -1079,22 +1020,20 @@ mod tests {
         plugin.run_phase(Phase::RunStart, &mut step).await;
 
         let updated = fixture.updated_state();
+        let decisions = resume_decisions_from_state(&updated);
         assert!(
             updated["__suspended_tool_calls"]["calls"]
                 .as_object()
-                .is_some_and(|calls| calls.is_empty()),
-            "suspended calls should be cleared on run_start failure"
+                .is_some_and(|calls| calls.contains_key("call_write")),
+            "suspended call should remain until loop applies decision"
         );
-        assert_eq!(
-            updated["__inference_error"]["error"]["type"],
-            "interaction_response_error"
-        );
+        assert!(decisions.contains_key("call_write"));
         assert!(
-            updated["__inference_error"]["error"]["message"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("failed to persist replay tool call"),
-            "expected queue replay failure message in inference_error"
+            updated
+                .get("__inference_error")
+                .and_then(|err| err.get("error"))
+                .is_none(),
+            "legacy outbox corruption should not surface as interaction error"
         );
     }
 
@@ -1133,7 +1072,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_start_recovery_denial_clears_suspended_call() {
+    async fn run_start_recovery_denial_queues_cancel_and_keeps_suspended_call() {
         let state = json!({
             "__suspended_tool_calls": {
                 "calls": {
@@ -1158,17 +1097,22 @@ mod tests {
         let mut step = fixture.step(vec![]);
         plugin.run_phase(Phase::RunStart, &mut step).await;
 
-        assert!(
-            fixture.has_changes(),
-            "denied recovery must clear pending interaction state"
-        );
-
         let updated = fixture.updated_state();
+        let decisions = resume_decisions_from_state(&updated);
+        assert!(
+            decisions
+                .get("agent_recovery_run-1")
+                .is_some_and(|decision| matches!(decision.action, ResumeDecisionAction::Cancel)),
+            "denied recovery should queue a cancel decision"
+        );
         let suspended = updated
             .get("__suspended_tool_calls")
             .and_then(|a| a.get("calls"))
             .and_then(|v| v.as_object());
-        assert!(suspended.is_none() || suspended.is_some_and(|calls| calls.is_empty()));
+        assert!(
+            suspended.is_some_and(|calls| calls.contains_key("agent_recovery_run-1")),
+            "suspended recovery call should remain until loop applies decision"
+        );
     }
 
     // =========================================================================

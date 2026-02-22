@@ -1,14 +1,17 @@
 use super::AgentLoopError;
 use crate::contracts::plugin::phase::StepContext;
 use crate::contracts::runtime::state_paths::{
-    INFERENCE_ERROR_STATE_PATH, RESOLVED_SUSPENSIONS_STATE_PATH, RESUME_TOOL_CALLS_STATE_PATH,
-    SKILLS_STATE_PATH, SUSPENDED_TOOL_CALLS_STATE_PATH,
+    INFERENCE_ERROR_STATE_PATH, RESOLVED_SUSPENSIONS_STATE_PATH, RESUME_DECISIONS_STATE_PATH,
+    RESUME_TOOL_CALLS_STATE_PATH, SKILLS_STATE_PATH, SUSPENDED_TOOL_CALLS_STATE_PATH,
 };
 use crate::contracts::thread::{Message, MessageMetadata, Role};
 use crate::contracts::tool::Tool;
 use crate::contracts::RunContext;
 use crate::contracts::{InteractionResponse, SuspendedCall};
-use crate::runtime::control::{InferenceError, InferenceErrorState, SuspendedToolCallsState};
+use crate::runtime::control::{
+    InferenceError, InferenceErrorState, ResumeDecision, ResumeDecisionsState,
+    SuspendedToolCallsState,
+};
 use tirea_state::{DocCell, StateContext, TireaError, TrackedPatch};
 
 use serde_json::Value;
@@ -243,6 +246,67 @@ pub(super) fn set_agent_inference_error(
     Ok(ctx.take_tracked_patch("agent_loop"))
 }
 
+pub(super) fn resume_decisions_from_ctx(run_ctx: &RunContext) -> HashMap<String, ResumeDecision> {
+    run_ctx
+        .snapshot()
+        .ok()
+        .and_then(|state| {
+            state
+                .get(RESUME_DECISIONS_STATE_PATH)
+                .and_then(|v| v.get("calls"))
+                .cloned()
+                .and_then(|raw| serde_json::from_value::<HashMap<String, ResumeDecision>>(raw).ok())
+        })
+        .unwrap_or_default()
+}
+
+pub(super) fn upsert_resume_decision(
+    state: &Value,
+    call_id: &str,
+    decision: ResumeDecision,
+) -> Result<TrackedPatch, AgentLoopError> {
+    let doc = DocCell::new(state.clone());
+    let ctx = StateContext::new(&doc);
+    let mailbox = ctx.state_of::<ResumeDecisionsState>();
+    let mut decisions = mailbox.calls().ok().unwrap_or_default();
+    decisions.insert(call_id.to_string(), decision);
+    mailbox.set_calls(decisions).map_err(|e| {
+        AgentLoopError::StateError(format!(
+            "failed to set {RESUME_DECISIONS_STATE_PATH}.calls: {e}"
+        ))
+    })?;
+    Ok(ctx.take_tracked_patch("agent_loop"))
+}
+
+pub(super) fn clear_resume_decisions(
+    state: &Value,
+    call_ids: &[String],
+) -> Result<TrackedPatch, AgentLoopError> {
+    if call_ids.is_empty() {
+        return Ok(TrackedPatch::new(tirea_state::Patch::new()).with_source("agent_loop"));
+    }
+
+    let doc = DocCell::new(state.clone());
+    let ctx = StateContext::new(&doc);
+    let mailbox = ctx.state_of::<ResumeDecisionsState>();
+    let mut decisions = mailbox.calls().ok().unwrap_or_default();
+    let mut changed = false;
+    for call_id in call_ids {
+        if decisions.remove(call_id).is_some() {
+            changed = true;
+        }
+    }
+    if !changed {
+        return Ok(ctx.take_tracked_patch("agent_loop"));
+    }
+    mailbox.set_calls(decisions).map_err(|e| {
+        AgentLoopError::StateError(format!(
+            "failed to set {RESUME_DECISIONS_STATE_PATH}.calls: {e}"
+        ))
+    })?;
+    Ok(ctx.take_tracked_patch("agent_loop"))
+}
+
 pub(super) fn clear_agent_inference_error(state: &Value) -> Result<TrackedPatch, AgentLoopError> {
     let doc = DocCell::new(state.clone());
     let ctx = StateContext::new(&doc);
@@ -328,66 +392,6 @@ pub(super) fn drain_agent_outbox(
         interaction_resolutions,
         replay_tool_calls,
     })
-}
-
-pub(super) fn enqueue_interaction_resolution(
-    state: &Value,
-    resolution: InteractionResponse,
-    replay_tool_call: Option<crate::contracts::thread::ToolCall>,
-) -> Result<TrackedPatch, AgentLoopError> {
-    let mut interaction_resolutions = match state
-        .get(RESOLVED_SUSPENSIONS_STATE_PATH)
-        .and_then(|outbox| outbox.get("resolutions"))
-        .cloned()
-    {
-        Some(raw) => serde_json::from_value::<Vec<InteractionResponse>>(raw).map_err(|e| {
-            AgentLoopError::StateError(format!(
-                "failed to parse {RESOLVED_SUSPENSIONS_STATE_PATH}.resolutions: {e}"
-            ))
-        })?,
-        None => Vec::new(),
-    };
-    interaction_resolutions.push(resolution);
-
-    let mut patch = tirea_state::Patch::new().with_op(tirea_state::Op::set(
-        tirea_state::Path::root()
-            .key(RESOLVED_SUSPENSIONS_STATE_PATH)
-            .key("resolutions"),
-        serde_json::to_value(interaction_resolutions).map_err(|e| {
-            AgentLoopError::StateError(format!(
-                "failed to serialize {RESOLVED_SUSPENSIONS_STATE_PATH}.resolutions: {e}"
-            ))
-        })?,
-    ));
-
-    if let Some(replay_tool_call) = replay_tool_call {
-        let mut replay_tool_calls = match state
-            .get(RESUME_TOOL_CALLS_STATE_PATH)
-            .and_then(|outbox| outbox.get("calls"))
-            .cloned()
-        {
-            Some(raw) => serde_json::from_value::<Vec<crate::contracts::thread::ToolCall>>(raw)
-                .map_err(|e| {
-                    AgentLoopError::StateError(format!(
-                        "failed to parse {RESUME_TOOL_CALLS_STATE_PATH}.calls: {e}"
-                    ))
-                })?,
-            None => Vec::new(),
-        };
-        replay_tool_calls.push(replay_tool_call);
-        patch = patch.with_op(tirea_state::Op::set(
-            tirea_state::Path::root()
-                .key(RESUME_TOOL_CALLS_STATE_PATH)
-                .key("calls"),
-            serde_json::to_value(replay_tool_calls).map_err(|e| {
-                AgentLoopError::StateError(format!(
-                    "failed to serialize {RESUME_TOOL_CALLS_STATE_PATH}.calls: {e}"
-                ))
-            })?,
-        ));
-    }
-
-    Ok(TrackedPatch::new(patch).with_source("agent_loop"))
 }
 
 pub(super) fn enqueue_replay_tool_calls(

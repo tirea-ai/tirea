@@ -4647,14 +4647,16 @@ fn test_scenario_various_interaction_types() {
 // InteractionPlugin Scenario Tests
 // ============================================================================
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use tirea_agentos::contracts::plugin::phase::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
     BeforeToolExecuteContext, Phase, RunEndContext, RunStartContext, StepContext, StepEndContext,
     StepStartContext, ToolContext,
 };
 use tirea_agentos::contracts::plugin::AgentPlugin;
+use tirea_agentos::contracts::runtime::control::{ResumeDecision, ResumeDecisionAction};
 use tirea_agentos::contracts::thread::ToolCall;
+use tirea_agentos::contracts::{InvocationOrigin, ResponseRouting, SuspendedCall};
 use tirea_protocol_ag_ui::RunAgentInput;
 
 #[async_trait::async_trait]
@@ -5662,18 +5664,19 @@ async fn test_scenario_interaction_response_plugin_blocks_denied() {
     let fix = TestFixture::new_with_state(thread.state.clone());
     let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
+    plugin.run_phase(Phase::RunStart, &mut step).await;
+
+    let decisions = resume_decisions_from_state(&fix.updated_state());
+    let decision = decisions
+        .get("call_write")
+        .expect("denied response should create resume decision");
+    assert!(matches!(decision.action, ResumeDecisionAction::Cancel));
+
+    // Interaction plugin no longer applies gate decisions in BeforeToolExecute.
     let call = ToolCall::new("call_write", "write_file", json!({"path": "/etc/config"}));
     step.tool = Some(ToolContext::new(&call));
-
     plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
-
-    assert!(step.tool_blocked(), "Denied tool should be blocked");
-    let block_reason = step.tool.as_ref().unwrap().block_reason.as_ref().unwrap();
-    assert!(
-        block_reason.contains("denied"),
-        "Block reason should mention denial, got: {}",
-        block_reason
-    );
+    assert!(!step.tool_blocked(), "gate application is loop-owned");
 }
 
 /// Test scenario: InteractionPlugin allows approved tool in execution flow
@@ -6234,8 +6237,8 @@ async fn test_permission_flow_denial_e2e() {
         .iter()
         .any(|id| id == &interaction.id));
 
-    // Phase 3: On resume, tool should be blocked.
-    // The session must have the pending interaction persisted (as the real loop does).
+    // Phase 3: On resume, response plugin should produce a cancel decision.
+    // The session must have the suspended call persisted (as the real loop does).
     let session2 = Thread::with_initial_state(
         "test",
         state_with_suspended_call(
@@ -6250,19 +6253,12 @@ async fn test_permission_flow_denial_e2e() {
     let fix2 = TestFixture::new_with_state(session2.state.clone());
     let ctx_step2 = fix2.ctx();
     let mut step2 = StepContext::new(ctx_step2, &session2.id, &session2.messages, vec![]);
-    let tool_call2 = ToolCall::new(&interaction.id, "delete_all", json!({}));
-    step2.tool = Some(ToolContext::new(&tool_call2));
-
-    response_plugin
-        .run_phase(Phase::BeforeToolExecute, &mut step2)
-        .await;
-    assert!(step2.tool_blocked(), "Denied tool should be blocked");
-
-    let block_reason = step2.tool.as_ref().unwrap().block_reason.as_ref().unwrap();
-    assert!(
-        block_reason.contains("denied"),
-        "Block reason should mention denial"
-    );
+    response_plugin.run_phase(Phase::RunStart, &mut step2).await;
+    let decisions = resume_decisions_from_state(&fix2.updated_state());
+    let decision = decisions
+        .get(&interaction.id)
+        .expect("denied interaction should create a decision");
+    assert!(matches!(decision.action, ResumeDecisionAction::Cancel));
 }
 
 /// Test: Multiple tools with mixed permissions
@@ -6309,7 +6305,7 @@ async fn test_permission_flow_multiple_tools_mixed() {
 
     let response_plugin = interaction_plugin_from_request(&response_request);
 
-    // Verify first tool (approved) — session has its pending interaction persisted.
+    // Verify first tool (approved) — session has its suspended call persisted.
     let session_r1 = Thread::with_initial_state(
         "test",
         state_with_suspended_call(
@@ -6322,14 +6318,16 @@ async fn test_permission_flow_multiple_tools_mixed() {
     let fix_r1 = TestFixture::new_with_state(session_r1.state.clone());
     let ctx_resume1 = fix_r1.ctx();
     let mut resume1 = StepContext::new(ctx_resume1, &session_r1.id, &session_r1.messages, vec![]);
-    let resume_call1 = ToolCall::new(&int1.id, "read_file", json!({}));
-    resume1.tool = Some(ToolContext::new(&resume_call1));
     response_plugin
-        .run_phase(Phase::BeforeToolExecute, &mut resume1)
+        .run_phase(Phase::RunStart, &mut resume1)
         .await;
-    assert!(!resume1.tool_blocked(), "First tool should not be blocked");
+    let decisions_r1 = resume_decisions_from_state(&fix_r1.updated_state());
+    let decision_r1 = decisions_r1
+        .get(&int1.id)
+        .expect("approved interaction should create decision");
+    assert!(matches!(decision_r1.action, ResumeDecisionAction::Resume));
 
-    // Verify second tool (denied) — session has its pending interaction persisted.
+    // Verify second tool (denied) — session has its suspended call persisted.
     let session_r2 = Thread::with_initial_state(
         "test",
         state_with_suspended_call(
@@ -6342,12 +6340,14 @@ async fn test_permission_flow_multiple_tools_mixed() {
     let fix_r2 = TestFixture::new_with_state(session_r2.state.clone());
     let ctx_resume2 = fix_r2.ctx();
     let mut resume2 = StepContext::new(ctx_resume2, &session_r2.id, &session_r2.messages, vec![]);
-    let resume_call2 = ToolCall::new(&int2.id, "write_file", json!({}));
-    resume2.tool = Some(ToolContext::new(&resume_call2));
     response_plugin
-        .run_phase(Phase::BeforeToolExecute, &mut resume2)
+        .run_phase(Phase::RunStart, &mut resume2)
         .await;
-    assert!(resume2.tool_blocked(), "Second tool should be blocked");
+    let decisions_r2 = resume_decisions_from_state(&fix_r2.updated_state());
+    let decision_r2 = decisions_r2
+        .get(&int2.id)
+        .expect("denied interaction should create decision");
+    assert!(matches!(decision_r2.action, ResumeDecisionAction::Cancel));
 }
 
 // ============================================================================
@@ -7013,11 +7013,12 @@ async fn test_resume_flow_with_denial() {
     let fix = TestFixture::new_with_state(thread.state.clone());
     let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
-    let call = ToolCall::new(interaction_id, "dangerous_tool", json!({}));
-    step.tool = Some(ToolContext::new(&call));
-
-    plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
-    assert!(step.tool_blocked());
+    plugin.run_phase(Phase::RunStart, &mut step).await;
+    let decisions = resume_decisions_from_state(&fix.updated_state());
+    let decision = decisions
+        .get(interaction_id)
+        .expect("denied response should create decision");
+    assert!(matches!(decision.action, ResumeDecisionAction::Cancel));
 }
 
 /// Test: Resume with multiple pending responses
@@ -7049,13 +7050,16 @@ async fn test_resume_flow_multiple_responses() {
         let fix = TestFixture::new_with_state(thread.state.clone());
         let ctx_step = fix.ctx();
         let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
-        let call = ToolCall::new(id, "test_tool", json!({}));
-        step.tool = Some(ToolContext::new(&call));
-        plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.run_phase(Phase::RunStart, &mut step).await;
+        let decisions = resume_decisions_from_state(&fix.updated_state());
+        let action = decisions
+            .get(id)
+            .map(|d| d.action.clone())
+            .expect("expected decision for responded call");
         assert_eq!(
-            step.tool_blocked(),
+            matches!(action, ResumeDecisionAction::Cancel),
             should_block,
-            "Tool {} block state incorrect",
+            "Tool {} decision state incorrect",
             id
         );
     }
@@ -7202,18 +7206,26 @@ async fn test_plugin_interaction_execution_order() {
     let call = ToolCall::new("call_danger", "dangerousAction", json!({}));
     step.tool = Some(ToolContext::new(&call));
 
-    // Response plugin runs first - denies the tool
+    // Response plugin run_start persists cancel decision.
+    response_plugin.run_phase(Phase::RunStart, &mut step).await;
+    let decisions = resume_decisions_from_state(&fix.updated_state());
+    let decision = decisions
+        .get("call_danger")
+        .expect("denied response should create decision");
+    assert!(matches!(decision.action, ResumeDecisionAction::Cancel));
+
+    // before_tool_execute does not apply decision (loop-owned); frontend plugin still sees call.
     response_plugin
         .run_phase(Phase::BeforeToolExecute, &mut step)
         .await;
-    assert!(step.tool_blocked(), "Tool should be blocked by denial");
-
-    // Frontend plugin runs second - should NOT override the block
     frontend_plugin
         .run_phase(Phase::BeforeToolExecute, &mut step)
         .await;
-    assert!(step.tool_blocked(), "Tool should still be blocked");
-    assert!(!step.tool_pending(), "Blocked tool should not be pending");
+    assert!(!step.tool_blocked(), "gate application is loop-owned");
+    assert!(
+        step.tool_pending(),
+        "frontend plugin can still suspend in this unit scope"
+    );
 }
 
 /// Test: Permission plugin with frontend tool
@@ -7710,11 +7722,11 @@ async fn test_multiple_interaction_responses() {
     assert!(plugin.is_denied("perm_write"));
     assert!(plugin.is_approved("perm_exec"));
 
-    // Verify each tool gets correct treatment — each needs a session with matching pending interaction.
+    // Verify each responded call writes the expected resume decision.
     let test_cases = vec![
-        ("perm_read", false), // approved, not blocked
-        ("perm_write", true), // denied, blocked
-        ("perm_exec", false), // approved, not blocked
+        ("perm_read", false), // approved => resume
+        ("perm_write", true), // denied => cancel
+        ("perm_exec", false), // approved => resume
     ];
 
     for (id, should_block) in test_cases {
@@ -7730,18 +7742,20 @@ async fn test_multiple_interaction_responses() {
         let fix = TestFixture::new_with_state(thread.state.clone());
         let ctx_step = fix.ctx();
         let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
-        let call = ToolCall::new(id, "some_tool", json!({}));
-        step.tool = Some(ToolContext::new(&call));
-
-        plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.run_phase(Phase::RunStart, &mut step).await;
+        let decisions = resume_decisions_from_state(&fix.updated_state());
+        let action = decisions
+            .get(id)
+            .map(|d| d.action.clone())
+            .expect("response should create a decision");
 
         assert_eq!(
-            step.tool_blocked(),
+            matches!(action, ResumeDecisionAction::Cancel),
             should_block,
-            "Tool {} should_block={} but got blocked={}",
+            "Tool {} should_block={} but got action={:?}",
             id,
             should_block,
-            step.tool_blocked()
+            action
         );
     }
 }
@@ -12521,11 +12535,79 @@ mod llmmetry_tracing {
 // ============================================================================
 
 fn replay_calls_from_state(state: &Value) -> Vec<ToolCall> {
-    state
+    let legacy = state
         .get("__resume_tool_calls")
         .and_then(|agent| agent.get("calls"))
         .cloned()
         .and_then(|v| serde_json::from_value::<Vec<ToolCall>>(v).ok())
+        .unwrap_or_default();
+    if !legacy.is_empty() {
+        return legacy;
+    }
+
+    let decisions = resume_decisions_from_state(state);
+    if decisions.is_empty() {
+        return Vec::new();
+    }
+
+    let suspended = state
+        .get("__suspended_tool_calls")
+        .and_then(|agent| agent.get("calls"))
+        .cloned()
+        .and_then(|v| serde_json::from_value::<HashMap<String, SuspendedCall>>(v).ok())
+        .unwrap_or_default();
+
+    let mut call_ids: Vec<String> = decisions.keys().cloned().collect();
+    call_ids.sort();
+    call_ids
+        .into_iter()
+        .filter_map(|call_id| {
+            let decision = decisions.get(&call_id)?;
+            if !matches!(decision.action, ResumeDecisionAction::Resume) {
+                return None;
+            }
+            let call = suspended.get(&call_id)?;
+            if let Some(invocation) = call.frontend_invocation.as_ref() {
+                return Some(match (&invocation.origin, &invocation.routing) {
+                    (
+                        InvocationOrigin::ToolCallIntercepted {
+                            backend_call_id,
+                            backend_tool_name,
+                            backend_arguments,
+                        },
+                        ResponseRouting::ReplayOriginalTool,
+                    ) => ToolCall::new(
+                        backend_call_id.clone(),
+                        backend_tool_name.clone(),
+                        backend_arguments.clone(),
+                    ),
+                    (
+                        InvocationOrigin::PluginInitiated { .. },
+                        ResponseRouting::ReplayOriginalTool,
+                    )
+                    | (_, ResponseRouting::UseAsToolResult)
+                    | (_, ResponseRouting::PassToLLM) => ToolCall::new(
+                        invocation.call_id.clone(),
+                        invocation.tool_name.clone(),
+                        invocation.arguments.clone(),
+                    ),
+                });
+            }
+            Some(ToolCall::new(
+                call.call_id.clone(),
+                call.tool_name.clone(),
+                call.interaction.parameters.clone(),
+            ))
+        })
+        .collect()
+}
+
+fn resume_decisions_from_state(state: &Value) -> HashMap<String, ResumeDecision> {
+    state
+        .get("__resume_decisions")
+        .and_then(|agent| agent.get("calls"))
+        .cloned()
+        .and_then(|v| serde_json::from_value::<HashMap<String, ResumeDecision>>(v).ok())
         .unwrap_or_default()
 }
 

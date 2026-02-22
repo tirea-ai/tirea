@@ -8,6 +8,7 @@ mod outbox;
 
 pub const INTERACTION_PLUGIN_ID: &str = "interaction";
 pub const INTERACTION_RESPONSE_PLUGIN_ID: &str = "interaction_response";
+#[cfg(test)]
 pub(crate) const RECOVERY_RESUME_TOOL_ID: &str = "agent_run";
 
 /// Interaction action used for agent run recovery confirmation.
@@ -17,4 +18,4 @@ pub const AGENT_RECOVERY_INTERACTION_ACTION: &str = "recover_agent_run";
 pub const AGENT_RECOVERY_INTERACTION_PREFIX: &str = "agent_recovery_";
 
 pub use interaction_plugin::InteractionPlugin;
-pub use outbox::{ResolvedSuspensionsState, ResumeToolCallsState};
+pub use outbox::{ResolvedSuspensionsState, ResumeDecisionsState, ResumeToolCallsState};

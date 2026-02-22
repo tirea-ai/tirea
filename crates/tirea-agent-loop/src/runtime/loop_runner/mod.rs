@@ -49,10 +49,10 @@ mod stream_runner;
 mod tool_exec;
 
 use crate::contracts::plugin::phase::Phase;
-use crate::contracts::runtime::state_paths::PERMISSIONS_STATE_PATH;
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
-    StopPolicy, StreamResult, ToolExecutionRequest, ToolExecutionResult,
+    ResumeDecision, ResumeDecisionAction, StopPolicy, StreamResult, ToolExecutionRequest,
+    ToolExecutionResult,
 };
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
@@ -93,9 +93,10 @@ use core::build_messages;
 #[cfg(test)]
 use core::set_agent_pending_interaction;
 use core::{
-    build_request_for_filtered_tools, clear_all_suspended_calls, clear_suspended_call,
-    drain_agent_outbox, enqueue_interaction_resolution, enqueue_replay_tool_calls,
-    inference_inputs_from_step, set_agent_suspended_calls, suspended_calls_from_ctx,
+    build_request_for_filtered_tools, clear_all_suspended_calls, clear_resume_decisions,
+    clear_suspended_call, drain_agent_outbox, enqueue_replay_tool_calls,
+    inference_inputs_from_step, resume_decisions_from_ctx, set_agent_suspended_calls,
+    suspended_calls_from_ctx, upsert_resume_decision,
 };
 pub use outcome::{tool_map, tool_map_from_arc, AgentLoopError};
 pub use outcome::{LoopOutcome, LoopStats, LoopUsage};
@@ -626,14 +627,235 @@ struct RunStartDrainOutcome {
     replayed: bool,
 }
 
+fn decision_result_value(decision: &ResumeDecision) -> serde_json::Value {
+    if decision.result.is_null() {
+        serde_json::Value::Bool(matches!(decision.action, ResumeDecisionAction::Resume))
+    } else {
+        decision.result.clone()
+    }
+}
+
+async fn drain_resume_decisions_and_replay(
+    run_ctx: &mut RunContext,
+    tools: &HashMap<String, Arc<dyn Tool>>,
+    config: &AgentConfig,
+    tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
+) -> Result<RunStartDrainOutcome, AgentLoopError> {
+    let decisions = resume_decisions_from_ctx(run_ctx);
+    if decisions.is_empty() {
+        return Ok(RunStartDrainOutcome {
+            events: Vec::new(),
+            replayed: false,
+        });
+    }
+
+    let suspended = suspended_calls_from_ctx(run_ctx);
+    if suspended.is_empty() {
+        let state = run_ctx
+            .snapshot()
+            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+        let stale_ids = decisions.keys().cloned().collect::<Vec<_>>();
+        let clear_patch = clear_resume_decisions(&state, &stale_ids)?;
+        if !clear_patch.patch().is_empty() {
+            run_ctx.add_thread_patch(clear_patch);
+            let snapshot = run_ctx
+                .snapshot()
+                .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+            return Ok(RunStartDrainOutcome {
+                events: vec![AgentEvent::StateSnapshot { snapshot }],
+                replayed: false,
+            });
+        }
+        return Ok(RunStartDrainOutcome {
+            events: Vec::new(),
+            replayed: false,
+        });
+    }
+
+    let mut events = Vec::new();
+    let mut decision_ids: Vec<String> = decisions.keys().cloned().collect();
+    decision_ids.sort();
+
+    let mut replayed = false;
+    let mut state_changed = false;
+    let mut decisions_to_clear = Vec::new();
+    let mut suspended_to_clear = Vec::new();
+
+    for call_id in decision_ids {
+        let Some(suspended_call) = suspended.get(&call_id).cloned() else {
+            continue;
+        };
+        let Some(decision) = decisions.get(&call_id).cloned() else {
+            continue;
+        };
+        replayed = true;
+        decisions_to_clear.push(call_id.clone());
+        let decision_result = decision_result_value(&decision);
+        events.push(AgentEvent::InteractionResolved {
+            interaction_id: suspended_call.interaction.id.clone(),
+            result: decision_result.clone(),
+        });
+
+        match decision.action {
+            ResumeDecisionAction::Cancel => {
+                events.push(append_denied_tool_result_message(
+                    run_ctx,
+                    &suspended_call.call_id,
+                    Some(&suspended_call.tool_name),
+                    &decision_result,
+                ));
+                suspended_to_clear.push(call_id);
+            }
+            ResumeDecisionAction::Resume => {
+                let replay_response = InteractionResponse::new(
+                    suspended_call.interaction.id.clone(),
+                    decision_result.clone(),
+                );
+                let Some(tool_call) =
+                    replay_tool_call_for_resolution(run_ctx, &suspended_call, &replay_response)
+                else {
+                    continue;
+                };
+                let state = run_ctx
+                    .snapshot()
+                    .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+                let tool = tools.get(&tool_call.name).cloned();
+                let rt_for_replay = scope_with_tool_caller_context(run_ctx, &state, Some(config))?;
+                let replay_phase_ctx = ToolPhaseContext {
+                    tool_descriptors,
+                    plugins: &config.plugins,
+                    activity_manager: None,
+                    run_config: &rt_for_replay,
+                    thread_id: run_ctx.thread_id(),
+                    thread_messages: run_ctx.messages(),
+                    cancellation_token: None,
+                };
+                let replay_result = execute_single_tool_with_phases(
+                    tool.as_deref(),
+                    &tool_call,
+                    &state,
+                    &replay_phase_ctx,
+                )
+                .await?;
+
+                let replay_msg_id = gen_message_id();
+                let replay_msg = tool_response(&tool_call.id, &replay_result.execution.result)
+                    .with_id(replay_msg_id.clone());
+                run_ctx.add_message(Arc::new(replay_msg));
+
+                if !replay_result.reminders.is_empty() {
+                    let msgs: Vec<Arc<Message>> = replay_result
+                        .reminders
+                        .iter()
+                        .map(|reminder| {
+                            Arc::new(Message::internal_system(format!(
+                                "<system-reminder>{}</system-reminder>",
+                                reminder
+                            )))
+                        })
+                        .collect();
+                    run_ctx.add_messages(msgs);
+                }
+
+                if let Some(patch) = replay_result.execution.patch.clone() {
+                    state_changed = true;
+                    run_ctx.add_thread_patch(patch);
+                }
+                if !replay_result.pending_patches.is_empty() {
+                    state_changed = true;
+                    run_ctx.add_thread_patches(replay_result.pending_patches.clone());
+                }
+
+                events.push(AgentEvent::ToolCallDone {
+                    id: tool_call.id.clone(),
+                    result: replay_result.execution.result,
+                    patch: replay_result.execution.patch,
+                    message_id: replay_msg_id,
+                });
+
+                if let Some(next_suspended_call) = replay_result.suspended_call.clone() {
+                    let state = run_ctx
+                        .snapshot()
+                        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+                    let mut merged = run_ctx.suspended_calls();
+                    merged.insert(
+                        next_suspended_call.call_id.clone(),
+                        next_suspended_call.clone(),
+                    );
+                    let patch = set_agent_suspended_calls(
+                        &state,
+                        merged.into_values().collect::<Vec<_>>(),
+                    )?;
+                    if !patch.patch().is_empty() {
+                        state_changed = true;
+                        run_ctx.add_thread_patch(patch);
+                    }
+                    for event in pending_tool_events(
+                        &next_suspended_call.interaction,
+                        next_suspended_call.frontend_invocation.as_ref(),
+                    ) {
+                        events.push(event);
+                    }
+                    if next_suspended_call.call_id != call_id {
+                        suspended_to_clear.push(call_id);
+                    }
+                } else {
+                    suspended_to_clear.push(call_id);
+                }
+            }
+        }
+    }
+
+    if !suspended_to_clear.is_empty() {
+        let mut unique = suspended_to_clear;
+        unique.sort();
+        unique.dedup();
+        for call_id in &unique {
+            let state = run_ctx
+                .snapshot()
+                .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+            let clear_patch = clear_suspended_call(&state, call_id)?;
+            if !clear_patch.patch().is_empty() {
+                state_changed = true;
+                run_ctx.add_thread_patch(clear_patch);
+            }
+        }
+    }
+    if !decisions_to_clear.is_empty() {
+        let mut unique = decisions_to_clear;
+        unique.sort();
+        unique.dedup();
+        let state = run_ctx
+            .snapshot()
+            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+        let clear_patch = clear_resume_decisions(&state, &unique)?;
+        if !clear_patch.patch().is_empty() {
+            state_changed = true;
+            run_ctx.add_thread_patch(clear_patch);
+        }
+    }
+
+    if state_changed {
+        let snapshot = run_ctx
+            .snapshot()
+            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+        events.push(AgentEvent::StateSnapshot { snapshot });
+    }
+
+    Ok(RunStartDrainOutcome { events, replayed })
+}
+
 async fn drain_run_start_outbox_and_replay(
     run_ctx: &mut RunContext,
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
 ) -> Result<RunStartDrainOutcome, AgentLoopError> {
+    let mut resume_outcome =
+        drain_resume_decisions_and_replay(run_ctx, tools, config, tool_descriptors).await?;
+
     let outbox = drain_agent_outbox(run_ctx, "agent_outbox_run_start")?;
-    let mut events = Vec::new();
+    let mut events = std::mem::take(&mut resume_outcome.events);
     let mut synthesized_denied_result = false;
     for resolution in outbox.interaction_resolutions {
         let interaction_id = resolution.interaction_id;
@@ -657,7 +879,7 @@ async fn drain_run_start_outbox_and_replay(
     if replay_calls.is_empty() {
         return Ok(RunStartDrainOutcome {
             events,
-            replayed: synthesized_denied_result,
+            replayed: resume_outcome.replayed || synthesized_denied_result,
         });
     }
 
@@ -967,62 +1189,19 @@ fn replay_tool_call_for_resolution(
     })
 }
 
-fn one_shot_approval_call_id(
-    suspended_call: &SuspendedCall,
-    response: &InteractionResponse,
-) -> Option<String> {
-    if !InteractionResponse::is_approved(&response.result) {
-        return None;
-    }
-
-    let invocation = suspended_call.frontend_invocation.as_ref()?;
-    if !matches!(
-        invocation.routing,
-        crate::contracts::ResponseRouting::ReplayOriginalTool
-    ) {
-        return None;
-    }
-
-    match &invocation.origin {
-        crate::contracts::InvocationOrigin::ToolCallIntercepted {
-            backend_call_id, ..
-        } => Some(backend_call_id.clone()),
-        crate::contracts::InvocationOrigin::PluginInitiated { .. } => None,
-    }
-}
-
-fn set_permission_one_shot_approval(
-    run_ctx: &mut RunContext,
-    approved_call_id: &str,
-) -> Result<(), AgentLoopError> {
-    let state = run_ctx
-        .snapshot()
-        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let mut approved_calls = match state
-        .get(PERMISSIONS_STATE_PATH)
-        .and_then(|permissions| permissions.get("approved_calls"))
-        .cloned()
-    {
-        Some(raw) => serde_json::from_value::<HashMap<String, bool>>(raw).map_err(|e| {
-            AgentLoopError::StateError(format!("failed to parse permissions.approved_calls: {e}"))
-        })?,
-        None => HashMap::new(),
+fn resume_decision_from_response(response: &InteractionResponse) -> ResumeDecision {
+    let action = if InteractionResponse::is_denied(&response.result) {
+        ResumeDecisionAction::Cancel
+    } else {
+        ResumeDecisionAction::Resume
     };
-    approved_calls.insert(approved_call_id.to_string(), true);
-    let patch = tirea_state::Patch::new().with_op(tirea_state::Op::set(
-        tirea_state::Path::root()
-            .key(PERMISSIONS_STATE_PATH)
-            .key("approved_calls"),
-        serde_json::to_value(approved_calls).map_err(|e| {
-            AgentLoopError::StateError(format!(
-                "failed to serialize permissions.approved_calls: {e}"
-            ))
-        })?,
-    ));
-    if !patch.is_empty() {
-        run_ctx.add_thread_patch(TrackedPatch::new(patch).with_source("agent_loop"));
+    ResumeDecision {
+        decision_id: format!("decision_{}", uuid_v7()),
+        action,
+        result: response.result.clone(),
+        reason: denied_reason_from_response(&response.result),
+        updated_at: current_unix_millis(),
     }
-    Ok(())
 }
 
 pub(super) fn resolve_suspended_call(
@@ -1047,25 +1226,13 @@ pub(super) fn resolve_suspended_call(
         return Ok(None);
     };
 
-    if let Some(approved_call_id) = one_shot_approval_call_id(&suspended_call, response) {
-        set_permission_one_shot_approval(run_ctx, &approved_call_id)?;
-    }
-
-    let replay_call = replay_tool_call_for_resolution(run_ctx, &suspended_call, response);
+    let decision = resume_decision_from_response(response);
     let state = run_ctx
         .snapshot()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let outbox_patch = enqueue_interaction_resolution(&state, response.clone(), replay_call)?;
-    if !outbox_patch.patch().is_empty() {
-        run_ctx.add_thread_patch(outbox_patch);
-    }
-
-    let state = run_ctx
-        .snapshot()
-        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let clear_patch = clear_suspended_call(&state, &suspended_call.call_id)?;
-    if !clear_patch.patch().is_empty() {
-        run_ctx.add_thread_patch(clear_patch);
+    let decision_patch = upsert_resume_decision(&state, &suspended_call.call_id, decision)?;
+    if !decision_patch.patch().is_empty() {
+        run_ctx.add_thread_patch(decision_patch);
     }
 
     Ok(Some(DecisionReplayOutcome {

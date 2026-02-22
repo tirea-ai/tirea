@@ -32,6 +32,7 @@ use tirea_contract::plugin::phase::{
     BeforeToolExecuteContext, PluginPhaseContext, SuspendTicket, ToolGateDecision,
 };
 use tirea_contract::plugin::AgentPlugin;
+use tirea_contract::runtime::control::{ResumeDecisionAction, ResumeDecisionsState};
 use tirea_contract::tool::context::ToolCallContext;
 use tirea_state::State;
 
@@ -150,6 +151,18 @@ impl AgentPlugin for PermissionPlugin {
         // If this call_id was approved, consume the entry and allow execution.
         let call_id = step.tool_call_id().unwrap_or_default().to_string();
         if !call_id.is_empty() {
+            let has_resume_grant = {
+                let state = step.state_of::<ResumeDecisionsState>();
+                state
+                    .calls()
+                    .ok()
+                    .and_then(|calls| calls.get(&call_id).cloned())
+                    .is_some_and(|decision| matches!(decision.action, ResumeDecisionAction::Resume))
+            };
+            if has_resume_grant {
+                return;
+            }
+
             let is_approved = {
                 let state = step.state_of::<PermissionState>();
                 state

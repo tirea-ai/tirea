@@ -344,13 +344,6 @@ struct ActivityProgressState {
     progress: f64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-#[tirea(path = "permissions")]
-struct TestPermissionState {
-    #[tirea(default = "HashMap::new()")]
-    approved_calls: HashMap<String, bool>,
-}
-
 struct EchoTool;
 
 #[async_trait]
@@ -2413,7 +2406,7 @@ fn test_execute_tools_with_config_with_blocking_plugin() {
 }
 
 #[test]
-fn test_execute_tools_with_config_denied_permission_is_visible_as_tool_error() {
+fn test_execute_tools_with_config_denied_response_is_applied_via_run_start_resume_mailbox() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let thread = Thread::with_initial_state(
@@ -2453,15 +2446,14 @@ fn test_execute_tools_with_config_denied_permission_is_visible_as_tool_error() {
 
         let thread = execute_tools_with_config(thread, &result, &tools, &config)
             .await
-            .expect("denied permission should block tool and return thread");
+            .expect("tool execution should succeed with denied decision applied");
 
         assert_eq!(thread.message_count(), 1);
         let msg = &thread.messages[0];
         assert_eq!(msg.role, crate::contracts::thread::Role::Tool);
         assert!(
-            msg.content.contains("User denied the action")
-                || msg.content.to_lowercase().contains("denied"),
-            "Denied permission should be visible in tool error message, got: {}",
+            msg.content.contains("\"status\":\"error\""),
+            "denied decision should yield error tool result, got: {}",
             msg.content
         );
 
@@ -2470,7 +2462,19 @@ fn test_execute_tools_with_config_denied_permission_is_visible_as_tool_error() {
             .get("__suspended_tool_calls")
             .and_then(|a| a.get("calls"))
             .and_then(|v| v.as_object());
-        assert!(suspended.map_or(true, |calls| calls.is_empty()));
+        assert!(
+            suspended.map_or(true, |calls| !calls.contains_key("call_1")),
+            "resolved suspended call should be cleared"
+        );
+
+        let decisions = final_state
+            .get("__resume_decisions")
+            .and_then(|a| a.get("calls"))
+            .and_then(|v| v.as_object());
+        assert!(
+            decisions.map_or(true, |calls| !calls.contains_key("call_1")),
+            "consumed decision should be cleared"
+        );
     });
 }
 
@@ -11344,7 +11348,7 @@ async fn test_stream_decision_channel_drains_while_inference_stream_is_running()
 }
 
 #[tokio::test]
-async fn test_run_loop_decision_channel_replay_original_tool_sets_permission_one_shot_approval() {
+async fn test_run_loop_decision_channel_replay_original_tool_uses_resume_decision_mailbox() {
     struct OneShotPermissionPlugin;
 
     #[async_trait]
@@ -11360,14 +11364,21 @@ async fn test_run_loop_decision_channel_replay_original_tool_sets_permission_one
             let Some(call_id) = step.tool_call_id().map(str::to_string) else {
                 return;
             };
-            {
-                let permissions = step.state_of::<TestPermissionState>();
-                let mut approved_calls = permissions.approved_calls().ok().unwrap_or_default();
-                if approved_calls.remove(&call_id) == Some(true) {
-                    let _ = permissions.set_approved_calls(approved_calls);
-                    return;
-                }
-                let _ = permissions.set_approved_calls(approved_calls);
+            let has_resume_grant = {
+                let mailbox = step.state_of::<crate::contracts::runtime::ResumeDecisionsState>();
+                mailbox
+                    .calls()
+                    .ok()
+                    .and_then(|calls| calls.get(&call_id).cloned())
+                    .is_some_and(|decision| {
+                        matches!(
+                            decision.action,
+                            crate::contracts::runtime::ResumeDecisionAction::Resume
+                        )
+                    })
+            };
+            if has_resume_grant {
+                return;
             }
             let tool_name = step.tool_name().unwrap_or_default().to_string();
             let tool_args = step.tool_args().cloned().unwrap_or_default();
@@ -11443,10 +11454,10 @@ async fn test_run_loop_decision_channel_replay_original_tool_sets_permission_one
     let final_state = outcome.run_ctx.snapshot().expect("snapshot");
     assert!(
         final_state
-            .get("permissions")
-            .and_then(|p| p.get("approved_calls"))
-            .and_then(|m| m.get("call_write"))
+            .get("__resume_decisions")
+            .and_then(|mailbox| mailbox.get("calls"))
+            .and_then(|calls| calls.get("call_write"))
             .is_none(),
-        "one-shot approval should be consumed by permission plugin"
+        "resume decision should be consumed after replay"
     );
 }
