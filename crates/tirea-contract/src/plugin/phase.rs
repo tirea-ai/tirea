@@ -148,6 +148,9 @@ pub enum ToolGateDecision {
     Cancel { reason: String },
 }
 
+/// Backward-compatible alias during gate contract migration.
+pub type ToolDecision = ToolGateDecision;
+
 /// Context for the currently executing tool.
 #[derive(Debug, Clone)]
 pub struct ToolContext {
@@ -713,6 +716,21 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
 
     pub fn suspend(&mut self, ticket: SuspendTicket) {
         self.step.suspend(ticket);
+    }
+
+    /// Backward-compatible alias for `suspend(SuspendTicket::new(interaction))`.
+    pub fn ask_confirm(&mut self, interaction: Interaction) {
+        self.suspend(SuspendTicket::new(interaction));
+    }
+
+    /// Backward-compatible wrapper for frontend-tool suspend tickets.
+    pub fn ask_frontend_tool(
+        &mut self,
+        tool_name: impl Into<String>,
+        arguments: Value,
+        routing: ResponseRouting,
+    ) -> Option<String> {
+        self.step.ask_frontend_tool(tool_name, arguments, routing)
     }
 }
 

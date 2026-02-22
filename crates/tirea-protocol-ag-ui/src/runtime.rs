@@ -9,8 +9,12 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tirea_agent_loop::runtime::loop_runner::ResolvedRun;
-use tirea_contract::event::interaction::ResponseRouting;
-use tirea_contract::plugin::phase::{BeforeInferenceContext, BeforeToolExecuteContext};
+use tirea_contract::event::interaction::{
+    FrontendToolInvocation, InvocationOrigin, ResponseRouting,
+};
+use tirea_contract::plugin::phase::{
+    BeforeInferenceContext, BeforeToolExecuteContext, SuspendTicket, ToolGateDecision,
+};
 use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_contract::ToolCallContext;
@@ -212,10 +216,7 @@ impl AgentPlugin for FrontendToolPendingPlugin {
     }
 
     async fn before_tool_execute(&self, ctx: &mut BeforeToolExecuteContext<'_, '_>) {
-        if !matches!(
-            ctx.decision(),
-            tirea_contract::plugin::phase::ToolDecision::Proceed
-        ) {
+        if !matches!(ctx.decision(), ToolGateDecision::Proceed) {
             return;
         }
 
@@ -225,13 +226,21 @@ impl AgentPlugin for FrontendToolPendingPlugin {
         if !self.frontend_tools.contains(tool_name) {
             return;
         }
+        let Some(call_id) = ctx.tool_call_id().map(str::to_string) else {
+            return;
+        };
 
         let args = ctx.tool_args().cloned().unwrap_or_default();
-        ctx.ask_frontend_tool(
+        let invocation = FrontendToolInvocation::new(
+            call_id,
             tool_name.to_string(),
             args,
+            InvocationOrigin::PluginInitiated {
+                plugin_id: self.id().to_string(),
+            },
             ResponseRouting::UseAsToolResult,
         );
+        ctx.suspend(SuspendTicket::from_frontend_invocation(invocation));
     }
 }
 

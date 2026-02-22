@@ -3693,7 +3693,11 @@ async fn test_e2e_pending_tool_in_session_flow() {
     // Check tool response contains pending status
     let tool_msg = thread.messages.last().unwrap();
     assert_eq!(tool_msg.role, ThreadRole::Tool);
-    assert!(tool_msg.content.contains("pending") || tool_msg.content.contains("confirmation"));
+    assert!(
+        tool_msg.content.contains("pending")
+            || tool_msg.content.contains("confirmation")
+            || tool_msg.content.contains("awaiting approval")
+    );
 }
 
 // ============================================================================
