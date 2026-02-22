@@ -508,6 +508,7 @@ fn tool_execution_result(call_id: &str, patch: Option<TrackedPatch>) -> ToolExec
         pending_interaction: None,
         pending_frontend_invocation: None,
         pending_patches: Vec::new(),
+        deferred_pending: false,
     }
 }
 
@@ -541,6 +542,7 @@ fn skill_activation_result(
         pending_interaction: None,
         pending_frontend_invocation: None,
         pending_patches: Vec::new(),
+        deferred_pending: false,
     }
 }
 
@@ -2137,6 +2139,7 @@ fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
         pending_interaction: None,
         pending_frontend_invocation: None,
         pending_patches: Vec::new(),
+        deferred_pending: false,
     };
 
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
@@ -2184,6 +2187,7 @@ fn test_apply_tool_results_ignores_blank_agent_state_outbox_messages() {
         pending_interaction: None,
         pending_frontend_invocation: None,
         pending_patches: Vec::new(),
+        deferred_pending: false,
     };
 
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
@@ -8685,5 +8689,229 @@ async fn test_stream_permission_intercept_emits_tool_call_start_for_frontend() {
             })
         ),
         "run should pause with PendingInteraction: {events:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// HOL-blocking fix: mixed pending/completed tools should not block entire run
+// ---------------------------------------------------------------------------
+
+/// When some tool calls complete and one is pending, the run should continue
+/// to the next inference round so the LLM sees the completed results. The run
+/// should eventually terminate with PendingInteraction.
+#[tokio::test]
+async fn test_stream_mixed_pending_and_completed_tools_continues_loop() {
+    struct PendingOnlyCall2Plugin;
+
+    #[async_trait]
+    impl AgentPlugin for PendingOnlyCall2Plugin {
+        fn id(&self) -> &str {
+            "pending_only_call_2"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::BeforeToolExecute {
+                if let Some(call_id) = step.tool_call_id() {
+                    if call_id == "call_2" {
+                        use crate::contracts::Interaction;
+                        step.ask(
+                            Interaction::new("confirm_call_2", "confirm")
+                                .with_message("approve delete?"),
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(PendingOnlyCall2Plugin) as Arc<dyn AgentPlugin>)
+        .with_parallel_tools(true);
+    let thread = Thread::new("test").with_message(Message::user("run tools"));
+
+    // First response: 3 tool calls, call_2 will be pending.
+    // Second response: text only (LLM reasons with the results).
+    let responses = vec![
+        MockResponse::text("")
+            .with_tool_call("call_1", "echo", json!({"message": "a"}))
+            .with_tool_call("call_2", "echo", json!({"message": "b"}))
+            .with_tool_call("call_3", "echo", json!({"message": "c"})),
+        MockResponse::text("I got results for a and c, delete needs approval"),
+    ];
+    let tools = tool_map([EchoTool]);
+
+    let events =
+        run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
+
+    // The LLM should have been called twice (two InferenceComplete events).
+    let inference_count = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::InferenceComplete { .. }))
+        .count();
+    assert_eq!(
+        inference_count, 2,
+        "LLM should get a second inference round with completed results: {events:?}"
+    );
+
+    // call_1 and call_3 should have ToolCallDone events.
+    let done_ids: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolCallDone { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        done_ids.contains(&"call_1"),
+        "call_1 should have ToolCallDone: {events:?}"
+    );
+    assert!(
+        done_ids.contains(&"call_3"),
+        "call_3 should have ToolCallDone: {events:?}"
+    );
+
+    // Run should terminate with PendingInteraction.
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::PendingInteraction),
+        "run should eventually pause with PendingInteraction: {events:?}"
+    );
+
+    // Exactly one Pending event should be emitted.
+    let pending_count = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::Pending { .. }))
+        .count();
+    assert_eq!(
+        pending_count, 1,
+        "exactly one pending interaction should be emitted: {events:?}"
+    );
+}
+
+/// When ALL tool calls are pending, the run should terminate immediately
+/// with PendingInteraction (no need for another inference round).
+#[tokio::test]
+async fn test_stream_all_tools_pending_pauses_run() {
+    struct PendingAllToolsPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for PendingAllToolsPlugin {
+        fn id(&self) -> &str {
+            "pending_all_tools"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::BeforeToolExecute {
+                if let Some(call_id) = step.tool_call_id() {
+                    use crate::contracts::Interaction;
+                    step.ask(
+                        Interaction::new(format!("confirm_{call_id}"), "confirm")
+                            .with_message("needs confirmation"),
+                    );
+                }
+            }
+        });
+    }
+
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(PendingAllToolsPlugin) as Arc<dyn AgentPlugin>)
+        .with_parallel_tools(true);
+    let thread = Thread::new("test").with_message(Message::user("run tools"));
+    let responses = vec![MockResponse::text("")
+        .with_tool_call("call_1", "echo", json!({"message": "a"}))
+        .with_tool_call("call_2", "echo", json!({"message": "b"}))];
+    let tools = tool_map([EchoTool]);
+
+    let events =
+        run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
+
+    // Only one inference round — no second call since all are pending.
+    let inference_count = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::InferenceComplete { .. }))
+        .count();
+    assert_eq!(
+        inference_count, 1,
+        "should have only one inference round when all tools are pending: {events:?}"
+    );
+
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::PendingInteraction),
+        "run should pause with PendingInteraction: {events:?}"
+    );
+}
+
+/// Verify that the pending interaction state is persisted correctly when the
+/// run continues past a partial pending round and eventually terminates.
+#[tokio::test]
+async fn test_stream_mixed_pending_persists_interaction_state() {
+    struct PendingOnlyCall2Plugin;
+
+    #[async_trait]
+    impl AgentPlugin for PendingOnlyCall2Plugin {
+        fn id(&self) -> &str {
+            "pending_only_call_2_persist"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::BeforeToolExecute {
+                if let Some(call_id) = step.tool_call_id() {
+                    if call_id == "call_2" {
+                        use crate::contracts::Interaction;
+                        step.ask(
+                            Interaction::new("confirm_call_2", "confirm")
+                                .with_message("approve delete?"),
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(PendingOnlyCall2Plugin) as Arc<dyn AgentPlugin>)
+        .with_parallel_tools(true);
+    let thread = Thread::new("test").with_message(Message::user("run tools"));
+    let responses = vec![
+        MockResponse::text("")
+            .with_tool_call("call_1", "echo", json!({"message": "a"}))
+            .with_tool_call("call_2", "echo", json!({"message": "b"})),
+        MockResponse::text("done"),
+    ];
+    let tools = tool_map([EchoTool]);
+
+    // Use run_loop_stream directly to inspect the final state via RunContext.
+    let provider = MockStreamProvider::new(responses);
+    let config = config.with_llm_executor(Arc::new(provider));
+    let run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let stream = run_loop_stream(config, tools, run_ctx, None, None);
+    let events = collect_stream_events(stream).await;
+
+    // Run should terminate with PendingInteraction.
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::PendingInteraction),
+    );
+
+    // The state snapshot should contain the pending interaction.
+    let last_state = events.iter().rev().find_map(|e| match e {
+        AgentEvent::StateSnapshot { snapshot } => Some(snapshot.clone()),
+        _ => None,
+    });
+    assert!(
+        last_state.is_some(),
+        "should have a state snapshot: {events:?}"
+    );
+    let state = last_state.unwrap();
+    assert_eq!(
+        state
+            .get("loop_control")
+            .and_then(|lc| lc.get("pending_interaction"))
+            .and_then(|pi| pi.get("id"))
+            .and_then(|id| id.as_str()),
+        Some("confirm_call_2"),
+        "pending interaction should be persisted in state: {state:?}"
     );
 }

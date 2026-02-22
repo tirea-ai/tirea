@@ -327,6 +327,7 @@ pub(super) fn run_loop_stream_impl(
             }
         };
         let mut active_tool_descriptors = active_tool_snapshot.descriptors.clone();
+        let mut deferred_pending_interaction: Option<crate::contracts::Interaction> = None;
 
         macro_rules! emit_run_finished_delta {
             () => {
@@ -357,6 +358,20 @@ pub(super) fn run_loop_stream_impl(
             ($failure:expr, $message:expr) => {{
                 let failure = $failure;
                 let message = $message;
+                // Re-persist deferred pending so it survives for the next run.
+                if let Some(ref interaction) = deferred_pending_interaction {
+                    if let Ok(state) = run_ctx.snapshot() {
+                        if let Ok(patch) = set_agent_pending_interaction(
+                            &state,
+                            interaction.clone(),
+                            None,
+                        ) {
+                            if !patch.patch().is_empty() {
+                                run_ctx.add_thread_patch(patch);
+                            }
+                        }
+                    }
+                }
                 finalize_run_end(&mut run_ctx, &active_tool_descriptors, &config.plugins).await;
                 emit_run_finished_delta!();
                 let outcome = build_loop_outcome(
@@ -376,8 +391,30 @@ pub(super) fn run_loop_stream_impl(
 
         macro_rules! finish_run {
             ($termination_expr:expr, $response_expr:expr) => {{
-                let final_termination = $termination_expr;
-                let final_response = $response_expr;
+                // Re-persist deferred pending interaction before finalizing.
+                let (final_termination, final_response) =
+                    if let Some(ref interaction) = deferred_pending_interaction {
+                        if let Ok(state) = run_ctx.snapshot() {
+                            if let Ok(patch) = set_agent_pending_interaction(
+                                &state,
+                                interaction.clone(),
+                                None,
+                            ) {
+                                if !patch.patch().is_empty() {
+                                    run_ctx.add_thread_patch(patch);
+                                }
+                            }
+                        }
+                        let reason: TerminationReason = $termination_expr;
+                        match reason {
+                            TerminationReason::Error | TerminationReason::Cancelled => {
+                                (reason, $response_expr)
+                            }
+                            _ => (TerminationReason::PendingInteraction, None),
+                        }
+                    } else {
+                        ($termination_expr, $response_expr)
+                    };
                 finalize_run_end(&mut run_ctx, &active_tool_descriptors, &config.plugins).await;
                 ensure_run_finished_delta_or_error!();
                 let outcome = build_loop_outcome(
@@ -838,9 +875,26 @@ pub(super) fn run_loop_stream_impl(
                 yield emitter.emit_existing(AgentEvent::StateSnapshot { snapshot });
             }
 
-            // If there are pending interactions, pause the loop.
-            if applied.pending_interaction.is_some() {
-                finish_run!(TerminationReason::PendingInteraction, None);
+            // Pause only when ALL tools are pending — if some completed, continue so
+            // the LLM sees their results while the pending tool shows "awaiting approval".
+            if let Some(interaction) = applied.pending_interaction {
+                let has_completed =
+                    results.iter().any(|r| r.pending_interaction.is_none() && !r.deferred_pending);
+                if !has_completed {
+                    finish_run!(TerminationReason::PendingInteraction, None);
+                }
+                // Some tools completed alongside the pending one. Clear the pending
+                // state from LoopControlState so subsequent apply_tool_results_impl
+                // calls don't clear it. The finish_run! macro will re-persist it
+                // when the run eventually finishes.
+                deferred_pending_interaction = Some(interaction);
+                if let Ok(state) = run_ctx.snapshot() {
+                    if let Ok(patch) = clear_agent_pending_interaction(&state) {
+                        if !patch.patch().is_empty() {
+                            run_ctx.add_thread_patch(patch);
+                        }
+                    }
+                }
             }
 
             // Track tool step metrics for stop condition evaluation.

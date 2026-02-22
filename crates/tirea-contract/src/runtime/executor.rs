@@ -74,6 +74,9 @@ pub struct ToolExecutionResult {
     pub pending_interaction: Option<Interaction>,
     pub pending_frontend_invocation: Option<FrontendToolInvocation>,
     pub pending_patches: Vec<TrackedPatch>,
+    /// True when this tool was originally pending but deferred because another
+    /// pending interaction was already active in the same round.
+    pub deferred_pending: bool,
 }
 
 /// Error returned by custom tool executors.

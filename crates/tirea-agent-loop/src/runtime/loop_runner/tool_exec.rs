@@ -574,6 +574,7 @@ fn coalesce_pending_interactions(results: &mut [ToolExecutionResult]) {
         result.pending_interaction = None;
         result.pending_frontend_invocation = None;
         result.pending_patches.clear();
+        result.deferred_pending = true;
         result.execution.result = ToolResult::error(
             &result.execution.call.name,
             format!(
@@ -828,6 +829,7 @@ pub(super) async fn execute_single_tool_with_phases(
         pending_interaction,
         pending_frontend_invocation,
         pending_patches,
+        deferred_pending: false,
     })
 }
 
