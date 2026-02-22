@@ -9010,3 +9010,182 @@ async fn test_plugin_termination_request_stops_loop() {
         "no inference should run when plugin requests termination: {events:?}"
     );
 }
+
+/// Verify that mutating `termination_request` outside BeforeInference is
+/// rejected by the phase-mutation validator (non-stream path).
+#[tokio::test]
+async fn test_run_loop_rejects_termination_request_mutation_outside_before_inference() {
+    struct InvalidStepStartTermPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for InvalidStepStartTermPlugin {
+        fn id(&self) -> &str {
+            "invalid_step_start_term"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::StepStart {
+                step.termination_request = Some(TerminationReason::PluginRequested);
+            }
+        });
+    }
+
+    let config = AgentConfig::new("gpt-4o-mini")
+        .with_plugin(Arc::new(InvalidStepStartTermPlugin) as Arc<dyn AgentPlugin>);
+    let thread =
+        Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
+    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+    assert!(
+        matches!(outcome.termination, TerminationReason::Error),
+        "expected phase mutation state error, got: {:?}",
+        outcome.termination
+    );
+    assert!(
+        outcome.failure.as_ref().is_some_and(|f| matches!(
+            f,
+            LoopFailure::State(msg) if msg.contains("mutated termination_request outside BeforeInference")
+        )),
+        "expected termination_request mutation error in failure, got: {:?}",
+        outcome.failure
+    );
+}
+
+/// Verify that mutating `termination_request` outside BeforeInference is
+/// rejected by the phase-mutation validator (stream path).
+#[tokio::test]
+async fn test_stream_rejects_termination_request_mutation_outside_before_inference() {
+    struct InvalidStepStartTermPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for InvalidStepStartTermPlugin {
+        fn id(&self) -> &str {
+            "invalid_step_start_term"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::StepStart {
+                step.termination_request = Some(TerminationReason::PluginRequested);
+            }
+        });
+    }
+
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(InvalidStepStartTermPlugin) as Arc<dyn AgentPlugin>);
+    let thread = Thread::new("test").with_message(Message::user("hi"));
+    let tools = HashMap::new();
+
+    let events = run_mock_stream(MockStreamProvider::new(vec![]), config, thread, tools).await;
+
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::Error { message }
+            if message.contains("mutated termination_request outside BeforeInference")
+        )),
+        "expected mutation error event, got: {events:?}"
+    );
+    assert!(
+        matches!(events.last(), Some(AgentEvent::RunFinish { .. })),
+        "expected stream termination after mutation error, got: {events:?}"
+    );
+}
+
+/// Non-stream run_loop: plugin-driven termination via termination_request
+/// stops the loop without running inference.
+#[tokio::test]
+async fn test_run_loop_plugin_termination_request_stops_loop() {
+    struct TerminatePlugin;
+
+    #[async_trait]
+    impl AgentPlugin for TerminatePlugin {
+        fn id(&self) -> &str {
+            "terminate_nonstream"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::BeforeInference {
+                step.skip_inference = true;
+                step.termination_request = Some(TerminationReason::PluginRequested);
+            }
+        });
+    }
+
+    let config = AgentConfig::new("gpt-4o-mini")
+        .with_plugin(Arc::new(TerminatePlugin) as Arc<dyn AgentPlugin>);
+    let thread =
+        Thread::new("test").with_message(crate::contracts::thread::Message::user("go"));
+    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let outcome = run_loop(&config, tools, run_ctx, None, None).await;
+
+    assert_eq!(
+        outcome.termination,
+        TerminationReason::PluginRequested,
+        "non-stream run should terminate with PluginRequested"
+    );
+    assert!(
+        outcome.failure.is_none(),
+        "no failure expected: {:?}",
+        outcome.failure
+    );
+    assert_eq!(
+        outcome.stats.llm_calls, 0,
+        "no LLM calls should have run"
+    );
+}
+
+/// Test that `BeforeInferenceContext::request_termination()` method works
+/// end-to-end (as opposed to setting step fields directly).
+#[tokio::test]
+async fn test_request_termination_method_stops_stream() {
+    struct MethodTerminatePlugin;
+
+    #[async_trait]
+    impl AgentPlugin for MethodTerminatePlugin {
+        fn id(&self) -> &str {
+            "method_terminate"
+        }
+
+        fn before_inference<'life0, 'life1, 's, 'a, 'async_trait>(
+            &'life0 self,
+            ctx: &'life1 mut BeforeInferenceContext<'s, 'a>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            's: 'async_trait,
+            'a: 'async_trait,
+            Self: Sync + 'async_trait,
+        {
+            Box::pin(async move {
+                ctx.request_termination(TerminationReason::PluginRequested);
+            })
+        }
+    }
+
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(MethodTerminatePlugin) as Arc<dyn AgentPlugin>);
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+
+    let responses = vec![MockResponse::text("should not appear")];
+    let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
+
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::PluginRequested),
+        "request_termination() method should produce PluginRequested: {events:?}"
+    );
+    let inference_count = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::InferenceComplete { .. }))
+        .count();
+    assert_eq!(
+        inference_count, 0,
+        "request_termination() should prevent inference: {events:?}"
+    );
+}
