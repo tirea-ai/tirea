@@ -6,6 +6,7 @@
 use crate::event::interaction::{FrontendToolInvocation, Interaction};
 use crate::thread::Thread;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use tirea_state::State;
 
 /// Inference error emitted by the loop and consumed by telemetry plugins.
@@ -18,6 +19,20 @@ pub struct InferenceError {
     pub message: String,
 }
 
+/// A tool call that has been suspended, awaiting external resolution.
+///
+/// The core loop only stores `call_id` + generic `Interaction`; it does not
+/// interpret the semantics (permissions, frontend tools, user confirmation).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SuspendedCall {
+    pub call_id: String,
+    pub tool_name: String,
+    pub interaction: Interaction,
+    /// Optional frontend invocation metadata for routing decisions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frontend_invocation: Option<FrontendToolInvocation>,
+}
+
 /// Durable loop control state persisted at `state["loop_control"]`.
 ///
 /// Used for cross-step and cross-run flow control that must survive restarts
@@ -25,11 +40,15 @@ pub struct InferenceError {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 #[tirea(path = "loop_control")]
 pub struct LoopControlState {
-    /// Pending interaction that must be resolved by the client before the run can continue.
+    /// Per-call suspended tool calls awaiting external resolution.
+    #[serde(default)]
+    #[tirea(default = "HashMap::new()")]
+    pub suspended_calls: HashMap<String, SuspendedCall>,
+    /// Backward-compatible view: derived from first entry in `suspended_calls`.
     #[tirea(default = "None")]
     pub pending_interaction: Option<Interaction>,
     /// Structured frontend tool invocation (first-class model).
-    /// When present, takes precedence over `pending_interaction` for routing decisions.
+    /// Backward-compatible view: derived from first entry in `suspended_calls`.
     #[tirea(default = "None")]
     pub pending_frontend_invocation: Option<FrontendToolInvocation>,
     /// Inference error envelope for AfterInference cleanup flow.

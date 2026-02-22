@@ -12,7 +12,7 @@ pub mod state_paths;
 
 pub use activity::ActivityManager;
 pub use context::RunContext;
-pub use control::{InferenceError, LoopControlExt, LoopControlState};
+pub use control::{InferenceError, LoopControlExt, LoopControlState, SuspendedCall};
 pub use delta::RunDelta;
 pub use executor::{
     LlmEventStream, LlmExecutor, ToolExecution, ToolExecutionRequest, ToolExecutionResult,

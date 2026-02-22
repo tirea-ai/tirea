@@ -844,21 +844,9 @@ pub(super) fn run_loop_stream_impl(
                 yield emitter.emit_existing(AgentEvent::StateSnapshot { snapshot });
             }
 
-            // If ALL tools are pending (no completed results), terminate immediately.
-            // With parallel execution, only one pending interaction is active — the
-            // rest are deferred by coalesce_pending_interactions (result message
-            // contains "was deferred"). A truly completed tool has no pending
-            // interaction and was NOT deferred.
-            if applied.pending_interaction.is_some() {
-                let has_completed = results.iter().any(|r| {
-                    r.pending_interaction.is_none()
-                        && !r
-                            .execution
-                            .result
-                            .message
-                            .as_deref()
-                            .is_some_and(|m| m.contains("was deferred"))
-                });
+            // If ALL tools are suspended (no completed results), terminate immediately.
+            if !applied.suspended_calls.is_empty() {
+                let has_completed = results.iter().any(|r| r.pending_interaction.is_none());
                 if !has_completed {
                     finish_run!(TerminationReason::PendingInteraction, None);
                 }

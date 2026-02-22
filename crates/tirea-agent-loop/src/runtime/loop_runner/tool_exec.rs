@@ -1,7 +1,8 @@
 use super::core::{
-    clear_agent_pending_interaction, drain_agent_append_user_messages,
-    set_agent_pending_interaction,
+    clear_all_suspended_calls, drain_agent_append_user_messages,
+    set_agent_suspended_calls,
 };
+use crate::contracts::SuspendedCall;
 use super::plugin_runtime::emit_phase_checked;
 use super::{
     AgentConfig, AgentLoopError, RunCancellationToken, TOOL_SCOPE_CALLER_MESSAGES_KEY,
@@ -17,7 +18,6 @@ use crate::contracts::runtime::{
 use crate::contracts::thread::Thread;
 use crate::contracts::thread::{Message, MessageMetadata};
 use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult};
-use crate::contracts::Interaction;
 use crate::contracts::RunContext;
 use crate::engine::convert::tool_response;
 use crate::engine::tool_execution::collect_patches;
@@ -32,7 +32,7 @@ use tirea_state::State;
 use tirea_state::{PatchExt, TrackedPatch};
 
 pub(super) struct AppliedToolResults {
-    pub(super) pending_interaction: Option<Interaction>,
+    pub(super) suspended_calls: Vec<SuspendedCall>,
     pub(super) state_snapshot: Option<Value>,
 }
 
@@ -182,10 +182,18 @@ pub(super) fn apply_tool_results_impl(
     check_parallel_patch_conflicts: bool,
     tool_msg_ids: Option<&HashMap<String, String>>,
 ) -> Result<AppliedToolResults, AgentLoopError> {
-    let pending_interaction_idx = results.iter().position(|r| r.pending_interaction.is_some());
-    let pending_interaction =
-        pending_interaction_idx.and_then(|idx| results[idx].pending_interaction.clone());
-    let pending_interaction_id = pending_interaction.as_ref().map(|i| i.id.clone());
+    // Collect all suspended calls from results.
+    let suspended: Vec<SuspendedCall> = results
+        .iter()
+        .filter_map(|r| {
+            r.pending_interaction.as_ref().map(|interaction| SuspendedCall {
+                call_id: r.execution.call.id.clone(),
+                tool_name: r.execution.call.name.clone(),
+                interaction: interaction.clone(),
+                frontend_invocation: r.pending_frontend_invocation.clone(),
+            })
+        })
+        .collect();
 
     if check_parallel_patch_conflicts {
         validate_parallel_state_patch_conflicts(results)?;
@@ -204,13 +212,16 @@ pub(super) fn apply_tool_results_impl(
     let mut state_changed = !patches.is_empty();
     run_ctx.add_thread_patches(patches);
 
+    // Build a set of suspended call_ids for message generation.
+    let suspended_ids: std::collections::HashSet<&str> =
+        suspended.iter().map(|s| s.call_id.as_str()).collect();
+
     // Add tool result messages for all executions.
     let tool_messages: Vec<Arc<Message>> = results
         .iter()
-        .enumerate()
-        .flat_map(|(idx, r)| {
-            let is_active_pending = pending_interaction_idx == Some(idx);
-            let mut msgs = if is_active_pending {
+        .flat_map(|r| {
+            let is_suspended = suspended_ids.contains(r.execution.call.id.as_str());
+            let mut msgs = if is_suspended {
                 vec![Message::tool(
                     &r.execution.call.id,
                     format!(
@@ -219,19 +230,7 @@ pub(super) fn apply_tool_results_impl(
                     ),
                 )]
             } else {
-                let message_result = if r.pending_interaction.is_some() {
-                    ToolResult::error(
-                        &r.execution.call.name,
-                        format!(
-                            "Tool '{}' was deferred because interaction '{}' is already pending in this round.",
-                            r.execution.call.name,
-                            pending_interaction_id.as_deref().unwrap_or("unknown")
-                        ),
-                    )
-                } else {
-                    r.execution.result.clone()
-                };
-                let mut tool_msg = tool_response(&r.execution.call.id, &message_result);
+                let mut tool_msg = tool_response(&r.execution.call.id, &r.execution.result);
                 if let Some(id) = tool_msg_ids.and_then(|ids| ids.get(&r.execution.call.id)) {
                     tool_msg = tool_msg.with_id(id.clone());
                 }
@@ -258,14 +257,11 @@ pub(super) fn apply_tool_results_impl(
         state_changed = true;
     }
 
-    if let Some(interaction) = pending_interaction.clone() {
-        let frontend_invocation = pending_interaction_idx
-            .and_then(|idx| results[idx].pending_frontend_invocation.clone());
+    if !suspended.is_empty() {
         let state = run_ctx
             .snapshot()
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-        let patch =
-            set_agent_pending_interaction(&state, interaction.clone(), frontend_invocation)?;
+        let patch = set_agent_suspended_calls(&state, suspended.clone())?;
         if !patch.patch().is_empty() {
             state_changed = true;
             run_ctx.add_thread_patch(patch);
@@ -280,22 +276,27 @@ pub(super) fn apply_tool_results_impl(
             None
         };
         return Ok(AppliedToolResults {
-            pending_interaction: Some(interaction),
+            suspended_calls: suspended,
             state_snapshot,
         });
     }
 
-    // If a previous run left a persisted pending interaction, clear it once we successfully
-    // complete tool execution without creating a new pending interaction.
+    // If a previous run left persisted suspended calls, clear them once we successfully
+    // complete tool execution without creating new suspensions.
     let state = run_ctx
         .snapshot()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    if state
+    let has_persisted = state
         .get(LoopControlState::PATH)
         .and_then(|v| v.get("pending_interaction"))
         .is_some()
-    {
-        let patch = clear_agent_pending_interaction(&state)?;
+        || state
+            .get(LoopControlState::PATH)
+            .and_then(|v| v.get("suspended_calls"))
+            .and_then(|v| v.as_object())
+            .is_some_and(|m| !m.is_empty());
+    if has_persisted {
+        let patch = clear_all_suspended_calls(&state)?;
         if !patch.patch().is_empty() {
             state_changed = true;
             run_ctx.add_thread_patch(patch);
@@ -313,7 +314,7 @@ pub(super) fn apply_tool_results_impl(
     };
 
     Ok(AppliedToolResults {
-        pending_interaction: None,
+        suspended_calls: Vec::new(),
         state_snapshot,
     })
 }
@@ -481,10 +482,10 @@ pub async fn execute_tools_with_plugins_and_executor(
         metadata,
         executor.requires_parallel_patch_conflict_check(),
     )?;
-    if let Some(interaction) = applied.pending_interaction {
+    if let Some(first) = applied.suspended_calls.first() {
         return Err(AgentLoopError::PendingInteraction {
             run_ctx: Box::new(run_ctx),
-            interaction: Box::new(interaction),
+            interaction: Box::new(first.interaction.clone()),
         });
     }
 
@@ -553,35 +554,8 @@ pub(super) async fn execute_tools_parallel_with_phases(
         CancelAware::Cancelled => return Err(cancelled_error(&thread_id)),
         CancelAware::Value(results) => results,
     };
-    let mut results: Vec<ToolExecutionResult> = results.into_iter().collect::<Result<_, _>>()?;
-    coalesce_pending_interactions(&mut results);
+    let results: Vec<ToolExecutionResult> = results.into_iter().collect::<Result<_, _>>()?;
     Ok(results)
-}
-
-fn coalesce_pending_interactions(results: &mut [ToolExecutionResult]) {
-    let mut active_pending_id: Option<String> = None;
-    for result in results {
-        let Some(interaction_id) = result.pending_interaction.as_ref().map(|i| i.id.clone()) else {
-            continue;
-        };
-
-        if active_pending_id.is_none() {
-            active_pending_id = Some(interaction_id);
-            continue;
-        }
-
-        let active_id = active_pending_id.as_deref().unwrap_or("unknown");
-        result.pending_interaction = None;
-        result.pending_frontend_invocation = None;
-        result.pending_patches.clear();
-        result.execution.result = ToolResult::error(
-            &result.execution.call.name,
-            format!(
-                "Tool '{}' was deferred because interaction '{}' is already pending in this round.",
-                result.execution.call.name, active_id
-            ),
-        );
-    }
 }
 
 /// Execute tools sequentially with phase hooks.

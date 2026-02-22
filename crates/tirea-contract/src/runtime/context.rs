@@ -108,6 +108,20 @@ impl RunContext {
             .and_then(|value| serde_json::from_value::<Interaction>(value).ok())
     }
 
+    /// Read all suspended calls from durable control state.
+    pub fn suspended_calls(&self) -> std::collections::HashMap<String, crate::runtime::control::SuspendedCall> {
+        self.snapshot()
+            .ok()
+            .and_then(|state| {
+                state
+                    .get(LoopControlState::PATH)
+                    .and_then(|lc| lc.get("suspended_calls"))
+                    .cloned()
+            })
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default()
+    }
+
     /// Read pending frontend invocation from durable control state.
     pub fn pending_frontend_invocation(&self) -> Option<FrontendToolInvocation> {
         self.snapshot()

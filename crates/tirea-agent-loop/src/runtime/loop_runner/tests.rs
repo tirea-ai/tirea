@@ -2013,7 +2013,7 @@ fn test_invalid_args_are_returned_as_tool_error_before_pending_confirmation() {
 }
 
 #[test]
-fn test_apply_tool_results_keeps_first_pending_interaction_when_multiple_exist() {
+fn test_apply_tool_results_suspends_all_pending_interactions() {
     let thread = Thread::new("test");
     let mut run_ctx =
         RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
@@ -2027,29 +2027,31 @@ fn test_apply_tool_results_keeps_first_pending_interaction_when_multiple_exist()
         Some(Interaction::new("confirm_2", "confirm").with_message("approve second tool"));
 
     let applied = apply_tool_results_to_session(&mut run_ctx, &[first, second], None, false)
-        .expect("apply should keep the first pending interaction");
-    assert_eq!(
-        applied.pending_interaction.as_ref().map(|i| i.id.as_str()),
-        Some("confirm_1")
-    );
+        .expect("apply should succeed");
+    assert_eq!(applied.suspended_calls.len(), 2);
+    assert_eq!(applied.suspended_calls[0].call_id, "call_1");
+    assert_eq!(applied.suspended_calls[1].call_id, "call_2");
     assert_eq!(run_ctx.messages().len(), 2);
     assert!(
         run_ctx.messages()[0].content.contains("awaiting approval"),
-        "first pending should remain placeholder: {}",
+        "first suspended tool message: {}",
         run_ctx.messages()[0].content
     );
     assert!(
-        run_ctx.messages()[1]
-            .content
-            .contains("deferred because interaction 'confirm_1'"),
-        "extra pending should be converted to deferred tool result: {}",
+        run_ctx.messages()[1].content.contains("awaiting approval"),
+        "second suspended tool message: {}",
         run_ctx.messages()[1].content
     );
     let state = run_ctx.snapshot().expect("snapshot should succeed");
+    // Backward-compatible view: first entry populates pending_interaction
     assert_eq!(
         state["loop_control"]["pending_interaction"]["id"],
         "confirm_1"
     );
+    // Per-call map has both entries
+    let suspended = &state["loop_control"]["suspended_calls"];
+    assert!(suspended.get("call_1").is_some());
+    assert!(suspended.get("call_2").is_some());
 }
 
 #[test]
@@ -5986,7 +5988,7 @@ async fn test_stream_replay_without_placeholder_appends_tool_result_message() {
 }
 
 #[tokio::test]
-async fn test_stream_parallel_multiple_pending_keeps_run_end_and_single_pending() {
+async fn test_stream_parallel_multiple_pending_emits_all_suspended() {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     static SESSION_END_RAN: AtomicBool = AtomicBool::new(false);
@@ -6038,13 +6040,14 @@ async fn test_stream_parallel_multiple_pending_keeps_run_end_and_single_pending(
         extract_termination(&events),
         Some(TerminationReason::PendingInteraction)
     );
+    // Per-call suspension: each suspended tool emits its own Pending event
     assert_eq!(
         events
             .iter()
             .filter(|e| matches!(e, AgentEvent::Pending { .. }))
             .count(),
-        1,
-        "only one pending interaction should be emitted per tool round"
+        2,
+        "each suspended tool should emit a Pending event"
     );
     assert!(
         SESSION_END_RAN.load(Ordering::SeqCst),
@@ -6899,7 +6902,7 @@ async fn test_parallel_tools_allow_single_pending_interaction_per_round() {
 
     let err = execute_tools_with_plugins(thread, &result, &tools, true, &plugins)
         .await
-        .expect_err("parallel mode should keep one pending interaction and pause");
+        .expect_err("parallel mode should suspend all pending interactions and pause");
     let (thread, interaction) = match err {
         AgentLoopError::PendingInteraction {
             run_ctx: thread,
@@ -6907,6 +6910,7 @@ async fn test_parallel_tools_allow_single_pending_interaction_per_round() {
         } => (thread, interaction),
         other => panic!("expected PendingInteraction, got: {other:?}"),
     };
+    // First suspended call's interaction is returned
     assert_eq!(interaction.id, "confirm_call_1");
     let mut seen = seen_calls.lock().expect("lock poisoned").clone();
     seen.sort();
@@ -6916,15 +6920,16 @@ async fn test_parallel_tools_allow_single_pending_interaction_per_round() {
         "parallel mode should still execute both BeforeToolExecute phases"
     );
     assert_eq!(thread.messages().len(), 2);
+    // Both tools should be suspended (not deferred)
     assert!(
         thread.messages()[0].content.contains("awaiting approval"),
-        "first tool should remain pending placeholder"
+        "first tool should be suspended: {}",
+        thread.messages()[0].content
     );
     assert!(
-        thread.messages()[1]
-            .content
-            .contains("deferred because interaction 'confirm_call_1'"),
-        "second pending interaction should be converted into a deferred tool result"
+        thread.messages()[1].content.contains("awaiting approval"),
+        "second tool should also be suspended: {}",
+        thread.messages()[1].content
     );
 }
 

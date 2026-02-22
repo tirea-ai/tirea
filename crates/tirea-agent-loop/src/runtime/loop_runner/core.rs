@@ -4,7 +4,7 @@ use crate::contracts::runtime::state_paths::{INTERACTION_OUTBOX_STATE_PATH, SKIL
 use crate::contracts::thread::{Message, MessageMetadata, Role};
 use crate::contracts::tool::Tool;
 use crate::contracts::RunContext;
-use crate::contracts::{FrontendToolInvocation, Interaction, InteractionResponse};
+use crate::contracts::{FrontendToolInvocation, Interaction, InteractionResponse, SuspendedCall};
 use crate::runtime::control::{InferenceError, LoopControlState};
 use tirea_state::{DocCell, StateContext, TireaError, TrackedPatch};
 
@@ -125,20 +125,34 @@ pub(super) fn build_request_for_filtered_tools(
     crate::engine::convert::build_request(messages, &filtered_tool_refs)
 }
 
-pub(super) fn set_agent_pending_interaction(
+/// Write suspended calls to state, plus backward-compatible views.
+pub(super) fn set_agent_suspended_calls(
     state: &Value,
-    interaction: Interaction,
-    frontend_invocation: Option<FrontendToolInvocation>,
+    calls: Vec<SuspendedCall>,
 ) -> Result<TrackedPatch, AgentLoopError> {
     let doc = DocCell::new(state.clone());
     let ctx = StateContext::new(&doc);
     let lc = ctx.state_of::<LoopControlState>();
-    lc.set_pending_interaction(Some(interaction)).map_err(|e| {
-        AgentLoopError::StateError(format!(
-            "failed to set loop_control.pending_interaction: {e}"
-        ))
+
+    // Backward-compatible views: first entry → pending_interaction/pending_frontend_invocation
+    let first = calls.first();
+    let compat_interaction = first.map(|c| c.interaction.clone());
+    let compat_frontend = first.and_then(|c| c.frontend_invocation.clone());
+
+    let map: HashMap<String, SuspendedCall> = calls
+        .into_iter()
+        .map(|c| (c.call_id.clone(), c))
+        .collect();
+    lc.set_suspended_calls(map).map_err(|e| {
+        AgentLoopError::StateError(format!("failed to set loop_control.suspended_calls: {e}"))
     })?;
-    lc.set_pending_frontend_invocation(frontend_invocation)
+    lc.set_pending_interaction(compat_interaction)
+        .map_err(|e| {
+            AgentLoopError::StateError(format!(
+                "failed to set loop_control.pending_interaction: {e}"
+            ))
+        })?;
+    lc.set_pending_frontend_invocation(compat_frontend)
         .map_err(|e| {
             AgentLoopError::StateError(format!(
                 "failed to set loop_control.pending_frontend_invocation: {e}"
@@ -147,12 +161,22 @@ pub(super) fn set_agent_pending_interaction(
     Ok(ctx.take_tracked_patch("agent_loop"))
 }
 
-pub(super) fn clear_agent_pending_interaction(
+/// Clear all suspended calls and backward-compatible views.
+pub(super) fn clear_all_suspended_calls(
     state: &Value,
 ) -> Result<TrackedPatch, AgentLoopError> {
     let doc = DocCell::new(state.clone());
     let ctx = StateContext::new(&doc);
     let lc = ctx.state_of::<LoopControlState>();
+
+    match lc.set_suspended_calls(HashMap::new()) {
+        Ok(()) | Err(TireaError::PathNotFound { .. }) => {}
+        Err(e) => {
+            return Err(AgentLoopError::StateError(format!(
+                "failed to clear loop_control.suspended_calls: {e}"
+            )))
+        }
+    }
     match lc.pending_interaction_none() {
         Ok(()) | Err(TireaError::PathNotFound { .. }) => {}
         Err(e) => {
@@ -172,8 +196,48 @@ pub(super) fn clear_agent_pending_interaction(
     Ok(ctx.take_tracked_patch("agent_loop"))
 }
 
+/// Backward-compatible alias: set single pending interaction via suspended_calls.
+pub(super) fn set_agent_pending_interaction(
+    state: &Value,
+    interaction: Interaction,
+    frontend_invocation: Option<FrontendToolInvocation>,
+) -> Result<TrackedPatch, AgentLoopError> {
+    // Create a suspended call from the legacy single-slot data.
+    let call_id = frontend_invocation
+        .as_ref()
+        .map(|fi| fi.call_id.clone())
+        .unwrap_or_else(|| interaction.id.clone());
+    let tool_name = frontend_invocation
+        .as_ref()
+        .map(|fi| fi.tool_name.clone())
+        .unwrap_or_default();
+    set_agent_suspended_calls(
+        state,
+        vec![SuspendedCall {
+            call_id,
+            tool_name,
+            interaction,
+            frontend_invocation,
+        }],
+    )
+}
+
+/// Backward-compatible alias: clear all suspended calls.
+pub(super) fn clear_agent_pending_interaction(
+    state: &Value,
+) -> Result<TrackedPatch, AgentLoopError> {
+    clear_all_suspended_calls(state)
+}
+
 pub(super) fn pending_interaction_from_ctx(run_ctx: &RunContext) -> Option<Interaction> {
     run_ctx.pending_interaction()
+}
+
+#[allow(dead_code)]
+pub(super) fn suspended_calls_from_ctx(
+    run_ctx: &RunContext,
+) -> HashMap<String, SuspendedCall> {
+    run_ctx.suspended_calls()
 }
 
 pub(super) fn pending_frontend_invocation_from_ctx(
