@@ -6,7 +6,7 @@ use crate::contracts::tool::Tool;
 use crate::contracts::RunContext;
 use crate::contracts::{FrontendToolInvocation, Interaction, InteractionResponse, SuspendedCall};
 use crate::runtime::control::{InferenceError, LoopControlState};
-use tirea_state::{DocCell, StateContext, TireaError, TrackedPatch};
+use tirea_state::{DocCell, State, StateContext, TireaError, TrackedPatch};
 
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -108,7 +108,12 @@ pub(super) fn inference_inputs_from_step(
         .collect::<Vec<_>>();
     let skip_inference = step.skip_inference;
     let termination_request = step.termination_request.clone();
-    (messages, filtered_tools, skip_inference, termination_request)
+    (
+        messages,
+        filtered_tools,
+        skip_inference,
+        termination_request,
+    )
 }
 
 pub(super) fn build_request_for_filtered_tools(
@@ -125,6 +130,21 @@ pub(super) fn build_request_for_filtered_tools(
     crate::engine::convert::build_request(messages, &filtered_tool_refs)
 }
 
+fn compat_views_from_suspended_map(
+    suspended: &HashMap<String, SuspendedCall>,
+) -> (Option<Interaction>, Option<FrontendToolInvocation>) {
+    suspended
+        .iter()
+        .min_by(|(left, _), (right, _)| left.cmp(right))
+        .map(|(_, call)| {
+            (
+                Some(call.interaction.clone()),
+                call.frontend_invocation.clone(),
+            )
+        })
+        .unwrap_or((None, None))
+}
+
 /// Write suspended calls to state, plus backward-compatible views.
 pub(super) fn set_agent_suspended_calls(
     state: &Value,
@@ -139,10 +159,8 @@ pub(super) fn set_agent_suspended_calls(
     let compat_interaction = first.map(|c| c.interaction.clone());
     let compat_frontend = first.and_then(|c| c.frontend_invocation.clone());
 
-    let map: HashMap<String, SuspendedCall> = calls
-        .into_iter()
-        .map(|c| (c.call_id.clone(), c))
-        .collect();
+    let map: HashMap<String, SuspendedCall> =
+        calls.into_iter().map(|c| (c.call_id.clone(), c)).collect();
     lc.set_suspended_calls(map).map_err(|e| {
         AgentLoopError::StateError(format!("failed to set loop_control.suspended_calls: {e}"))
     })?;
@@ -162,9 +180,7 @@ pub(super) fn set_agent_suspended_calls(
 }
 
 /// Clear all suspended calls and backward-compatible views.
-pub(super) fn clear_all_suspended_calls(
-    state: &Value,
-) -> Result<TrackedPatch, AgentLoopError> {
+pub(super) fn clear_all_suspended_calls(state: &Value) -> Result<TrackedPatch, AgentLoopError> {
     let doc = DocCell::new(state.clone());
     let ctx = StateContext::new(&doc);
     let lc = ctx.state_of::<LoopControlState>();
@@ -193,6 +209,44 @@ pub(super) fn clear_all_suspended_calls(
             )))
         }
     }
+    Ok(ctx.take_tracked_patch("agent_loop"))
+}
+
+/// Clear one suspended call and refresh backward-compatible views.
+pub(super) fn clear_suspended_call(
+    state: &Value,
+    call_id: &str,
+) -> Result<TrackedPatch, AgentLoopError> {
+    let doc = DocCell::new(state.clone());
+    let ctx = StateContext::new(&doc);
+    let lc = ctx.state_of::<LoopControlState>();
+    let mut suspended = state
+        .get(LoopControlState::PATH)
+        .and_then(|lc_state| lc_state.get("suspended_calls"))
+        .cloned()
+        .and_then(|raw| serde_json::from_value::<HashMap<String, SuspendedCall>>(raw).ok())
+        .unwrap_or_default();
+
+    if suspended.remove(call_id).is_none() {
+        return Ok(ctx.take_tracked_patch("agent_loop"));
+    }
+
+    let (compat_interaction, compat_frontend) = compat_views_from_suspended_map(&suspended);
+    lc.set_suspended_calls(suspended).map_err(|e| {
+        AgentLoopError::StateError(format!("failed to set loop_control.suspended_calls: {e}"))
+    })?;
+    lc.set_pending_interaction(compat_interaction)
+        .map_err(|e| {
+            AgentLoopError::StateError(format!(
+                "failed to set loop_control.pending_interaction: {e}"
+            ))
+        })?;
+    lc.set_pending_frontend_invocation(compat_frontend)
+        .map_err(|e| {
+            AgentLoopError::StateError(format!(
+                "failed to set loop_control.pending_frontend_invocation: {e}"
+            ))
+        })?;
     Ok(ctx.take_tracked_patch("agent_loop"))
 }
 
@@ -234,9 +288,7 @@ pub(super) fn pending_interaction_from_ctx(run_ctx: &RunContext) -> Option<Inter
 }
 
 #[allow(dead_code)]
-pub(super) fn suspended_calls_from_ctx(
-    run_ctx: &RunContext,
-) -> HashMap<String, SuspendedCall> {
+pub(super) fn suspended_calls_from_ctx(run_ctx: &RunContext) -> HashMap<String, SuspendedCall> {
     run_ctx.suspended_calls()
 }
 
@@ -342,6 +394,63 @@ pub(super) fn drain_agent_outbox(
         interaction_resolutions,
         replay_tool_calls,
     })
+}
+
+pub(super) fn enqueue_interaction_resolution(
+    state: &Value,
+    resolution: InteractionResponse,
+    replay_tool_call: Option<crate::contracts::thread::ToolCall>,
+) -> Result<TrackedPatch, AgentLoopError> {
+    let mut interaction_resolutions = match state
+        .get(INTERACTION_OUTBOX_STATE_PATH)
+        .and_then(|outbox| outbox.get("interaction_resolutions"))
+        .cloned()
+    {
+        Some(raw) => serde_json::from_value::<Vec<InteractionResponse>>(raw).map_err(|e| {
+            AgentLoopError::StateError(format!(
+                "failed to parse interaction_outbox.interaction_resolutions: {e}"
+            ))
+        })?,
+        None => Vec::new(),
+    };
+    interaction_resolutions.push(resolution);
+
+    let outbox_path = tirea_state::Path::root().key(INTERACTION_OUTBOX_STATE_PATH);
+    let mut patch = tirea_state::Patch::new().with_op(tirea_state::Op::set(
+        outbox_path.clone().key("interaction_resolutions"),
+        serde_json::to_value(interaction_resolutions).map_err(|e| {
+            AgentLoopError::StateError(format!(
+                "failed to serialize interaction_outbox.interaction_resolutions: {e}"
+            ))
+        })?,
+    ));
+
+    if let Some(replay_tool_call) = replay_tool_call {
+        let mut replay_tool_calls = match state
+            .get(INTERACTION_OUTBOX_STATE_PATH)
+            .and_then(|outbox| outbox.get("replay_tool_calls"))
+            .cloned()
+        {
+            Some(raw) => serde_json::from_value::<Vec<crate::contracts::thread::ToolCall>>(raw)
+                .map_err(|e| {
+                    AgentLoopError::StateError(format!(
+                        "failed to parse interaction_outbox.replay_tool_calls: {e}"
+                    ))
+                })?,
+            None => Vec::new(),
+        };
+        replay_tool_calls.push(replay_tool_call);
+        patch = patch.with_op(tirea_state::Op::set(
+            outbox_path.key("replay_tool_calls"),
+            serde_json::to_value(replay_tool_calls).map_err(|e| {
+                AgentLoopError::StateError(format!(
+                    "failed to serialize interaction_outbox.replay_tool_calls: {e}"
+                ))
+            })?,
+        ));
+    }
+
+    Ok(TrackedPatch::new(patch).with_source("agent_loop"))
 }
 
 pub(super) fn drain_agent_append_user_messages(

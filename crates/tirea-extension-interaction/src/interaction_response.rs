@@ -18,9 +18,9 @@ use tirea_contract::plugin::phase::{
 };
 use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::runtime::control::{InferenceError, LoopControlState};
-use tirea_contract::{Interaction, InteractionResponse};
+use tirea_contract::{InteractionResponse, SuspendedCall};
 use tirea_extension_permission::PermissionState;
-use tirea_state::{State, TireaError};
+use tirea_state::State;
 
 /// Plugin that handles interaction responses from client.
 ///
@@ -104,31 +104,25 @@ impl InteractionResponsePlugin {
         !self.responses.is_empty()
     }
 
-    fn pending_interaction_from_step_thread(step: &impl PluginPhaseContext) -> Option<Interaction> {
-        let state = step.snapshot();
-        state
-            .get(LoopControlState::PATH)
-            .and_then(|agent| agent.get("pending_interaction"))
-            .cloned()
-            .and_then(|v| serde_json::from_value::<Interaction>(v).ok())
-    }
-
-    fn persisted_pending_interaction(step: &impl PluginPhaseContext) -> Option<Interaction> {
-        Self::pending_interaction_from_step_thread(step).or_else(|| {
-            let agent = step.state_of::<LoopControlState>();
-            agent.pending_interaction().ok().flatten()
-        })
-    }
-
-    fn persisted_frontend_invocation(
+    fn suspended_calls_from_step_thread(
         step: &impl PluginPhaseContext,
-    ) -> Option<FrontendToolInvocation> {
+    ) -> HashMap<String, SuspendedCall> {
         let state = step.snapshot();
         state
             .get(LoopControlState::PATH)
-            .and_then(|lc| lc.get("pending_frontend_invocation"))
+            .and_then(|agent| agent.get("suspended_calls"))
             .cloned()
-            .and_then(|v| serde_json::from_value::<FrontendToolInvocation>(v).ok())
+            .and_then(|v| serde_json::from_value::<HashMap<String, SuspendedCall>>(v).ok())
+            .unwrap_or_default()
+    }
+
+    fn persisted_suspended_calls(step: &impl PluginPhaseContext) -> HashMap<String, SuspendedCall> {
+        let from_step = Self::suspended_calls_from_step_thread(step);
+        if !from_step.is_empty() {
+            return from_step;
+        }
+        let state = step.state_of::<LoopControlState>();
+        state.suspended_calls().ok().unwrap_or_default()
     }
 
     fn push_resolution(
@@ -152,23 +146,38 @@ impl InteractionResponsePlugin {
             .map_err(|e| format!("failed to persist replay tool call: {e}"))
     }
 
-    fn clear_pending_interaction_state(step: &impl PluginPhaseContext) -> Result<(), String> {
+    fn clear_suspended_calls_state(step: &impl PluginPhaseContext) -> Result<(), String> {
+        Self::set_suspended_calls_state(step, HashMap::new())
+    }
+
+    fn set_suspended_calls_state(
+        step: &impl PluginPhaseContext,
+        suspended_calls: HashMap<String, SuspendedCall>,
+    ) -> Result<(), String> {
         let state = step.state_of::<LoopControlState>();
-        if let Err(err) = state.pending_interaction_none() {
-            if !matches!(err, TireaError::PathNotFound { .. }) {
-                return Err(format!(
-                    "failed to clear loop_control.pending_interaction: {err}"
-                ));
-            }
-        }
-        if let Err(err) = state.pending_frontend_invocation_none() {
-            if !matches!(err, TireaError::PathNotFound { .. }) {
-                return Err(format!(
-                    "failed to clear loop_control.pending_frontend_invocation: {err}"
-                ));
-            }
-        }
-        Ok(())
+        state
+            .set_suspended_calls(suspended_calls)
+            .map_err(|err| format!("failed to set loop_control.suspended_calls: {err}"))
+    }
+
+    fn resolve_response_key(&self, call: &SuspendedCall) -> Option<String> {
+        let frontend_id = call
+            .frontend_invocation
+            .as_ref()
+            .map(|inv| inv.call_id.as_str());
+        [
+            frontend_id,
+            Some(call.interaction.id.as_str()),
+            Some(call.call_id.as_str()),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|id| self.result_for(id).is_some())
+        .map(str::to_string)
+    }
+
+    fn has_response_for_call(&self, call: &SuspendedCall) -> bool {
+        self.resolve_response_key(call).is_some()
     }
 
     fn report_run_start_error(step: &impl PluginPhaseContext, message: impl Into<String>) {
@@ -179,11 +188,11 @@ impl InteractionResponsePlugin {
             "interaction response run_start handling failed"
         );
 
-        if let Err(err) = Self::clear_pending_interaction_state(step) {
+        if let Err(err) = Self::clear_suspended_calls_state(step) {
             tracing::error!(
                 plugin = INTERACTION_RESPONSE_PLUGIN_ID,
                 error = %err,
-                "failed to clear pending interaction state after run_start error"
+                "failed to clear suspended calls state after run_start error"
             );
         }
 
@@ -200,129 +209,111 @@ impl InteractionResponsePlugin {
         }
     }
 
-    /// During RunStart, detect pending interaction and schedule replay if approved.
+    /// During RunStart, resolve suspended calls and schedule replay when needed.
     fn on_run_start(&self, step: &mut RunStartContext<'_, '_>) {
-        let Some(pending) = Self::persisted_pending_interaction(step) else {
+        let mut suspended_calls = Self::persisted_suspended_calls(step);
+        if suspended_calls.is_empty() {
             return;
-        };
+        }
+        let mut call_ids: Vec<String> = suspended_calls.keys().cloned().collect();
+        call_ids.sort();
+        for call_id in call_ids {
+            let Some(call) = suspended_calls.get(&call_id).cloned() else {
+                continue;
+            };
+            let Some(response_key) = self.resolve_response_key(&call) else {
+                continue;
+            };
+            let result_payload = self.result_for(&response_key).cloned();
+            let is_denied = result_payload
+                .as_ref()
+                .is_some_and(InteractionResponse::is_denied);
+            let is_approved = result_payload
+                .as_ref()
+                .is_some_and(InteractionResponse::is_approved);
+            let resolution_id = response_key.clone();
+            let resolution_value = result_payload
+                .clone()
+                .unwrap_or(serde_json::Value::Bool(!is_denied));
 
-        // Recovery interaction is not a frontend tool invocation and has its own replay tool.
-        if pending.action == AGENT_RECOVERY_INTERACTION_ACTION {
-            let pending_id = pending.id.as_str();
-
-            if self.is_denied(pending_id) {
-                if let Err(err) = Self::clear_pending_interaction_state(step) {
+            if is_denied {
+                if let Err(err) = Self::push_resolution(step, resolution_id, resolution_value) {
                     Self::report_run_start_error(step, err);
                     return;
                 }
-                if let Err(err) = Self::push_resolution(
-                    step,
-                    pending.id.clone(),
-                    self.result_for(pending_id)
-                        .cloned()
-                        .unwrap_or(serde_json::Value::Bool(false)),
-                ) {
-                    Self::report_run_start_error(step, err);
+                suspended_calls.remove(&call_id);
+                continue;
+            }
+
+            if call.interaction.action == AGENT_RECOVERY_INTERACTION_ACTION {
+                if !is_approved {
+                    continue;
                 }
-                return;
-            }
-
-            if !self.is_approved(pending_id) {
-                return;
-            }
-
-            if let Err(err) = Self::push_resolution(
-                step,
-                pending.id.clone(),
-                self.result_for(pending_id)
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Bool(true)),
-            ) {
-                Self::report_run_start_error(step, err);
-                return;
-            }
-
-            let run_id = pending
-                .parameters
-                .get("run_id")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-                .or_else(|| {
-                    pending
-                        .id
-                        .strip_prefix(AGENT_RECOVERY_INTERACTION_PREFIX)
-                        .map(str::to_string)
-                });
-            let Some(run_id) = run_id else {
-                Self::report_run_start_error(
-                    step,
-                    "missing run_id in recovery interaction payload",
+                if let Err(err) = Self::push_resolution(step, resolution_id, resolution_value) {
+                    Self::report_run_start_error(step, err);
+                    return;
+                }
+                let run_id = call
+                    .interaction
+                    .parameters
+                    .get("run_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .or_else(|| {
+                        call.interaction
+                            .id
+                            .strip_prefix(AGENT_RECOVERY_INTERACTION_PREFIX)
+                            .map(str::to_string)
+                    });
+                let Some(run_id) = run_id else {
+                    Self::report_run_start_error(
+                        step,
+                        "missing run_id in recovery interaction payload",
+                    );
+                    return;
+                };
+                let replay_call = tirea_contract::thread::ToolCall::new(
+                    format!("recovery_resume_{run_id}"),
+                    RECOVERY_RESUME_TOOL_ID,
+                    json!({
+                        "run_id": run_id,
+                        "background": false
+                    }),
                 );
-                return;
-            };
-
-            let replay_call = tirea_contract::thread::ToolCall::new(
-                format!("recovery_resume_{run_id}"),
-                RECOVERY_RESUME_TOOL_ID,
-                json!({
-                    "run_id": run_id,
-                    "background": false
-                }),
-            );
-            if let Err(err) = Self::queue_replay_call(step, replay_call) {
-                Self::report_run_start_error(step, err);
+                if let Err(err) = Self::queue_replay_call(step, replay_call) {
+                    Self::report_run_start_error(step, err);
+                    return;
+                }
+                suspended_calls.remove(&call_id);
+                continue;
             }
-            return;
-        }
 
-        // Frontend tool interactions must use first-class invocation metadata.
-        let Some(invocation) = Self::persisted_frontend_invocation(step) else {
-            return;
-        };
-
-        let pending_id_owned = invocation.call_id.clone();
-        let pending_id = pending_id_owned.as_str();
-
-        if self.is_denied(pending_id) {
-            if let Err(err) = Self::clear_pending_interaction_state(step) {
+            let should_continue_use_as_result = result_payload.is_some()
+                && call.frontend_invocation.as_ref().is_some_and(|inv| {
+                    matches!(
+                        inv.routing,
+                        ResponseRouting::UseAsToolResult | ResponseRouting::PassToLLM
+                    )
+                });
+            if !is_approved && !should_continue_use_as_result {
+                continue;
+            }
+            if let Err(err) = Self::push_resolution(step, resolution_id, resolution_value) {
                 Self::report_run_start_error(step, err);
                 return;
             }
-            if let Err(err) = Self::push_resolution(
-                step,
-                pending_id_owned.clone(),
-                self.result_for(pending_id)
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Bool(false)),
-            ) {
-                Self::report_run_start_error(step, err);
+            if let Some(invocation) = call.frontend_invocation.as_ref() {
+                if let Err(err) =
+                    self.route_frontend_invocation(step, invocation, result_payload.as_ref())
+                {
+                    Self::report_run_start_error(step, err);
+                    return;
+                }
             }
-            return;
+            suspended_calls.remove(&call_id);
         }
 
-        let result_payload = self.result_for(pending_id).cloned();
-        let is_approved = self.is_approved(pending_id);
-        let should_continue_use_as_result = result_payload.is_some()
-            && matches!(
-                &invocation.routing,
-                ResponseRouting::UseAsToolResult | ResponseRouting::PassToLLM
-            );
-        if !is_approved && !should_continue_use_as_result {
-            return;
-        }
-        if let Err(err) = Self::push_resolution(
-            step,
-            pending_id_owned.clone(),
-            result_payload
-                .clone()
-                .unwrap_or(serde_json::Value::Bool(true)),
-        ) {
-            Self::report_run_start_error(step, err);
-            return;
-        }
-
-        if let Err(err) = self.route_frontend_invocation(step, &invocation, result_payload.as_ref())
-        {
+        if let Err(err) = Self::set_suspended_calls_state(step, suspended_calls) {
             Self::report_run_start_error(step, err);
         }
     }
@@ -398,8 +389,8 @@ fn normalize_frontend_tool_result(
     fallback_arguments: &serde_json::Value,
 ) -> serde_json::Value {
     match response {
-        // Backward compatibility: approved/denied channels only carry bool.
-        // For use_as_tool_result/pass_to_llm we treat bool as ack and keep original args.
+        // Boolean responses represent decision-only payloads.
+        // For result-routing modes, keep original tool arguments in that case.
         Some(serde_json::Value::Bool(_)) | None => fallback_arguments.clone(),
         Some(value) => value.clone(),
     }
@@ -423,93 +414,79 @@ impl AgentPlugin for InteractionResponsePlugin {
             return;
         }
 
-        let Some(pending) = Self::persisted_pending_interaction(ctx) else {
+        let suspended_calls = Self::persisted_suspended_calls(ctx);
+        if suspended_calls.is_empty() {
             return;
-        };
-
-        // If the client provided a response, RunStart already handled it.
-        // The pending should have been cleared. If it still exists, it means
-        // no response was provided — terminate to await user input.
-        let pending_id = pending.id.as_str();
-        let frontend_id = Self::persisted_frontend_invocation(ctx).map(|inv| inv.call_id);
-        let effective_ids = [Some(pending_id.to_string()), frontend_id];
-        let has_response = effective_ids
-            .iter()
-            .filter_map(|id| id.as_deref())
-            .any(|id| self.is_approved(id) || self.is_denied(id));
-
-        if has_response {
-            return; // RunStart handled it; pending should be cleared or will be resolved by replay
         }
-
-        ctx.request_termination(TerminationReason::PendingInteraction);
+        let has_unresolved = suspended_calls
+            .values()
+            .any(|call| !self.has_response_for_call(call));
+        if has_unresolved {
+            ctx.request_termination(TerminationReason::PendingInteraction);
+        }
     }
 
     async fn before_tool_execute(&self, step: &mut BeforeToolExecuteContext<'_, '_>) {
         // Check if there's a tool context
-        let Some(interaction_id) = step.tool_call_id().map(str::to_string) else {
+        let Some(tool_call_id) = step.tool_call_id().map(str::to_string) else {
             return;
         };
-
-        // Check both the tool call ID and the frontend invocation call_id.
-        // For direct frontend tools, interaction_id == tool.id.
-        // For indirect (permission), the frontend invocation has a different call_id.
-        let frontend_call_id = Self::persisted_frontend_invocation(step).map(|inv| inv.call_id);
-
-        // The client may respond with either the tool call ID or the frontend call ID.
-        let effective_id = if let Some(ref fc_id) = frontend_call_id {
-            if self.is_approved(fc_id) || self.is_denied(fc_id) {
-                fc_id.clone()
+        let mut suspended_calls = Self::persisted_suspended_calls(step);
+        if suspended_calls.is_empty() {
+            return;
+        }
+        let matched = suspended_calls.iter().find_map(|(entry_id, call)| {
+            let frontend_id = call
+                .frontend_invocation
+                .as_ref()
+                .map(|inv| inv.call_id.as_str());
+            if call.call_id == tool_call_id
+                || call.interaction.id == tool_call_id
+                || frontend_id == Some(tool_call_id.as_str())
+            {
+                Some((entry_id.clone(), call.clone()))
             } else {
-                interaction_id.clone()
+                None
             }
-        } else {
-            interaction_id.clone()
+        });
+        let Some((entry_id, matched_call)) = matched else {
+            return;
         };
-
-        let is_approved = self.is_approved(&effective_id);
-        let is_denied = self.is_denied(&effective_id);
-
+        let Some(response_key) = self.resolve_response_key(&matched_call) else {
+            return;
+        };
+        let response_payload = self
+            .result_for(&response_key)
+            .cloned()
+            .unwrap_or(serde_json::Value::Bool(true));
+        let is_approved = InteractionResponse::is_approved(&response_payload);
+        let is_denied = InteractionResponse::is_denied(&response_payload);
         if !is_approved && !is_denied {
             return;
         }
-
-        // Verify that the server actually has a persisted pending interaction whose ID
-        // matches the one the client claims to be responding to.  Without this check a
-        // malicious client could pre-approve arbitrary tool calls by injecting approved
-        // IDs in a fresh request that has no outstanding pending interaction.
-        let persisted_id = Self::persisted_pending_interaction(step).map(|i| i.id);
-
-        let id_matches = persisted_id
-            .as_deref()
-            .is_some_and(|id| id == interaction_id || Some(id) == frontend_call_id.as_deref());
-
-        if !id_matches {
-            return;
-        }
+        let resolution_id = response_key;
+        suspended_calls.remove(&entry_id);
 
         if is_denied {
             step.deny("User denied the action".to_string());
-            if let Err(err) = Self::clear_pending_interaction_state(step) {
+            if let Err(err) = Self::set_suspended_calls_state(step, suspended_calls) {
                 step.deny(err);
                 return;
             }
-            let resolved_id = persisted_id.unwrap_or(effective_id);
             if let Err(err) =
-                Self::push_resolution(step, resolved_id, serde_json::Value::Bool(false))
+                Self::push_resolution(step, resolution_id, serde_json::Value::Bool(false))
             {
                 step.deny(err);
             }
         } else if is_approved {
             // Override prior ask/deny state and continue execution.
             step.proceed();
-            if let Err(err) = Self::clear_pending_interaction_state(step) {
+            if let Err(err) = Self::set_suspended_calls_state(step, suspended_calls) {
                 step.deny(err);
                 return;
             }
-            let resolved_id = persisted_id.unwrap_or(effective_id);
             if let Err(err) =
-                Self::push_resolution(step, resolved_id, serde_json::Value::Bool(true))
+                Self::push_resolution(step, resolution_id, serde_json::Value::Bool(true))
             {
                 step.deny(err);
             }
@@ -603,28 +580,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_start_replays_tool_matching_pending_interaction() {
+    async fn run_start_replays_tool_matching_suspended_call() {
         let state = json!({
             "loop_control": {
-                "pending_interaction": {
-                    "id": "fc_ask_1",
-                    "action": "tool:write_file",
-                    "parameters": {
-                        "source": "permission"
-                    }
-                },
-                "pending_frontend_invocation": {
-                    "call_id": "fc_ask_1",
-                    "tool_name": "PermissionConfirm",
-                    "arguments": { "tool_name": "write_file", "tool_args": { "path": "b.txt" } },
-                    "origin": {
-                        "type": "tool_call_intercepted",
-                        "backend_call_id": "call_write",
-                        "backend_tool_name": "write_file",
-                        "backend_arguments": { "path": "b.txt" }
-                    },
-                    "routing": {
-                        "strategy": "replay_original_tool"
+                "suspended_calls": {
+                    "call_write": {
+                        "call_id": "call_write",
+                        "tool_name": "write_file",
+                        "interaction": {
+                            "id": "fc_ask_1",
+                            "action": "tool:write_file",
+                            "parameters": {
+                                "source": "permission"
+                            }
+                        },
+                        "frontend_invocation": {
+                            "call_id": "fc_ask_1",
+                            "tool_name": "PermissionConfirm",
+                            "arguments": { "tool_name": "write_file", "tool_args": { "path": "b.txt" } },
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "call_write",
+                                "backend_tool_name": "write_file",
+                                "backend_arguments": { "path": "b.txt" }
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
+                        }
                     }
                 }
             }
@@ -667,15 +650,21 @@ mod tests {
     async fn run_start_replay_requires_frontend_invocation_channel() {
         let state = json!({
             "loop_control": {
-                "pending_interaction": {
-                    "id": "call_write",
-                    "action": "tool:write_file",
-                    "parameters": {
-                        "source": "permission",
-                        "origin_tool_call": {
+                "suspended_calls": {
+                    "call_write": {
+                        "call_id": "call_write",
+                        "tool_name": "write_file",
+                        "interaction": {
                             "id": "call_write",
-                            "name": "write_file",
-                            "arguments": { "path": "b.txt" }
+                            "action": "tool:write_file",
+                            "parameters": {
+                                "source": "permission",
+                                "origin_tool_call": {
+                                    "id": "call_write",
+                                    "name": "write_file",
+                                    "arguments": { "path": "b.txt" }
+                                }
+                            }
                         }
                     }
                 }
@@ -702,7 +691,7 @@ mod tests {
         let replay_after = replay_calls_from_state(&updated);
         assert!(
             replay_after.is_empty(),
-            "without pending_frontend_invocation metadata, replay must not happen"
+            "without frontend_invocation metadata, replay must not happen"
         );
     }
 
@@ -710,20 +699,26 @@ mod tests {
     async fn run_start_frontend_interaction_replay_works_without_prior_channel() {
         let state = json!({
             "loop_control": {
-                "pending_interaction": {
-                    "id": "call_copy_1",
-                    "action": "tool:copyToClipboard"
-                },
-                "pending_frontend_invocation": {
-                    "call_id": "call_copy_1",
-                    "tool_name": "copyToClipboard",
-                    "arguments": { "text": "hello" },
-                    "origin": {
-                        "type": "plugin_initiated",
-                        "plugin_id": "agui_frontend_tools"
-                    },
-                    "routing": {
-                        "strategy": "use_as_tool_result"
+                "suspended_calls": {
+                    "call_copy_1": {
+                        "call_id": "call_copy_1",
+                        "tool_name": "copyToClipboard",
+                        "interaction": {
+                            "id": "call_copy_1",
+                            "action": "tool:copyToClipboard"
+                        },
+                        "frontend_invocation": {
+                            "call_id": "call_copy_1",
+                            "tool_name": "copyToClipboard",
+                            "arguments": { "text": "hello" },
+                            "origin": {
+                                "type": "plugin_initiated",
+                                "plugin_id": "agui_frontend_tools"
+                            },
+                            "routing": {
+                                "strategy": "use_as_tool_result"
+                            }
+                        }
                     }
                 }
             }
@@ -752,24 +747,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_start_frontend_interaction_replay_without_history_uses_pending_payload() {
+    async fn run_start_frontend_interaction_replay_without_history_uses_suspended_payload() {
         let state = json!({
             "loop_control": {
-                "pending_interaction": {
-                    "id": "call_copy_1",
-                    "action": "tool:copyToClipboard",
-                    "parameters": { "text": "hello" }
-                },
-                "pending_frontend_invocation": {
-                    "call_id": "call_copy_1",
-                    "tool_name": "copyToClipboard",
-                    "arguments": { "text": "hello" },
-                    "origin": {
-                        "type": "plugin_initiated",
-                        "plugin_id": "agui_frontend_tools"
-                    },
-                    "routing": {
-                        "strategy": "use_as_tool_result"
+                "suspended_calls": {
+                    "call_copy_1": {
+                        "call_id": "call_copy_1",
+                        "tool_name": "copyToClipboard",
+                        "interaction": {
+                            "id": "call_copy_1",
+                            "action": "tool:copyToClipboard",
+                            "parameters": { "text": "hello" }
+                        },
+                        "frontend_invocation": {
+                            "call_id": "call_copy_1",
+                            "tool_name": "copyToClipboard",
+                            "arguments": { "text": "hello" },
+                            "origin": {
+                                "type": "plugin_initiated",
+                                "plugin_id": "agui_frontend_tools"
+                            },
+                            "routing": {
+                                "strategy": "use_as_tool_result"
+                            }
+                        }
                     }
                 }
             }
@@ -792,25 +793,31 @@ mod tests {
     async fn run_start_permission_replay_without_history_uses_embedded_tool_call() {
         let state = json!({
             "loop_control": {
-                "pending_interaction": {
-                    "id": "fc_ask_2",
-                    "action": "tool:write_file",
-                    "parameters": {
-                        "source": "permission"
-                    }
-                },
-                "pending_frontend_invocation": {
-                    "call_id": "fc_ask_2",
-                    "tool_name": "PermissionConfirm",
-                    "arguments": { "tool_name": "write_file", "tool_args": { "path": "a.txt" } },
-                    "origin": {
-                        "type": "tool_call_intercepted",
-                        "backend_call_id": "call_write",
-                        "backend_tool_name": "write_file",
-                        "backend_arguments": { "path": "a.txt" }
-                    },
-                    "routing": {
-                        "strategy": "replay_original_tool"
+                "suspended_calls": {
+                    "call_write": {
+                        "call_id": "call_write",
+                        "tool_name": "write_file",
+                        "interaction": {
+                            "id": "fc_ask_2",
+                            "action": "tool:write_file",
+                            "parameters": {
+                                "source": "permission"
+                            }
+                        },
+                        "frontend_invocation": {
+                            "call_id": "fc_ask_2",
+                            "tool_name": "PermissionConfirm",
+                            "arguments": { "tool_name": "write_file", "tool_args": { "path": "a.txt" } },
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "call_write",
+                                "backend_tool_name": "write_file",
+                                "backend_arguments": { "path": "a.txt" }
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
+                        }
                     }
                 }
             }
@@ -833,25 +840,31 @@ mod tests {
     async fn run_start_permission_replay_prefers_origin_tool_call_mapping() {
         let state = json!({
             "loop_control": {
-                "pending_interaction": {
-                    "id": "fc_ask_3",
-                    "action": "tool:write_file",
-                    "parameters": {
-                        "source": "permission"
-                    }
-                },
-                "pending_frontend_invocation": {
-                    "call_id": "fc_ask_3",
-                    "tool_name": "PermissionConfirm",
-                    "arguments": { "tool_name": "write_file", "tool_args": { "path": "b.txt" } },
-                    "origin": {
-                        "type": "tool_call_intercepted",
-                        "backend_call_id": "call_write",
-                        "backend_tool_name": "write_file",
-                        "backend_arguments": { "path": "b.txt" }
-                    },
-                    "routing": {
-                        "strategy": "replay_original_tool"
+                "suspended_calls": {
+                    "call_write": {
+                        "call_id": "call_write",
+                        "tool_name": "write_file",
+                        "interaction": {
+                            "id": "fc_ask_3",
+                            "action": "tool:write_file",
+                            "parameters": {
+                                "source": "permission"
+                            }
+                        },
+                        "frontend_invocation": {
+                            "call_id": "fc_ask_3",
+                            "tool_name": "PermissionConfirm",
+                            "arguments": { "tool_name": "write_file", "tool_args": { "path": "b.txt" } },
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "call_write",
+                                "backend_tool_name": "write_file",
+                                "backend_arguments": { "path": "b.txt" }
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
+                        }
                     }
                 }
             }
@@ -874,23 +887,29 @@ mod tests {
     async fn run_start_routes_via_frontend_invocation_replay_original_tool() {
         let state = json!({
             "loop_control": {
-                "pending_interaction": {
-                    "id": "call_write",
-                    "action": "tool:write_file",
-                    "parameters": {}
-                },
-                "pending_frontend_invocation": {
-                    "call_id": "fc_ask_1",
-                    "tool_name": "PermissionConfirm",
-                    "arguments": { "tool_name": "write_file", "tool_args": { "path": "a.txt" } },
-                    "origin": {
-                        "type": "tool_call_intercepted",
-                        "backend_call_id": "call_write",
-                        "backend_tool_name": "write_file",
-                        "backend_arguments": { "path": "a.txt" }
-                    },
-                    "routing": {
-                        "strategy": "replay_original_tool"
+                "suspended_calls": {
+                    "call_write": {
+                        "call_id": "call_write",
+                        "tool_name": "write_file",
+                        "interaction": {
+                            "id": "call_write",
+                            "action": "tool:write_file",
+                            "parameters": {}
+                        },
+                        "frontend_invocation": {
+                            "call_id": "fc_ask_1",
+                            "tool_name": "PermissionConfirm",
+                            "arguments": { "tool_name": "write_file", "tool_args": { "path": "a.txt" } },
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "call_write",
+                                "backend_tool_name": "write_file",
+                                "backend_arguments": { "path": "a.txt" }
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
+                        }
                     }
                 }
             }
@@ -923,21 +942,27 @@ mod tests {
     async fn run_start_routes_via_frontend_invocation_use_as_tool_result() {
         let state = json!({
             "loop_control": {
-                "pending_interaction": {
-                    "id": "call_copy",
-                    "action": "tool:copyToClipboard",
-                    "parameters": { "text": "hello" }
-                },
-                "pending_frontend_invocation": {
-                    "call_id": "call_copy",
-                    "tool_name": "copyToClipboard",
-                    "arguments": { "text": "hello" },
-                    "origin": {
-                        "type": "plugin_initiated",
-                        "plugin_id": "agui_frontend_tools"
-                    },
-                    "routing": {
-                        "strategy": "use_as_tool_result"
+                "suspended_calls": {
+                    "call_copy": {
+                        "call_id": "call_copy",
+                        "tool_name": "copyToClipboard",
+                        "interaction": {
+                            "id": "call_copy",
+                            "action": "tool:copyToClipboard",
+                            "parameters": { "text": "hello" }
+                        },
+                        "frontend_invocation": {
+                            "call_id": "call_copy",
+                            "tool_name": "copyToClipboard",
+                            "arguments": { "text": "hello" },
+                            "origin": {
+                                "type": "plugin_initiated",
+                                "plugin_id": "agui_frontend_tools"
+                            },
+                            "routing": {
+                                "strategy": "use_as_tool_result"
+                            }
+                        }
                     }
                 }
             }
@@ -963,21 +988,27 @@ mod tests {
     async fn run_start_use_as_tool_result_preserves_non_boolean_payload() {
         let state = json!({
             "loop_control": {
-                "pending_interaction": {
-                    "id": "call_copy",
-                    "action": "tool:copyToClipboard",
-                    "parameters": { "text": "hello" }
-                },
-                "pending_frontend_invocation": {
-                    "call_id": "call_copy",
-                    "tool_name": "copyToClipboard",
-                    "arguments": { "text": "hello" },
-                    "origin": {
-                        "type": "plugin_initiated",
-                        "plugin_id": "agui_frontend_tools"
-                    },
-                    "routing": {
-                        "strategy": "use_as_tool_result"
+                "suspended_calls": {
+                    "call_copy": {
+                        "call_id": "call_copy",
+                        "tool_name": "copyToClipboard",
+                        "interaction": {
+                            "id": "call_copy",
+                            "action": "tool:copyToClipboard",
+                            "parameters": { "text": "hello" }
+                        },
+                        "frontend_invocation": {
+                            "call_id": "call_copy",
+                            "tool_name": "copyToClipboard",
+                            "arguments": { "text": "hello" },
+                            "origin": {
+                                "type": "plugin_initiated",
+                                "plugin_id": "agui_frontend_tools"
+                            },
+                            "routing": {
+                                "strategy": "use_as_tool_result"
+                            }
+                        }
                     }
                 }
             }
@@ -1010,26 +1041,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_start_replay_failure_sets_inference_error_and_clears_pending() {
+    async fn run_start_replay_failure_sets_inference_error_and_clears_suspended_calls() {
         let state = json!({
             "loop_control": {
-                "pending_interaction": {
-                    "id": "fc_ask_fail",
-                    "action": "tool:write_file",
-                    "parameters": {}
-                },
-                "pending_frontend_invocation": {
-                    "call_id": "fc_ask_fail",
-                    "tool_name": "PermissionConfirm",
-                    "arguments": { "tool_name": "write_file", "tool_args": { "path": "a.txt" } },
-                    "origin": {
-                        "type": "tool_call_intercepted",
-                        "backend_call_id": "call_write",
-                        "backend_tool_name": "write_file",
-                        "backend_arguments": { "path": "a.txt" }
-                    },
-                    "routing": {
-                        "strategy": "replay_original_tool"
+                "suspended_calls": {
+                    "call_write": {
+                        "call_id": "call_write",
+                        "tool_name": "write_file",
+                        "interaction": {
+                            "id": "fc_ask_fail",
+                            "action": "tool:write_file",
+                            "parameters": {}
+                        },
+                        "frontend_invocation": {
+                            "call_id": "fc_ask_fail",
+                            "tool_name": "PermissionConfirm",
+                            "arguments": { "tool_name": "write_file", "tool_args": { "path": "a.txt" } },
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "call_write",
+                                "backend_tool_name": "write_file",
+                                "backend_arguments": { "path": "a.txt" }
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
+                        }
                     }
                 }
             },
@@ -1045,12 +1082,10 @@ mod tests {
 
         let updated = fixture.updated_state();
         assert!(
-            updated["loop_control"]["pending_interaction"].is_null(),
-            "pending interaction should be cleared on run_start failure"
-        );
-        assert!(
-            updated["loop_control"]["pending_frontend_invocation"].is_null(),
-            "pending frontend invocation should be cleared on run_start failure"
+            updated["loop_control"]["suspended_calls"]
+                .as_object()
+                .is_some_and(|calls| calls.is_empty()),
+            "suspended calls should be cleared on run_start failure"
         );
         assert_eq!(
             updated["loop_control"]["inference_error"]["type"],
@@ -1069,11 +1104,17 @@ mod tests {
     async fn run_start_recovery_approval_schedules_agent_run_replay() {
         let state = json!({
             "loop_control": {
-                "pending_interaction": {
-                    "id": "agent_recovery_run-1",
-                    "action": "recover_agent_run",
-                    "parameters": {
-                        "run_id": "run-1"
+                "suspended_calls": {
+                    "agent_recovery_run-1": {
+                        "call_id": "agent_recovery_run-1",
+                        "tool_name": "recover_agent_run",
+                        "interaction": {
+                            "id": "agent_recovery_run-1",
+                            "action": "recover_agent_run",
+                            "parameters": {
+                                "run_id": "run-1"
+                            }
+                        }
                     }
                 }
             }
@@ -1094,14 +1135,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_start_recovery_denial_clears_pending_interaction() {
+    async fn run_start_recovery_denial_clears_suspended_call() {
         let state = json!({
             "loop_control": {
-                "pending_interaction": {
-                    "id": "agent_recovery_run-1",
-                    "action": "recover_agent_run",
-                    "parameters": {
-                        "run_id": "run-1"
+                "suspended_calls": {
+                    "agent_recovery_run-1": {
+                        "call_id": "agent_recovery_run-1",
+                        "tool_name": "recover_agent_run",
+                        "interaction": {
+                            "id": "agent_recovery_run-1",
+                            "action": "recover_agent_run",
+                            "parameters": {
+                                "run_id": "run-1"
+                            }
+                        }
                     }
                 }
             }
@@ -1119,10 +1166,11 @@ mod tests {
         );
 
         let updated = fixture.updated_state();
-        let pending = updated
+        let suspended = updated
             .get("loop_control")
-            .and_then(|a| a.get("pending_interaction"));
-        assert!(pending.is_none() || pending == Some(&serde_json::Value::Null));
+            .and_then(|a| a.get("suspended_calls"))
+            .and_then(|v| v.as_object());
+        assert!(suspended.is_none() || suspended.is_some_and(|calls| calls.is_empty()));
     }
 
     // =========================================================================
@@ -1130,20 +1178,26 @@ mod tests {
     // =========================================================================
 
     #[tokio::test]
-    async fn before_inference_terminates_on_unresolved_pending() {
+    async fn before_inference_terminates_on_unresolved_suspended_call() {
         let state = json!({
             "loop_control": {
-                "pending_interaction": {
-                    "id": "fc_ask_1",
-                    "action": "tool:write_file",
-                    "parameters": { "source": "permission" }
-                },
-                "pending_frontend_invocation": {
-                    "call_id": "fc_ask_1",
-                    "tool_name": "PermissionConfirm",
-                    "arguments": { "tool_name": "write_file" },
-                    "origin": { "type": "plugin_initiated", "plugin_id": "test" },
-                    "routing": { "strategy": "replay_original_tool" }
+                "suspended_calls": {
+                    "fc_ask_1": {
+                        "call_id": "fc_ask_1",
+                        "tool_name": "write_file",
+                        "interaction": {
+                            "id": "fc_ask_1",
+                            "action": "tool:write_file",
+                            "parameters": { "source": "permission" }
+                        },
+                        "frontend_invocation": {
+                            "call_id": "fc_ask_1",
+                            "tool_name": "PermissionConfirm",
+                            "arguments": { "tool_name": "write_file" },
+                            "origin": { "type": "plugin_initiated", "plugin_id": "test" },
+                            "routing": { "strategy": "replay_original_tool" }
+                        }
+                    }
                 }
             }
         });
@@ -1169,17 +1223,23 @@ mod tests {
     async fn before_inference_skips_when_response_provided() {
         let state = json!({
             "loop_control": {
-                "pending_interaction": {
-                    "id": "fc_ask_1",
-                    "action": "tool:write_file",
-                    "parameters": { "source": "permission" }
-                },
-                "pending_frontend_invocation": {
-                    "call_id": "fc_ask_1",
-                    "tool_name": "PermissionConfirm",
-                    "arguments": { "tool_name": "write_file" },
-                    "origin": { "type": "plugin_initiated", "plugin_id": "test" },
-                    "routing": { "strategy": "replay_original_tool" }
+                "suspended_calls": {
+                    "fc_ask_1": {
+                        "call_id": "fc_ask_1",
+                        "tool_name": "write_file",
+                        "interaction": {
+                            "id": "fc_ask_1",
+                            "action": "tool:write_file",
+                            "parameters": { "source": "permission" }
+                        },
+                        "frontend_invocation": {
+                            "call_id": "fc_ask_1",
+                            "tool_name": "PermissionConfirm",
+                            "arguments": { "tool_name": "write_file" },
+                            "origin": { "type": "plugin_initiated", "plugin_id": "test" },
+                            "routing": { "strategy": "replay_original_tool" }
+                        }
+                    }
                 }
             }
         });
@@ -1204,10 +1264,16 @@ mod tests {
     async fn before_inference_only_checks_first_call() {
         let state = json!({
             "loop_control": {
-                "pending_interaction": {
-                    "id": "confirm_1",
-                    "action": "confirm",
-                    "parameters": {}
+                "suspended_calls": {
+                    "confirm_1": {
+                        "call_id": "confirm_1",
+                        "tool_name": "confirm",
+                        "interaction": {
+                            "id": "confirm_1",
+                            "action": "confirm",
+                            "parameters": {}
+                        }
+                    }
                 }
             }
         });

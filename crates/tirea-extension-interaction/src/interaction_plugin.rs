@@ -55,7 +55,6 @@ impl InteractionPlugin {
     pub fn is_denied(&self, interaction_id: &str) -> bool {
         self.static_response.is_denied(interaction_id)
     }
-
 }
 
 impl Default for InteractionPlugin {

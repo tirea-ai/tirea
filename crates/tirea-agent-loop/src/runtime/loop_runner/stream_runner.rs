@@ -286,9 +286,11 @@ pub(super) fn run_loop_stream_impl(
     run_ctx: RunContext,
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
+    decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     Box::pin(stream! {
     let mut run_ctx = run_ctx;
+    let mut decision_rx = decision_rx;
     let executor = llm_executor_for_run(&config);
     let mut run_state = RunState::new();
     let mut last_text = String::new();
@@ -467,6 +469,51 @@ pub(super) fn run_loop_stream_impl(
         }
 
         loop {
+            let decisions_applied = match drain_decision_channel(&mut run_ctx, &mut decision_rx) {
+                Ok(applied) => applied,
+                Err(e) => {
+                    let message = e.to_string();
+                    terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
+                }
+            };
+            if decisions_applied {
+                active_tool_snapshot = match resolve_step_tool_snapshot(&step_tool_provider, &run_ctx).await {
+                    Ok(snapshot) => snapshot,
+                    Err(e) => {
+                        let message = e.to_string();
+                        terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
+                    }
+                };
+                active_tool_descriptors = active_tool_snapshot.descriptors.clone();
+
+                let decision_drain = match drain_run_start_outbox_and_replay(
+                    &mut run_ctx,
+                    &active_tool_snapshot.tools,
+                    &config,
+                    &active_tool_descriptors,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let message = e;
+                        terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
+                    }
+                };
+
+                if let Err(e) = pending_delta_commit
+                    .commit(&mut run_ctx, CheckpointReason::ToolResultsCommitted, false)
+                    .await
+                {
+                    let message = e.to_string();
+                    terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
+                }
+
+                for event in decision_drain.events {
+                    yield emitter.emit_existing(event);
+                }
+            }
+
             let loop_tick_events = match drain_loop_tick_outbox(&mut run_ctx) {
                 Ok(v) => v,
                 Err(e) => {

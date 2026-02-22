@@ -49,16 +49,20 @@ mod stream_runner;
 mod tool_exec;
 
 use crate::contracts::plugin::phase::Phase;
+use crate::contracts::runtime::state_paths::PERMISSIONS_STATE_PATH;
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
     StopPolicy, StreamResult, ToolExecutionRequest, ToolExecutionResult,
 };
 use crate::contracts::thread::CheckpointReason;
-use crate::contracts::thread::{gen_message_id, Message, MessageMetadata};
+use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
 use crate::contracts::tool::Tool;
 use crate::contracts::RunContext;
 use crate::contracts::StopReason;
-use crate::contracts::{AgentEvent, FrontendToolInvocation, Interaction, InteractionResponse, TerminationReason};
+use crate::contracts::{
+    AgentEvent, FrontendToolInvocation, Interaction, InteractionResponse, SuspendedCall,
+    TerminationReason,
+};
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
 use crate::engine::stop_conditions::check_stop_policies;
 use crate::runtime::activity::ActivityHub;
@@ -87,9 +91,10 @@ pub use config::{StepToolInput, StepToolProvider, StepToolSnapshot};
 #[cfg(test)]
 use core::build_messages;
 use core::{
-    build_request_for_filtered_tools, clear_agent_pending_interaction, drain_agent_outbox,
-    inference_inputs_from_step, pending_frontend_invocation_from_ctx, pending_interaction_from_ctx,
-    set_agent_pending_interaction,
+    build_request_for_filtered_tools, clear_agent_pending_interaction, clear_suspended_call,
+    drain_agent_outbox, enqueue_interaction_resolution, inference_inputs_from_step,
+    pending_frontend_invocation_from_ctx, pending_interaction_from_ctx,
+    set_agent_pending_interaction, suspended_calls_from_ctx,
 };
 pub use outcome::{tool_map, tool_map_from_arc, AgentLoopError};
 pub use outcome::{LoopOutcome, LoopStats, LoopUsage};
@@ -681,6 +686,211 @@ async fn drain_run_start_outbox_and_replay_nonstream(
     Ok(true)
 }
 
+fn normalize_frontend_tool_result(
+    response: &serde_json::Value,
+    fallback_arguments: &serde_json::Value,
+) -> serde_json::Value {
+    match response {
+        serde_json::Value::Bool(_) => fallback_arguments.clone(),
+        value => value.clone(),
+    }
+}
+
+fn find_tool_call_in_messages(run_ctx: &RunContext, call_id: &str) -> Option<ToolCall> {
+    run_ctx.messages().iter().rev().find_map(|message| {
+        message
+            .tool_calls
+            .as_ref()
+            .and_then(|calls| calls.iter().find(|call| call.id == call_id).cloned())
+    })
+}
+
+fn replay_tool_call_for_resolution(
+    run_ctx: &RunContext,
+    suspended_call: &SuspendedCall,
+    response: &InteractionResponse,
+) -> Option<ToolCall> {
+    if InteractionResponse::is_denied(&response.result) {
+        return None;
+    }
+
+    if let Some(invocation) = suspended_call.frontend_invocation.as_ref() {
+        match invocation.routing {
+            crate::contracts::ResponseRouting::ReplayOriginalTool => match &invocation.origin {
+                crate::contracts::InvocationOrigin::ToolCallIntercepted {
+                    backend_call_id,
+                    backend_tool_name,
+                    backend_arguments,
+                } => {
+                    return Some(ToolCall::new(
+                        backend_call_id.clone(),
+                        backend_tool_name.clone(),
+                        backend_arguments.clone(),
+                    ));
+                }
+                crate::contracts::InvocationOrigin::PluginInitiated { .. } => {
+                    return Some(ToolCall::new(
+                        invocation.call_id.clone(),
+                        invocation.tool_name.clone(),
+                        invocation.arguments.clone(),
+                    ));
+                }
+            },
+            crate::contracts::ResponseRouting::UseAsToolResult
+            | crate::contracts::ResponseRouting::PassToLLM => {
+                return Some(ToolCall::new(
+                    invocation.call_id.clone(),
+                    invocation.tool_name.clone(),
+                    normalize_frontend_tool_result(&response.result, &invocation.arguments),
+                ));
+            }
+        }
+    }
+
+    if !InteractionResponse::is_approved(&response.result) {
+        return None;
+    }
+
+    find_tool_call_in_messages(run_ctx, &suspended_call.call_id).or_else(|| {
+        if suspended_call.tool_name.is_empty() {
+            None
+        } else {
+            Some(ToolCall::new(
+                suspended_call.call_id.clone(),
+                suspended_call.tool_name.clone(),
+                suspended_call.interaction.parameters.clone(),
+            ))
+        }
+    })
+}
+
+fn one_shot_approval_call_id(
+    suspended_call: &SuspendedCall,
+    response: &InteractionResponse,
+) -> Option<String> {
+    if !InteractionResponse::is_approved(&response.result) {
+        return None;
+    }
+
+    let invocation = suspended_call.frontend_invocation.as_ref()?;
+    if !matches!(
+        invocation.routing,
+        crate::contracts::ResponseRouting::ReplayOriginalTool
+    ) {
+        return None;
+    }
+
+    match &invocation.origin {
+        crate::contracts::InvocationOrigin::ToolCallIntercepted {
+            backend_call_id, ..
+        } => Some(backend_call_id.clone()),
+        crate::contracts::InvocationOrigin::PluginInitiated { .. } => None,
+    }
+}
+
+fn set_permission_one_shot_approval(
+    run_ctx: &mut RunContext,
+    approved_call_id: &str,
+) -> Result<(), AgentLoopError> {
+    let state = run_ctx
+        .snapshot()
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    let mut approved_calls = match state
+        .get(PERMISSIONS_STATE_PATH)
+        .and_then(|permissions| permissions.get("approved_calls"))
+        .cloned()
+    {
+        Some(raw) => serde_json::from_value::<HashMap<String, bool>>(raw).map_err(|e| {
+            AgentLoopError::StateError(format!("failed to parse permissions.approved_calls: {e}"))
+        })?,
+        None => HashMap::new(),
+    };
+    approved_calls.insert(approved_call_id.to_string(), true);
+    let patch = tirea_state::Patch::new().with_op(tirea_state::Op::set(
+        tirea_state::Path::root()
+            .key(PERMISSIONS_STATE_PATH)
+            .key("approved_calls"),
+        serde_json::to_value(approved_calls).map_err(|e| {
+            AgentLoopError::StateError(format!(
+                "failed to serialize permissions.approved_calls: {e}"
+            ))
+        })?,
+    ));
+    if !patch.is_empty() {
+        run_ctx.add_thread_patch(TrackedPatch::new(patch).with_source("agent_loop"));
+    }
+    Ok(())
+}
+
+pub(super) fn resolve_suspended_call(
+    run_ctx: &mut RunContext,
+    response: &InteractionResponse,
+) -> Result<bool, AgentLoopError> {
+    let suspended_calls = suspended_calls_from_ctx(run_ctx);
+    if suspended_calls.is_empty() {
+        return Ok(false);
+    }
+
+    let suspended_call = suspended_calls
+        .get(&response.interaction_id)
+        .cloned()
+        .or_else(|| {
+            suspended_calls
+                .values()
+                .find(|call| call.interaction.id == response.interaction_id)
+                .cloned()
+        });
+    let Some(suspended_call) = suspended_call else {
+        return Ok(false);
+    };
+
+    if let Some(approved_call_id) = one_shot_approval_call_id(&suspended_call, response) {
+        set_permission_one_shot_approval(run_ctx, &approved_call_id)?;
+    }
+
+    let replay_call = replay_tool_call_for_resolution(run_ctx, &suspended_call, response);
+    let state = run_ctx
+        .snapshot()
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    let outbox_patch = enqueue_interaction_resolution(&state, response.clone(), replay_call)?;
+    if !outbox_patch.patch().is_empty() {
+        run_ctx.add_thread_patch(outbox_patch);
+    }
+
+    let state = run_ctx
+        .snapshot()
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    let clear_patch = clear_suspended_call(&state, &suspended_call.call_id)?;
+    if !clear_patch.patch().is_empty() {
+        run_ctx.add_thread_patch(clear_patch);
+    }
+
+    Ok(true)
+}
+
+pub(super) fn drain_decision_channel(
+    run_ctx: &mut RunContext,
+    decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
+) -> Result<bool, AgentLoopError> {
+    let Some(rx) = decision_rx.as_mut() else {
+        return Ok(false);
+    };
+
+    let mut resolved_any = false;
+    loop {
+        match rx.try_recv() {
+            Ok(response) => {
+                if resolve_suspended_call(run_ctx, &response)? {
+                    resolved_any = true;
+                }
+            }
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            | Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+        }
+    }
+    Ok(resolved_any)
+}
+
 /// Run the full agent loop until completion or a stop condition is met.
 ///
 /// This is the primary non-streaming entry point. Tools are passed directly
@@ -692,7 +902,7 @@ pub async fn run_loop(
     mut run_ctx: RunContext,
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
-    _decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
+    mut decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
 ) -> LoopOutcome {
     let executor = llm_executor_for_run(config);
     let mut run_state = RunState::new();
@@ -728,8 +938,10 @@ pub async fn run_loop(
             let reason: TerminationReason = $termination;
             // Thin backward-compat boundary: if state has pending_interaction
             // and the reason is not Error/Cancelled, override to PendingInteraction.
-            let final_termination = if !matches!(reason, TerminationReason::Error | TerminationReason::Cancelled)
-                && pending_interaction_from_ctx(&run_ctx).is_some()
+            let final_termination = if !matches!(
+                reason,
+                TerminationReason::Error | TerminationReason::Cancelled
+            ) && pending_interaction_from_ctx(&run_ctx).is_some()
             {
                 TerminationReason::PendingInteraction
             } else {
@@ -824,6 +1036,55 @@ pub async fn run_loop(
         }
     }
     loop {
+        let decisions_applied = match drain_decision_channel(&mut run_ctx, &mut decision_rx) {
+            Ok(applied) => applied,
+            Err(error) => {
+                terminate_run!(
+                    TerminationReason::Error,
+                    None,
+                    Some(outcome::LoopFailure::State(error.to_string()))
+                );
+            }
+        };
+        if decisions_applied {
+            let decision_tools =
+                match resolve_step_tool_snapshot(&step_tool_provider, &run_ctx).await {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        terminate_run!(
+                            TerminationReason::Error,
+                            None,
+                            Some(outcome::LoopFailure::State(error.to_string()))
+                        );
+                    }
+                };
+            active_tool_descriptors = decision_tools.descriptors.clone();
+            if let Err(error) = drain_run_start_outbox_and_replay_nonstream(
+                &mut run_ctx,
+                &decision_tools.tools,
+                config,
+                &active_tool_descriptors,
+            )
+            .await
+            {
+                terminate_run!(
+                    TerminationReason::Error,
+                    None,
+                    Some(outcome::LoopFailure::State(error.to_string()))
+                );
+            }
+            if let Err(error) = pending_delta_commit
+                .commit(&mut run_ctx, CheckpointReason::ToolResultsCommitted, false)
+                .await
+            {
+                terminate_run!(
+                    TerminationReason::Error,
+                    None,
+                    Some(outcome::LoopFailure::State(error.to_string()))
+                );
+            }
+        }
+
         if is_run_cancelled(run_cancellation_token.as_ref()) {
             terminate_run!(TerminationReason::Cancelled, None, None);
         }
@@ -1081,9 +1342,16 @@ pub fn run_loop_stream(
     run_ctx: RunContext,
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
-    _decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
+    decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
-    stream_runner::run_loop_stream_impl(config, tools, run_ctx, cancellation_token, state_committer)
+    stream_runner::run_loop_stream_impl(
+        config,
+        tools,
+        run_ctx,
+        cancellation_token,
+        state_committer,
+        decision_rx,
+    )
 }
 
 #[cfg(test)]

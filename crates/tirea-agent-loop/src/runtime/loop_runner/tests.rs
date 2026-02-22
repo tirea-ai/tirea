@@ -340,6 +340,13 @@ struct ActivityProgressState {
     progress: f64,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[tirea(path = "permissions")]
+struct TestPermissionState {
+    #[tirea(default = "HashMap::new()")]
+    approved_calls: HashMap<String, bool>,
+}
+
 struct EchoTool;
 
 #[async_trait]
@@ -2399,10 +2406,16 @@ fn test_execute_tools_with_config_denied_permission_is_visible_as_tool_error() {
             "test",
             json!({
                 "loop_control": {
-                    "pending_interaction": {
-                        "id": "call_1",
-                        "action": "tool:echo",
-                        "parameters": { "source": "permission" }
+                    "suspended_calls": {
+                        "call_1": {
+                            "call_id": "call_1",
+                            "tool_name": "echo",
+                            "interaction": {
+                                "id": "call_1",
+                                "action": "tool:echo",
+                                "parameters": { "source": "permission" }
+                            }
+                        }
                     }
                 }
             }),
@@ -2439,10 +2452,11 @@ fn test_execute_tools_with_config_denied_permission_is_visible_as_tool_error() {
         );
 
         let final_state = thread.rebuild_state().expect("state should rebuild");
-        let pending = final_state
+        let suspended = final_state
             .get("loop_control")
-            .and_then(|a| a.get("pending_interaction"));
-        assert!(pending.is_none() || pending == Some(&Value::Null));
+            .and_then(|a| a.get("suspended_calls"))
+            .and_then(|v| v.as_object());
+        assert!(suspended.is_none() || suspended.is_some_and(|calls| calls.is_empty()));
     });
 }
 
@@ -2769,7 +2783,8 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
     let tools = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let events = collect_stream_events(run_loop_stream(config, tools, run_ctx, None, None, None)).await;
+    let events =
+        collect_stream_events(run_loop_stream(config, tools, run_ctx, None, None, None)).await;
 
     assert!(matches!(events.first(), Some(AgentEvent::RunStart { .. })));
     assert!(matches!(
@@ -2820,26 +2835,32 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
         "test",
         serde_json::json!({
             "loop_control": {
-                "pending_interaction": {
-                    "id": "call_write",
-                    "action": "tool:write_file",
-                    "parameters": { "source": "permission" }
-                },
-                "pending_frontend_invocation": {
-                    "call_id": "call_write",
-                    "tool_name": "PermissionConfirm",
-                    "arguments": {
+                "suspended_calls": {
+                    "call_write": {
+                        "call_id": "call_write",
                         "tool_name": "write_file",
-                        "tool_args": { "path": "a.txt" }
-                    },
-                    "origin": {
-                        "type": "tool_call_intercepted",
-                        "backend_call_id": "call_write",
-                        "backend_tool_name": "write_file",
-                        "backend_arguments": { "path": "a.txt" }
-                    },
-                    "routing": {
-                        "strategy": "replay_original_tool"
+                        "interaction": {
+                            "id": "call_write",
+                            "action": "tool:write_file",
+                            "parameters": { "source": "permission" }
+                        },
+                        "frontend_invocation": {
+                            "call_id": "call_write",
+                            "tool_name": "PermissionConfirm",
+                            "arguments": {
+                                "tool_name": "write_file",
+                                "tool_args": { "path": "a.txt" }
+                            },
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "call_write",
+                                "backend_tool_name": "write_file",
+                                "backend_arguments": { "path": "a.txt" }
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
+                        }
                     }
                 }
             }
@@ -2849,7 +2870,8 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
     let tools = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let events = collect_stream_events(run_loop_stream(config, tools, run_ctx, None, None, None)).await;
+    let events =
+        collect_stream_events(run_loop_stream(config, tools, run_ctx, None, None, None)).await;
 
     assert!(matches!(events.first(), Some(AgentEvent::RunStart { .. })));
     assert!(
@@ -2892,33 +2914,39 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
         "test",
         json!({
             "loop_control": {
-                "pending_interaction": {
-                    "id": "call_1",
-                    "action": "tool:echo",
-                    "parameters": {
-                        "source": "permission",
-                        "origin_tool_call": {
-                            "id": "call_1",
-                            "name": "echo",
-                            "arguments": { "message": "approved-run" }
-                        }
-                    }
-                },
-                "pending_frontend_invocation": {
-                    "call_id": "call_1",
-                    "tool_name": "PermissionConfirm",
-                    "arguments": {
+                "suspended_calls": {
+                    "call_1": {
+                        "call_id": "call_1",
                         "tool_name": "echo",
-                        "tool_args": { "message": "approved-run" }
-                    },
-                    "origin": {
-                        "type": "tool_call_intercepted",
-                        "backend_call_id": "call_1",
-                        "backend_tool_name": "echo",
-                        "backend_arguments": { "message": "approved-run" }
-                    },
-                    "routing": {
-                        "strategy": "replay_original_tool"
+                        "interaction": {
+                            "id": "call_1",
+                            "action": "tool:echo",
+                            "parameters": {
+                                "source": "permission",
+                                "origin_tool_call": {
+                                    "id": "call_1",
+                                    "name": "echo",
+                                    "arguments": { "message": "approved-run" }
+                                }
+                            }
+                        },
+                        "frontend_invocation": {
+                            "call_id": "call_1",
+                            "tool_name": "PermissionConfirm",
+                            "arguments": {
+                                "tool_name": "echo",
+                                "tool_args": { "message": "approved-run" }
+                            },
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "call_1",
+                                "backend_tool_name": "echo",
+                                "backend_arguments": { "message": "approved-run" }
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
+                        }
                     }
                 }
             }
@@ -2988,10 +3016,11 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
     );
 
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
-    let pending = final_state
+    let suspended = final_state
         .get("loop_control")
-        .and_then(|a| a.get("pending_interaction"));
-    assert!(pending.is_none() || pending == Some(&Value::Null));
+        .and_then(|a| a.get("suspended_calls"))
+        .and_then(|v| v.as_object());
+    assert!(suspended.is_none() || suspended.is_some_and(|calls| calls.is_empty()));
 }
 
 #[tokio::test]
@@ -3026,33 +3055,39 @@ async fn test_run_loop_permission_approval_replays_tool_and_clears_outbox() {
         "test",
         json!({
             "loop_control": {
-                "pending_interaction": {
-                    "id": "call_1",
-                    "action": "tool:echo",
-                    "parameters": {
-                        "source": "permission",
-                        "origin_tool_call": {
-                            "id": "call_1",
-                            "name": "echo",
-                            "arguments": { "message": "approved-run" }
-                        }
-                    }
-                },
-                "pending_frontend_invocation": {
-                    "call_id": "call_1",
-                    "tool_name": "PermissionConfirm",
-                    "arguments": {
+                "suspended_calls": {
+                    "call_1": {
+                        "call_id": "call_1",
                         "tool_name": "echo",
-                        "tool_args": { "message": "approved-run" }
-                    },
-                    "origin": {
-                        "type": "tool_call_intercepted",
-                        "backend_call_id": "call_1",
-                        "backend_tool_name": "echo",
-                        "backend_arguments": { "message": "approved-run" }
-                    },
-                    "routing": {
-                        "strategy": "replay_original_tool"
+                        "interaction": {
+                            "id": "call_1",
+                            "action": "tool:echo",
+                            "parameters": {
+                                "source": "permission",
+                                "origin_tool_call": {
+                                    "id": "call_1",
+                                    "name": "echo",
+                                    "arguments": { "message": "approved-run" }
+                                }
+                            }
+                        },
+                        "frontend_invocation": {
+                            "call_id": "call_1",
+                            "tool_name": "PermissionConfirm",
+                            "arguments": {
+                                "tool_name": "echo",
+                                "tool_args": { "message": "approved-run" }
+                            },
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "call_1",
+                                "backend_tool_name": "echo",
+                                "backend_arguments": { "message": "approved-run" }
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
+                        }
                     }
                 }
             }
@@ -3101,10 +3136,11 @@ async fn test_run_loop_permission_approval_replays_tool_and_clears_outbox() {
     );
 
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
-    let pending = state
+    let suspended = state
         .get("loop_control")
-        .and_then(|a| a.get("pending_interaction"));
-    assert!(pending.is_none() || pending == Some(&Value::Null));
+        .and_then(|a| a.get("suspended_calls"))
+        .and_then(|v| v.as_object());
+    assert!(suspended.is_none() || suspended.is_some_and(|calls| calls.is_empty()));
 
     let replay_outbox = state
         .get("interaction_outbox")
@@ -3148,25 +3184,31 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
         "test",
         json!({
             "loop_control": {
-                "pending_interaction": {
-                    "id": "call_1",
-                    "action": "tool:echo",
-                    "parameters": { "source": "permission" }
-                },
-                "pending_frontend_invocation": {
-                    "call_id": "call_1",
-                    "tool_name": "PermissionConfirm",
-                    "arguments": {
+                "suspended_calls": {
+                    "call_1": {
+                        "call_id": "call_1",
                         "tool_name": "echo",
-                        "tool_args": { "message": "approved-run" }
-                    },
-                    "origin": {
-                        "type": "tool_call_intercepted",
-                        "backend_call_id": "call_1",
-                        "backend_tool_name": "echo",
-                        "backend_arguments": { "message": "approved-run" }
-                    },
-                    "routing": { "strategy": "replay_original_tool" }
+                        "interaction": {
+                            "id": "call_1",
+                            "action": "tool:echo",
+                            "parameters": { "source": "permission" }
+                        },
+                        "frontend_invocation": {
+                            "call_id": "call_1",
+                            "tool_name": "PermissionConfirm",
+                            "arguments": {
+                                "tool_name": "echo",
+                                "tool_args": { "message": "approved-run" }
+                            },
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "call_1",
+                                "backend_tool_name": "echo",
+                                "backend_arguments": { "message": "approved-run" }
+                            },
+                            "routing": { "strategy": "replay_original_tool" }
+                        }
+                    }
                 }
             }
         }),
@@ -3249,33 +3291,39 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
         "test",
         json!({
             "loop_control": {
-                "pending_interaction": {
-                    "id": "call_1",
-                    "action": "tool:echo",
-                    "parameters": {
-                        "source": "permission",
-                        "origin_tool_call": {
-                            "id": "call_1",
-                            "name": "echo",
-                            "arguments": { "message": "denied-run" }
-                        }
-                    }
-                },
-                "pending_frontend_invocation": {
-                    "call_id": "call_1",
-                    "tool_name": "PermissionConfirm",
-                    "arguments": {
+                "suspended_calls": {
+                    "call_1": {
+                        "call_id": "call_1",
                         "tool_name": "echo",
-                        "tool_args": { "message": "denied-run" }
-                    },
-                    "origin": {
-                        "type": "tool_call_intercepted",
-                        "backend_call_id": "call_1",
-                        "backend_tool_name": "echo",
-                        "backend_arguments": { "message": "denied-run" }
-                    },
-                    "routing": {
-                        "strategy": "replay_original_tool"
+                        "interaction": {
+                            "id": "call_1",
+                            "action": "tool:echo",
+                            "parameters": {
+                                "source": "permission",
+                                "origin_tool_call": {
+                                    "id": "call_1",
+                                    "name": "echo",
+                                    "arguments": { "message": "denied-run" }
+                                }
+                            }
+                        },
+                        "frontend_invocation": {
+                            "call_id": "call_1",
+                            "tool_name": "PermissionConfirm",
+                            "arguments": {
+                                "tool_name": "echo",
+                                "tool_args": { "message": "denied-run" }
+                            },
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "call_1",
+                                "backend_tool_name": "echo",
+                                "backend_arguments": { "message": "denied-run" }
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
+                        }
                     }
                 }
             }
@@ -3338,10 +3386,11 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
     );
 
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
-    let pending = final_state
+    let suspended = final_state
         .get("loop_control")
-        .and_then(|a| a.get("pending_interaction"));
-    assert!(pending.is_none() || pending == Some(&Value::Null));
+        .and_then(|a| a.get("suspended_calls"))
+        .and_then(|v| v.as_object());
+    assert!(suspended.is_none() || suspended.is_some_and(|calls| calls.is_empty()));
 }
 
 #[tokio::test]
@@ -4166,7 +4215,15 @@ async fn test_nonstream_cancellation_token_during_inference() {
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
     let handle = tokio::spawn(async move {
-        run_loop(&config, HashMap::new(), run_ctx, Some(token_for_run), None, None).await
+        run_loop(
+            &config,
+            HashMap::new(),
+            run_ctx,
+            Some(token_for_run),
+            None,
+            None,
+        )
+        .await
     });
 
     tokio::time::timeout(std::time::Duration::from_secs(1), ready.notified())
@@ -4342,10 +4399,9 @@ async fn test_nonstream_cancellation_token_during_tool_execution() {
     let thread = Thread::new("test").with_message(Message::user("go"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
-    let handle =
-        tokio::spawn(
-            async move { run_loop(&config, tools, run_ctx, Some(token_for_run), None, None).await },
-        );
+    let handle = tokio::spawn(async move {
+        run_loop(&config, tools, run_ctx, Some(token_for_run), None, None).await
+    });
 
     tokio::time::timeout(std::time::Duration::from_secs(2), ready.notified())
         .await
@@ -4475,7 +4531,15 @@ async fn test_nonstream_inference_abort_message_persisted_and_visible_next_run()
         .with_llm_executor(resume_provider as Arc<dyn LlmExecutor>);
     let resume_run_ctx =
         RunContext::from_thread(&persisted_thread, tirea_contract::RunConfig::default()).unwrap();
-    let second_outcome = run_loop(&resume_config, HashMap::new(), resume_run_ctx, None, None, None).await;
+    let second_outcome = run_loop(
+        &resume_config,
+        HashMap::new(),
+        resume_run_ctx,
+        None,
+        None,
+        None,
+    )
+    .await;
 
     assert_eq!(second_outcome.termination, TerminationReason::NaturalEnd);
     assert!(
@@ -4586,7 +4650,15 @@ async fn test_nonstream_tool_abort_message_persisted_and_visible_next_run() {
         .with_llm_executor(resume_provider as Arc<dyn LlmExecutor>);
     let resume_run_ctx =
         RunContext::from_thread(&persisted_thread, tirea_contract::RunConfig::default()).unwrap();
-    let second_outcome = run_loop(&resume_config, HashMap::new(), resume_run_ctx, None, None, None).await;
+    let second_outcome = run_loop(
+        &resume_config,
+        HashMap::new(),
+        resume_run_ctx,
+        None,
+        None,
+        None,
+    )
+    .await;
 
     assert_eq!(second_outcome.termination, TerminationReason::NaturalEnd);
     assert!(
@@ -4611,7 +4683,8 @@ async fn test_golden_run_loop_and_stream_natural_end_alignment() {
         AgentConfig::new("mock").with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
-    let nonstream_outcome = run_loop(&nonstream_config, tools.clone(), run_ctx, None, None, None).await;
+    let nonstream_outcome =
+        run_loop(&nonstream_config, tools.clone(), run_ctx, None, None, None).await;
     assert_eq!(nonstream_outcome.termination, TerminationReason::NaturalEnd);
     let nonstream_response = nonstream_outcome.response.clone().unwrap_or_default();
 
@@ -4730,7 +4803,8 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
         .with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
-    let nonstream_outcome = run_loop(&nonstream_config, tools.clone(), run_ctx, None, None, None).await;
+    let nonstream_outcome =
+        run_loop(&nonstream_config, tools.clone(), run_ctx, None, None, None).await;
     assert_eq!(
         nonstream_outcome.termination,
         TerminationReason::PendingInteraction
@@ -4814,33 +4888,39 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
         "idempotent-replay",
         json!({
             "loop_control": {
-                "pending_interaction": {
-                    "id": "call_1",
-                    "action": "tool:counting_echo",
-                    "parameters": {
-                        "source": "permission",
-                        "origin_tool_call": {
-                            "id": "call_1",
-                            "name": "counting_echo",
-                            "arguments": { "message": "approved-run" }
-                        }
-                    }
-                },
-                "pending_frontend_invocation": {
-                    "call_id": "call_1",
-                    "tool_name": "PermissionConfirm",
-                    "arguments": {
+                "suspended_calls": {
+                    "call_1": {
+                        "call_id": "call_1",
                         "tool_name": "counting_echo",
-                        "tool_args": { "message": "approved-run" }
-                    },
-                    "origin": {
-                        "type": "tool_call_intercepted",
-                        "backend_call_id": "call_1",
-                        "backend_tool_name": "counting_echo",
-                        "backend_arguments": { "message": "approved-run" }
-                    },
-                    "routing": {
-                        "strategy": "replay_original_tool"
+                        "interaction": {
+                            "id": "call_1",
+                            "action": "tool:counting_echo",
+                            "parameters": {
+                                "source": "permission",
+                                "origin_tool_call": {
+                                    "id": "call_1",
+                                    "name": "counting_echo",
+                                    "arguments": { "message": "approved-run" }
+                                }
+                            }
+                        },
+                        "frontend_invocation": {
+                            "call_id": "call_1",
+                            "tool_name": "PermissionConfirm",
+                            "arguments": {
+                                "tool_name": "counting_echo",
+                                "tool_args": { "message": "approved-run" }
+                            },
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "call_1",
+                                "backend_tool_name": "counting_echo",
+                                "backend_arguments": { "message": "approved-run" }
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
+                        }
                     }
                 }
             }
@@ -4901,10 +4981,11 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
     );
 
     let final_state = second_thread.rebuild_state().expect("state should rebuild");
-    let pending = final_state
+    let suspended = final_state
         .get("loop_control")
-        .and_then(|a| a.get("pending_interaction"));
-    assert!(pending.is_none() || pending == Some(&Value::Null));
+        .and_then(|a| a.get("suspended_calls"))
+        .and_then(|v| v.as_object());
+    assert!(suspended.is_none() || suspended.is_some_and(|calls| calls.is_empty()));
 }
 
 // ========================================================================
@@ -5238,7 +5319,14 @@ async fn run_mock_stream_with_final_thread_with_context(
     let committer: Arc<dyn StateCommitter> = Arc::new(ChannelStateCommitter::new(checkpoint_tx));
     let config = config.with_llm_executor(Arc::new(provider));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, tools, run_ctx, cancellation_token, Some(committer), None);
+    let stream = run_loop_stream(
+        config,
+        tools,
+        run_ctx,
+        cancellation_token,
+        Some(committer),
+        None,
+    );
     let events = collect_stream_events(stream).await;
     while let Some(changeset) = checkpoint_rx.recv().await {
         changeset.apply_to(&mut final_thread);
@@ -8757,8 +8845,7 @@ async fn test_stream_mixed_pending_and_completed_tools_continues_loop() {
     ];
     let tools = tool_map([EchoTool]);
 
-    let events =
-        run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
+    let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
 
     // The LLM should have been called twice (two InferenceComplete events).
     let inference_count = events
@@ -8839,8 +8926,7 @@ async fn test_stream_all_tools_pending_pauses_run() {
         .with_tool_call("call_2", "echo", json!({"message": "b"}))];
     let tools = tool_map([EchoTool]);
 
-    let events =
-        run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
+    let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
 
     // Only one inference round — no second call since all are pending.
     let inference_count = events
@@ -8901,8 +8987,7 @@ async fn test_stream_mixed_pending_persists_interaction_state() {
     // Use run_loop_stream directly to inspect the final state via RunContext.
     let provider = MockStreamProvider::new(responses);
     let config = config.with_llm_executor(Arc::new(provider));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let stream = run_loop_stream(config, tools, run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
@@ -9051,8 +9136,7 @@ async fn test_run_loop_rejects_termination_request_mutation_outside_before_infer
 
     let config = AgentConfig::new("gpt-4o-mini")
         .with_plugin(Arc::new(InvalidStepStartTermPlugin) as Arc<dyn AgentPlugin>);
-    let thread =
-        Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
+    let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
@@ -9134,8 +9218,7 @@ async fn test_run_loop_plugin_termination_request_stops_loop() {
 
     let config = AgentConfig::new("gpt-4o-mini")
         .with_plugin(Arc::new(TerminatePlugin) as Arc<dyn AgentPlugin>);
-    let thread =
-        Thread::new("test").with_message(crate::contracts::thread::Message::user("go"));
+    let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("go"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
@@ -9151,10 +9234,7 @@ async fn test_run_loop_plugin_termination_request_stops_loop() {
         "no failure expected: {:?}",
         outcome.failure
     );
-    assert_eq!(
-        outcome.stats.llm_calls, 0,
-        "no LLM calls should have run"
-    );
+    assert_eq!(outcome.stats.llm_calls, 0, "no LLM calls should have run");
 }
 
 /// Test that `BeforeInferenceContext::request_termination()` method works
@@ -9206,5 +9286,381 @@ async fn test_request_termination_method_stops_stream() {
     assert_eq!(
         inference_count, 0,
         "request_termination() should prevent inference: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_run_loop_decision_channel_resolves_suspended_call() {
+    struct FrontendTool;
+
+    #[async_trait]
+    impl Tool for FrontendTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("frontend_tool", "Frontend Tool", "needs approval").with_parameters(
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "message": { "type": "string" },
+                        "approved": { "type": "boolean" }
+                    },
+                    "required": ["message"]
+                }),
+            )
+        }
+
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success(
+                "frontend_tool",
+                json!({
+                    "message": args.get("message").and_then(Value::as_str).unwrap_or_default(),
+                    "approved": args.get("approved").and_then(Value::as_bool).unwrap_or(false),
+                }),
+            ))
+        }
+    }
+
+    struct PendingFrontendToolPlugin {
+        ready: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl AgentPlugin for PendingFrontendToolPlugin {
+        fn id(&self) -> &str {
+            "pending_frontend_tool_decision"
+        }
+
+        phase_dispatch_methods!(|this, phase, step| {
+            if phase != Phase::BeforeToolExecute {
+                return;
+            }
+            if step.tool_name() != Some("frontend_tool") {
+                return;
+            }
+            let already_approved = step
+                .tool_args()
+                .and_then(|args| args.get("approved"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if already_approved {
+                return;
+            }
+            let args = step.tool_args().cloned().unwrap_or_default();
+            step.ask_frontend_tool("frontend_tool", args, ResponseRouting::UseAsToolResult);
+            this.ready.notify_one();
+            this.release.notified().await;
+        });
+    }
+
+    let mut first = text_chat_response("");
+    first.content = MessageContent::from_tool_calls(vec![
+        genai::chat::ToolCall {
+            call_id: "call_done".to_string(),
+            fn_name: "echo".to_string(),
+            fn_arguments: json!({ "message": "ok" }),
+            thought_signatures: None,
+        },
+        genai::chat::ToolCall {
+            call_id: "call_pending".to_string(),
+            fn_name: "frontend_tool".to_string(),
+            fn_arguments: json!({ "message": "need approval" }),
+            thought_signatures: None,
+        },
+    ]);
+    let provider = Arc::new(MockChatProvider::new(vec![
+        Ok(first),
+        Ok(text_chat_response("done")),
+    ]));
+
+    let ready = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(PendingFrontendToolPlugin {
+            ready: ready.clone(),
+            release: release.clone(),
+        }) as Arc<dyn AgentPlugin>)
+        .with_llm_executor(provider as Arc<dyn LlmExecutor>);
+
+    let thread = Thread::new("test").with_message(Message::user("run"));
+    let run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).expect("run ctx");
+    let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+    tools.insert("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>);
+    tools.insert(
+        "frontend_tool".to_string(),
+        Arc::new(FrontendTool) as Arc<dyn Tool>,
+    );
+
+    let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
+    let run_task = tokio::spawn(async move {
+        run_loop(&config, tools, run_ctx, None, None, Some(decision_rx)).await
+    });
+
+    ready.notified().await;
+    decision_tx
+        .send(crate::contracts::InteractionResponse::new(
+            "call_pending",
+            json!({"approved": true, "message": "need approval"}),
+        ))
+        .expect("send decision");
+    release.notify_one();
+
+    let outcome = run_task.await.expect("join run task");
+    assert_eq!(outcome.termination, TerminationReason::NaturalEnd);
+    assert_eq!(outcome.response.as_deref(), Some("done"));
+    assert!(
+        outcome.run_ctx.messages().iter().any(|message| {
+            message.role == Role::Tool
+                && message.tool_call_id.as_deref() == Some("call_pending")
+                && !message
+                    .content
+                    .contains("is awaiting approval. Execution paused.")
+        }),
+        "resolved call_pending tool result should be appended"
+    );
+}
+
+#[tokio::test]
+async fn test_run_loop_stream_decision_channel_emits_resolution_and_replay() {
+    struct FrontendTool;
+
+    #[async_trait]
+    impl Tool for FrontendTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("frontend_tool", "Frontend Tool", "needs approval").with_parameters(
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "message": { "type": "string" },
+                        "approved": { "type": "boolean" }
+                    },
+                    "required": ["message"]
+                }),
+            )
+        }
+
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success(
+                "frontend_tool",
+                json!({
+                    "message": args.get("message").and_then(Value::as_str).unwrap_or_default(),
+                    "approved": args.get("approved").and_then(Value::as_bool).unwrap_or(false),
+                }),
+            ))
+        }
+    }
+
+    struct PendingFrontendToolPlugin {
+        ready: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl AgentPlugin for PendingFrontendToolPlugin {
+        fn id(&self) -> &str {
+            "pending_frontend_tool_stream_decision"
+        }
+
+        phase_dispatch_methods!(|this, phase, step| {
+            if phase != Phase::BeforeToolExecute {
+                return;
+            }
+            if step.tool_name() != Some("frontend_tool") {
+                return;
+            }
+            let already_approved = step
+                .tool_args()
+                .and_then(|args| args.get("approved"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if already_approved {
+                return;
+            }
+            let args = step.tool_args().cloned().unwrap_or_default();
+            step.ask_frontend_tool("frontend_tool", args, ResponseRouting::UseAsToolResult);
+            this.ready.notify_one();
+            this.release.notified().await;
+        });
+    }
+
+    let responses = vec![
+        MockResponse::text("")
+            .with_tool_call("call_done", "echo", json!({"message": "ok"}))
+            .with_tool_call(
+                "call_pending",
+                "frontend_tool",
+                json!({"message": "need approval"}),
+            ),
+        MockResponse::text("done"),
+    ];
+    let provider = MockStreamProvider::new(responses);
+    let ready = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(PendingFrontendToolPlugin {
+            ready: ready.clone(),
+            release: release.clone(),
+        }) as Arc<dyn AgentPlugin>)
+        .with_llm_executor(Arc::new(provider));
+
+    let thread = Thread::new("test").with_message(Message::user("run"));
+    let run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).expect("run ctx");
+    let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+    tools.insert("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>);
+    tools.insert(
+        "frontend_tool".to_string(),
+        Arc::new(FrontendTool) as Arc<dyn Tool>,
+    );
+
+    let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
+    let stream = run_loop_stream(config, tools, run_ctx, None, None, Some(decision_rx));
+    let collect_task = tokio::spawn(async move { collect_stream_events(stream).await });
+
+    ready.notified().await;
+    decision_tx
+        .send(crate::contracts::InteractionResponse::new(
+            "call_pending",
+            json!({"approved": true, "message": "need approval"}),
+        ))
+        .expect("send decision");
+    release.notify_one();
+
+    let events = collect_task.await.expect("join collect task");
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::NaturalEnd)
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::InteractionResolved { interaction_id, .. } if interaction_id == "call_pending"
+        )),
+        "stream should emit InteractionResolved for call_pending: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolCallDone { id, .. } if id == "call_pending"
+        )),
+        "stream should emit replay ToolCallDone for call_pending: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_run_loop_decision_channel_replay_original_tool_sets_permission_one_shot_approval() {
+    struct OneShotPermissionPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for OneShotPermissionPlugin {
+        fn id(&self) -> &str {
+            "test_one_shot_permission"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase != Phase::BeforeToolExecute {
+                return;
+            }
+            let Some(call_id) = step.tool_call_id().map(str::to_string) else {
+                return;
+            };
+            {
+                let permissions = step.state_of::<TestPermissionState>();
+                let mut approved_calls = permissions.approved_calls().ok().unwrap_or_default();
+                if approved_calls.remove(&call_id) == Some(true) {
+                    let _ = permissions.set_approved_calls(approved_calls);
+                    return;
+                }
+                let _ = permissions.set_approved_calls(approved_calls);
+            }
+            let tool_name = step.tool_name().unwrap_or_default().to_string();
+            let tool_args = step.tool_args().cloned().unwrap_or_default();
+            step.ask_frontend_tool(
+                "PermissionConfirm",
+                json!({ "tool_name": tool_name, "tool_args": tool_args }),
+                ResponseRouting::ReplayOriginalTool,
+            );
+        });
+    }
+
+    let pending_interaction = json!({
+        "id": "fc_perm_1",
+        "action": "tool:PermissionConfirm",
+        "parameters": { "source": "permission" }
+    });
+    let pending_frontend_invocation = json!({
+        "call_id": "fc_perm_1",
+        "tool_name": "PermissionConfirm",
+        "arguments": { "tool_name": "echo", "tool_args": { "message": "hello" } },
+        "origin": {
+            "type": "tool_call_intercepted",
+            "backend_call_id": "call_write",
+            "backend_tool_name": "echo",
+            "backend_arguments": { "message": "hello" }
+        },
+        "routing": { "strategy": "replay_original_tool" }
+    });
+    let state = json!({
+        "loop_control": {
+            "suspended_calls": {
+                "call_write": {
+                    "call_id": "call_write",
+                    "tool_name": "echo",
+                    "interaction": pending_interaction.clone(),
+                    "frontend_invocation": pending_frontend_invocation.clone()
+                }
+            },
+            "pending_interaction": pending_interaction,
+            "pending_frontend_invocation": pending_frontend_invocation
+        }
+    });
+    let thread = Thread::with_initial_state("test", state).with_message(Message::user("resume"));
+    let run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).expect("run ctx");
+
+    let provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("done"))]));
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(OneShotPermissionPlugin) as Arc<dyn AgentPlugin>)
+        .with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let tools = tool_map([EchoTool]);
+
+    let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
+    decision_tx
+        .send(crate::contracts::InteractionResponse::new(
+            "fc_perm_1",
+            json!(true),
+        ))
+        .expect("send decision");
+    drop(decision_tx);
+
+    let outcome = run_loop(&config, tools, run_ctx, None, None, Some(decision_rx)).await;
+    assert_eq!(outcome.termination, TerminationReason::NaturalEnd);
+    assert!(
+        outcome.run_ctx.messages().iter().any(|message| {
+            message.role == Role::Tool
+                && message.tool_call_id.as_deref() == Some("call_write")
+                && !message
+                    .content
+                    .contains("is awaiting approval. Execution paused.")
+        }),
+        "replayed backend call should complete without re-pending"
+    );
+
+    let final_state = outcome.run_ctx.snapshot().expect("snapshot");
+    assert!(
+        final_state
+            .get("permissions")
+            .and_then(|p| p.get("approved_calls"))
+            .and_then(|m| m.get("call_write"))
+            .is_none(),
+        "one-shot approval should be consumed by permission plugin"
     );
 }

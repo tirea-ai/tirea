@@ -109,7 +109,9 @@ impl RunContext {
     }
 
     /// Read all suspended calls from durable control state.
-    pub fn suspended_calls(&self) -> std::collections::HashMap<String, crate::runtime::control::SuspendedCall> {
+    pub fn suspended_calls(
+        &self,
+    ) -> std::collections::HashMap<String, crate::runtime::control::SuspendedCall> {
         self.snapshot()
             .ok()
             .and_then(|state| {

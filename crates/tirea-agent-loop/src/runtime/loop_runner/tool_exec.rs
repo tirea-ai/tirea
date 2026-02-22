@@ -1,8 +1,6 @@
 use super::core::{
-    clear_all_suspended_calls, drain_agent_append_user_messages,
-    set_agent_suspended_calls,
+    clear_all_suspended_calls, drain_agent_append_user_messages, set_agent_suspended_calls,
 };
-use crate::contracts::SuspendedCall;
 use super::plugin_runtime::emit_phase_checked;
 use super::{
     AgentConfig, AgentLoopError, RunCancellationToken, TOOL_SCOPE_CALLER_MESSAGES_KEY,
@@ -19,6 +17,7 @@ use crate::contracts::thread::Thread;
 use crate::contracts::thread::{Message, MessageMetadata};
 use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::contracts::RunContext;
+use crate::contracts::SuspendedCall;
 use crate::engine::convert::tool_response;
 use crate::engine::tool_execution::collect_patches;
 use crate::engine::tool_filter::{SCOPE_ALLOWED_TOOLS_KEY, SCOPE_EXCLUDED_TOOLS_KEY};
@@ -186,12 +185,14 @@ pub(super) fn apply_tool_results_impl(
     let suspended: Vec<SuspendedCall> = results
         .iter()
         .filter_map(|r| {
-            r.pending_interaction.as_ref().map(|interaction| SuspendedCall {
-                call_id: r.execution.call.id.clone(),
-                tool_name: r.execution.call.name.clone(),
-                interaction: interaction.clone(),
-                frontend_invocation: r.pending_frontend_invocation.clone(),
-            })
+            r.pending_interaction
+                .as_ref()
+                .map(|interaction| SuspendedCall {
+                    call_id: r.execution.call.id.clone(),
+                    tool_name: r.execution.call.name.clone(),
+                    interaction: interaction.clone(),
+                    frontend_invocation: r.pending_frontend_invocation.clone(),
+                })
         })
         .collect();
 
