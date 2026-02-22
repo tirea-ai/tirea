@@ -810,12 +810,52 @@ fn normalize_frontend_tool_result(
 fn denied_reason_from_response(result: &serde_json::Value) -> Option<String> {
     match result {
         serde_json::Value::String(text) if !text.trim().is_empty() => Some(text.clone()),
-        serde_json::Value::Object(obj) => obj
-            .get("reason")
-            .and_then(serde_json::Value::as_str)
-            .or_else(|| obj.get("message").and_then(serde_json::Value::as_str))
-            .map(str::to_string),
+        serde_json::Value::Object(obj) => {
+            let direct_reason = obj
+                .get("reason")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| obj.get("message").and_then(serde_json::Value::as_str))
+                .or_else(|| obj.get("error").and_then(serde_json::Value::as_str))
+                .map(str::to_string);
+            if direct_reason.is_some() {
+                return direct_reason;
+            }
+            if response_indicates_cancel(result) {
+                return Some("User canceled the action".to_string());
+            }
+            None
+        }
         _ => None,
+    }
+}
+
+fn response_indicates_cancel(result: &serde_json::Value) -> bool {
+    const CANCEL_TOKENS: &[&str] = &["cancel", "canceled", "cancelled", "abort", "aborted"];
+
+    match result {
+        serde_json::Value::String(text) => {
+            let lower = text.trim().to_lowercase();
+            CANCEL_TOKENS.iter().any(|token| lower == *token)
+        }
+        serde_json::Value::Object(obj) => {
+            ["cancel", "canceled", "cancelled", "abort", "aborted"]
+                .iter()
+                .any(|key| {
+                    obj.get(*key)
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false)
+                })
+                || ["status", "decision", "action"].iter().any(|key| {
+                    obj.get(*key)
+                        .and_then(serde_json::Value::as_str)
+                        .map(|value| {
+                            let lower = value.trim().to_lowercase();
+                            CANCEL_TOKENS.iter().any(|token| lower == *token)
+                        })
+                        .unwrap_or(false)
+                })
+        }
+        _ => false,
     }
 }
 
@@ -830,8 +870,13 @@ fn denied_tool_result_for_call(
         .map(str::to_string)
         .or_else(|| find_tool_call_in_messages(run_ctx, call_id).map(|call| call.name))
         .unwrap_or_else(|| "tool".to_string());
-    let reason = denied_reason_from_response(response_result)
-        .unwrap_or_else(|| "User denied the action".to_string());
+    let reason = denied_reason_from_response(response_result).unwrap_or_else(|| {
+        if response_indicates_cancel(response_result) {
+            "User canceled the action".to_string()
+        } else {
+            "User denied the action".to_string()
+        }
+    });
     ToolResult::error(tool_name, reason)
 }
 
@@ -1001,15 +1046,6 @@ pub(super) fn resolve_suspended_call(
     let Some(suspended_call) = suspended_call else {
         return Ok(None);
     };
-    let mut events = Vec::new();
-    if InteractionResponse::is_denied(&response.result) {
-        events.push(append_denied_tool_result_message(
-            run_ctx,
-            &suspended_call.call_id,
-            Some(&suspended_call.tool_name),
-            &response.result,
-        ));
-    }
 
     if let Some(approved_call_id) = one_shot_approval_call_id(&suspended_call, response) {
         set_permission_one_shot_approval(run_ctx, &approved_call_id)?;
@@ -1033,7 +1069,7 @@ pub(super) fn resolve_suspended_call(
     }
 
     Ok(Some(DecisionReplayOutcome {
-        events,
+        events: Vec::new(),
         resolved_call_ids: vec![suspended_call.call_id],
     }))
 }

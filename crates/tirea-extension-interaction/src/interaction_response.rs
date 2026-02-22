@@ -475,9 +475,7 @@ impl AgentPlugin for InteractionResponsePlugin {
                 step.cancel(err);
                 return;
             }
-            if let Err(err) =
-                Self::push_resolution(step, resolution_id, serde_json::Value::Bool(false))
-            {
+            if let Err(err) = Self::push_resolution(step, resolution_id, response_payload.clone()) {
                 step.cancel(err);
             }
         } else if is_approved {
@@ -487,9 +485,7 @@ impl AgentPlugin for InteractionResponsePlugin {
                 step.cancel(err);
                 return;
             }
-            if let Err(err) =
-                Self::push_resolution(step, resolution_id, serde_json::Value::Bool(true))
-            {
+            if let Err(err) = Self::push_resolution(step, resolution_id, response_payload) {
                 step.cancel(err);
             }
         }

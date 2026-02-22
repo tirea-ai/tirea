@@ -65,7 +65,12 @@ fn approved_and_denied_ids_follow_runtime_interaction_semantics() {
         .with_message(Message::tool("true", "approved_bool"))
         .with_message(Message::tool(r#"{"allowed": true}"#, "approved_object"))
         .with_message(Message::tool(r#"{"approved": false}"#, "denied_object"))
+        .with_message(Message::tool(
+            r#"{"status":"cancelled"}"#,
+            "cancelled_object",
+        ))
         .with_message(Message::tool("no", "denied_string"))
+        .with_message(Message::tool("cancelled", "cancelled_string"))
         .with_message(Message::tool("maybe", "neither"));
 
     assert_eq!(
@@ -74,7 +79,12 @@ fn approved_and_denied_ids_follow_runtime_interaction_semantics() {
     );
     assert_eq!(
         request.denied_interaction_ids(),
-        vec!["denied_object", "denied_string"]
+        vec![
+            "denied_object",
+            "cancelled_object",
+            "denied_string",
+            "cancelled_string"
+        ]
     );
 }
 

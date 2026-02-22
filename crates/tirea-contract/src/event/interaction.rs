@@ -60,6 +60,44 @@ pub struct InteractionResponse {
 }
 
 impl InteractionResponse {
+    fn deny_string_token(value: &str) -> bool {
+        matches!(
+            value,
+            "false"
+                | "no"
+                | "denied"
+                | "deny"
+                | "reject"
+                | "rejected"
+                | "cancel"
+                | "canceled"
+                | "cancelled"
+                | "abort"
+                | "aborted"
+        )
+    }
+
+    fn object_deny_flag(obj: &serde_json::Map<String, Value>) -> bool {
+        [
+            "denied",
+            "reject",
+            "rejected",
+            "cancel",
+            "canceled",
+            "cancelled",
+            "abort",
+            "aborted",
+        ]
+        .iter()
+        .any(|key| obj.get(*key).and_then(Value::as_bool).unwrap_or(false))
+            || ["status", "decision", "action"].iter().any(|key| {
+                obj.get(*key)
+                    .and_then(Value::as_str)
+                    .map(|v| Self::deny_string_token(&v.trim().to_lowercase()))
+                    .unwrap_or(false)
+            })
+    }
+
     /// Create a new interaction response.
     pub fn new(interaction_id: impl Into<String>, result: Value) -> Self {
         Self {
@@ -97,18 +135,15 @@ impl InteractionResponse {
         match result {
             Value::Bool(b) => !*b,
             Value::String(s) => {
-                let lower = s.to_lowercase();
-                matches!(
-                    lower.as_str(),
-                    "false" | "no" | "denied" | "deny" | "reject" | "cancel" | "abort"
-                )
+                let lower = s.trim().to_lowercase();
+                Self::deny_string_token(&lower)
             }
             Value::Object(obj) => {
                 obj.get("approved")
                     .and_then(|v| v.as_bool())
                     .map(|v| !v)
                     .unwrap_or(false)
-                    || obj.get("denied").and_then(|v| v.as_bool()).unwrap_or(false)
+                    || Self::object_deny_flag(obj)
             }
             _ => false,
         }
@@ -253,7 +288,7 @@ impl From<ResponseRouting> for ResponseRoutingWire {
 
 #[cfg(test)]
 mod tests {
-    use super::ResponseRouting;
+    use super::{InteractionResponse, ResponseRouting};
     use serde_json::json;
 
     #[test]
@@ -276,5 +311,23 @@ mod tests {
         let routing: ResponseRouting =
             serde_json::from_value(value).expect("deserialize legacy replay routing");
         assert_eq!(routing, ResponseRouting::ReplayOriginalTool);
+    }
+
+    #[test]
+    fn interaction_response_treats_cancel_variants_as_denied() {
+        let denied_cases = [
+            json!("cancelled"),
+            json!("canceled"),
+            json!({"status":"cancelled"}),
+            json!({"decision":"abort"}),
+            json!({"canceled": true}),
+            json!({"cancelled": true}),
+        ];
+        for case in denied_cases {
+            assert!(
+                InteractionResponse::is_denied(&case),
+                "expected denied for case: {case}"
+            );
+        }
     }
 }

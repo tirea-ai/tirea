@@ -3638,6 +3638,120 @@ async fn test_run_loop_permission_denied_appends_tool_result_for_model_context()
 }
 
 #[tokio::test]
+async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_context() {
+    struct SkipInferencePlugin;
+
+    #[async_trait]
+    impl AgentPlugin for SkipInferencePlugin {
+        fn id(&self) -> &str {
+            "skip_inference_for_permission_cancel_nonstream"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::BeforeInference {
+                step.skip_inference = true;
+            }
+        });
+    }
+
+    let interaction =
+        tirea_extension_interaction::InteractionPlugin::from_interaction_responses(vec![
+            crate::contracts::InteractionResponse::new(
+                "call_1",
+                json!({"status": "cancelled", "reason": "User canceled in UI"}),
+            ),
+        ]);
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(interaction))
+        .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+
+    let thread = Thread::with_initial_state(
+        "test",
+        json!({
+            "__suspended_tool_calls": {
+                "calls": {
+                    "call_1": {
+                        "call_id": "call_1",
+                        "tool_name": "echo",
+                        "interaction": {
+                            "id": "call_1",
+                            "action": "tool:echo"
+                        },
+                        "frontend_invocation": {
+                            "call_id": "call_1",
+                            "tool_name": "PermissionConfirm",
+                            "arguments": {
+                                "tool_name": "echo",
+                                "tool_args": { "message": "cancel-run" }
+                            },
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "call_1",
+                                "backend_tool_name": "echo",
+                                "backend_arguments": { "message": "cancel-run" }
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    )
+    .with_message(Message::assistant_with_tool_calls(
+        "need permission",
+        vec![crate::contracts::thread::ToolCall::new(
+            "call_1",
+            "echo",
+            json!({"message": "cancel-run"}),
+        )],
+    ))
+    .with_message(Message::tool(
+        "call_1",
+        "Tool 'echo' is awaiting approval. Execution paused.",
+    ));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
+
+    assert!(matches!(
+        outcome.termination,
+        TerminationReason::PluginRequested
+    ));
+
+    let resolved_tool_messages: Vec<_> = outcome
+        .run_ctx
+        .messages()
+        .iter()
+        .filter(|message| {
+            message.role == Role::Tool
+                && message.tool_call_id.as_deref() == Some("call_1")
+                && !message
+                    .content
+                    .contains("is awaiting approval. Execution paused.")
+        })
+        .collect();
+    assert_eq!(
+        resolved_tool_messages.len(),
+        1,
+        "cancelled flow should append one resolved tool message"
+    );
+    assert!(
+        resolved_tool_messages[0].content.contains("canceled")
+            || resolved_tool_messages[0].content.contains("cancelled"),
+        "cancelled flow should preserve cancel semantics in tool message: {}",
+        resolved_tool_messages[0].content
+    );
+
+    let final_state = outcome.run_ctx.snapshot().expect("snapshot");
+    let suspended = final_state
+        .get("__suspended_tool_calls")
+        .and_then(|a| a.get("calls"))
+        .and_then(|v| v.as_object());
+    assert!(suspended.map_or(true, |calls| calls.is_empty()));
+}
+
+#[tokio::test]
 async fn test_run_loop_skip_inference_emits_run_end_phase() {
     let (recorder, phases) = RecordAndSkipPlugin::new();
     let config =
@@ -10641,6 +10755,106 @@ async fn test_run_loop_decision_channel_resolves_suspended_call() {
         }),
         "resolved call_pending tool result should be appended"
     );
+}
+
+#[tokio::test]
+async fn test_run_loop_decision_channel_cancel_emits_single_tool_result_message() {
+    struct SkipInferencePlugin;
+
+    #[async_trait]
+    impl AgentPlugin for SkipInferencePlugin {
+        fn id(&self) -> &str {
+            "skip_inference_for_decision_cancel"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::BeforeInference {
+                step.skip_inference = true;
+            }
+        });
+    }
+
+    let config =
+        AgentConfig::new("mock").with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+
+    let thread = Thread::with_initial_state(
+        "test",
+        json!({
+            "__suspended_tool_calls": {
+                "calls": {
+                    "call_pending": {
+                        "call_id": "call_pending",
+                        "tool_name": "echo",
+                        "interaction": {
+                            "id": "call_pending",
+                            "action": "tool:echo"
+                        }
+                    }
+                }
+            }
+        }),
+    )
+    .with_message(Message::assistant_with_tool_calls(
+        "need permission",
+        vec![crate::contracts::thread::ToolCall::new(
+            "call_pending",
+            "echo",
+            json!({"message": "cancel-run"}),
+        )],
+    ))
+    .with_message(Message::tool(
+        "call_pending",
+        "Tool 'echo' is awaiting approval. Execution paused.",
+    ));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let tools = tool_map([EchoTool]);
+
+    let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
+    decision_tx
+        .send(crate::contracts::InteractionResponse::new(
+            "call_pending",
+            json!({"status": "cancelled", "reason": "User canceled in UI"}),
+        ))
+        .expect("send cancel decision");
+    drop(decision_tx);
+
+    let outcome = run_loop(&config, tools, run_ctx, None, None, Some(decision_rx)).await;
+
+    assert!(matches!(
+        outcome.termination,
+        TerminationReason::PluginRequested
+    ));
+
+    let resolved_tool_messages: Vec<_> = outcome
+        .run_ctx
+        .messages()
+        .iter()
+        .filter(|message| {
+            message.role == Role::Tool
+                && message.tool_call_id.as_deref() == Some("call_pending")
+                && !message
+                    .content
+                    .contains("is awaiting approval. Execution paused.")
+        })
+        .collect();
+    assert_eq!(
+        resolved_tool_messages.len(),
+        1,
+        "cancel decision should produce exactly one tool result message"
+    );
+    assert!(
+        resolved_tool_messages[0].content.contains("canceled")
+            || resolved_tool_messages[0].content.contains("cancelled"),
+        "cancel decision should preserve cancel semantics in tool result: {}",
+        resolved_tool_messages[0].content
+    );
+
+    let final_state = outcome.run_ctx.snapshot().expect("snapshot");
+    let suspended = final_state
+        .get("__suspended_tool_calls")
+        .and_then(|a| a.get("calls"))
+        .and_then(|v| v.as_object());
+    assert!(suspended.map_or(true, |calls| calls.is_empty()));
 }
 
 #[tokio::test]
