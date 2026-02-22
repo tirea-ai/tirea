@@ -2538,7 +2538,7 @@ fn test_execute_tools_with_config_with_reminder_plugin() {
 }
 
 #[test]
-fn test_execute_tools_with_config_clears_persisted_pending_interaction_on_success() {
+fn test_execute_tools_with_config_preserves_unresolved_suspended_calls_on_success() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         // Seed a session with a previously persisted pending interaction.
@@ -2568,14 +2568,46 @@ fn test_execute_tools_with_config_clears_persisted_pending_interaction_on_succes
             .unwrap();
 
         let state = thread.rebuild_state().unwrap();
-        let pending = state
+        let suspended = state
             .get("loop_control")
-            .and_then(|a| a.get("pending_interaction"));
+            .and_then(|a| a.get("suspended_calls"))
+            .and_then(|a| a.as_object());
         assert!(
-            pending.is_none() || pending.is_some_and(|v| v.is_null()),
-            "expected pending_interaction to be cleared, got: {pending:?}"
+            suspended.is_some_and(|calls| calls.contains_key("confirm_1")),
+            "expected unresolved suspended call to be preserved, got: {suspended:?}"
         );
     });
+}
+
+#[test]
+fn test_set_agent_suspended_calls_compat_view_uses_smallest_call_id() {
+    let base_state = json!({});
+    let patch = set_agent_suspended_calls(
+        &base_state,
+        vec![
+            SuspendedCall {
+                call_id: "call_b".to_string(),
+                tool_name: "echo".to_string(),
+                interaction: Interaction::new("int_b", "confirm").with_message("b"),
+                frontend_invocation: None,
+            },
+            SuspendedCall {
+                call_id: "call_a".to_string(),
+                tool_name: "echo".to_string(),
+                interaction: Interaction::new("int_a", "confirm").with_message("a"),
+                frontend_invocation: None,
+            },
+        ],
+    )
+    .expect("set suspended calls");
+    let thread = Thread::with_initial_state("test", base_state).with_patch(patch);
+    let state = thread.rebuild_state().expect("state should rebuild");
+
+    assert_eq!(
+        state["loop_control"]["pending_interaction"]["id"],
+        Value::String("int_a".to_string()),
+        "compat pending_interaction should be derived from smallest call_id"
+    );
 }
 
 #[test]
@@ -3580,6 +3612,72 @@ async fn test_run_loop_run_start_outbox_resolution_is_drained_without_replay() {
     assert!(
         resolutions.is_none() || resolutions == Some(&json!([])),
         "run start outbox resolutions should be drained after run start"
+    );
+}
+
+#[tokio::test]
+async fn test_run_loop_run_start_repending_requeues_remaining_replay_calls() {
+    struct ReplayPendingAndSkipPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for ReplayPendingAndSkipPlugin {
+        fn id(&self) -> &str {
+            "run_start_repending_requeues_nonstream"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            match phase {
+                Phase::RunStart => {
+                    let outbox = step.state_of::<InteractionOutbox>();
+                    outbox
+                        .replay_tool_calls_push(ToolCall::new(
+                            "replay_call_1",
+                            "echo",
+                            json!({"message": "first"}),
+                        ))
+                        .expect("queue replay_call_1");
+                    outbox
+                        .replay_tool_calls_push(ToolCall::new(
+                            "replay_call_2",
+                            "echo",
+                            json!({"message": "second"}),
+                        ))
+                        .expect("queue replay_call_2");
+                }
+                Phase::BeforeToolExecute if step.tool_call_id() == Some("replay_call_1") => {
+                    step.ask(
+                        Interaction::new("confirm_replay_call_1", "confirm")
+                            .with_message("approve first replay"),
+                    );
+                }
+                Phase::BeforeInference => {
+                    step.skip_inference = true;
+                }
+                _ => {}
+            }
+        });
+    }
+
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(ReplayPendingAndSkipPlugin) as Arc<dyn AgentPlugin>);
+    let thread = Thread::new("test").with_message(Message::user("resume"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+
+    let outcome = run_loop(&config, tool_map([EchoTool]), run_ctx, None, None, None).await;
+    assert_eq!(outcome.termination, TerminationReason::PendingInteraction);
+
+    let state = outcome.run_ctx.snapshot().expect("state should rebuild");
+    let replay_calls = state
+        .get(INTERACTION_OUTBOX_STATE_PATH)
+        .and_then(|outbox| outbox.get("replay_tool_calls"))
+        .and_then(|calls| calls.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(replay_calls.len(), 1, "expected one replay call to remain queued");
+    assert_eq!(
+        replay_calls[0]["id"],
+        Value::String("replay_call_2".to_string()),
+        "remaining replay call should be replay_call_2"
     );
 }
 
@@ -6289,6 +6387,92 @@ async fn test_stream_replay_without_placeholder_appends_tool_result_message() {
         msg.content.contains("\"echoed\":\"resume\""),
         "unexpected replay tool message: {}",
         msg.content
+    );
+}
+
+#[tokio::test]
+async fn test_stream_run_start_repending_requeues_remaining_replay_calls() {
+    struct ReplayPendingAndSkipPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for ReplayPendingAndSkipPlugin {
+        fn id(&self) -> &str {
+            "run_start_repending_requeues_stream"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            match phase {
+                Phase::RunStart => {
+                    let outbox = step.state_of::<InteractionOutbox>();
+                    outbox
+                        .replay_tool_calls_push(ToolCall::new(
+                            "replay_call_1",
+                            "echo",
+                            json!({"message": "first"}),
+                        ))
+                        .expect("queue replay_call_1");
+                    outbox
+                        .replay_tool_calls_push(ToolCall::new(
+                            "replay_call_2",
+                            "echo",
+                            json!({"message": "second"}),
+                        ))
+                        .expect("queue replay_call_2");
+                }
+                Phase::BeforeToolExecute if step.tool_call_id() == Some("replay_call_1") => {
+                    step.ask(
+                        Interaction::new("confirm_replay_call_1", "confirm")
+                            .with_message("approve first replay"),
+                    );
+                }
+                Phase::BeforeInference => {
+                    step.skip_inference = true;
+                }
+                _ => {}
+            }
+        });
+    }
+
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(ReplayPendingAndSkipPlugin) as Arc<dyn AgentPlugin>);
+    let thread = Thread::new("test").with_message(Message::user("resume"));
+    let (events, final_thread) = run_mock_stream_with_final_thread(
+        MockStreamProvider::new(vec![MockResponse::text("unused")]),
+        config,
+        thread,
+        tool_map([EchoTool]),
+    )
+    .await;
+
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::PendingInteraction)
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::ToolCallDone { id, .. } if id == "replay_call_1")),
+        "first replay call should execute before suspension"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::ToolCallDone { id, .. } if id == "replay_call_2")),
+        "remaining replay call should not execute in the same run"
+    );
+
+    let final_state = final_thread.rebuild_state().expect("state should rebuild");
+    let replay_calls = final_state
+        .get(INTERACTION_OUTBOX_STATE_PATH)
+        .and_then(|outbox| outbox.get("replay_tool_calls"))
+        .and_then(|calls| calls.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(replay_calls.len(), 1, "expected one replay call to remain queued");
+    assert_eq!(
+        replay_calls[0]["id"],
+        Value::String("replay_call_2".to_string()),
+        "remaining replay call should be replay_call_2"
     );
 }
 
@@ -9274,6 +9458,100 @@ async fn test_no_plugins_loop_ignores_pending() {
     );
 }
 
+#[tokio::test]
+async fn test_nonstream_completed_tool_round_does_not_clear_existing_suspended_calls() {
+    let thread = Thread::with_initial_state(
+        "test",
+        json!({
+            "loop_control": {
+                "suspended_calls": {
+                    "leftover_confirm": {
+                        "call_id": "leftover_confirm",
+                        "tool_name": "echo",
+                        "interaction": {
+                            "id": "leftover_confirm",
+                            "action": "confirm",
+                            "message": "still waiting",
+                            "parameters": {}
+                        }
+                    }
+                }
+            }
+        }),
+    )
+    .with_message(Message::user("run"));
+    let provider = Arc::new(MockChatProvider::new(vec![
+        Ok(tool_call_chat_response_object_args(
+            "call_1",
+            "echo",
+            json!({"message": "ok"}),
+        )),
+        Ok(text_chat_response("done")),
+    ]));
+    let config = AgentConfig::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+
+    let outcome = run_loop(&config, tool_map([EchoTool]), run_ctx, None, None, None).await;
+    assert_eq!(outcome.termination, TerminationReason::PendingInteraction);
+    let state = outcome.run_ctx.snapshot().expect("state should rebuild");
+    assert!(
+        state
+            .get("loop_control")
+            .and_then(|lc| lc.get("suspended_calls"))
+            .and_then(|calls| calls.get("leftover_confirm"))
+            .is_some(),
+        "existing unresolved suspended call must not be cleared by unrelated successful tool round"
+    );
+}
+
+#[tokio::test]
+async fn test_stream_completed_tool_round_does_not_clear_existing_suspended_calls() {
+    let thread = Thread::with_initial_state(
+        "test",
+        json!({
+            "loop_control": {
+                "suspended_calls": {
+                    "leftover_confirm": {
+                        "call_id": "leftover_confirm",
+                        "tool_name": "echo",
+                        "interaction": {
+                            "id": "leftover_confirm",
+                            "action": "confirm",
+                            "message": "still waiting",
+                            "parameters": {}
+                        }
+                    }
+                }
+            }
+        }),
+    )
+    .with_message(Message::user("run"));
+    let (events, final_thread) = run_mock_stream_with_final_thread(
+        MockStreamProvider::new(vec![
+            MockResponse::text("").with_tool_call("call_1", "echo", json!({"message": "ok"})),
+            MockResponse::text("done"),
+        ]),
+        AgentConfig::new("mock"),
+        thread,
+        tool_map([EchoTool]),
+    )
+    .await;
+
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::PendingInteraction)
+    );
+    let final_state = final_thread.rebuild_state().expect("state should rebuild");
+    assert!(
+        final_state
+            .get("loop_control")
+            .and_then(|lc| lc.get("suspended_calls"))
+            .and_then(|calls| calls.get("leftover_confirm"))
+            .is_some(),
+        "existing unresolved suspended call must not be cleared by unrelated successful tool round"
+    );
+}
+
 /// A plugin that sets `request_termination(PluginRequested)` in BeforeInference
 /// should cause the run to terminate immediately without running inference.
 #[tokio::test]
@@ -9492,6 +9770,163 @@ async fn test_request_termination_method_stops_stream() {
     assert_eq!(
         inference_count, 0,
         "request_termination() should prevent inference: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_run_loop_decision_channel_ignores_unknown_interaction_id() {
+    struct SkipInferencePlugin;
+
+    #[async_trait]
+    impl AgentPlugin for SkipInferencePlugin {
+        fn id(&self) -> &str {
+            "skip_inference_unknown_decision_nonstream"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::BeforeInference {
+                step.skip_inference = true;
+            }
+        });
+    }
+
+    let thread = Thread::with_initial_state(
+        "test",
+        json!({
+            "loop_control": {
+                "suspended_calls": {
+                    "call_keep": {
+                        "call_id": "call_keep",
+                        "tool_name": "echo",
+                        "interaction": {
+                            "id": "call_keep",
+                            "action": "confirm",
+                            "message": "still waiting",
+                            "parameters": {}
+                        }
+                    }
+                }
+            }
+        }),
+    )
+    .with_message(Message::user("continue"));
+    let run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).expect("run ctx");
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+    let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
+    decision_tx
+        .send(crate::contracts::InteractionResponse::new(
+            "unknown_call",
+            json!(true),
+        ))
+        .expect("send decision");
+    drop(decision_tx);
+
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, Some(decision_rx)).await;
+    assert_eq!(outcome.termination, TerminationReason::PendingInteraction);
+    let final_state = outcome.run_ctx.snapshot().expect("snapshot");
+    assert!(
+        final_state
+            .get("loop_control")
+            .and_then(|lc| lc.get("suspended_calls"))
+            .and_then(|calls| calls.get("call_keep"))
+            .is_some(),
+        "unknown decision must not clear existing suspended calls"
+    );
+    assert!(
+        final_state
+            .get(INTERACTION_OUTBOX_STATE_PATH)
+            .and_then(|outbox| outbox.get("interaction_resolutions"))
+            .is_none(),
+        "unknown decision must not enqueue outbox resolutions"
+    );
+}
+
+#[tokio::test]
+async fn test_stream_decision_channel_ignores_unknown_interaction_id() {
+    struct SkipInferencePlugin;
+
+    #[async_trait]
+    impl AgentPlugin for SkipInferencePlugin {
+        fn id(&self) -> &str {
+            "skip_inference_unknown_decision_stream"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::BeforeInference {
+                step.skip_inference = true;
+            }
+        });
+    }
+
+    let mut final_thread = Thread::with_initial_state(
+        "test",
+        json!({
+            "loop_control": {
+                "suspended_calls": {
+                    "call_keep": {
+                        "call_id": "call_keep",
+                        "tool_name": "echo",
+                        "interaction": {
+                            "id": "call_keep",
+                            "action": "confirm",
+                            "message": "still waiting",
+                            "parameters": {}
+                        }
+                    }
+                }
+            }
+        }),
+    )
+    .with_message(Message::user("continue"));
+    let run_ctx =
+        RunContext::from_thread(&final_thread, tirea_contract::RunConfig::default()).expect("run ctx");
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+    let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
+    let state_committer: Arc<dyn StateCommitter> =
+        Arc::new(ChannelStateCommitter::new(checkpoint_tx));
+    let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
+    decision_tx
+        .send(crate::contracts::InteractionResponse::new(
+            "unknown_call",
+            json!(true),
+        ))
+        .expect("send decision");
+    drop(decision_tx);
+
+    let stream = run_loop_stream(
+        config,
+        HashMap::new(),
+        run_ctx,
+        None,
+        Some(state_committer),
+        Some(decision_rx),
+    );
+    let events = collect_stream_events(stream).await;
+    while let Some(changeset) = checkpoint_rx.recv().await {
+        changeset.apply_to(&mut final_thread);
+    }
+
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::PendingInteraction)
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::InteractionResolved { .. })),
+        "unknown decision should not emit InteractionResolved"
+    );
+    let final_state = final_thread.rebuild_state().expect("state should rebuild");
+    assert!(
+        final_state
+            .get("loop_control")
+            .and_then(|lc| lc.get("suspended_calls"))
+            .and_then(|calls| calls.get("call_keep"))
+            .is_some(),
+        "unknown decision must not clear existing suspended calls"
     );
 }
 
