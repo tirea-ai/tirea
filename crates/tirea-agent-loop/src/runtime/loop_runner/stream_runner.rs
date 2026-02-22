@@ -279,21 +279,12 @@ pub(super) fn run_stream(
 
         yield emitter.run_start();
 
-        // Persist immediate run-start side effects before replaying any pending tools.
-        if let Err(e) = pending_delta_commit
-            .commit(&mut run_ctx, CheckpointReason::UserMessage, false)
-            .await
-        {
-            let message = e.to_string();
-            terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
-        }
-
-        // Resume pending tool execution requested by plugins at run start.
-        let run_start_drain = match drain_run_start_outbox_and_replay(
+        let run_start_drain = match commit_run_start_and_drain_replay(
             &mut run_ctx,
             &active_tool_snapshot.tools,
             &config,
             &active_tool_descriptors,
+            &pending_delta_commit,
         )
         .await
         {
@@ -303,17 +294,6 @@ pub(super) fn run_stream(
                 terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
             }
         };
-
-        // Replay path reuses the regular tool-results checkpoint semantics.
-        if run_start_drain.replayed {
-            if let Err(e) = pending_delta_commit
-                .commit(&mut run_ctx, CheckpointReason::ToolResultsCommitted, false)
-                .await
-            {
-                let message = e.to_string();
-                terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
-            }
-        }
 
         for event in run_start_drain.events {
             yield emitter.emit_existing(event);

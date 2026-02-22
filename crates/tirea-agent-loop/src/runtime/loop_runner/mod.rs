@@ -766,6 +766,29 @@ async fn drain_run_start_outbox_and_replay(
     })
 }
 
+async fn commit_run_start_and_drain_replay(
+    run_ctx: &mut RunContext,
+    tools: &HashMap<String, Arc<dyn Tool>>,
+    config: &AgentConfig,
+    active_tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
+    pending_delta_commit: &PendingDeltaCommitContext<'_>,
+) -> Result<RunStartDrainOutcome, AgentLoopError> {
+    pending_delta_commit
+        .commit(run_ctx, CheckpointReason::UserMessage, false)
+        .await?;
+
+    let run_start_drain =
+        drain_run_start_outbox_and_replay(run_ctx, tools, config, active_tool_descriptors).await?;
+
+    if run_start_drain.replayed {
+        pending_delta_commit
+            .commit(run_ctx, CheckpointReason::ToolResultsCommitted, false)
+            .await?;
+    }
+
+    Ok(run_start_drain)
+}
+
 fn normalize_frontend_tool_result(
     response: &serde_json::Value,
     fallback_arguments: &serde_json::Value,
@@ -1106,45 +1129,20 @@ pub async fn run_loop(
         }
     };
     run_ctx.add_thread_patches(pending);
-    if let Err(error) = pending_delta_commit
-        .commit(&mut run_ctx, CheckpointReason::UserMessage, false)
-        .await
+    if let Err(error) = commit_run_start_and_drain_replay(
+        &mut run_ctx,
+        &initial_tools,
+        config,
+        &active_tool_descriptors,
+        &pending_delta_commit,
+    )
+    .await
     {
         terminate_run!(
             TerminationReason::Error,
             None,
             Some(outcome::LoopFailure::State(error.to_string()))
         );
-    }
-
-    let run_start_drain = match drain_run_start_outbox_and_replay(
-        &mut run_ctx,
-        &initial_tools,
-        config,
-        &active_tool_descriptors,
-    )
-    .await
-    {
-        Ok(replayed) => replayed,
-        Err(error) => {
-            terminate_run!(
-                TerminationReason::Error,
-                None,
-                Some(outcome::LoopFailure::State(error.to_string()))
-            );
-        }
-    };
-    if run_start_drain.replayed {
-        if let Err(error) = pending_delta_commit
-            .commit(&mut run_ctx, CheckpointReason::ToolResultsCommitted, false)
-            .await
-        {
-            terminate_run!(
-                TerminationReason::Error,
-                None,
-                Some(outcome::LoopFailure::State(error.to_string()))
-            );
-        }
     }
     loop {
         if let Err(error) = apply_decisions_and_replay(

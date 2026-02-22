@@ -6,6 +6,7 @@ use crate::contracts::plugin::phase::{
     BeforeToolExecuteContext, Phase, RunEndContext, RunStartContext, StepEndContext,
     StepStartContext,
 };
+use crate::contracts::runtime::state_paths::INTERACTION_OUTBOX_STATE_PATH;
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::LlmExecutor;
 use crate::contracts::storage::VersionPrecondition;
@@ -2750,6 +2751,43 @@ async fn test_stream_skip_inference_emits_run_start_and_finish() {
 }
 
 #[tokio::test]
+async fn test_stream_run_start_outbox_resolution_emits_after_run_start() {
+    let (recorder, _phases) = RecordAndSkipPlugin::new();
+    let config =
+        AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
+
+    let thread = Thread::with_initial_state(
+        "test",
+        json!({
+            "interaction_outbox": {
+                "interaction_resolutions": [
+                    {
+                        "interaction_id": "resolution_1",
+                        "result": true
+                    }
+                ]
+            }
+        }),
+    )
+    .with_message(crate::contracts::thread::Message::user("hello"));
+    let tools = HashMap::new();
+
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let events =
+        collect_stream_events(run_loop_stream(config, tools, run_ctx, None, None, None)).await;
+
+    assert!(matches!(events.first(), Some(AgentEvent::RunStart { .. })));
+    assert!(matches!(
+        events.get(1),
+        Some(AgentEvent::InteractionResolved {
+            interaction_id,
+            result
+        }) if interaction_id == "resolution_1" && result == &serde_json::Value::Bool(true)
+    ));
+    assert!(matches!(events.last(), Some(AgentEvent::RunFinish { .. })));
+}
+
+#[tokio::test]
 async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses() {
     struct PendingSkipPlugin;
 
@@ -3490,6 +3528,59 @@ async fn test_run_loop_skip_inference_emits_run_end_phase() {
     );
     let run_end_count = recorded.iter().filter(|p| **p == Phase::RunEnd).count();
     assert_eq!(run_end_count, 1, "RunEnd should be emitted exactly once");
+}
+
+#[tokio::test]
+async fn test_run_loop_run_start_outbox_resolution_is_drained_without_replay() {
+    struct SkipInferencePlugin;
+
+    #[async_trait]
+    impl AgentPlugin for SkipInferencePlugin {
+        fn id(&self) -> &str {
+            "skip_inference_non_stream_run_start_outbox"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::BeforeInference {
+                step.skip_inference = true;
+            }
+        });
+    }
+
+    let config = AgentConfig::new("gpt-4o-mini")
+        .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+
+    let thread = Thread::with_initial_state(
+        "test",
+        json!({
+            "interaction_outbox": {
+                "interaction_resolutions": [
+                    {
+                        "interaction_id": "resolution_1",
+                        "result": true
+                    }
+                ]
+            }
+        }),
+    )
+    .with_message(crate::contracts::thread::Message::user("hello"));
+    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
+    assert!(matches!(
+        outcome.termination,
+        TerminationReason::PluginRequested
+    ));
+
+    let state = outcome.run_ctx.snapshot().expect("state should rebuild");
+    let resolutions = state
+        .get(INTERACTION_OUTBOX_STATE_PATH)
+        .and_then(|outbox| outbox.get("interaction_resolutions"));
+    assert!(
+        resolutions.is_none() || resolutions == Some(&json!([])),
+        "run start outbox resolutions should be drained after run start"
+    );
 }
 
 #[tokio::test]
