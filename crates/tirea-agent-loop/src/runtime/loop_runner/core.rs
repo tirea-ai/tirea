@@ -89,7 +89,12 @@ pub(super) fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec
     messages
 }
 
-pub(super) type InferenceInputs = (Vec<Message>, Vec<String>, bool);
+pub(super) type InferenceInputs = (
+    Vec<Message>,
+    Vec<String>,
+    bool,
+    Option<crate::contracts::TerminationReason>,
+);
 
 pub(super) fn inference_inputs_from_step(
     step: &mut StepContext<'_>,
@@ -102,7 +107,8 @@ pub(super) fn inference_inputs_from_step(
         .map(|td| td.id.clone())
         .collect::<Vec<_>>();
     let skip_inference = step.skip_inference;
-    (messages, filtered_tools, skip_inference)
+    let termination_request = step.termination_request.clone();
+    (messages, filtered_tools, skip_inference, termination_request)
 }
 
 pub(super) fn build_request_for_filtered_tools(

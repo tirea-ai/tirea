@@ -327,7 +327,6 @@ pub(super) fn run_loop_stream_impl(
             }
         };
         let mut active_tool_descriptors = active_tool_snapshot.descriptors.clone();
-        let mut deferred_pending_interaction: Option<crate::contracts::Interaction> = None;
 
         macro_rules! emit_run_finished_delta {
             () => {
@@ -358,20 +357,6 @@ pub(super) fn run_loop_stream_impl(
             ($failure:expr, $message:expr) => {{
                 let failure = $failure;
                 let message = $message;
-                // Re-persist deferred pending so it survives for the next run.
-                if let Some(ref interaction) = deferred_pending_interaction {
-                    if let Ok(state) = run_ctx.snapshot() {
-                        if let Ok(patch) = set_agent_pending_interaction(
-                            &state,
-                            interaction.clone(),
-                            None,
-                        ) {
-                            if !patch.patch().is_empty() {
-                                run_ctx.add_thread_patch(patch);
-                            }
-                        }
-                    }
-                }
                 finalize_run_end(&mut run_ctx, &active_tool_descriptors, &config.plugins).await;
                 emit_run_finished_delta!();
                 let outcome = build_loop_outcome(
@@ -391,30 +376,21 @@ pub(super) fn run_loop_stream_impl(
 
         macro_rules! finish_run {
             ($termination_expr:expr, $response_expr:expr) => {{
-                // Re-persist deferred pending interaction before finalizing.
-                let (final_termination, final_response) =
-                    if let Some(ref interaction) = deferred_pending_interaction {
-                        if let Ok(state) = run_ctx.snapshot() {
-                            if let Ok(patch) = set_agent_pending_interaction(
-                                &state,
-                                interaction.clone(),
-                                None,
-                            ) {
-                                if !patch.patch().is_empty() {
-                                    run_ctx.add_thread_patch(patch);
-                                }
-                            }
-                        }
-                        let reason: TerminationReason = $termination_expr;
-                        match reason {
-                            TerminationReason::Error | TerminationReason::Cancelled => {
-                                (reason, $response_expr)
-                            }
-                            _ => (TerminationReason::PendingInteraction, None),
-                        }
-                    } else {
-                        ($termination_expr, $response_expr)
-                    };
+                let reason: TerminationReason = $termination_expr;
+                // Thin backward-compat boundary: if state has pending_interaction
+                // and the reason is not Error/Cancelled, override to PendingInteraction.
+                let final_termination = if !matches!(reason, TerminationReason::Error | TerminationReason::Cancelled)
+                    && pending_interaction_from_ctx(&run_ctx).is_some()
+                {
+                    TerminationReason::PendingInteraction
+                } else {
+                    reason
+                };
+                let final_response = if final_termination == TerminationReason::PendingInteraction {
+                    None
+                } else {
+                    $response_expr
+                };
                 finalize_run_end(&mut run_ctx, &active_tool_descriptors, &config.plugins).await;
                 ensure_run_finished_delta_or_error!();
                 let outcome = build_loop_outcome(
@@ -490,11 +466,6 @@ pub(super) fn run_loop_stream_impl(
             yield emitter.emit_existing(event);
         }
 
-        // Check if drain produced a new pending interaction (multi-round).
-        if pending_interaction_from_ctx(&run_ctx).is_some() {
-            finish_run!(TerminationReason::PendingInteraction, None);
-        }
-
         loop {
             let loop_tick_events = match drain_loop_tick_outbox(&mut run_ctx) {
                 Ok(v) => v,
@@ -532,23 +503,21 @@ pub(super) fn run_loop_stream_impl(
             let messages = prepared.messages;
             let filtered_tools = prepared.filtered_tools;
 
-            // Skip inference if requested
-            if prepared.skip_inference {
-                let pending_interaction = pending_interaction_from_ctx(&run_ctx);
-                if let Some(interaction) = pending_interaction.clone() {
-                    let frontend_inv = pending_frontend_invocation_from_ctx(&run_ctx);
-                    for event in pending_tool_events(&interaction, frontend_inv.as_ref()) {
-                        yield emitter.emit_existing(event);
+            // Plugin-requested termination takes precedence over plain skip_inference.
+            if let Some(reason) = prepared.termination_request {
+                // Emit pending events from state at the boundary (thin event helper).
+                if matches!(reason, TerminationReason::PendingInteraction) {
+                    if let Some(interaction) = pending_interaction_from_ctx(&run_ctx) {
+                        let frontend_inv = pending_frontend_invocation_from_ctx(&run_ctx);
+                        for event in pending_tool_events(&interaction, frontend_inv.as_ref()) {
+                            yield emitter.emit_existing(event);
+                        }
                     }
                 }
-                finish_run!(
-                    if pending_interaction.is_some() {
-                        TerminationReason::PendingInteraction
-                    } else {
-                        TerminationReason::PluginRequested
-                    },
-                    Some(last_text.clone())
-                );
+                finish_run!(reason, Some(last_text.clone()));
+            }
+            if prepared.skip_inference {
+                finish_run!(TerminationReason::PluginRequested, Some(last_text.clone()));
             }
 
             // Step boundary: starting LLM call
@@ -875,25 +844,23 @@ pub(super) fn run_loop_stream_impl(
                 yield emitter.emit_existing(AgentEvent::StateSnapshot { snapshot });
             }
 
-            // Pause only when ALL tools are pending — if some completed, continue so
-            // the LLM sees their results while the pending tool shows "awaiting approval".
-            if let Some(interaction) = applied.pending_interaction {
-                let has_completed =
-                    results.iter().any(|r| r.pending_interaction.is_none() && !r.deferred_pending);
+            // If ALL tools are pending (no completed results), terminate immediately.
+            // With parallel execution, only one pending interaction is active — the
+            // rest are deferred by coalesce_pending_interactions (result message
+            // contains "was deferred"). A truly completed tool has no pending
+            // interaction and was NOT deferred.
+            if applied.pending_interaction.is_some() {
+                let has_completed = results.iter().any(|r| {
+                    r.pending_interaction.is_none()
+                        && !r
+                            .execution
+                            .result
+                            .message
+                            .as_deref()
+                            .is_some_and(|m| m.contains("was deferred"))
+                });
                 if !has_completed {
                     finish_run!(TerminationReason::PendingInteraction, None);
-                }
-                // Some tools completed alongside the pending one. Clear the pending
-                // state from LoopControlState so subsequent apply_tool_results_impl
-                // calls don't clear it. The finish_run! macro will re-persist it
-                // when the run eventually finishes.
-                deferred_pending_interaction = Some(interaction);
-                if let Ok(state) = run_ctx.snapshot() {
-                    if let Ok(patch) = clear_agent_pending_interaction(&state) {
-                        if !patch.patch().is_empty() {
-                            run_ctx.add_thread_patch(patch);
-                        }
-                    }
                 }
             }
 

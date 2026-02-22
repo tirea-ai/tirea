@@ -8,11 +8,13 @@ use crate::{AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX
 use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tirea_contract::event::interaction::{
     FrontendToolInvocation, InvocationOrigin, ResponseRouting,
 };
+use tirea_contract::event::termination::TerminationReason;
 use tirea_contract::plugin::phase::{
-    BeforeToolExecuteContext, PluginPhaseContext, RunStartContext,
+    BeforeInferenceContext, BeforeToolExecuteContext, PluginPhaseContext, RunStartContext,
 };
 use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::runtime::control::{InferenceError, LoopControlState};
@@ -44,6 +46,11 @@ use tirea_state::{State, TireaError};
 pub(crate) struct InteractionResponsePlugin {
     /// Interaction responses keyed by interaction ID.
     responses: HashMap<String, serde_json::Value>,
+    /// Guards the `before_inference` check so it only runs on the first call per run.
+    /// On the first BeforeInference, we check for unresolved pending interactions
+    /// from a previous run. On subsequent calls, the pending was created during this
+    /// run's tool execution — let the LLM continue with completed results (HOL fix).
+    first_inference_checked: AtomicBool,
 }
 
 impl InteractionResponsePlugin {
@@ -56,7 +63,10 @@ impl InteractionResponsePlugin {
         for id in denied_ids {
             responses.insert(id, serde_json::Value::Bool(false));
         }
-        Self { responses }
+        Self {
+            responses,
+            first_inference_checked: AtomicBool::new(false),
+        }
     }
 
     /// Create from explicit interaction response payloads.
@@ -66,6 +76,7 @@ impl InteractionResponsePlugin {
                 .into_iter()
                 .map(|r| (r.interaction_id, r.result))
                 .collect(),
+            first_inference_checked: AtomicBool::new(false),
         }
     }
 
@@ -412,6 +423,36 @@ impl AgentPlugin for InteractionResponsePlugin {
 
     async fn run_start(&self, ctx: &mut RunStartContext<'_, '_>) {
         self.on_run_start(ctx);
+    }
+
+    async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
+        // Only check on the first BeforeInference of the run.
+        // On subsequent calls, the pending was created during this run's tool
+        // execution — let the LLM continue with completed results (HOL fix).
+        if self.first_inference_checked.swap(true, Ordering::Relaxed) {
+            return;
+        }
+
+        let Some(pending) = Self::persisted_pending_interaction(ctx) else {
+            return;
+        };
+
+        // If the client provided a response, RunStart already handled it.
+        // The pending should have been cleared. If it still exists, it means
+        // no response was provided — terminate to await user input.
+        let pending_id = pending.id.as_str();
+        let frontend_id = Self::persisted_frontend_invocation(ctx).map(|inv| inv.call_id);
+        let effective_ids = [Some(pending_id.to_string()), frontend_id];
+        let has_response = effective_ids
+            .iter()
+            .filter_map(|id| id.as_deref())
+            .any(|id| self.is_approved(id) || self.is_denied(id));
+
+        if has_response {
+            return; // RunStart handled it; pending should be cleared or will be resolved by replay
+        }
+
+        ctx.request_termination(TerminationReason::PendingInteraction);
     }
 
     async fn before_tool_execute(&self, step: &mut BeforeToolExecuteContext<'_, '_>) {
@@ -1092,5 +1133,116 @@ mod tests {
             .get("loop_control")
             .and_then(|a| a.get("pending_interaction"));
         assert!(pending.is_none() || pending == Some(&serde_json::Value::Null));
+    }
+
+    // =========================================================================
+    // before_inference tests (plugin-driven termination)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn before_inference_terminates_on_unresolved_pending() {
+        let state = json!({
+            "loop_control": {
+                "pending_interaction": {
+                    "id": "fc_ask_1",
+                    "action": "tool:write_file",
+                    "parameters": { "source": "permission" }
+                },
+                "pending_frontend_invocation": {
+                    "call_id": "fc_ask_1",
+                    "tool_name": "PermissionConfirm",
+                    "arguments": { "tool_name": "write_file" },
+                    "origin": { "type": "plugin_initiated", "plugin_id": "test" },
+                    "routing": { "strategy": "replay_original_tool" }
+                }
+            }
+        });
+        let fixture = TestFixture::new_with_state(state);
+        // No responses → the pending is unresolved.
+        let plugin = InteractionResponsePlugin::new(vec![], vec![]);
+
+        let mut step = fixture.step(vec![]);
+        plugin.run_phase(Phase::BeforeInference, &mut step).await;
+
+        assert!(
+            step.skip_inference,
+            "skip_inference should be set when terminating for unresolved pending"
+        );
+        assert_eq!(
+            step.termination_request,
+            Some(TerminationReason::PendingInteraction),
+            "should request PendingInteraction termination"
+        );
+    }
+
+    #[tokio::test]
+    async fn before_inference_skips_when_response_provided() {
+        let state = json!({
+            "loop_control": {
+                "pending_interaction": {
+                    "id": "fc_ask_1",
+                    "action": "tool:write_file",
+                    "parameters": { "source": "permission" }
+                },
+                "pending_frontend_invocation": {
+                    "call_id": "fc_ask_1",
+                    "tool_name": "PermissionConfirm",
+                    "arguments": { "tool_name": "write_file" },
+                    "origin": { "type": "plugin_initiated", "plugin_id": "test" },
+                    "routing": { "strategy": "replay_original_tool" }
+                }
+            }
+        });
+        let fixture = TestFixture::new_with_state(state);
+        // Response provided for the frontend call_id → RunStart handled it.
+        let plugin = InteractionResponsePlugin::new(vec!["fc_ask_1".to_string()], vec![]);
+
+        let mut step = fixture.step(vec![]);
+        plugin.run_phase(Phase::BeforeInference, &mut step).await;
+
+        assert!(
+            !step.skip_inference,
+            "skip_inference should NOT be set when response was provided"
+        );
+        assert!(
+            step.termination_request.is_none(),
+            "should NOT request termination when response was provided"
+        );
+    }
+
+    #[tokio::test]
+    async fn before_inference_only_checks_first_call() {
+        let state = json!({
+            "loop_control": {
+                "pending_interaction": {
+                    "id": "confirm_1",
+                    "action": "confirm",
+                    "parameters": {}
+                }
+            }
+        });
+        let fixture = TestFixture::new_with_state(state);
+        let plugin = InteractionResponsePlugin::new(vec![], vec![]);
+
+        // First call: should detect pending and request termination.
+        let mut step = fixture.step(vec![]);
+        plugin.run_phase(Phase::BeforeInference, &mut step).await;
+        assert_eq!(
+            step.termination_request,
+            Some(TerminationReason::PendingInteraction),
+            "first call should request termination"
+        );
+
+        // Second call: should be a no-op (HOL fix behavior).
+        let mut step2 = fixture.step(vec![]);
+        plugin.run_phase(Phase::BeforeInference, &mut step2).await;
+        assert!(
+            step2.termination_request.is_none(),
+            "second call should NOT request termination (HOL fix)"
+        );
+        assert!(
+            !step2.skip_inference,
+            "second call should NOT set skip_inference"
+        );
     }
 }

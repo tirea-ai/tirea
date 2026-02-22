@@ -16,6 +16,7 @@ use tirea_state::{DocCell, TrackedPatch};
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PhaseMutationSnapshot {
     skip_inference: bool,
+    termination_request: bool,
     system_context: Vec<String>,
     session_context: Vec<String>,
     system_reminders: Vec<String>,
@@ -31,6 +32,7 @@ struct PhaseMutationSnapshot {
 fn phase_mutation_snapshot(step: &StepContext<'_>) -> PhaseMutationSnapshot {
     PhaseMutationSnapshot {
         skip_inference: step.skip_inference,
+        termination_request: step.termination_request.is_some(),
         system_context: step.system_context.clone(),
         session_context: step.session_context.clone(),
         system_reminders: step.system_reminders.clone(),
@@ -69,6 +71,15 @@ fn validate_phase_mutation(
     if before.skip_inference != after.skip_inference && !policy.allow_skip_inference_mutation {
         return Err(AgentLoopError::StateError(format!(
             "plugin '{}' mutated skip_inference outside BeforeInference ({phase})",
+            plugin_id
+        )));
+    }
+
+    if before.termination_request != after.termination_request
+        && !policy.allow_skip_inference_mutation
+    {
+        return Err(AgentLoopError::StateError(format!(
+            "plugin '{}' mutated termination_request outside BeforeInference ({phase})",
             plugin_id
         )));
     }

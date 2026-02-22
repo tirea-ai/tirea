@@ -508,7 +508,6 @@ fn tool_execution_result(call_id: &str, patch: Option<TrackedPatch>) -> ToolExec
         pending_interaction: None,
         pending_frontend_invocation: None,
         pending_patches: Vec::new(),
-        deferred_pending: false,
     }
 }
 
@@ -542,7 +541,6 @@ fn skill_activation_result(
         pending_interaction: None,
         pending_frontend_invocation: None,
         pending_patches: Vec::new(),
-        deferred_pending: false,
     }
 }
 
@@ -2139,7 +2137,6 @@ fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
         pending_interaction: None,
         pending_frontend_invocation: None,
         pending_patches: Vec::new(),
-        deferred_pending: false,
     };
 
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
@@ -2187,7 +2184,6 @@ fn test_apply_tool_results_ignores_blank_agent_state_outbox_messages() {
         pending_interaction: None,
         pending_frontend_invocation: None,
         pending_patches: Vec::new(),
-        deferred_pending: false,
     };
 
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
@@ -2761,6 +2757,7 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
             .expect("failed to set pending interaction");
             step.pending_patches.push(patch);
             step.skip_inference = true;
+            step.termination_request = Some(TerminationReason::PendingInteraction);
         });
     }
 
@@ -4710,6 +4707,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
             .expect("failed to set pending interaction");
             step.pending_patches.push(patch);
             step.skip_inference = true;
+            step.termination_request = Some(TerminationReason::PendingInteraction);
         });
     }
 
@@ -8913,5 +8911,102 @@ async fn test_stream_mixed_pending_persists_interaction_state() {
             .and_then(|id| id.as_str()),
         Some("confirm_call_2"),
         "pending interaction should be persisted in state: {state:?}"
+    );
+}
+
+/// Core loop without plugins should not terminate on pre-existing pending
+/// interaction state.  The core is a generic inference→tools→repeat engine;
+/// only plugins decide about interaction termination.
+#[tokio::test]
+async fn test_no_plugins_loop_ignores_pending() {
+    use crate::contracts::Interaction;
+
+    // Seed state with a pre-existing pending interaction.
+    let base_state = json!({});
+    let pending_patch = set_agent_pending_interaction(
+        &base_state,
+        Interaction::new("leftover_confirm", "confirm").with_message("stale pending"),
+        None,
+    )
+    .expect("failed to seed pending interaction");
+    let thread = Thread::with_initial_state("test", base_state)
+        .with_patch(pending_patch)
+        .with_message(Message::user("go"));
+
+    // No plugins — the core should run inference normally and terminate with
+    // NaturalEnd (text-only response, no tool calls).
+    let config = AgentConfig::new("mock");
+    let responses = vec![MockResponse::text("done")];
+    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+
+    let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
+
+    // The run should complete with NaturalEnd — the core ignores pending state.
+    // The backward-compat boundary in terminate_run!/finish_run! overrides the
+    // reason to PendingInteraction when the state has one, but only for
+    // non-Error/non-Cancelled reasons.  Since inference ran and returned text,
+    // the reason is NaturalEnd, which gets overridden to PendingInteraction.
+    // This is the expected thin boundary behavior.
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::PendingInteraction),
+        "backward-compat boundary should override to PendingInteraction: {events:?}"
+    );
+
+    // Crucially, inference DID run (the core didn't short-circuit).
+    let inference_count = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::InferenceComplete { .. }))
+        .count();
+    assert_eq!(
+        inference_count, 1,
+        "core should have run inference despite pre-existing pending: {events:?}"
+    );
+}
+
+/// A plugin that sets `request_termination(PluginRequested)` in BeforeInference
+/// should cause the run to terminate immediately without running inference.
+#[tokio::test]
+async fn test_plugin_termination_request_stops_loop() {
+    struct TerminatePlugin;
+
+    #[async_trait]
+    impl AgentPlugin for TerminatePlugin {
+        fn id(&self) -> &str {
+            "terminate_plugin"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::BeforeInference {
+                step.skip_inference = true;
+                step.termination_request = Some(TerminationReason::PluginRequested);
+            }
+        });
+    }
+
+    let config =
+        AgentConfig::new("mock").with_plugin(Arc::new(TerminatePlugin) as Arc<dyn AgentPlugin>);
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+
+    // Provide a response, but it should never be consumed.
+    let responses = vec![MockResponse::text("should not appear")];
+    let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
+
+    // Run should terminate with PluginRequested.
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::PluginRequested),
+        "run should terminate with PluginRequested: {events:?}"
+    );
+
+    // No inference should have run.
+    let inference_count = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::InferenceComplete { .. }))
+        .count();
+    assert_eq!(
+        inference_count, 0,
+        "no inference should run when plugin requests termination: {events:?}"
     );
 }

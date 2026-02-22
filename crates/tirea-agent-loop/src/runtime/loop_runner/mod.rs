@@ -405,23 +405,40 @@ pub(super) async fn run_step_prepare_phases(
     run_ctx: &RunContext,
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
     config: &AgentConfig,
-) -> Result<(Vec<Message>, Vec<String>, bool, Vec<TrackedPatch>), AgentLoopError> {
-    let ((messages, filtered_tools, skip_inference), pending) = run_phase_block(
-        run_ctx,
-        tool_descriptors,
-        &config.plugins,
-        &[Phase::StepStart, Phase::BeforeInference],
-        |_| {},
-        |step| inference_inputs_from_step(step, &config.system_prompt),
-    )
-    .await?;
-    Ok((messages, filtered_tools, skip_inference, pending))
+) -> Result<
+    (
+        Vec<Message>,
+        Vec<String>,
+        bool,
+        Option<TerminationReason>,
+        Vec<TrackedPatch>,
+    ),
+    AgentLoopError,
+> {
+    let ((messages, filtered_tools, skip_inference, termination_request), pending) =
+        run_phase_block(
+            run_ctx,
+            tool_descriptors,
+            &config.plugins,
+            &[Phase::StepStart, Phase::BeforeInference],
+            |_| {},
+            |step| inference_inputs_from_step(step, &config.system_prompt),
+        )
+        .await?;
+    Ok((
+        messages,
+        filtered_tools,
+        skip_inference,
+        termination_request,
+        pending,
+    ))
 }
 
 pub(super) struct PreparedStep {
     pub(super) messages: Vec<Message>,
     pub(super) filtered_tools: Vec<String>,
     pub(super) skip_inference: bool,
+    pub(super) termination_request: Option<TerminationReason>,
     pub(super) pending_patches: Vec<TrackedPatch>,
 }
 
@@ -430,12 +447,13 @@ pub(super) async fn prepare_step_execution(
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
     config: &AgentConfig,
 ) -> Result<PreparedStep, AgentLoopError> {
-    let (messages, filtered_tools, skip_inference, pending) =
+    let (messages, filtered_tools, skip_inference, termination_request, pending) =
         run_step_prepare_phases(run_ctx, tool_descriptors, config).await?;
     Ok(PreparedStep {
         messages,
         filtered_tools,
         skip_inference,
+        termination_request,
         pending_patches: pending,
     })
 }
@@ -703,32 +721,24 @@ pub async fn run_loop(
         descriptors: initial_descriptors,
     } = initial_step_tools;
     let mut active_tool_descriptors = initial_descriptors;
-    let mut deferred_pending_interaction: Option<crate::contracts::Interaction> = None;
 
     macro_rules! terminate_run {
         ($termination:expr, $response:expr, $failure:expr) => {{
-            // Re-persist deferred pending interaction before finalizing.
-            let (final_termination, final_response) =
-                if let Some(ref interaction) = deferred_pending_interaction {
-                    if let Ok(state) = run_ctx.snapshot() {
-                        if let Ok(patch) =
-                            set_agent_pending_interaction(&state, interaction.clone(), None)
-                        {
-                            if !patch.patch().is_empty() {
-                                run_ctx.add_thread_patch(patch);
-                            }
-                        }
-                    }
-                    let reason: TerminationReason = $termination;
-                    match reason {
-                        TerminationReason::Error | TerminationReason::Cancelled => {
-                            (reason, $response)
-                        }
-                        _ => (TerminationReason::PendingInteraction, None),
-                    }
-                } else {
-                    ($termination, $response)
-                };
+            let reason: TerminationReason = $termination;
+            // Thin backward-compat boundary: if state has pending_interaction
+            // and the reason is not Error/Cancelled, override to PendingInteraction.
+            let final_termination = if !matches!(reason, TerminationReason::Error | TerminationReason::Cancelled)
+                && pending_interaction_from_ctx(&run_ctx).is_some()
+            {
+                TerminationReason::PendingInteraction
+            } else {
+                reason
+            };
+            let final_response = if final_termination == TerminationReason::PendingInteraction {
+                None
+            } else {
+                $response
+            };
             finalize_run_end(&mut run_ctx, &active_tool_descriptors, &config.plugins).await;
             if let Err(error) = pending_delta_commit
                 .commit(&mut run_ctx, CheckpointReason::RunFinished, true)
@@ -812,10 +822,6 @@ pub async fn run_loop(
             );
         }
     }
-    if pending_interaction_from_ctx(&run_ctx).is_some() {
-        terminate_run!(TerminationReason::PendingInteraction, None, None);
-    }
-
     loop {
         if is_run_cancelled(run_cancellation_token.as_ref()) {
             terminate_run!(TerminationReason::Cancelled, None, None);
@@ -846,10 +852,10 @@ pub async fn run_loop(
             };
         run_ctx.add_thread_patches(prepared.pending_patches);
 
+        if let Some(reason) = prepared.termination_request {
+            terminate_run!(reason, None, None);
+        }
         if prepared.skip_inference {
-            if pending_interaction_from_ctx(&run_ctx).is_some() {
-                terminate_run!(TerminationReason::PendingInteraction, None, None);
-            }
             terminate_run!(
                 TerminationReason::PluginRequested,
                 Some(last_text.clone()),
@@ -1040,25 +1046,23 @@ pub async fn run_loop(
             );
         }
 
-        // Pause only when ALL tools are pending — if some completed, continue so
-        // the LLM sees their results while the pending tool shows "awaiting approval".
-        if let Some(interaction) = applied.pending_interaction {
-            let has_completed =
-                results.iter().any(|r| r.pending_interaction.is_none() && !r.deferred_pending);
+        // If ALL tools are pending (no completed results), terminate immediately.
+        // With parallel execution, only one pending interaction is active — the
+        // rest are deferred by coalesce_pending_interactions (result message
+        // contains "was deferred"). A truly completed tool has no pending
+        // interaction and was NOT deferred.
+        if applied.pending_interaction.is_some() {
+            let has_completed = results.iter().any(|r| {
+                r.pending_interaction.is_none()
+                    && !r
+                        .execution
+                        .result
+                        .message
+                        .as_deref()
+                        .is_some_and(|m| m.contains("was deferred"))
+            });
             if !has_completed {
                 terminate_run!(TerminationReason::PendingInteraction, None, None);
-            }
-            // Some tools completed alongside the pending one. Clear the pending
-            // state from LoopControlState so subsequent apply_tool_results_impl
-            // calls don't clear it. The terminate_run! macro will re-persist it
-            // when the run eventually finishes.
-            deferred_pending_interaction = Some(interaction);
-            if let Ok(state) = run_ctx.snapshot() {
-                if let Ok(patch) = clear_agent_pending_interaction(&state) {
-                    if !patch.patch().is_empty() {
-                        run_ctx.add_thread_patch(patch);
-                    }
-                }
             }
         }
 

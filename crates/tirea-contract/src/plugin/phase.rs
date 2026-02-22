@@ -8,6 +8,7 @@
 use crate::event::interaction::{
     FrontendToolInvocation, Interaction, InvocationOrigin, ResponseRouting,
 };
+use crate::event::termination::TerminationReason;
 use crate::runtime::result::StreamResult;
 use crate::thread::{Message, ToolCall};
 use crate::tool::context::ToolCallContext;
@@ -228,6 +229,8 @@ pub struct StepContext<'a> {
     // === Flow Control ===
     /// Skip LLM inference.
     pub skip_inference: bool,
+    /// Plugin-requested termination reason (set via `BeforeInferenceContext::request_termination`).
+    pub termination_request: Option<TerminationReason>,
 
     // === Pending State Changes ===
     /// Patches to apply to session state after this phase completes.
@@ -253,6 +256,7 @@ impl<'a> StepContext<'a> {
             tool: None,
             response: None,
             skip_inference: false,
+            termination_request: None,
             pending_patches: Vec::new(),
         }
     }
@@ -319,6 +323,7 @@ impl<'a> StepContext<'a> {
         self.tool = None;
         self.response = None;
         self.skip_inference = false;
+        self.termination_request = None;
         self.pending_patches.clear();
     }
 
@@ -616,6 +621,15 @@ impl<'s, 'a> BeforeInferenceContext<'s, 'a> {
     pub fn skip_inference(&mut self) {
         self.step.skip_inference = true;
     }
+
+    /// Request run termination with a specific reason.
+    ///
+    /// This implicitly sets `skip_inference = true`, so the existing
+    /// `PhasePolicy::allow_skip_inference_mutation` check covers it.
+    pub fn request_termination(&mut self, reason: TerminationReason) {
+        self.step.skip_inference = true;
+        self.step.termination_request = Some(reason);
+    }
 }
 
 pub struct AfterInferenceContext<'s, 'a> {
@@ -819,6 +833,7 @@ mod tests {
         assert!(ctx.tool.is_none());
         assert!(ctx.response.is_none());
         assert!(!ctx.skip_inference);
+        assert!(ctx.termination_request.is_none());
     }
 
     #[test]
@@ -830,6 +845,7 @@ mod tests {
         ctx.thread("test");
         ctx.reminder("test");
         ctx.skip_inference = true;
+        ctx.termination_request = Some(TerminationReason::PluginRequested);
 
         ctx.reset();
 
@@ -837,6 +853,7 @@ mod tests {
         assert!(ctx.session_context.is_empty());
         assert!(ctx.system_reminders.is_empty());
         assert!(!ctx.skip_inference);
+        assert!(ctx.termination_request.is_none());
     }
 
     // =========================================================================
