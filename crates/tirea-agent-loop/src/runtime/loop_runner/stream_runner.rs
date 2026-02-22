@@ -143,6 +143,7 @@ pub(super) fn run_stream(
     Box::pin(stream! {
     let mut run_ctx = run_ctx;
     let mut decision_rx = decision_rx;
+    let mut pending_decisions = std::collections::VecDeque::new();
     let executor = llm_executor_for_run(&config);
     let mut run_state = RunState::new();
     let mut last_text = String::new();
@@ -304,6 +305,7 @@ pub(super) fn run_stream(
             let decision_events = match apply_decisions_and_replay(
                 &mut run_ctx,
                 &mut decision_rx,
+                &mut pending_decisions,
                 &step_tool_provider,
                 &config,
                 &mut active_tool_descriptors,
@@ -456,6 +458,7 @@ pub(super) fn run_stream(
                                 &mut run_ctx,
                                 response,
                                 &mut decision_rx,
+                                &mut pending_decisions,
                                 &step_tool_provider,
                                 &config,
                                 &mut active_tool_descriptors,
@@ -487,6 +490,7 @@ pub(super) fn run_stream(
                                 &mut run_ctx,
                                 response,
                                 &mut decision_rx,
+                                &mut pending_decisions,
                                 &step_tool_provider,
                                 &config,
                                 &mut active_tool_descriptors,
@@ -677,6 +681,7 @@ pub(super) fn run_stream(
                             &mut run_ctx,
                             response,
                             &mut decision_rx,
+                            &mut pending_decisions,
                             &step_tool_provider,
                             &config,
                             &mut active_tool_descriptors,
@@ -774,6 +779,27 @@ pub(super) fn run_stream(
                 terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
             }
 
+            let decision_events = match apply_decisions_and_replay(
+                &mut run_ctx,
+                &mut decision_rx,
+                &mut pending_decisions,
+                &step_tool_provider,
+                &config,
+                &mut active_tool_descriptors,
+                &pending_delta_commit,
+            )
+            .await
+            {
+                Ok(events) => events,
+                Err(e) => {
+                    let message = e.to_string();
+                    terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
+                }
+            };
+            for event in decision_events {
+                yield emitter.emit_existing(event);
+            }
+
             // Emit non-pending tool results (pending ones pause the run).
             for exec_result in &results {
                 if exec_result.pending_interaction.is_none() {
@@ -792,7 +818,7 @@ pub(super) fn run_stream(
             }
 
             // If ALL tools are suspended (no completed results), terminate immediately.
-            if !applied.suspended_calls.is_empty() {
+            if has_suspended_calls(&run_ctx) {
                 let has_completed = results.iter().any(|r| r.pending_interaction.is_none());
                 if !has_completed {
                     finish_run!(TerminationReason::PendingInteraction, None);

@@ -71,7 +71,7 @@ use crate::runtime::streaming::StreamCollector;
 use async_stream::stream;
 use futures::{Stream, StreamExt};
 use genai::Client;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -974,26 +974,44 @@ pub(super) fn resolve_suspended_call(
 pub(super) fn drain_decision_channel(
     run_ctx: &mut RunContext,
     decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
+    pending_decisions: &mut VecDeque<InteractionResponse>,
 ) -> Result<Vec<String>, AgentLoopError> {
-    let Some(rx) = decision_rx.as_mut() else {
-        return Ok(Vec::new());
-    };
-
-    let mut resolved_call_ids = Vec::new();
-    let mut seen = HashSet::new();
-    loop {
-        match rx.try_recv() {
-            Ok(response) => {
-                if let Some(call_id) = resolve_suspended_call(run_ctx, &response)? {
-                    if seen.insert(call_id.clone()) {
-                        resolved_call_ids.push(call_id);
-                    }
+    let mut disconnected = false;
+    if let Some(rx) = decision_rx.as_mut() {
+        loop {
+            match rx.try_recv() {
+                Ok(response) => pending_decisions.push_back(response),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
                 }
             }
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-            | Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
         }
     }
+    if disconnected {
+        *decision_rx = None;
+    }
+
+    if pending_decisions.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut unresolved = VecDeque::new();
+    let mut resolved_call_ids = Vec::new();
+    let mut seen = HashSet::new();
+
+    while let Some(response) = pending_decisions.pop_front() {
+        if let Some(call_id) = resolve_suspended_call(run_ctx, &response)? {
+            if seen.insert(call_id.clone()) {
+                resolved_call_ids.push(call_id);
+            }
+        } else {
+            unresolved.push_back(response);
+        }
+    }
+    *pending_decisions = unresolved;
+
     Ok(resolved_call_ids)
 }
 
@@ -1030,12 +1048,14 @@ async fn replay_after_decisions(
 async fn apply_decisions_and_replay(
     run_ctx: &mut RunContext,
     decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
+    pending_decisions: &mut VecDeque<InteractionResponse>,
     step_tool_provider: &Arc<dyn StepToolProvider>,
     config: &AgentConfig,
     active_tool_descriptors: &mut Vec<crate::contracts::tool::ToolDescriptor>,
     pending_delta_commit: &PendingDeltaCommitContext<'_>,
 ) -> Result<Vec<AgentEvent>, AgentLoopError> {
-    let decisions_applied = !drain_decision_channel(run_ctx, decision_rx)?.is_empty();
+    let decisions_applied =
+        !drain_decision_channel(run_ctx, decision_rx, pending_decisions)?.is_empty();
     replay_after_decisions(
         run_ctx,
         decisions_applied,
@@ -1056,25 +1076,14 @@ async fn apply_decision_and_replay(
     run_ctx: &mut RunContext,
     response: InteractionResponse,
     decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
+    pending_decisions: &mut VecDeque<InteractionResponse>,
     step_tool_provider: &Arc<dyn StepToolProvider>,
     config: &AgentConfig,
     active_tool_descriptors: &mut Vec<crate::contracts::tool::ToolDescriptor>,
     pending_delta_commit: &PendingDeltaCommitContext<'_>,
 ) -> Result<DecisionReplayOutcome, AgentLoopError> {
-    let mut resolved_call_ids = Vec::new();
-    let mut seen = HashSet::new();
-
-    if let Some(call_id) = resolve_suspended_call(run_ctx, &response)? {
-        if seen.insert(call_id.clone()) {
-            resolved_call_ids.push(call_id);
-        }
-    }
-
-    for call_id in drain_decision_channel(run_ctx, decision_rx)? {
-        if seen.insert(call_id.clone()) {
-            resolved_call_ids.push(call_id);
-        }
-    }
+    pending_decisions.push_back(response);
+    let resolved_call_ids = drain_decision_channel(run_ctx, decision_rx, pending_decisions)?;
 
     let events = replay_after_decisions(
         run_ctx,
@@ -1115,6 +1124,7 @@ pub async fn run_loop(
     let executor = llm_executor_for_run(config);
     let mut run_state = RunState::new();
     let stop_conditions = effective_stop_conditions(config);
+    let mut pending_decisions = VecDeque::new();
     let run_cancellation_token = cancellation_token;
     let mut last_text = String::new();
     let step_tool_provider = step_tool_provider_for_run(config, tools);
@@ -1222,6 +1232,7 @@ pub async fn run_loop(
         if let Err(error) = apply_decisions_and_replay(
             &mut run_ctx,
             &mut decision_rx,
+            &mut pending_decisions,
             &step_tool_provider,
             config,
             &mut active_tool_descriptors,
@@ -1430,7 +1441,7 @@ pub async fn run_loop(
             }
         };
 
-        let applied = match apply_tool_results_to_session(
+        if let Err(_e) = apply_tool_results_to_session(
             &mut run_ctx,
             &results,
             Some(step_meta),
@@ -1438,16 +1449,13 @@ pub async fn run_loop(
                 .tool_executor
                 .requires_parallel_patch_conflict_check(),
         ) {
-            Ok(a) => a,
-            Err(_e) => {
-                // On error, we can't easily rollback RunContext, so just terminate
-                terminate_run!(
-                    TerminationReason::Error,
-                    None,
-                    Some(outcome::LoopFailure::State(_e.to_string()))
-                );
-            }
-        };
+            // On error, we can't easily rollback RunContext, so just terminate
+            terminate_run!(
+                TerminationReason::Error,
+                None,
+                Some(outcome::LoopFailure::State(_e.to_string()))
+            );
+        }
         if let Err(error) = pending_delta_commit
             .commit(&mut run_ctx, CheckpointReason::ToolResultsCommitted, false)
             .await
@@ -1459,8 +1467,26 @@ pub async fn run_loop(
             );
         }
 
+        if let Err(error) = apply_decisions_and_replay(
+            &mut run_ctx,
+            &mut decision_rx,
+            &mut pending_decisions,
+            &step_tool_provider,
+            config,
+            &mut active_tool_descriptors,
+            &pending_delta_commit,
+        )
+        .await
+        {
+            terminate_run!(
+                TerminationReason::Error,
+                None,
+                Some(outcome::LoopFailure::State(error.to_string()))
+            );
+        }
+
         // If ALL tools are suspended (no completed results), terminate immediately.
-        if !applied.suspended_calls.is_empty() {
+        if has_suspended_calls(&run_ctx) {
             let has_completed = results.iter().any(|r| r.pending_interaction.is_none());
             if !has_completed {
                 terminate_run!(TerminationReason::PendingInteraction, None, None);

@@ -9762,6 +9762,259 @@ async fn test_run_loop_stream_decision_channel_emits_resolution_and_replay() {
 }
 
 #[tokio::test]
+async fn test_run_loop_decision_channel_buffers_early_response_for_all_suspended_tools() {
+    struct FrontendTool;
+
+    #[async_trait]
+    impl Tool for FrontendTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("frontend_tool", "Frontend Tool", "needs approval").with_parameters(
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "message": { "type": "string" },
+                        "approved": { "type": "boolean" }
+                    },
+                    "required": ["message"]
+                }),
+            )
+        }
+
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success(
+                "frontend_tool",
+                json!({
+                    "message": args.get("message").and_then(Value::as_str).unwrap_or_default(),
+                    "approved": args.get("approved").and_then(Value::as_bool).unwrap_or(false),
+                }),
+            ))
+        }
+    }
+
+    struct EarlyPendingPlugin {
+        entered: Arc<Notify>,
+        allow_pending: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl AgentPlugin for EarlyPendingPlugin {
+        fn id(&self) -> &str {
+            "early_pending_nonstream"
+        }
+
+        phase_dispatch_methods!(|this, phase, step| {
+            if phase != Phase::BeforeToolExecute {
+                return;
+            }
+            if step.tool_name() != Some("frontend_tool") {
+                return;
+            }
+            let already_approved = step
+                .tool_args()
+                .and_then(|args| args.get("approved"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if already_approved {
+                return;
+            }
+            this.entered.notify_one();
+            this.allow_pending.notified().await;
+            let args = step.tool_args().cloned().unwrap_or_default();
+            step.ask_frontend_tool("frontend_tool", args, ResponseRouting::UseAsToolResult);
+        });
+    }
+
+    let mut first = text_chat_response("");
+    first.content = MessageContent::from_tool_calls(vec![genai::chat::ToolCall {
+        call_id: "call_pending".to_string(),
+        fn_name: "frontend_tool".to_string(),
+        fn_arguments: json!({ "message": "need approval" }),
+        thought_signatures: None,
+    }]);
+    let provider = Arc::new(MockChatProvider::new(vec![
+        Ok(first),
+        Ok(text_chat_response("done")),
+    ]));
+    let entered = Arc::new(Notify::new());
+    let allow_pending = Arc::new(Notify::new());
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(EarlyPendingPlugin {
+            entered: entered.clone(),
+            allow_pending: allow_pending.clone(),
+        }) as Arc<dyn AgentPlugin>)
+        .with_llm_executor(provider as Arc<dyn LlmExecutor>);
+
+    let thread = Thread::new("test").with_message(Message::user("run"));
+    let run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).expect("run ctx");
+    let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+    tools.insert(
+        "frontend_tool".to_string(),
+        Arc::new(FrontendTool) as Arc<dyn Tool>,
+    );
+
+    let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
+    let run_task = tokio::spawn(async move {
+        run_loop(&config, tools, run_ctx, None, None, Some(decision_rx)).await
+    });
+
+    entered.notified().await;
+    decision_tx
+        .send(crate::contracts::InteractionResponse::new(
+            "call_pending",
+            json!({"approved": true, "message": "need approval"}),
+        ))
+        .expect("send decision");
+    allow_pending.notify_one();
+
+    let outcome = run_task.await.expect("join run task");
+    assert_eq!(outcome.termination, TerminationReason::NaturalEnd);
+    assert_eq!(outcome.response.as_deref(), Some("done"));
+    assert!(
+        outcome.run_ctx.messages().iter().any(|message| {
+            message.role == Role::Tool
+                && message.tool_call_id.as_deref() == Some("call_pending")
+                && !message
+                    .content
+                    .contains("is awaiting approval. Execution paused.")
+        }),
+        "queued decision should be replayed after pending state is applied"
+    );
+}
+
+#[tokio::test]
+async fn test_stream_decision_channel_buffers_early_response_for_all_suspended_tools() {
+    struct FrontendTool;
+
+    #[async_trait]
+    impl Tool for FrontendTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("frontend_tool", "Frontend Tool", "needs approval").with_parameters(
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "message": { "type": "string" },
+                        "approved": { "type": "boolean" }
+                    },
+                    "required": ["message"]
+                }),
+            )
+        }
+
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success(
+                "frontend_tool",
+                json!({
+                    "message": args.get("message").and_then(Value::as_str).unwrap_or_default(),
+                    "approved": args.get("approved").and_then(Value::as_bool).unwrap_or(false),
+                }),
+            ))
+        }
+    }
+
+    struct EarlyPendingPlugin {
+        entered: Arc<Notify>,
+        allow_pending: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl AgentPlugin for EarlyPendingPlugin {
+        fn id(&self) -> &str {
+            "early_pending_stream"
+        }
+
+        phase_dispatch_methods!(|this, phase, step| {
+            if phase != Phase::BeforeToolExecute {
+                return;
+            }
+            if step.tool_name() != Some("frontend_tool") {
+                return;
+            }
+            let already_approved = step
+                .tool_args()
+                .and_then(|args| args.get("approved"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if already_approved {
+                return;
+            }
+            this.entered.notify_one();
+            this.allow_pending.notified().await;
+            let args = step.tool_args().cloned().unwrap_or_default();
+            step.ask_frontend_tool("frontend_tool", args, ResponseRouting::UseAsToolResult);
+        });
+    }
+
+    let responses = vec![
+        MockResponse::text("").with_tool_call(
+            "call_pending",
+            "frontend_tool",
+            json!({"message": "need approval"}),
+        ),
+        MockResponse::text("done"),
+    ];
+    let provider = MockStreamProvider::new(responses);
+    let entered = Arc::new(Notify::new());
+    let allow_pending = Arc::new(Notify::new());
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(EarlyPendingPlugin {
+            entered: entered.clone(),
+            allow_pending: allow_pending.clone(),
+        }) as Arc<dyn AgentPlugin>)
+        .with_llm_executor(Arc::new(provider));
+
+    let thread = Thread::new("test").with_message(Message::user("run"));
+    let run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).expect("run ctx");
+    let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+    tools.insert(
+        "frontend_tool".to_string(),
+        Arc::new(FrontendTool) as Arc<dyn Tool>,
+    );
+
+    let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
+    let stream = run_loop_stream(config, tools, run_ctx, None, None, Some(decision_rx));
+    let collect_task = tokio::spawn(async move { collect_stream_events(stream).await });
+
+    entered.notified().await;
+    decision_tx
+        .send(crate::contracts::InteractionResponse::new(
+            "call_pending",
+            json!({"approved": true, "message": "need approval"}),
+        ))
+        .expect("send decision");
+    allow_pending.notify_one();
+
+    let events = collect_task.await.expect("join collect task");
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::NaturalEnd)
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::InteractionResolved { interaction_id, .. } if interaction_id == "call_pending"
+        )),
+        "queued decision should resolve once pending call is materialized: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolCallDone { id, .. } if id == "call_pending"
+        )),
+        "replayed tool result should be emitted after queued decision: {events:?}"
+    );
+}
+
+#[tokio::test]
 async fn test_stream_decision_channel_drains_while_inference_stream_is_running() {
     struct HangingStreamProvider;
 
