@@ -337,7 +337,7 @@ impl ActivityContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::control::LoopControlState;
+    use crate::runtime::control::InferenceErrorState;
     use serde_json::json;
     use tokio::time::{timeout, Duration};
     use tokio_util::sync::CancellationToken;
@@ -379,9 +379,7 @@ mod tests {
 
     #[test]
     fn test_state_of_read_write() {
-        let doc = DocCell::new(
-            json!({"loop_control": {"pending_interaction": null, "inference_error": null}}),
-        );
+        let doc = DocCell::new(json!({"__inference_error": {"error": null}}));
         let ops = Mutex::new(Vec::new());
         let scope = RunConfig::default();
         let pending = Mutex::new(Vec::new());
@@ -389,15 +387,15 @@ mod tests {
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
         // Write
-        let ctrl = ctx.state_of::<LoopControlState>();
-        ctrl.set_inference_error(Some(crate::runtime::control::InferenceError {
+        let ctrl = ctx.state_of::<InferenceErrorState>();
+        ctrl.set_error(Some(crate::runtime::control::InferenceError {
             error_type: "rate_limit".into(),
             message: "too many requests".into(),
         }))
         .expect("failed to set inference_error");
 
         // Read back from same ref
-        let err = ctrl.inference_error().unwrap();
+        let err = ctrl.error().unwrap();
         assert!(err.is_some());
         assert_eq!(err.unwrap().error_type, "rate_limit");
 
@@ -407,9 +405,7 @@ mod tests {
 
     #[test]
     fn test_write_through_read_cross_ref() {
-        let doc = DocCell::new(
-            json!({"loop_control": {"pending_interaction": null, "inference_error": null}}),
-        );
+        let doc = DocCell::new(json!({"__inference_error": {"error": null}}));
         let ops = Mutex::new(Vec::new());
         let scope = RunConfig::default();
         let pending = Mutex::new(Vec::new());
@@ -417,34 +413,29 @@ mod tests {
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
         // Write via first ref
-        ctx.state_of::<LoopControlState>()
-            .set_inference_error(Some(crate::runtime::control::InferenceError {
+        ctx.state_of::<InferenceErrorState>()
+            .set_error(Some(crate::runtime::control::InferenceError {
                 error_type: "timeout".into(),
                 message: "timed out".into(),
             }))
             .expect("failed to set inference_error");
 
         // Read via second ref
-        let err = ctx
-            .state_of::<LoopControlState>()
-            .inference_error()
-            .unwrap();
+        let err = ctx.state_of::<InferenceErrorState>().error().unwrap();
         assert_eq!(err.unwrap().error_type, "timeout");
     }
 
     #[test]
     fn test_take_patch() {
-        let doc = DocCell::new(
-            json!({"loop_control": {"pending_interaction": null, "inference_error": null}}),
-        );
+        let doc = DocCell::new(json!({"__inference_error": {"error": null}}));
         let ops = Mutex::new(Vec::new());
         let scope = RunConfig::default();
         let pending = Mutex::new(Vec::new());
 
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
-        ctx.state_of::<LoopControlState>()
-            .set_inference_error(Some(crate::runtime::control::InferenceError {
+        ctx.state_of::<InferenceErrorState>()
+            .set_error(Some(crate::runtime::control::InferenceError {
                 error_type: "test".into(),
                 message: "test".into(),
             }))
@@ -484,8 +475,8 @@ mod tests {
 
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
-        let ctrl = ctx.call_state::<LoopControlState>();
-        ctrl.set_inference_error(Some(crate::runtime::control::InferenceError {
+        let ctrl = ctx.call_state::<InferenceErrorState>();
+        ctrl.set_error(Some(crate::runtime::control::InferenceError {
             error_type: "call_scoped".into(),
             message: "test".into(),
         }))

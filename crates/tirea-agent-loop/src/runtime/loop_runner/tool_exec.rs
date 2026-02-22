@@ -8,6 +8,7 @@ use super::{
 };
 use crate::contracts::plugin::phase::{Phase, StepContext, ToolContext};
 use crate::contracts::plugin::AgentPlugin;
+use crate::contracts::runtime::state_paths::SUSPENDED_TOOL_CALLS_STATE_PATH;
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
     StreamResult, ToolExecution, ToolExecutionRequest, ToolExecutionResult, ToolExecutor,
@@ -21,13 +22,11 @@ use crate::contracts::SuspendedCall;
 use crate::engine::convert::tool_response;
 use crate::engine::tool_execution::collect_patches;
 use crate::engine::tool_filter::{SCOPE_ALLOWED_TOOLS_KEY, SCOPE_EXCLUDED_TOOLS_KEY};
-use crate::runtime::control::LoopControlState;
 use crate::runtime::run_context::{await_or_cancel, is_cancelled, CancelAware};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tirea_state::State;
 use tirea_state::{PatchExt, TrackedPatch};
 
 pub(super) struct AppliedToolResults {
@@ -267,10 +266,8 @@ pub(super) fn apply_tool_results_impl(
         let state = run_ctx
             .snapshot()
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-        let patch = set_agent_suspended_calls(
-            &state,
-            merged_suspended.into_values().collect::<Vec<_>>(),
-        )?;
+        let patch =
+            set_agent_suspended_calls(&state, merged_suspended.into_values().collect::<Vec<_>>())?;
         if !patch.patch().is_empty() {
             state_changed = true;
             run_ctx.add_thread_patch(patch);
@@ -290,25 +287,16 @@ pub(super) fn apply_tool_results_impl(
         });
     }
 
-    // Keep unresolved suspended calls until explicit resolution. Only clear stale
-    // compatibility fields when no suspended map is present.
+    // Keep unresolved suspended calls until explicit resolution.
     let state = run_ctx
         .snapshot()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     let has_persisted_suspended = state
-        .get(LoopControlState::PATH)
-        .and_then(|v| v.get("suspended_calls"))
+        .get(SUSPENDED_TOOL_CALLS_STATE_PATH)
+        .and_then(|v| v.get("calls"))
         .and_then(|v| v.as_object())
         .is_some_and(|m| !m.is_empty());
-    let has_compat_only = state
-        .get(LoopControlState::PATH)
-        .and_then(|v| v.get("pending_interaction"))
-        .is_some()
-        || state
-            .get(LoopControlState::PATH)
-            .and_then(|v| v.get("pending_frontend_invocation"))
-            .is_some();
-    if !has_persisted_suspended && has_compat_only {
+    if !has_persisted_suspended {
         let patch = clear_all_suspended_calls(&state)?;
         if !patch.patch().is_empty() {
             state_changed = true;

@@ -92,9 +92,15 @@ fn conflicting_results_for_same_interaction_id_use_last_result() {
 fn interaction_responses_filter_to_pending_ids_when_state_exists() {
     let request = RunAgentInput::new("thread_1", "run_1")
         .with_state(json!({
-            "loop_control": {
-                "pending_interaction": { "id": "call_pending" },
-                "pending_frontend_invocation": { "call_id": "call_pending" }
+            "__suspended_tool_calls": {
+                "calls": {
+                    "call_pending": {
+                        "call_id": "call_pending",
+                        "tool_name": "confirm",
+                        "interaction": { "id": "call_pending", "action": "confirm" },
+                        "frontend_invocation": { "call_id": "call_pending" }
+                    }
+                }
             }
         }))
         .with_message(Message::tool("true", "call_pending"))

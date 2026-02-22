@@ -1,6 +1,8 @@
 use super::*;
 use tirea_contract::plugin::phase::PluginPhaseContext;
-use tirea_extension_interaction::InteractionOutbox;
+use tirea_contract::runtime::control::{SuspendedCall, SuspendedToolCallsState};
+use tirea_contract::runtime::state_paths::SUSPENDED_TOOL_CALLS_STATE_PATH;
+use tirea_extension_interaction::ResumeToolCallsState;
 use tirea_state::State;
 pub(super) fn as_delegation_record(
     summary: &AgentRunSummary,
@@ -88,16 +90,51 @@ pub(super) fn build_recovery_interaction(run_id: &str, run: &DelegationRecord) -
 }
 
 pub(super) fn parse_pending_interaction_from_state(state: &Value) -> Option<Interaction> {
-    state
-        .get(crate::runtime::control::LoopControlState::PATH)
-        .and_then(|a| a.get("pending_interaction"))
+    let calls = state
+        .get(SUSPENDED_TOOL_CALLS_STATE_PATH)
+        .and_then(|a| a.get("calls"))
         .cloned()
-        .and_then(|v| serde_json::from_value::<Interaction>(v).ok())
+        .and_then(|v| serde_json::from_value::<HashMap<String, SuspendedCall>>(v).ok())
+        .unwrap_or_default();
+    calls
+        .iter()
+        .min_by(|(left, _), (right, _)| left.cmp(right))
+        .map(|(_, call)| call.interaction.clone())
+}
+
+pub(super) fn has_pending_recovery_interaction(state: &Value) -> bool {
+    state
+        .get(SUSPENDED_TOOL_CALLS_STATE_PATH)
+        .and_then(|a| a.get("calls"))
+        .cloned()
+        .and_then(|v| serde_json::from_value::<HashMap<String, SuspendedCall>>(v).ok())
+        .unwrap_or_default()
+        .values()
+        .any(|call| call.interaction.action == AGENT_RECOVERY_INTERACTION_ACTION)
+}
+
+pub(super) fn set_pending_recovery_interaction(
+    step: &impl PluginPhaseContext,
+    interaction: Interaction,
+) {
+    let state = step.state_of::<SuspendedToolCallsState>();
+    let mut calls = state.calls().ok().unwrap_or_default();
+    let call_id = interaction.id.clone();
+    calls.insert(
+        call_id.clone(),
+        SuspendedCall {
+            call_id,
+            tool_name: AGENT_RECOVERY_INTERACTION_ACTION.to_string(),
+            interaction,
+            frontend_invocation: None,
+        },
+    );
+    let _ = state.set_calls(calls);
 }
 
 pub(super) fn schedule_recovery_replay(step: &impl PluginPhaseContext, run_id: &str) {
-    let outbox = step.state_of::<InteractionOutbox>();
-    let mut replay_calls = outbox.replay_tool_calls().ok().unwrap_or_default();
+    let outbox = step.state_of::<ResumeToolCallsState>();
+    let mut replay_calls = outbox.calls().ok().unwrap_or_default();
 
     let exists = replay_calls.iter().any(|call| {
         call.name == AGENT_RUN_TOOL_ID
@@ -119,7 +156,7 @@ pub(super) fn schedule_recovery_replay(step: &impl PluginPhaseContext, run_id: &
             "background": false
         }),
     ));
-    let _ = outbox.set_replay_tool_calls(replay_calls);
+    let _ = outbox.set_calls(replay_calls);
 }
 
 #[derive(Debug, Default, Clone)]

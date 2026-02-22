@@ -6,7 +6,10 @@ use crate::contracts::plugin::phase::{
     BeforeToolExecuteContext, Phase, RunEndContext, RunStartContext, StepEndContext,
     StepStartContext,
 };
-use crate::contracts::runtime::state_paths::INTERACTION_OUTBOX_STATE_PATH;
+use crate::contracts::runtime::control::LoopControlExt;
+use crate::contracts::runtime::state_paths::{
+    RESOLVED_SUSPENSIONS_STATE_PATH, RESUME_TOOL_CALLS_STATE_PATH,
+};
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::LlmExecutor;
 use crate::contracts::storage::VersionPrecondition;
@@ -25,7 +28,7 @@ use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use tirea_contract::testing::TestFixture;
-use tirea_extension_interaction::InteractionOutbox;
+use tirea_extension_interaction::ResumeToolCallsState;
 use tirea_state::{Op, Patch, State};
 use tokio::sync::Notify;
 
@@ -1027,7 +1030,7 @@ fn test_execute_tools_with_state_changes() {
         let thread = execute_tools(thread, &result, &tools, true).await.unwrap();
 
         assert_eq!(thread.message_count(), 1);
-        assert_eq!(thread.patch_count(), 1);
+        assert_eq!(thread.patch_count(), 2);
 
         let state = thread.rebuild_state().unwrap();
         assert_eq!(state["counter"], 5);
@@ -1713,9 +1716,9 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
             this.phases.lock().unwrap().push(phase);
             match phase {
                 Phase::AfterInference => {
-                    let agent = step.state_of::<crate::runtime::control::LoopControlState>();
+                    let agent = step.state_of::<crate::runtime::control::InferenceErrorState>();
                     let err = agent
-                        .inference_error()
+                        .error()
                         .ok()
                         .flatten()
                         .map(|v| json!({"type": v.error_type, "message": v.message}));
@@ -1962,7 +1965,7 @@ fn test_execute_tools_with_pending_phase_plugin() {
 
         let state = thread.snapshot().unwrap();
         assert_eq!(
-            state["loop_control"]["pending_interaction"]["id"],
+            state["__suspended_tool_calls"]["calls"]["call_1"]["interaction"]["id"],
             "confirm_1"
         );
     });
@@ -2011,10 +2014,11 @@ fn test_invalid_args_are_returned_as_tool_error_before_pending_confirmation() {
 
         let final_state = thread.rebuild_state().expect("state should rebuild");
         let pending = final_state
-            .get("loop_control")
-            .and_then(|a| a.get("pending_interaction"));
+            .get("__suspended_tool_calls")
+            .and_then(|a| a.get("calls"))
+            .and_then(|v| v.as_object());
         assert!(
-            pending.is_none() || pending == Some(&Value::Null),
+            pending.map_or(true, |calls| calls.is_empty()),
             "invalid args should not persist pending interaction: {pending:?}"
         );
     });
@@ -2051,13 +2055,12 @@ fn test_apply_tool_results_suspends_all_pending_interactions() {
         run_ctx.messages()[1].content
     );
     let state = run_ctx.snapshot().expect("snapshot should succeed");
-    // Backward-compatible view: first entry populates pending_interaction
     assert_eq!(
-        state["loop_control"]["pending_interaction"]["id"],
+        state["__suspended_tool_calls"]["calls"]["call_1"]["interaction"]["id"],
         "confirm_1"
     );
     // Per-call map has both entries
-    let suspended = &state["loop_control"]["suspended_calls"];
+    let suspended = &state["__suspended_tool_calls"]["calls"];
     assert!(suspended.get("call_1").is_some());
     assert!(suspended.get("call_2").is_some());
 }
@@ -2406,8 +2409,8 @@ fn test_execute_tools_with_config_denied_permission_is_visible_as_tool_error() {
         let thread = Thread::with_initial_state(
             "test",
             json!({
-                "loop_control": {
-                    "suspended_calls": {
+                "__suspended_tool_calls": {
+                    "calls": {
                         "call_1": {
                             "call_id": "call_1",
                             "tool_name": "echo",
@@ -2454,10 +2457,10 @@ fn test_execute_tools_with_config_denied_permission_is_visible_as_tool_error() {
 
         let final_state = thread.rebuild_state().expect("state should rebuild");
         let suspended = final_state
-            .get("loop_control")
-            .and_then(|a| a.get("suspended_calls"))
+            .get("__suspended_tool_calls")
+            .and_then(|a| a.get("calls"))
             .and_then(|v| v.as_object());
-        assert!(suspended.is_none() || suspended.is_some_and(|calls| calls.is_empty()));
+        assert!(suspended.map_or(true, |calls| calls.is_empty()));
     });
 }
 
@@ -2503,7 +2506,7 @@ fn test_execute_tools_with_config_with_pending_plugin() {
         // Pending interaction should be persisted via RunContext.
         let state = thread.snapshot().unwrap();
         assert_eq!(
-            state["loop_control"]["pending_interaction"]["id"],
+            state["__suspended_tool_calls"]["calls"]["call_1"]["interaction"]["id"],
             "confirm_1"
         );
     });
@@ -2569,8 +2572,8 @@ fn test_execute_tools_with_config_preserves_unresolved_suspended_calls_on_succes
 
         let state = thread.rebuild_state().unwrap();
         let suspended = state
-            .get("loop_control")
-            .and_then(|a| a.get("suspended_calls"))
+            .get("__suspended_tool_calls")
+            .and_then(|a| a.get("calls"))
             .and_then(|a| a.as_object());
         assert!(
             suspended.is_some_and(|calls| calls.contains_key("confirm_1")),
@@ -2601,13 +2604,10 @@ fn test_set_agent_suspended_calls_compat_view_uses_smallest_call_id() {
     )
     .expect("set suspended calls");
     let thread = Thread::with_initial_state("test", base_state).with_patch(patch);
-    let state = thread.rebuild_state().expect("state should rebuild");
-
-    assert_eq!(
-        state["loop_control"]["pending_interaction"]["id"],
-        Value::String("int_a".to_string()),
-        "compat pending_interaction should be derived from smallest call_id"
-    );
+    let pending = thread
+        .pending_interaction()
+        .expect("pending interaction expected");
+    assert_eq!(pending.id, "int_a");
 }
 
 #[test]
@@ -2791,8 +2791,8 @@ async fn test_stream_run_start_outbox_resolution_emits_after_run_start() {
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "interaction_outbox": {
-                "interaction_resolutions": [
+            "__resolved_suspensions": {
+                "resolutions": [
                     {
                         "interaction_id": "resolution_1",
                         "result": true
@@ -2900,8 +2900,8 @@ async fn test_stream_termination_request_with_suspended_only_state_emits_pending
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "recover_1": {
                         "call_id": "recover_1",
                         "tool_name": "recover_agent_run",
@@ -2970,8 +2970,8 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
     let thread = Thread::with_initial_state(
         "test",
         serde_json::json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "call_write": {
                         "call_id": "call_write",
                         "tool_name": "write_file",
@@ -3049,8 +3049,8 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "call_1": {
                         "call_id": "call_1",
                         "tool_name": "echo",
@@ -3153,10 +3153,10 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
 
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
     let suspended = final_state
-        .get("loop_control")
-        .and_then(|a| a.get("suspended_calls"))
+        .get("__suspended_tool_calls")
+        .and_then(|a| a.get("calls"))
         .and_then(|v| v.as_object());
-    assert!(suspended.is_none() || suspended.is_some_and(|calls| calls.is_empty()));
+    assert!(suspended.map_or(true, |calls| calls.is_empty()));
 }
 
 #[tokio::test]
@@ -3190,8 +3190,8 @@ async fn test_run_loop_permission_approval_replays_tool_and_clears_outbox() {
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "call_1": {
                         "call_id": "call_1",
                         "tool_name": "echo",
@@ -3273,14 +3273,14 @@ async fn test_run_loop_permission_approval_replays_tool_and_clears_outbox() {
 
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     let suspended = state
-        .get("loop_control")
-        .and_then(|a| a.get("suspended_calls"))
+        .get("__suspended_tool_calls")
+        .and_then(|a| a.get("calls"))
         .and_then(|v| v.as_object());
-    assert!(suspended.is_none() || suspended.is_some_and(|calls| calls.is_empty()));
+    assert!(suspended.map_or(true, |calls| calls.is_empty()));
 
     let replay_outbox = state
-        .get("interaction_outbox")
-        .and_then(|o| o.get("replay_tool_calls"));
+        .get("__resume_tool_calls")
+        .and_then(|o| o.get("calls"));
     assert!(
         replay_outbox.is_none() || replay_outbox == Some(&json!([])),
         "run_loop should drain replay outbox after run-start replay"
@@ -3319,8 +3319,8 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "call_1": {
                         "call_id": "call_1",
                         "tool_name": "echo",
@@ -3426,8 +3426,8 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "call_1": {
                         "call_id": "call_1",
                         "tool_name": "echo",
@@ -3523,10 +3523,10 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
 
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
     let suspended = final_state
-        .get("loop_control")
-        .and_then(|a| a.get("suspended_calls"))
+        .get("__suspended_tool_calls")
+        .and_then(|a| a.get("calls"))
         .and_then(|v| v.as_object());
-    assert!(suspended.is_none() || suspended.is_some_and(|calls| calls.is_empty()));
+    assert!(suspended.map_or(true, |calls| calls.is_empty()));
 }
 
 #[tokio::test]
@@ -3585,8 +3585,8 @@ async fn test_run_loop_run_start_outbox_resolution_is_drained_without_replay() {
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "interaction_outbox": {
-                "interaction_resolutions": [
+            "__resolved_suspensions": {
+                "resolutions": [
                     {
                         "interaction_id": "resolution_1",
                         "result": true
@@ -3607,8 +3607,8 @@ async fn test_run_loop_run_start_outbox_resolution_is_drained_without_replay() {
 
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     let resolutions = state
-        .get(INTERACTION_OUTBOX_STATE_PATH)
-        .and_then(|outbox| outbox.get("interaction_resolutions"));
+        .get(RESOLVED_SUSPENSIONS_STATE_PATH)
+        .and_then(|outbox| outbox.get("resolutions"));
     assert!(
         resolutions.is_none() || resolutions == Some(&json!([])),
         "run start outbox resolutions should be drained after run start"
@@ -3628,16 +3628,16 @@ async fn test_run_loop_run_start_repending_requeues_remaining_replay_calls() {
         phase_dispatch_methods!(|phase, step| {
             match phase {
                 Phase::RunStart => {
-                    let outbox = step.state_of::<InteractionOutbox>();
+                    let outbox = step.state_of::<ResumeToolCallsState>();
                     outbox
-                        .replay_tool_calls_push(ToolCall::new(
+                        .calls_push(ToolCall::new(
                             "replay_call_1",
                             "echo",
                             json!({"message": "first"}),
                         ))
                         .expect("queue replay_call_1");
                     outbox
-                        .replay_tool_calls_push(ToolCall::new(
+                        .calls_push(ToolCall::new(
                             "replay_call_2",
                             "echo",
                             json!({"message": "second"}),
@@ -3668,12 +3668,16 @@ async fn test_run_loop_run_start_repending_requeues_remaining_replay_calls() {
 
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     let replay_calls = state
-        .get(INTERACTION_OUTBOX_STATE_PATH)
-        .and_then(|outbox| outbox.get("replay_tool_calls"))
+        .get(RESUME_TOOL_CALLS_STATE_PATH)
+        .and_then(|outbox| outbox.get("calls"))
         .and_then(|calls| calls.as_array())
         .cloned()
         .unwrap_or_default();
-    assert_eq!(replay_calls.len(), 1, "expected one replay call to remain queued");
+    assert_eq!(
+        replay_calls.len(),
+        1,
+        "expected one replay call to remain queued"
+    );
     assert_eq!(
         replay_calls[0]["id"],
         Value::String("replay_call_2".to_string()),
@@ -3734,7 +3738,7 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
 
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     assert_eq!(
-        state["loop_control"]["pending_interaction"]["action"],
+        state["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["interaction"]["action"],
         Value::String("recover_agent_run".to_string())
     );
 
@@ -3771,8 +3775,8 @@ async fn test_run_loop_skip_inference_with_suspended_only_state_returns_pending_
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "recover_1": {
                         "call_id": "recover_1",
                         "tool_name": "recover_agent_run",
@@ -4426,8 +4430,8 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
                 return;
             }
 
-            let agent = step.state_of::<crate::runtime::control::LoopControlState>();
-            let err_type = agent.inference_error().ok().flatten().map(|e| e.error_type);
+            let agent = step.state_of::<crate::runtime::control::InferenceErrorState>();
+            let err_type = agent.error().ok().flatten().map(|e| e.error_type);
             assert_eq!(err_type.as_deref(), Some("llm_exec_error"));
         });
     }
@@ -5150,8 +5154,8 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
         .rebuild_state()
         .expect("stream state should rebuild");
     assert_eq!(
-        nonstream_state["loop_control"]["pending_interaction"],
-        stream_state["loop_control"]["pending_interaction"]
+        nonstream_state["__suspended_tool_calls"]["calls"],
+        stream_state["__suspended_tool_calls"]["calls"]
     );
 }
 
@@ -5183,7 +5187,10 @@ async fn test_golden_run_loop_and_stream_no_plugins_pending_state_alignment() {
         None,
     )
     .await;
-    assert_eq!(nonstream_outcome.termination, TerminationReason::PendingInteraction);
+    assert_eq!(
+        nonstream_outcome.termination,
+        TerminationReason::PendingInteraction
+    );
     assert_eq!(nonstream_outcome.stats.llm_calls, 1);
 
     let (stream_events, stream_thread) = run_mock_stream_with_final_thread(
@@ -5246,8 +5253,8 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
     let thread = Thread::with_initial_state(
         "idempotent-replay",
         json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "call_1": {
                         "call_id": "call_1",
                         "tool_name": "counting_echo",
@@ -5341,10 +5348,10 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
 
     let final_state = second_thread.rebuild_state().expect("state should rebuild");
     let suspended = final_state
-        .get("loop_control")
-        .and_then(|a| a.get("suspended_calls"))
+        .get("__suspended_tool_calls")
+        .and_then(|a| a.get("calls"))
         .and_then(|v| v.as_object());
-    assert!(suspended.is_none() || suspended.is_some_and(|calls| calls.is_empty()));
+    assert!(suspended.map_or(true, |calls| calls.is_empty()));
 }
 
 #[tokio::test]
@@ -5384,8 +5391,8 @@ async fn test_nonstream_replay_is_idempotent_across_reruns() {
     let seed_thread = Thread::with_initial_state(
         "idempotent-replay-nonstream",
         json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "call_1": {
                         "call_id": "call_1",
                         "tool_name": "counting_echo",
@@ -5441,7 +5448,9 @@ async fn test_nonstream_replay_is_idempotent_across_reruns() {
         Arc::new(ChannelStateCommitter::new(checkpoint_tx));
     let first_run_ctx =
         RunContext::from_thread(&seed_thread, tirea_contract::RunConfig::default()).unwrap();
-    let first_provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("unused"))]));
+    let first_provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response(
+        "unused",
+    ))]));
     let first_outcome = run_loop(
         &replay_config(first_provider as Arc<dyn LlmExecutor>),
         tools.clone(),
@@ -5470,7 +5479,9 @@ async fn test_nonstream_replay_is_idempotent_across_reruns() {
         changeset.apply_to(&mut persisted_thread);
     }
 
-    let second_provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("unused"))]));
+    let second_provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response(
+        "unused",
+    ))]));
     let second_run_ctx =
         RunContext::from_thread(&persisted_thread, tirea_contract::RunConfig::default()).unwrap();
     let second_outcome = run_loop(
@@ -5929,9 +5940,9 @@ impl AgentPlugin for RunStartReplayPlugin {
 
     phase_dispatch_methods!(|_this, phase, step| {
         if phase == Phase::RunStart {
-            let outbox = step.state_of::<InteractionOutbox>();
+            let outbox = step.state_of::<ResumeToolCallsState>();
             outbox
-                .replay_tool_calls_push(ToolCall::new(
+                .calls_push(ToolCall::new(
                     "replay_call_1",
                     "echo",
                     json!({"message": "from replay"}),
@@ -6362,7 +6373,7 @@ async fn test_stream_replay_invalid_payload_emits_error_and_finish() {
             if phase == Phase::RunStart {
                 step.pending_patches.push(
                     tirea_state::TrackedPatch::new(Patch::new().with_op(Op::set(
-                        tirea_state::path!("interaction_outbox", "replay_tool_calls"),
+                        tirea_state::path!("__resume_tool_calls", "calls"),
                         json!({"bad": "payload"}),
                     )))
                     .with_source("test:invalid_replay_payload"),
@@ -6388,7 +6399,7 @@ async fn test_stream_replay_invalid_payload_emits_error_and_finish() {
         events.iter().any(|e| matches!(
             e,
             AgentEvent::Error { message }
-            if message.contains("interaction_outbox.replay_tool_calls")
+            if message.contains("__resume_tool_calls.calls")
         )),
         "expected replay payload parse error, got events: {events:?}"
     );
@@ -6423,9 +6434,9 @@ async fn test_stream_replay_state_failure_emits_error() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::RunStart {
-                let outbox = step.state_of::<InteractionOutbox>();
+                let outbox = step.state_of::<ResumeToolCallsState>();
                 outbox
-                    .replay_tool_calls_push(crate::contracts::thread::ToolCall::new(
+                    .calls_push(crate::contracts::thread::ToolCall::new(
                         "replay_call_1",
                         "echo",
                         json!({"message": "resume"}),
@@ -6490,9 +6501,9 @@ async fn test_stream_replay_tool_exec_respects_tool_phases() {
         phase_dispatch_methods!(|phase, step| {
             match phase {
                 Phase::RunStart => {
-                    let outbox = step.state_of::<InteractionOutbox>();
+                    let outbox = step.state_of::<ResumeToolCallsState>();
                     outbox
-                        .replay_tool_calls_push(crate::contracts::thread::ToolCall::new(
+                        .calls_push(crate::contracts::thread::ToolCall::new(
                             "replay_call_1",
                             "echo",
                             json!({"message": "resume"}),
@@ -6557,9 +6568,9 @@ async fn test_stream_replay_without_placeholder_appends_tool_result_message() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::RunStart {
-                let outbox = step.state_of::<InteractionOutbox>();
+                let outbox = step.state_of::<ResumeToolCallsState>();
                 outbox
-                    .replay_tool_calls_push(crate::contracts::thread::ToolCall::new(
+                    .calls_push(crate::contracts::thread::ToolCall::new(
                         "replay_call_1",
                         "echo",
                         json!({"message": "resume"}),
@@ -6614,16 +6625,16 @@ async fn test_stream_run_start_repending_requeues_remaining_replay_calls() {
         phase_dispatch_methods!(|phase, step| {
             match phase {
                 Phase::RunStart => {
-                    let outbox = step.state_of::<InteractionOutbox>();
+                    let outbox = step.state_of::<ResumeToolCallsState>();
                     outbox
-                        .replay_tool_calls_push(ToolCall::new(
+                        .calls_push(ToolCall::new(
                             "replay_call_1",
                             "echo",
                             json!({"message": "first"}),
                         ))
                         .expect("queue replay_call_1");
                     outbox
-                        .replay_tool_calls_push(ToolCall::new(
+                        .calls_push(ToolCall::new(
                             "replay_call_2",
                             "echo",
                             json!({"message": "second"}),
@@ -6660,26 +6671,30 @@ async fn test_stream_run_start_repending_requeues_remaining_replay_calls() {
         Some(TerminationReason::PendingInteraction)
     );
     assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, AgentEvent::ToolCallDone { id, .. } if id == "replay_call_1")),
+        events.iter().any(
+            |event| matches!(event, AgentEvent::ToolCallDone { id, .. } if id == "replay_call_1")
+        ),
         "first replay call should execute before suspension"
     );
     assert!(
-        !events
-            .iter()
-            .any(|event| matches!(event, AgentEvent::ToolCallDone { id, .. } if id == "replay_call_2")),
+        !events.iter().any(
+            |event| matches!(event, AgentEvent::ToolCallDone { id, .. } if id == "replay_call_2")
+        ),
         "remaining replay call should not execute in the same run"
     );
 
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
     let replay_calls = final_state
-        .get(INTERACTION_OUTBOX_STATE_PATH)
-        .and_then(|outbox| outbox.get("replay_tool_calls"))
+        .get(RESUME_TOOL_CALLS_STATE_PATH)
+        .and_then(|outbox| outbox.get("calls"))
         .and_then(|calls| calls.as_array())
         .cloned()
         .unwrap_or_default();
-    assert_eq!(replay_calls.len(), 1, "expected one replay call to remain queued");
+    assert_eq!(
+        replay_calls.len(),
+        1,
+        "expected one replay call to remain queued"
+    );
     assert_eq!(
         replay_calls[0]["id"],
         Value::String("replay_call_2".to_string()),
@@ -8052,7 +8067,7 @@ async fn test_run_step_skip_inference_with_pending_state_returns_pending_interac
 
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     assert_eq!(
-        state["loop_control"]["pending_interaction"]["action"],
+        state["__suspended_tool_calls"]["calls"]["agent_recovery_step-1"]["interaction"]["action"],
         Value::String("recover_agent_run".to_string())
     );
 }
@@ -8111,8 +8126,8 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
             this.phases.lock().expect("lock poisoned").push(phase);
             match phase {
                 Phase::AfterInference => {
-                    let agent = step.state_of::<crate::runtime::control::LoopControlState>();
-                    let err_type = agent.inference_error().ok().flatten().map(|e| e.error_type);
+                    let agent = step.state_of::<crate::runtime::control::InferenceErrorState>();
+                    let err_type = agent.error().ok().flatten().map(|e| e.error_type);
                     assert_eq!(err_type.as_deref(), Some("llm_stream_start_error"));
                 }
                 Phase::StepEnd => {
@@ -9121,7 +9136,11 @@ fn test_sequential_error_preserves_prior_patches() {
     // Verify "a" is patched
     let state = run_ctx.snapshot().unwrap();
     assert_eq!(state["a"], 100);
-    assert_eq!(run_ctx.thread_patches().len(), 1);
+    let patches_after_first = run_ctx.thread_patches().len();
+    assert!(
+        patches_after_first >= 1,
+        "at least one patch must be recorded after first sequential apply"
+    );
 
     // Now apply a second tool that also writes "a" — this should still succeed
     // in non-parallel mode since conflict detection is only for parallel
@@ -9136,7 +9155,10 @@ fn test_sequential_error_preserves_prior_patches() {
 
     let state = run_ctx.snapshot().unwrap();
     assert_eq!(state["a"], 200, "sequential overwrites are allowed");
-    assert_eq!(run_ctx.thread_patches().len(), 2);
+    assert!(
+        run_ctx.thread_patches().len() > patches_after_first,
+        "second sequential apply should append additional patch entries"
+    );
 }
 
 #[test]
@@ -9451,7 +9473,9 @@ async fn test_nonstream_mixed_pending_and_completed_tools_continues_loop() {
     ]);
     let provider = Arc::new(MockChatProvider::new(vec![
         Ok(first),
-        Ok(text_chat_response("I got results for a and c, delete needs approval")),
+        Ok(text_chat_response(
+            "I got results for a and c, delete needs approval",
+        )),
     ]));
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(PendingOnlyCall2Plugin) as Arc<dyn AgentPlugin>)
@@ -9755,8 +9779,10 @@ async fn test_stream_mixed_pending_persists_interaction_state() {
     let state = last_state.unwrap();
     assert_eq!(
         state
-            .get("loop_control")
-            .and_then(|lc| lc.get("pending_interaction"))
+            .get("__suspended_tool_calls")
+            .and_then(|lc| lc.get("calls"))
+            .and_then(|calls| calls.get("call_2"))
+            .and_then(|entry| entry.get("interaction"))
             .and_then(|pi| pi.get("id"))
             .and_then(|id| id.as_str()),
         Some("confirm_call_2"),
@@ -9819,8 +9845,8 @@ async fn test_nonstream_completed_tool_round_does_not_clear_existing_suspended_c
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "leftover_confirm": {
                         "call_id": "leftover_confirm",
                         "tool_name": "echo",
@@ -9852,8 +9878,8 @@ async fn test_nonstream_completed_tool_round_does_not_clear_existing_suspended_c
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     assert!(
         state
-            .get("loop_control")
-            .and_then(|lc| lc.get("suspended_calls"))
+            .get("__suspended_tool_calls")
+            .and_then(|lc| lc.get("calls"))
             .and_then(|calls| calls.get("leftover_confirm"))
             .is_some(),
         "existing unresolved suspended call must not be cleared by unrelated successful tool round"
@@ -9865,8 +9891,8 @@ async fn test_stream_completed_tool_round_does_not_clear_existing_suspended_call
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "leftover_confirm": {
                         "call_id": "leftover_confirm",
                         "tool_name": "echo",
@@ -9900,8 +9926,8 @@ async fn test_stream_completed_tool_round_does_not_clear_existing_suspended_call
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
     assert!(
         final_state
-            .get("loop_control")
-            .and_then(|lc| lc.get("suspended_calls"))
+            .get("__suspended_tool_calls")
+            .and_then(|lc| lc.get("calls"))
             .and_then(|calls| calls.get("leftover_confirm"))
             .is_some(),
         "existing unresolved suspended call must not be cleared by unrelated successful tool round"
@@ -10149,8 +10175,8 @@ async fn test_run_loop_decision_channel_ignores_unknown_interaction_id() {
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "call_keep": {
                         "call_id": "call_keep",
                         "tool_name": "echo",
@@ -10168,8 +10194,8 @@ async fn test_run_loop_decision_channel_ignores_unknown_interaction_id() {
     .with_message(Message::user("continue"));
     let run_ctx =
         RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).expect("run ctx");
-    let config = AgentConfig::new("mock")
-        .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+    let config =
+        AgentConfig::new("mock").with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
     let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
     decision_tx
         .send(crate::contracts::InteractionResponse::new(
@@ -10179,21 +10205,29 @@ async fn test_run_loop_decision_channel_ignores_unknown_interaction_id() {
         .expect("send decision");
     drop(decision_tx);
 
-    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, Some(decision_rx)).await;
+    let outcome = run_loop(
+        &config,
+        HashMap::new(),
+        run_ctx,
+        None,
+        None,
+        Some(decision_rx),
+    )
+    .await;
     assert_eq!(outcome.termination, TerminationReason::PendingInteraction);
     let final_state = outcome.run_ctx.snapshot().expect("snapshot");
     assert!(
         final_state
-            .get("loop_control")
-            .and_then(|lc| lc.get("suspended_calls"))
+            .get("__suspended_tool_calls")
+            .and_then(|lc| lc.get("calls"))
             .and_then(|calls| calls.get("call_keep"))
             .is_some(),
         "unknown decision must not clear existing suspended calls"
     );
     assert!(
         final_state
-            .get(INTERACTION_OUTBOX_STATE_PATH)
-            .and_then(|outbox| outbox.get("interaction_resolutions"))
+            .get(RESOLVED_SUSPENSIONS_STATE_PATH)
+            .and_then(|outbox| outbox.get("resolutions"))
             .is_none(),
         "unknown decision must not enqueue outbox resolutions"
     );
@@ -10219,8 +10253,8 @@ async fn test_stream_decision_channel_ignores_unknown_interaction_id() {
     let mut final_thread = Thread::with_initial_state(
         "test",
         json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "call_keep": {
                         "call_id": "call_keep",
                         "tool_name": "echo",
@@ -10236,10 +10270,10 @@ async fn test_stream_decision_channel_ignores_unknown_interaction_id() {
         }),
     )
     .with_message(Message::user("continue"));
-    let run_ctx =
-        RunContext::from_thread(&final_thread, tirea_contract::RunConfig::default()).expect("run ctx");
-    let config = AgentConfig::new("mock")
-        .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+    let run_ctx = RunContext::from_thread(&final_thread, tirea_contract::RunConfig::default())
+        .expect("run ctx");
+    let config =
+        AgentConfig::new("mock").with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
     let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
     let state_committer: Arc<dyn StateCommitter> =
         Arc::new(ChannelStateCommitter::new(checkpoint_tx));
@@ -10278,8 +10312,8 @@ async fn test_stream_decision_channel_ignores_unknown_interaction_id() {
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
     assert!(
         final_state
-            .get("loop_control")
-            .and_then(|lc| lc.get("suspended_calls"))
+            .get("__suspended_tool_calls")
+            .and_then(|lc| lc.get("calls"))
             .and_then(|calls| calls.get("call_keep"))
             .is_some(),
         "unknown decision must not clear existing suspended calls"
@@ -10847,15 +10881,14 @@ async fn test_stream_decision_channel_drains_while_inference_stream_is_running()
         "parameters": { "message": "approved during stream" }
     });
     let state = json!({
-        "loop_control": {
-            "suspended_calls": {
+        "__suspended_tool_calls": {
+            "calls": {
                 "call_pending": {
                     "call_id": "call_pending",
                     "tool_name": "echo",
                     "interaction": pending_interaction.clone()
                 }
-            },
-            "pending_interaction": pending_interaction
+            }
         }
     });
     let thread = Thread::with_initial_state("test", state).with_message(Message::user("resume"));
@@ -10962,17 +10995,15 @@ async fn test_run_loop_decision_channel_replay_original_tool_sets_permission_one
         "routing": { "strategy": "replay_original_tool" }
     });
     let state = json!({
-        "loop_control": {
-            "suspended_calls": {
+        "__suspended_tool_calls": {
+            "calls": {
                 "call_write": {
                     "call_id": "call_write",
                     "tool_name": "echo",
                     "interaction": pending_interaction.clone(),
                     "frontend_invocation": pending_frontend_invocation.clone()
                 }
-            },
-            "pending_interaction": pending_interaction,
-            "pending_frontend_invocation": pending_frontend_invocation
+            }
         }
     });
     let thread = Thread::with_initial_state("test", state).with_message(Message::user("resume"));

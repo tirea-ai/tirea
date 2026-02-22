@@ -1096,11 +1096,12 @@ async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
         json!("stopped")
     );
     assert_eq!(
-        updated["loop_control"]["pending_interaction"]["action"],
+        updated["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["interaction"]["action"],
         json!(AGENT_RECOVERY_INTERACTION_ACTION)
     );
     assert_eq!(
-        updated["loop_control"]["pending_interaction"]["parameters"]["run_id"],
+        updated["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["interaction"]
+            ["parameters"]["run_id"],
         json!("run-1")
     );
 
@@ -1121,11 +1122,17 @@ async fn recovery_plugin_does_not_override_existing_pending_interaction() {
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
-            "loop_control": {
-                "pending_interaction": {
-                    "id": "existing_1",
-                    "action": "confirm",
-                },
+            "__suspended_tool_calls": {
+                "calls": {
+                    "existing_1": {
+                        "call_id": "existing_1",
+                        "tool_name": "confirm",
+                        "interaction": {
+                            "id": "existing_1",
+                            "action": "confirm",
+                        }
+                    }
+                }
             },
             "agent_runs": {
                 "runs": {
@@ -1151,7 +1158,7 @@ async fn recovery_plugin_does_not_override_existing_pending_interaction() {
 
     let updated = fixture.updated_state();
     assert_eq!(
-        updated["loop_control"]["pending_interaction"]["id"],
+        updated["__suspended_tool_calls"]["calls"]["existing_1"]["interaction"]["id"],
         json!("existing_1")
     );
 }
@@ -1188,8 +1195,8 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
-    let replay_calls: Vec<ToolCall> = updated["interaction_outbox"]
-        .get("replay_tool_calls")
+    let replay_calls: Vec<ToolCall> = updated["__resume_tool_calls"]
+        .get("calls")
         .cloned()
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
@@ -1200,10 +1207,11 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
         updated["agent_runs"]["runs"]["run-1"]["status"],
         json!("stopped")
     );
-    assert!(
-        updated["loop_control"].get("pending_interaction").is_none()
-            || updated["loop_control"]["pending_interaction"].is_null()
-    );
+    assert!(updated
+        .get("__suspended_tool_calls")
+        .and_then(|v| v.get("calls"))
+        .and_then(|v| v.as_object())
+        .map_or(true, |calls| calls.is_empty()));
 }
 
 #[tokio::test]
@@ -1238,8 +1246,8 @@ async fn recovery_plugin_auto_deny_when_permission_deny() {
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
-    let replay_calls: Vec<ToolCall> = updated["interaction_outbox"]
-        .get("replay_tool_calls")
+    let replay_calls: Vec<ToolCall> = updated["__resume_tool_calls"]
+        .get("calls")
         .cloned()
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
@@ -1248,10 +1256,11 @@ async fn recovery_plugin_auto_deny_when_permission_deny() {
         updated["agent_runs"]["runs"]["run-1"]["status"],
         json!("stopped")
     );
-    assert!(
-        updated["loop_control"].get("pending_interaction").is_none()
-            || updated["loop_control"]["pending_interaction"].is_null()
-    );
+    assert!(updated
+        .get("__suspended_tool_calls")
+        .and_then(|v| v.get("calls"))
+        .and_then(|v| v.as_object())
+        .map_or(true, |calls| calls.is_empty()));
 }
 
 #[tokio::test]
@@ -1284,18 +1293,19 @@ async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
-    let replay_calls: Vec<ToolCall> = updated["interaction_outbox"]
-        .get("replay_tool_calls")
+    let replay_calls: Vec<ToolCall> = updated["__resume_tool_calls"]
+        .get("calls")
         .cloned()
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
     assert_eq!(replay_calls.len(), 1);
     assert_eq!(replay_calls[0].name, "agent_run");
     assert_eq!(replay_calls[0].arguments["run_id"], "run-1");
-    assert!(
-        updated["loop_control"].get("pending_interaction").is_none()
-            || updated["loop_control"]["pending_interaction"].is_null()
-    );
+    assert!(updated
+        .get("__suspended_tool_calls")
+        .and_then(|v| v.get("calls"))
+        .and_then(|v| v.as_object())
+        .map_or(true, |calls| calls.is_empty()));
 }
 
 #[tokio::test]
@@ -1328,8 +1338,8 @@ async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
-    let replay_calls: Vec<ToolCall> = updated["interaction_outbox"]
-        .get("replay_tool_calls")
+    let replay_calls: Vec<ToolCall> = updated["__resume_tool_calls"]
+        .get("calls")
         .cloned()
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
@@ -1337,10 +1347,11 @@ async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
         replay_calls.is_empty(),
         "deny should not schedule recovery replay"
     );
-    assert!(
-        updated["loop_control"].get("pending_interaction").is_none()
-            || updated["loop_control"]["pending_interaction"].is_null()
-    );
+    assert!(updated
+        .get("__suspended_tool_calls")
+        .and_then(|v| v.get("calls"))
+        .and_then(|v| v.as_object())
+        .map_or(true, |calls| calls.is_empty()));
 }
 
 #[tokio::test]
@@ -1375,8 +1386,8 @@ async fn recovery_plugin_tool_rule_overrides_default_behavior() {
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
-    let replay_calls: Vec<ToolCall> = updated["interaction_outbox"]
-        .get("replay_tool_calls")
+    let replay_calls: Vec<ToolCall> = updated["__resume_tool_calls"]
+        .get("calls")
         .cloned()
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
@@ -1385,7 +1396,7 @@ async fn recovery_plugin_tool_rule_overrides_default_behavior() {
         "tool-level ask should override default allow"
     );
     assert_eq!(
-        updated["loop_control"]["pending_interaction"]["action"],
+        updated["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["interaction"]["action"],
         json!(AGENT_RECOVERY_INTERACTION_ACTION)
     );
 }

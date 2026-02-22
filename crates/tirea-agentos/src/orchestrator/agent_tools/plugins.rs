@@ -3,7 +3,6 @@ use crate::contracts::plugin::phase::{
     AfterToolExecuteContext, BeforeInferenceContext, PluginPhaseContext, RunStartContext,
 };
 use tirea_extension_permission::PermissionState;
-use tirea_state::State;
 pub struct AgentRecoveryPlugin {
     manager: Arc<AgentRunManager>,
 }
@@ -20,10 +19,7 @@ impl AgentRecoveryPlugin {
             return;
         }
 
-        let has_pending_interaction = state
-            .get(crate::runtime::control::LoopControlState::PATH)
-            .and_then(|a| a.get("pending_interaction"))
-            .is_some_and(|v| !v.is_null());
+        let has_pending_interaction = has_pending_recovery_interaction(&state);
 
         let outcome =
             reconcile_persisted_runs(self.manager.as_ref(), step.thread_id(), &mut runs).await;
@@ -62,8 +58,7 @@ impl AgentRecoveryPlugin {
             ToolPermissionBehavior::Deny => {}
             ToolPermissionBehavior::Ask => {
                 let interaction = build_recovery_interaction(&run_id, run);
-                let lc = step.state_of::<crate::runtime::control::LoopControlState>();
-                let _ = lc.set_pending_interaction(Some(interaction));
+                set_pending_recovery_interaction(step, interaction);
             }
         }
     }

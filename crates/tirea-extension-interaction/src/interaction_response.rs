@@ -3,7 +3,7 @@
 //! Handles client responses to pending interactions (approvals/denials).
 
 use super::{INTERACTION_RESPONSE_PLUGIN_ID, RECOVERY_RESUME_TOOL_ID};
-use crate::outbox::InteractionOutbox;
+use crate::outbox::{ResolvedSuspensionsState, ResumeToolCallsState};
 use crate::{AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX};
 use async_trait::async_trait;
 use serde_json::json;
@@ -17,10 +17,12 @@ use tirea_contract::plugin::phase::{
     BeforeInferenceContext, BeforeToolExecuteContext, PluginPhaseContext, RunStartContext,
 };
 use tirea_contract::plugin::AgentPlugin;
-use tirea_contract::runtime::control::{InferenceError, LoopControlState};
+use tirea_contract::runtime::control::{
+    InferenceError, InferenceErrorState, SuspendedToolCallsState,
+};
+use tirea_contract::runtime::state_paths::SUSPENDED_TOOL_CALLS_STATE_PATH;
 use tirea_contract::{InteractionResponse, SuspendedCall};
 use tirea_extension_permission::PermissionState;
-use tirea_state::State;
 
 /// Plugin that handles interaction responses from client.
 ///
@@ -109,8 +111,8 @@ impl InteractionResponsePlugin {
     ) -> HashMap<String, SuspendedCall> {
         let state = step.snapshot();
         state
-            .get(LoopControlState::PATH)
-            .and_then(|agent| agent.get("suspended_calls"))
+            .get(SUSPENDED_TOOL_CALLS_STATE_PATH)
+            .and_then(|agent| agent.get("calls"))
             .cloned()
             .and_then(|v| serde_json::from_value::<HashMap<String, SuspendedCall>>(v).ok())
             .unwrap_or_default()
@@ -121,8 +123,8 @@ impl InteractionResponsePlugin {
         if !from_step.is_empty() {
             return from_step;
         }
-        let state = step.state_of::<LoopControlState>();
-        state.suspended_calls().ok().unwrap_or_default()
+        let state = step.state_of::<SuspendedToolCallsState>();
+        state.calls().ok().unwrap_or_default()
     }
 
     fn push_resolution(
@@ -130,9 +132,9 @@ impl InteractionResponsePlugin {
         interaction_id: String,
         result: serde_json::Value,
     ) -> Result<(), String> {
-        let outbox = step.state_of::<InteractionOutbox>();
+        let outbox = step.state_of::<ResolvedSuspensionsState>();
         outbox
-            .interaction_resolutions_push(InteractionResponse::new(interaction_id, result))
+            .resolutions_push(InteractionResponse::new(interaction_id, result))
             .map_err(|e| format!("failed to persist interaction resolution: {e}"))
     }
 
@@ -140,9 +142,9 @@ impl InteractionResponsePlugin {
         step: &impl PluginPhaseContext,
         call: tirea_contract::thread::ToolCall,
     ) -> Result<(), String> {
-        let outbox = step.state_of::<InteractionOutbox>();
+        let outbox = step.state_of::<ResumeToolCallsState>();
         outbox
-            .replay_tool_calls_push(call)
+            .calls_push(call)
             .map_err(|e| format!("failed to persist replay tool call: {e}"))
     }
 
@@ -154,10 +156,10 @@ impl InteractionResponsePlugin {
         step: &impl PluginPhaseContext,
         suspended_calls: HashMap<String, SuspendedCall>,
     ) -> Result<(), String> {
-        let state = step.state_of::<LoopControlState>();
+        let state = step.state_of::<SuspendedToolCallsState>();
         state
-            .set_suspended_calls(suspended_calls)
-            .map_err(|err| format!("failed to set loop_control.suspended_calls: {err}"))
+            .set_calls(suspended_calls)
+            .map_err(|err| format!("failed to set {SUSPENDED_TOOL_CALLS_STATE_PATH}.calls: {err}"))
     }
 
     fn resolve_response_key(&self, call: &SuspendedCall) -> Option<String> {
@@ -196,8 +198,8 @@ impl InteractionResponsePlugin {
             );
         }
 
-        let state = step.state_of::<LoopControlState>();
-        if let Err(err) = state.set_inference_error(Some(InferenceError {
+        let state = step.state_of::<InferenceErrorState>();
+        if let Err(err) = state.set_error(Some(InferenceError {
             error_type: "interaction_response_error".to_string(),
             message,
         })) {
@@ -507,7 +509,7 @@ mod tests {
     };
     use tirea_contract::plugin::AgentPlugin;
     use tirea_contract::runtime::state_paths::{
-        INTERACTION_OUTBOX_STATE_PATH, PERMISSIONS_STATE_PATH,
+        PERMISSIONS_STATE_PATH, RESOLVED_SUSPENSIONS_STATE_PATH, RESUME_TOOL_CALLS_STATE_PATH,
     };
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::{Message, ToolCall};
@@ -563,8 +565,8 @@ mod tests {
 
     fn replay_calls_from_state(state: &serde_json::Value) -> Vec<ToolCall> {
         state
-            .get(INTERACTION_OUTBOX_STATE_PATH)
-            .and_then(|agent| agent.get("replay_tool_calls"))
+            .get(RESUME_TOOL_CALLS_STATE_PATH)
+            .and_then(|agent| agent.get("calls"))
             .cloned()
             .and_then(|v| serde_json::from_value::<Vec<ToolCall>>(v).ok())
             .unwrap_or_default()
@@ -572,8 +574,8 @@ mod tests {
 
     fn interaction_resolutions_from_state(state: &serde_json::Value) -> Vec<InteractionResponse> {
         state
-            .get(INTERACTION_OUTBOX_STATE_PATH)
-            .and_then(|agent| agent.get("interaction_resolutions"))
+            .get(RESOLVED_SUSPENSIONS_STATE_PATH)
+            .and_then(|agent| agent.get("resolutions"))
             .cloned()
             .and_then(|v| serde_json::from_value::<Vec<InteractionResponse>>(v).ok())
             .unwrap_or_default()
@@ -582,8 +584,8 @@ mod tests {
     #[tokio::test]
     async fn run_start_replays_tool_matching_suspended_call() {
         let state = json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "call_write": {
                         "call_id": "call_write",
                         "tool_name": "write_file",
@@ -649,8 +651,8 @@ mod tests {
     #[tokio::test]
     async fn run_start_replay_requires_frontend_invocation_channel() {
         let state = json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "call_write": {
                         "call_id": "call_write",
                         "tool_name": "write_file",
@@ -698,8 +700,8 @@ mod tests {
     #[tokio::test]
     async fn run_start_frontend_interaction_replay_works_without_prior_channel() {
         let state = json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "call_copy_1": {
                         "call_id": "call_copy_1",
                         "tool_name": "copyToClipboard",
@@ -749,8 +751,8 @@ mod tests {
     #[tokio::test]
     async fn run_start_frontend_interaction_replay_without_history_uses_suspended_payload() {
         let state = json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "call_copy_1": {
                         "call_id": "call_copy_1",
                         "tool_name": "copyToClipboard",
@@ -792,8 +794,8 @@ mod tests {
     #[tokio::test]
     async fn run_start_permission_replay_without_history_uses_embedded_tool_call() {
         let state = json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "call_write": {
                         "call_id": "call_write",
                         "tool_name": "write_file",
@@ -839,8 +841,8 @@ mod tests {
     #[tokio::test]
     async fn run_start_permission_replay_prefers_origin_tool_call_mapping() {
         let state = json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "call_write": {
                         "call_id": "call_write",
                         "tool_name": "write_file",
@@ -886,8 +888,8 @@ mod tests {
     #[tokio::test]
     async fn run_start_routes_via_frontend_invocation_replay_original_tool() {
         let state = json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "call_write": {
                         "call_id": "call_write",
                         "tool_name": "write_file",
@@ -941,8 +943,8 @@ mod tests {
     #[tokio::test]
     async fn run_start_routes_via_frontend_invocation_use_as_tool_result() {
         let state = json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "call_copy": {
                         "call_id": "call_copy",
                         "tool_name": "copyToClipboard",
@@ -987,8 +989,8 @@ mod tests {
     #[tokio::test]
     async fn run_start_use_as_tool_result_preserves_non_boolean_payload() {
         let state = json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "call_copy": {
                         "call_id": "call_copy",
                         "tool_name": "copyToClipboard",
@@ -1043,8 +1045,8 @@ mod tests {
     #[tokio::test]
     async fn run_start_replay_failure_sets_inference_error_and_clears_suspended_calls() {
         let state = json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "call_write": {
                         "call_id": "call_write",
                         "tool_name": "write_file",
@@ -1070,8 +1072,8 @@ mod tests {
                     }
                 }
             },
-            "interaction_outbox": {
-                "replay_tool_calls": "invalid_type"
+            "__resume_tool_calls": {
+                "calls": "invalid_type"
             }
         });
         let fixture = TestFixture::new_with_state(state);
@@ -1082,17 +1084,17 @@ mod tests {
 
         let updated = fixture.updated_state();
         assert!(
-            updated["loop_control"]["suspended_calls"]
+            updated["__suspended_tool_calls"]["calls"]
                 .as_object()
                 .is_some_and(|calls| calls.is_empty()),
             "suspended calls should be cleared on run_start failure"
         );
         assert_eq!(
-            updated["loop_control"]["inference_error"]["type"],
+            updated["__inference_error"]["error"]["type"],
             "interaction_response_error"
         );
         assert!(
-            updated["loop_control"]["inference_error"]["message"]
+            updated["__inference_error"]["error"]["message"]
                 .as_str()
                 .unwrap_or_default()
                 .contains("failed to persist replay tool call"),
@@ -1103,8 +1105,8 @@ mod tests {
     #[tokio::test]
     async fn run_start_recovery_approval_schedules_agent_run_replay() {
         let state = json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "agent_recovery_run-1": {
                         "call_id": "agent_recovery_run-1",
                         "tool_name": "recover_agent_run",
@@ -1137,8 +1139,8 @@ mod tests {
     #[tokio::test]
     async fn run_start_recovery_denial_clears_suspended_call() {
         let state = json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "agent_recovery_run-1": {
                         "call_id": "agent_recovery_run-1",
                         "tool_name": "recover_agent_run",
@@ -1167,8 +1169,8 @@ mod tests {
 
         let updated = fixture.updated_state();
         let suspended = updated
-            .get("loop_control")
-            .and_then(|a| a.get("suspended_calls"))
+            .get("__suspended_tool_calls")
+            .and_then(|a| a.get("calls"))
             .and_then(|v| v.as_object());
         assert!(suspended.is_none() || suspended.is_some_and(|calls| calls.is_empty()));
     }
@@ -1180,8 +1182,8 @@ mod tests {
     #[tokio::test]
     async fn before_inference_terminates_on_unresolved_suspended_call() {
         let state = json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "fc_ask_1": {
                         "call_id": "fc_ask_1",
                         "tool_name": "write_file",
@@ -1222,8 +1224,8 @@ mod tests {
     #[tokio::test]
     async fn before_inference_skips_when_response_provided() {
         let state = json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "fc_ask_1": {
                         "call_id": "fc_ask_1",
                         "tool_name": "write_file",
@@ -1263,8 +1265,8 @@ mod tests {
     #[tokio::test]
     async fn before_inference_only_checks_first_call() {
         let state = json!({
-            "loop_control": {
-                "suspended_calls": {
+            "__suspended_tool_calls": {
+                "calls": {
                     "confirm_1": {
                         "call_id": "confirm_1",
                         "tool_name": "confirm",

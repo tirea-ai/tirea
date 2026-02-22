@@ -14,7 +14,7 @@ use tirea_contract::plugin::phase::{
     BeforeToolExecuteContext, PluginPhaseContext, RunEndContext, RunStartContext,
 };
 use tirea_contract::plugin::AgentPlugin;
-use tirea_contract::runtime::control::{InferenceError, LoopControlState};
+use tirea_contract::runtime::control::{InferenceError, InferenceErrorState};
 
 fn lock_unpoison<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     match m.lock() {
@@ -624,8 +624,8 @@ fn extract_cache_tokens(usage: Option<&Usage>) -> (Option<i32>, Option<i32>) {
 }
 
 fn inference_error_from_state(ctx: &impl PluginPhaseContext) -> Option<InferenceError> {
-    let lc = ctx.state_of::<LoopControlState>();
-    lc.inference_error().ok().flatten()
+    let state = ctx.state_of::<InferenceErrorState>();
+    state.error().ok().flatten()
 }
 
 // =============================================================================
@@ -1009,8 +1009,8 @@ mod tests {
     #[tokio::test]
     async fn test_plugin_captures_inference_error() {
         let fix = TestFixture::new_with_state(json!({
-            "loop_control": {
-                "inference_error": {
+            "__inference_error": {
+                "error": {
                     "type": "rate_limited",
                     "message": "429"
                 }
@@ -1525,8 +1525,8 @@ mod tests {
         #[tokio::test]
         async fn test_otel_export_inference_error_sets_status_and_error_type() {
             let fix = TestFixture::new_with_state(json!({
-                "loop_control": {
-                    "inference_error": {
+                "__inference_error": {
+                    "error": {
                         "type": "rate_limited",
                         "message": "429"
                     }

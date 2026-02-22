@@ -17,4 +17,4 @@ pub const AGENT_RECOVERY_INTERACTION_ACTION: &str = "recover_agent_run";
 pub const AGENT_RECOVERY_INTERACTION_PREFIX: &str = "agent_recovery_";
 
 pub use interaction_plugin::InteractionPlugin;
-pub use outbox::InteractionOutbox;
+pub use outbox::{ResolvedSuspensionsState, ResumeToolCallsState};

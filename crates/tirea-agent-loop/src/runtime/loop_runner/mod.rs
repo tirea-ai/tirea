@@ -95,8 +95,7 @@ use core::set_agent_pending_interaction;
 use core::{
     build_request_for_filtered_tools, clear_all_suspended_calls, clear_suspended_call,
     drain_agent_outbox, enqueue_interaction_resolution, enqueue_replay_tool_calls,
-    inference_inputs_from_step,
-    set_agent_suspended_calls, suspended_calls_from_ctx,
+    inference_inputs_from_step, set_agent_suspended_calls, suspended_calls_from_ctx,
 };
 pub use outcome::{tool_map, tool_map_from_arc, AgentLoopError};
 pub use outcome::{LoopOutcome, LoopStats, LoopUsage};

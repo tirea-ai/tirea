@@ -358,18 +358,24 @@ mod tests {
             tools: vec![],
             context: vec![],
             state: Some(json!({
-                "loop_control": {
-                    "pending_interaction": {
-                        "id": "call_copy_1",
-                        "action": "tool:copyToClipboard"
-                    },
-                    "pending_frontend_invocation": {
-                        "call_id": "call_copy_1",
-                        "tool_name": "copyToClipboard",
-                        "routing": { "strategy": "use_as_tool_result" },
-                        "origin": {
-                            "type": "plugin_initiated",
-                            "plugin_id": "agui_frontend_tools"
+                "__suspended_tool_calls": {
+                    "calls": {
+                        "call_copy_1": {
+                            "call_id": "call_copy_1",
+                            "tool_name": "copyToClipboard",
+                            "interaction": {
+                                "id": "call_copy_1",
+                                "action": "tool:copyToClipboard"
+                            },
+                            "frontend_invocation": {
+                                "call_id": "call_copy_1",
+                                "tool_name": "copyToClipboard",
+                                "routing": { "strategy": "use_as_tool_result" },
+                                "origin": {
+                                    "type": "plugin_initiated",
+                                    "plugin_id": "agui_frontend_tools"
+                                }
+                            }
                         }
                     }
                 }

@@ -3065,7 +3065,7 @@ async fn test_e2e_tool_execution_flow() {
     let thread = thread.with_message(Message::assistant("Done! The counter is now 1."));
 
     assert_eq!(thread.message_count(), 4); // user + assistant(tool) + tool_response + assistant
-    assert_eq!(thread.patch_count(), 1);
+    assert_eq!(thread.patch_count(), 2);
 }
 
 /// Simulate parallel tool calls
@@ -3117,7 +3117,7 @@ async fn test_e2e_parallel_tool_calls() {
     let state = thread.rebuild_state().unwrap();
     assert_eq!(state["counter"]["value"], 1);
     assert_eq!(state["tasks"]["count"], 1);
-    assert_eq!(thread.patch_count(), 2); // Two parallel patches
+    assert_eq!(thread.patch_count(), 3); // Two tool patches + control-state patch
 }
 
 /// Simulate multi-step conversation with state accumulation
@@ -3190,7 +3190,7 @@ async fn test_e2e_multi_step_with_state() {
     // Verify accumulated state
     let state = thread.rebuild_state().unwrap();
     assert_eq!(state["counter"]["value"], 3);
-    assert_eq!(thread.patch_count(), 3);
+    assert_eq!(thread.patch_count(), 6);
 }
 
 /// Simulate tool failure and error message
@@ -3325,7 +3325,7 @@ async fn test_e2e_snapshot_and_continue() {
             .unwrap();
     }
 
-    assert_eq!(thread.patch_count(), 5);
+    assert_eq!(thread.patch_count(), 10);
     let state_before = thread.rebuild_state().unwrap();
     assert_eq!(state_before["counter"]["value"], 5);
 
@@ -3350,7 +3350,7 @@ async fn test_e2e_snapshot_and_continue() {
 
     let final_state = thread.rebuild_state().unwrap();
     assert_eq!(final_state["counter"]["value"], 6);
-    assert_eq!(thread.patch_count(), 1); // Only new patch after snapshot
+    assert_eq!(thread.patch_count(), 2); // Tool patch + control-state patch
 }
 
 /// Simulate state replay (time-travel debugging)
@@ -3377,12 +3377,13 @@ async fn test_e2e_state_replay() {
             .unwrap();
     }
 
-    // Replay to each historical point
+    // Replay through tool-state boundaries (control-state patches are interleaved).
+    assert_eq!(thread.patch_count(), 10);
     assert_eq!(thread.replay_to(0).unwrap()["counter"]["value"], 1);
-    assert_eq!(thread.replay_to(1).unwrap()["counter"]["value"], 2);
-    assert_eq!(thread.replay_to(2).unwrap()["counter"]["value"], 3);
-    assert_eq!(thread.replay_to(3).unwrap()["counter"]["value"], 4);
-    assert_eq!(thread.replay_to(4).unwrap()["counter"]["value"], 5);
+    assert_eq!(thread.replay_to(2).unwrap()["counter"]["value"], 2);
+    assert_eq!(thread.replay_to(4).unwrap()["counter"]["value"], 3);
+    assert_eq!(thread.replay_to(6).unwrap()["counter"]["value"], 4);
+    assert_eq!(thread.replay_to(8).unwrap()["counter"]["value"], 5);
 
     // Final state
     assert_eq!(thread.rebuild_state().unwrap()["counter"]["value"], 5);
@@ -5637,7 +5638,16 @@ async fn test_scenario_interaction_response_plugin_blocks_denied() {
     // Unified format: id = tool_call_id, action = "tool:<name>"
     let thread = Thread::with_initial_state(
         "test",
-        json!({ "loop_control": { "pending_interaction": { "id": "call_write", "action": "tool:write_file", "parameters": { "source": "permission" } } } }),
+        state_with_suspended_call(
+            "call_write",
+            "write_file",
+            json!({
+                "id": "call_write",
+                "action": "tool:write_file",
+                "parameters": { "source": "permission" }
+            }),
+            None,
+        ),
     );
 
     let plugin = InteractionPlugin::with_responses(
@@ -5668,7 +5678,16 @@ async fn test_scenario_interaction_response_plugin_allows_approved() {
     // Unified format: id = tool_call_id, action = "tool:<name>"
     let thread = Thread::with_initial_state(
         "test",
-        json!({ "loop_control": { "pending_interaction": { "id": "call_read", "action": "tool:read_file", "parameters": { "source": "permission" } } } }),
+        state_with_suspended_call(
+            "call_read",
+            "read_file",
+            json!({
+                "id": "call_read",
+                "action": "tool:read_file",
+                "parameters": { "source": "permission" }
+            }),
+            None,
+        ),
     );
 
     let plugin = InteractionPlugin::with_responses(
@@ -5736,7 +5755,16 @@ async fn test_scenario_e2e_permission_to_response_flow() {
     // The session must have the pending interaction persisted (as the real loop does).
     let session2 = Thread::with_initial_state(
         "test",
-        json!({ "loop_control": { "pending_interaction": { "id": interaction.id, "action": interaction.action, "parameters": interaction.parameters } } }),
+        state_with_suspended_call(
+            &interaction.id,
+            "execute_command",
+            json!({
+                "id": interaction.id,
+                "action": interaction.action,
+                "parameters": interaction.parameters
+            }),
+            None,
+        ),
     );
     let response_plugin = interaction_plugin_from_request(&response_request);
     let fix2 = TestFixture::new_with_state(session2.state.clone());
@@ -6206,7 +6234,12 @@ async fn test_permission_flow_denial_e2e() {
     // The session must have the pending interaction persisted (as the real loop does).
     let session2 = Thread::with_initial_state(
         "test",
-        json!({ "loop_control": { "pending_interaction": { "id": interaction.id, "action": "confirm" } } }),
+        state_with_suspended_call(
+            &interaction.id,
+            "delete_all",
+            json!({ "id": interaction.id, "action": "confirm" }),
+            None,
+        ),
     );
     let response_plugin = interaction_plugin_from_request(&response_request);
 
@@ -6275,7 +6308,12 @@ async fn test_permission_flow_multiple_tools_mixed() {
     // Verify first tool (approved) — session has its pending interaction persisted.
     let session_r1 = Thread::with_initial_state(
         "test",
-        json!({ "loop_control": { "pending_interaction": { "id": int1.id, "action": "confirm" } } }),
+        state_with_suspended_call(
+            &int1.id,
+            "read_file",
+            json!({ "id": int1.id, "action": "confirm" }),
+            None,
+        ),
     );
     let fix_r1 = TestFixture::new_with_state(session_r1.state.clone());
     let ctx_resume1 = fix_r1.ctx();
@@ -6290,7 +6328,12 @@ async fn test_permission_flow_multiple_tools_mixed() {
     // Verify second tool (denied) — session has its pending interaction persisted.
     let session_r2 = Thread::with_initial_state(
         "test",
-        json!({ "loop_control": { "pending_interaction": { "id": int2.id, "action": "confirm" } } }),
+        state_with_suspended_call(
+            &int2.id,
+            "write_file",
+            json!({ "id": int2.id, "action": "confirm" }),
+            None,
+        ),
     );
     let fix_r2 = TestFixture::new_with_state(session_r2.state.clone());
     let ctx_resume2 = fix_r2.ctx();
@@ -6373,7 +6416,11 @@ async fn test_e2e_permission_suspend_with_real_tool() {
 
     // pending_interaction persisted in session state
     let state = suspended_run_ctx.snapshot().unwrap();
-    let pending = &state["loop_control"]["pending_interaction"];
+    let pending = state["__suspended_tool_calls"]["calls"]
+        .as_object()
+        .and_then(|calls| calls.values().next())
+        .and_then(|entry| entry.get("interaction"))
+        .expect("suspended interaction should be persisted");
     assert!(
         pending["id"].as_str().unwrap().starts_with("fc_"),
         "Persisted interaction should use frontend call_id"
@@ -6598,10 +6645,11 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
     // pending_interaction should be cleared
     let state_after = resumed_thread.rebuild_state().unwrap();
     let pending_after = state_after
-        .get("loop_control")
-        .and_then(|a| a.get("pending_interaction"));
+        .get("__suspended_tool_calls")
+        .and_then(|a| a.get("calls"))
+        .and_then(|v| v.as_object());
     assert!(
-        pending_after.is_none() || pending_after == Some(&Value::Null),
+        pending_after.map_or(true, |calls| calls.is_empty()),
         "pending_interaction should be cleared after approval, got: {:?}",
         pending_after
     );
@@ -6947,7 +6995,16 @@ async fn test_resume_flow_with_denial() {
     // Thread must have the pending interaction persisted.
     let thread = Thread::with_initial_state(
         "test",
-        json!({ "loop_control": { "pending_interaction": { "id": interaction_id, "action": "tool:dangerous_tool", "parameters": { "source": "permission" } } } }),
+        state_with_suspended_call(
+            interaction_id,
+            "dangerous_tool",
+            json!({
+                "id": interaction_id,
+                "action": "tool:dangerous_tool",
+                "parameters": { "source": "permission" }
+            }),
+            None,
+        ),
     );
     let fix = TestFixture::new_with_state(thread.state.clone());
     let ctx_step = fix.ctx();
@@ -6978,7 +7035,12 @@ async fn test_resume_flow_multiple_responses() {
     for (id, should_block) in [("perm_1", false), ("perm_2", true), ("perm_3", false)] {
         let thread = Thread::with_initial_state(
             "test",
-            json!({ "loop_control": { "pending_interaction": { "id": id, "action": "confirm" } } }),
+            state_with_suspended_call(
+                id,
+                "test_tool",
+                json!({ "id": id, "action": "confirm" }),
+                None,
+            ),
         );
         let fix = TestFixture::new_with_state(thread.state.clone());
         let ctx_step = fix.ctx();
@@ -7012,7 +7074,12 @@ async fn test_resume_flow_partial_responses() {
     // Responded tool should not be blocked — session has matching pending interaction.
     let session1 = Thread::with_initial_state(
         "test",
-        json!({ "loop_control": { "pending_interaction": { "id": "perm_1", "action": "confirm" } } }),
+        state_with_suspended_call(
+            "perm_1",
+            "tool_1",
+            json!({ "id": "perm_1", "action": "confirm" }),
+            None,
+        ),
     );
     let fix1 = TestFixture::new_with_state(session1.state.clone());
     let ctx_step1 = fix1.ctx();
@@ -7076,7 +7143,12 @@ async fn test_plugin_interaction_frontend_and_response() {
     // Thread must have a persisted pending interaction matching the approved ID.
     let session2 = Thread::with_initial_state(
         "test",
-        json!({ "loop_control": { "pending_interaction": { "id": "call_prev", "action": "confirm" } } }),
+        state_with_suspended_call(
+            "call_prev",
+            "some_tool",
+            json!({ "id": "call_prev", "action": "confirm" }),
+            None,
+        ),
     );
     let fix2 = TestFixture::new_with_state(session2.state.clone());
     let ctx_step2 = fix2.ctx();
@@ -7113,7 +7185,12 @@ async fn test_plugin_interaction_execution_order() {
     // Thread must have a persisted pending interaction matching the denied ID.
     let thread = Thread::with_initial_state(
         "test",
-        json!({ "loop_control": { "pending_interaction": { "id": "call_danger", "action": "confirm" } } }),
+        state_with_suspended_call(
+            "call_danger",
+            "dangerousAction",
+            json!({ "id": "call_danger", "action": "confirm" }),
+            None,
+        ),
     );
     let fix = TestFixture::new_with_state(thread.state.clone());
     let ctx_step = fix.ctx();
@@ -7639,7 +7716,12 @@ async fn test_multiple_interaction_responses() {
     for (id, should_block) in test_cases {
         let thread = Thread::with_initial_state(
             "test",
-            json!({ "loop_control": { "pending_interaction": { "id": id, "action": "confirm" } } }),
+            state_with_suspended_call(
+                id,
+                "some_tool",
+                json!({ "id": id, "action": "confirm" }),
+                None,
+            ),
         );
         let fix = TestFixture::new_with_state(thread.state.clone());
         let ctx_step = fix.ctx();
@@ -12436,11 +12518,34 @@ mod llmmetry_tracing {
 
 fn replay_calls_from_state(state: &Value) -> Vec<ToolCall> {
     state
-        .get("interaction_outbox")
-        .and_then(|agent| agent.get("replay_tool_calls"))
+        .get("__resume_tool_calls")
+        .and_then(|agent| agent.get("calls"))
         .cloned()
         .and_then(|v| serde_json::from_value::<Vec<ToolCall>>(v).ok())
         .unwrap_or_default()
+}
+
+fn state_with_suspended_call(
+    call_id: &str,
+    tool_name: &str,
+    interaction: Value,
+    frontend_invocation: Option<Value>,
+) -> Value {
+    let mut entry = json!({
+        "call_id": call_id,
+        "tool_name": tool_name,
+        "interaction": interaction,
+    });
+    if let Some(frontend_invocation) = frontend_invocation {
+        entry["frontend_invocation"] = frontend_invocation;
+    }
+    json!({
+        "__suspended_tool_calls": {
+            "calls": {
+                call_id: entry
+            }
+        }
+    })
 }
 
 /// Test: on_run_start sets replay_tool_calls when pending_interaction is approved
@@ -12455,30 +12560,34 @@ async fn test_interaction_response_run_start_sets_replay_on_approval() {
     //   3. A placeholder tool result
     let thread = Thread::with_initial_state(
         "test",
-        json!({ "loop_control": { "pending_interaction": {
-            "id": frontend_call_id,
-            "action": "tool:add_trips",
-            "parameters": {
-                "source": "permission"
-            }
-        },
-        "pending_frontend_invocation": {
-            "call_id": frontend_call_id,
-            "tool_name": "PermissionConfirm",
-            "arguments": {
-                "tool_name": "add_trips",
-                "tool_args": { "destination": "Beijing" }
-            },
-            "origin": {
-                "type": "tool_call_intercepted",
-                "backend_call_id": pending_id,
-                "backend_tool_name": "add_trips",
-                "backend_arguments": { "destination": "Beijing" }
-            },
-            "routing": {
-                "strategy": "replay_original_tool"
-            }
-        } } }),
+        state_with_suspended_call(
+            pending_id,
+            "add_trips",
+            json!({
+                "id": frontend_call_id,
+                "action": "tool:add_trips",
+                "parameters": {
+                    "source": "permission"
+                }
+            }),
+            Some(json!({
+                "call_id": frontend_call_id,
+                "tool_name": "PermissionConfirm",
+                "arguments": {
+                    "tool_name": "add_trips",
+                    "tool_args": { "destination": "Beijing" }
+                },
+                "origin": {
+                    "type": "tool_call_intercepted",
+                    "backend_call_id": pending_id,
+                    "backend_tool_name": "add_trips",
+                    "backend_arguments": { "destination": "Beijing" }
+                },
+                "routing": {
+                    "strategy": "replay_original_tool"
+                }
+            })),
+        ),
     )
     .with_message(
         tirea_agentos::contracts::thread::Message::assistant_with_tool_calls(
@@ -12516,7 +12625,16 @@ async fn test_interaction_response_run_start_no_replay_on_denial() {
 
     let thread = Thread::with_initial_state(
         "test",
-        json!({ "loop_control": { "pending_interaction": { "id": pending_id, "action": "tool:add_trips", "parameters": { "source": "permission" } } } }),
+        state_with_suspended_call(
+            pending_id,
+            "add_trips",
+            json!({
+                "id": pending_id,
+                "action": "tool:add_trips",
+                "parameters": { "source": "permission" }
+            }),
+            None,
+        ),
     )
     .with_message(
         tirea_agentos::contracts::thread::Message::assistant_with_tool_calls(
@@ -12546,7 +12664,7 @@ async fn test_interaction_response_run_start_no_replay_on_denial() {
 /// Test: on_run_start does nothing when no pending_interaction exists
 #[tokio::test]
 async fn test_interaction_response_run_start_no_pending() {
-    let thread = Thread::with_initial_state("test", json!({ "loop_control": {} }));
+    let thread = Thread::with_initial_state("test", json!({}));
 
     let plugin = InteractionPlugin::with_responses(vec!["some_id".to_string()], vec![]);
 
@@ -12567,12 +12685,23 @@ async fn test_interaction_response_run_start_no_pending() {
 async fn test_interaction_response_run_start_mismatched_id() {
     let thread = Thread::with_initial_state(
         "test",
-        json!({ "loop_control": { "pending_interaction": { "id": "call_x", "action": "tool:some_tool", "parameters": { "source": "permission" } } } }),
+        state_with_suspended_call(
+            "call_x",
+            "some_tool",
+            json!({
+                "id": "call_x",
+                "action": "tool:some_tool",
+                "parameters": { "source": "permission" }
+            }),
+            None,
+        ),
     )
-    .with_message(tirea_agentos::contracts::thread::Message::assistant_with_tool_calls(
-        "",
-        vec![ToolCall::new("call_x", "some_tool", json!({}))],
-    ));
+    .with_message(
+        tirea_agentos::contracts::thread::Message::assistant_with_tool_calls(
+            "",
+            vec![ToolCall::new("call_x", "some_tool", json!({}))],
+        ),
+    );
 
     // Approved a different ID
     let plugin = InteractionPlugin::with_responses(vec!["call_y".to_string()], vec![]);
@@ -12601,30 +12730,34 @@ async fn test_interaction_response_run_start_no_tool_calls_in_messages() {
     // This test verifies the tool:<name> fallback path works.
     let thread = Thread::with_initial_state(
         "test",
-        json!({ "loop_control": { "pending_interaction": {
-            "id": frontend_call_id,
-            "action": "tool:add_trips",
-            "parameters": {
-                "source": "permission"
-            }
-        },
-        "pending_frontend_invocation": {
-            "call_id": frontend_call_id,
-            "tool_name": "PermissionConfirm",
-            "arguments": {
-                "tool_name": "add_trips",
-                "tool_args": {}
-            },
-            "origin": {
-                "type": "tool_call_intercepted",
-                "backend_call_id": pending_id,
-                "backend_tool_name": "add_trips",
-                "backend_arguments": {}
-            },
-            "routing": {
-                "strategy": "replay_original_tool"
-            }
-        } } }),
+        state_with_suspended_call(
+            pending_id,
+            "add_trips",
+            json!({
+                "id": frontend_call_id,
+                "action": "tool:add_trips",
+                "parameters": {
+                    "source": "permission"
+                }
+            }),
+            Some(json!({
+                "call_id": frontend_call_id,
+                "tool_name": "PermissionConfirm",
+                "arguments": {
+                    "tool_name": "add_trips",
+                    "tool_args": {}
+                },
+                "origin": {
+                    "type": "tool_call_intercepted",
+                    "backend_call_id": pending_id,
+                    "backend_tool_name": "add_trips",
+                    "backend_arguments": {}
+                },
+                "routing": {
+                    "strategy": "replay_original_tool"
+                }
+            })),
+        ),
     )
     .with_message(tirea_agentos::contracts::thread::Message::assistant(
         "I need to call a tool",
@@ -12691,15 +12824,15 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
     // Phase 2: Simulate persisted session with pending_interaction + placeholder
     let persisted_thread = Thread::with_initial_state(
         "test",
-        json!({
-            "loop_control": {
-                "pending_interaction": {
-                    "id": interaction.id,
-                    "action": interaction.action
-                },
-                "pending_frontend_invocation": serde_json::to_value(invocation).unwrap()
-            }
-        }),
+        state_with_suspended_call(
+            &call.id,
+            &call.name,
+            json!({
+                "id": interaction.id,
+                "action": interaction.action
+            }),
+            Some(serde_json::to_value(invocation).unwrap()),
+        ),
     )
     .with_message(
         tirea_agentos::contracts::thread::Message::assistant_with_tool_calls(
@@ -12751,15 +12884,16 @@ async fn test_hitl_replay_denial_does_not_schedule() {
 
     let persisted_thread = Thread::with_initial_state(
         "test",
-        json!({
-            "loop_control": {
-                "pending_interaction": {
-                    "id": pending_id,
-                    "action": "tool:add_trips",
-                    "parameters": { "source": "permission" }
-                }
-            }
-        }),
+        state_with_suspended_call(
+            pending_id,
+            "add_trips",
+            json!({
+                "id": pending_id,
+                "action": "tool:add_trips",
+                "parameters": { "source": "permission" }
+            }),
+            None,
+        ),
     )
     .with_message(
         tirea_agentos::contracts::thread::Message::assistant_with_tool_calls(
@@ -12798,39 +12932,39 @@ async fn test_hitl_replay_picks_first_tool_call() {
 
     let persisted_thread = Thread::with_initial_state(
         "test",
-        json!({
-            "loop_control": {
-                "pending_interaction": {
-                    "id": pending_id,
-                    "action": "tool:tool_a",
-                    "parameters": {
-                        "source": "permission",
-                        "origin_tool_call": {
-                            "id": pending_id,
-                            "name": "tool_a",
-                            "arguments": { "a": 1 }
-                        }
-                    }
-                },
-                "pending_frontend_invocation": {
-                    "call_id": pending_id,
-                    "tool_name": "PermissionConfirm",
-                    "arguments": {
-                        "tool_name": "tool_a",
-                        "tool_args": { "a": 1 }
-                    },
-                    "origin": {
-                        "type": "tool_call_intercepted",
-                        "backend_call_id": pending_id,
-                        "backend_tool_name": "tool_a",
-                        "backend_arguments": { "a": 1 }
-                    },
-                    "routing": {
-                        "strategy": "replay_original_tool"
+        state_with_suspended_call(
+            pending_id,
+            "tool_a",
+            json!({
+                "id": pending_id,
+                "action": "tool:tool_a",
+                "parameters": {
+                    "source": "permission",
+                    "origin_tool_call": {
+                        "id": pending_id,
+                        "name": "tool_a",
+                        "arguments": { "a": 1 }
                     }
                 }
-            }
-        }),
+            }),
+            Some(json!({
+                "call_id": pending_id,
+                "tool_name": "PermissionConfirm",
+                "arguments": {
+                    "tool_name": "tool_a",
+                    "tool_args": { "a": 1 }
+                },
+                "origin": {
+                    "type": "tool_call_intercepted",
+                    "backend_call_id": pending_id,
+                    "backend_tool_name": "tool_a",
+                    "backend_arguments": { "a": 1 }
+                },
+                "routing": {
+                    "strategy": "replay_original_tool"
+                }
+            })),
+        ),
     )
     .with_message(
         tirea_agentos::contracts::thread::Message::assistant_with_tool_calls(
@@ -12868,39 +13002,39 @@ async fn test_hitl_replay_run_start_does_not_affect_before_tool_execute() {
 
     let thread = Thread::with_initial_state(
         "test",
-        json!({
-            "loop_control": {
-                "pending_interaction": {
-                    "id": pending_id,
-                    "action": "tool:some_tool",
-                    "parameters": {
-                        "source": "permission",
-                        "origin_tool_call": {
-                            "id": pending_id,
-                            "name": "some_tool",
-                            "arguments": {}
-                        }
-                    }
-                },
-                "pending_frontend_invocation": {
-                    "call_id": pending_id,
-                    "tool_name": "PermissionConfirm",
-                    "arguments": {
-                        "tool_name": "some_tool",
-                        "tool_args": {}
-                    },
-                    "origin": {
-                        "type": "tool_call_intercepted",
-                        "backend_call_id": pending_id,
-                        "backend_tool_name": "some_tool",
-                        "backend_arguments": {}
-                    },
-                    "routing": {
-                        "strategy": "replay_original_tool"
+        state_with_suspended_call(
+            pending_id,
+            "some_tool",
+            json!({
+                "id": pending_id,
+                "action": "tool:some_tool",
+                "parameters": {
+                    "source": "permission",
+                    "origin_tool_call": {
+                        "id": pending_id,
+                        "name": "some_tool",
+                        "arguments": {}
                     }
                 }
-            }
-        }),
+            }),
+            Some(json!({
+                "call_id": pending_id,
+                "tool_name": "PermissionConfirm",
+                "arguments": {
+                    "tool_name": "some_tool",
+                    "tool_args": {}
+                },
+                "origin": {
+                    "type": "tool_call_intercepted",
+                    "backend_call_id": pending_id,
+                    "backend_tool_name": "some_tool",
+                    "backend_arguments": {}
+                },
+                "routing": {
+                    "strategy": "replay_original_tool"
+                }
+            })),
+        ),
     )
     .with_message(
         tirea_agentos::contracts::thread::Message::assistant_with_tool_calls(

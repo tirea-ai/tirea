@@ -1,10 +1,12 @@
-//! Loop control-state schema stored under `Thread.state["loop_control"]`.
+//! Runtime control-state schema stored under internal `__*` top-level paths.
 //!
-//! These types define durable loop-control state for cross-step and cross-run
-//! flow control (pending interactions, inference error envelope).
+//! These types define durable runtime control state for cross-step and cross-run
+//! flow control (suspended tool calls, resume queue, suspension resolutions, and
+//! inference error envelope).
 
-use crate::event::interaction::{FrontendToolInvocation, Interaction};
+use crate::event::interaction::{FrontendToolInvocation, Interaction, InteractionResponse};
 use crate::thread::Thread;
+use crate::thread::ToolCall;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tirea_state::State;
@@ -33,27 +35,45 @@ pub struct SuspendedCall {
     pub frontend_invocation: Option<FrontendToolInvocation>,
 }
 
-/// Durable loop control state persisted at `state["loop_control"]`.
+/// Durable suspended tool-call map persisted at `state["__suspended_tool_calls"]`.
 ///
-/// Used for cross-step and cross-run flow control that must survive restarts
-/// (not ephemeral in-memory variables).
+/// This is the only long-lived control state required to recover pending tool
+/// calls across runs.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-#[tirea(path = "loop_control")]
-pub struct LoopControlState {
+#[tirea(path = "__suspended_tool_calls")]
+pub struct SuspendedToolCallsState {
     /// Per-call suspended tool calls awaiting external resolution.
     #[serde(default)]
     #[tirea(default = "HashMap::new()")]
-    pub suspended_calls: HashMap<String, SuspendedCall>,
-    /// Backward-compatible view: derived from first entry in `suspended_calls`.
+    pub calls: HashMap<String, SuspendedCall>,
+}
+
+/// Durable resume queue persisted at `state["__resume_tool_calls"]`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[tirea(path = "__resume_tool_calls")]
+pub struct ResumeToolCallsState {
+    /// Tool calls queued for resume/replay.
+    #[serde(default)]
+    #[tirea(default = "Vec::new()")]
+    pub calls: Vec<ToolCall>,
+}
+
+/// Durable suspension decision records persisted at `state["__resolved_suspensions"]`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[tirea(path = "__resolved_suspensions")]
+pub struct ResolvedSuspensionsState {
+    /// Resolved suspension decisions (approve/deny payloads).
+    #[serde(default)]
+    #[tirea(default = "Vec::new()")]
+    pub resolutions: Vec<InteractionResponse>,
+}
+
+/// Durable inference-error envelope persisted at `state["__inference_error"]`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[tirea(path = "__inference_error")]
+pub struct InferenceErrorState {
     #[tirea(default = "None")]
-    pub pending_interaction: Option<Interaction>,
-    /// Structured frontend tool invocation (first-class model).
-    /// Backward-compatible view: derived from first entry in `suspended_calls`.
-    #[tirea(default = "None")]
-    pub pending_frontend_invocation: Option<FrontendToolInvocation>,
-    /// Inference error envelope for AfterInference cleanup flow.
-    #[tirea(default = "None")]
-    pub inference_error: Option<InferenceError>,
+    pub error: Option<InferenceError>,
 }
 
 /// Helpers for accessing loop control state from `Thread`.
@@ -64,15 +84,18 @@ pub trait LoopControlExt {
 
 impl LoopControlExt for Thread {
     fn pending_interaction(&self) -> Option<Interaction> {
-        self.rebuild_state()
-            .ok()
-            .and_then(|state| {
-                state
-                    .get(LoopControlState::PATH)
-                    .and_then(|lc| lc.get("pending_interaction"))
-                    .cloned()
-            })
-            .and_then(|value| serde_json::from_value::<Interaction>(value).ok())
+        self.rebuild_state().ok().and_then(|state| {
+            let calls = state
+                .get(SuspendedToolCallsState::PATH)
+                .and_then(|v| v.get("calls"))
+                .cloned()
+                .and_then(|v| serde_json::from_value::<HashMap<String, SuspendedCall>>(v).ok())
+                .unwrap_or_default();
+            calls
+                .iter()
+                .min_by(|(left, _), (right, _)| left.cmp(right))
+                .map(|(_, call)| call.interaction.clone())
+        })
     }
 }
 
@@ -93,8 +116,16 @@ mod tests {
 
     #[test]
     fn test_loop_control_state_defaults() {
-        let state = LoopControlState::default();
-        assert!(state.pending_interaction.is_none());
-        assert!(state.inference_error.is_none());
+        let suspended = SuspendedToolCallsState::default();
+        assert!(suspended.calls.is_empty());
+
+        let resume = ResumeToolCallsState::default();
+        assert!(resume.calls.is_empty());
+
+        let resolved = ResolvedSuspensionsState::default();
+        assert!(resolved.resolutions.is_empty());
+
+        let err = InferenceErrorState::default();
+        assert!(err.error.is_none());
     }
 }

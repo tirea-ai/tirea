@@ -1,7 +1,8 @@
 use crate::event::interaction::{FrontendToolInvocation, Interaction};
 use crate::runtime::activity::ActivityManager;
-use crate::runtime::control::LoopControlState;
+use crate::runtime::control::SuspendedCall;
 use crate::runtime::delta::RunDelta;
+use crate::runtime::state_paths::SUSPENDED_TOOL_CALLS_STATE_PATH;
 use crate::thread::Message;
 use crate::tool::context::ToolCallContext;
 use crate::RunConfig;
@@ -95,17 +96,12 @@ impl RunContext {
 
     /// Read pending interaction from durable control state.
     ///
-    /// This rebuilds state and navigates to `loop_control.pending_interaction`.
+    /// This rebuilds state and returns the interaction from the smallest
+    /// suspended call ID.
     pub fn pending_interaction(&self) -> Option<Interaction> {
-        self.snapshot()
-            .ok()
-            .and_then(|state| {
-                state
-                    .get(LoopControlState::PATH)
-                    .and_then(|lc| lc.get("pending_interaction"))
-                    .cloned()
-            })
-            .and_then(|value| serde_json::from_value::<Interaction>(value).ok())
+        let mut calls: Vec<SuspendedCall> = self.suspended_calls().into_values().collect();
+        calls.sort_by(|left, right| left.call_id.cmp(&right.call_id));
+        calls.into_iter().next().map(|call| call.interaction)
     }
 
     /// Read all suspended calls from durable control state.
@@ -116,8 +112,8 @@ impl RunContext {
             .ok()
             .and_then(|state| {
                 state
-                    .get(LoopControlState::PATH)
-                    .and_then(|lc| lc.get("suspended_calls"))
+                    .get(SUSPENDED_TOOL_CALLS_STATE_PATH)
+                    .and_then(|s| s.get("calls"))
                     .cloned()
             })
             .and_then(|value| serde_json::from_value(value).ok())
@@ -126,15 +122,12 @@ impl RunContext {
 
     /// Read pending frontend invocation from durable control state.
     pub fn pending_frontend_invocation(&self) -> Option<FrontendToolInvocation> {
-        self.snapshot()
-            .ok()
-            .and_then(|state| {
-                state
-                    .get(LoopControlState::PATH)
-                    .and_then(|lc| lc.get("pending_frontend_invocation"))
-                    .cloned()
-            })
-            .and_then(|value| serde_json::from_value::<FrontendToolInvocation>(value).ok())
+        let mut calls: Vec<SuspendedCall> = self.suspended_calls().into_values().collect();
+        calls.sort_by(|left, right| left.call_id.cmp(&right.call_id));
+        calls
+            .into_iter()
+            .next()
+            .and_then(|call| call.frontend_invocation)
     }
 
     // =========================================================================
@@ -428,39 +421,38 @@ mod tests {
 
     #[test]
     fn snapshot_of_deserializes_at_canonical_path() {
-        use crate::runtime::control::LoopControlState;
+        use crate::runtime::control::InferenceErrorState;
 
         let ctx = RunContext::new(
             "t-1",
-            json!({"loop_control": {"pending_interaction": null, "inference_error": null}}),
+            json!({"__inference_error": {"error": null}}),
             vec![],
             RunConfig::default(),
         );
-        let ctrl: LoopControlState = ctx.snapshot_of().unwrap();
-        assert!(ctrl.pending_interaction.is_none());
-        assert!(ctrl.inference_error.is_none());
+        let ctrl: InferenceErrorState = ctx.snapshot_of().unwrap();
+        assert!(ctrl.error.is_none());
     }
 
     #[test]
     fn snapshot_at_deserializes_at_explicit_path() {
-        use crate::runtime::control::LoopControlState;
+        use crate::runtime::control::InferenceErrorState;
 
         let ctx = RunContext::new(
             "t-1",
-            json!({"custom": {"pending_interaction": null, "inference_error": null}}),
+            json!({"custom": {"error": null}}),
             vec![],
             RunConfig::default(),
         );
-        let ctrl: LoopControlState = ctx.snapshot_at("custom").unwrap();
-        assert!(ctrl.pending_interaction.is_none());
+        let ctrl: InferenceErrorState = ctx.snapshot_at("custom").unwrap();
+        assert!(ctrl.error.is_none());
     }
 
     #[test]
     fn snapshot_of_returns_error_for_missing_path() {
-        use crate::runtime::control::LoopControlState;
+        use crate::runtime::control::InferenceErrorState;
 
         let ctx = RunContext::new("t-1", json!({}), vec![], RunConfig::default());
-        assert!(ctx.snapshot_of::<LoopControlState>().is_err());
+        assert!(ctx.snapshot_of::<InferenceErrorState>().is_err());
     }
 
     // =========================================================================

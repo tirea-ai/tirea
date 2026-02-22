@@ -1732,30 +1732,36 @@ fn pending_permission_frontend_thread(id: &str, payload: &str) -> Thread {
     Thread::with_initial_state(
         id,
         json!({
-            "loop_control": {
-                "pending_interaction": {
-                    "id": "fc_perm_1",
-                    "action": "tool:PermissionConfirm",
-                    "parameters": {
+            "__suspended_tool_calls": {
+                "calls": {
+                    "call_1": {
+                        "call_id": "call_1",
                         "tool_name": "echo",
-                        "tool_args": { "message": payload }
-                    }
-                },
-                "pending_frontend_invocation": {
-                    "call_id": "fc_perm_1",
-                    "tool_name": "PermissionConfirm",
-                    "arguments": {
-                        "tool_name": "echo",
-                        "tool_args": { "message": payload }
-                    },
-                    "origin": {
-                        "type": "tool_call_intercepted",
-                        "backend_call_id": "call_1",
-                        "backend_tool_name": "echo",
-                        "backend_arguments": { "message": payload }
-                    },
-                    "routing": {
-                        "strategy": "replay_original_tool"
+                        "interaction": {
+                            "id": "fc_perm_1",
+                            "action": "tool:PermissionConfirm",
+                            "parameters": {
+                                "tool_name": "echo",
+                                "tool_args": { "message": payload }
+                            }
+                        },
+                        "frontend_invocation": {
+                            "call_id": "fc_perm_1",
+                            "tool_name": "PermissionConfirm",
+                            "arguments": {
+                                "tool_name": "echo",
+                                "tool_args": { "message": payload }
+                            },
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "call_1",
+                                "backend_tool_name": "echo",
+                                "backend_arguments": { "message": payload }
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
+                        }
                     }
                 }
             }
@@ -1781,26 +1787,32 @@ fn pending_ask_frontend_thread(id: &str, question: &str) -> Thread {
     Thread::with_initial_state(
         id,
         json!({
-            "loop_control": {
-                "pending_interaction": {
-                    "id": "ask_call_1",
-                    "action": "tool:askUserQuestion",
-                    "parameters": {
-                        "question": question
-                    }
-                },
-                "pending_frontend_invocation": {
-                    "call_id": "ask_call_1",
-                    "tool_name": "askUserQuestion",
-                    "arguments": {
-                        "question": question
-                    },
-                    "origin": {
-                        "type": "plugin_initiated",
-                        "plugin_id": "agui_frontend_tools"
-                    },
-                    "routing": {
-                        "strategy": "use_as_tool_result"
+            "__suspended_tool_calls": {
+                "calls": {
+                    "ask_call_1": {
+                        "call_id": "ask_call_1",
+                        "tool_name": "askUserQuestion",
+                        "interaction": {
+                            "id": "ask_call_1",
+                            "action": "tool:askUserQuestion",
+                            "parameters": {
+                                "question": question
+                            }
+                        },
+                        "frontend_invocation": {
+                            "call_id": "ask_call_1",
+                            "tool_name": "askUserQuestion",
+                            "arguments": {
+                                "question": question
+                            },
+                            "origin": {
+                                "type": "plugin_initiated",
+                                "plugin_id": "agui_frontend_tools"
+                            },
+                            "routing": {
+                                "strategy": "use_as_tool_result"
+                            }
+                        }
                     }
                 }
             }
@@ -1874,13 +1886,10 @@ async fn test_agui_pending_approval_resumes_and_replays_tool_call() {
     let rebuilt = saved.rebuild_state().unwrap();
     assert!(
         rebuilt
-            .get("loop_control")
-            .and_then(|rt| rt.get("pending_interaction"))
-            .is_none()
-            || rebuilt
-                .get("loop_control")
-                .and_then(|rt| rt.get("pending_interaction"))
-                == Some(&Value::Null),
+            .get("__suspended_tool_calls")
+            .and_then(|rt| rt.get("calls"))
+            .and_then(|v| v.as_object())
+            .map_or(true, |calls| calls.is_empty()),
         "pending_interaction must be cleared after approval replay"
     );
 }
@@ -1930,13 +1939,10 @@ async fn test_agui_pending_denial_clears_pending_without_replay() {
     let rebuilt = saved.rebuild_state().unwrap();
     assert!(
         rebuilt
-            .get("loop_control")
-            .and_then(|rt| rt.get("pending_interaction"))
-            .is_none()
-            || rebuilt
-                .get("loop_control")
-                .and_then(|rt| rt.get("pending_interaction"))
-                == Some(&Value::Null),
+            .get("__suspended_tool_calls")
+            .and_then(|rt| rt.get("calls"))
+            .and_then(|v| v.as_object())
+            .map_or(true, |calls| calls.is_empty()),
         "pending_interaction must be cleared after denial"
     );
 }
@@ -2006,13 +2012,10 @@ async fn test_ai_sdk_permission_approval_replays_backend_tool_call() {
     let rebuilt = saved.rebuild_state().unwrap();
     assert!(
         rebuilt
-            .get("loop_control")
-            .and_then(|rt| rt.get("pending_interaction"))
-            .is_none()
-            || rebuilt
-                .get("loop_control")
-                .and_then(|rt| rt.get("pending_interaction"))
-                == Some(&Value::Null),
+            .get("__suspended_tool_calls")
+            .and_then(|rt| rt.get("calls"))
+            .and_then(|v| v.as_object())
+            .map_or(true, |calls| calls.is_empty()),
         "pending_interaction must be cleared after approval replay"
     );
 }
@@ -2079,13 +2082,10 @@ async fn test_ai_sdk_permission_denial_emits_output_denied_without_replay() {
     let rebuilt = saved.rebuild_state().unwrap();
     assert!(
         rebuilt
-            .get("loop_control")
-            .and_then(|rt| rt.get("pending_interaction"))
-            .is_none()
-            || rebuilt
-                .get("loop_control")
-                .and_then(|rt| rt.get("pending_interaction"))
-                == Some(&Value::Null),
+            .get("__suspended_tool_calls")
+            .and_then(|rt| rt.get("calls"))
+            .and_then(|v| v.as_object())
+            .map_or(true, |calls| calls.is_empty()),
         "pending_interaction must be cleared after denial"
     );
 }
@@ -2264,13 +2264,10 @@ async fn test_ai_sdk_ask_output_available_replays_with_frontend_payload() {
     let rebuilt = saved.rebuild_state().unwrap();
     assert!(
         rebuilt
-            .get("loop_control")
-            .and_then(|rt| rt.get("pending_interaction"))
-            .is_none()
-            || rebuilt
-                .get("loop_control")
-                .and_then(|rt| rt.get("pending_interaction"))
-                == Some(&Value::Null),
+            .get("__suspended_tool_calls")
+            .and_then(|rt| rt.get("calls"))
+            .and_then(|v| v.as_object())
+            .map_or(true, |calls| calls.is_empty()),
         "pending_interaction must be cleared after ask replay"
     );
 }

@@ -1686,8 +1686,8 @@ async fn run_stream_exposes_decision_sender_and_replays_suspended_calls() {
         .unwrap();
 
     let pending_state = json!({
-        "loop_control": {
-            "suspended_calls": {
+        "__suspended_tool_calls": {
+            "calls": {
                 "call_pending": {
                     "call_id": "call_pending",
                     "tool_name": "echo",
