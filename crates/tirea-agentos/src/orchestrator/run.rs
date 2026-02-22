@@ -121,6 +121,7 @@ impl AgentOs {
 
         let run_ctx = RunContext::from_thread(&thread, resolved.run_config)
             .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;
+        let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
 
         Ok(PreparedRun {
             thread_id,
@@ -132,6 +133,8 @@ impl AgentOs {
             state_committer: Some(Arc::new(AgentStateStoreStateCommitter::new(
                 agent_state_store.clone(),
             ))),
+            decision_tx,
+            decision_rx,
         })
     }
 
@@ -143,11 +146,12 @@ impl AgentOs {
             prepared.run_ctx,
             prepared.cancellation_token,
             prepared.state_committer,
-            None,
+            Some(prepared.decision_rx),
         );
         Ok(RunStream {
             thread_id: prepared.thread_id,
             run_id: prepared.run_id,
+            decision_tx: prepared.decision_tx,
             events,
         })
     }

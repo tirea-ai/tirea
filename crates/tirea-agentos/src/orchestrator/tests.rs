@@ -1631,6 +1631,116 @@ async fn execute_prepared_runs_stream() {
 }
 
 #[tokio::test]
+async fn run_stream_exposes_decision_sender_and_replays_suspended_calls() {
+    use futures::StreamExt;
+    use serde_json::Value;
+    use tirea_store_adapters::MemoryStore;
+
+    #[derive(Debug)]
+    struct SkipPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for SkipPlugin {
+        fn id(&self) -> &str {
+            "skip"
+        }
+
+        async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
+            step.skip_inference();
+        }
+    }
+
+    #[derive(Debug)]
+    struct EchoTool;
+
+    #[async_trait]
+    impl Tool for EchoTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("echo", "Echo", "Echo tool")
+                .with_parameters(json!({"type":"object"}))
+        }
+
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("echo", args))
+        }
+    }
+
+    let storage = Arc::new(MemoryStore::new());
+    let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+    tools.insert("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>);
+    let os = AgentOs::builder()
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>)
+        .with_tools(tools)
+        .with_registered_plugin("skip", Arc::new(SkipPlugin))
+        .with_agent(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini").with_plugin_id("skip"),
+        )
+        .build()
+        .unwrap();
+
+    let pending_state = json!({
+        "loop_control": {
+            "suspended_calls": {
+                "call_pending": {
+                    "call_id": "call_pending",
+                    "tool_name": "echo",
+                    "interaction": {
+                        "id": "call_pending",
+                        "action": "confirm",
+                        "parameters": {
+                            "message": "approved-from-channel"
+                        }
+                    }
+                }
+            }
+        }
+    });
+    let thread = Thread::with_initial_state("t-decision-sender", pending_state)
+        .with_message(crate::contracts::thread::Message::user("resume"));
+    storage.create(&thread).await.unwrap();
+
+    let run = os
+        .run_stream(RunRequest {
+            agent_id: "a1".to_string(),
+            thread_id: Some("t-decision-sender".to_string()),
+            run_id: Some("run-decision-sender".to_string()),
+            parent_run_id: None,
+            resource_id: None,
+            state: None,
+            messages: vec![],
+        })
+        .await
+        .unwrap();
+
+    run.submit_decision(crate::contracts::InteractionResponse::new(
+        "call_pending",
+        json!(true),
+    ))
+    .expect("decision channel should be connected");
+
+    let events: Vec<_> = run.events.collect().await;
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::InteractionResolved { interaction_id, .. } if interaction_id == "call_pending"
+        )),
+        "run stream should emit interaction resolution: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolCallDone { id, .. } if id == "call_pending"
+        )),
+        "run stream should replay suspended call after decision: {events:?}"
+    );
+}
+
+#[tokio::test]
 async fn run_stream_checkpoint_append_failure_keeps_persisted_prefix_consistent() {
     use futures::StreamExt;
 
