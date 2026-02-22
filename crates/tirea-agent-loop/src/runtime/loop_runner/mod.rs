@@ -607,18 +607,37 @@ fn assistant_turn_message(
     msg
 }
 
-async fn drain_run_start_outbox_and_replay_nonstream(
+pub(super) struct RunStartDrainOutcome {
+    pub(super) events: Vec<AgentEvent>,
+    pub(super) replayed: bool,
+}
+
+pub(super) async fn drain_run_start_outbox_and_replay(
     run_ctx: &mut RunContext,
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
-) -> Result<bool, AgentLoopError> {
-    let outbox = drain_agent_outbox(run_ctx, "agent_outbox_run_start_nonstream")?;
-    if outbox.replay_tool_calls.is_empty() {
-        return Ok(false);
+) -> Result<RunStartDrainOutcome, AgentLoopError> {
+    let outbox = drain_agent_outbox(run_ctx, "agent_outbox_run_start")?;
+    let mut events = outbox
+        .interaction_resolutions
+        .into_iter()
+        .map(|resolution| AgentEvent::InteractionResolved {
+            interaction_id: resolution.interaction_id,
+            result: resolution.result,
+        })
+        .collect::<Vec<_>>();
+
+    let replay_calls = outbox.replay_tool_calls;
+    if replay_calls.is_empty() {
+        return Ok(RunStartDrainOutcome {
+            events,
+            replayed: false,
+        });
     }
 
-    for tool_call in &outbox.replay_tool_calls {
+    let mut replay_state_changed = false;
+    for tool_call in &replay_calls {
         let state = run_ctx
             .snapshot()
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
@@ -637,7 +656,9 @@ async fn drain_run_start_outbox_and_replay_nonstream(
             execute_single_tool_with_phases(tool.as_deref(), tool_call, &state, &replay_phase_ctx)
                 .await?;
 
-        let replay_msg = tool_response(&tool_call.id, &replay_result.execution.result);
+        let replay_msg_id = gen_message_id();
+        let replay_msg = tool_response(&tool_call.id, &replay_result.execution.result)
+            .with_id(replay_msg_id.clone());
         run_ctx.add_message(Arc::new(replay_msg));
 
         if !replay_result.reminders.is_empty() {
@@ -654,24 +675,46 @@ async fn drain_run_start_outbox_and_replay_nonstream(
             run_ctx.add_messages(msgs);
         }
 
-        if let Some(patch) = replay_result.execution.patch {
+        if let Some(patch) = replay_result.execution.patch.clone() {
+            replay_state_changed = true;
             run_ctx.add_thread_patch(patch);
         }
         if !replay_result.pending_patches.is_empty() {
-            run_ctx.add_thread_patches(replay_result.pending_patches);
+            replay_state_changed = true;
+            run_ctx.add_thread_patches(replay_result.pending_patches.clone());
         }
 
+        events.push(AgentEvent::ToolCallDone {
+            id: tool_call.id.clone(),
+            result: replay_result.execution.result,
+            patch: replay_result.execution.patch,
+            message_id: replay_msg_id,
+        });
+
         if let Some(new_interaction) = replay_result.pending_interaction {
-            let new_frontend_invocation = replay_result.pending_frontend_invocation;
+            let new_frontend_invocation = replay_result.pending_frontend_invocation.clone();
             let state = run_ctx
                 .snapshot()
                 .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-            let patch =
-                set_agent_pending_interaction(&state, new_interaction, new_frontend_invocation)?;
+            let patch = set_agent_pending_interaction(
+                &state,
+                new_interaction.clone(),
+                new_frontend_invocation.clone(),
+            )?;
             if !patch.patch().is_empty() {
                 run_ctx.add_thread_patch(patch);
             }
-            return Ok(true);
+            for event in pending_tool_events(&new_interaction, new_frontend_invocation.as_ref()) {
+                events.push(event);
+            }
+            let snapshot = run_ctx
+                .snapshot()
+                .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+            events.push(AgentEvent::StateSnapshot { snapshot });
+            return Ok(RunStartDrainOutcome {
+                events,
+                replayed: true,
+            });
         }
     }
 
@@ -680,10 +723,21 @@ async fn drain_run_start_outbox_and_replay_nonstream(
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     let clear_patch = clear_agent_pending_interaction(&state)?;
     if !clear_patch.patch().is_empty() {
+        replay_state_changed = true;
         run_ctx.add_thread_patch(clear_patch);
     }
 
-    Ok(true)
+    if replay_state_changed {
+        let snapshot = run_ctx
+            .snapshot()
+            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+        events.push(AgentEvent::StateSnapshot { snapshot });
+    }
+
+    Ok(RunStartDrainOutcome {
+        events,
+        replayed: true,
+    })
 }
 
 fn normalize_frontend_tool_result(
@@ -1006,7 +1060,7 @@ pub async fn run_loop(
         );
     }
 
-    let replayed_at_run_start = match drain_run_start_outbox_and_replay_nonstream(
+    let run_start_drain = match drain_run_start_outbox_and_replay(
         &mut run_ctx,
         &initial_tools,
         config,
@@ -1023,7 +1077,7 @@ pub async fn run_loop(
             );
         }
     };
-    if replayed_at_run_start {
+    if run_start_drain.replayed {
         if let Err(error) = pending_delta_commit
             .commit(&mut run_ctx, CheckpointReason::ToolResultsCommitted, false)
             .await
@@ -1059,7 +1113,7 @@ pub async fn run_loop(
                     }
                 };
             active_tool_descriptors = decision_tools.descriptors.clone();
-            if let Err(error) = drain_run_start_outbox_and_replay_nonstream(
+            if let Err(error) = drain_run_start_outbox_and_replay(
                 &mut run_ctx,
                 &decision_tools.tools,
                 config,
@@ -1344,7 +1398,7 @@ pub fn run_loop_stream(
     state_committer: Option<Arc<dyn StateCommitter>>,
     decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
-    stream_runner::run_loop_stream_impl(
+    stream_runner::run_stream(
         config,
         tools,
         run_ctx,

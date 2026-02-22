@@ -7,155 +7,6 @@ use super::*;
 // - emits AgentEvent stream
 // - delegates deterministic state-machine helpers to `stream_core`
 
-struct RunStartDrainOutcome {
-    events: Vec<AgentEvent>,
-    replayed: bool,
-}
-
-async fn drain_run_start_outbox_and_replay(
-    run_ctx: &mut RunContext,
-    tools: &HashMap<String, Arc<dyn Tool>>,
-    config: &AgentConfig,
-    tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
-) -> Result<RunStartDrainOutcome, String> {
-    let outbox =
-        drain_agent_outbox(run_ctx, "agent_outbox_run_start").map_err(|e| e.to_string())?;
-
-    let mut events = Vec::new();
-    for resolution in outbox.interaction_resolutions {
-        events.push(AgentEvent::InteractionResolved {
-            interaction_id: resolution.interaction_id,
-            result: resolution.result,
-        });
-    }
-
-    let replay_calls = outbox.replay_tool_calls;
-    if replay_calls.is_empty() {
-        return Ok(RunStartDrainOutcome {
-            events,
-            replayed: false,
-        });
-    }
-
-    let mut replay_state_changed = false;
-    for tool_call in &replay_calls {
-        let state = run_ctx.snapshot().map_err(|e| {
-            format!(
-                "failed to rebuild state before replaying tool '{}': {e}",
-                tool_call.id
-            )
-        })?;
-
-        let tool = tools.get(&tool_call.name).cloned();
-        let rt_for_replay = scope_with_tool_caller_context(run_ctx, &state, Some(config))
-            .map_err(|e| e.to_string())?;
-        let replay_phase_ctx = super::tool_exec::ToolPhaseContext {
-            tool_descriptors,
-            plugins: &config.plugins,
-            activity_manager: None,
-            run_config: &rt_for_replay,
-            thread_id: run_ctx.thread_id(),
-            thread_messages: run_ctx.messages(),
-            cancellation_token: None,
-        };
-        let replay_result =
-            execute_single_tool_with_phases(tool.as_deref(), tool_call, &state, &replay_phase_ctx)
-                .await
-                .map_err(|e| e.to_string())?;
-
-        // Append real replay tool result as a new tool message (append-only log).
-        let replay_msg_id = gen_message_id();
-        let replay_msg = tool_response(&tool_call.id, &replay_result.execution.result)
-            .with_id(replay_msg_id.clone());
-        run_ctx.add_message(Arc::new(replay_msg));
-
-        // Preserve reminder emission semantics for replayed tool calls.
-        if !replay_result.reminders.is_empty() {
-            let msgs: Vec<Arc<Message>> = replay_result
-                .reminders
-                .iter()
-                .map(|reminder| {
-                    Arc::new(Message::internal_system(format!(
-                        "<system-reminder>{}</system-reminder>",
-                        reminder
-                    )))
-                })
-                .collect();
-            run_ctx.add_messages(msgs);
-        }
-
-        if let Some(patch) = replay_result.execution.patch.clone() {
-            replay_state_changed = true;
-            run_ctx.add_thread_patch(patch);
-        }
-        if !replay_result.pending_patches.is_empty() {
-            replay_state_changed = true;
-            run_ctx.add_thread_patches(replay_result.pending_patches.clone());
-        }
-
-        events.push(AgentEvent::ToolCallDone {
-            id: tool_call.id.clone(),
-            result: replay_result.execution.result,
-            patch: replay_result.execution.patch,
-            message_id: replay_msg_id,
-        });
-
-        // Multi-round: replayed tool produced a new pending interaction.
-        // Persist it and return early so the run terminates with PendingInteraction.
-        if let Some(new_interaction) = replay_result.pending_interaction {
-            let new_frontend_invocation = replay_result.pending_frontend_invocation.clone();
-            let state = run_ctx.snapshot().map_err(|e| {
-                format!(
-                    "failed to rebuild state for multi-round pending on tool '{}': {e}",
-                    tool_call.id
-                )
-            })?;
-            let patch = set_agent_pending_interaction(
-                &state,
-                new_interaction.clone(),
-                new_frontend_invocation.clone(),
-            )
-            .map_err(|e| e.to_string())?;
-            if !patch.patch().is_empty() {
-                run_ctx.add_thread_patch(patch);
-            }
-            for event in pending_tool_events(&new_interaction, new_frontend_invocation.as_ref()) {
-                events.push(event);
-            }
-            let snapshot = run_ctx
-                .snapshot()
-                .map_err(|e| format!("failed to rebuild multi-round snapshot: {e}"))?;
-            events.push(AgentEvent::StateSnapshot { snapshot });
-            return Ok(RunStartDrainOutcome {
-                events,
-                replayed: true,
-            });
-        }
-    }
-
-    // Clear pending_interaction state after replaying tools.
-    let state = run_ctx
-        .snapshot()
-        .map_err(|e| format!("failed to rebuild state after replay: {e}"))?;
-    let clear_patch = clear_agent_pending_interaction(&state).map_err(|e| e.to_string())?;
-    if !clear_patch.patch().is_empty() {
-        replay_state_changed = true;
-        run_ctx.add_thread_patch(clear_patch);
-    }
-
-    if replay_state_changed {
-        let snapshot = run_ctx
-            .snapshot()
-            .map_err(|e| format!("failed to rebuild replay snapshot: {e}"))?;
-        events.push(AgentEvent::StateSnapshot { snapshot });
-    }
-
-    Ok(RunStartDrainOutcome {
-        events,
-        replayed: true,
-    })
-}
-
 fn drain_loop_tick_outbox(run_ctx: &mut RunContext) -> Result<Vec<AgentEvent>, String> {
     let outbox =
         drain_agent_outbox(run_ctx, "agent_outbox_loop_tick").map_err(|e| e.to_string())?;
@@ -280,7 +131,7 @@ fn event_type_name(event: &AgentEvent) -> &'static str {
     }
 }
 
-pub(super) fn run_loop_stream_impl(
+pub(super) fn run_stream(
     config: AgentConfig,
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
@@ -448,7 +299,7 @@ pub(super) fn run_loop_stream_impl(
         {
             Ok(v) => v,
             Err(e) => {
-                let message = e;
+                let message = e.to_string();
                 terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
             }
         };
@@ -496,7 +347,7 @@ pub(super) fn run_loop_stream_impl(
                 {
                     Ok(v) => v,
                     Err(e) => {
-                        let message = e;
+                        let message = e.to_string();
                         terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
                     }
                 };
