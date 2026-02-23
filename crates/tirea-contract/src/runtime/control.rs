@@ -23,7 +23,7 @@ pub struct InferenceError {
 /// A tool call that has been suspended, awaiting external resolution.
 ///
 /// The core loop only stores `call_id` + generic `Suspension`; it does not
-/// interpret the semantics (permissions, frontend tools, user confirmation).
+/// interpret the semantics (policy checks, frontend tools, user confirmation).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SuspendedCall {
     pub call_id: String,

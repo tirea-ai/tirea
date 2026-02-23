@@ -215,7 +215,7 @@ impl FrontendToolInvocation {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InvocationOrigin {
-    /// A backend tool call was intercepted (e.g. permission check).
+    /// A backend tool call was intercepted by a gate/policy plugin.
     ToolCallIntercepted {
         /// The intercepted backend tool call ID.
         backend_call_id: String,
@@ -237,8 +237,8 @@ pub enum InvocationOrigin {
 pub enum ResponseRouting {
     /// Replay the original backend tool.
     ///
-    /// Used for permission prompts where approval allows replaying the
-    /// intercepted backend tool call.
+    /// Used when an external decision allows replaying the intercepted
+    /// backend tool call.
     ReplayOriginalTool,
     /// The frontend result IS the tool result — inject it directly into
     /// the LLM message history as the tool call response.
@@ -304,7 +304,7 @@ mod tests {
             "strategy": "replay_original_tool",
             "state_patches": [{
                 "op": "set",
-                "path": ["permissions", "approved_calls", "call_1"],
+                "path": ["__legacy", "state_patches", "call_1"],
                 "value": true
             }]
         });
