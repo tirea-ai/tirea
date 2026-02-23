@@ -12535,16 +12535,6 @@ mod llmmetry_tracing {
 // ============================================================================
 
 fn replay_calls_from_state(state: &Value) -> Vec<ToolCall> {
-    let legacy = state
-        .get("__resume_tool_calls")
-        .and_then(|agent| agent.get("calls"))
-        .cloned()
-        .and_then(|v| serde_json::from_value::<Vec<ToolCall>>(v).ok())
-        .unwrap_or_default();
-    if !legacy.is_empty() {
-        return legacy;
-    }
-
     let decisions = resume_decisions_from_state(state);
     if decisions.is_empty() {
         return Vec::new();

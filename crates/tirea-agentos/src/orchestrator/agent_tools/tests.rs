@@ -14,7 +14,9 @@ use crate::runtime::loop_runner::{
 };
 use async_trait::async_trait;
 use serde_json::json;
+use std::collections::HashMap;
 use std::time::Duration;
+use tirea_contract::runtime::{ResumeDecision, ResumeDecisionAction};
 use tirea_contract::testing::TestFixture;
 use tirea_state::apply_patches;
 
@@ -64,6 +66,15 @@ where
             }
         }
     }
+}
+
+fn resume_decisions_from_state(state: &serde_json::Value) -> HashMap<String, ResumeDecision> {
+    state
+        .get("__resume_decisions")
+        .and_then(|v| v.get("calls"))
+        .cloned()
+        .and_then(|raw| serde_json::from_value::<HashMap<String, ResumeDecision>>(raw).ok())
+        .unwrap_or_default()
 }
 
 #[test]
@@ -1195,23 +1206,29 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
-    let replay_calls: Vec<ToolCall> = updated["__resume_tool_calls"]
-        .get("calls")
-        .cloned()
-        .and_then(|v| serde_json::from_value(v).ok())
-        .unwrap_or_default();
-    assert_eq!(replay_calls.len(), 1);
-    assert_eq!(replay_calls[0].name, "agent_run");
-    assert_eq!(replay_calls[0].arguments["run_id"], "run-1");
+    let decisions = resume_decisions_from_state(&updated);
+    assert!(
+        decisions
+            .get("agent_recovery_run-1")
+            .is_some_and(|decision| {
+                matches!(decision.action, ResumeDecisionAction::Resume)
+                    && decision.result == serde_json::Value::Bool(true)
+            }),
+        "allow should enqueue resume decision for recovery suspended call"
+    );
+    assert_eq!(
+        updated["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["tool_name"],
+        json!("agent_run")
+    );
+    assert_eq!(
+        updated["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["interaction"]
+            ["parameters"]["run_id"],
+        json!("run-1")
+    );
     assert_eq!(
         updated["agent_runs"]["runs"]["run-1"]["status"],
         json!("stopped")
     );
-    assert!(updated
-        .get("__suspended_tool_calls")
-        .and_then(|v| v.get("calls"))
-        .and_then(|v| v.as_object())
-        .map_or(true, |calls| calls.is_empty()));
 }
 
 #[tokio::test]
@@ -1246,12 +1263,8 @@ async fn recovery_plugin_auto_deny_when_permission_deny() {
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
-    let replay_calls: Vec<ToolCall> = updated["__resume_tool_calls"]
-        .get("calls")
-        .cloned()
-        .and_then(|v| serde_json::from_value(v).ok())
-        .unwrap_or_default();
-    assert!(replay_calls.is_empty());
+    let decisions = resume_decisions_from_state(&updated);
+    assert!(decisions.is_empty());
     assert_eq!(
         updated["agent_runs"]["runs"]["run-1"]["status"],
         json!("stopped")
@@ -1293,19 +1306,17 @@ async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
-    let replay_calls: Vec<ToolCall> = updated["__resume_tool_calls"]
-        .get("calls")
-        .cloned()
-        .and_then(|v| serde_json::from_value(v).ok())
-        .unwrap_or_default();
-    assert_eq!(replay_calls.len(), 1);
-    assert_eq!(replay_calls[0].name, "agent_run");
-    assert_eq!(replay_calls[0].arguments["run_id"], "run-1");
-    assert!(updated
-        .get("__suspended_tool_calls")
-        .and_then(|v| v.get("calls"))
-        .and_then(|v| v.as_object())
-        .map_or(true, |calls| calls.is_empty()));
+    let decisions = resume_decisions_from_state(&updated);
+    assert!(
+        decisions
+            .get("agent_recovery_run-1")
+            .is_some_and(|decision| matches!(decision.action, ResumeDecisionAction::Resume)),
+        "default allow should enqueue resume decision"
+    );
+    assert_eq!(
+        updated["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["tool_name"],
+        json!("agent_run")
+    );
 }
 
 #[tokio::test]
@@ -1338,14 +1349,10 @@ async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
-    let replay_calls: Vec<ToolCall> = updated["__resume_tool_calls"]
-        .get("calls")
-        .cloned()
-        .and_then(|v| serde_json::from_value(v).ok())
-        .unwrap_or_default();
+    let decisions = resume_decisions_from_state(&updated);
     assert!(
-        replay_calls.is_empty(),
-        "deny should not schedule recovery replay"
+        decisions.is_empty(),
+        "deny should not enqueue recovery resume decision"
     );
     assert!(updated
         .get("__suspended_tool_calls")
@@ -1386,13 +1393,9 @@ async fn recovery_plugin_tool_rule_overrides_default_behavior() {
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
-    let replay_calls: Vec<ToolCall> = updated["__resume_tool_calls"]
-        .get("calls")
-        .cloned()
-        .and_then(|v| serde_json::from_value(v).ok())
-        .unwrap_or_default();
+    let decisions = resume_decisions_from_state(&updated);
     assert!(
-        replay_calls.is_empty(),
+        decisions.is_empty(),
         "tool-level ask should override default allow"
     );
     assert_eq!(

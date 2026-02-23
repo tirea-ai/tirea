@@ -308,7 +308,7 @@ impl AgentPlugin for InteractionResponsePlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AGENT_RECOVERY_INTERACTION_PREFIX, RECOVERY_RESUME_TOOL_ID};
+    use crate::RECOVERY_RESUME_TOOL_ID;
     use async_trait::async_trait;
     use serde_json::json;
     use std::sync::Arc;
@@ -319,8 +319,7 @@ mod tests {
     };
     use tirea_contract::plugin::AgentPlugin;
     use tirea_contract::runtime::state_paths::{
-        RESOLVED_SUSPENSIONS_STATE_PATH, RESUME_DECISIONS_STATE_PATH, RESUME_TOOL_CALLS_STATE_PATH,
-        SUSPENDED_TOOL_CALLS_STATE_PATH,
+        RESUME_DECISIONS_STATE_PATH, SUSPENDED_TOOL_CALLS_STATE_PATH,
     };
     use tirea_contract::runtime::{ResumeDecision, ResumeDecisionAction};
     use tirea_contract::testing::TestFixture;
@@ -377,16 +376,6 @@ mod tests {
     }
 
     fn replay_calls_from_state(state: &serde_json::Value) -> Vec<ToolCall> {
-        let legacy = state
-            .get(RESUME_TOOL_CALLS_STATE_PATH)
-            .and_then(|agent| agent.get("calls"))
-            .cloned()
-            .and_then(|v| serde_json::from_value::<Vec<ToolCall>>(v).ok())
-            .unwrap_or_default();
-        if !legacy.is_empty() {
-            return legacy;
-        }
-
         let decisions = resume_decisions_from_state(state);
         if decisions.is_empty() {
             return Vec::new();
@@ -408,28 +397,6 @@ mod tests {
                     return None;
                 }
                 let call = suspended.get(&call_id)?;
-                if call.interaction.action == AGENT_RECOVERY_INTERACTION_ACTION {
-                    let run_id = call
-                        .interaction
-                        .parameters
-                        .get("run_id")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string)
-                        .or_else(|| {
-                            call.interaction
-                                .id
-                                .strip_prefix(AGENT_RECOVERY_INTERACTION_PREFIX)
-                                .map(str::to_string)
-                        })?;
-                    return Some(ToolCall::new(
-                        format!("recovery_resume_{run_id}"),
-                        RECOVERY_RESUME_TOOL_ID,
-                        json!({
-                            "run_id": run_id,
-                            "background": false
-                        }),
-                    ));
-                }
                 if let Some(inv) = call.frontend_invocation.as_ref() {
                     return match &inv.routing {
                         ResponseRouting::ReplayOriginalTool => match &inv.origin {
@@ -485,16 +452,6 @@ mod tests {
     }
 
     fn interaction_resolutions_from_state(state: &serde_json::Value) -> Vec<InteractionResponse> {
-        let legacy = state
-            .get(RESOLVED_SUSPENSIONS_STATE_PATH)
-            .and_then(|agent| agent.get("resolutions"))
-            .cloned()
-            .and_then(|v| serde_json::from_value::<Vec<InteractionResponse>>(v).ok())
-            .unwrap_or_default();
-        if !legacy.is_empty() {
-            return legacy;
-        }
-
         let decisions = resume_decisions_from_state(state);
         if decisions.is_empty() {
             return Vec::new();
@@ -1044,12 +1001,13 @@ mod tests {
                 "calls": {
                     "agent_recovery_run-1": {
                         "call_id": "agent_recovery_run-1",
-                        "tool_name": "recover_agent_run",
+                        "tool_name": "agent_run",
                         "interaction": {
                             "id": "agent_recovery_run-1",
                             "action": "recover_agent_run",
                             "parameters": {
-                                "run_id": "run-1"
+                                "run_id": "run-1",
+                                "background": false
                             }
                         }
                     }
@@ -1078,12 +1036,13 @@ mod tests {
                 "calls": {
                     "agent_recovery_run-1": {
                         "call_id": "agent_recovery_run-1",
-                        "tool_name": "recover_agent_run",
+                        "tool_name": "agent_run",
                         "interaction": {
                             "id": "agent_recovery_run-1",
                             "action": "recover_agent_run",
                             "parameters": {
-                                "run_id": "run-1"
+                                "run_id": "run-1",
+                                "background": false
                             }
                         }
                     }

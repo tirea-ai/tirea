@@ -8,30 +8,6 @@ use std::collections::HashSet;
 // - emits AgentEvent stream
 // - delegates deterministic state-machine helpers to `stream_core`
 
-fn drain_loop_tick_outbox(run_ctx: &mut RunContext) -> Result<Vec<AgentEvent>, String> {
-    let outbox =
-        drain_agent_outbox(run_ctx, "agent_outbox_loop_tick").map_err(|e| e.to_string())?;
-
-    if !outbox.replay_tool_calls.is_empty() {
-        let state = run_ctx.snapshot().map_err(|e| e.to_string())?;
-        let patch = enqueue_replay_tool_calls(&state, outbox.replay_tool_calls.clone())
-            .map_err(|e| e.to_string())?;
-        if !patch.patch().is_empty() {
-            run_ctx.add_thread_patch(patch);
-        }
-    }
-
-    let events = outbox
-        .interaction_resolutions
-        .into_iter()
-        .map(|resolution| AgentEvent::InteractionResolved {
-            interaction_id: resolution.interaction_id,
-            result: resolution.result,
-        })
-        .collect::<Vec<_>>();
-    Ok(events)
-}
-
 #[derive(Debug)]
 struct StreamEventEmitter {
     run_id: String,
@@ -328,17 +304,6 @@ pub(super) fn run_stream(
                 for event in decision_events {
                     yield emitter.emit_existing(event);
                 }
-            }
-
-            let loop_tick_events = match drain_loop_tick_outbox(&mut run_ctx) {
-                Ok(v) => v,
-                Err(e) => {
-                    let message = e;
-                    terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
-                }
-            };
-            for event in loop_tick_events {
-                yield emitter.emit_existing(event);
             }
 
             // Check cancellation at the top of each iteration.

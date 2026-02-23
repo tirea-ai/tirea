@@ -53,7 +53,7 @@ impl AgentRecoveryPlugin {
         };
         match behavior {
             ToolPermissionBehavior::Allow => {
-                schedule_recovery_replay(step, &run_id);
+                schedule_recovery_replay(step, &run_id, run);
             }
             ToolPermissionBehavior::Deny => {}
             ToolPermissionBehavior::Ask => {

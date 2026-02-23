@@ -7,9 +7,6 @@ use crate::contracts::plugin::phase::{
     StepStartContext,
 };
 use crate::contracts::runtime::control::LoopControlExt;
-use crate::contracts::runtime::state_paths::{
-    RESOLVED_SUSPENSIONS_STATE_PATH, RESUME_TOOL_CALLS_STATE_PATH,
-};
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::LlmExecutor;
 use crate::contracts::storage::VersionPrecondition;
@@ -28,7 +25,6 @@ use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use tirea_contract::testing::TestFixture;
-use tirea_extension_interaction::ResumeToolCallsState;
 use tirea_state::{Op, Patch, State};
 use tokio::sync::Notify;
 
@@ -2805,13 +2801,28 @@ async fn test_stream_run_start_outbox_resolution_emits_after_run_start() {
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "__resolved_suspensions": {
-                "resolutions": [
-                    {
-                        "interaction_id": "resolution_1",
-                        "result": true
+            "__suspended_tool_calls": {
+                "calls": {
+                    "call_1": {
+                        "call_id": "call_1",
+                        "tool_name": "echo",
+                        "interaction": {
+                            "id": "resolution_1",
+                            "action": "confirm",
+                            "parameters": {}
+                        }
                     }
-                ]
+                }
+            },
+            "__resume_decisions": {
+                "calls": {
+                    "call_1": {
+                        "decision_id": "decision_1",
+                        "action": "cancel",
+                        "result": false,
+                        "updated_at": 1
+                    }
+                }
             }
         }),
     )
@@ -2828,7 +2839,7 @@ async fn test_stream_run_start_outbox_resolution_emits_after_run_start() {
         Some(AgentEvent::InteractionResolved {
             interaction_id,
             result
-        }) if interaction_id == "resolution_1" && result == &serde_json::Value::Bool(true)
+        }) if interaction_id == "resolution_1" && result == &serde_json::Value::Bool(false)
     ));
     assert!(matches!(events.last(), Some(AgentEvent::RunFinish { .. })));
 }
@@ -3292,12 +3303,12 @@ async fn test_run_loop_permission_approval_replays_tool_and_clears_outbox() {
         .and_then(|v| v.as_object());
     assert!(suspended.map_or(true, |calls| calls.is_empty()));
 
-    let replay_outbox = state
-        .get("__resume_tool_calls")
-        .and_then(|o| o.get("calls"));
+    let replay_outbox = state.get("__resume_decisions").and_then(|o| o.get("calls"));
     assert!(
-        replay_outbox.is_none() || replay_outbox == Some(&json!([])),
-        "run_loop should drain replay outbox after run-start replay"
+        replay_outbox
+            .and_then(|calls| calls.as_object())
+            .map_or(true, |calls| calls.is_empty()),
+        "run_loop should drain resume decisions after run-start replay"
     );
 }
 
@@ -3833,7 +3844,7 @@ async fn test_run_loop_legacy_run_start_outbox_resolution_is_ignored() {
 
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     let resolutions = state
-        .get(RESOLVED_SUSPENSIONS_STATE_PATH)
+        .get("__resolved_suspensions")
         .and_then(|outbox| outbox.get("resolutions"));
     assert_eq!(
         resolutions,
@@ -3858,21 +3869,24 @@ async fn test_run_loop_legacy_run_start_replay_queue_is_ignored() {
         phase_dispatch_methods!(|phase, step| {
             match phase {
                 Phase::RunStart => {
-                    let outbox = step.state_of::<ResumeToolCallsState>();
-                    outbox
-                        .calls_push(ToolCall::new(
-                            "replay_call_1",
-                            "echo",
-                            json!({"message": "first"}),
-                        ))
-                        .expect("queue replay_call_1");
-                    outbox
-                        .calls_push(ToolCall::new(
-                            "replay_call_2",
-                            "echo",
-                            json!({"message": "second"}),
-                        ))
-                        .expect("queue replay_call_2");
+                    step.pending_patches.push(
+                        tirea_state::TrackedPatch::new(Patch::new().with_op(Op::set(
+                            tirea_state::path!("__resume_tool_calls", "calls"),
+                            json!([
+                                {
+                                    "id": "replay_call_1",
+                                    "name": "echo",
+                                    "arguments": {"message": "first"}
+                                },
+                                {
+                                    "id": "replay_call_2",
+                                    "name": "echo",
+                                    "arguments": {"message": "second"}
+                                }
+                            ]),
+                        )))
+                        .with_source("test:legacy_replay_queue"),
+                    );
                 }
                 Phase::BeforeToolExecute if step.tool_call_id() == Some("replay_call_1") => {
                     step.ask(
@@ -3898,7 +3912,7 @@ async fn test_run_loop_legacy_run_start_replay_queue_is_ignored() {
 
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     let replay_calls = state
-        .get(RESUME_TOOL_CALLS_STATE_PATH)
+        .get("__resume_tool_calls")
         .and_then(|outbox| outbox.get("calls"))
         .and_then(|calls| calls.as_array())
         .cloned()
@@ -6248,14 +6262,17 @@ impl AgentPlugin for RunStartReplayPlugin {
 
     phase_dispatch_methods!(|_this, phase, step| {
         if phase == Phase::RunStart {
-            let outbox = step.state_of::<ResumeToolCallsState>();
-            outbox
-                .calls_push(ToolCall::new(
-                    "replay_call_1",
-                    "echo",
-                    json!({"message": "from replay"}),
-                ))
-                .expect("queue replay tool call");
+            step.pending_patches.push(
+                tirea_state::TrackedPatch::new(Patch::new().with_op(Op::set(
+                    tirea_state::path!("__resume_tool_calls", "calls"),
+                    json!([{
+                        "id": "replay_call_1",
+                        "name": "echo",
+                        "arguments": {"message": "from replay"}
+                    }]),
+                )))
+                .with_source("test:run_start_replay_plugin"),
+            );
         }
     });
 }
@@ -6667,7 +6684,7 @@ async fn test_stream_skip_inference_force_commits_run_finished_delta() {
 }
 
 #[tokio::test]
-async fn test_stream_replay_invalid_payload_emits_error_and_finish() {
+async fn test_stream_legacy_replay_invalid_payload_is_ignored() {
     struct InvalidReplayPayloadPlugin;
 
     #[async_trait]
@@ -6703,29 +6720,23 @@ async fn test_stream_replay_invalid_payload_emits_error_and_finish() {
     .await;
 
     assert!(
-        events.iter().any(|e| matches!(
+        !events.iter().any(|e| matches!(
             e,
             AgentEvent::Error { message }
             if message.contains("__resume_tool_calls.calls")
         )),
-        "expected replay payload parse error, got events: {events:?}"
+        "legacy replay payload should be ignored without parse errors: {events:?}"
+    );
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::NaturalEnd),
+        "stream should continue normally when legacy replay payload is malformed"
     );
     assert!(
-        matches!(
-            events.last(),
-            Some(AgentEvent::RunFinish {
-                termination: TerminationReason::Error,
-                ..
-            })
-        ),
-        "expected terminal RunFinish after replay parse error, got: {:?}",
-        events.last()
-    );
-    assert!(
-        !events
+        events
             .iter()
             .any(|e| matches!(e, AgentEvent::TextDelta { .. })),
-        "stream should terminate before inference when replay payload is invalid"
+        "stream should proceed to inference despite malformed legacy replay payload"
     );
 }
 
@@ -6741,14 +6752,17 @@ async fn test_stream_replay_state_failure_emits_error() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::RunStart {
-                let outbox = step.state_of::<ResumeToolCallsState>();
-                outbox
-                    .calls_push(crate::contracts::thread::ToolCall::new(
-                        "replay_call_1",
-                        "echo",
-                        json!({"message": "resume"}),
-                    ))
-                    .expect("failed to queue replay call");
+                step.pending_patches.push(
+                    tirea_state::TrackedPatch::new(Patch::new().with_op(Op::set(
+                        tirea_state::path!("__resume_tool_calls", "calls"),
+                        json!([{
+                            "id": "replay_call_1",
+                            "name": "echo",
+                            "arguments": {"message": "resume"}
+                        }]),
+                    )))
+                    .with_source("test:replay_state_failure"),
+                );
             }
         });
     }
@@ -6808,14 +6822,17 @@ async fn test_stream_legacy_replay_queue_is_not_executed() {
         phase_dispatch_methods!(|phase, step| {
             match phase {
                 Phase::RunStart => {
-                    let outbox = step.state_of::<ResumeToolCallsState>();
-                    outbox
-                        .calls_push(crate::contracts::thread::ToolCall::new(
-                            "replay_call_1",
-                            "echo",
-                            json!({"message": "resume"}),
-                        ))
-                        .expect("failed to queue replay call");
+                    step.pending_patches.push(
+                        tirea_state::TrackedPatch::new(Patch::new().with_op(Op::set(
+                            tirea_state::path!("__resume_tool_calls", "calls"),
+                            json!([{
+                                "id": "replay_call_1",
+                                "name": "echo",
+                                "arguments": {"message": "resume"}
+                            }]),
+                        )))
+                        .with_source("test:legacy_replay_queue"),
+                    );
                 }
                 Phase::BeforeToolExecute if step.tool_call_id() == Some("replay_call_1") => {
                     BEFORE_TOOL_EXECUTED.store(true, Ordering::SeqCst);
@@ -6866,14 +6883,17 @@ async fn test_stream_legacy_replay_queue_does_not_append_tool_result_message() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::RunStart {
-                let outbox = step.state_of::<ResumeToolCallsState>();
-                outbox
-                    .calls_push(crate::contracts::thread::ToolCall::new(
-                        "replay_call_1",
-                        "echo",
-                        json!({"message": "resume"}),
-                    ))
-                    .expect("failed to queue replay call");
+                step.pending_patches.push(
+                    tirea_state::TrackedPatch::new(Patch::new().with_op(Op::set(
+                        tirea_state::path!("__resume_tool_calls", "calls"),
+                        json!([{
+                            "id": "replay_call_1",
+                            "name": "echo",
+                            "arguments": {"message": "resume"}
+                        }]),
+                    )))
+                    .with_source("test:legacy_replay_queue"),
+                );
             }
         });
     }
@@ -6913,21 +6933,24 @@ async fn test_stream_legacy_run_start_replay_queue_is_ignored() {
         phase_dispatch_methods!(|phase, step| {
             match phase {
                 Phase::RunStart => {
-                    let outbox = step.state_of::<ResumeToolCallsState>();
-                    outbox
-                        .calls_push(ToolCall::new(
-                            "replay_call_1",
-                            "echo",
-                            json!({"message": "first"}),
-                        ))
-                        .expect("queue replay_call_1");
-                    outbox
-                        .calls_push(ToolCall::new(
-                            "replay_call_2",
-                            "echo",
-                            json!({"message": "second"}),
-                        ))
-                        .expect("queue replay_call_2");
+                    step.pending_patches.push(
+                        tirea_state::TrackedPatch::new(Patch::new().with_op(Op::set(
+                            tirea_state::path!("__resume_tool_calls", "calls"),
+                            json!([
+                                {
+                                    "id": "replay_call_1",
+                                    "name": "echo",
+                                    "arguments": {"message": "first"}
+                                },
+                                {
+                                    "id": "replay_call_2",
+                                    "name": "echo",
+                                    "arguments": {"message": "second"}
+                                }
+                            ]),
+                        )))
+                        .with_source("test:legacy_replay_queue"),
+                    );
                 }
                 Phase::BeforeToolExecute if step.tool_call_id() == Some("replay_call_1") => {
                     step.ask(
@@ -6967,7 +6990,7 @@ async fn test_stream_legacy_run_start_replay_queue_is_ignored() {
 
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
     let replay_calls = final_state
-        .get(RESUME_TOOL_CALLS_STATE_PATH)
+        .get("__resume_tool_calls")
         .and_then(|outbox| outbox.get("calls"))
         .and_then(|calls| calls.as_array())
         .cloned()
@@ -10510,10 +10533,11 @@ async fn test_run_loop_decision_channel_ignores_unknown_interaction_id() {
     );
     assert!(
         final_state
-            .get(RESOLVED_SUSPENSIONS_STATE_PATH)
-            .and_then(|outbox| outbox.get("resolutions"))
-            .is_none(),
-        "unknown decision must not enqueue outbox resolutions"
+            .get("__resume_decisions")
+            .and_then(|mailbox| mailbox.get("calls"))
+            .and_then(|calls| calls.as_object())
+            .map_or(true, |calls| calls.is_empty()),
+        "unknown decision must not enqueue resume decisions"
     );
 }
 

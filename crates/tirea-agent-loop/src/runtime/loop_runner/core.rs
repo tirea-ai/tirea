@@ -1,13 +1,13 @@
 use super::AgentLoopError;
 use crate::contracts::plugin::phase::StepContext;
 use crate::contracts::runtime::state_paths::{
-    INFERENCE_ERROR_STATE_PATH, RESOLVED_SUSPENSIONS_STATE_PATH, RESUME_DECISIONS_STATE_PATH,
-    RESUME_TOOL_CALLS_STATE_PATH, SKILLS_STATE_PATH, SUSPENDED_TOOL_CALLS_STATE_PATH,
+    INFERENCE_ERROR_STATE_PATH, RESUME_DECISIONS_STATE_PATH, SKILLS_STATE_PATH,
+    SUSPENDED_TOOL_CALLS_STATE_PATH,
 };
 use crate::contracts::thread::{Message, MessageMetadata, Role};
 use crate::contracts::tool::Tool;
 use crate::contracts::RunContext;
-use crate::contracts::{InteractionResponse, SuspendedCall};
+use crate::contracts::SuspendedCall;
 use crate::runtime::control::{
     InferenceError, InferenceErrorState, ResumeDecision, ResumeDecisionsState,
     SuspendedToolCallsState,
@@ -320,114 +320,6 @@ pub(super) fn clear_agent_inference_error(state: &Value) -> Result<TrackedPatch,
         }
     }
     Ok(ctx.take_tracked_patch("agent_loop"))
-}
-
-#[derive(Default)]
-pub(super) struct AgentOutboxDrain {
-    pub(super) interaction_resolutions: Vec<InteractionResponse>,
-    pub(super) replay_tool_calls: Vec<crate::contracts::thread::ToolCall>,
-}
-
-pub(super) fn drain_agent_outbox(
-    run_ctx: &mut RunContext,
-    _call_id: &str,
-) -> Result<AgentOutboxDrain, AgentLoopError> {
-    let state = run_ctx
-        .snapshot()
-        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-
-    let interaction_resolutions = match state
-        .get(RESOLVED_SUSPENSIONS_STATE_PATH)
-        .and_then(|outbox| outbox.get("resolutions"))
-        .cloned()
-    {
-        Some(raw) => serde_json::from_value::<Vec<InteractionResponse>>(raw).map_err(|e| {
-            AgentLoopError::StateError(format!(
-                "failed to parse {RESOLVED_SUSPENSIONS_STATE_PATH}.resolutions: {e}"
-            ))
-        })?,
-        None => Vec::new(),
-    };
-    let replay_tool_calls = match state
-        .get(RESUME_TOOL_CALLS_STATE_PATH)
-        .and_then(|outbox| outbox.get("calls"))
-        .cloned()
-    {
-        Some(raw) => serde_json::from_value::<Vec<crate::contracts::thread::ToolCall>>(raw)
-            .map_err(|e| {
-                AgentLoopError::StateError(format!(
-                    "failed to parse {RESUME_TOOL_CALLS_STATE_PATH}.calls: {e}"
-                ))
-            })?,
-        None => Vec::new(),
-    };
-
-    if interaction_resolutions.is_empty() && replay_tool_calls.is_empty() {
-        return Ok(AgentOutboxDrain::default());
-    }
-
-    let mut clear_patch = tirea_state::Patch::new();
-    if !interaction_resolutions.is_empty() {
-        clear_patch = clear_patch.with_op(tirea_state::Op::set(
-            tirea_state::Path::root()
-                .key(RESOLVED_SUSPENSIONS_STATE_PATH)
-                .key("resolutions"),
-            serde_json::json!([]),
-        ));
-    }
-    if !replay_tool_calls.is_empty() {
-        clear_patch = clear_patch.with_op(tirea_state::Op::set(
-            tirea_state::Path::root()
-                .key(RESUME_TOOL_CALLS_STATE_PATH)
-                .key("calls"),
-            serde_json::json!([]),
-        ));
-    }
-    if !clear_patch.is_empty() {
-        let patch = TrackedPatch::new(clear_patch).with_source("agent_loop");
-        run_ctx.add_thread_patch(patch);
-    }
-
-    Ok(AgentOutboxDrain {
-        interaction_resolutions,
-        replay_tool_calls,
-    })
-}
-
-pub(super) fn enqueue_replay_tool_calls(
-    state: &Value,
-    replay_calls: Vec<crate::contracts::thread::ToolCall>,
-) -> Result<TrackedPatch, AgentLoopError> {
-    if replay_calls.is_empty() {
-        return Ok(TrackedPatch::new(tirea_state::Patch::new()).with_source("agent_loop"));
-    }
-
-    let mut existing = match state
-        .get(RESUME_TOOL_CALLS_STATE_PATH)
-        .and_then(|outbox| outbox.get("calls"))
-        .cloned()
-    {
-        Some(raw) => serde_json::from_value::<Vec<crate::contracts::thread::ToolCall>>(raw)
-            .map_err(|e| {
-                AgentLoopError::StateError(format!(
-                    "failed to parse {RESUME_TOOL_CALLS_STATE_PATH}.calls: {e}"
-                ))
-            })?,
-        None => Vec::new(),
-    };
-    existing.extend(replay_calls);
-
-    let patch = tirea_state::Patch::new().with_op(tirea_state::Op::set(
-        tirea_state::Path::root()
-            .key(RESUME_TOOL_CALLS_STATE_PATH)
-            .key("calls"),
-        serde_json::to_value(existing).map_err(|e| {
-            AgentLoopError::StateError(format!(
-                "failed to serialize {RESUME_TOOL_CALLS_STATE_PATH}.calls: {e}"
-            ))
-        })?,
-    ));
-    Ok(TrackedPatch::new(patch).with_source("agent_loop"))
 }
 
 pub(super) fn drain_agent_append_user_messages(

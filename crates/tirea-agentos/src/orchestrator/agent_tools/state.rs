@@ -1,8 +1,10 @@
 use super::*;
 use tirea_contract::plugin::phase::PluginPhaseContext;
-use tirea_contract::runtime::control::{SuspendedCall, SuspendedToolCallsState};
+use tirea_contract::runtime::control::{
+    ResumeDecision, ResumeDecisionAction, ResumeDecisionsState, SuspendedCall,
+    SuspendedToolCallsState,
+};
 use tirea_contract::runtime::state_paths::SUSPENDED_TOOL_CALLS_STATE_PATH;
-use tirea_extension_interaction::ResumeToolCallsState;
 use tirea_state::State;
 pub(super) fn as_delegation_record(
     summary: &AgentRunSummary,
@@ -124,7 +126,7 @@ pub(super) fn set_pending_recovery_interaction(
         call_id.clone(),
         SuspendedCall {
             call_id,
-            tool_name: AGENT_RECOVERY_INTERACTION_ACTION.to_string(),
+            tool_name: AGENT_RUN_TOOL_ID.to_string(),
             interaction,
             frontend_invocation: None,
         },
@@ -132,31 +134,54 @@ pub(super) fn set_pending_recovery_interaction(
     let _ = state.set_calls(calls);
 }
 
-pub(super) fn schedule_recovery_replay(step: &impl PluginPhaseContext, run_id: &str) {
-    let outbox = step.state_of::<ResumeToolCallsState>();
-    let mut replay_calls = outbox.calls().ok().unwrap_or_default();
+pub(super) fn schedule_recovery_replay(
+    step: &impl PluginPhaseContext,
+    run_id: &str,
+    run: &DelegationRecord,
+) {
+    let call_id = recovery_interaction_id(run_id);
+    let suspended_state = step.state_of::<SuspendedToolCallsState>();
+    let mut suspended_calls = suspended_state.calls().ok().unwrap_or_default();
 
-    let exists = replay_calls.iter().any(|call| {
-        call.name == AGENT_RUN_TOOL_ID
-            && call
-                .arguments
-                .get("run_id")
-                .and_then(|v| v.as_str())
-                .is_some_and(|id| id == run_id)
-    });
-    if exists {
-        return;
+    if !suspended_calls.contains_key(&call_id) {
+        suspended_calls.insert(
+            call_id.clone(),
+            SuspendedCall {
+                call_id: call_id.clone(),
+                tool_name: AGENT_RUN_TOOL_ID.to_string(),
+                interaction: build_recovery_interaction(run_id, run),
+                frontend_invocation: None,
+            },
+        );
+    } else if suspended_calls
+        .get(&call_id)
+        .is_some_and(|call| call.tool_name != AGENT_RUN_TOOL_ID)
+    {
+        if let Some(call) = suspended_calls.get_mut(&call_id) {
+            call.tool_name = AGENT_RUN_TOOL_ID.to_string();
+        }
     }
+    let _ = suspended_state.set_calls(suspended_calls);
 
-    replay_calls.push(ToolCall::new(
-        format!("agent_recovery_resume_{run_id}"),
-        AGENT_RUN_TOOL_ID,
-        json!({
-            "run_id": run_id,
-            "background": false
-        }),
-    ));
-    let _ = outbox.set_calls(replay_calls);
+    let mailbox = step.state_of::<ResumeDecisionsState>();
+    let mut decisions = mailbox.calls().ok().unwrap_or_default();
+    decisions.insert(
+        call_id.clone(),
+        ResumeDecision {
+            decision_id: call_id,
+            action: ResumeDecisionAction::Resume,
+            result: serde_json::Value::Bool(true),
+            reason: None,
+            updated_at: current_unix_millis(),
+        },
+    );
+    let _ = mailbox.set_calls(decisions);
+}
+
+fn current_unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64)
 }
 
 #[derive(Debug, Default, Clone)]

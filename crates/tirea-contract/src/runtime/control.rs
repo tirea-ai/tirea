@@ -1,12 +1,10 @@
 //! Runtime control-state schema stored under internal `__*` top-level paths.
 //!
 //! These types define durable runtime control state for cross-step and cross-run
-//! flow control (suspended tool calls, resume queue, suspension resolutions, and
-//! inference error envelope).
+//! flow control (suspended tool calls, resume decisions, and inference error envelope).
 
-use crate::event::interaction::{FrontendToolInvocation, Interaction, InteractionResponse};
+use crate::event::interaction::{FrontendToolInvocation, Interaction};
 use crate::thread::Thread;
-use crate::thread::ToolCall;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -84,26 +82,6 @@ pub struct ResumeDecisionsState {
     pub calls: HashMap<String, ResumeDecision>,
 }
 
-/// Durable resume queue persisted at `state["__resume_tool_calls"]`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-#[tirea(path = "__resume_tool_calls")]
-pub struct ResumeToolCallsState {
-    /// Tool calls queued for resume/replay.
-    #[serde(default)]
-    #[tirea(default = "Vec::new()")]
-    pub calls: Vec<ToolCall>,
-}
-
-/// Durable suspension decision records persisted at `state["__resolved_suspensions"]`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-#[tirea(path = "__resolved_suspensions")]
-pub struct ResolvedSuspensionsState {
-    /// Resolved suspension decisions (approve/deny payloads).
-    #[serde(default)]
-    #[tirea(default = "Vec::new()")]
-    pub resolutions: Vec<InteractionResponse>,
-}
-
 /// Durable inference-error envelope persisted at `state["__inference_error"]`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 #[tirea(path = "__inference_error")]
@@ -157,12 +135,6 @@ mod tests {
 
         let resume_decisions = ResumeDecisionsState::default();
         assert!(resume_decisions.calls.is_empty());
-
-        let resume = ResumeToolCallsState::default();
-        assert!(resume.calls.is_empty());
-
-        let resolved = ResolvedSuspensionsState::default();
-        assert!(resolved.resolutions.is_empty());
 
         let err = InferenceErrorState::default();
         assert!(err.error.is_none());
