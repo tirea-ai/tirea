@@ -544,7 +544,7 @@ pub(super) fn run_stream(
             });
 
             let step_meta = step_metadata(Some(run_id.clone()), run_state.completed_steps as u32);
-            if let Err(e) = complete_step_after_inference(
+            let post_inference_termination = match complete_step_after_inference(
                 &mut run_ctx,
                 &result,
                 step_meta.clone(),
@@ -554,9 +554,12 @@ pub(super) fn run_stream(
             )
             .await
             {
-                let message = e.to_string();
-                terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
-            }
+                Ok(reason) => reason,
+                Err(e) => {
+                    let message = e.to_string();
+                    terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
+                }
+            };
 
             if let Err(e) = pending_delta_commit
                 .commit(&mut run_ctx, CheckpointReason::AssistantTurnCommitted, false)
@@ -570,6 +573,15 @@ pub(super) fn run_stream(
             yield emitter.step_end();
 
             mark_step_completed(&mut run_state);
+
+            if let Some(reason) = post_inference_termination {
+                if matches!(reason, TerminationReason::Suspended) {
+                    for event in suspended_call_pending_events(&run_ctx) {
+                        yield emitter.emit_existing(event);
+                    }
+                }
+                finish_run!(reason, Some(last_text.clone()));
+            }
 
             // Check if we need to execute tools
             if !result.needs_tools() {

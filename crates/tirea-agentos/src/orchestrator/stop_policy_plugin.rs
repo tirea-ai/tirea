@@ -3,11 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-use crate::contracts::plugin::phase::{
-    AfterInferenceContext, BeforeInferenceContext, PluginPhaseContext,
-};
+use crate::contracts::plugin::phase::{AfterInferenceContext, PluginPhaseContext};
 use crate::contracts::plugin::AgentPlugin;
-use crate::contracts::runtime::{StopPolicy, StopPolicyInput, StopPolicyStats};
+use crate::contracts::runtime::{StopPolicy, StopPolicyInput, StopPolicyStats, StreamResult};
 use crate::contracts::thread::{Message, Role, ToolCall};
 use crate::contracts::{RunContext, StopConditionSpec, ToolResult};
 use tirea_state::State;
@@ -36,7 +34,7 @@ struct MessageDerivedStopStats {
     tool_call_history: VecDeque<Vec<String>>,
 }
 
-/// Plugin adapter that evaluates configured stop policies at `BeforeInference`.
+/// Plugin adapter that evaluates configured stop policies at `AfterInference`.
 ///
 /// This keeps stop-domain semantics out of the core loop.
 pub struct StopPolicyPlugin {
@@ -73,24 +71,47 @@ impl AgentPlugin for StopPolicyPlugin {
         STOP_POLICY_PLUGIN_ID
     }
 
-    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
+    async fn after_inference(&self, step: &mut AfterInferenceContext<'_, '_>) {
         if self.conditions.is_empty() {
             return;
         }
 
+        let Some(response) = step.response_opt() else {
+            return;
+        };
         let now_ms = now_millis();
+        let prompt_tokens = response
+            .usage
+            .as_ref()
+            .and_then(|usage| usage.prompt_tokens)
+            .unwrap_or(0) as usize;
+        let completion_tokens = response
+            .usage
+            .as_ref()
+            .and_then(|usage| usage.completion_tokens)
+            .unwrap_or(0) as usize;
+
         let (started_at_ms, total_input_tokens, total_output_tokens) = {
             let runtime = step.state_of::<StopPolicyRuntimeState>();
             let started_at_ms = runtime.started_at_ms().ok().flatten().unwrap_or(now_ms);
             if runtime.started_at_ms().ok().flatten().is_none() {
                 let _ = runtime.set_started_at_ms(Some(now_ms));
             }
-            let total_input_tokens = runtime.total_input_tokens().ok().unwrap_or(0);
-            let total_output_tokens = runtime.total_output_tokens().ok().unwrap_or(0);
+
+            let current_input = runtime.total_input_tokens().ok().unwrap_or(0);
+            let current_output = runtime.total_output_tokens().ok().unwrap_or(0);
+            let total_input_tokens = current_input.saturating_add(prompt_tokens);
+            let total_output_tokens = current_output.saturating_add(completion_tokens);
+            if prompt_tokens > 0 {
+                let _ = runtime.set_total_input_tokens(total_input_tokens);
+            }
+            if completion_tokens > 0 {
+                let _ = runtime.set_total_output_tokens(total_output_tokens);
+            }
             (started_at_ms, total_input_tokens, total_output_tokens)
         };
 
-        let message_stats = derive_stats_from_messages(step.messages());
+        let message_stats = derive_stats_from_messages_with_response(step.messages(), response);
         let elapsed = std::time::Duration::from_millis(now_ms.saturating_sub(started_at_ms));
 
         let run_ctx = RunContext::new(
@@ -120,31 +141,6 @@ impl AgentPlugin for StopPolicyPlugin {
                 break;
             }
         }
-    }
-
-    async fn after_inference(&self, step: &mut AfterInferenceContext<'_, '_>) {
-        if self.conditions.is_empty() {
-            return;
-        }
-
-        let Some(response) = step.response_opt() else {
-            return;
-        };
-        let usage = response.usage.clone();
-        let Some(usage) = usage else {
-            return;
-        };
-        let prompt_tokens = usage.prompt_tokens.unwrap_or(0) as usize;
-        let completion_tokens = usage.completion_tokens.unwrap_or(0) as usize;
-        if prompt_tokens == 0 && completion_tokens == 0 {
-            return;
-        }
-
-        let runtime = step.state_of::<StopPolicyRuntimeState>();
-        let current_input = runtime.total_input_tokens().ok().unwrap_or(0);
-        let current_output = runtime.total_output_tokens().ok().unwrap_or(0);
-        let _ = runtime.set_total_input_tokens(current_input.saturating_add(prompt_tokens));
-        let _ = runtime.set_total_output_tokens(current_output.saturating_add(completion_tokens));
     }
 }
 
@@ -215,6 +211,19 @@ fn derive_stats_from_messages(messages: &[Arc<Message>]) -> MessageDerivedStopSt
     stats
 }
 
+fn derive_stats_from_messages_with_response(
+    messages: &[Arc<Message>],
+    response: &StreamResult,
+) -> MessageDerivedStopStats {
+    let mut all_messages = Vec::with_capacity(messages.len() + 1);
+    all_messages.extend(messages.iter().cloned());
+    all_messages.push(Arc::new(Message::assistant_with_tool_calls(
+        response.text.clone(),
+        response.tool_calls.clone(),
+    )));
+    derive_stats_from_messages(&all_messages)
+}
+
 fn collect_round_tool_results(
     messages: &[Arc<Message>],
     from: usize,
@@ -266,6 +275,7 @@ fn condition_from_spec(spec: StopConditionSpec) -> Arc<dyn StopPolicy> {
 mod tests {
     use super::*;
     use crate::contracts::thread::Message;
+    use crate::contracts::StreamResult;
     use serde_json::json;
 
     #[test]
@@ -299,5 +309,23 @@ mod tests {
         assert_eq!(stats.last_tool_calls[0].name, call_2.name);
         assert_eq!(stats.last_text, "r2");
         assert_eq!(stats.consecutive_errors, 0);
+    }
+
+    #[test]
+    fn derives_stats_with_current_response() {
+        let prior_messages = vec![Arc::new(Message::user("u1"))];
+        let response = StreamResult {
+            text: "r1".to_string(),
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({}))],
+            usage: None,
+        };
+
+        let stats = derive_stats_from_messages_with_response(&prior_messages, &response);
+        assert_eq!(stats.step, 1);
+        assert_eq!(stats.step_tool_call_count, 1);
+        assert_eq!(stats.total_tool_call_count, 1);
+        assert_eq!(stats.last_text, "r1");
+        assert_eq!(stats.last_tool_calls.len(), 1);
+        assert_eq!(stats.last_tool_calls[0].id, "c1");
     }
 }

@@ -10211,10 +10211,10 @@ async fn test_plugin_termination_request_stops_loop() {
     );
 }
 
-/// Verify that mutating `termination_request` outside BeforeInference is
+/// Verify that mutating `termination_request` outside BeforeInference/AfterInference is
 /// rejected by the phase-mutation validator (non-stream path).
 #[tokio::test]
-async fn test_run_loop_rejects_termination_request_mutation_outside_before_inference() {
+async fn test_run_loop_rejects_termination_request_mutation_outside_inference_phases() {
     struct InvalidStepStartTermPlugin;
 
     #[async_trait]
@@ -10245,17 +10245,17 @@ async fn test_run_loop_rejects_termination_request_mutation_outside_before_infer
     assert!(
         outcome.failure.as_ref().is_some_and(|f| matches!(
             f,
-            LoopFailure::State(msg) if msg.contains("mutated termination_request outside BeforeInference")
+            LoopFailure::State(msg) if msg.contains("mutated termination_request outside BeforeInference/AfterInference")
         )),
         "expected termination_request mutation error in failure, got: {:?}",
         outcome.failure
     );
 }
 
-/// Verify that mutating `termination_request` outside BeforeInference is
+/// Verify that mutating `termination_request` outside BeforeInference/AfterInference is
 /// rejected by the phase-mutation validator (stream path).
 #[tokio::test]
-async fn test_stream_rejects_termination_request_mutation_outside_before_inference() {
+async fn test_stream_rejects_termination_request_mutation_outside_inference_phases() {
     struct InvalidStepStartTermPlugin;
 
     #[async_trait]
@@ -10282,7 +10282,7 @@ async fn test_stream_rejects_termination_request_mutation_outside_before_inferen
         events.iter().any(|event| matches!(
             event,
             AgentEvent::Error { message }
-            if message.contains("mutated termination_request outside BeforeInference")
+            if message.contains("mutated termination_request outside BeforeInference/AfterInference")
         )),
         "expected mutation error event, got: {events:?}"
     );
@@ -10331,6 +10331,107 @@ async fn test_run_loop_plugin_termination_request_stops_loop() {
         outcome.failure
     );
     assert_eq!(outcome.stats.llm_calls, 0, "no LLM calls should have run");
+}
+
+#[tokio::test]
+async fn test_run_loop_after_inference_termination_request_stops_before_tool_execution() {
+    struct AfterInferenceTerminatePlugin;
+
+    #[async_trait]
+    impl AgentPlugin for AfterInferenceTerminatePlugin {
+        fn id(&self) -> &str {
+            "after_inference_terminate_nonstream"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::AfterInference {
+                step.termination_request = Some(TerminationReason::PluginRequested);
+            }
+        });
+    }
+
+    let provider = Arc::new(MockChatProvider::new(vec![Ok(
+        tool_call_chat_response_object_args("call_1", "echo", json!({"message": "hi"})),
+    )]));
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(AfterInferenceTerminatePlugin) as Arc<dyn AgentPlugin>)
+        .with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+
+    let outcome = run_loop(&config, tool_map([EchoTool]), run_ctx, None, None, None).await;
+
+    assert_eq!(outcome.termination, TerminationReason::PluginRequested);
+    assert_eq!(
+        outcome.stats.llm_calls, 1,
+        "inference should run exactly once"
+    );
+    assert_eq!(
+        outcome.stats.tool_calls, 0,
+        "tool execution should not start when AfterInference requests termination"
+    );
+    assert!(
+        outcome.run_ctx.messages().iter().any(|message| {
+            message.role == crate::contracts::thread::Role::Assistant
+                && message
+                    .tool_calls
+                    .as_ref()
+                    .map(|calls| calls.iter().any(|call| call.id == "call_1"))
+                    .unwrap_or(false)
+        }),
+        "assistant response should still be committed before termination"
+    );
+}
+
+#[tokio::test]
+async fn test_stream_after_inference_termination_request_stops_before_tool_events() {
+    struct AfterInferenceTerminatePlugin;
+
+    #[async_trait]
+    impl AgentPlugin for AfterInferenceTerminatePlugin {
+        fn id(&self) -> &str {
+            "after_inference_terminate_stream"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::AfterInference {
+                step.termination_request = Some(TerminationReason::PluginRequested);
+            }
+        });
+    }
+
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(AfterInferenceTerminatePlugin) as Arc<dyn AgentPlugin>);
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let events = run_mock_stream(
+        MockStreamProvider::new(vec![MockResponse::text("tool").with_tool_call(
+            "call_1",
+            "echo",
+            json!({"message":"hi"}),
+        )]),
+        config,
+        thread,
+        tool_map([EchoTool]),
+    )
+    .await;
+
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::PluginRequested)
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::InferenceComplete { .. })),
+        "inference should complete before termination: {events:?}"
+    );
+    assert!(
+        !events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolCallReady { id, .. } if id == "call_1"
+        )),
+        "tool-ready event should not be emitted after AfterInference termination: {events:?}"
+    );
 }
 
 /// Test that `BeforeInferenceContext::request_termination()` method works

@@ -469,15 +469,16 @@ pub(super) async fn complete_step_after_inference(
     assistant_message_id: Option<String>,
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
     plugins: &[Arc<dyn crate::contracts::plugin::AgentPlugin>],
-) -> Result<(), AgentLoopError> {
-    let pending = emit_phase_block(
-        Phase::AfterInference,
+) -> Result<Option<TerminationReason>, AgentLoopError> {
+    let (termination_request, pending) = run_phase_block(
         run_ctx,
         tool_descriptors,
         plugins,
+        &[Phase::AfterInference],
         |step| {
             step.response = Some(result.clone());
         },
+        |step| step.termination_request.clone(),
     )
     .await?;
     run_ctx.add_thread_patches(pending);
@@ -488,7 +489,7 @@ pub(super) async fn complete_step_after_inference(
     let pending =
         emit_phase_block(Phase::StepEnd, run_ctx, tool_descriptors, plugins, |_| {}).await?;
     run_ctx.add_thread_patches(pending);
-    Ok(())
+    Ok(termination_request)
 }
 
 pub(super) fn suspension_requested_pending_events(suspension: &Suspension) -> [AgentEvent; 2] {
@@ -1486,7 +1487,7 @@ pub async fn run_loop(
         // Add assistant message
         let assistant_msg_id = gen_message_id();
         let step_meta = step_metadata(Some(run_id.clone()), run_state.completed_steps as u32);
-        if let Err(e) = complete_step_after_inference(
+        let post_inference_termination = match complete_step_after_inference(
             &mut run_ctx,
             &result,
             step_meta.clone(),
@@ -1496,12 +1497,15 @@ pub async fn run_loop(
         )
         .await
         {
-            terminate_run!(
-                TerminationReason::Error,
-                None,
-                Some(outcome::LoopFailure::State(e.to_string()))
-            );
-        }
+            Ok(reason) => reason,
+            Err(e) => {
+                terminate_run!(
+                    TerminationReason::Error,
+                    None,
+                    Some(outcome::LoopFailure::State(e.to_string()))
+                );
+            }
+        };
         if let Err(error) = pending_delta_commit
             .commit(
                 &mut run_ctx,
@@ -1518,6 +1522,10 @@ pub async fn run_loop(
         }
 
         mark_step_completed(&mut run_state);
+
+        if let Some(reason) = post_inference_termination {
+            terminate_run!(reason, Some(last_text.clone()), None);
+        }
 
         if !result.needs_tools() {
             run_state.record_step_without_tools();

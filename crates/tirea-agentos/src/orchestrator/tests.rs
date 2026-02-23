@@ -934,7 +934,7 @@ async fn run_and_run_stream_work_without_llm_when_skip_inference() {
 async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_conditions_to_loop() {
     use crate::contracts::runtime::StopPolicyInput;
     use crate::contracts::StopReason;
-    use futures::StreamExt;
+    use crate::runtime::loop_runner::run_loop;
 
     #[derive(Debug)]
     struct AlwaysStopPolicy;
@@ -959,30 +959,69 @@ async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_condition
         .build()
         .unwrap();
 
-    let run = os
-        .run_stream(RunRequest {
-            agent_id: "a1".to_string(),
-            thread_id: Some("stop-plugin-thread".to_string()),
-            run_id: None,
-            parent_run_id: None,
-            resource_id: None,
-            state: Some(json!({})),
-            messages: vec![crate::contracts::thread::Message::user("go")],
-            initial_decisions: vec![],
-        })
-        .await
-        .unwrap();
-
-    let events: Vec<_> = run.events.collect().await;
+    let resolved = os.resolve("a1").expect("resolve a1");
     assert!(
-        events.iter().any(|event| matches!(
-            event,
-            AgentEvent::RunFinish {
-                termination: TerminationReason::Stopped(StopReason::Custom(reason)),
-                ..
-            } if reason == "always"
-        )),
-        "stop_policy plugin should terminate run with configured stop reason: {events:?}"
+        resolved.config.stop_conditions.is_empty()
+            && resolved.config.stop_condition_specs.is_empty(),
+        "resolved loop config should not carry stop conditions directly"
+    );
+
+    #[derive(Debug)]
+    struct OneShotLlm;
+
+    #[async_trait]
+    impl crate::contracts::runtime::LlmExecutor for OneShotLlm {
+        async fn exec_chat_response(
+            &self,
+            _model: &str,
+            _chat_req: genai::chat::ChatRequest,
+            _options: Option<&genai::chat::ChatOptions>,
+        ) -> genai::Result<genai::chat::ChatResponse> {
+            let model_iden =
+                genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "mock-model");
+            Ok(genai::chat::ChatResponse {
+                content: genai::chat::MessageContent::from_text("ok".to_string()),
+                reasoning_content: None,
+                model_iden: model_iden.clone(),
+                provider_model_iden: model_iden,
+                usage: genai::chat::Usage::default(),
+                captured_raw_body: None,
+            })
+        }
+
+        async fn exec_chat_stream_events(
+            &self,
+            _model: &str,
+            _chat_req: genai::chat::ChatRequest,
+            _options: Option<&genai::chat::ChatOptions>,
+        ) -> genai::Result<crate::contracts::runtime::LlmEventStream> {
+            Ok(Box::pin(futures::stream::empty()))
+        }
+
+        fn name(&self) -> &'static str {
+            "one_shot_llm"
+        }
+    }
+
+    let config = resolved
+        .config
+        .with_llm_executor(Arc::new(OneShotLlm) as Arc<dyn crate::contracts::runtime::LlmExecutor>);
+    let thread = crate::contracts::thread::Thread::new("stop-plugin-thread")
+        .with_message(crate::contracts::thread::Message::user("go"));
+    let run_ctx = crate::contracts::RunContext::from_thread(&thread, resolved.run_config)
+        .expect("build run context");
+    let outcome = run_loop(&config, resolved.tools, run_ctx, None, None, None).await;
+    assert!(
+        matches!(
+            outcome.termination,
+            TerminationReason::Stopped(StopReason::Custom(ref reason)) if reason == "always"
+        ),
+        "stop_policy plugin should terminate run with configured stop reason: {:?}",
+        outcome.termination
+    );
+    assert_eq!(
+        outcome.stats.llm_calls, 1,
+        "stop policy should be evaluated after inference"
     );
 }
 

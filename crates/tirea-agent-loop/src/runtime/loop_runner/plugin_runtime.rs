@@ -77,10 +77,10 @@ fn validate_phase_mutation(
     }
 
     if before.termination_request != after.termination_request
-        && !policy.allow_skip_inference_mutation
+        && !policy.allow_termination_request_mutation
     {
         return Err(AgentLoopError::StateError(format!(
-            "plugin '{}' mutated termination_request outside BeforeInference ({phase})",
+            "plugin '{}' mutated termination_request outside BeforeInference/AfterInference ({phase})",
             plugin_id
         )));
     }
