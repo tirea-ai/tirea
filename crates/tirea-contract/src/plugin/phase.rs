@@ -5,9 +5,9 @@
 //! - `StepContext`: Mutable context passed through all phases
 //! - `ToolContext`: Tool-call state carried by `StepContext`
 
-use crate::event::interaction::{
-    FrontendToolInvocation, Interaction, InvocationOrigin, ResponseRouting,
-};
+use crate::event::interaction::{FrontendToolInvocation, Interaction};
+#[cfg(test)]
+use crate::event::interaction::{InvocationOrigin, ResponseRouting};
 use crate::event::termination::TerminationReason;
 use crate::runtime::result::StreamResult;
 use crate::thread::{Message, ToolCall};
@@ -17,7 +17,6 @@ use crate::RunConfig;
 use serde_json::Value;
 use std::sync::Arc;
 use tirea_state::{State, TireaResult, TrackedPatch};
-use uuid::Uuid;
 
 /// Execution phase in the agent loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -449,37 +448,6 @@ impl<'a> StepContext<'a> {
         }
     }
 
-    /// Suspend current tool and request a frontend tool invocation.
-    ///
-    /// Returns the generated frontend call id when tool context is present.
-    pub fn ask_frontend_tool(
-        &mut self,
-        tool_name: impl Into<String>,
-        arguments: Value,
-        routing: ResponseRouting,
-    ) -> Option<String> {
-        let tool = self.tool.as_mut()?;
-        let tool_name = tool_name.into();
-        let call_id = match &routing {
-            ResponseRouting::UseAsToolResult => tool.id.clone(),
-            _ => format!("fc_{}", Uuid::new_v4().simple()),
-        };
-        let origin = match &routing {
-            ResponseRouting::UseAsToolResult => InvocationOrigin::PluginInitiated {
-                plugin_id: "agui_frontend_tools".to_string(),
-            },
-            _ => InvocationOrigin::ToolCallIntercepted {
-                backend_call_id: tool.id.clone(),
-                backend_tool_name: tool.name.clone(),
-                backend_arguments: tool.args.clone(),
-            },
-        };
-        let invocation =
-            FrontendToolInvocation::new(&call_id, &tool_name, arguments, origin, routing);
-        self.suspend(SuspendTicket::from_frontend_invocation(invocation));
-        Some(call_id)
-    }
-
     /// Set tool result.
     pub fn set_tool_result(&mut self, result: ToolResult) {
         if let Some(ref mut tool) = self.tool {
@@ -692,16 +660,6 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
 
     pub fn suspend(&mut self, ticket: SuspendTicket) {
         self.step.suspend(ticket);
-    }
-
-    /// Backward-compatible wrapper for frontend-tool suspend tickets.
-    pub fn ask_frontend_tool(
-        &mut self,
-        tool_name: impl Into<String>,
-        arguments: Value,
-        routing: ResponseRouting,
-    ) -> Option<String> {
-        self.step.ask_frontend_tool(tool_name, arguments, routing)
     }
 }
 
@@ -1442,7 +1400,7 @@ mod tests {
     }
 
     #[test]
-    fn test_invoke_frontend_tool_direct() {
+    fn test_suspend_with_frontend_invocation_direct() {
         let fix = TestFixture::new();
         let mut ctx = fix.step(vec![]);
 
@@ -1450,17 +1408,20 @@ mod tests {
         ctx.tool = Some(ToolContext::new(&call));
         ctx.cancel("old deny state");
 
-        let call_id = ctx.ask_frontend_tool(
+        let invocation = FrontendToolInvocation::new(
+            "call_copy",
             "copyToClipboard",
             json!({"text": "hello"}),
+            InvocationOrigin::PluginInitiated {
+                plugin_id: "agui_frontend_tools".to_string(),
+            },
             ResponseRouting::UseAsToolResult,
         );
+        ctx.suspend(SuspendTicket::from_frontend_invocation(invocation));
 
         assert!(ctx.tool_pending());
         assert!(!ctx.tool_blocked());
         assert!(ctx.tool.as_ref().unwrap().block_reason.is_none());
-        // For UseAsToolResult, call_id should match the tool call ID
-        assert_eq!(call_id.as_deref(), Some("call_copy"));
 
         let invocation = ctx
             .tool
@@ -1495,22 +1456,29 @@ mod tests {
     }
 
     #[test]
-    fn test_invoke_frontend_tool_indirect_permission() {
+    fn test_suspend_with_frontend_invocation_replay_original_tool() {
         let fix = TestFixture::new();
         let mut ctx = fix.step(vec![]);
 
         let call = ToolCall::new("call_write", "write_file", json!({"path": "a.txt"}));
         ctx.tool = Some(ToolContext::new(&call));
 
-        let call_id = ctx.ask_frontend_tool(
+        let call_id = "fc_generated";
+        let invocation = FrontendToolInvocation::new(
+            call_id,
             "PermissionConfirm",
             json!({"tool_name": "write_file", "tool_args": {"path": "a.txt"}}),
+            InvocationOrigin::ToolCallIntercepted {
+                backend_call_id: "call_write".to_string(),
+                backend_tool_name: "write_file".to_string(),
+                backend_arguments: json!({"path": "a.txt"}),
+            },
             ResponseRouting::ReplayOriginalTool,
         );
+        ctx.suspend(SuspendTicket::from_frontend_invocation(invocation));
 
         assert!(ctx.tool_pending());
-        // For ReplayOriginalTool, call_id should be a new unique ID
-        let call_id = call_id.unwrap();
+        // ReplayOriginalTool should use a dedicated frontend call id.
         assert!(
             call_id.starts_with("fc_"),
             "expected generated ID, got: {call_id}"
@@ -1545,16 +1513,20 @@ mod tests {
     }
 
     #[test]
-    fn test_invoke_frontend_tool_without_tool_context() {
+    fn test_suspend_frontend_invocation_without_tool_context_noop() {
         let fix = TestFixture::new();
         let mut ctx = fix.step(vec![]);
 
-        let result = ctx.ask_frontend_tool(
+        let invocation = FrontendToolInvocation::new(
+            "fc_noop",
             "PermissionConfirm",
             json!({}),
+            InvocationOrigin::PluginInitiated {
+                plugin_id: "agui_frontend_tools".to_string(),
+            },
             ResponseRouting::UseAsToolResult,
         );
-        assert!(result.is_none());
+        ctx.suspend(SuspendTicket::from_frontend_invocation(invocation));
         assert!(!ctx.tool_pending());
     }
 

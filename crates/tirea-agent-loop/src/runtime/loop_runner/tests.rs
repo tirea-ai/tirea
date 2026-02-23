@@ -1,6 +1,8 @@
 use super::outcome::LoopFailure;
 use super::*;
-use crate::contracts::event::interaction::ResponseRouting;
+use crate::contracts::event::interaction::{
+    FrontendToolInvocation, InvocationOrigin, ResponseRouting,
+};
 use crate::contracts::plugin::phase::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
     BeforeToolExecuteContext, Phase, RunEndContext, RunStartContext, StepEndContext,
@@ -27,6 +29,7 @@ use std::sync::Mutex;
 use tirea_contract::testing::TestFixture;
 use tirea_state::{Op, Patch, State};
 use tokio::sync::Notify;
+use uuid::Uuid;
 
 macro_rules! phase_dispatch_methods {
     (|$this:ident, $phase:ident, $step:ident| $body:block) => {
@@ -338,6 +341,33 @@ struct TestCounterState {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 struct ActivityProgressState {
     progress: f64,
+}
+
+fn suspend_frontend_tool(
+    step: &mut crate::contracts::plugin::phase::StepContext<'_>,
+    tool_name: impl Into<String>,
+    arguments: Value,
+    routing: ResponseRouting,
+) -> Option<String> {
+    let tool = step.tool.as_ref()?;
+    let tool_name = tool_name.into();
+    let call_id = match routing {
+        ResponseRouting::UseAsToolResult => tool.id.clone(),
+        _ => format!("fc_{}", Uuid::new_v4().simple()),
+    };
+    let origin = match routing {
+        ResponseRouting::UseAsToolResult => InvocationOrigin::PluginInitiated {
+            plugin_id: "agui_frontend_tools".to_string(),
+        },
+        _ => InvocationOrigin::ToolCallIntercepted {
+            backend_call_id: tool.id.clone(),
+            backend_tool_name: tool.name.clone(),
+            backend_arguments: tool.args.clone(),
+        },
+    };
+    let invocation = FrontendToolInvocation::new(&call_id, &tool_name, arguments, origin, routing);
+    step.suspend(SuspendTicket::from_frontend_invocation(invocation));
+    Some(call_id)
 }
 
 struct EchoTool;
@@ -6608,7 +6638,8 @@ async fn test_stream_frontend_use_as_tool_result_emits_single_tool_call_start() 
                 return;
             }
 
-            step.ask_frontend_tool(
+            let _ = suspend_frontend_tool(
+                step,
                 "addTask",
                 json!({ "title": "Deploy v2" }),
                 ResponseRouting::UseAsToolResult,
@@ -9479,7 +9510,8 @@ async fn test_stream_permission_intercept_emits_tool_call_start_for_frontend() {
                 return;
             }
 
-            step.ask_frontend_tool(
+            let _ = suspend_frontend_tool(
+                step,
                 "PermissionConfirm",
                 json!({ "tool_name": "serverInfo", "tool_args": {} }),
                 ResponseRouting::ReplayOriginalTool,
@@ -10493,7 +10525,12 @@ async fn test_run_loop_decision_channel_resolves_suspended_call() {
                 return;
             }
             let args = step.tool_args().cloned().unwrap_or_default();
-            step.ask_frontend_tool("frontend_tool", args, ResponseRouting::UseAsToolResult);
+            let _ = suspend_frontend_tool(
+                step,
+                "frontend_tool",
+                args,
+                ResponseRouting::UseAsToolResult,
+            );
             this.ready.notify_one();
             this.release.notified().await;
         });
@@ -10734,7 +10771,12 @@ async fn test_run_loop_stream_decision_channel_emits_resolution_and_replay() {
                 return;
             }
             let args = step.tool_args().cloned().unwrap_or_default();
-            step.ask_frontend_tool("frontend_tool", args, ResponseRouting::UseAsToolResult);
+            let _ = suspend_frontend_tool(
+                step,
+                "frontend_tool",
+                args,
+                ResponseRouting::UseAsToolResult,
+            );
             this.ready.notify_one();
             this.release.notified().await;
         });
@@ -10870,7 +10912,12 @@ async fn test_run_loop_decision_channel_buffers_early_response_for_all_suspended
             this.entered.notify_one();
             this.allow_pending.notified().await;
             let args = step.tool_args().cloned().unwrap_or_default();
-            step.ask_frontend_tool("frontend_tool", args, ResponseRouting::UseAsToolResult);
+            let _ = suspend_frontend_tool(
+                step,
+                "frontend_tool",
+                args,
+                ResponseRouting::UseAsToolResult,
+            );
         });
     }
 
@@ -10998,7 +11045,12 @@ async fn test_stream_decision_channel_buffers_early_response_for_all_suspended_t
             this.entered.notify_one();
             this.allow_pending.notified().await;
             let args = step.tool_args().cloned().unwrap_or_default();
-            step.ask_frontend_tool("frontend_tool", args, ResponseRouting::UseAsToolResult);
+            let _ = suspend_frontend_tool(
+                step,
+                "frontend_tool",
+                args,
+                ResponseRouting::UseAsToolResult,
+            );
         });
     }
 
@@ -11200,7 +11252,8 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_resume_decisio
             }
             let tool_name = step.tool_name().unwrap_or_default().to_string();
             let tool_args = step.tool_args().cloned().unwrap_or_default();
-            step.ask_frontend_tool(
+            let _ = suspend_frontend_tool(
+                step,
                 "PermissionConfirm",
                 json!({ "tool_name": tool_name, "tool_args": tool_args }),
                 ResponseRouting::ReplayOriginalTool,

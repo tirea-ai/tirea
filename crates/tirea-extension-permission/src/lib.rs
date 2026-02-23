@@ -504,7 +504,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_skips_when_tool_already_pending() {
-        use tirea_contract::event::interaction::ResponseRouting;
+        use tirea_contract::event::interaction::{
+            FrontendToolInvocation, InvocationOrigin, ResponseRouting,
+        };
+        use tirea_contract::plugin::phase::SuspendTicket;
 
         let fixture = TestFixture::new_with_state(
             json!({ "permissions": { "default_behavior": "ask", "tools": {} } }),
@@ -513,11 +516,16 @@ mod tests {
         let call = ToolCall::new("call_1", "copyToClipboard", json!({"text": "hello"}));
         step.tool = Some(ToolContext::new(&call));
 
-        step.ask_frontend_tool(
+        let invocation = FrontendToolInvocation::new(
+            "call_1",
             "copyToClipboard",
             json!({"text": "hello"}),
+            InvocationOrigin::PluginInitiated {
+                plugin_id: "agui_frontend_tools".to_string(),
+            },
             ResponseRouting::UseAsToolResult,
         );
+        step.suspend(SuspendTicket::from_frontend_invocation(invocation));
 
         let plugin = PermissionPlugin;
         run_before_tool_execute(&plugin, &mut step).await;
