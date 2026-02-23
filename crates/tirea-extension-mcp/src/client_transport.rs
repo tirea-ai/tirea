@@ -594,65 +594,369 @@ impl McpToolTransport for ProgressAwareHttpTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{json, Value};
+    use std::sync::{Arc, Mutex};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
 
-    #[test]
-    fn decode_http_batch_routes_progress_and_returns_matching_response() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let body = json!([
-            {
-                "jsonrpc": "2.0",
-                "method": "notifications/progress",
-                "params": {
-                    "progressToken": 7,
-                    "progress": 2.0,
-                    "total": 4.0,
-                    "message": "phase"
-                }
-            },
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "result": {
-                    "content": [{"type": "text", "text": "ok"}]
-                }
+    #[derive(Clone)]
+    struct HttpResponseSpec {
+        status: u16,
+        content_type: &'static str,
+        body: String,
+    }
+
+    impl HttpResponseSpec {
+        fn json(body: Value) -> Self {
+            Self {
+                status: 200,
+                content_type: "application/json",
+                body: body.to_string(),
             }
-        ]);
+        }
 
-        let result = decode_http_response_payload(body, 1, Some((ProgressTokenKey::Number(7), tx)))
-            .expect("decode response");
+        fn text(status: u16, body: impl Into<String>) -> Self {
+            Self {
+                status,
+                content_type: "text/plain",
+                body: body.into(),
+            }
+        }
+    }
 
-        let update = rx.try_recv().expect("progress update");
-        assert_eq!(update.progress, 2.0);
-        assert_eq!(update.total, Some(4.0));
-        assert_eq!(update.message.as_deref(), Some("phase"));
-        assert_eq!(result["content"][0]["text"], json!("ok"));
+    fn status_text(status: u16) -> &'static str {
+        match status {
+            200 => "OK",
+            400 => "Bad Request",
+            500 => "Internal Server Error",
+            _ => "OK",
+        }
+    }
+
+    fn header_end(buf: &[u8]) -> Option<usize> {
+        buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4)
+    }
+
+    fn content_length(headers: &str) -> usize {
+        headers
+            .lines()
+            .find_map(|line| {
+                let (k, v) = line.split_once(':')?;
+                if k.trim().eq_ignore_ascii_case("content-length") {
+                    v.trim().parse::<usize>().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0)
+    }
+
+    async fn read_json_body(stream: &mut TcpStream) -> Option<Value> {
+        let mut buf = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        let (header_end, body_len) = loop {
+            let n = stream.read(&mut chunk).await.ok()?;
+            if n == 0 {
+                return None;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            let Some(end) = header_end(&buf) else {
+                continue;
+            };
+            let headers = std::str::from_utf8(&buf[..end]).ok()?;
+            let len = content_length(headers);
+            break (end, len);
+        };
+
+        while buf.len() < header_end + body_len {
+            let n = stream.read(&mut chunk).await.ok()?;
+            if n == 0 {
+                return None;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+
+        serde_json::from_slice(&buf[header_end..header_end + body_len]).ok()
+    }
+
+    async fn spawn_http_server(
+        handler: Arc<dyn Fn(Value) -> HttpResponseSpec + Send + Sync>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind http listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let handle = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let handler = Arc::clone(&handler);
+                tokio::spawn(async move {
+                    let Some(request_body) = read_json_body(&mut stream).await else {
+                        return;
+                    };
+                    let response = handler(request_body);
+                    let payload = response.body;
+                    let head = format!(
+                        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        response.status,
+                        status_text(response.status),
+                        response.content_type,
+                        payload.as_bytes().len()
+                    );
+                    let _ = stream.write_all(head.as_bytes()).await;
+                    let _ = stream.write_all(payload.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        (format!("http://{}", addr), handle)
+    }
+
+    fn tool_call_success_response(request: &Value, text: &str) -> HttpResponseSpec {
+        HttpResponseSpec::json(json!({
+            "jsonrpc": "2.0",
+            "id": request["id"].clone(),
+            "result": {
+                "content": [{"type": "text", "text": text}]
+            }
+        }))
+    }
+
+    #[tokio::test]
+    async fn http_call_tool_sets_progress_token_meta_conditionally() {
+        let requests: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let requests_handler = Arc::clone(&requests);
+        let (endpoint, server) = spawn_http_server(Arc::new(move |request| {
+            requests_handler
+                .lock()
+                .expect("requests lock")
+                .push(request.clone());
+            tool_call_success_response(&request, "ok")
+        }))
+        .await;
+
+        let cfg = McpServerConnectionConfig::http("http_progress_meta", endpoint);
+        let transport = ProgressAwareHttpTransport::connect(&cfg).expect("connect transport");
+
+        let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
+        let _ = transport
+            .call_tool("echo", json!({"message":"hello"}), Some(progress_tx))
+            .await
+            .expect("tool call with progress");
+        let _ = transport
+            .call_tool("echo", json!({"message":"hello"}), None)
+            .await
+            .expect("tool call without progress");
+
+        server.abort();
+        let captured = requests.lock().expect("requests lock");
+        assert_eq!(captured.len(), 2);
+        assert_eq!(captured[0]["method"], json!("tools/call"));
+        assert!(captured[0]["params"]["_meta"]["progressToken"].is_number());
+        assert!(captured[1]["params"].get("_meta").is_none());
+    }
+
+    #[tokio::test]
+    async fn http_non_success_status_is_reported() {
+        let (endpoint, server) =
+            spawn_http_server(Arc::new(|_| HttpResponseSpec::text(500, "upstream error"))).await;
+        let cfg = McpServerConnectionConfig::http("http_error_status", endpoint);
+        let transport = ProgressAwareHttpTransport::connect(&cfg).expect("connect transport");
+        let err = transport.list_tools().await.err().expect("error");
+        server.abort();
+        assert!(matches!(err, McpTransportError::TransportError(_)));
+        assert!(err.to_string().contains("HTTP error"));
+    }
+
+    #[tokio::test]
+    async fn http_invalid_json_response_is_reported() {
+        let (endpoint, server) =
+            spawn_http_server(Arc::new(|_| HttpResponseSpec::text(200, "not-json"))).await;
+        let cfg = McpServerConnectionConfig::http("http_invalid_json", endpoint);
+        let transport = ProgressAwareHttpTransport::connect(&cfg).expect("connect transport");
+        let err = transport.list_tools().await.err().expect("error");
+        server.abort();
+        assert!(matches!(err, McpTransportError::TransportError(_)));
+        assert!(err.to_string().contains("Failed to parse JSON response"));
+    }
+
+    #[tokio::test]
+    async fn http_json_rpc_error_payload_is_reported() {
+        let (endpoint, server) = spawn_http_server(Arc::new(|request| {
+            HttpResponseSpec::json(json!({
+                "jsonrpc": "2.0",
+                "id": request["id"].clone(),
+                "error": {"code": -32000, "message": "rpc failed"}
+            }))
+        }))
+        .await;
+        let cfg = McpServerConnectionConfig::http("http_rpc_error", endpoint);
+        let transport = ProgressAwareHttpTransport::connect(&cfg).expect("connect transport");
+        let err = transport.list_tools().await.err().expect("error");
+        server.abort();
+        assert!(matches!(err, McpTransportError::ServerError(_)));
+        assert!(err.to_string().contains("rpc failed"));
+    }
+
+    #[tokio::test]
+    async fn http_call_tool_with_is_error_result_returns_server_error() {
+        let (endpoint, server) = spawn_http_server(Arc::new(|request| {
+            HttpResponseSpec::json(json!({
+                "jsonrpc": "2.0",
+                "id": request["id"].clone(),
+                "result": {
+                    "content": [{"type": "text", "text": "tool failed"}],
+                    "isError": true
+                }
+            }))
+        }))
+        .await;
+        let cfg = McpServerConnectionConfig::http("http_tool_error", endpoint);
+        let transport = ProgressAwareHttpTransport::connect(&cfg).expect("connect transport");
+        let err = transport
+            .call_tool("echo", json!({"message":"x"}), None)
+            .await
+            .err()
+            .expect("server error");
+        server.abort();
+        assert!(matches!(err, McpTransportError::ServerError(_)));
+        assert!(err.to_string().contains("tool failed"));
     }
 
     #[test]
-    fn decode_http_batch_ignores_progress_with_other_token() {
+    fn decode_http_batch_ignores_malformed_notifications() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let body = json!([
+            { "jsonrpc": "2.0", "method": "notifications/progress" },
+            { "jsonrpc": "2.0", "method": "notifications/progress", "params": {"progressToken": {"bad": true}, "progress": "oops"} },
+            { "jsonrpc": "2.0", "method": "notifications/other", "params": {"x":1} },
+            { "jsonrpc": "2.0", "id": 5, "result": {"content": [{"type":"text","text":"ok"}]} }
+        ]);
+
+        let result = decode_http_response_payload(body, 5, Some((ProgressTokenKey::Number(1), tx)))
+            .expect("decode response");
+        assert_eq!(result["content"][0]["text"], json!("ok"));
+        assert!(
+            rx.try_recv().is_err(),
+            "malformed notifications must be ignored"
+        );
+    }
+
+    #[test]
+    fn decode_http_batch_emits_progress_before_and_after_response_in_order() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let body = json!([
             {
                 "jsonrpc": "2.0",
                 "method": "notifications/progress",
-                "params": {
-                    "progressToken": 9,
-                    "progress": 1.0
-                }
+                "params": {"progressToken": 7, "progress": 1.0, "total": 4.0, "message": "before"}
             },
             {
                 "jsonrpc": "2.0",
                 "id": 3,
-                "result": {
-                    "content": [{"type": "text", "text": "ok"}]
-                }
+                "result": {"content": [{"type": "text", "text": "ok"}]}
+            },
+            {
+                "jsonrpc": "2.0",
+                "method": "notifications/progress",
+                "params": {"progressToken": 7, "progress": 4.0, "total": 4.0, "message": "after"}
             }
         ]);
 
-        let _ = decode_http_response_payload(body, 3, Some((ProgressTokenKey::Number(7), tx)))
+        let result = decode_http_response_payload(body, 3, Some((ProgressTokenKey::Number(7), tx)))
             .expect("decode response");
-        assert!(rx.try_recv().is_err(), "unexpected progress update");
+
+        let first = rx.try_recv().expect("first progress");
+        let second = rx.try_recv().expect("second progress");
+        assert_eq!(first.message.as_deref(), Some("before"));
+        assert_eq!(second.message.as_deref(), Some("after"));
+        assert_eq!(result["content"][0]["text"], json!("ok"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_http_tool_calls_route_progress_by_token() {
+        let (endpoint, server) = spawn_http_server(Arc::new(|request| {
+            let token = request["params"]["_meta"]["progressToken"].clone();
+            let label = request["params"]["arguments"]["label"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            HttpResponseSpec::json(json!([
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/progress",
+                    "params": {
+                        "progressToken": token,
+                        "progress": 1.0,
+                        "total": 1.0,
+                        "message": label
+                    }
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": request["id"].clone(),
+                    "result": {
+                        "content": [{"type": "text", "text": request["params"]["arguments"]["label"].clone()}]
+                    }
+                }
+            ]))
+        }))
+        .await;
+
+        let cfg = McpServerConnectionConfig::http("http_concurrent", endpoint);
+        let transport =
+            Arc::new(ProgressAwareHttpTransport::connect(&cfg).expect("connect transport"));
+
+        let (tx_a, mut rx_a) = mpsc::unbounded_channel();
+        let (tx_b, mut rx_b) = mpsc::unbounded_channel();
+        let transport_a = Arc::clone(&transport);
+        let transport_b = Arc::clone(&transport);
+
+        let call_a = tokio::spawn(async move {
+            transport_a
+                .call_tool("echo", json!({"label":"A"}), Some(tx_a))
+                .await
+        });
+        let call_b = tokio::spawn(async move {
+            transport_b
+                .call_tool("echo", json!({"label":"B"}), Some(tx_b))
+                .await
+        });
+
+        let result_a = call_a.await.expect("join a").expect("result a");
+        let result_b = call_b.await.expect("join b").expect("result b");
+        server.abort();
+
+        let update_a = rx_a.recv().await.expect("progress a");
+        let update_b = rx_b.recv().await.expect("progress b");
+        assert_eq!(result_a, Value::String("A".to_string()));
+        assert_eq!(result_b, Value::String("B".to_string()));
+        assert_eq!(update_a.message.as_deref(), Some("A"));
+        assert_eq!(update_b.message.as_deref(), Some("B"));
+        assert!(rx_a.try_recv().is_err());
+        assert!(rx_b.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn http_server_without_progress_still_succeeds_with_progress_channel() {
+        let (endpoint, server) = spawn_http_server(Arc::new(|request| {
+            tool_call_success_response(&request, "no-progress")
+        }))
+        .await;
+        let cfg = McpServerConnectionConfig::http("http_no_progress", endpoint);
+        let transport = ProgressAwareHttpTransport::connect(&cfg).expect("connect transport");
+
+        let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
+        let result = transport
+            .call_tool("echo", json!({"message":"ok"}), Some(progress_tx))
+            .await
+            .expect("tool call");
+        server.abort();
+
+        assert_eq!(result, Value::String("no-progress".to_string()));
+        assert!(progress_rx.try_recv().is_err());
     }
 
     #[test]

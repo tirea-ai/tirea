@@ -614,6 +614,8 @@ mod tests {
     use tirea_contract::runtime::ActivityManager;
     use tirea_contract::thread::Message;
     use tirea_state::{DocCell, Op};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
 
     #[derive(Debug, Clone)]
     struct FakeTransport {
@@ -729,6 +731,113 @@ mod tests {
         McpServerConnectionConfig::stdio(name, "node", vec!["server.js".to_string()])
     }
 
+    #[derive(Clone)]
+    struct HttpResponseSpec {
+        status: u16,
+        content_type: &'static str,
+        body: String,
+    }
+
+    impl HttpResponseSpec {
+        fn json(body: Value) -> Self {
+            Self {
+                status: 200,
+                content_type: "application/json",
+                body: body.to_string(),
+            }
+        }
+    }
+
+    fn http_status_text(status: u16) -> &'static str {
+        match status {
+            200 => "OK",
+            400 => "Bad Request",
+            500 => "Internal Server Error",
+            _ => "OK",
+        }
+    }
+
+    fn http_header_end(buf: &[u8]) -> Option<usize> {
+        buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4)
+    }
+
+    fn http_content_length(headers: &str) -> usize {
+        headers
+            .lines()
+            .find_map(|line| {
+                let (k, v) = line.split_once(':')?;
+                if k.trim().eq_ignore_ascii_case("content-length") {
+                    v.trim().parse::<usize>().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0)
+    }
+
+    async fn read_http_json_body(stream: &mut TcpStream) -> Option<Value> {
+        let mut buf = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        let (header_end, body_len) = loop {
+            let n = stream.read(&mut chunk).await.ok()?;
+            if n == 0 {
+                return None;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            let Some(end) = http_header_end(&buf) else {
+                continue;
+            };
+            let headers = std::str::from_utf8(&buf[..end]).ok()?;
+            let len = http_content_length(headers);
+            break (end, len);
+        };
+
+        while buf.len() < header_end + body_len {
+            let n = stream.read(&mut chunk).await.ok()?;
+            if n == 0 {
+                return None;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+
+        serde_json::from_slice(&buf[header_end..header_end + body_len]).ok()
+    }
+
+    async fn spawn_http_server(
+        handler: Arc<dyn Fn(Value) -> HttpResponseSpec + Send + Sync>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind http listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let handle = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let handler = Arc::clone(&handler);
+                tokio::spawn(async move {
+                    let Some(request_body) = read_http_json_body(&mut stream).await else {
+                        return;
+                    };
+                    let response = handler(request_body);
+                    let payload = response.body;
+                    let head = format!(
+                        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        response.status,
+                        http_status_text(response.status),
+                        response.content_type,
+                        payload.as_bytes().len()
+                    );
+                    let _ = stream.write_all(head.as_bytes()).await;
+                    let _ = stream.write_all(payload.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        (format!("http://{}", addr), handle)
+    }
+
     #[tokio::test]
     async fn mcp_tool_forwards_progress_to_tool_activity_stream() {
         let transport = Arc::new(FakeProgressTransport) as Arc<dyn McpToolTransport>;
@@ -803,6 +912,109 @@ mod tests {
         let events = activity_manager.events.lock().unwrap();
         assert!(events.iter().any(|(stream_id, activity_type, op)| {
             stream_id == "tool_call:call-progress-registry"
+                && activity_type == "progress"
+                && op.path().to_string() == "$.progress"
+        }));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn connect_http_registry_forwards_progress_and_sets_transport_metadata() {
+        let (endpoint, server) = spawn_http_server(Arc::new(|request| {
+            let method = request["method"].as_str().unwrap_or_default();
+            match method {
+                "tools/list" => HttpResponseSpec::json(json!({
+                    "jsonrpc": "2.0",
+                    "id": request["id"].clone(),
+                    "result": {
+                        "tools": [{
+                            "name": "echo_http_progress",
+                            "title": "Echo HTTP Progress",
+                            "description": "Echo tool over HTTP",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "message": {"type": "string"}
+                                },
+                                "required": ["message"]
+                            }
+                        }]
+                    }
+                })),
+                "tools/call" => {
+                    let token = request["params"]["_meta"]["progressToken"].clone();
+                    let text = request["params"]["arguments"]["message"]
+                        .as_str()
+                        .unwrap_or("ok");
+                    HttpResponseSpec::json(json!([
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "notifications/progress",
+                            "params": {
+                                "progressToken": token,
+                                "progress": 1.0,
+                                "total": 4.0,
+                                "message": "phase-1"
+                            }
+                        },
+                        {
+                            "jsonrpc": "2.0",
+                            "id": request["id"].clone(),
+                            "result": {
+                                "content": [{"type":"text", "text": text}]
+                            }
+                        }
+                    ]))
+                }
+                _ => HttpResponseSpec::json(json!({
+                    "jsonrpc": "2.0",
+                    "id": request["id"].clone(),
+                    "result": {}
+                })),
+            }
+        }))
+        .await;
+
+        let cfg = McpServerConnectionConfig::http("http_s1", endpoint);
+        let manager = McpToolRegistryManager::connect([cfg]).await.unwrap();
+        let registry = manager.registry();
+        let tool_id = registry
+            .ids()
+            .into_iter()
+            .find(|id| id.ends_with("__echo_http_progress"))
+            .expect("discover http tool");
+        let tool = registry.get(&tool_id).expect("registry tool");
+
+        let descriptor = tool.descriptor();
+        assert_eq!(
+            descriptor.metadata.get("mcp.transport"),
+            Some(&json!("http"))
+        );
+
+        let activity_manager = Arc::new(RecordingActivityManager::default());
+        let doc = DocCell::new(json!({}));
+        let ops = Mutex::new(Vec::new());
+        let run_config = tirea_contract::RunConfig::default();
+        let pending_messages: Mutex<Vec<Arc<Message>>> = Mutex::new(Vec::new());
+        let ctx = ToolCallContext::new(
+            &doc,
+            &ops,
+            "call-http-progress",
+            "test",
+            &run_config,
+            &pending_messages,
+            Some(activity_manager.clone()),
+        );
+
+        let result = tool
+            .execute(json!({"message":"hello-http"}), &ctx)
+            .await
+            .unwrap();
+        server.abort();
+        assert!(result.is_success());
+
+        let events = activity_manager.events.lock().unwrap();
+        assert!(events.iter().any(|(stream_id, activity_type, op)| {
+            stream_id == "tool_call:call-http-progress"
                 && activity_type == "progress"
                 && op.path().to_string() == "$.progress"
         }));

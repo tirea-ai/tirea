@@ -17,6 +17,8 @@ use tirea_agent_loop::runtime::loop_runner::{run_loop_stream, AgentConfig, LlmEx
 use tirea_contract::ProtocolOutputEncoder;
 use tirea_extension_mcp::McpToolRegistryManager;
 use tirea_protocol_ai_sdk_v6::{AiSdkV6ProtocolEncoder, UIStreamEvent};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 
 #[derive(Clone)]
 struct MockResponse {
@@ -125,6 +127,164 @@ async fn collect_agent_events(
         events.push(event);
     }
     events
+}
+
+#[derive(Clone)]
+struct HttpResponseSpec {
+    status: u16,
+    content_type: &'static str,
+    body: String,
+}
+
+impl HttpResponseSpec {
+    fn json(body: Value) -> Self {
+        Self {
+            status: 200,
+            content_type: "application/json",
+            body: body.to_string(),
+        }
+    }
+}
+
+fn http_status_text(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        400 => "Bad Request",
+        500 => "Internal Server Error",
+        _ => "OK",
+    }
+}
+
+fn http_header_end(buf: &[u8]) -> Option<usize> {
+    buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4)
+}
+
+fn http_content_length(headers: &str) -> usize {
+    headers
+        .lines()
+        .find_map(|line| {
+            let (k, v) = line.split_once(':')?;
+            if k.trim().eq_ignore_ascii_case("content-length") {
+                v.trim().parse::<usize>().ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0)
+}
+
+async fn read_http_json_body(stream: &mut TcpStream) -> Option<Value> {
+    let mut buf = Vec::new();
+    let mut chunk = [0_u8; 1024];
+    let (header_end, body_len) = loop {
+        let n = stream.read(&mut chunk).await.ok()?;
+        if n == 0 {
+            return None;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        let Some(end) = http_header_end(&buf) else {
+            continue;
+        };
+        let headers = std::str::from_utf8(&buf[..end]).ok()?;
+        let len = http_content_length(headers);
+        break (end, len);
+    };
+
+    while buf.len() < header_end + body_len {
+        let n = stream.read(&mut chunk).await.ok()?;
+        if n == 0 {
+            return None;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+
+    serde_json::from_slice(&buf[header_end..header_end + body_len]).ok()
+}
+
+async fn spawn_http_server(
+    handler: Arc<dyn Fn(Value) -> HttpResponseSpec + Send + Sync>,
+) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind http listener");
+    let addr = listener.local_addr().expect("listener addr");
+    let handle = tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            let handler = Arc::clone(&handler);
+            tokio::spawn(async move {
+                let Some(request_body) = read_http_json_body(&mut stream).await else {
+                    return;
+                };
+                let response = handler(request_body);
+                let payload = response.body;
+                let head = format!(
+                    "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    response.status,
+                    http_status_text(response.status),
+                    response.content_type,
+                    payload.as_bytes().len()
+                );
+                let _ = stream.write_all(head.as_bytes()).await;
+                let _ = stream.write_all(payload.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            });
+        }
+    });
+    (format!("http://{}", addr), handle)
+}
+
+fn assert_progress_chain(agent_events: &[AgentEvent], ui_events: &[UIStreamEvent], call_id: &str) {
+    let stream_id = format!("tool_call:{call_id}");
+    assert!(agent_events.iter().any(|event| {
+        matches!(
+            event,
+            AgentEvent::ActivitySnapshot {
+                message_id,
+                activity_type,
+                content,
+                ..
+            } if message_id == &stream_id
+                && activity_type == "progress"
+                && content["progress"] == json!(0.25)
+        )
+    }));
+    assert!(agent_events.iter().any(|event| {
+        matches!(
+            event,
+            AgentEvent::ActivitySnapshot {
+                message_id,
+                activity_type,
+                content,
+                ..
+            } if message_id == &stream_id
+                && activity_type == "progress"
+                && content["progress"] == json!(1.0)
+        )
+    }));
+
+    assert!(ui_events.iter().any(|event| {
+        matches!(
+            event,
+            UIStreamEvent::Data { data_type, data, .. }
+                if data_type == "data-activity-snapshot"
+                    && data["messageId"] == json!(stream_id.as_str())
+                    && data["activityType"] == json!("progress")
+                    && data["content"]["progress"] == json!(0.25)
+        )
+    }));
+    assert!(ui_events.iter().any(|event| {
+        matches!(
+            event,
+            UIStreamEvent::Data { data_type, data, .. }
+                if data_type == "data-activity-snapshot"
+                    && data["messageId"] == json!(stream_id.as_str())
+                    && data["activityType"] == json!("progress")
+                    && data["content"]["progress"] == json!(1.0)
+        )
+    }));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -251,33 +411,6 @@ for raw in sys.stdin:
     ))
     .await;
 
-    assert!(agent_events.iter().any(|event| {
-        matches!(
-            event,
-            AgentEvent::ActivitySnapshot {
-                message_id,
-                activity_type,
-                content,
-                ..
-            } if message_id == "tool_call:call_progress"
-                && activity_type == "progress"
-                && content["progress"] == json!(0.25)
-        )
-    }));
-    assert!(agent_events.iter().any(|event| {
-        matches!(
-            event,
-            AgentEvent::ActivitySnapshot {
-                message_id,
-                activity_type,
-                content,
-                ..
-            } if message_id == "tool_call:call_progress"
-                && activity_type == "progress"
-                && content["progress"] == json!(1.0)
-        )
-    }));
-
     let mut encoder = AiSdkV6ProtocolEncoder::new(
         "run_progress_e2e".to_string(),
         Some("thread-mcp-progress".to_string()),
@@ -287,24 +420,116 @@ for raw in sys.stdin:
         ui_events.extend(encoder.on_agent_event(event));
     }
 
-    assert!(ui_events.iter().any(|event| {
-        matches!(
-            event,
-            UIStreamEvent::Data { data_type, data, .. }
-                if data_type == "data-activity-snapshot"
-                    && data["messageId"] == json!("tool_call:call_progress")
-                    && data["activityType"] == json!("progress")
-                    && data["content"]["progress"] == json!(0.25)
-        )
-    }));
-    assert!(ui_events.iter().any(|event| {
-        matches!(
-            event,
-            UIStreamEvent::Data { data_type, data, .. }
-                if data_type == "data-activity-snapshot"
-                    && data["messageId"] == json!("tool_call:call_progress")
-                    && data["activityType"] == json!("progress")
-                    && data["content"]["progress"] == json!(1.0)
-        )
-    }));
+    assert_progress_chain(&agent_events, &ui_events, "call_progress");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn real_http_mcp_progress_notifications_flow_to_ui_data_events() {
+    let (endpoint, server) = spawn_http_server(Arc::new(|request| {
+        let method = request["method"].as_str().unwrap_or_default();
+        match method {
+            "tools/list" => HttpResponseSpec::json(json!({
+                "jsonrpc": "2.0",
+                "id": request["id"].clone(),
+                "result": {
+                    "tools": [{
+                        "name": "echo_http_progress",
+                        "title": "Echo HTTP Progress",
+                        "description": "Echo text with HTTP progress notifications",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "message": {"type": "string"}
+                            },
+                            "required": ["message"]
+                        }
+                    }]
+                }
+            })),
+            "tools/call" => {
+                let token = request["params"]["_meta"]["progressToken"].clone();
+                let text = request["params"]["arguments"]["message"]
+                    .as_str()
+                    .unwrap_or("ok");
+                HttpResponseSpec::json(json!([
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "notifications/progress",
+                        "params": {
+                            "progressToken": token,
+                            "progress": 1.0,
+                            "total": 4.0
+                        }
+                    },
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "notifications/progress",
+                        "params": {
+                            "progressToken": request["params"]["_meta"]["progressToken"].clone(),
+                            "progress": 4.0,
+                            "total": 4.0
+                        }
+                    },
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request["id"].clone(),
+                        "result": {
+                            "content": [{"type":"text","text": text}]
+                        }
+                    }
+                ]))
+            }
+            _ => HttpResponseSpec::json(json!({
+                "jsonrpc": "2.0",
+                "id": request["id"].clone(),
+                "result": {}
+            })),
+        }
+    }))
+    .await;
+
+    let cfg = McpServerConnectionConfig::http("http_progress_server", endpoint);
+    let manager = McpToolRegistryManager::connect([cfg])
+        .await
+        .expect("connect HTTP MCP server");
+    let registry = manager.registry();
+    let tool_id = registry
+        .ids()
+        .into_iter()
+        .find(|id| id.ends_with("__echo_http_progress"))
+        .expect("discover echo_http_progress tool");
+
+    let llm = MockStreamProvider::new(vec![
+        MockResponse::tool_call(
+            "call_http_progress",
+            &tool_id,
+            json!({ "message": "hello-http" }),
+        ),
+        MockResponse::text("done"),
+    ]);
+    let config = AgentConfig::new("mock").with_llm_executor(Arc::new(llm) as Arc<dyn LlmExecutor>);
+
+    let thread = Thread::new("thread-mcp-http-progress").with_message(Message::user("run"));
+    let run_ctx = RunContext::from_thread(&thread, RunConfig::default()).expect("run context");
+    let agent_events = collect_agent_events(run_loop_stream(
+        config,
+        registry.snapshot(),
+        run_ctx,
+        None,
+        None,
+        None,
+    ))
+    .await;
+
+    let mut encoder = AiSdkV6ProtocolEncoder::new(
+        "run_http_progress_e2e".to_string(),
+        Some("thread-mcp-http-progress".to_string()),
+    );
+    let mut ui_events = encoder.prologue();
+    for event in &agent_events {
+        ui_events.extend(encoder.on_agent_event(event));
+    }
+
+    server.abort();
+    assert_progress_chain(&agent_events, &ui_events, "call_http_progress");
 }
