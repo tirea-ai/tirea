@@ -6,4 +6,4 @@ pub mod model;
 
 pub use changeset::{CheckpointReason, ThreadChangeSet, Version};
 pub use message::{gen_message_id, Message, MessageMetadata, Role, ToolCall, Visibility};
-pub use model::{PendingDelta, Thread, ThreadMetadata};
+pub use model::{Thread, ThreadMetadata};

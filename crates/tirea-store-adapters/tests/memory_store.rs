@@ -620,7 +620,7 @@ async fn test_parent_thread_id_none_omitted() {
 }
 
 // ========================================================================
-// End-to-end: PendingDelta → ThreadChangeSet → append (full agent flow)
+// End-to-end: ThreadChangeSet append flow (full agent lifecycle)
 // ========================================================================
 
 /// Simulates a complete agent run: create → user message → assistant turn →
@@ -636,16 +636,13 @@ async fn test_full_agent_run_via_append() {
 
     // 2. User message delta (simulates http handler)
     let mut thread = thread.with_message(Message::user("What is 2+2?"));
-    let pending = thread.take_pending();
-    assert_eq!(pending.messages.len(), 1);
-    assert!(pending.patches.is_empty());
 
     let user_delta = ThreadChangeSet {
         run_id: "run-1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::UserMessage,
-        messages: pending.messages,
-        patches: pending.patches,
+        messages: vec![Arc::new(Message::user("What is 2+2?"))],
+        patches: vec![],
         snapshot: None,
     };
     let committed = store
@@ -656,15 +653,13 @@ async fn test_full_agent_run_via_append() {
 
     // 3. Assistant turn committed (LLM inference)
     thread = thread.with_message(Message::assistant("2+2 = 4"));
-    let pending = thread.take_pending();
-    assert_eq!(pending.messages.len(), 1);
 
     let assistant_delta = ThreadChangeSet {
         run_id: "run-1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
-        messages: pending.messages,
-        patches: pending.patches,
+        messages: vec![Arc::new(Message::assistant("2+2 = 4"))],
+        patches: vec![],
         snapshot: None,
     };
     let committed = store
@@ -677,17 +672,14 @@ async fn test_full_agent_run_via_append() {
     let patch = TrackedPatch::new(Patch::new().with_op(Op::set(path!("result"), json!(4))));
     thread = thread
         .with_message(Message::tool("call-1", "4"))
-        .with_patch(patch);
-    let pending = thread.take_pending();
-    assert_eq!(pending.messages.len(), 1);
-    assert_eq!(pending.patches.len(), 1);
+        .with_patch(patch.clone());
 
     let tool_delta = ThreadChangeSet {
         run_id: "run-1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::ToolResultsCommitted,
-        messages: pending.messages,
-        patches: pending.patches,
+        messages: vec![Arc::new(Message::tool("call-1", "4"))],
+        patches: vec![patch],
         snapshot: None,
     };
     let committed = store
@@ -697,15 +689,14 @@ async fn test_full_agent_run_via_append() {
     assert_eq!(committed.version, 3);
 
     // 5. Run finished (final assistant message)
-    thread = thread.with_message(Message::assistant("The answer is 4."));
-    let pending = thread.take_pending();
+    let _thread = thread.with_message(Message::assistant("The answer is 4."));
 
     let finished_delta = ThreadChangeSet {
         run_id: "run-1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::RunFinished,
-        messages: pending.messages,
-        patches: pending.patches,
+        messages: vec![Arc::new(Message::assistant("The answer is 4."))],
+        patches: vec![],
         snapshot: None,
     };
     let committed = store
@@ -819,7 +810,7 @@ async fn test_partial_delta_replay() {
     assert_eq!(deltas[1].messages[0].content, "msg-4");
 }
 
-/// PendingDelta → ThreadChangeSet → append preserves patch content and source.
+/// ThreadChangeSet append preserves patch content and source.
 #[tokio::test]
 async fn test_append_preserves_patch_provenance() {
     let store = MemoryStore::new();
@@ -829,15 +820,12 @@ async fn test_append_preserves_patch_provenance() {
         .with_source("tool:weather")
         .with_description("Set weather data");
 
-    let mut thread = Thread::new("t1").with_patch(patch);
-    let pending = thread.take_pending();
-
     let delta = ThreadChangeSet {
         run_id: "run-1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::ToolResultsCommitted,
-        messages: pending.messages,
-        patches: pending.patches,
+        messages: vec![],
+        patches: vec![patch],
         snapshot: None,
     };
     store

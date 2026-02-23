@@ -86,20 +86,21 @@ impl AgentOs {
         }
 
         // 3. Deduplicate and append inbound messages
-        let deduped = Self::dedup_messages(&thread, request.messages);
-        if !deduped.is_empty() {
-            thread = thread.with_messages(deduped);
+        let deduped_messages = Self::dedup_messages(&thread, request.messages);
+        if !deduped_messages.is_empty() {
+            thread = thread.with_messages(deduped_messages.clone());
         }
 
-        // 4. Persist pending changes (user messages + frontend state snapshot)
-        let pending = thread.take_pending();
-        if !pending.is_empty() || state_snapshot_for_delta.is_some() {
+        // 4. Persist run-start changes (user messages + frontend state snapshot)
+        let delta_messages: Vec<Arc<Message>> =
+            deduped_messages.into_iter().map(Arc::new).collect();
+        if !delta_messages.is_empty() || state_snapshot_for_delta.is_some() {
             let changeset = crate::contracts::ThreadChangeSet::from_parts(
                 run_id.clone(),
                 parent_run_id.clone(),
                 CheckpointReason::UserMessage,
-                pending.messages,
-                pending.patches,
+                delta_messages,
+                Vec::new(),
                 state_snapshot_for_delta,
             );
             let committed = agent_state_store

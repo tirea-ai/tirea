@@ -139,8 +139,8 @@ pub type RunConfigError = tirea_state::SealedStateError;
 
 // thread
 pub use thread::{
-    gen_message_id, CheckpointReason, Message, MessageMetadata, PendingDelta, Role, Thread,
-    ThreadChangeSet, ThreadMetadata, ToolCall, Version, Visibility,
+    gen_message_id, CheckpointReason, Message, MessageMetadata, Role, Thread, ThreadChangeSet,
+    ThreadMetadata, ToolCall, Version, Visibility,
 };
 
 // event

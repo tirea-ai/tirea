@@ -1176,17 +1176,16 @@ async fn test_incremental_checkpoints_via_append() {
 
     // Simulate 5 checkpoints via append (not save)
     for checkpoint in 1..=5u64 {
+        let mut delta_messages = Vec::new();
         for _ in 0..10 {
-            thread = thread.with_message(Message::user(format!(
-                "Work item at checkpoint {}",
-                checkpoint
-            )));
+            let message = Message::user(format!("Work item at checkpoint {}", checkpoint));
+            delta_messages.push(Arc::new(message.clone()));
+            thread = thread.with_message(message);
         }
-        thread = thread.with_patch(TrackedPatch::new(
+        let delta_patch = TrackedPatch::new(
             Patch::new().with_op(Op::set(path!("progress"), json!(checkpoint * 10))),
-        ));
-
-        let pending = thread.take_pending();
+        );
+        thread = thread.with_patch(delta_patch.clone());
         let delta = ThreadChangeSet {
             run_id: "run-1".to_string(),
             parent_run_id: None,
@@ -1195,8 +1194,8 @@ async fn test_incremental_checkpoints_via_append() {
             } else {
                 CheckpointReason::ToolResultsCommitted
             },
-            messages: pending.messages,
-            patches: pending.patches,
+            messages: delta_messages,
+            patches: vec![delta_patch],
             snapshot: None,
         };
 

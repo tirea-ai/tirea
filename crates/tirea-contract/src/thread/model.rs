@@ -9,32 +9,10 @@ use serde_json::Value;
 use std::sync::Arc;
 use tirea_state::{apply_patches, TireaError, TireaResult, TrackedPatch};
 
-/// Accumulated new messages and patches since the last `take_pending()`.
-///
-/// This buffer is populated automatically by `with_message`, `with_messages`,
-/// `with_patch`, and `with_patches`. Consumers call `take_pending()` to
-/// drain the buffer and build a `ThreadChangeSet` for storage.
-#[derive(Debug, Clone, Default)]
-pub struct PendingDelta {
-    pub messages: Vec<Arc<Message>>,
-    pub patches: Vec<TrackedPatch>,
-}
-
-impl PendingDelta {
-    /// Returns true if there are no pending messages or patches.
-    pub fn is_empty(&self) -> bool {
-        self.messages.is_empty() && self.patches.is_empty()
-    }
-}
-
 /// Persisted thread state with messages and state history.
 ///
 /// `Thread` uses an owned builder pattern: `with_*` methods consume `self`
 /// and return a new `Thread` (e.g., `thread.with_message(msg)`).
-///
-/// Runtime field (`pending`) is transient — not serialized.
-/// It exists for backward compatibility and will be removed
-/// once all callers migrate to `RunContext`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Thread {
     /// Unique thread identifier.
@@ -54,10 +32,6 @@ pub struct Thread {
     /// Metadata.
     #[serde(default)]
     pub metadata: ThreadMetadata,
-    /// Pending delta buffer — tracks new items since last `take_pending()`.
-    /// Deprecated: use `RunContext.take_delta()` instead.
-    #[serde(skip)]
-    pub(crate) pending: PendingDelta,
 }
 
 /// Thread metadata.
@@ -91,7 +65,6 @@ impl Thread {
             state: Value::Object(serde_json::Map::new()),
             patches: Vec::new(),
             metadata: ThreadMetadata::default(),
-            pending: PendingDelta::default(),
         }
     }
 
@@ -105,7 +78,6 @@ impl Thread {
             state,
             patches: Vec::new(),
             metadata: ThreadMetadata::default(),
-            pending: PendingDelta::default(),
         }
     }
 
@@ -128,9 +100,7 @@ impl Thread {
     /// Messages are Arc-wrapped for efficient cloning during agent loops.
     #[must_use]
     pub fn with_message(mut self, msg: Message) -> Self {
-        let arc = Arc::new(msg);
-        self.pending.messages.push(arc.clone());
-        self.messages.push(arc);
+        self.messages.push(Arc::new(msg));
         self
     }
 
@@ -138,7 +108,6 @@ impl Thread {
     #[must_use]
     pub fn with_messages(mut self, msgs: impl IntoIterator<Item = Message>) -> Self {
         let arcs: Vec<Arc<Message>> = msgs.into_iter().map(Arc::new).collect();
-        self.pending.messages.extend(arcs.iter().cloned());
         self.messages.extend(arcs);
         self
     }
@@ -146,7 +115,6 @@ impl Thread {
     /// Add a patch to the thread (pure function, returns new Thread).
     #[must_use]
     pub fn with_patch(mut self, patch: TrackedPatch) -> Self {
-        self.pending.patches.push(patch.clone());
         self.patches.push(patch);
         self
     }
@@ -154,18 +122,8 @@ impl Thread {
     /// Add multiple patches (pure function, returns new Thread).
     #[must_use]
     pub fn with_patches(mut self, patches: impl IntoIterator<Item = TrackedPatch>) -> Self {
-        let patches: Vec<TrackedPatch> = patches.into_iter().collect();
-        self.pending.patches.extend(patches.iter().cloned());
         self.patches.extend(patches);
         self
-    }
-
-    /// Drain and return the pending delta buffer.
-    ///
-    /// After this call, the pending buffer is empty. The returned `PendingDelta`
-    /// contains all messages and patches added since the last `take_pending()`.
-    pub fn take_pending(&mut self) -> PendingDelta {
-        std::mem::take(&mut self.pending)
     }
 
     /// Rebuild the current state (base + thread patches).
@@ -210,7 +168,6 @@ impl Thread {
             state: current_state,
             patches: Vec::new(),
             metadata: self.metadata,
-            pending: self.pending,
         })
     }
 
@@ -239,145 +196,26 @@ mod tests {
     // Tests use Thread directly (the canonical name).
 
     #[test]
-    fn test_pending_delta_tracks_messages() {
-        let mut thread = Thread::new("t-1")
-            .with_message(Message::user("Hello"))
-            .with_message(Message::assistant("Hi!"));
-
-        assert_eq!(thread.pending.messages.len(), 2);
-        assert_eq!(thread.messages.len(), 2);
-
-        let pending = thread.take_pending();
-        assert_eq!(pending.messages.len(), 2);
-        assert_eq!(pending.messages[0].content, "Hello");
-        assert_eq!(pending.messages[1].content, "Hi!");
-        assert!(thread.pending.is_empty());
-    }
-
-    #[test]
-    fn test_pending_delta_tracks_patches() {
-        let mut thread = Thread::new("t-1")
-            .with_patch(TrackedPatch::new(
-                Patch::new().with_op(Op::set(path!("a"), json!(1))),
-            ))
-            .with_patches(vec![
-                TrackedPatch::new(Patch::new().with_op(Op::set(path!("b"), json!(2)))),
-                TrackedPatch::new(Patch::new().with_op(Op::set(path!("c"), json!(3)))),
-            ]);
-
-        assert_eq!(thread.pending.patches.len(), 3);
-        assert_eq!(thread.patches.len(), 3);
-
-        let pending = thread.take_pending();
-        assert_eq!(pending.patches.len(), 3);
-        assert!(thread.pending.is_empty());
-    }
-
-    #[test]
-    fn test_take_pending_resets_buffer() {
-        let mut thread = Thread::new("t-1").with_message(Message::user("first"));
-        let p1 = thread.take_pending();
-        assert_eq!(p1.messages.len(), 1);
-
-        // Second take should be empty
-        let p2 = thread.take_pending();
-        assert!(p2.is_empty());
-
-        // Add more, take again
-        thread = thread.with_message(Message::user("second"));
-        let p3 = thread.take_pending();
-        assert_eq!(p3.messages.len(), 1);
-        assert_eq!(p3.messages[0].content, "second");
-    }
-
-    #[test]
-    fn test_pending_delta_not_serialized() {
-        let thread = Thread::new("t-1").with_message(Message::user("Hello"));
-        assert_eq!(thread.pending.messages.len(), 1);
-
-        let json_str = serde_json::to_string(&thread).unwrap();
-        let restored: Thread = serde_json::from_str(&json_str).unwrap();
-        assert!(
-            restored.pending.is_empty(),
-            "pending should not survive serialization"
-        );
-        assert_eq!(restored.messages.len(), 1);
-    }
-
-    #[test]
-    fn test_pending_clone_is_independent() {
-        let thread = Thread::new("t-1").with_message(Message::user("first"));
-        assert_eq!(thread.pending.messages.len(), 1);
-
-        // Clone carries the same pending state
-        let mut cloned = thread.clone();
-        assert_eq!(cloned.pending.messages.len(), 1);
-
-        // Draining the clone does not affect the original
-        let pending = cloned.take_pending();
-        assert_eq!(pending.messages.len(), 1);
-        assert!(cloned.pending.is_empty());
-
-        // Original still has its pending
-        assert_eq!(thread.pending.messages.len(), 1);
-    }
-
-    #[test]
-    fn test_pending_with_messages_batch() {
+    fn test_thread_with_messages_batch() {
         let msgs = vec![
             Message::user("a"),
             Message::assistant("b"),
             Message::user("c"),
         ];
-        let mut thread = Thread::new("t-1").with_messages(msgs);
+        let thread = Thread::new("t-1").with_messages(msgs);
         assert_eq!(thread.messages.len(), 3);
-        assert_eq!(thread.pending.messages.len(), 3);
-
-        let pending = thread.take_pending();
-        assert_eq!(pending.messages.len(), 3);
-        assert_eq!(pending.messages[0].content, "a");
-        assert_eq!(pending.messages[2].content, "c");
+        assert_eq!(thread.messages[0].content, "a");
+        assert_eq!(thread.messages[2].content, "c");
     }
 
     #[test]
-    fn test_pending_interleaved_messages_and_patches() {
-        let mut thread = Thread::new("t-1")
-            .with_message(Message::user("hello"))
-            .with_patch(TrackedPatch::new(
-                Patch::new().with_op(Op::set(path!("a"), json!(1))),
-            ))
-            .with_message(Message::assistant("hi"))
-            .with_patches(vec![
-                TrackedPatch::new(Patch::new().with_op(Op::set(path!("b"), json!(2)))),
-                TrackedPatch::new(Patch::new().with_op(Op::set(path!("c"), json!(3)))),
-            ]);
-
-        let pending = thread.take_pending();
-        assert_eq!(pending.messages.len(), 2);
-        assert_eq!(pending.patches.len(), 3);
-        assert!(thread.pending.is_empty());
-
-        // Main arrays still have everything
-        assert_eq!(thread.messages.len(), 2);
+    fn test_thread_with_patches_batch() {
+        let thread = Thread::new("t-1").with_patches(vec![
+            TrackedPatch::new(Patch::new().with_op(Op::set(path!("a"), json!(1)))),
+            TrackedPatch::new(Patch::new().with_op(Op::set(path!("b"), json!(2)))),
+            TrackedPatch::new(Patch::new().with_op(Op::set(path!("c"), json!(3)))),
+        ]);
         assert_eq!(thread.patches.len(), 3);
-    }
-
-    #[test]
-    fn test_pending_is_empty() {
-        let delta = PendingDelta::default();
-        assert!(delta.is_empty());
-
-        let delta = PendingDelta {
-            messages: vec![Arc::new(Message::user("hi"))],
-            patches: vec![],
-        };
-        assert!(!delta.is_empty());
-
-        let delta = PendingDelta {
-            messages: vec![],
-            patches: vec![TrackedPatch::new(Patch::new())],
-        };
-        assert!(!delta.is_empty());
     }
 
     #[test]

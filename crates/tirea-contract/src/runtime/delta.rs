@@ -4,10 +4,6 @@ use tirea_state::TrackedPatch;
 
 /// Incremental output from a run step — the new messages and patches
 /// accumulated since the last `take_delta()`.
-///
-/// This replaces the previous `PendingDelta` with a cleaner name that
-/// reflects its role as run-scoped output rather than a buffer on the
-/// persisted entity.
 #[derive(Debug, Clone, Default)]
 pub struct RunDelta {
     pub messages: Vec<Arc<Message>>,
