@@ -1865,7 +1865,9 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
             this.phases.lock().unwrap().push(phase);
             if phase == Phase::BeforeInference {
                 step.system("from_before_inference");
-                step.skip_inference = true;
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
                 let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
                     tirea_state::path!("debug", "phase_block"),
                     json!(true),
@@ -1889,7 +1891,15 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
         &plugins,
         &[Phase::StepStart, Phase::BeforeInference],
         |_| {},
-        |step| (step.system_context.clone(), step.skip_inference),
+        |step| {
+            (
+                step.system_context.clone(),
+                matches!(
+                    step.run_action(),
+                    crate::contracts::RunAction::Terminate(TerminationReason::PluginRequested)
+                ),
+            )
+        },
     )
     .await
     .expect("phase block should succeed");
@@ -2923,7 +2933,9 @@ impl AgentPlugin for RecordAndSkipPlugin {
     phase_dispatch_methods!(|this, phase, step| {
         this.phases.lock().unwrap().push(phase);
         if phase == Phase::BeforeInference {
-            step.skip_inference = true;
+            step.set_run_action(crate::contracts::RunAction::Terminate(
+                TerminationReason::PluginRequested,
+            ));
         }
     });
 }
@@ -3087,8 +3099,9 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
             )
             .expect("failed to set suspended interaction");
             step.pending_patches.push(patch);
-            step.skip_inference = true;
-            step.termination_request = Some(TerminationReason::Suspended);
+            step.set_run_action(crate::contracts::RunAction::Terminate(
+                TerminationReason::Suspended,
+            ));
         });
     }
 
@@ -3134,8 +3147,9 @@ async fn test_stream_termination_request_with_suspended_only_state_emits_pending
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.termination_request = Some(TerminationReason::Suspended);
-                step.skip_inference = true;
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::Suspended,
+                ));
             }
         });
     }
@@ -3200,7 +3214,9 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.skip_inference = true;
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
             }
         });
     }
@@ -3277,7 +3293,9 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.skip_inference = true;
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
             }
         });
     }
@@ -3411,7 +3429,9 @@ async fn test_run_loop_permission_approval_replays_tool_and_clears_outbox() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.skip_inference = true;
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
             }
         });
     }
@@ -3536,7 +3556,9 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.skip_inference = true;
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
             }
         });
     }
@@ -3645,7 +3667,9 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.skip_inference = true;
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
             }
         });
     }
@@ -3776,7 +3800,9 @@ async fn test_run_loop_permission_denied_appends_tool_result_for_model_context()
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.skip_inference = true;
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
             }
         });
     }
@@ -3867,7 +3893,9 @@ async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_contex
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.skip_inference = true;
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
             }
         });
     }
@@ -4013,7 +4041,9 @@ async fn test_run_loop_legacy_run_start_outbox_resolution_is_ignored() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.skip_inference = true;
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
             }
         });
     }
@@ -4097,7 +4127,9 @@ async fn test_run_loop_legacy_run_start_replay_queue_is_ignored() {
                     ));
                 }
                 Phase::BeforeInference => {
-                    step.skip_inference = true;
+                    step.set_run_action(crate::contracts::RunAction::Terminate(
+                        TerminationReason::PluginRequested,
+                    ));
                 }
                 _ => {}
             }
@@ -4157,7 +4189,9 @@ async fn test_run_loop_skip_inference_with_suspended_state_returns_suspended_int
             )
             .expect("failed to set suspended interaction");
             step.pending_patches.push(patch);
-            step.skip_inference = true;
+            step.set_run_action(crate::contracts::RunAction::Terminate(
+                TerminationReason::PluginRequested,
+            ));
         });
     }
 
@@ -4208,7 +4242,9 @@ async fn test_run_loop_skip_inference_with_suspended_only_state_returns_suspende
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.skip_inference = true;
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
             }
         });
     }
@@ -4341,8 +4377,11 @@ async fn test_run_loop_rejects_skip_inference_mutation_outside_before_inference(
         outcome.termination
     );
     assert!(
-        outcome.failure.as_ref().is_some_and(|f| matches!(f, LoopFailure::State(msg) if msg.contains("mutated skip_inference outside BeforeInference"))),
-        "expected skip_inference mutation error in failure"
+        outcome.failure.as_ref().is_some_and(|f| matches!(
+            f,
+            LoopFailure::State(msg) if msg.contains("mutated legacy skip_inference field")
+        )),
+        "expected legacy skip_inference mutation error in failure"
     );
 }
 
@@ -4374,7 +4413,7 @@ async fn test_stream_rejects_skip_inference_mutation_outside_before_inference() 
         events.iter().any(|event| matches!(
             event,
             AgentEvent::Error { message }
-            if message.contains("mutated skip_inference outside BeforeInference")
+            if message.contains("mutated legacy skip_inference field")
         )),
         "expected mutation error event, got: {events:?}"
     );
@@ -5608,8 +5647,9 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
             )
             .expect("failed to set suspended interaction");
             step.pending_patches.push(patch);
-            step.skip_inference = true;
-            step.termination_request = Some(TerminationReason::Suspended);
+            step.set_run_action(crate::contracts::RunAction::Terminate(
+                TerminationReason::Suspended,
+            ));
         });
     }
 
@@ -5738,7 +5778,9 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.skip_inference = true;
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
             }
         });
     }
@@ -5873,7 +5915,9 @@ async fn test_nonstream_replay_is_idempotent_across_reruns() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.skip_inference = true;
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
             }
         });
     }
@@ -6888,7 +6932,9 @@ async fn test_stream_legacy_run_start_replay_queue_is_ignored() {
                     ));
                 }
                 Phase::BeforeInference => {
-                    step.skip_inference = true;
+                    step.set_run_action(crate::contracts::RunAction::Terminate(
+                        TerminationReason::PluginRequested,
+                    ));
                 }
                 _ => {}
             }
@@ -8271,7 +8317,9 @@ async fn test_run_step_skip_inference_with_suspended_state_returns_suspended_int
             )
             .expect("failed to set suspended interaction");
             step.pending_patches.push(patch);
-            step.skip_inference = true;
+            step.set_run_action(crate::contracts::RunAction::Terminate(
+                TerminationReason::PluginRequested,
+            ));
         });
     }
 
@@ -10283,8 +10331,9 @@ async fn test_plugin_termination_request_stops_loop() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.skip_inference = true;
-                step.termination_request = Some(TerminationReason::PluginRequested);
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
             }
         });
     }
@@ -10350,7 +10399,7 @@ async fn test_run_loop_rejects_termination_request_mutation_outside_inference_ph
     assert!(
         outcome.failure.as_ref().is_some_and(|f| matches!(
             f,
-            LoopFailure::State(msg) if msg.contains("mutated termination_request outside BeforeInference/AfterInference")
+            LoopFailure::State(msg) if msg.contains("mutated legacy termination_request field")
         )),
         "expected termination_request mutation error in failure, got: {:?}",
         outcome.failure
@@ -10387,7 +10436,7 @@ async fn test_stream_rejects_termination_request_mutation_outside_inference_phas
         events.iter().any(|event| matches!(
             event,
             AgentEvent::Error { message }
-            if message.contains("mutated termination_request outside BeforeInference/AfterInference")
+            if message.contains("mutated legacy termination_request field")
         )),
         "expected mutation error event, got: {events:?}"
     );
@@ -10411,8 +10460,9 @@ async fn test_run_loop_plugin_termination_request_stops_loop() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.skip_inference = true;
-                step.termination_request = Some(TerminationReason::PluginRequested);
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
             }
         });
     }
@@ -10530,7 +10580,9 @@ async fn test_run_loop_after_inference_termination_request_stops_before_tool_exe
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::AfterInference {
-                step.termination_request = Some(TerminationReason::PluginRequested);
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
             }
         });
     }
@@ -10580,7 +10632,9 @@ async fn test_stream_after_inference_termination_request_stops_before_tool_event
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::AfterInference {
-                step.termination_request = Some(TerminationReason::PluginRequested);
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
             }
         });
     }
@@ -10683,7 +10737,9 @@ async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.skip_inference = true;
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
             }
         });
     }
@@ -10759,7 +10815,9 @@ async fn test_stream_decision_channel_ignores_unknown_target_id() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.skip_inference = true;
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
             }
         });
     }
@@ -10986,7 +11044,9 @@ async fn test_run_loop_decision_channel_cancel_emits_single_tool_result_message(
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.skip_inference = true;
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
             }
         });
     }

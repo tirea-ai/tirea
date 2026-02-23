@@ -71,18 +71,16 @@ fn validate_phase_mutation(
         )));
     }
 
-    if before.skip_inference != after.skip_inference && !policy.allow_skip_inference_mutation {
+    if before.skip_inference != after.skip_inference {
         return Err(AgentLoopError::StateError(format!(
-            "plugin '{}' mutated skip_inference outside BeforeInference ({phase})",
+            "plugin '{}' mutated legacy skip_inference field; use run_action APIs ({phase})",
             plugin_id
         )));
     }
 
-    if before.termination_request != after.termination_request
-        && !policy.allow_termination_request_mutation
-    {
+    if before.termination_request != after.termination_request {
         return Err(AgentLoopError::StateError(format!(
-            "plugin '{}' mutated termination_request outside BeforeInference/AfterInference ({phase})",
+            "plugin '{}' mutated legacy termination_request field; use run_action APIs ({phase})",
             plugin_id
         )));
     }

@@ -271,9 +271,15 @@ pub struct StepContext<'a> {
     pub response: Option<StreamResult>,
 
     // === Flow Control ===
-    /// Skip LLM inference.
+    /// Legacy skip-inference field.
+    ///
+    /// Deprecated runtime behavior: this field is no longer consumed by loop control.
+    /// Plugins must use `run_action` via typed phase APIs.
     pub skip_inference: bool,
-    /// Plugin-requested termination reason (set via `BeforeInferenceContext::request_termination`).
+    /// Legacy termination request field.
+    ///
+    /// Deprecated runtime behavior: this field is no longer consumed by loop control.
+    /// Plugins must use `run_action` via typed phase APIs.
     pub termination_request: Option<TerminationReason>,
     /// Unified run-level action emitted by plugins.
     pub run_action: Option<RunAction>,
@@ -516,12 +522,6 @@ impl<'a> StepContext<'a> {
         if let Some(action) = self.run_action.clone() {
             return action;
         }
-        if let Some(reason) = self.termination_request.clone() {
-            return RunAction::Terminate(reason);
-        }
-        if self.skip_inference {
-            return RunAction::Terminate(TerminationReason::PluginRequested);
-        }
         RunAction::Continue
     }
 
@@ -668,17 +668,12 @@ impl<'s, 'a> BeforeInferenceContext<'s, 'a> {
 
     /// Skip current inference.
     pub fn skip_inference(&mut self) {
-        self.step.skip_inference = true;
         self.step
             .set_run_action(RunAction::Terminate(TerminationReason::PluginRequested));
     }
 
     /// Request run termination with a specific reason.
-    ///
-    /// This implicitly sets `skip_inference = true`.
     pub fn request_termination(&mut self, reason: TerminationReason) {
-        self.step.skip_inference = true;
-        self.step.termination_request = Some(reason.clone());
         self.step.set_run_action(RunAction::Terminate(reason));
     }
 }
@@ -702,7 +697,6 @@ impl<'s, 'a> AfterInferenceContext<'s, 'a> {
 
     /// Request run termination with a specific reason after inference has completed.
     pub fn request_termination(&mut self, reason: TerminationReason) {
-        self.step.termination_request = Some(reason.clone());
         self.step.set_run_action(RunAction::Terminate(reason));
     }
 }
@@ -902,10 +896,7 @@ mod tests {
             let mut ctx = AfterInferenceContext::new(&mut step);
             ctx.request_termination(TerminationReason::PluginRequested);
         }
-        assert_eq!(
-            step.termination_request,
-            Some(TerminationReason::PluginRequested)
-        );
+        assert!(step.termination_request.is_none());
         assert!(!step.skip_inference);
         assert_eq!(
             step.run_action,
