@@ -1126,7 +1126,7 @@ async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
 }
 
 #[tokio::test]
-async fn recovery_plugin_does_not_override_existing_pending_interaction() {
+async fn recovery_plugin_does_not_override_existing_suspended_interaction() {
     let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
     let child_thread = crate::contracts::thread::Thread::new("child-run")
         .with_message(crate::contracts::thread::Message::user("seed"));
@@ -1164,7 +1164,7 @@ async fn recovery_plugin_does_not_override_existing_pending_interaction() {
     plugin.run_phase(Phase::RunStart, &mut step).await;
     assert!(
         !step.skip_inference,
-        "existing pending interaction should not be replaced"
+        "existing suspended interaction should not be replaced"
     );
 
     let updated = fixture.updated_state();

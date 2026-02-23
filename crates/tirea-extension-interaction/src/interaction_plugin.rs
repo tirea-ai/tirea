@@ -30,7 +30,7 @@ pub struct InteractionPlugin {
     /// Interaction responses keyed by interaction ID.
     responses: HashMap<String, serde_json::Value>,
     /// Guards the `before_inference` check so it only runs on the first call per run.
-    /// On the first BeforeInference, we check for unresolved pending interactions
+    /// On the first BeforeInference, we check for unresolved suspended interactions
     /// from a previous run. On subsequent calls, the pending was created during this
     /// run's tool execution — let the LLM continue with completed results (HOL fix).
     first_inference_checked: AtomicBool,

@@ -14,8 +14,8 @@ pub use activity::ActivityManager;
 pub use context::RunContext;
 pub use control::{
     InferenceError, InferenceErrorState, ResumeDecision, ResumeDecisionAction,
-    ResumeDecisionsState, SuspendedCall, SuspendedToolCallsState, ToolCallDecision,
-    SuspendedCallsExt,
+    ResumeDecisionsState, SuspendedCall, SuspendedCallsExt, SuspendedToolCallsState,
+    ToolCallDecision,
 };
 pub use delta::RunDelta;
 pub use executor::{

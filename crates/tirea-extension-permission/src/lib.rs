@@ -458,7 +458,7 @@ mod tests {
             .as_ref()
             .and_then(|t| t.suspend_ticket.as_ref())
             .map(|ticket| &ticket.interaction)
-            .expect("pending interaction should exist");
+            .expect("suspended interaction should exist");
         assert_eq!(
             interaction.action,
             format!("tool:{}", PERMISSION_CONFIRM_TOOL_NAME)

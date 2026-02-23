@@ -188,7 +188,7 @@ impl AgUiEventContext {
             }
             // InteractionRequested: emit TOOL_CALL events for interactions whose
             // tool call ID hasn't been seen yet (e.g. multi-round replays that
-            // produce new pending interactions, or permission interactions where
+            // produce new suspended interactions, or permission interactions where
             // the frontend tool call was never streamed by the LLM).
             AgentEvent::InteractionRequested { interaction } => {
                 if self.emitted_tool_call_ids.contains(&interaction.id) {
@@ -200,7 +200,7 @@ impl AgUiEventContext {
                 return events;
             }
             // Pending: close current text stream.
-            // The pending interaction is communicated via STATE_SNAPSHOT (emitted separately).
+            // Suspended-call interaction details are communicated via STATE_SNAPSHOT.
             AgentEvent::Pending { .. } => {
                 return self.close_open_streams();
             }

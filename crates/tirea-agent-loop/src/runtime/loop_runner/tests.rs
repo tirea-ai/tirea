@@ -2088,7 +2088,7 @@ fn test_invalid_args_are_returned_as_tool_error_before_pending_confirmation() {
 
         let thread = execute_tools_with_plugins(thread, &result, &tools, true, &plugins)
             .await
-            .expect("invalid args should return a tool error instead of pending interaction");
+            .expect("invalid args should return a tool error instead of suspended interaction");
 
         assert_eq!(thread.messages.len(), 1);
         let msg = &thread.messages[0];
@@ -2117,13 +2117,13 @@ fn test_invalid_args_are_returned_as_tool_error_before_pending_confirmation() {
             .and_then(|v| v.as_object());
         assert!(
             pending.map_or(true, |calls| calls.is_empty()),
-            "invalid args should not persist pending interaction: {pending:?}"
+            "invalid args should not persist suspended interaction: {pending:?}"
         );
     });
 }
 
 #[test]
-fn test_apply_tool_results_suspends_all_pending_interactions() {
+fn test_apply_tool_results_suspends_all_interactions() {
     let thread = Thread::new("test");
     let mut run_ctx =
         RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
@@ -2663,14 +2663,14 @@ fn test_execute_tools_with_config_with_reminder_plugin() {
 fn test_execute_tools_with_config_preserves_unresolved_suspended_calls_on_success() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        // Seed a session with a previously persisted pending interaction.
+        // Seed a session with a previously persisted suspended interaction.
         let base_state = json!({});
         let pending_patch = set_single_suspended_call(
             &base_state,
             Interaction::new("confirm_1", "confirm").with_message("ok"),
             None,
         )
-        .expect("failed to set pending interaction for test seed");
+        .expect("failed to set suspended interaction for test seed");
         let thread = Thread::with_initial_state("test", base_state).with_patch(pending_patch);
 
         let result = StreamResult {
@@ -2725,7 +2725,7 @@ fn test_set_agent_suspended_calls_compat_view_uses_smallest_call_id() {
     let thread = Thread::with_initial_state("test", base_state).with_patch(patch);
     let pending = thread
         .first_suspended_interaction()
-        .expect("pending interaction expected");
+        .expect("suspended interaction expected");
     assert_eq!(pending.id, "int_a");
 }
 
@@ -2974,7 +2974,7 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
                     .with_message("resume?"),
                 None,
             )
-            .expect("failed to set pending interaction");
+            .expect("failed to set suspended interaction");
             step.pending_patches.push(patch);
             step.skip_inference = true;
             step.termination_request = Some(TerminationReason::PendingInteraction);
@@ -4039,7 +4039,7 @@ async fn test_run_loop_legacy_run_start_replay_queue_is_ignored() {
 }
 
 #[tokio::test]
-async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interaction() {
+async fn test_run_loop_skip_inference_with_suspended_state_returns_suspended_interaction() {
     struct PendingSkipPlugin {
         phases: Arc<Mutex<Vec<Phase>>>,
     }
@@ -4062,7 +4062,7 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
                     .with_message("resume?"),
                 None,
             )
-            .expect("failed to set pending interaction");
+            .expect("failed to set suspended interaction");
             step.pending_patches.push(patch);
             step.skip_inference = true;
         });
@@ -4085,7 +4085,7 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
     let interaction = outcome
         .run_ctx
         .first_suspended_interaction()
-        .expect("should have pending interaction");
+        .expect("should have suspended interaction");
     assert_eq!(interaction.action, "recover_agent_run");
     assert_eq!(interaction.message, "resume?");
 
@@ -4107,7 +4107,7 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
 }
 
 #[tokio::test]
-async fn test_run_loop_skip_inference_with_suspended_only_state_returns_pending_interaction() {
+async fn test_run_loop_skip_inference_with_suspended_only_state_returns_suspended_interaction() {
     struct SkipInferencePlugin;
 
     #[async_trait]
@@ -5522,7 +5522,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
                 Interaction::new("golden_resume_1", "recover_agent_run").with_message("resume me"),
                 None,
             )
-            .expect("failed to set pending interaction");
+            .expect("failed to set suspended interaction");
             step.pending_patches.push(patch);
             step.skip_inference = true;
             step.termination_request = Some(TerminationReason::PendingInteraction);
@@ -5551,7 +5551,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
     let nonstream_interaction = nonstream_outcome
         .run_ctx
         .first_suspended_interaction()
-        .expect("non-stream outcome should have pending interaction");
+        .expect("non-stream outcome should have suspended interaction");
 
     let (events, stream_thread) = run_mock_stream_with_final_thread(
         MockStreamProvider::new(vec![MockResponse::text("unused")]),
@@ -5598,7 +5598,7 @@ async fn test_golden_run_loop_and_stream_no_plugins_pending_state_alignment() {
         Interaction::new("leftover_confirm", "confirm").with_message("stale pending"),
         None,
     )
-    .expect("failed to seed pending interaction");
+    .expect("failed to seed suspended interaction");
     let thread = Thread::with_initial_state("golden-no-plugin-pending", base_state)
         .with_patch(pending_patch)
         .with_message(Message::user("go"));
@@ -6936,7 +6936,7 @@ async fn test_stream_parallel_multiple_pending_emits_all_suspended() {
     );
     assert!(
         SESSION_END_RAN.load(Ordering::SeqCst),
-        "RunEnd phase must run when stream terminates on pending interaction"
+        "RunEnd phase must run when stream terminates on suspended interaction"
     );
 }
 
@@ -7677,7 +7677,7 @@ fn test_sequential_tools_partial_failure() {
 }
 
 #[tokio::test]
-async fn test_sequential_tools_stop_after_first_pending_interaction() {
+async fn test_sequential_tools_stop_after_first_suspended_interaction() {
     struct PendingEveryToolPlugin {
         seen_calls: Arc<Mutex<Vec<String>>>,
     }
@@ -7723,7 +7723,7 @@ async fn test_sequential_tools_stop_after_first_pending_interaction() {
 
     let err = execute_tools_with_plugins(thread, &result, &tools, false, &plugins)
         .await
-        .expect_err("sequential mode should pause on first pending interaction");
+        .expect_err("sequential mode should pause on first suspended interaction");
     let (thread, interaction) = match err {
         AgentLoopError::PendingInteraction {
             run_ctx: thread,
@@ -7735,14 +7735,14 @@ async fn test_sequential_tools_stop_after_first_pending_interaction() {
     assert_eq!(
         seen_calls.lock().expect("lock poisoned").clone(),
         vec!["call_1".to_string()],
-        "second tool must not execute after first pending interaction in sequential mode"
+        "second tool must not execute after first suspended interaction in sequential mode"
     );
     assert_eq!(thread.messages().len(), 1);
     assert_eq!(thread.messages()[0].tool_call_id.as_deref(), Some("call_1"));
 }
 
 #[tokio::test]
-async fn test_parallel_tools_allow_single_pending_interaction_per_round() {
+async fn test_parallel_tools_allow_single_suspended_interaction_per_round() {
     struct PendingEveryToolPlugin {
         seen_calls: Arc<Mutex<Vec<String>>>,
     }
@@ -7788,7 +7788,7 @@ async fn test_parallel_tools_allow_single_pending_interaction_per_round() {
 
     let err = execute_tools_with_plugins(thread, &result, &tools, true, &plugins)
         .await
-        .expect_err("parallel mode should suspend all pending interactions and pause");
+        .expect_err("parallel mode should suspend all interactions and pause");
     let (thread, interaction) = match err {
         AgentLoopError::PendingInteraction {
             run_ctx: thread,
@@ -8189,7 +8189,7 @@ async fn test_run_step_skip_inference_returns_empty_result_without_assistant_mes
 }
 
 #[tokio::test]
-async fn test_run_step_skip_inference_with_pending_state_returns_pending_interaction() {
+async fn test_run_step_skip_inference_with_suspended_state_returns_suspended_interaction() {
     struct PendingSkipStepPlugin;
 
     #[async_trait]
@@ -8209,7 +8209,7 @@ async fn test_run_step_skip_inference_with_pending_state_returns_pending_interac
                     .with_message("resume step?"),
                 None,
             )
-            .expect("failed to set pending interaction");
+            .expect("failed to set suspended interaction");
             step.pending_patches.push(patch);
             step.skip_inference = true;
         });
@@ -8231,7 +8231,7 @@ async fn test_run_step_skip_inference_with_pending_state_returns_pending_interac
     let interaction = outcome
         .run_ctx
         .first_suspended_interaction()
-        .expect("should have pending interaction");
+        .expect("should have suspended interaction");
     assert_eq!(interaction.action, "recover_agent_run");
     assert_eq!(interaction.message, "resume step?");
 
@@ -9831,7 +9831,7 @@ async fn test_stream_mixed_pending_and_completed_tools_continues_loop() {
         .count();
     assert_eq!(
         pending_count, 1,
-        "exactly one pending interaction should be emitted: {events:?}"
+        "exactly one suspended interaction should be emitted: {events:?}"
     );
 }
 
@@ -9888,7 +9888,7 @@ async fn test_stream_all_tools_pending_pauses_run() {
     );
 }
 
-/// Verify that the pending interaction state is persisted correctly when the
+/// Verify that the suspended interaction state is persisted correctly when the
 /// run continues past a partial pending round and eventually terminates.
 #[tokio::test]
 async fn test_stream_mixed_pending_persists_interaction_state() {
@@ -9940,7 +9940,7 @@ async fn test_stream_mixed_pending_persists_interaction_state() {
         Some(TerminationReason::PendingInteraction),
     );
 
-    // The state snapshot should contain the pending interaction.
+    // The state snapshot should contain the suspended interaction.
     let last_state = events.iter().rev().find_map(|e| match e {
         AgentEvent::StateSnapshot { snapshot } => Some(snapshot.clone()),
         _ => None,
@@ -9959,7 +9959,7 @@ async fn test_stream_mixed_pending_persists_interaction_state() {
             .and_then(|pi| pi.get("id"))
             .and_then(|id| id.as_str()),
         Some("confirm_call_2"),
-        "pending interaction should be persisted in state: {state:?}"
+        "suspended interaction should be persisted in state: {state:?}"
     );
 }
 
@@ -9970,14 +9970,14 @@ async fn test_stream_mixed_pending_persists_interaction_state() {
 async fn test_no_plugins_loop_ignores_pending() {
     use crate::contracts::Interaction;
 
-    // Seed state with a pre-existing pending interaction.
+    // Seed state with a pre-existing suspended interaction.
     let base_state = json!({});
     let pending_patch = set_single_suspended_call(
         &base_state,
         Interaction::new("leftover_confirm", "confirm").with_message("stale pending"),
         None,
     )
-    .expect("failed to seed pending interaction");
+    .expect("failed to seed suspended interaction");
     let thread = Thread::with_initial_state("test", base_state)
         .with_patch(pending_patch)
         .with_message(Message::user("go"));
@@ -11178,7 +11178,7 @@ async fn test_stream_decision_channel_drains_while_inference_stream_is_running()
         }
     }
 
-    let pending_interaction = json!({
+    let suspended_interaction = json!({
         "id": "call_pending",
         "action": "confirm",
         "parameters": { "message": "approved during stream" }
@@ -11189,7 +11189,7 @@ async fn test_stream_decision_channel_drains_while_inference_stream_is_running()
                 "call_pending": {
                     "call_id": "call_pending",
                     "tool_name": "echo",
-                    "interaction": pending_interaction.clone()
+                    "interaction": suspended_interaction.clone()
                 }
             }
         }
@@ -11285,12 +11285,12 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_resume_decisio
         });
     }
 
-    let pending_interaction = json!({
+    let suspended_interaction = json!({
         "id": "fc_perm_1",
         "action": "tool:PermissionConfirm",
         "parameters": { "source": "permission" }
     });
-    let pending_frontend_invocation = json!({
+    let suspended_frontend_invocation = json!({
         "call_id": "fc_perm_1",
         "tool_name": "PermissionConfirm",
         "arguments": { "tool_name": "echo", "tool_args": { "message": "hello" } },
@@ -11308,8 +11308,8 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_resume_decisio
                 "call_write": {
                     "call_id": "call_write",
                     "tool_name": "echo",
-                    "interaction": pending_interaction.clone(),
-                    "frontend_invocation": pending_frontend_invocation.clone()
+                    "interaction": suspended_interaction.clone(),
+                    "frontend_invocation": suspended_frontend_invocation.clone()
                 }
             }
         }
