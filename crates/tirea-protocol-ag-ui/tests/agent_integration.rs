@@ -3012,10 +3012,15 @@ fn test_agent_loop_error_all_variants() {
             vec![],
             Default::default(),
         )),
-        interaction: Box::new(Interaction::new("int_1", "confirm")),
+        suspended_call: Box::new(tirea_agentos::contracts::SuspendedCall {
+            call_id: "call_1".to_string(),
+            tool_name: "confirm_tool".to_string(),
+            interaction: Interaction::new("int_1", "confirm"),
+            frontend_invocation: None,
+        }),
     };
     let display = pending_err.to_string();
-    assert!(display.contains("int_1") || display.contains("Pending"));
+    assert!(display.contains("call_1") || display.contains("suspended"));
 }
 
 // ============================================================================
@@ -6302,8 +6307,8 @@ async fn test_e2e_permission_suspend_with_real_tool() {
     let (suspended_run_ctx, interaction) = match err {
         AgentLoopError::Suspended {
             run_ctx,
-            interaction,
-        } => (*run_ctx, *interaction),
+            suspended_call,
+        } => (*run_ctx, suspended_call.interaction.clone()),
         other => panic!("Expected Suspended, got: {:?}", other),
     };
 
@@ -6384,8 +6389,8 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
     let (suspended_run_ctx, interaction) = match err {
         AgentLoopError::Suspended {
             run_ctx,
-            interaction,
-        } => (*run_ctx, *interaction),
+            suspended_call,
+        } => (*run_ctx, suspended_call.interaction.clone()),
         other => panic!("Expected Suspended, got: {:?}", other),
     };
 
@@ -6493,8 +6498,8 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
     let (suspended_run_ctx, interaction) = match err {
         AgentLoopError::Suspended {
             run_ctx,
-            interaction,
-        } => (*run_ctx, *interaction),
+            suspended_call,
+        } => (*run_ctx, suspended_call.interaction.clone()),
         other => panic!("Expected Suspended, got: {:?}", other),
     };
 

@@ -709,7 +709,12 @@ fn test_agent_loop_error_termination_reason_mapping() {
             vec![],
             crate::contracts::RunConfig::default(),
         )),
-        interaction: Box::new(Interaction::new("int_1", "confirm")),
+        suspended_call: Box::new(SuspendedCall {
+            call_id: "call_1".to_string(),
+            tool_name: "confirm_tool".to_string(),
+            interaction: Interaction::new("int_1", "confirm"),
+            frontend_invocation: None,
+        }),
     };
     assert_eq!(
         pending.termination_reason(),
@@ -2044,16 +2049,16 @@ fn test_execute_tools_with_pending_phase_plugin() {
             .await
             .unwrap_err();
 
-        let (thread, interaction) = match err {
+        let (thread, suspended_call) = match err {
             AgentLoopError::Suspended {
                 run_ctx: thread,
-                interaction,
-            } => (thread, interaction),
+                suspended_call,
+            } => (thread, suspended_call),
             other => panic!("Expected Suspended error, got: {:?}", other),
         };
 
-        assert_eq!(interaction.id, "confirm_1");
-        assert_eq!(interaction.action, "confirm");
+        assert_eq!(suspended_call.interaction.id, "confirm_1");
+        assert_eq!(suspended_call.interaction.action, "confirm");
 
         // Pending tool gets a placeholder tool result to keep message sequence valid.
         assert_eq!(thread.messages().len(), 1);
@@ -2605,16 +2610,16 @@ fn test_execute_tools_with_config_with_pending_plugin() {
             .await
             .unwrap_err();
 
-        let (thread, interaction) = match err {
+        let (thread, suspended_call) = match err {
             AgentLoopError::Suspended {
                 run_ctx: thread,
-                interaction,
-            } => (thread, interaction),
+                suspended_call,
+            } => (thread, suspended_call),
             other => panic!("Expected Suspended error, got: {:?}", other),
         };
 
-        assert_eq!(interaction.id, "confirm_1");
-        assert_eq!(interaction.action, "confirm");
+        assert_eq!(suspended_call.interaction.id, "confirm_1");
+        assert_eq!(suspended_call.interaction.action, "confirm");
 
         // Pending tool gets a placeholder tool result to keep message sequence valid.
         assert_eq!(thread.messages().len(), 1);
@@ -7724,14 +7729,14 @@ async fn test_sequential_tools_stop_after_first_suspended_interaction() {
     let err = execute_tools_with_plugins(thread, &result, &tools, false, &plugins)
         .await
         .expect_err("sequential mode should pause on first suspended interaction");
-    let (thread, interaction) = match err {
+    let (thread, suspended_call) = match err {
         AgentLoopError::Suspended {
             run_ctx: thread,
-            interaction,
-        } => (thread, interaction),
+            suspended_call,
+        } => (thread, suspended_call),
         other => panic!("expected Suspended, got: {other:?}"),
     };
-    assert_eq!(interaction.id, "confirm_call_1");
+    assert_eq!(suspended_call.interaction.id, "confirm_call_1");
     assert_eq!(
         seen_calls.lock().expect("lock poisoned").clone(),
         vec!["call_1".to_string()],
@@ -7789,15 +7794,15 @@ async fn test_parallel_tools_allow_single_suspended_interaction_per_round() {
     let err = execute_tools_with_plugins(thread, &result, &tools, true, &plugins)
         .await
         .expect_err("parallel mode should suspend all interactions and pause");
-    let (thread, interaction) = match err {
+    let (thread, suspended_call) = match err {
         AgentLoopError::Suspended {
             run_ctx: thread,
-            interaction,
-        } => (thread, interaction),
+            suspended_call,
+        } => (thread, suspended_call),
         other => panic!("expected Suspended, got: {other:?}"),
     };
     // First suspended call's interaction is returned
-    assert_eq!(interaction.id, "confirm_call_1");
+    assert_eq!(suspended_call.interaction.id, "confirm_call_1");
     let mut seen = seen_calls.lock().expect("lock poisoned").clone();
     seen.sort();
     assert_eq!(

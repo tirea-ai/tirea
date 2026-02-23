@@ -77,14 +77,18 @@ pub enum AgentLoopError {
         run_ctx: Box<crate::contracts::RunContext>,
         reason: StopReason,
     },
-    /// Pending user interaction; execution should pause until the client responds.
+    /// Run suspended waiting for external resolution of a tool call.
     ///
-    /// The returned run context includes any patches applied up to the point where the
-    /// interaction was requested (including persisting suspended tool calls).
-    #[error("Pending interaction: {id} ({action})", id = interaction.id, action = interaction.action)]
+    /// The returned run context includes any patches applied up to the suspension point
+    /// (including persisted suspended tool calls).
+    #[error(
+        "Run suspended on tool call: {call_id} ({tool_name})",
+        call_id = suspended_call.call_id,
+        tool_name = suspended_call.tool_name
+    )]
     Suspended {
         run_ctx: Box<crate::contracts::RunContext>,
-        interaction: Box<Interaction>,
+        suspended_call: Box<SuspendedCall>,
     },
     /// External cancellation signal requested run termination.
     #[error("Run cancelled")]

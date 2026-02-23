@@ -477,7 +477,7 @@ pub async fn execute_tools_with_plugins_and_executor(
         if let Some(first) = run_ctx.suspended_calls().values().next().cloned() {
             return Err(AgentLoopError::Suspended {
                 run_ctx: Box::new(run_ctx),
-                interaction: Box::new(first.interaction),
+                suspended_call: Box::new(first),
             });
         }
         let delta = run_ctx.take_delta();
@@ -529,7 +529,7 @@ pub async fn execute_tools_with_plugins_and_executor(
     if let Some(first) = applied.suspended_calls.first() {
         return Err(AgentLoopError::Suspended {
             run_ctx: Box::new(run_ctx),
-            interaction: Box::new(first.interaction.clone()),
+            suspended_call: Box::new(first.clone()),
         });
     }
 
