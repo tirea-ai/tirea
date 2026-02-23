@@ -4,8 +4,6 @@ use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::{LlmExecutor, ToolExecutor};
 use crate::contracts::tool::{Tool, ToolDescriptor};
 use crate::contracts::RunContext;
-use crate::contracts::StopConditionSpec;
-use crate::engine::stop_conditions::StopPolicy;
 use async_trait::async_trait;
 use genai::chat::ChatOptions;
 use genai::Client;
@@ -144,7 +142,7 @@ pub struct AgentConfig {
     pub model: String,
     /// System prompt for the LLM.
     pub system_prompt: String,
-    /// Maximum number of tool call rounds before stopping.
+    /// Optional loop-budget hint (core loop does not enforce this directly).
     pub max_rounds: usize,
     /// Tool execution strategy (parallel, sequential, or custom).
     pub tool_executor: Arc<dyn ToolExecutor>,
@@ -158,17 +156,6 @@ pub struct AgentConfig {
     pub llm_retry_policy: LlmRetryPolicy,
     /// Plugins to run during the agent loop.
     pub plugins: Vec<Arc<dyn AgentPlugin>>,
-    /// Composable stop policies checked after each tool-call round.
-    ///
-    /// When empty (and `stop_condition_specs` is also empty), a default
-    /// [`crate::engine::stop_conditions::MaxRounds`] condition is created from `max_rounds`.
-    /// When non-empty, `max_rounds` is ignored.
-    pub stop_conditions: Vec<Arc<dyn StopPolicy>>,
-    /// Declarative stop condition specs, resolved to `Arc<dyn StopPolicy>`
-    /// at runtime.
-    ///
-    /// Specs are appended after explicit `stop_conditions` in evaluation order.
-    pub stop_condition_specs: Vec<StopConditionSpec>,
     /// Optional per-step tool provider.
     ///
     /// When not set, the loop uses a static provider derived from the `tools`
@@ -197,8 +184,6 @@ impl Default for AgentConfig {
             fallback_models: Vec::new(),
             llm_retry_policy: LlmRetryPolicy::default(),
             plugins: Vec::new(),
-            stop_conditions: Vec::new(),
-            stop_condition_specs: Vec::new(),
             step_tool_provider: None,
             llm_executor: None,
         }
@@ -221,11 +206,6 @@ impl std::fmt::Debug for AgentConfig {
             .field("llm_retry_policy", &self.llm_retry_policy)
             .field("plugins", &format!("[{} plugins]", self.plugins.len()))
             .field(
-                "stop_conditions",
-                &format!("[{} conditions]", self.stop_conditions.len()),
-            )
-            .field("stop_condition_specs", &self.stop_condition_specs)
-            .field(
                 "step_tool_provider",
                 &self.step_tool_provider.as_ref().map(|_| "<set>"),
             )
@@ -243,22 +223,7 @@ impl std::fmt::Debug for AgentConfig {
 
 impl AgentConfig {
     tirea_contract::impl_shared_agent_builder_methods!();
-    tirea_contract::impl_stop_condition_spec_builder_methods!();
     tirea_contract::impl_loop_config_builder_methods!();
-
-    /// Add a stop policy.
-    #[must_use]
-    pub fn with_stop_condition(mut self, condition: impl StopPolicy + 'static) -> Self {
-        self.stop_conditions.push(Arc::new(condition));
-        self
-    }
-
-    /// Set all stop policies, replacing any previously set.
-    #[must_use]
-    pub fn with_stop_conditions(mut self, conditions: Vec<Arc<dyn StopPolicy>>) -> Self {
-        self.stop_conditions = conditions;
-        self
-    }
 
     /// Set tool executor strategy.
     #[must_use]

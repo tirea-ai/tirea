@@ -49,6 +49,7 @@ pub use composition::{
     ProviderRegistryError, RegistryBundle, RegistrySet, StopPolicyRegistry,
     StopPolicyRegistryError, ToolPluginBundle, ToolRegistry, ToolRegistryError,
 };
+pub use stop_policy_plugin::{StopPolicy, StopPolicyInput, StopPolicyStats};
 
 pub use crate::runtime::loop_runner::ResolvedRun;
 
@@ -358,7 +359,7 @@ pub struct AgentOsBuilder {
     base_tool_registries: Vec<Arc<dyn ToolRegistry>>,
     plugins: HashMap<String, Arc<dyn AgentPlugin>>,
     plugin_registries: Vec<Arc<dyn PluginRegistry>>,
-    stop_policies: HashMap<String, Arc<dyn crate::engine::stop_conditions::StopPolicy>>,
+    stop_policies: HashMap<String, Arc<dyn StopPolicy>>,
     stop_policy_registries: Vec<Arc<dyn StopPolicyRegistry>>,
     providers: HashMap<String, Client>,
     provider_registries: Vec<Arc<dyn ProviderRegistry>>,

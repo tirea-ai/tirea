@@ -15,6 +15,7 @@ use crate::contracts::storage::VersionPrecondition;
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{Message, Role, Thread, ToolCall};
 use crate::contracts::tool::{ToolDescriptor, ToolError, ToolResult};
+use crate::contracts::StopReason;
 use crate::contracts::TerminationReason;
 use crate::contracts::{RunContext, Suspension, ToolCallContext};
 use crate::runtime::activity::ActivityHub;
@@ -5049,15 +5050,11 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
 }
 
 #[tokio::test]
-async fn test_nonstream_stop_condition_is_ignored_and_natural_end_wins() {
+async fn test_nonstream_natural_end_wins_without_stop_policy() {
     let provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response(
         "done now",
     ))]));
-    let config = AgentConfig::new("mock")
-        .with_stop_condition(crate::engine::stop_conditions::Timeout(
-            std::time::Duration::from_secs(0),
-        ))
-        .with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let config = AgentConfig::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
@@ -7187,8 +7184,7 @@ async fn test_stop_condition_config_is_ignored_in_stream_loop() {
         })
         .collect();
 
-    let config =
-        AgentConfig::new("mock").with_stop_condition(crate::engine::stop_conditions::MaxRounds(2));
+    let config = AgentConfig::new("mock");
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = tool_map([EchoTool]);
 
@@ -7315,9 +7311,7 @@ async fn test_stop_on_tool_condition() {
         }
     }
 
-    let config = AgentConfig::new("mock").with_stop_condition(
-        crate::engine::stop_conditions::StopOnTool("finish_tool".to_string()),
-    );
+    let config = AgentConfig::new("mock");
     let thread = Thread::new("test").with_message(Message::user("go"));
 
     let mut tools = tool_map([EchoTool]);
@@ -7343,11 +7337,7 @@ async fn test_stop_content_match_condition() {
         ),
     ];
 
-    let config = AgentConfig::new("mock")
-        .with_stop_condition(crate::engine::stop_conditions::ContentMatch(
-            "FINAL_ANSWER".to_string(),
-        ))
-        .with_stop_condition(crate::engine::stop_conditions::MaxRounds(10));
+    let config = AgentConfig::new("mock");
     let thread = Thread::new("test").with_message(Message::user("solve"));
     let tools = tool_map([EchoTool]);
 
@@ -7370,9 +7360,7 @@ async fn test_stop_token_budget_condition() {
             .with_usage(200, 100),
     ];
 
-    let config = AgentConfig::new("mock")
-        .with_stop_condition(crate::engine::stop_conditions::TokenBudget { max_total: 500 })
-        .with_stop_condition(crate::engine::stop_conditions::MaxRounds(10));
+    let config = AgentConfig::new("mock");
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = tool_map([EchoTool]);
 
@@ -7396,9 +7384,7 @@ async fn test_stop_consecutive_errors_condition() {
         })
         .collect();
 
-    let config = AgentConfig::new("mock")
-        .with_stop_condition(crate::engine::stop_conditions::ConsecutiveErrors(2))
-        .with_stop_condition(crate::engine::stop_conditions::MaxRounds(10));
+    let config = AgentConfig::new("mock");
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = tool_map([FailingTool]);
 
@@ -7422,9 +7408,7 @@ async fn test_stop_loop_detection_condition() {
         })
         .collect();
 
-    let config = AgentConfig::new("mock")
-        .with_stop_condition(crate::engine::stop_conditions::LoopDetection { window: 3 })
-        .with_stop_condition(crate::engine::stop_conditions::MaxRounds(10));
+    let config = AgentConfig::new("mock");
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = tool_map([EchoTool]);
 
@@ -7541,9 +7525,7 @@ async fn test_stop_cancellation_token_during_inference_stream() {
 #[tokio::test]
 async fn test_stop_condition_applies_on_natural_end_without_tools() {
     let responses = vec![MockResponse::text("done now")];
-    let config = AgentConfig::new("mock").with_stop_condition(
-        crate::engine::stop_conditions::ContentMatch("done".to_string()),
-    );
+    let config = AgentConfig::new("mock");
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = HashMap::new();
 
@@ -7581,9 +7563,7 @@ async fn test_stop_first_condition_wins() {
         .with_tool_call("c1", "echo", json!({"message": "a"}))
         .with_usage(100, 100)];
 
-    let config = AgentConfig::new("mock")
-        .with_stop_condition(crate::engine::stop_conditions::MaxRounds(1))
-        .with_stop_condition(crate::engine::stop_conditions::TokenBudget { max_total: 50 });
+    let config = AgentConfig::new("mock");
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = tool_map([EchoTool]);
 
@@ -7622,8 +7602,7 @@ async fn test_stop_default_max_rounds_from_config() {
 async fn test_stop_max_rounds_counts_no_tool_step() {
     // Single no-tool step should naturally end regardless of MaxRounds config.
     let responses = vec![MockResponse::text("done")];
-    let config =
-        AgentConfig::new("mock").with_stop_condition(crate::engine::stop_conditions::MaxRounds(1));
+    let config = AgentConfig::new("mock");
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = tool_map([EchoTool]);
 
@@ -7640,8 +7619,7 @@ async fn test_termination_in_run_finish_event() {
     let responses =
         vec![MockResponse::text("r1").with_tool_call("c1", "echo", json!({"message": "a"}))];
 
-    let config =
-        AgentConfig::new("mock").with_stop_condition(crate::engine::stop_conditions::MaxRounds(1));
+    let config = AgentConfig::new("mock");
     let thread = Thread::new("test-thread").with_message(Message::user("go"));
     let tools = tool_map([EchoTool]);
 
@@ -7678,9 +7656,7 @@ async fn test_consecutive_errors_resets_on_success() {
     let ft: Arc<dyn Tool> = Arc::new(FailingTool);
     tools.insert("failing".to_string(), ft);
 
-    let config = AgentConfig::new("mock")
-        .with_stop_condition(crate::engine::stop_conditions::ConsecutiveErrors(2))
-        .with_stop_condition(crate::engine::stop_conditions::MaxRounds(3));
+    let config = AgentConfig::new("mock");
     let thread = Thread::new("test").with_message(Message::user("go"));
 
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
@@ -7742,26 +7718,6 @@ async fn test_run_state_caps_history_at_20() {
         state.record_tool_step(&tool_calls, 0);
     }
     assert_eq!(state.tool_call_history.len(), 20);
-}
-
-#[tokio::test]
-async fn test_effective_stop_conditions_empty_uses_max_rounds() {
-    let config = AgentConfig::new("mock").with_max_rounds(5);
-    let conditions = effective_stop_conditions(&config);
-    assert_eq!(conditions.len(), 1);
-    assert_eq!(conditions[0].id(), "max_rounds");
-}
-
-#[tokio::test]
-async fn test_effective_stop_conditions_explicit_overrides() {
-    let config = AgentConfig::new("mock")
-        .with_max_rounds(5) // ignored when explicit conditions set
-        .with_stop_condition(crate::engine::stop_conditions::Timeout(
-            std::time::Duration::from_secs(30),
-        ));
-    let conditions = effective_stop_conditions(&config);
-    assert_eq!(conditions.len(), 1);
-    assert_eq!(conditions[0].id(), "timeout");
 }
 
 // ========================================================================
@@ -8595,9 +8551,7 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
 #[tokio::test]
 async fn test_stream_stop_condition_is_ignored_and_natural_end_wins() {
     let responses = vec![MockResponse::text("done now")];
-    let config = AgentConfig::new("mock").with_stop_condition(
-        crate::engine::stop_conditions::Timeout(std::time::Duration::from_secs(0)),
-    );
+    let config = AgentConfig::new("mock");
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = HashMap::new();
 

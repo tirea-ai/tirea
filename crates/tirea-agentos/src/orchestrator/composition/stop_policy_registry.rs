@@ -1,4 +1,4 @@
-use crate::engine::stop_conditions::StopPolicy;
+use super::super::StopPolicy;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -145,7 +145,7 @@ impl StopPolicyRegistry for CompositeStopPolicyRegistry {
 mod tests {
     use super::*;
     use crate::contracts::StopReason;
-    use crate::engine::stop_conditions::StopPolicyInput;
+    use crate::orchestrator::StopPolicyInput;
 
     #[derive(Debug)]
     struct MockStopPolicy {

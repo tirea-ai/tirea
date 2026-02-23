@@ -57,7 +57,6 @@ use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
 use crate::contracts::tool::{Tool, ToolResult};
 use crate::contracts::RunContext;
-use crate::contracts::StopReason;
 use crate::contracts::{
     AgentEvent, FrontendToolInvocation, RunAction, SuspendedCall, TerminationReason,
     ToolCallDecision,
@@ -100,8 +99,6 @@ use plugin_runtime::emit_phase_checked;
 use plugin_runtime::{
     emit_cleanup_phases_and_apply, emit_phase_block, emit_run_end_phase, run_phase_block,
 };
-#[cfg(test)]
-use run_state::effective_stop_conditions;
 use run_state::RunState;
 pub use state_commit::ChannelStateCommitter;
 use state_commit::PendingDeltaCommitContext;
@@ -126,7 +123,7 @@ pub use tool_exec::{
 /// the resolved tool map, and the runtime config. This is a pure data struct
 /// that can be inspected, mutated, and tested independently.
 pub struct ResolvedRun {
-    /// Loop configuration (model, plugins, stop conditions, ...).
+    /// Loop configuration (model, plugins, ...).
     pub config: AgentConfig,
     /// Resolved tool map after filtering and wiring.
     pub tools: HashMap<String, Arc<dyn Tool>>,
@@ -1612,7 +1609,7 @@ pub async fn run_loop(
             }
         }
 
-        // Track tool-step metrics for post-tool stop condition evaluation.
+        // Track tool-step metrics for loop stats and plugin consumers.
         let error_count = results
             .iter()
             .filter(|r| r.execution.result.is_error())

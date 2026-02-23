@@ -12,82 +12,12 @@
 //! - [`StopOnTool`]: Stop when a specific tool is called
 //! - [`ContentMatch`]: Stop when LLM output contains a pattern
 //! - [`LoopDetection`]: Stop when identical tool call patterns repeat
-//!
-//! # Custom Conditions
-//!
-//! Implement the [`StopPolicy`] trait for custom logic:
-//!
-//! ```ignore
-//! use tirea::engine::stop_conditions::{StopPolicy, StopPolicyInput, StopReason};
-//!
-//! struct CostLimit { max_cents: usize }
-//!
-//! impl StopPolicy for CostLimit {
-//!     fn id(&self) -> &str { "cost_limit" }
-//!     fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason> {
-//!         let estimated_cents =
-//!             input.stats.total_input_tokens / 1000 + input.stats.total_output_tokens / 500;
-//!         if estimated_cents >= self.max_cents {
-//!             Some(StopReason::Custom("Cost limit exceeded".into()))
-//!         } else {
-//!             None
-//!         }
-//!     }
-//! }
-//! ```
 
 use crate::contracts::thread::ToolCall;
 use crate::contracts::RunContext;
-use crate::contracts::StopConditionSpec;
 pub use crate::contracts::StopReason;
 use std::collections::VecDeque;
-use std::sync::Arc;
 use std::time::Duration;
-
-// ---------------------------------------------------------------------------
-// Stop policy contract
-// ---------------------------------------------------------------------------
-
-/// Aggregated runtime stats consumed by stop policies.
-pub struct StopPolicyStats<'a> {
-    /// Number of completed steps.
-    pub step: usize,
-    /// Tool calls emitted by the current step.
-    pub step_tool_call_count: usize,
-    /// Total tool calls across the whole run.
-    pub total_tool_call_count: usize,
-    /// Cumulative input tokens across all LLM calls.
-    pub total_input_tokens: usize,
-    /// Cumulative output tokens across all LLM calls.
-    pub total_output_tokens: usize,
-    /// Number of consecutive rounds where all tools failed.
-    pub consecutive_errors: usize,
-    /// Time elapsed since the loop started.
-    pub elapsed: Duration,
-    /// Tool calls from the most recent LLM response.
-    pub last_tool_calls: &'a [ToolCall],
-    /// Text from the most recent LLM response.
-    pub last_text: &'a str,
-    /// History of tool call names per round (most recent last), for loop detection.
-    pub tool_call_history: &'a VecDeque<Vec<String>>,
-}
-
-/// Canonical stop-policy input: run context + runtime stats.
-pub struct StopPolicyInput<'a> {
-    /// Current run context.
-    pub run_ctx: &'a RunContext,
-    /// Runtime run stats.
-    pub stats: StopPolicyStats<'a>,
-}
-
-/// Stop policy contract evaluated by loop/plug-ins.
-pub trait StopPolicy: Send + Sync {
-    /// Unique identifier for this policy.
-    fn id(&self) -> &str;
-
-    /// Evaluate stop decision from canonical input.
-    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason>;
-}
 
 // ---------------------------------------------------------------------------
 // StopCheckContext
@@ -119,73 +49,10 @@ pub struct StopCheckContext<'a> {
 }
 
 impl<'a> StopCheckContext<'a> {
-    /// Convert legacy context shape to canonical stop-policy input.
-    pub fn as_policy_input(&'a self) -> StopPolicyInput<'a> {
-        StopPolicyInput {
-            run_ctx: self.run_ctx,
-            stats: StopPolicyStats {
-                step: self.rounds,
-                step_tool_call_count: self.last_tool_calls.len(),
-                total_tool_call_count: self.tool_call_history.iter().map(std::vec::Vec::len).sum(),
-                total_input_tokens: self.total_input_tokens,
-                total_output_tokens: self.total_output_tokens,
-                consecutive_errors: self.consecutive_errors,
-                elapsed: self.elapsed,
-                last_tool_calls: self.last_tool_calls,
-                last_text: self.last_text,
-                tool_call_history: self.tool_call_history,
-            },
-        }
+    /// Total tool calls across all completed rounds represented in history.
+    pub fn total_tool_call_count(&self) -> usize {
+        self.tool_call_history.iter().map(std::vec::Vec::len).sum()
     }
-}
-
-// ---------------------------------------------------------------------------
-// Stop policy helpers
-// ---------------------------------------------------------------------------
-
-fn stop_check_context_from_policy_input<'a>(
-    input: &'a StopPolicyInput<'a>,
-) -> StopCheckContext<'a> {
-    StopCheckContext {
-        rounds: input.stats.step,
-        total_input_tokens: input.stats.total_input_tokens,
-        total_output_tokens: input.stats.total_output_tokens,
-        consecutive_errors: input.stats.consecutive_errors,
-        elapsed: input.stats.elapsed,
-        last_tool_calls: input.stats.last_tool_calls,
-        last_text: input.stats.last_text,
-        tool_call_history: input.stats.tool_call_history,
-        run_ctx: input.run_ctx,
-    }
-}
-
-macro_rules! impl_stop_policy_via_check {
-    ($ty:ty, $id:literal) => {
-        impl StopPolicy for $ty {
-            fn id(&self) -> &str {
-                $id
-            }
-
-            fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason> {
-                let ctx = stop_check_context_from_policy_input(input);
-                self.check(&ctx)
-            }
-        }
-    };
-}
-
-/// Evaluate canonical stop policies in declaration order and return the first match.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn check_stop_policies(
-    conditions: &[Arc<dyn StopPolicy>],
-    input: &StopPolicyInput<'_>,
-) -> Option<StopReason> {
-    for condition in conditions {
-        if let Some(reason) = StopPolicy::evaluate(condition.as_ref(), input) {
-            return Some(reason);
-        }
-    }
-    None
 }
 
 // ---------------------------------------------------------------------------
@@ -196,7 +63,7 @@ pub(crate) fn check_stop_policies(
 pub struct MaxRounds(pub usize);
 
 impl MaxRounds {
-    fn check(&self, ctx: &StopCheckContext<'_>) -> Option<StopReason> {
+    pub fn evaluate(&self, ctx: &StopCheckContext<'_>) -> Option<StopReason> {
         if ctx.rounds >= self.0 {
             Some(StopReason::MaxRoundsReached)
         } else {
@@ -205,13 +72,11 @@ impl MaxRounds {
     }
 }
 
-impl_stop_policy_via_check!(MaxRounds, "max_rounds");
-
 /// Stop after a wall-clock duration elapses.
 pub struct Timeout(pub Duration);
 
 impl Timeout {
-    fn check(&self, ctx: &StopCheckContext<'_>) -> Option<StopReason> {
+    pub fn evaluate(&self, ctx: &StopCheckContext<'_>) -> Option<StopReason> {
         if ctx.elapsed >= self.0 {
             Some(StopReason::TimeoutReached)
         } else {
@@ -220,8 +85,6 @@ impl Timeout {
     }
 }
 
-impl_stop_policy_via_check!(Timeout, "timeout");
-
 /// Stop when cumulative token usage exceeds a budget.
 pub struct TokenBudget {
     /// Maximum total tokens (input + output). 0 = unlimited.
@@ -229,7 +92,7 @@ pub struct TokenBudget {
 }
 
 impl TokenBudget {
-    fn check(&self, ctx: &StopCheckContext<'_>) -> Option<StopReason> {
+    pub fn evaluate(&self, ctx: &StopCheckContext<'_>) -> Option<StopReason> {
         if self.max_total > 0
             && (ctx.total_input_tokens + ctx.total_output_tokens) >= self.max_total
         {
@@ -240,13 +103,11 @@ impl TokenBudget {
     }
 }
 
-impl_stop_policy_via_check!(TokenBudget, "token_budget");
-
 /// Stop after N consecutive rounds where all tool executions failed.
 pub struct ConsecutiveErrors(pub usize);
 
 impl ConsecutiveErrors {
-    fn check(&self, ctx: &StopCheckContext<'_>) -> Option<StopReason> {
+    pub fn evaluate(&self, ctx: &StopCheckContext<'_>) -> Option<StopReason> {
         if self.0 > 0 && ctx.consecutive_errors >= self.0 {
             Some(StopReason::ConsecutiveErrorsExceeded)
         } else {
@@ -255,13 +116,11 @@ impl ConsecutiveErrors {
     }
 }
 
-impl_stop_policy_via_check!(ConsecutiveErrors, "consecutive_errors");
-
 /// Stop when a specific tool is called by the LLM.
 pub struct StopOnTool(pub String);
 
 impl StopOnTool {
-    fn check(&self, ctx: &StopCheckContext<'_>) -> Option<StopReason> {
+    pub fn evaluate(&self, ctx: &StopCheckContext<'_>) -> Option<StopReason> {
         for call in ctx.last_tool_calls {
             if call.name == self.0 {
                 return Some(StopReason::ToolCalled(self.0.clone()));
@@ -271,13 +130,11 @@ impl StopOnTool {
     }
 }
 
-impl_stop_policy_via_check!(StopOnTool, "stop_on_tool");
-
 /// Stop when LLM output text contains a literal pattern.
 pub struct ContentMatch(pub String);
 
 impl ContentMatch {
-    fn check(&self, ctx: &StopCheckContext<'_>) -> Option<StopReason> {
+    pub fn evaluate(&self, ctx: &StopCheckContext<'_>) -> Option<StopReason> {
         if !self.0.is_empty() && ctx.last_text.contains(&self.0) {
             Some(StopReason::ContentMatched(self.0.clone()))
         } else {
@@ -285,8 +142,6 @@ impl ContentMatch {
         }
     }
 }
-
-impl_stop_policy_via_check!(ContentMatch, "content_match");
 
 /// Stop when the same tool call pattern repeats within a sliding window.
 ///
@@ -299,7 +154,7 @@ pub struct LoopDetection {
 }
 
 impl LoopDetection {
-    fn check(&self, ctx: &StopCheckContext<'_>) -> Option<StopReason> {
+    pub fn evaluate(&self, ctx: &StopCheckContext<'_>) -> Option<StopReason> {
         let window = self.window.max(2);
         let history = ctx.tool_call_history;
         if history.len() < 2 {
@@ -317,26 +172,6 @@ impl LoopDetection {
     }
 }
 
-impl_stop_policy_via_check!(LoopDetection, "loop_detection");
-
-// ---------------------------------------------------------------------------
-// StopConditionSpec resolution
-// ---------------------------------------------------------------------------
-
-/// Resolve contract-level declarative stop condition spec to runtime evaluator.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn condition_from_spec(spec: StopConditionSpec) -> Arc<dyn StopPolicy> {
-    match spec {
-        StopConditionSpec::MaxRounds { rounds } => Arc::new(MaxRounds(rounds)),
-        StopConditionSpec::Timeout { seconds } => Arc::new(Timeout(Duration::from_secs(seconds))),
-        StopConditionSpec::TokenBudget { max_total } => Arc::new(TokenBudget { max_total }),
-        StopConditionSpec::ConsecutiveErrors { max } => Arc::new(ConsecutiveErrors(max)),
-        StopConditionSpec::StopOnTool { tool_name } => Arc::new(StopOnTool(tool_name)),
-        StopConditionSpec::ContentMatch { pattern } => Arc::new(ContentMatch(pattern)),
-        StopConditionSpec::LoopDetection { window } => Arc::new(LoopDetection { window }),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -344,6 +179,7 @@ pub(crate) fn condition_from_spec(spec: StopConditionSpec) -> Arc<dyn StopPolicy
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contracts::StopConditionSpec;
     use serde_json::json;
     use std::sync::LazyLock;
     use tirea_contract::RunConfig;
@@ -382,7 +218,7 @@ mod tests {
         let cond = MaxRounds(3);
         let mut ctx = empty_context();
         ctx.rounds = 2;
-        assert!(cond.check(&ctx).is_none());
+        assert!(cond.evaluate(&ctx).is_none());
     }
 
     #[test]
@@ -390,7 +226,7 @@ mod tests {
         let cond = MaxRounds(3);
         let mut ctx = empty_context();
         ctx.rounds = 3;
-        assert_eq!(cond.check(&ctx), Some(StopReason::MaxRoundsReached));
+        assert_eq!(cond.evaluate(&ctx), Some(StopReason::MaxRoundsReached));
     }
 
     #[test]
@@ -398,7 +234,7 @@ mod tests {
         let cond = MaxRounds(3);
         let mut ctx = empty_context();
         ctx.rounds = 5;
-        assert_eq!(cond.check(&ctx), Some(StopReason::MaxRoundsReached));
+        assert_eq!(cond.evaluate(&ctx), Some(StopReason::MaxRoundsReached));
     }
 
     // -- Timeout --
@@ -408,7 +244,7 @@ mod tests {
         let cond = Timeout(Duration::from_secs(10));
         let mut ctx = empty_context();
         ctx.elapsed = Duration::from_secs(5);
-        assert!(cond.check(&ctx).is_none());
+        assert!(cond.evaluate(&ctx).is_none());
     }
 
     #[test]
@@ -416,7 +252,7 @@ mod tests {
         let cond = Timeout(Duration::from_secs(10));
         let mut ctx = empty_context();
         ctx.elapsed = Duration::from_secs(10);
-        assert_eq!(cond.check(&ctx), Some(StopReason::TimeoutReached));
+        assert_eq!(cond.evaluate(&ctx), Some(StopReason::TimeoutReached));
     }
 
     // -- TokenBudget --
@@ -427,7 +263,7 @@ mod tests {
         let mut ctx = empty_context();
         ctx.total_input_tokens = 400;
         ctx.total_output_tokens = 500;
-        assert!(cond.check(&ctx).is_none());
+        assert!(cond.evaluate(&ctx).is_none());
     }
 
     #[test]
@@ -436,7 +272,7 @@ mod tests {
         let mut ctx = empty_context();
         ctx.total_input_tokens = 600;
         ctx.total_output_tokens = 400;
-        assert_eq!(cond.check(&ctx), Some(StopReason::TokenBudgetExceeded));
+        assert_eq!(cond.evaluate(&ctx), Some(StopReason::TokenBudgetExceeded));
     }
 
     #[test]
@@ -445,7 +281,7 @@ mod tests {
         let mut ctx = empty_context();
         ctx.total_input_tokens = 999_999;
         ctx.total_output_tokens = 999_999;
-        assert!(cond.check(&ctx).is_none());
+        assert!(cond.evaluate(&ctx).is_none());
     }
 
     // -- ConsecutiveErrors --
@@ -455,7 +291,7 @@ mod tests {
         let cond = ConsecutiveErrors(3);
         let mut ctx = empty_context();
         ctx.consecutive_errors = 2;
-        assert!(cond.check(&ctx).is_none());
+        assert!(cond.evaluate(&ctx).is_none());
     }
 
     #[test]
@@ -464,7 +300,7 @@ mod tests {
         let mut ctx = empty_context();
         ctx.consecutive_errors = 3;
         assert_eq!(
-            cond.check(&ctx),
+            cond.evaluate(&ctx),
             Some(StopReason::ConsecutiveErrorsExceeded)
         );
     }
@@ -474,7 +310,7 @@ mod tests {
         let cond = ConsecutiveErrors(0);
         let mut ctx = empty_context();
         ctx.consecutive_errors = 100;
-        assert!(cond.check(&ctx).is_none());
+        assert!(cond.evaluate(&ctx).is_none());
     }
 
     // -- StopOnTool --
@@ -489,7 +325,7 @@ mod tests {
             tool_call_history: &history,
             ..empty_context()
         };
-        assert!(cond.check(&ctx).is_none());
+        assert!(cond.evaluate(&ctx).is_none());
     }
 
     #[test]
@@ -503,7 +339,7 @@ mod tests {
             ..empty_context()
         };
         assert_eq!(
-            cond.check(&ctx),
+            cond.evaluate(&ctx),
             Some(StopReason::ToolCalled("finish".to_string()))
         );
     }
@@ -519,7 +355,7 @@ mod tests {
             tool_call_history: &history,
             ..empty_context()
         };
-        assert!(cond.check(&ctx).is_none());
+        assert!(cond.evaluate(&ctx).is_none());
     }
 
     #[test]
@@ -532,7 +368,7 @@ mod tests {
             ..empty_context()
         };
         assert_eq!(
-            cond.check(&ctx),
+            cond.evaluate(&ctx),
             Some(StopReason::ContentMatched("FINAL_ANSWER".to_string()))
         );
     }
@@ -546,7 +382,7 @@ mod tests {
             tool_call_history: &history,
             ..empty_context()
         };
-        assert!(cond.check(&ctx).is_none());
+        assert!(cond.evaluate(&ctx).is_none());
     }
 
     // -- LoopDetection --
@@ -560,7 +396,7 @@ mod tests {
             tool_call_history: &history,
             ..empty_context()
         };
-        assert!(cond.check(&ctx).is_none());
+        assert!(cond.evaluate(&ctx).is_none());
     }
 
     #[test]
@@ -574,7 +410,7 @@ mod tests {
             tool_call_history: &history,
             ..empty_context()
         };
-        assert!(cond.check(&ctx).is_none());
+        assert!(cond.evaluate(&ctx).is_none());
     }
 
     #[test]
@@ -588,44 +424,7 @@ mod tests {
             tool_call_history: &history,
             ..empty_context()
         };
-        assert_eq!(cond.check(&ctx), Some(StopReason::LoopDetected));
-    }
-
-    // -- check_stop_conditions --
-
-    #[test]
-    fn check_stop_conditions_returns_first_match() {
-        let conditions: Vec<Arc<dyn StopPolicy>> = vec![
-            Arc::new(MaxRounds(5)),
-            Arc::new(Timeout(Duration::from_secs(10))),
-        ];
-        let mut ctx = empty_context();
-        ctx.rounds = 5;
-        ctx.elapsed = Duration::from_secs(15);
-        // MaxRounds is first, so it should win
-        assert_eq!(
-            check_stop_policies(&conditions, &ctx.as_policy_input()),
-            Some(StopReason::MaxRoundsReached)
-        );
-    }
-
-    #[test]
-    fn check_stop_conditions_returns_none_when_all_pass() {
-        let conditions: Vec<Arc<dyn StopPolicy>> = vec![
-            Arc::new(MaxRounds(10)),
-            Arc::new(Timeout(Duration::from_secs(60))),
-        ];
-        let mut ctx = empty_context();
-        ctx.rounds = 3;
-        ctx.elapsed = Duration::from_secs(5);
-        assert!(check_stop_policies(&conditions, &ctx.as_policy_input()).is_none());
-    }
-
-    #[test]
-    fn check_stop_conditions_empty_always_none() {
-        let conditions: Vec<Arc<dyn StopPolicy>> = vec![];
-        let ctx = empty_context();
-        assert!(check_stop_policies(&conditions, &ctx.as_policy_input()).is_none());
+        assert_eq!(cond.evaluate(&ctx), Some(StopReason::LoopDetected));
     }
 
     // -- StopReason serialization --
@@ -647,28 +446,6 @@ mod tests {
             let back: StopReason = serde_json::from_str(&json).unwrap();
             assert_eq!(reason, back);
         }
-    }
-
-    // -- Custom StopPolicy --
-
-    struct AlwaysStop;
-    impl StopPolicy for AlwaysStop {
-        fn id(&self) -> &str {
-            "always_stop"
-        }
-        fn evaluate(&self, _input: &StopPolicyInput<'_>) -> Option<StopReason> {
-            Some(StopReason::Custom("always".to_string()))
-        }
-    }
-
-    #[test]
-    fn custom_stop_policy_works() {
-        let conditions: Vec<Arc<dyn StopPolicy>> = vec![Arc::new(AlwaysStop)];
-        let ctx = empty_context();
-        assert_eq!(
-            check_stop_policies(&conditions, &ctx.as_policy_input()),
-            Some(StopReason::Custom("always".to_string()))
-        );
     }
 
     // -- StopConditionSpec --
@@ -706,63 +483,5 @@ mod tests {
         };
         let json = serde_json::to_string(&spec).unwrap();
         assert_eq!(json, r#"{"type":"stop_on_tool","tool_name":"done"}"#);
-    }
-
-    #[test]
-    fn stop_condition_spec_into_condition_max_rounds() {
-        let spec = StopConditionSpec::MaxRounds { rounds: 3 };
-        let cond = condition_from_spec(spec);
-        assert_eq!(cond.id(), "max_rounds");
-        let mut ctx = empty_context();
-        ctx.rounds = 3;
-        assert_eq!(
-            cond.evaluate(&ctx.as_policy_input()),
-            Some(StopReason::MaxRoundsReached)
-        );
-    }
-
-    #[test]
-    fn stop_condition_spec_into_condition_timeout() {
-        let spec = StopConditionSpec::Timeout { seconds: 10 };
-        let cond = condition_from_spec(spec);
-        assert_eq!(cond.id(), "timeout");
-        let mut ctx = empty_context();
-        ctx.elapsed = Duration::from_secs(10);
-        assert_eq!(
-            cond.evaluate(&ctx.as_policy_input()),
-            Some(StopReason::TimeoutReached)
-        );
-    }
-
-    #[test]
-    fn stop_condition_spec_into_condition_token_budget() {
-        let spec = StopConditionSpec::TokenBudget { max_total: 100 };
-        let cond = condition_from_spec(spec);
-        let mut ctx = empty_context();
-        ctx.total_input_tokens = 60;
-        ctx.total_output_tokens = 50;
-        assert_eq!(
-            cond.evaluate(&ctx.as_policy_input()),
-            Some(StopReason::TokenBudgetExceeded)
-        );
-    }
-
-    #[test]
-    fn stop_condition_spec_into_condition_stop_on_tool() {
-        let spec = StopConditionSpec::StopOnTool {
-            tool_name: "finish".to_string(),
-        };
-        let cond = condition_from_spec(spec);
-        let calls = vec![make_tool_call("finish")];
-        let history = VecDeque::new();
-        let ctx = StopCheckContext {
-            last_tool_calls: &calls,
-            tool_call_history: &history,
-            ..empty_context()
-        };
-        assert_eq!(
-            cond.evaluate(&ctx.as_policy_input()),
-            Some(StopReason::ToolCalled("finish".to_string()))
-        );
     }
 }

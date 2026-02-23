@@ -197,8 +197,6 @@ impl AgentDefinition {
             fallback_models: self.fallback_models,
             llm_retry_policy: self.llm_retry_policy,
             plugins,
-            stop_conditions: Vec::new(),
-            stop_condition_specs: Vec::new(),
             step_tool_provider: None,
             llm_executor: None,
         }

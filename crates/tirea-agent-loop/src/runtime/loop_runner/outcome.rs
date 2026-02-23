@@ -1,4 +1,5 @@
 use super::*;
+use crate::contracts::StopReason;
 use serde_json::{json, Value};
 
 /// Aggregated token usage for one loop run.

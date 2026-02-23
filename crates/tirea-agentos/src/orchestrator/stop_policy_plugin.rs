@@ -7,8 +7,7 @@ use crate::contracts::plugin::phase::{AfterInferenceContext, PluginPhaseContext}
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::StreamResult;
 use crate::contracts::thread::{Message, Role, ToolCall};
-use crate::contracts::{RunContext, StopConditionSpec, ToolResult};
-use crate::engine::stop_conditions::{StopPolicy, StopPolicyInput, StopPolicyStats};
+use crate::contracts::{RunContext, StopConditionSpec, StopReason, ToolResult};
 use tirea_state::State;
 
 pub const STOP_POLICY_PLUGIN_ID: &str = "stop_policy";
@@ -34,6 +33,95 @@ struct MessageDerivedStopStats {
     last_text: String,
     tool_call_history: VecDeque<Vec<String>>,
 }
+
+/// Aggregated runtime stats consumed by stop policies.
+pub struct StopPolicyStats<'a> {
+    /// Number of completed steps.
+    pub step: usize,
+    /// Tool calls emitted by the current step.
+    pub step_tool_call_count: usize,
+    /// Total tool calls across the whole run.
+    pub total_tool_call_count: usize,
+    /// Cumulative input tokens across all LLM calls.
+    pub total_input_tokens: usize,
+    /// Cumulative output tokens across all LLM calls.
+    pub total_output_tokens: usize,
+    /// Number of consecutive rounds where all tools failed.
+    pub consecutive_errors: usize,
+    /// Time elapsed since the loop started.
+    pub elapsed: std::time::Duration,
+    /// Tool calls from the most recent LLM response.
+    pub last_tool_calls: &'a [ToolCall],
+    /// Text from the most recent LLM response.
+    pub last_text: &'a str,
+    /// History of tool call names per round (most recent last), for loop detection.
+    pub tool_call_history: &'a VecDeque<Vec<String>>,
+}
+
+/// Canonical stop-policy input.
+pub struct StopPolicyInput<'a> {
+    /// Current run context.
+    pub run_ctx: &'a RunContext,
+    /// Runtime stats.
+    pub stats: StopPolicyStats<'a>,
+}
+
+/// Stop-policy contract used by [`StopPolicyPlugin`].
+pub trait StopPolicy: Send + Sync {
+    /// Stable policy id.
+    fn id(&self) -> &str;
+
+    /// Evaluate stop decision.
+    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason>;
+}
+
+fn stop_check_ctx_from_input<'a>(
+    input: &'a StopPolicyInput<'a>,
+) -> crate::engine::stop_conditions::StopCheckContext<'a> {
+    crate::engine::stop_conditions::StopCheckContext {
+        rounds: input.stats.step,
+        total_input_tokens: input.stats.total_input_tokens,
+        total_output_tokens: input.stats.total_output_tokens,
+        consecutive_errors: input.stats.consecutive_errors,
+        elapsed: input.stats.elapsed,
+        last_tool_calls: input.stats.last_tool_calls,
+        last_text: input.stats.last_text,
+        tool_call_history: input.stats.tool_call_history,
+        run_ctx: input.run_ctx,
+    }
+}
+
+macro_rules! impl_builtin_stop_policy {
+    ($ty:path, $id:literal) => {
+        impl StopPolicy for $ty {
+            fn id(&self) -> &str {
+                $id
+            }
+
+            fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason> {
+                let ctx = stop_check_ctx_from_input(input);
+                self.evaluate(&ctx)
+            }
+        }
+    };
+}
+
+impl_builtin_stop_policy!(crate::engine::stop_conditions::MaxRounds, "max_rounds");
+impl_builtin_stop_policy!(crate::engine::stop_conditions::Timeout, "timeout");
+impl_builtin_stop_policy!(crate::engine::stop_conditions::TokenBudget, "token_budget");
+impl_builtin_stop_policy!(
+    crate::engine::stop_conditions::ConsecutiveErrors,
+    "consecutive_errors"
+);
+impl_builtin_stop_policy!(crate::engine::stop_conditions::StopOnTool, "stop_on_tool");
+impl_builtin_stop_policy!(
+    crate::engine::stop_conditions::ContentMatch,
+    "content_match"
+);
+impl_builtin_stop_policy!(
+    crate::engine::stop_conditions::LoopDetection,
+    "loop_detection"
+);
 
 /// Plugin adapter that evaluates configured stop policies at `AfterInference`.
 ///
