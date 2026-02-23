@@ -15,8 +15,6 @@ use tirea_state::{DocCell, TrackedPatch};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PhaseMutationSnapshot {
-    skip_inference: bool,
-    termination_request: bool,
     run_action: Option<RunAction>,
     system_context: Vec<String>,
     session_context: Vec<String>,
@@ -32,8 +30,6 @@ struct PhaseMutationSnapshot {
 
 fn phase_mutation_snapshot(step: &StepContext<'_>) -> PhaseMutationSnapshot {
     PhaseMutationSnapshot {
-        skip_inference: step.skip_inference,
-        termination_request: step.termination_request.is_some(),
         run_action: step.run_action.clone(),
         system_context: step.system_context.clone(),
         session_context: step.session_context.clone(),
@@ -71,23 +67,7 @@ fn validate_phase_mutation(
         )));
     }
 
-    if before.skip_inference != after.skip_inference {
-        return Err(AgentLoopError::StateError(format!(
-            "plugin '{}' mutated legacy skip_inference field; use run_action APIs ({phase})",
-            plugin_id
-        )));
-    }
-
-    if before.termination_request != after.termination_request {
-        return Err(AgentLoopError::StateError(format!(
-            "plugin '{}' mutated legacy termination_request field; use run_action APIs ({phase})",
-            plugin_id
-        )));
-    }
-
-    if before.run_action != after.run_action
-        && !matches!(phase, Phase::BeforeInference | Phase::AfterInference)
-    {
+    if before.run_action != after.run_action && !policy.allow_run_action_mutation {
         return Err(AgentLoopError::StateError(format!(
             "plugin '{}' mutated run_action outside BeforeInference/AfterInference ({phase})",
             plugin_id

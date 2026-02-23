@@ -1099,7 +1099,10 @@ async fn recovery_plugin_reconciles_orphan_running_and_records_confirmation() {
     let fixture = TestFixture::new_with_state(doc);
     let mut step = fixture.step(vec![]);
     plugin.run_phase(Phase::RunStart, &mut step).await;
-    assert!(!step.skip_inference);
+    assert!(matches!(
+        step.run_action(),
+        crate::contracts::RunAction::Continue
+    ));
 
     let updated = fixture.updated_state();
     assert_eq!(
@@ -1120,7 +1123,7 @@ async fn recovery_plugin_reconciles_orphan_running_and_records_confirmation() {
     let mut before = fixture2.step(vec![]);
     plugin.run_phase(Phase::BeforeInference, &mut before).await;
     assert!(
-        !before.skip_inference,
+        matches!(before.run_action(), crate::contracts::RunAction::Continue),
         "recovery plugin should not control inference flow in BeforeInference"
     );
 }
@@ -1163,7 +1166,7 @@ async fn recovery_plugin_does_not_override_existing_suspended_interaction() {
     let mut step = fixture.step(vec![]);
     plugin.run_phase(Phase::RunStart, &mut step).await;
     assert!(
-        !step.skip_inference,
+        matches!(step.run_action(), crate::contracts::RunAction::Continue),
         "existing suspended interaction should not be replaced"
     );
 

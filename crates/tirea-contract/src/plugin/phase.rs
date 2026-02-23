@@ -59,10 +59,8 @@ impl std::fmt::Display for Phase {
 pub struct PhasePolicy {
     /// Whether tool filtering (`StepContext::tools`) can be mutated.
     pub allow_tool_filter_mutation: bool,
-    /// Whether `StepContext::skip_inference` can be mutated.
-    pub allow_skip_inference_mutation: bool,
-    /// Whether `StepContext::termination_request` can be mutated.
-    pub allow_termination_request_mutation: bool,
+    /// Whether `StepContext::run_action` can be mutated.
+    pub allow_run_action_mutation: bool,
     /// Whether tool execution gate (`blocked/pending`) can be mutated.
     pub allow_tool_gate_mutation: bool,
 }
@@ -71,8 +69,7 @@ impl PhasePolicy {
     pub const fn read_only() -> Self {
         Self {
             allow_tool_filter_mutation: false,
-            allow_skip_inference_mutation: false,
-            allow_termination_request_mutation: false,
+            allow_run_action_mutation: false,
             allow_tool_gate_mutation: false,
         }
     }
@@ -84,20 +81,17 @@ impl Phase {
         match self {
             Self::BeforeInference => PhasePolicy {
                 allow_tool_filter_mutation: true,
-                allow_skip_inference_mutation: true,
-                allow_termination_request_mutation: true,
+                allow_run_action_mutation: true,
                 allow_tool_gate_mutation: false,
             },
             Self::AfterInference => PhasePolicy {
                 allow_tool_filter_mutation: false,
-                allow_skip_inference_mutation: false,
-                allow_termination_request_mutation: true,
+                allow_run_action_mutation: true,
                 allow_tool_gate_mutation: false,
             },
             Self::BeforeToolExecute => PhasePolicy {
                 allow_tool_filter_mutation: false,
-                allow_skip_inference_mutation: false,
-                allow_termination_request_mutation: false,
+                allow_run_action_mutation: false,
                 allow_tool_gate_mutation: true,
             },
             Self::RunStart
@@ -271,16 +265,6 @@ pub struct StepContext<'a> {
     pub response: Option<StreamResult>,
 
     // === Flow Control ===
-    /// Legacy skip-inference field.
-    ///
-    /// Deprecated runtime behavior: this field is no longer consumed by loop control.
-    /// Plugins must use `run_action` via typed phase APIs.
-    pub skip_inference: bool,
-    /// Legacy termination request field.
-    ///
-    /// Deprecated runtime behavior: this field is no longer consumed by loop control.
-    /// Plugins must use `run_action` via typed phase APIs.
-    pub termination_request: Option<TerminationReason>,
     /// Unified run-level action emitted by plugins.
     pub run_action: Option<RunAction>,
 
@@ -309,8 +293,6 @@ impl<'a> StepContext<'a> {
             tools,
             tool: None,
             response: None,
-            skip_inference: false,
-            termination_request: None,
             run_action: None,
             pending_patches: Vec::new(),
             state_effects: Vec::new(),
@@ -378,8 +360,6 @@ impl<'a> StepContext<'a> {
         self.system_reminders.clear();
         self.tool = None;
         self.response = None;
-        self.skip_inference = false;
-        self.termination_request = None;
         self.run_action = None;
         self.pending_patches.clear();
         self.state_effects.clear();
@@ -519,10 +499,7 @@ impl<'a> StepContext<'a> {
 
     /// Effective run-level action for current step.
     pub fn run_action(&self) -> RunAction {
-        if let Some(action) = self.run_action.clone() {
-            return action;
-        }
-        RunAction::Continue
+        self.run_action.clone().unwrap_or(RunAction::Continue)
     }
 
     /// Current tool action derived from tool gate state.
@@ -825,20 +802,17 @@ mod tests {
     fn test_phase_policy() {
         let before_inference = Phase::BeforeInference.policy();
         assert!(before_inference.allow_tool_filter_mutation);
-        assert!(before_inference.allow_skip_inference_mutation);
-        assert!(before_inference.allow_termination_request_mutation);
+        assert!(before_inference.allow_run_action_mutation);
         assert!(!before_inference.allow_tool_gate_mutation);
 
         let after_inference = Phase::AfterInference.policy();
         assert!(!after_inference.allow_tool_filter_mutation);
-        assert!(!after_inference.allow_skip_inference_mutation);
-        assert!(after_inference.allow_termination_request_mutation);
+        assert!(after_inference.allow_run_action_mutation);
         assert!(!after_inference.allow_tool_gate_mutation);
 
         let before_tool_execute = Phase::BeforeToolExecute.policy();
         assert!(!before_tool_execute.allow_tool_filter_mutation);
-        assert!(!before_tool_execute.allow_skip_inference_mutation);
-        assert!(!before_tool_execute.allow_termination_request_mutation);
+        assert!(!before_tool_execute.allow_run_action_mutation);
         assert!(before_tool_execute.allow_tool_gate_mutation);
 
         let run_end = Phase::RunEnd.policy();
@@ -860,8 +834,6 @@ mod tests {
         assert_eq!(ctx.tools.len(), 3);
         assert!(ctx.tool.is_none());
         assert!(ctx.response.is_none());
-        assert!(!ctx.skip_inference);
-        assert!(ctx.termination_request.is_none());
         assert!(ctx.run_action.is_none());
         assert!(ctx.state_effects.is_empty());
     }
@@ -874,30 +846,25 @@ mod tests {
         ctx.system("test");
         ctx.thread("test");
         ctx.reminder("test");
-        ctx.skip_inference = true;
-        ctx.termination_request = Some(TerminationReason::PluginRequested);
+        ctx.set_run_action(RunAction::Terminate(TerminationReason::PluginRequested));
 
         ctx.reset();
 
         assert!(ctx.system_context.is_empty());
         assert!(ctx.session_context.is_empty());
         assert!(ctx.system_reminders.is_empty());
-        assert!(!ctx.skip_inference);
-        assert!(ctx.termination_request.is_none());
         assert!(ctx.run_action.is_none());
         assert!(ctx.state_effects.is_empty());
     }
 
     #[test]
-    fn test_after_inference_request_termination_does_not_set_skip_inference() {
+    fn test_after_inference_request_termination_sets_run_action() {
         let fix = TestFixture::new();
         let mut step = fix.step(vec![]);
         {
             let mut ctx = AfterInferenceContext::new(&mut step);
             ctx.request_termination(TerminationReason::PluginRequested);
         }
-        assert!(step.termination_request.is_none());
-        assert!(!step.skip_inference);
         assert_eq!(
             step.run_action,
             Some(RunAction::Terminate(TerminationReason::PluginRequested))

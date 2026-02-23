@@ -4348,24 +4348,26 @@ async fn test_run_loop_phase_sequence_on_skip_inference() {
 }
 
 #[tokio::test]
-async fn test_run_loop_rejects_skip_inference_mutation_outside_before_inference() {
-    struct InvalidStepStartSkipPlugin;
+async fn test_run_loop_rejects_run_action_mutation_outside_inference_phases() {
+    struct InvalidStepStartRunActionPlugin;
 
     #[async_trait]
-    impl AgentPlugin for InvalidStepStartSkipPlugin {
+    impl AgentPlugin for InvalidStepStartRunActionPlugin {
         fn id(&self) -> &str {
-            "invalid_step_start_skip"
+            "invalid_step_start_run_action"
         }
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::StepStart {
-                step.skip_inference = true;
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
             }
         });
     }
 
     let config = AgentConfig::new("gpt-4o-mini")
-        .with_plugin(Arc::new(InvalidStepStartSkipPlugin) as Arc<dyn AgentPlugin>);
+        .with_plugin(Arc::new(InvalidStepStartRunActionPlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
@@ -4379,31 +4381,33 @@ async fn test_run_loop_rejects_skip_inference_mutation_outside_before_inference(
     assert!(
         outcome.failure.as_ref().is_some_and(|f| matches!(
             f,
-            LoopFailure::State(msg) if msg.contains("mutated legacy skip_inference field")
+            LoopFailure::State(msg) if msg.contains("mutated run_action outside BeforeInference/AfterInference")
         )),
-        "expected legacy skip_inference mutation error in failure"
+        "expected run_action mutation error in failure"
     );
 }
 
 #[tokio::test]
-async fn test_stream_rejects_skip_inference_mutation_outside_before_inference() {
-    struct InvalidStepStartSkipPlugin;
+async fn test_stream_rejects_run_action_mutation_outside_inference_phases() {
+    struct InvalidStepStartRunActionPlugin;
 
     #[async_trait]
-    impl AgentPlugin for InvalidStepStartSkipPlugin {
+    impl AgentPlugin for InvalidStepStartRunActionPlugin {
         fn id(&self) -> &str {
-            "invalid_step_start_skip"
+            "invalid_step_start_run_action"
         }
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::StepStart {
-                step.skip_inference = true;
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
             }
         });
     }
 
     let config = AgentConfig::new("mock")
-        .with_plugin(Arc::new(InvalidStepStartSkipPlugin) as Arc<dyn AgentPlugin>);
+        .with_plugin(Arc::new(InvalidStepStartRunActionPlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(Message::user("hi"));
     let tools = HashMap::new();
 
@@ -4413,7 +4417,7 @@ async fn test_stream_rejects_skip_inference_mutation_outside_before_inference() 
         events.iter().any(|event| matches!(
             event,
             AgentEvent::Error { message }
-            if message.contains("mutated legacy skip_inference field")
+            if message.contains("mutated run_action outside BeforeInference/AfterInference")
         )),
         "expected mutation error event, got: {events:?}"
     );
@@ -10365,10 +10369,10 @@ async fn test_plugin_termination_request_stops_loop() {
     );
 }
 
-/// Verify that mutating `termination_request` outside BeforeInference/AfterInference is
+/// Verify that mutating `run_action` outside BeforeInference/AfterInference is
 /// rejected by the phase-mutation validator (non-stream path).
 #[tokio::test]
-async fn test_run_loop_rejects_termination_request_mutation_outside_inference_phases() {
+async fn test_run_loop_rejects_run_action_mutation_outside_inference_phases_v2() {
     struct InvalidStepStartTermPlugin;
 
     #[async_trait]
@@ -10379,7 +10383,9 @@ async fn test_run_loop_rejects_termination_request_mutation_outside_inference_ph
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::StepStart {
-                step.termination_request = Some(TerminationReason::PluginRequested);
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
             }
         });
     }
@@ -10399,17 +10405,17 @@ async fn test_run_loop_rejects_termination_request_mutation_outside_inference_ph
     assert!(
         outcome.failure.as_ref().is_some_and(|f| matches!(
             f,
-            LoopFailure::State(msg) if msg.contains("mutated legacy termination_request field")
+            LoopFailure::State(msg) if msg.contains("mutated run_action outside BeforeInference/AfterInference")
         )),
-        "expected termination_request mutation error in failure, got: {:?}",
+        "expected run_action mutation error in failure, got: {:?}",
         outcome.failure
     );
 }
 
-/// Verify that mutating `termination_request` outside BeforeInference/AfterInference is
+/// Verify that mutating `run_action` outside BeforeInference/AfterInference is
 /// rejected by the phase-mutation validator (stream path).
 #[tokio::test]
-async fn test_stream_rejects_termination_request_mutation_outside_inference_phases() {
+async fn test_stream_rejects_run_action_mutation_outside_inference_phases_v2() {
     struct InvalidStepStartTermPlugin;
 
     #[async_trait]
@@ -10420,7 +10426,9 @@ async fn test_stream_rejects_termination_request_mutation_outside_inference_phas
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::StepStart {
-                step.termination_request = Some(TerminationReason::PluginRequested);
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
             }
         });
     }
@@ -10436,7 +10444,7 @@ async fn test_stream_rejects_termination_request_mutation_outside_inference_phas
         events.iter().any(|event| matches!(
             event,
             AgentEvent::Error { message }
-            if message.contains("mutated legacy termination_request field")
+            if message.contains("mutated run_action outside BeforeInference/AfterInference")
         )),
         "expected mutation error event, got: {events:?}"
     );
