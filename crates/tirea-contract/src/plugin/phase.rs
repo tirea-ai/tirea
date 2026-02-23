@@ -120,6 +120,15 @@ pub enum StepOutcome {
     Pending(Suspension),
 }
 
+/// Run-level control action emitted by plugins.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunAction {
+    /// Continue normal execution.
+    Continue,
+    /// Terminate run with specific reason.
+    Terminate(TerminationReason),
+}
+
 /// Suspension payload for `ToolGateDecision::Suspend`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SuspendTicket {
@@ -155,6 +164,20 @@ pub enum ToolGateDecision {
     Proceed,
     Suspend(SuspendTicket),
     Cancel { reason: String },
+}
+
+/// Tool-level control action emitted by plugins.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolAction {
+    Proceed,
+    Suspend(SuspendTicket),
+    Cancel { reason: String },
+}
+
+/// State side effect emitted by plugins.
+#[derive(Debug, Clone)]
+pub enum StateEffect {
+    Patch(TrackedPatch),
 }
 
 /// Context for the currently executing tool.
@@ -252,10 +275,14 @@ pub struct StepContext<'a> {
     pub skip_inference: bool,
     /// Plugin-requested termination reason (set via `BeforeInferenceContext::request_termination`).
     pub termination_request: Option<TerminationReason>,
+    /// Unified run-level action emitted by plugins.
+    pub run_action: Option<RunAction>,
 
     // === Pending State Changes ===
     /// Patches to apply to session state after this phase completes.
     pub pending_patches: Vec<TrackedPatch>,
+    /// State effects emitted by plugins.
+    pub state_effects: Vec<StateEffect>,
 }
 
 impl<'a> StepContext<'a> {
@@ -278,7 +305,9 @@ impl<'a> StepContext<'a> {
             response: None,
             skip_inference: false,
             termination_request: None,
+            run_action: None,
             pending_patches: Vec::new(),
+            state_effects: Vec::new(),
         }
     }
 
@@ -345,7 +374,9 @@ impl<'a> StepContext<'a> {
         self.response = None;
         self.skip_inference = false;
         self.termination_request = None;
+        self.run_action = None;
         self.pending_patches.clear();
+        self.state_effects.clear();
     }
 
     // =========================================================================
@@ -463,6 +494,56 @@ impl<'a> StepContext<'a> {
         if let Some(ref mut tool) = self.tool {
             tool.result = Some(result);
         }
+    }
+
+    /// Set run-level action.
+    pub fn set_run_action(&mut self, action: RunAction) {
+        match &action {
+            RunAction::Continue => {
+                self.skip_inference = false;
+                self.termination_request = None;
+            }
+            RunAction::Terminate(reason) => {
+                self.skip_inference = true;
+                self.termination_request = Some(reason.clone());
+            }
+        }
+        self.run_action = Some(action);
+    }
+
+    /// Effective run-level action for current step.
+    pub fn run_action(&self) -> RunAction {
+        if let Some(action) = self.run_action.clone() {
+            return action;
+        }
+        if let Some(reason) = self.termination_request.clone() {
+            return RunAction::Terminate(reason);
+        }
+        if self.skip_inference {
+            return RunAction::Terminate(TerminationReason::PluginRequested);
+        }
+        RunAction::Continue
+    }
+
+    /// Current tool action derived from tool gate state.
+    pub fn tool_action(&self) -> ToolAction {
+        if let Some(tool) = self.tool.as_ref() {
+            if tool.blocked {
+                return ToolAction::Cancel {
+                    reason: tool.block_reason.clone().unwrap_or_default(),
+                };
+            }
+            if tool.pending {
+                if let Some(ticket) = tool.suspend_ticket.as_ref() {
+                    return ToolAction::Suspend(ticket.clone());
+                }
+                return ToolAction::Suspend(SuspendTicket::new(Suspension::new(
+                    tool.id.clone(),
+                    format!("tool:{}", tool.name),
+                )));
+            }
+        }
+        ToolAction::Proceed
     }
 
     // =========================================================================
@@ -587,15 +668,15 @@ impl<'s, 'a> BeforeInferenceContext<'s, 'a> {
 
     /// Skip current inference.
     pub fn skip_inference(&mut self) {
-        self.step.skip_inference = true;
+        self.step
+            .set_run_action(RunAction::Terminate(TerminationReason::PluginRequested));
     }
 
     /// Request run termination with a specific reason.
     ///
     /// This implicitly sets `skip_inference = true`.
     pub fn request_termination(&mut self, reason: TerminationReason) {
-        self.step.skip_inference = true;
-        self.step.termination_request = Some(reason);
+        self.step.set_run_action(RunAction::Terminate(reason));
     }
 }
 
@@ -618,7 +699,7 @@ impl<'s, 'a> AfterInferenceContext<'s, 'a> {
 
     /// Request run termination with a specific reason after inference has completed.
     pub fn request_termination(&mut self, reason: TerminationReason) {
-        self.step.termination_request = Some(reason);
+        self.step.set_run_action(RunAction::Terminate(reason));
     }
 }
 
@@ -641,24 +722,11 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
     }
 
     pub fn decision(&self) -> ToolGateDecision {
-        let Some(tool) = self.step.tool.as_ref() else {
-            return ToolGateDecision::Proceed;
-        };
-        if tool.blocked {
-            return ToolGateDecision::Cancel {
-                reason: tool.block_reason.clone().unwrap_or_default(),
-            };
+        match self.step.tool_action() {
+            ToolAction::Proceed => ToolGateDecision::Proceed,
+            ToolAction::Suspend(ticket) => ToolGateDecision::Suspend(ticket),
+            ToolAction::Cancel { reason } => ToolGateDecision::Cancel { reason },
         }
-        if tool.pending {
-            if let Some(ticket) = tool.suspend_ticket.as_ref() {
-                return ToolGateDecision::Suspend(ticket.clone());
-            }
-            return ToolGateDecision::Suspend(SuspendTicket::new(Suspension::new(
-                tool.id.clone(),
-                format!("tool:{}", tool.name),
-            )));
-        }
-        ToolGateDecision::Proceed
     }
 
     pub fn cancel(&mut self, reason: impl Into<String>) {
@@ -796,6 +864,8 @@ mod tests {
         assert!(ctx.response.is_none());
         assert!(!ctx.skip_inference);
         assert!(ctx.termination_request.is_none());
+        assert!(ctx.run_action.is_none());
+        assert!(ctx.state_effects.is_empty());
     }
 
     #[test]
@@ -816,10 +886,12 @@ mod tests {
         assert!(ctx.system_reminders.is_empty());
         assert!(!ctx.skip_inference);
         assert!(ctx.termination_request.is_none());
+        assert!(ctx.run_action.is_none());
+        assert!(ctx.state_effects.is_empty());
     }
 
     #[test]
-    fn test_after_inference_request_termination_does_not_set_skip_inference() {
+    fn test_after_inference_request_termination_sets_run_action() {
         let fix = TestFixture::new();
         let mut step = fix.step(vec![]);
         {
@@ -830,7 +902,11 @@ mod tests {
             step.termination_request,
             Some(TerminationReason::PluginRequested)
         );
-        assert!(!step.skip_inference);
+        assert!(step.skip_inference);
+        assert_eq!(
+            step.run_action,
+            Some(RunAction::Terminate(TerminationReason::PluginRequested))
+        );
     }
 
     // =========================================================================

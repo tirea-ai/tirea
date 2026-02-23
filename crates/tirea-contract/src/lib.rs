@@ -156,7 +156,10 @@ pub use tool::{
 };
 
 // plugin
-pub use plugin::{AgentPlugin, Phase, PhasePolicy, StepContext, StepOutcome, ToolContext};
+pub use plugin::{
+    AgentPlugin, Phase, PhasePolicy, RunAction, StateEffect, StepContext, StepOutcome, ToolAction,
+    ToolContext,
+};
 
 // runtime
 pub use runtime::{
