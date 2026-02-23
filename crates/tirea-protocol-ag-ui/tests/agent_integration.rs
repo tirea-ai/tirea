@@ -11,7 +11,6 @@ use tirea_agentos::contracts::thread::Thread as ConversationAgentState;
 use tirea_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_agentos::contracts::SuspensionResponse;
 use tirea_agentos::contracts::ToolCallContext;
-use tirea_agentos::extensions::interaction::InteractionPlugin;
 use tirea_agentos::extensions::reminder::SystemReminder;
 use tirea_agentos::runtime::activity::ActivityHub;
 use tirea_agentos::runtime::loop_runner::AgentLoopError;
@@ -4650,8 +4649,8 @@ fn test_scenario_various_interaction_types() {
 use std::collections::{HashMap, HashSet};
 use tirea_agentos::contracts::plugin::phase::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
-    BeforeToolExecuteContext, Phase, RunEndContext, RunStartContext, StepContext, StepEndContext,
-    StepStartContext, ToolContext,
+    BeforeToolExecuteContext, Phase, PluginPhaseContext, RunEndContext, RunStartContext,
+    StepContext, StepEndContext, StepStartContext, ToolContext,
 };
 use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::runtime::control::{ResumeDecision, ResumeDecisionAction};
@@ -4707,11 +4706,124 @@ where
     }
 }
 
+#[derive(Debug, Default)]
+struct InteractionPlugin {
+    responses: HashMap<String, Value>,
+}
+
+impl InteractionPlugin {
+    fn with_responses(approved_ids: Vec<String>, denied_ids: Vec<String>) -> Self {
+        let mut responses = HashMap::new();
+        for id in approved_ids {
+            responses.insert(id, Value::Bool(true));
+        }
+        for id in denied_ids {
+            responses.insert(id, Value::Bool(false));
+        }
+        Self { responses }
+    }
+
+    fn has_responses(&self) -> bool {
+        !self.responses.is_empty()
+    }
+
+    fn is_approved(&self, target_id: &str) -> bool {
+        self.responses
+            .get(target_id)
+            .map(SuspensionResponse::is_approved)
+            .unwrap_or(false)
+    }
+
+    fn is_denied(&self, target_id: &str) -> bool {
+        self.responses
+            .get(target_id)
+            .map(SuspensionResponse::is_denied)
+            .unwrap_or(false)
+    }
+
+    fn response_for_call(&self, call: &SuspendedCall) -> Option<Value> {
+        self.responses
+            .get(&call.call_id)
+            .cloned()
+            .or_else(|| self.responses.get(&call.suspension.id).cloned())
+            .or_else(|| {
+                call.invocation
+                    .as_ref()
+                    .and_then(|invocation| self.responses.get(&invocation.call_id).cloned())
+            })
+    }
+
+    fn cancel_reason(result: &Value) -> Option<String> {
+        result
+            .as_object()
+            .and_then(|obj| {
+                obj.get("reason")
+                    .and_then(Value::as_str)
+                    .or_else(|| obj.get("message").and_then(Value::as_str))
+            })
+            .map(str::to_string)
+    }
+
+    fn to_resume_decision(call_id: &str, result: Value) -> ResumeDecision {
+        let action = if SuspensionResponse::is_denied(&result) {
+            ResumeDecisionAction::Cancel
+        } else {
+            ResumeDecisionAction::Resume
+        };
+        let reason = if matches!(action, ResumeDecisionAction::Cancel) {
+            Self::cancel_reason(&result)
+        } else {
+            None
+        };
+        ResumeDecision {
+            decision_id: format!("decision_{call_id}"),
+            action,
+            result,
+            reason,
+            updated_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| {
+                    duration.as_millis().min(u128::from(u64::MAX)) as u64
+                }),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl AgentPlugin for InteractionPlugin {
+    fn id(&self) -> &str {
+        "test_interaction"
+    }
+
+    async fn run_start(&self, step: &mut RunStartContext<'_, '_>) {
+        if self.responses.is_empty() {
+            return;
+        }
+
+        let suspended_state =
+            step.state_of::<tirea_agentos::contracts::runtime::SuspendedToolCallsState>();
+        let suspended_calls = suspended_state.calls().ok().unwrap_or_default();
+        if suspended_calls.is_empty() {
+            return;
+        }
+
+        let mailbox = step.state_of::<tirea_agentos::contracts::runtime::ResumeDecisionsState>();
+        let mut decisions = mailbox.calls().ok().unwrap_or_default();
+        for (call_id, suspended_call) in suspended_calls {
+            if decisions.contains_key(&call_id) {
+                continue;
+            }
+            let Some(result) = self.response_for_call(&suspended_call) else {
+                continue;
+            };
+            decisions.insert(call_id.clone(), Self::to_resume_decision(&call_id, result));
+        }
+        let _ = mailbox.set_calls(decisions);
+    }
+}
+
 fn interaction_plugin_from_request(request: &RunAgentInput) -> InteractionPlugin {
-    InteractionPlugin::with_responses(
-        request.approved_target_ids(),
-        request.denied_target_ids(),
-    )
+    InteractionPlugin::with_responses(request.approved_target_ids(), request.denied_target_ids())
 }
 
 struct TestFrontendToolPlugin {
@@ -5502,10 +5614,7 @@ fn test_scenario_permission_custom_response_format() {
         ),
     );
 
-    assert!(request2
-        .denied_target_ids()
-        .iter()
-        .any(|id| id == "perm_2"));
+    assert!(request2.denied_target_ids().iter().any(|id| id == "perm_2"));
 
     // Using allowed flag
     let request3 = RunAgentInput::new("t1".to_string(), "r1".to_string()).with_message(

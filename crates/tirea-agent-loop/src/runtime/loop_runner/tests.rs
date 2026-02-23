@@ -5,8 +5,8 @@ use crate::contracts::event::suspension::{
 };
 use crate::contracts::plugin::phase::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
-    BeforeToolExecuteContext, Phase, RunEndContext, RunStartContext, StepEndContext,
-    StepStartContext, SuspendTicket,
+    BeforeToolExecuteContext, Phase, PluginPhaseContext, RunEndContext, RunStartContext,
+    StepEndContext, StepStartContext, SuspendTicket,
 };
 use crate::contracts::runtime::control::SuspendedCallsExt;
 use crate::contracts::runtime::ActivityManager;
@@ -392,6 +392,117 @@ fn set_single_suspended_call(
             invocation,
         }],
     )
+}
+
+#[derive(Debug, Default)]
+struct TestInteractionPlugin {
+    responses: std::collections::HashMap<String, Value>,
+}
+
+impl TestInteractionPlugin {
+    fn with_responses(approved_ids: Vec<String>, denied_ids: Vec<String>) -> Self {
+        let mut responses = std::collections::HashMap::new();
+        for id in approved_ids {
+            responses.insert(id, Value::Bool(true));
+        }
+        for id in denied_ids {
+            responses.insert(id, Value::Bool(false));
+        }
+        Self { responses }
+    }
+
+    fn from_interaction_responses(responses: Vec<crate::contracts::SuspensionResponse>) -> Self {
+        Self {
+            responses: responses
+                .into_iter()
+                .map(|response| (response.target_id, response.result))
+                .collect(),
+        }
+    }
+
+    fn resolve_response_for_call(&self, call: &crate::contracts::SuspendedCall) -> Option<Value> {
+        self.responses
+            .get(&call.call_id)
+            .cloned()
+            .or_else(|| self.responses.get(&call.suspension.id).cloned())
+            .or_else(|| {
+                call.invocation
+                    .as_ref()
+                    .and_then(|invocation| self.responses.get(&invocation.call_id).cloned())
+            })
+    }
+
+    fn cancel_reason(result: &Value) -> Option<String> {
+        result
+            .as_object()
+            .and_then(|obj| {
+                obj.get("reason")
+                    .and_then(Value::as_str)
+                    .or_else(|| obj.get("message").and_then(Value::as_str))
+            })
+            .map(str::to_string)
+    }
+
+    fn to_resume_decision(
+        call_id: &str,
+        result: Value,
+    ) -> crate::contracts::runtime::ResumeDecision {
+        let action = if crate::contracts::SuspensionResponse::is_denied(&result) {
+            crate::contracts::runtime::ResumeDecisionAction::Cancel
+        } else {
+            crate::contracts::runtime::ResumeDecisionAction::Resume
+        };
+        let reason = if matches!(
+            action,
+            crate::contracts::runtime::ResumeDecisionAction::Cancel
+        ) {
+            Self::cancel_reason(&result)
+        } else {
+            None
+        };
+        crate::contracts::runtime::ResumeDecision {
+            decision_id: format!("decision_{call_id}"),
+            action,
+            result,
+            reason,
+            updated_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| {
+                    duration.as_millis().min(u128::from(u64::MAX)) as u64
+                }),
+        }
+    }
+}
+
+#[async_trait]
+impl AgentPlugin for TestInteractionPlugin {
+    fn id(&self) -> &str {
+        "test_interaction"
+    }
+
+    async fn run_start(&self, step: &mut RunStartContext<'_, '_>) {
+        if self.responses.is_empty() {
+            return;
+        }
+        let suspended_state = step.state_of::<crate::contracts::runtime::SuspendedToolCallsState>();
+        let suspended_calls = suspended_state.calls().ok().unwrap_or_default();
+        if suspended_calls.is_empty() {
+            return;
+        }
+
+        let mailbox = step.state_of::<crate::contracts::runtime::ResumeDecisionsState>();
+        let mut decisions = mailbox.calls().ok().unwrap_or_default();
+        for (call_id, suspended_call) in suspended_calls {
+            if decisions.contains_key(&call_id) {
+                continue;
+            }
+            let Some(result) = self.resolve_response_for_call(&suspended_call) else {
+                continue;
+            };
+            decisions.insert(call_id.clone(), Self::to_resume_decision(&call_id, result));
+        }
+        let _ = mailbox.set_calls(decisions);
+    }
 }
 
 struct EchoTool;
@@ -2544,10 +2655,8 @@ fn test_execute_tools_with_config_denied_response_is_applied_via_run_start_resum
             usage: None,
         };
         let tools = tool_map([EchoTool]);
-        let interaction = tirea_extension_interaction::InteractionPlugin::with_responses(
-            Vec::new(),
-            vec!["call_1".to_string()],
-        );
+        let interaction =
+            TestInteractionPlugin::with_responses(Vec::new(), vec!["call_1".to_string()]);
         let config =
             AgentConfig::new("gpt-4").with_plugin(Arc::new(interaction) as Arc<dyn AgentPlugin>);
 
@@ -3096,10 +3205,8 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
         });
     }
 
-    let interaction = tirea_extension_interaction::InteractionPlugin::with_responses(
-        Vec::new(),
-        vec!["call_write".to_string()],
-    );
+    let interaction =
+        TestInteractionPlugin::with_responses(Vec::new(), vec!["call_write".to_string()]);
     let config = AgentConfig::new("gpt-4o-mini")
         .with_plugin(Arc::new(interaction))
         .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
@@ -3175,10 +3282,7 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
         });
     }
 
-    let interaction = tirea_extension_interaction::InteractionPlugin::with_responses(
-        vec!["call_1".to_string()],
-        Vec::new(),
-    );
+    let interaction = TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(interaction))
         .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
@@ -3312,10 +3416,7 @@ async fn test_run_loop_permission_approval_replays_tool_and_clears_outbox() {
         });
     }
 
-    let interaction = tirea_extension_interaction::InteractionPlugin::with_responses(
-        vec!["call_1".to_string()],
-        Vec::new(),
-    );
+    let interaction = TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(interaction))
         .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>)
@@ -3441,10 +3542,7 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
     }
 
     let committer = Arc::new(RecordingStateCommitter::new(None));
-    let interaction = tirea_extension_interaction::InteractionPlugin::with_responses(
-        vec!["call_1".to_string()],
-        Vec::new(),
-    );
+    let interaction = TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(interaction))
         .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>)
@@ -3552,10 +3650,7 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
         });
     }
 
-    let interaction = tirea_extension_interaction::InteractionPlugin::with_responses(
-        Vec::new(),
-        vec!["call_1".to_string()],
-    );
+    let interaction = TestInteractionPlugin::with_responses(Vec::new(), vec!["call_1".to_string()]);
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(interaction))
         .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
@@ -3686,10 +3781,7 @@ async fn test_run_loop_permission_denied_appends_tool_result_for_model_context()
         });
     }
 
-    let interaction = tirea_extension_interaction::InteractionPlugin::with_responses(
-        Vec::new(),
-        vec!["call_1".to_string()],
-    );
+    let interaction = TestInteractionPlugin::with_responses(Vec::new(), vec!["call_1".to_string()]);
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(interaction))
         .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
@@ -3780,13 +3872,12 @@ async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_contex
         });
     }
 
-    let interaction =
-        tirea_extension_interaction::InteractionPlugin::from_interaction_responses(vec![
-            crate::contracts::SuspensionResponse::new(
-                "call_1",
-                json!({"status": "cancelled", "reason": "User canceled in UI"}),
-            ),
-        ]);
+    let interaction = TestInteractionPlugin::from_interaction_responses(vec![
+        crate::contracts::SuspensionResponse::new(
+            "call_1",
+            json!({"status": "cancelled", "reason": "User canceled in UI"}),
+        ),
+    ]);
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(interaction))
         .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
@@ -5656,10 +5747,8 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
     }
 
     fn replay_config() -> AgentConfig {
-        let interaction = tirea_extension_interaction::InteractionPlugin::with_responses(
-            vec!["call_1".to_string()],
-            Vec::new(),
-        );
+        let interaction =
+            TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
         AgentConfig::new("mock")
             .with_plugin(Arc::new(interaction))
             .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>)
@@ -5793,10 +5882,8 @@ async fn test_nonstream_replay_is_idempotent_across_reruns() {
     }
 
     fn replay_config(provider: Arc<dyn LlmExecutor>) -> AgentConfig {
-        let interaction = tirea_extension_interaction::InteractionPlugin::with_responses(
-            vec!["call_1".to_string()],
-            Vec::new(),
-        );
+        let interaction =
+            TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
         AgentConfig::new("mock")
             .with_plugin(Arc::new(interaction))
             .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>)

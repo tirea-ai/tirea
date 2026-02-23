@@ -1,6 +1,5 @@
-//! Extension bundles: skills, interaction, policy, reminders, observability.
+//! Extension bundles: skills, policy, reminders, observability.
 
-pub mod interaction;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 pub mod observability;

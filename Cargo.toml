@@ -8,7 +8,6 @@ members = [
     "crates/tirea-agentos",
     "crates/tirea-extension-permission",
     "crates/tirea-extension-reminder",
-    "crates/tirea-extension-interaction",
     "crates/tirea-extension-observability",
     "crates/tirea-extension-skills",
     "crates/tirea-extension-mcp",
@@ -36,7 +35,6 @@ tirea-agent-loop = { version = "0.1.1", path = "crates/tirea-agent-loop" }
 tirea-agentos = { version = "0.1.1", path = "crates/tirea-agentos" }
 tirea-extension-permission = { version = "0.1.1", path = "crates/tirea-extension-permission" }
 tirea-extension-reminder = { version = "0.1.1", path = "crates/tirea-extension-reminder" }
-tirea-extension-interaction = { version = "0.1.1", path = "crates/tirea-extension-interaction" }
 tirea-extension-observability = { version = "0.1.1", path = "crates/tirea-extension-observability" }
 tirea-extension-skills = { version = "0.1.1", path = "crates/tirea-extension-skills" }
 tirea-extension-mcp = { version = "0.1.1", path = "crates/tirea-extension-mcp" }

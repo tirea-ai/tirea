@@ -15,9 +15,6 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use tirea_extension_interaction::{
-    AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
-};
 use tokio::sync::Mutex;
 use types::{DelegationRecord, DelegationState, DelegationStatus};
 
@@ -29,6 +26,8 @@ pub(crate) const AGENT_TOOLS_PLUGIN_ID: &str = "agent_tools";
 pub(crate) const AGENT_RECOVERY_PLUGIN_ID: &str = "agent_recovery";
 pub(crate) const AGENT_RUN_TOOL_ID: &str = "agent_run";
 pub(crate) const AGENT_STOP_TOOL_ID: &str = "agent_stop";
+pub(crate) const AGENT_RECOVERY_INTERACTION_ACTION: &str = "recover_agent_run";
+pub(crate) const AGENT_RECOVERY_INTERACTION_PREFIX: &str = "agent_recovery_";
 
 fn collect_descendant_run_ids(
     children_by_parent: &HashMap<String, Vec<String>>,
