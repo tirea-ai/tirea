@@ -770,12 +770,9 @@ mod tests {
     #[tokio::test]
     async fn from_transports_accepts_progress_transport() {
         let transport = Arc::new(FakeProgressTransport) as Arc<dyn McpToolTransport>;
-        let manager = McpToolRegistryManager::from_transports([(
-            cfg("s1"),
-            transport,
-        )])
-        .await
-        .unwrap();
+        let manager = McpToolRegistryManager::from_transports([(cfg("s1"), transport)])
+            .await
+            .unwrap();
 
         let reg = manager.registry();
         let tool_id = reg

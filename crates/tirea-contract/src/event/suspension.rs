@@ -288,7 +288,7 @@ impl From<ResponseRouting> for ResponseRoutingWire {
 
 #[cfg(test)]
 mod tests {
-    use super::{SuspensionResponse, ResponseRouting};
+    use super::{ResponseRouting, SuspensionResponse};
     use serde_json::json;
 
     #[test]

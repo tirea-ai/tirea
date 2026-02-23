@@ -60,7 +60,7 @@ use crate::contracts::tool::{Tool, ToolResult};
 use crate::contracts::RunContext;
 use crate::contracts::StopReason;
 use crate::contracts::{
-    AgentEvent, FrontendToolInvocation, Suspension, SuspendedCall, TerminationReason,
+    AgentEvent, FrontendToolInvocation, SuspendedCall, Suspension, TerminationReason,
     ToolCallDecision,
 };
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};

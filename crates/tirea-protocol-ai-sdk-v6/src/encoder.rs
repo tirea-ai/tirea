@@ -1,7 +1,7 @@
 use super::UIStreamEvent;
 use serde_json::Value;
 use std::collections::HashSet;
-use tirea_contract::{AgentEvent, Suspension, StopReason, TerminationReason, ToolStatus};
+use tirea_contract::{AgentEvent, StopReason, Suspension, TerminationReason, ToolStatus};
 
 /// Data event name for a full state snapshot payload.
 pub const DATA_EVENT_STATE_SNAPSHOT: &str = "state-snapshot";

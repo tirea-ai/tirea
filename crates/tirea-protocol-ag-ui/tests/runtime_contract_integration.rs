@@ -2,7 +2,7 @@
 
 use serde_json::{json, Value};
 use tirea_contract::{
-    AgentEvent, Suspension, ProtocolInputAdapter, Role, TerminationReason, ToolResult,
+    AgentEvent, ProtocolInputAdapter, Role, Suspension, TerminationReason, ToolResult,
 };
 use tirea_protocol_ag_ui::{AgUiEventContext, AgUiInputAdapter, Event, Message, RunAgentInput};
 
