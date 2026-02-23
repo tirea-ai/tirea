@@ -52,7 +52,8 @@ mod tool_exec;
 use crate::contracts::plugin::phase::Phase;
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
-    ResumeDecision, ResumeDecisionAction, StreamResult, ToolExecutionRequest, ToolExecutionResult,
+    ResumeDecision, ResumeDecisionAction, StreamResult, ToolCallResume, ToolCallState,
+    ToolCallStatus, ToolExecutionRequest, ToolExecutionResult,
 };
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
@@ -69,6 +70,7 @@ use crate::runtime::streaming::StreamCollector;
 use async_stream::stream;
 use futures::{Stream, StreamExt};
 use genai::Client;
+use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
@@ -91,7 +93,8 @@ use core::build_messages;
 use core::{
     build_request_for_filtered_tools, clear_resume_decisions, clear_suspended_call,
     inference_inputs_from_step, resume_decisions_from_ctx, set_agent_suspended_calls,
-    suspended_calls_from_ctx, upsert_resume_decision,
+    suspended_calls_from_ctx, tool_call_states_from_ctx, upsert_resume_decision,
+    upsert_tool_call_state,
 };
 pub use outcome::{tool_map, tool_map_from_arc, AgentLoopError};
 pub use outcome::{LoopOutcome, LoopStats, LoopUsage};
@@ -1000,6 +1003,39 @@ pub(super) fn resolve_suspended_call(
     let decision_patch = upsert_resume_decision(&state, &suspended_call.call_id, decision)?;
     if !decision_patch.patch().is_empty() {
         run_ctx.add_thread_patch(decision_patch);
+    }
+    let mut tool_state = tool_call_states_from_ctx(run_ctx)
+        .remove(&suspended_call.call_id)
+        .unwrap_or_else(|| ToolCallState {
+            call_id: suspended_call.call_id.clone(),
+            tool_name: suspended_call.tool_name.clone(),
+            arguments: suspended_call.invocation.arguments.clone(),
+            status: ToolCallStatus::Suspended,
+            resume_token: Some(suspended_call.invocation.call_id.clone()),
+            resume: None,
+            scratch: Value::Null,
+            updated_at: current_unix_millis(),
+        });
+    tool_state.call_id = suspended_call.call_id.clone();
+    tool_state.tool_name = suspended_call.tool_name.clone();
+    tool_state.arguments = suspended_call.invocation.arguments.clone();
+    tool_state.status = ToolCallStatus::Resuming;
+    tool_state.resume_token = Some(suspended_call.invocation.call_id.clone());
+    tool_state.resume = Some(ToolCallResume {
+        decision_id: response.decision_id.clone(),
+        action: response.action.clone(),
+        result: response.result.clone(),
+        reason: response.reason.clone(),
+        updated_at: response.updated_at,
+    });
+    tool_state.updated_at = current_unix_millis();
+
+    let state = run_ctx
+        .snapshot()
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    let patch = upsert_tool_call_state(&state, &suspended_call.call_id, tool_state)?;
+    if !patch.patch().is_empty() {
+        run_ctx.add_thread_patch(patch);
     }
 
     Ok(Some(DecisionReplayOutcome {

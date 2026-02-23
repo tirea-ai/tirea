@@ -219,6 +219,24 @@ impl AgentPlugin for FrontendToolPendingPlugin {
         if !self.frontend_tools.contains(tool_name) {
             return;
         }
+
+        if let Some(resume) = ctx.resume_input() {
+            let result = match resume.action {
+                tirea_contract::runtime::ResumeDecisionAction::Resume => {
+                    ToolResult::success(tool_name.to_string(), resume.result)
+                }
+                tirea_contract::runtime::ResumeDecisionAction::Cancel => ToolResult::error(
+                    tool_name.to_string(),
+                    resume
+                        .reason
+                        .filter(|r| !r.trim().is_empty())
+                        .unwrap_or_else(|| "User denied the action".to_string()),
+                ),
+            };
+            ctx.set_tool_result(result);
+            ctx.allow();
+            return;
+        }
         let Some(call_id) = ctx.tool_call_id().map(str::to_string) else {
             return;
         };
@@ -248,6 +266,7 @@ mod tests {
     use tirea_agent_loop::runtime::loop_runner::AgentConfig;
     use tirea_contract::plugin::phase::{StepContext, ToolContext};
     use tirea_contract::plugin::AgentPlugin;
+    use tirea_contract::runtime::ResumeDecisionAction;
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::ToolCall;
 
@@ -508,6 +527,87 @@ mod tests {
             inv.origin,
             InvocationOrigin::PluginInitiated { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn frontend_pending_plugin_resume_sets_tool_result() {
+        let plugin =
+            FrontendToolPendingPlugin::new(["copyToClipboard".to_string()].into_iter().collect());
+        let fixture = TestFixture::new_with_state(json!({
+            "__tool_call_states": {
+                "calls": {
+                    "call_1": {
+                        "call_id": "call_1",
+                        "tool_name": "copyToClipboard",
+                        "arguments": { "text": "hello" },
+                        "status": "resuming",
+                        "resume_token": "call_1",
+                        "resume": {
+                            "decision_id": "d1",
+                            "action": "resume",
+                            "result": { "accepted": true },
+                            "updated_at": 1
+                        },
+                        "scratch": null,
+                        "updated_at": 1
+                    }
+                }
+            }
+        }));
+        let mut step = fixture.step(vec![]);
+        let call = ToolCall::new("call_1", "copyToClipboard", json!({"text":"hello"}));
+        step.tool = Some(ToolContext::new(&call));
+
+        run_before_tool_execute(&plugin, &mut step).await;
+
+        assert!(!step.tool_pending());
+        let result = step.tool_result().expect("resume should set tool result");
+        assert_eq!(result.tool_name, "copyToClipboard");
+        assert_eq!(result.status, tirea_contract::tool::ToolStatus::Success);
+        assert_eq!(result.data, json!({"accepted": true}));
+    }
+
+    #[tokio::test]
+    async fn frontend_pending_plugin_cancel_sets_error_result() {
+        let plugin =
+            FrontendToolPendingPlugin::new(["copyToClipboard".to_string()].into_iter().collect());
+        let fixture = TestFixture::new_with_state(json!({
+            "__tool_call_states": {
+                "calls": {
+                    "call_1": {
+                        "call_id": "call_1",
+                        "tool_name": "copyToClipboard",
+                        "arguments": { "text": "hello" },
+                        "status": "resuming",
+                        "resume_token": "call_1",
+                        "resume": {
+                            "decision_id": "d1",
+                            "action": "cancel",
+                            "result": null,
+                            "reason": "user denied",
+                            "updated_at": 1
+                        },
+                        "scratch": null,
+                        "updated_at": 1
+                    }
+                }
+            }
+        }));
+        let mut step = fixture.step(vec![]);
+        let call = ToolCall::new("call_1", "copyToClipboard", json!({"text":"hello"}));
+        step.tool = Some(ToolContext::new(&call));
+
+        run_before_tool_execute(&plugin, &mut step).await;
+
+        let result = step.tool_result().expect("cancel should set tool result");
+        assert_eq!(result.status, tirea_contract::tool::ToolStatus::Error);
+        assert_eq!(result.message.as_deref(), Some("user denied"));
+        let resume = step
+            .ctx()
+            .resume_input_for("call_1")
+            .expect("resume input should still be readable")
+            .expect("resume input should exist");
+        assert_eq!(resume.action, ResumeDecisionAction::Cancel);
     }
 
     #[test]

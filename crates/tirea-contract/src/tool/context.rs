@@ -5,6 +5,8 @@
 //! entity (`Thread`) invisible to tools and plugins.
 
 use crate::runtime::activity::ActivityManager;
+use crate::runtime::state_paths::TOOL_CALL_STATES_STATE_PATH;
+use crate::runtime::{ToolCallResume, ToolCallState, ToolCallStatesState};
 use crate::thread::Message;
 use crate::RunConfig;
 use futures::future::pending;
@@ -12,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use tirea_state::{
-    get_at_path, parse_path, DocCell, Op, Patch, PatchSink, State, TireaError, TireaResult,
+    get_at_path, parse_path, DocCell, Op, Patch, PatchSink, Path, State, TireaError, TireaResult,
     TrackedPatch,
 };
 use tokio_util::sync::CancellationToken;
@@ -95,6 +97,19 @@ impl<'a> ToolCallContextInit<'a> {
 }
 
 impl<'a> ToolCallContext<'a> {
+    fn tool_call_state_path(call_id: &str) -> Path {
+        Path::root()
+            .key(TOOL_CALL_STATES_STATE_PATH)
+            .key("calls")
+            .key(call_id)
+    }
+
+    fn apply_op(&self, op: Op) -> TireaResult<()> {
+        self.doc.apply(&op)?;
+        self.ops.lock().unwrap().push(op);
+        Ok(())
+    }
+
     /// Create a new tool call context.
     pub fn new(
         doc: &'a DocCell,
@@ -222,6 +237,65 @@ impl<'a> ToolCallContext<'a> {
     pub fn call_state<T: State>(&self) -> T::Ref<'_> {
         let path = format!("tool_calls.{}", self.call_id);
         self.state::<T>(&path)
+    }
+
+    /// Read persisted runtime state for a specific tool call.
+    pub fn tool_call_state_for(&self, call_id: &str) -> TireaResult<Option<ToolCallState>> {
+        if call_id.trim().is_empty() {
+            return Ok(None);
+        }
+        let runtime = self.state_of::<ToolCallStatesState>();
+        let calls = runtime.calls()?;
+        Ok(calls.get(call_id).cloned())
+    }
+
+    /// Read persisted runtime state for current `call_id`.
+    pub fn tool_call_state(&self) -> TireaResult<Option<ToolCallState>> {
+        self.tool_call_state_for(self.call_id())
+    }
+
+    /// Upsert persisted runtime state for a specific tool call.
+    pub fn set_tool_call_state_for(&self, call_id: &str, state: ToolCallState) -> TireaResult<()> {
+        if call_id.trim().is_empty() {
+            return Err(TireaError::invalid_operation(
+                "tool_call_state requires non-empty call_id",
+            ));
+        }
+        let value = serde_json::to_value(state)?;
+        self.apply_op(Op::set(Self::tool_call_state_path(call_id), value))
+    }
+
+    /// Upsert persisted runtime state for current `call_id`.
+    pub fn set_tool_call_state(&self, state: ToolCallState) -> TireaResult<()> {
+        self.set_tool_call_state_for(self.call_id(), state)
+    }
+
+    /// Remove persisted runtime state for a specific tool call.
+    pub fn clear_tool_call_state_for(&self, call_id: &str) -> TireaResult<()> {
+        if call_id.trim().is_empty() {
+            return Ok(());
+        }
+        if self.tool_call_state_for(call_id)?.is_some() {
+            self.apply_op(Op::delete(Self::tool_call_state_path(call_id)))?;
+        }
+        Ok(())
+    }
+
+    /// Remove persisted runtime state for current `call_id`.
+    pub fn clear_tool_call_state(&self) -> TireaResult<()> {
+        self.clear_tool_call_state_for(self.call_id())
+    }
+
+    /// Read resume payload for a specific tool call.
+    pub fn resume_input_for(&self, call_id: &str) -> TireaResult<Option<ToolCallResume>> {
+        Ok(self
+            .tool_call_state_for(call_id)?
+            .and_then(|state| state.resume))
+    }
+
+    /// Read resume payload for current `call_id`.
+    pub fn resume_input(&self) -> TireaResult<Option<ToolCallResume>> {
+        self.resume_input_for(self.call_id())
     }
 
     // =========================================================================
@@ -429,7 +503,7 @@ impl ActivityContext {
 mod tests {
     use super::*;
     use crate::runtime::activity::ActivityManager;
-    use crate::runtime::control::InferenceErrorState;
+    use crate::runtime::control::{InferenceErrorState, ResumeDecisionAction};
     use serde_json::json;
     use std::sync::Arc;
     use tokio::time::{timeout, Duration};
@@ -576,6 +650,77 @@ mod tests {
         .expect("failed to set inference_error");
 
         assert!(ctx.has_changes());
+    }
+
+    #[test]
+    fn test_tool_call_state_roundtrip_and_resume_input() {
+        let doc = DocCell::new(json!({}));
+        let ops = Mutex::new(Vec::new());
+        let scope = RunConfig::default();
+        let pending = Mutex::new(Vec::new());
+        let ctx = make_ctx(&doc, &ops, &scope, &pending);
+
+        let state = ToolCallState {
+            call_id: "call.1".to_string(),
+            tool_name: "confirm".to_string(),
+            arguments: json!({"value": 1}),
+            status: crate::runtime::ToolCallStatus::Resuming,
+            resume_token: Some("resume.1".to_string()),
+            resume: Some(crate::runtime::ToolCallResume {
+                decision_id: "decision_1".to_string(),
+                action: ResumeDecisionAction::Resume,
+                result: json!({"approved": true}),
+                reason: None,
+                updated_at: 123,
+            }),
+            scratch: json!({"k": "v"}),
+            updated_at: 124,
+        };
+
+        ctx.set_tool_call_state_for("call.1", state.clone())
+            .expect("state should be persisted");
+
+        let loaded = ctx
+            .tool_call_state_for("call.1")
+            .expect("state read should succeed");
+        assert_eq!(loaded, Some(state.clone()));
+
+        let resume = ctx
+            .resume_input_for("call.1")
+            .expect("resume read should succeed");
+        assert_eq!(resume, state.resume);
+    }
+
+    #[test]
+    fn test_clear_tool_call_state_for_removes_entry() {
+        let doc = DocCell::new(json!({}));
+        let ops = Mutex::new(Vec::new());
+        let scope = RunConfig::default();
+        let pending = Mutex::new(Vec::new());
+        let ctx = make_ctx(&doc, &ops, &scope, &pending);
+
+        ctx.set_tool_call_state_for(
+            "call-1",
+            ToolCallState {
+                call_id: "call-1".to_string(),
+                tool_name: "echo".to_string(),
+                arguments: json!({"x": 1}),
+                status: crate::runtime::ToolCallStatus::Running,
+                resume_token: None,
+                resume: None,
+                scratch: Value::Null,
+                updated_at: 1,
+            },
+        )
+        .expect("state should be set");
+
+        ctx.clear_tool_call_state_for("call-1")
+            .expect("clear should succeed");
+        assert_eq!(
+            ctx.tool_call_state_for("call-1")
+                .expect("state read should succeed"),
+            None
+        );
     }
 
     #[test]

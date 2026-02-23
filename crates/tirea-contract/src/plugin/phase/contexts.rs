@@ -1,6 +1,7 @@
 use super::{Phase, RunAction, StepContext, SuspendTicket, ToolAction, ToolGateDecision};
 use crate::event::termination::TerminationReason;
 use crate::runtime::result::StreamResult;
+use crate::runtime::{ToolCallResume, ToolCallState};
 use crate::thread::Message;
 use crate::tool::contract::ToolResult;
 use crate::RunConfig;
@@ -151,6 +152,18 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
         self.step.tool_args()
     }
 
+    /// Runtime state for current tool call, if present.
+    pub fn tool_call_state(&self) -> Option<ToolCallState> {
+        let call_id = self.tool_call_id()?;
+        self.step.ctx().tool_call_state_for(call_id).ok().flatten()
+    }
+
+    /// Resume payload attached to current tool call, if present.
+    pub fn resume_input(&self) -> Option<ToolCallResume> {
+        let call_id = self.tool_call_id()?;
+        self.step.ctx().resume_input_for(call_id).ok().flatten()
+    }
+
     pub fn decision(&self) -> ToolGateDecision {
         match self.step.tool_action() {
             ToolAction::Proceed => ToolGateDecision::Proceed,
@@ -176,6 +189,14 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
     /// This clears any previous block/suspend state set by earlier plugins.
     pub fn allow(&mut self) {
         self.step.allow();
+    }
+
+    /// Override current call result directly from plugin logic.
+    ///
+    /// Useful for resumed frontend interactions where the external payload
+    /// should become the tool result without executing a backend tool.
+    pub fn set_tool_result(&mut self, result: ToolResult) {
+        self.step.set_tool_result(result);
     }
 
     pub fn suspend(&mut self, ticket: SuspendTicket) {

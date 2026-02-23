@@ -11,8 +11,8 @@ use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::state_paths::SUSPENDED_TOOL_CALLS_STATE_PATH;
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
-    StreamResult, ToolCallOutcome, ToolExecution, ToolExecutionRequest, ToolExecutionResult,
-    ToolExecutor, ToolExecutorError,
+    StreamResult, ToolCallOutcome, ToolCallState, ToolCallStatus, ToolExecution,
+    ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
 };
 use crate::contracts::thread::Thread;
 use crate::contracts::thread::{Message, MessageMetadata};
@@ -56,6 +56,25 @@ impl<'a> ToolPhaseContext<'a> {
             thread_messages: request.thread_messages,
             cancellation_token: request.cancellation_token,
         }
+    }
+}
+
+fn now_unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64)
+}
+
+fn baseline_tool_call_state(call: &crate::contracts::thread::ToolCall) -> ToolCallState {
+    ToolCallState {
+        call_id: call.id.clone(),
+        tool_name: call.name.clone(),
+        arguments: call.arguments.clone(),
+        status: ToolCallStatus::New,
+        resume_token: None,
+        resume: None,
+        scratch: Value::Null,
+        updated_at: now_unix_millis(),
     }
 }
 
@@ -705,7 +724,6 @@ pub(super) async fn execute_single_tool_with_phases(
         phase_ctx.tool_descriptors.to_vec(),
     );
     step.tool = Some(ToolContext::new(call));
-
     // Phase: BeforeToolExecute
     emit_phase_checked(Phase::BeforeToolExecute, &mut step, phase_ctx.plugins).await?;
 
@@ -741,6 +759,17 @@ pub(super) async fn execute_single_tool_with_phases(
                 patch: None,
             },
             ToolCallOutcome::Failed,
+            None,
+        )
+    } else if let Some(plugin_result) = step.tool_result().cloned() {
+        let outcome = ToolCallOutcome::from_tool_result(&plugin_result);
+        (
+            ToolExecution {
+                call: call.clone(),
+                result: plugin_result,
+                patch: None,
+            },
+            outcome,
             None,
         )
     } else if tool.is_none() {
@@ -838,6 +867,49 @@ pub(super) async fn execute_single_tool_with_phases(
 
     // Phase: AfterToolExecute
     emit_phase_checked(Phase::AfterToolExecute, &mut step, phase_ctx.plugins).await?;
+
+    match outcome {
+        ToolCallOutcome::Suspended => {
+            let mut runtime_state = step
+                .ctx()
+                .tool_call_state_for(&call.id)
+                .map_err(|e| {
+                    AgentLoopError::StateError(format!(
+                        "failed to read suspended tool call state for '{}': {e}",
+                        call.id
+                    ))
+                })?
+                .unwrap_or_else(|| baseline_tool_call_state(call));
+            runtime_state.call_id = call.id.clone();
+            runtime_state.tool_name = call.name.clone();
+            runtime_state.arguments = call.arguments.clone();
+            runtime_state.status = ToolCallStatus::Suspended;
+            runtime_state.resume_token = suspended_call
+                .as_ref()
+                .map(|call| call.invocation.call_id.clone())
+                .or(runtime_state.resume_token);
+            runtime_state.resume = None;
+            runtime_state.updated_at = now_unix_millis();
+            step.ctx()
+                .set_tool_call_state_for(&call.id, runtime_state)
+                .map_err(|e| {
+                    AgentLoopError::StateError(format!(
+                        "failed to persist suspended tool call state for '{}': {e}",
+                        call.id
+                    ))
+                })?;
+        }
+        ToolCallOutcome::Succeeded | ToolCallOutcome::Failed => {
+            step.ctx()
+                .clear_tool_call_state_for(&call.id)
+                .map_err(|e| {
+                    AgentLoopError::StateError(format!(
+                        "failed to clear tool call state for '{}': {e}",
+                        call.id
+                    ))
+                })?;
+        }
+    }
 
     // Flush plugin state ops into pending patches
     let plugin_patch = step.ctx().take_patch();

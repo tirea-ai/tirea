@@ -4,7 +4,7 @@
 //! flow control (suspended tool calls, resume decisions, and inference error envelope).
 
 use crate::event::suspension::{FrontendToolInvocation, Suspension};
-use crate::runtime::state_paths::SUSPENDED_TOOL_CALLS_STATE_PATH;
+use crate::runtime::state_paths::{SUSPENDED_TOOL_CALLS_STATE_PATH, TOOL_CALL_STATES_STATE_PATH};
 use crate::thread::Thread;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -137,6 +137,88 @@ pub struct ResumeDecisionsState {
     pub calls: HashMap<String, ResumeDecision>,
 }
 
+/// Tool call lifecycle status for suspend/resume capable execution.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCallStatus {
+    /// Newly observed call that has not started execution yet.
+    #[default]
+    New,
+    /// Call is currently executing.
+    Running,
+    /// Call is suspended waiting for a resume decision.
+    Suspended,
+    /// Call is resuming with external decision input.
+    Resuming,
+    /// Call finished successfully.
+    Succeeded,
+    /// Call finished with failure.
+    Failed,
+    /// Call was cancelled.
+    Cancelled,
+}
+
+/// Resume input payload attached to a suspended tool call.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolCallResume {
+    /// Idempotency key for the decision submission.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub decision_id: String,
+    /// Resume or cancel action.
+    pub action: ResumeDecisionAction,
+    /// Raw response payload from suspension/frontend.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub result: Value,
+    /// Optional human-readable reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Decision update timestamp (unix millis).
+    #[serde(default)]
+    pub updated_at: u64,
+}
+
+/// Durable per-tool-call runtime state.
+///
+/// This is run-time state persisted in thread state so tool execution can be
+/// resumed as a re-entrant flow (`before_tool_execute -> execute -> after_tool_execute`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, State)]
+pub struct ToolCallState {
+    /// Stable tool call id.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub call_id: String,
+    /// Tool name.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tool_name: String,
+    /// Tool arguments snapshot.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub arguments: Value,
+    /// Lifecycle status.
+    #[serde(default)]
+    pub status: ToolCallStatus,
+    /// Token used by external actor to resume this call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_token: Option<String>,
+    /// Resume payload written by external decision handling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume: Option<ToolCallResume>,
+    /// Plugin/tool scratch data for this call.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub scratch: Value,
+    /// Last update timestamp (unix millis).
+    #[serde(default)]
+    pub updated_at: u64,
+}
+
+/// Durable per-call runtime map persisted at `state["__tool_call_states"]`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[tirea(path = "__tool_call_states")]
+pub struct ToolCallStatesState {
+    /// Runtime state keyed by `tool_call_id`.
+    #[serde(default)]
+    #[tirea(default = "HashMap::new()")]
+    pub calls: HashMap<String, ToolCallState>,
+}
+
 /// Durable inference-error envelope persisted at `state["__inference_error"]`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 #[tirea(path = "__inference_error")]
@@ -149,6 +231,16 @@ pub struct InferenceErrorState {
 pub fn suspended_calls_from_state(state: &Value) -> HashMap<String, SuspendedCall> {
     state
         .get(SUSPENDED_TOOL_CALLS_STATE_PATH)
+        .and_then(|value| value.get("calls"))
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
+}
+
+/// Parse persisted tool call runtime states from a rebuilt state snapshot.
+pub fn tool_call_states_from_state(state: &Value) -> HashMap<String, ToolCallState> {
+    state
+        .get(TOOL_CALL_STATES_STATE_PATH)
         .and_then(|value| value.get("calls"))
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok())

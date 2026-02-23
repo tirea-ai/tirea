@@ -14,7 +14,7 @@ pub use context::RunContext;
 pub use control::{
     InferenceError, InferenceErrorState, ResumeDecision, ResumeDecisionAction,
     ResumeDecisionsState, SuspendedCall, SuspendedCallsExt, SuspendedToolCallsState,
-    ToolCallDecision,
+    ToolCallDecision, ToolCallResume, ToolCallState, ToolCallStatesState, ToolCallStatus,
 };
 pub use delta::RunDelta;
 pub use executor::{

@@ -2,7 +2,7 @@ use super::AgentLoopError;
 use crate::contracts::plugin::phase::StepContext;
 use crate::contracts::runtime::state_paths::{
     INFERENCE_ERROR_STATE_PATH, RESUME_DECISIONS_STATE_PATH, SKILLS_STATE_PATH,
-    SUSPENDED_TOOL_CALLS_STATE_PATH,
+    SUSPENDED_TOOL_CALLS_STATE_PATH, TOOL_CALL_STATES_STATE_PATH,
 };
 use crate::contracts::thread::{Message, MessageMetadata, Role};
 use crate::contracts::tool::Tool;
@@ -11,7 +11,7 @@ use crate::contracts::RunContext;
 use crate::contracts::SuspendedCall;
 use crate::runtime::control::{
     InferenceError, InferenceErrorState, ResumeDecision, ResumeDecisionsState,
-    SuspendedToolCallsState,
+    SuspendedToolCallsState, ToolCallState, ToolCallStatesState,
 };
 use tirea_state::{DocCell, StateContext, TireaError, TrackedPatch};
 
@@ -221,6 +221,38 @@ pub(super) fn resume_decisions_from_ctx(run_ctx: &RunContext) -> HashMap<String,
                 .and_then(|raw| serde_json::from_value::<HashMap<String, ResumeDecision>>(raw).ok())
         })
         .unwrap_or_default()
+}
+
+pub(super) fn tool_call_states_from_ctx(run_ctx: &RunContext) -> HashMap<String, ToolCallState> {
+    run_ctx
+        .snapshot()
+        .ok()
+        .and_then(|state| {
+            state
+                .get(TOOL_CALL_STATES_STATE_PATH)
+                .and_then(|v| v.get("calls"))
+                .cloned()
+                .and_then(|raw| serde_json::from_value::<HashMap<String, ToolCallState>>(raw).ok())
+        })
+        .unwrap_or_default()
+}
+
+pub(super) fn upsert_tool_call_state(
+    state: &Value,
+    call_id: &str,
+    tool_state: ToolCallState,
+) -> Result<TrackedPatch, AgentLoopError> {
+    let doc = DocCell::new(state.clone());
+    let ctx = StateContext::new(&doc);
+    let runtime = ctx.state_of::<ToolCallStatesState>();
+    let mut calls = runtime.calls().ok().unwrap_or_default();
+    calls.insert(call_id.to_string(), tool_state);
+    runtime.set_calls(calls).map_err(|e| {
+        AgentLoopError::StateError(format!(
+            "failed to set {TOOL_CALL_STATES_STATE_PATH}.calls: {e}"
+        ))
+    })?;
+    Ok(ctx.take_tracked_patch("agent_loop"))
 }
 
 pub(super) fn upsert_resume_decision(
