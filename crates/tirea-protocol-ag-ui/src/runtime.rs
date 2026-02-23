@@ -493,11 +493,12 @@ mod tests {
 
         assert!(step.tool_pending());
 
-        // Backward-compat Interaction should still be set
+        // Suspension interaction should be set
         let pending = step
             .tool
             .as_ref()
-            .and_then(|t| t.pending_interaction.as_ref())
+            .and_then(|t| t.suspend_ticket.as_ref())
+            .map(|ticket| &ticket.interaction)
             .expect("pending interaction should exist");
         assert_eq!(pending.action, "tool:copyToClipboard");
 
@@ -505,7 +506,8 @@ mod tests {
         let inv = step
             .tool
             .as_ref()
-            .and_then(|t| t.pending_frontend_invocation.as_ref())
+            .and_then(|t| t.suspend_ticket.as_ref())
+            .and_then(|ticket| ticket.frontend_invocation.as_ref())
             .expect("pending frontend invocation should exist");
         assert_eq!(inv.call_id, "call_1");
         assert_eq!(inv.tool_name, "copyToClipboard");

@@ -1224,8 +1224,9 @@ impl AgentPlugin for InvalidDualToolGatePlugin {
         if let Some(tool) = step.tool.as_mut() {
             tool.blocked = true;
             tool.pending = true;
-            tool.pending_interaction =
-                Some(Interaction::new("confirm", "confirm").with_message("invalid gate"));
+            tool.suspend_ticket = Some(SuspendTicket::new(
+                Interaction::new("confirm", "confirm").with_message("invalid gate"),
+            ));
         }
     });
 }

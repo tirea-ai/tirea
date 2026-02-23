@@ -148,9 +148,6 @@ pub enum ToolGateDecision {
     Cancel { reason: String },
 }
 
-/// Backward-compatible alias during gate contract migration.
-pub type ToolDecision = ToolGateDecision;
-
 /// Context for the currently executing tool.
 #[derive(Debug, Clone)]
 pub struct ToolContext {
@@ -170,11 +167,6 @@ pub struct ToolContext {
     pub pending: bool,
     /// Canonical suspend ticket carrying pause payload.
     pub suspend_ticket: Option<SuspendTicket>,
-    /// Pending interaction (legacy format, kept for backward compatibility).
-    pub pending_interaction: Option<Interaction>,
-    /// Structured frontend tool invocation (first-class model).
-    /// When set, takes precedence over `pending_interaction` for routing.
-    pub pending_frontend_invocation: Option<FrontendToolInvocation>,
 }
 
 impl ToolContext {
@@ -189,8 +181,6 @@ impl ToolContext {
             block_reason: None,
             pending: false,
             suspend_ticket: None,
-            pending_interaction: None,
-            pending_frontend_invocation: None,
         }
     }
 
@@ -432,8 +422,6 @@ impl<'a> StepContext<'a> {
             tool.block_reason = None;
             tool.pending = false;
             tool.suspend_ticket = None;
-            tool.pending_interaction = None;
-            tool.pending_frontend_invocation = None;
         }
     }
 
@@ -446,8 +434,6 @@ impl<'a> StepContext<'a> {
             tool.block_reason = Some(reason.into());
             tool.pending = false;
             tool.suspend_ticket = None;
-            tool.pending_interaction = None;
-            tool.pending_frontend_invocation = None;
         }
     }
 
@@ -459,9 +445,7 @@ impl<'a> StepContext<'a> {
             tool.blocked = false;
             tool.block_reason = None;
             tool.pending = true;
-            tool.suspend_ticket = Some(ticket.clone());
-            tool.pending_interaction = Some(ticket.interaction);
-            tool.pending_frontend_invocation = ticket.frontend_invocation;
+            tool.suspend_ticket = Some(ticket);
         }
     }
 
@@ -530,9 +514,10 @@ impl<'a> StepContext<'a> {
                 if let Some(ticket) = tool.suspend_ticket.as_ref() {
                     return StepOutcome::Pending(ticket.interaction.clone());
                 }
-                if let Some(ref interaction) = tool.pending_interaction {
-                    return StepOutcome::Pending(interaction.clone());
-                }
+                return StepOutcome::Pending(Interaction::new(
+                    tool.id.clone(),
+                    format!("tool:{}", tool.name),
+                ));
             }
         }
 
@@ -700,12 +685,6 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
         if tool.pending {
             if let Some(ticket) = tool.suspend_ticket.as_ref() {
                 return ToolGateDecision::Suspend(ticket.clone());
-            }
-            if let Some(interaction) = tool.pending_interaction.as_ref() {
-                return ToolGateDecision::Suspend(SuspendTicket {
-                    interaction: interaction.clone(),
-                    frontend_invocation: tool.pending_frontend_invocation.clone(),
-                });
             }
             return ToolGateDecision::Suspend(SuspendTicket::new(Interaction::new(
                 tool.id.clone(),
@@ -1027,7 +1006,7 @@ mod tests {
             ctx.tool.as_ref().unwrap().block_reason,
             Some("Permission denied".to_string())
         );
-        assert!(ctx.tool.as_ref().unwrap().pending_interaction.is_none());
+        assert!(ctx.tool.as_ref().unwrap().suspend_ticket.is_none());
     }
 
     #[test]
@@ -1044,7 +1023,7 @@ mod tests {
         assert!(ctx.tool_pending());
         assert!(!ctx.tool_blocked());
         assert!(ctx.tool.as_ref().unwrap().block_reason.is_none());
-        assert!(ctx.tool.as_ref().unwrap().pending_interaction.is_some());
+        assert!(ctx.tool.as_ref().unwrap().suspend_ticket.is_some());
     }
 
     #[test]
@@ -1062,7 +1041,7 @@ mod tests {
         assert!(!ctx.tool_pending());
         assert!(!ctx.tool_blocked());
         assert!(ctx.tool.as_ref().unwrap().block_reason.is_none());
-        assert!(ctx.tool.as_ref().unwrap().pending_interaction.is_none());
+        assert!(ctx.tool.as_ref().unwrap().suspend_ticket.is_none());
     }
 
     #[test]
@@ -1085,12 +1064,14 @@ mod tests {
         ctx.allow();
         assert!(!ctx.tool_blocked());
         assert!(!ctx.tool_pending());
-        assert!(ctx.tool.as_ref().unwrap().pending_interaction.is_none());
+        assert!(ctx.tool.as_ref().unwrap().suspend_ticket.is_none());
         assert!(ctx
             .tool
             .as_ref()
             .unwrap()
-            .pending_frontend_invocation
+            .suspend_ticket
+            .as_ref()
+            .and_then(|ticket| ticket.frontend_invocation.as_ref())
             .is_none());
     }
 
@@ -1148,13 +1129,10 @@ mod tests {
 
         let ticket_interaction =
             Interaction::new("ticket_1", "confirm").with_message("Suspend via ticket");
-        let legacy_interaction =
-            Interaction::new("legacy_1", "confirm").with_message("Legacy pending interaction");
 
         if let Some(tool) = ctx.tool.as_mut() {
             tool.pending = true;
             tool.suspend_ticket = Some(SuspendTicket::new(ticket_interaction.clone()));
-            tool.pending_interaction = Some(legacy_interaction);
         }
 
         match ctx.result() {
@@ -1175,13 +1153,10 @@ mod tests {
 
         let ticket_interaction =
             Interaction::new("ticket_2", "confirm").with_message("Suspend via ticket");
-        let legacy_interaction =
-            Interaction::new("legacy_2", "confirm").with_message("Legacy pending interaction");
 
         if let Some(tool) = step.tool.as_mut() {
             tool.pending = true;
             tool.suspend_ticket = Some(SuspendTicket::new(ticket_interaction.clone()));
-            tool.pending_interaction = Some(legacy_interaction);
         }
 
         let ctx = BeforeToolExecuteContext::new(&mut step);
@@ -1469,17 +1444,17 @@ mod tests {
     }
 
     #[test]
-    fn test_tool_context_pending_interaction() {
+    fn test_tool_context_suspend_ticket() {
         let call = ToolCall::new("call_1", "test", json!({}));
         let mut tool_ctx = ToolContext::new(&call);
 
-        assert!(tool_ctx.pending_interaction.is_none());
+        assert!(tool_ctx.suspend_ticket.is_none());
 
         let interaction = Interaction::new("confirm_1", "confirm").with_message("Test?");
-        tool_ctx.pending_interaction = Some(interaction.clone());
+        tool_ctx.suspend_ticket = Some(SuspendTicket::new(interaction.clone()));
 
         assert_eq!(
-            tool_ctx.pending_interaction.as_ref().unwrap().id,
+            tool_ctx.suspend_ticket.as_ref().unwrap().interaction.id,
             "confirm_1"
         );
     }
@@ -1509,9 +1484,10 @@ mod tests {
             .tool
             .as_ref()
             .unwrap()
-            .pending_frontend_invocation
+            .suspend_ticket
             .as_ref()
-            .unwrap();
+            .and_then(|ticket| ticket.frontend_invocation.as_ref())
+            .expect("pending frontend invocation should exist");
         assert_eq!(invocation.call_id, "call_copy");
         assert_eq!(invocation.tool_name, "copyToClipboard");
         assert!(matches!(
@@ -1528,8 +1504,9 @@ mod tests {
             .tool
             .as_ref()
             .unwrap()
-            .pending_interaction
+            .suspend_ticket
             .as_ref()
+            .map(|ticket| &ticket.interaction)
             .unwrap();
         assert_eq!(interaction.id, "call_copy");
         assert_eq!(interaction.action, "tool:copyToClipboard");
@@ -1562,9 +1539,10 @@ mod tests {
             .tool
             .as_ref()
             .unwrap()
-            .pending_frontend_invocation
+            .suspend_ticket
             .as_ref()
-            .unwrap();
+            .and_then(|ticket| ticket.frontend_invocation.as_ref())
+            .expect("pending frontend invocation should exist");
         assert_eq!(invocation.call_id, call_id);
         assert_eq!(invocation.tool_name, "PermissionConfirm");
         assert!(matches!(
