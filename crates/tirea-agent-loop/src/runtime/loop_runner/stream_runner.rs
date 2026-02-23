@@ -119,7 +119,7 @@ pub(super) fn run_stream(
     run_ctx: RunContext,
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
-    decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
+    decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     Box::pin(stream! {
     let mut run_ctx = run_ctx;

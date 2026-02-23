@@ -15,7 +15,7 @@ use crate::contracts::thread::Message;
 use crate::contracts::thread::Thread;
 use crate::contracts::tool::Tool;
 use crate::contracts::RunContext;
-use crate::contracts::{AgentEvent, InteractionResponse, RunRequest};
+use crate::contracts::{AgentEvent, RunRequest, ToolCallDecision};
 use crate::extensions::skills::{
     CompositeSkillRegistry, InMemorySkillRegistry, Skill, SkillDiscoveryPlugin, SkillError,
     SkillPlugin, SkillRegistry, SkillRegistryError, SkillRegistryManagerError, SkillRuntimePlugin,
@@ -288,18 +288,18 @@ pub struct RunStream {
     ///
     /// The receiver is owned by the running loop. Sending a decision while the
     /// run is active allows mid-run resolution of suspended tool calls.
-    pub decision_tx: tokio::sync::mpsc::UnboundedSender<InteractionResponse>,
+    pub decision_tx: tokio::sync::mpsc::UnboundedSender<ToolCallDecision>,
     /// The agent event stream.
     pub events: Pin<Box<dyn Stream<Item = AgentEvent> + Send>>,
 }
 
 impl RunStream {
     /// Submit one interaction decision to the active run.
-    pub fn submit_decision(
+    pub fn submit_decision<D: Into<ToolCallDecision>>(
         &self,
-        response: InteractionResponse,
-    ) -> Result<(), tokio::sync::mpsc::error::SendError<InteractionResponse>> {
-        self.decision_tx.send(response)
+        response: D,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<ToolCallDecision>> {
+        self.decision_tx.send(response.into())
     }
 }
 
@@ -317,8 +317,8 @@ pub struct PreparedRun {
     run_ctx: RunContext,
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
-    decision_tx: tokio::sync::mpsc::UnboundedSender<InteractionResponse>,
-    decision_rx: tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>,
+    decision_tx: tokio::sync::mpsc::UnboundedSender<ToolCallDecision>,
+    decision_rx: tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>,
 }
 
 impl PreparedRun {

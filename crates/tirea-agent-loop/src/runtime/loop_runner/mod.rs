@@ -60,8 +60,8 @@ use crate::contracts::tool::{Tool, ToolResult};
 use crate::contracts::RunContext;
 use crate::contracts::StopReason;
 use crate::contracts::{
-    AgentEvent, FrontendToolInvocation, Interaction, InteractionResponse, SuspendedCall,
-    TerminationReason,
+    AgentEvent, FrontendToolInvocation, Interaction, SuspendedCall, TerminationReason,
+    ToolCallDecision,
 };
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
 use crate::engine::stop_conditions::check_stop_policies;
@@ -706,13 +706,18 @@ async fn drain_resume_decisions_and_replay(
                 suspended_to_clear.push(call_id);
             }
             ResumeDecisionAction::Resume => {
-                let replay_response = InteractionResponse::new(
-                    suspended_call.interaction.id.clone(),
-                    decision_result.clone(),
-                );
-                let Some(tool_call) =
-                    replay_tool_call_for_resolution(run_ctx, &suspended_call, &replay_response)
-                else {
+                let Some(tool_call) = replay_tool_call_for_resolution(
+                    run_ctx,
+                    &suspended_call,
+                    &ToolCallDecision {
+                        target_id: suspended_call.call_id.clone(),
+                        decision_id: decision.decision_id.clone(),
+                        action: decision.action.clone(),
+                        result: decision_result.clone(),
+                        reason: decision.reason.clone(),
+                        updated_at: decision.updated_at,
+                    },
+                ) else {
                     continue;
                 };
                 let state = run_ctx
@@ -990,9 +995,9 @@ fn find_tool_call_in_messages(run_ctx: &RunContext, call_id: &str) -> Option<Too
 fn replay_tool_call_for_resolution(
     run_ctx: &RunContext,
     suspended_call: &SuspendedCall,
-    response: &InteractionResponse,
+    decision: &ToolCallDecision,
 ) -> Option<ToolCall> {
-    if InteractionResponse::is_denied(&response.result) {
+    if matches!(decision.action, ResumeDecisionAction::Cancel) {
         return None;
     }
 
@@ -1023,14 +1028,10 @@ fn replay_tool_call_for_resolution(
                 return Some(ToolCall::new(
                     invocation.call_id.clone(),
                     invocation.tool_name.clone(),
-                    normalize_frontend_tool_result(&response.result, &invocation.arguments),
+                    normalize_frontend_tool_result(&decision.result, &invocation.arguments),
                 ));
             }
         }
-    }
-
-    if !InteractionResponse::is_approved(&response.result) {
-        return None;
     }
 
     find_tool_call_in_messages(run_ctx, &suspended_call.call_id).or_else(|| {
@@ -1046,24 +1047,22 @@ fn replay_tool_call_for_resolution(
     })
 }
 
-fn resume_decision_from_response(response: &InteractionResponse) -> ResumeDecision {
-    let action = if InteractionResponse::is_denied(&response.result) {
-        ResumeDecisionAction::Cancel
-    } else {
-        ResumeDecisionAction::Resume
-    };
+fn resume_decision_from_response(response: &ToolCallDecision) -> ResumeDecision {
     ResumeDecision {
-        decision_id: format!("decision_{}", uuid_v7()),
-        action,
+        decision_id: response.decision_id.clone(),
+        action: response.action.clone(),
         result: response.result.clone(),
-        reason: denied_reason_from_response(&response.result),
-        updated_at: current_unix_millis(),
+        reason: response
+            .reason
+            .clone()
+            .or_else(|| denied_reason_from_response(&response.result)),
+        updated_at: response.updated_at,
     }
 }
 
 pub(super) fn resolve_suspended_call(
     run_ctx: &mut RunContext,
-    response: &InteractionResponse,
+    response: &ToolCallDecision,
 ) -> Result<Option<DecisionReplayOutcome>, AgentLoopError> {
     let suspended_calls = suspended_calls_from_ctx(run_ctx);
     if suspended_calls.is_empty() {
@@ -1071,12 +1070,18 @@ pub(super) fn resolve_suspended_call(
     }
 
     let suspended_call = suspended_calls
-        .get(&response.interaction_id)
+        .get(&response.target_id)
         .cloned()
         .or_else(|| {
             suspended_calls
                 .values()
-                .find(|call| call.interaction.id == response.interaction_id)
+                .find(|call| {
+                    call.interaction.id == response.target_id
+                        || call
+                            .frontend_invocation
+                            .as_ref()
+                            .is_some_and(|inv| inv.call_id == response.target_id)
+                })
                 .cloned()
         });
     let Some(suspended_call) = suspended_call else {
@@ -1100,8 +1105,8 @@ pub(super) fn resolve_suspended_call(
 
 pub(super) fn drain_decision_channel(
     run_ctx: &mut RunContext,
-    decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
-    pending_decisions: &mut VecDeque<InteractionResponse>,
+    decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
+    pending_decisions: &mut VecDeque<ToolCallDecision>,
 ) -> Result<DecisionReplayOutcome, AgentLoopError> {
     let mut disconnected = false;
     if let Some(rx) = decision_rx.as_mut() {
@@ -1184,8 +1189,8 @@ async fn replay_after_decisions(
 
 async fn apply_decisions_and_replay(
     run_ctx: &mut RunContext,
-    decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
-    pending_decisions: &mut VecDeque<InteractionResponse>,
+    decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
+    pending_decisions: &mut VecDeque<ToolCallDecision>,
     step_tool_provider: &Arc<dyn StepToolProvider>,
     config: &AgentConfig,
     active_tool_descriptors: &mut Vec<crate::contracts::tool::ToolDescriptor>,
@@ -1213,9 +1218,9 @@ pub(super) struct DecisionReplayOutcome {
 
 async fn apply_decision_and_replay(
     run_ctx: &mut RunContext,
-    response: InteractionResponse,
-    decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
-    pending_decisions: &mut VecDeque<InteractionResponse>,
+    response: ToolCallDecision,
+    decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
+    pending_decisions: &mut VecDeque<ToolCallDecision>,
     step_tool_provider: &Arc<dyn StepToolProvider>,
     config: &AgentConfig,
     active_tool_descriptors: &mut Vec<crate::contracts::tool::ToolDescriptor>,
@@ -1242,8 +1247,8 @@ async fn apply_decision_and_replay(
 }
 
 async fn recv_decision(
-    decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
-) -> Option<InteractionResponse> {
+    decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
+) -> Option<ToolCallDecision> {
     let rx = decision_rx.as_mut()?;
     rx.recv().await
 }
@@ -1259,7 +1264,7 @@ pub async fn run_loop(
     mut run_ctx: RunContext,
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
-    mut decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
+    mut decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
 ) -> LoopOutcome {
     let executor = llm_executor_for_run(config);
     let mut run_state = RunState::new();
@@ -1661,7 +1666,7 @@ pub fn run_loop_stream(
     run_ctx: RunContext,
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
-    decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<InteractionResponse>>,
+    decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     stream_runner::run_stream(
         config,

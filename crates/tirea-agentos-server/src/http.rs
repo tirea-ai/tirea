@@ -16,7 +16,7 @@ use tirea_agentos::contracts::storage::{
     MessageQuery, SortOrder,
 };
 use tirea_agentos::contracts::thread::{Thread, Visibility};
-use tirea_agentos::contracts::{AgentEvent, InteractionResponse};
+use tirea_agentos::contracts::{AgentEvent, InteractionResponse, ToolCallDecision};
 use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError, RunStream};
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
 use tirea_contract::{ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder};
@@ -75,14 +75,14 @@ fn ai_sdk_stream_key(agent_id: &str, chat_id: &str) -> String {
 
 #[derive(Default)]
 struct ActiveRunRegistry {
-    decisions: RwLock<HashMap<String, tokio::sync::mpsc::UnboundedSender<InteractionResponse>>>,
+    decisions: RwLock<HashMap<String, tokio::sync::mpsc::UnboundedSender<ToolCallDecision>>>,
 }
 
 impl ActiveRunRegistry {
     async fn register(
         &self,
         key: String,
-        decision_tx: tokio::sync::mpsc::UnboundedSender<InteractionResponse>,
+        decision_tx: tokio::sync::mpsc::UnboundedSender<ToolCallDecision>,
     ) {
         self.decisions.write().await.insert(key, decision_tx);
     }
@@ -90,7 +90,7 @@ impl ActiveRunRegistry {
     async fn decision_tx_for(
         &self,
         key: &str,
-    ) -> Option<tokio::sync::mpsc::UnboundedSender<InteractionResponse>> {
+    ) -> Option<tokio::sync::mpsc::UnboundedSender<ToolCallDecision>> {
         self.decisions.read().await.get(key).cloned()
     }
 
@@ -455,7 +455,7 @@ async fn try_forward_decisions_to_active_run(
     };
 
     for response in responses {
-        if decision_tx.send(response).is_err() {
+        if decision_tx.send(response.into()).is_err() {
             active_run_registry().remove(active_key).await;
             return false;
         }

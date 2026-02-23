@@ -3,7 +3,7 @@
 //! These types define durable runtime control state for cross-step and cross-run
 //! flow control (suspended tool calls, resume decisions, and inference error envelope).
 
-use crate::event::interaction::{FrontendToolInvocation, Interaction};
+use crate::event::interaction::{FrontendToolInvocation, Interaction, InteractionResponse};
 use crate::thread::Thread;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -53,6 +53,71 @@ pub struct SuspendedToolCallsState {
 pub enum ResumeDecisionAction {
     Resume,
     Cancel,
+}
+
+/// External decision command routed to a suspended tool call.
+///
+/// `target_id` may refer to:
+/// - suspended `call_id`
+/// - interaction id
+/// - frontend invocation call id
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolCallDecision {
+    /// External target identifier used to resolve suspended call.
+    pub target_id: String,
+    /// Idempotency key for the decision submission.
+    pub decision_id: String,
+    /// Resume or cancel action.
+    pub action: ResumeDecisionAction,
+    /// Raw response payload from interaction/frontend.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub result: Value,
+    /// Optional human-readable reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Decision update timestamp (unix millis).
+    pub updated_at: u64,
+}
+
+impl ToolCallDecision {
+    /// Build a decision from a legacy interaction response payload.
+    pub fn from_interaction_response(response: InteractionResponse, updated_at: u64) -> Self {
+        let action = if InteractionResponse::is_denied(&response.result) {
+            ResumeDecisionAction::Cancel
+        } else {
+            ResumeDecisionAction::Resume
+        };
+        let reason = if matches!(action, ResumeDecisionAction::Cancel) {
+            response
+                .result
+                .as_object()
+                .and_then(|obj| {
+                    obj.get("reason")
+                        .and_then(Value::as_str)
+                        .or_else(|| obj.get("message").and_then(Value::as_str))
+                })
+                .map(str::to_string)
+        } else {
+            None
+        };
+        Self {
+            target_id: response.interaction_id.clone(),
+            decision_id: format!("decision_{}", response.interaction_id),
+            action,
+            result: response.result,
+            reason,
+            updated_at,
+        }
+    }
+}
+
+impl From<InteractionResponse> for ToolCallDecision {
+    fn from(response: InteractionResponse) -> Self {
+        let updated_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64);
+        Self::from_interaction_response(response, updated_at)
+    }
 }
 
 /// One pending decision waiting to be applied to a suspended tool call.
@@ -138,5 +203,32 @@ mod tests {
 
         let err = InferenceErrorState::default();
         assert!(err.error.is_none());
+    }
+
+    #[test]
+    fn tool_call_decision_from_interaction_response_resume() {
+        let response = InteractionResponse::new("fc_1", Value::Bool(true));
+        let decision = ToolCallDecision::from_interaction_response(response, 123);
+        assert_eq!(decision.target_id, "fc_1");
+        assert_eq!(decision.decision_id, "decision_fc_1");
+        assert!(matches!(decision.action, ResumeDecisionAction::Resume));
+        assert_eq!(decision.result, Value::Bool(true));
+        assert!(decision.reason.is_none());
+        assert_eq!(decision.updated_at, 123);
+    }
+
+    #[test]
+    fn tool_call_decision_from_interaction_response_cancel_with_reason() {
+        let response = InteractionResponse::new(
+            "fc_2",
+            serde_json::json!({
+                "approved": false,
+                "reason": "denied by user"
+            }),
+        );
+        let decision = ToolCallDecision::from_interaction_response(response, 456);
+        assert!(matches!(decision.action, ResumeDecisionAction::Cancel));
+        assert_eq!(decision.reason.as_deref(), Some("denied by user"));
+        assert_eq!(decision.updated_at, 456);
     }
 }

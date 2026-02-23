@@ -10260,10 +10260,7 @@ async fn test_run_loop_decision_channel_ignores_unknown_interaction_id() {
         AgentConfig::new("mock").with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
     let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
     decision_tx
-        .send(crate::contracts::InteractionResponse::new(
-            "unknown_call",
-            json!(true),
-        ))
+        .send(crate::contracts::InteractionResponse::new("unknown_call", json!(true)).into())
         .expect("send decision");
     drop(decision_tx);
 
@@ -10342,10 +10339,7 @@ async fn test_stream_decision_channel_ignores_unknown_interaction_id() {
         Arc::new(ChannelStateCommitter::new(checkpoint_tx));
     let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
     decision_tx
-        .send(crate::contracts::InteractionResponse::new(
-            "unknown_call",
-            json!(true),
-        ))
+        .send(crate::contracts::InteractionResponse::new("unknown_call", json!(true)).into())
         .expect("send decision");
     drop(decision_tx);
 
@@ -10496,10 +10490,13 @@ async fn test_run_loop_decision_channel_resolves_suspended_call() {
 
     ready.notified().await;
     decision_tx
-        .send(crate::contracts::InteractionResponse::new(
-            "call_pending",
-            json!({"approved": true, "message": "need approval"}),
-        ))
+        .send(
+            crate::contracts::InteractionResponse::new(
+                "call_pending",
+                json!({"approved": true, "message": "need approval"}),
+            )
+            .into(),
+        )
         .expect("send decision");
     release.notify_one();
 
@@ -10572,10 +10569,13 @@ async fn test_run_loop_decision_channel_cancel_emits_single_tool_result_message(
 
     let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
     decision_tx
-        .send(crate::contracts::InteractionResponse::new(
-            "call_pending",
-            json!({"status": "cancelled", "reason": "User canceled in UI"}),
-        ))
+        .send(
+            crate::contracts::InteractionResponse::new(
+                "call_pending",
+                json!({"status": "cancelled", "reason": "User canceled in UI"}),
+            )
+            .into(),
+        )
         .expect("send cancel decision");
     drop(decision_tx);
 
@@ -10721,10 +10721,13 @@ async fn test_run_loop_stream_decision_channel_emits_resolution_and_replay() {
 
     ready.notified().await;
     decision_tx
-        .send(crate::contracts::InteractionResponse::new(
-            "call_pending",
-            json!({"approved": true, "message": "need approval"}),
-        ))
+        .send(
+            crate::contracts::InteractionResponse::new(
+                "call_pending",
+                json!({"approved": true, "message": "need approval"}),
+            )
+            .into(),
+        )
         .expect("send decision");
     release.notify_one();
 
@@ -10852,10 +10855,13 @@ async fn test_run_loop_decision_channel_buffers_early_response_for_all_suspended
 
     entered.notified().await;
     decision_tx
-        .send(crate::contracts::InteractionResponse::new(
-            "call_pending",
-            json!({"approved": true, "message": "need approval"}),
-        ))
+        .send(
+            crate::contracts::InteractionResponse::new(
+                "call_pending",
+                json!({"approved": true, "message": "need approval"}),
+            )
+            .into(),
+        )
         .expect("send decision");
     allow_pending.notify_one();
 
@@ -10974,10 +10980,13 @@ async fn test_stream_decision_channel_buffers_early_response_for_all_suspended_t
 
     entered.notified().await;
     decision_tx
-        .send(crate::contracts::InteractionResponse::new(
-            "call_pending",
-            json!({"approved": true, "message": "need approval"}),
-        ))
+        .send(
+            crate::contracts::InteractionResponse::new(
+                "call_pending",
+                json!({"approved": true, "message": "need approval"}),
+            )
+            .into(),
+        )
         .expect("send decision");
     allow_pending.notify_one();
 
@@ -11075,10 +11084,7 @@ async fn test_stream_decision_channel_drains_while_inference_stream_is_running()
 
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     decision_tx
-        .send(crate::contracts::InteractionResponse::new(
-            "call_pending",
-            json!(true),
-        ))
+        .send(crate::contracts::InteractionResponse::new("call_pending", json!(true)).into())
         .expect("send decision");
     tokio::time::sleep(std::time::Duration::from_millis(40)).await;
     token.cancel();
@@ -11188,10 +11194,7 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_resume_decisio
 
     let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
     decision_tx
-        .send(crate::contracts::InteractionResponse::new(
-            "fc_perm_1",
-            json!(true),
-        ))
+        .send(crate::contracts::InteractionResponse::new("fc_perm_1", json!(true)).into())
         .expect("send decision");
     drop(decision_tx);
 
