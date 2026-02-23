@@ -7,6 +7,10 @@ src = "src"
 [build]
 build-dir = "../../target/book"
 
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
 [output.html]
 default-theme = "rust"
 git-repository-url = "https://github.com/chaizhenhua/tirea"
+additional-js = ["mermaid.min.js", "mermaid-init.js"]

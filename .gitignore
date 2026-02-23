@@ -14,3 +14,7 @@ e2e/**/.next/
 e2e/**/node_modules/
 travel_stderr.log
 threads/
+
+# mdbook-mermaid generated assets
+docs/book/mermaid.min.js
+docs/book/mermaid-init.js

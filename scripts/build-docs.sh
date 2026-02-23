@@ -6,6 +6,14 @@ WORKSPACE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 echo "==> Building cargo doc..."
 cargo doc --workspace --no-deps --manifest-path "$WORKSPACE_ROOT/Cargo.toml"
 
+if ! command -v mdbook-mermaid >/dev/null 2>&1; then
+    echo "error: mdbook-mermaid is required. Install with: cargo install mdbook-mermaid"
+    exit 1
+fi
+
+echo "==> Installing Mermaid support..."
+mdbook-mermaid install "$WORKSPACE_ROOT/docs/book"
+
 echo "==> Building mdBook..."
 mdbook build "$WORKSPACE_ROOT/docs/book"
 
