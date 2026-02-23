@@ -214,15 +214,15 @@ pub(super) fn run_stream(
             ($termination_expr:expr, $response_expr:expr) => {{
                 let reason: TerminationReason = $termination_expr;
                 // When suspended calls exist, unresolved external input should keep
-                // the run in PendingInteraction regardless of plugin termination hint.
+                // the run in Suspended regardless of plugin termination hint.
                 let final_termination = if !matches!(reason, TerminationReason::Error | TerminationReason::Cancelled)
                     && has_suspended_calls(&run_ctx)
                 {
-                    TerminationReason::PendingInteraction
+                    TerminationReason::Suspended
                 } else {
                     reason
                 };
-                let final_response = if final_termination == TerminationReason::PendingInteraction {
+                let final_response = if final_termination == TerminationReason::Suspended {
                     None
                 } else {
                     $response_expr
@@ -333,7 +333,7 @@ pub(super) fn run_stream(
 
             // Plugin-requested termination takes precedence over plain skip_inference.
             if let Some(reason) = prepared.termination_request {
-                if matches!(reason, TerminationReason::PendingInteraction) {
+                if matches!(reason, TerminationReason::Suspended) {
                     for event in suspended_call_pending_events(&run_ctx) {
                         yield emitter.emit_existing(event);
                     }
@@ -799,7 +799,7 @@ pub(super) fn run_stream(
                     !matches!(r.outcome, crate::contracts::ToolCallOutcome::Suspended)
                 });
                 if !has_completed {
-                    finish_run!(TerminationReason::PendingInteraction, None);
+                    finish_run!(TerminationReason::Suspended, None);
                 }
             }
 

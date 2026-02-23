@@ -475,7 +475,7 @@ pub async fn execute_tools_with_plugins_and_executor(
 
     if replay.replayed {
         if let Some(first) = run_ctx.suspended_calls().values().next().cloned() {
-            return Err(AgentLoopError::PendingInteraction {
+            return Err(AgentLoopError::Suspended {
                 run_ctx: Box::new(run_ctx),
                 interaction: Box::new(first.interaction),
             });
@@ -527,7 +527,7 @@ pub async fn execute_tools_with_plugins_and_executor(
         executor.requires_parallel_patch_conflict_check(),
     )?;
     if let Some(first) = applied.suspended_calls.first() {
-        return Err(AgentLoopError::PendingInteraction {
+        return Err(AgentLoopError::Suspended {
             run_ctx: Box::new(run_ctx),
             interaction: Box::new(first.interaction.clone()),
         });

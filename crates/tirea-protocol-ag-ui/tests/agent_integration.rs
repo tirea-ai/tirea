@@ -3004,8 +3004,8 @@ fn test_agent_loop_error_all_variants() {
             || display.contains("MaxRoundsReached")
     );
 
-    // PendingInteraction
-    let pending_err = AgentLoopError::PendingInteraction {
+    // Suspended
+    let pending_err = AgentLoopError::Suspended {
         run_ctx: Box::new(tirea_agentos::contracts::RunContext::new(
             "s",
             serde_json::json!({}),
@@ -6266,7 +6266,7 @@ async fn test_permission_flow_multiple_tools_mixed() {
 
 /// Test: PermissionPlugin "ask" suspends tool execution via execute_tools_with_plugins.
 ///
-/// Verifies: PendingInteraction error returned, no tool messages, interaction details correct,
+/// Verifies: Suspended error returned, no tool messages, interaction details correct,
 /// and suspended_interaction persisted in session state.
 #[tokio::test]
 async fn test_e2e_permission_suspend_with_real_tool() {
@@ -6294,17 +6294,17 @@ async fn test_e2e_permission_suspend_with_real_tool() {
     let plugins: Vec<Arc<dyn tirea_agentos::contracts::plugin::AgentPlugin>> =
         vec![Arc::new(PermissionPlugin)];
 
-    // execute_tools_with_plugins should return PendingInteraction error
+    // execute_tools_with_plugins should return Suspended error
     let err = execute_tools_with_plugins(thread, &result, &tools, false, &plugins)
         .await
         .unwrap_err();
 
     let (suspended_run_ctx, interaction) = match err {
-        AgentLoopError::PendingInteraction {
+        AgentLoopError::Suspended {
             run_ctx,
             interaction,
         } => (*run_ctx, *interaction),
-        other => panic!("Expected PendingInteraction, got: {:?}", other),
+        other => panic!("Expected Suspended, got: {:?}", other),
     };
 
     // Frontend tool invocation: id = fc_<uuid>, action = "tool:PermissionConfirm"
@@ -6382,11 +6382,11 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
         .unwrap_err();
 
     let (suspended_run_ctx, interaction) = match err {
-        AgentLoopError::PendingInteraction {
+        AgentLoopError::Suspended {
             run_ctx,
             interaction,
         } => (*run_ctx, *interaction),
-        other => panic!("Expected PendingInteraction, got: {:?}", other),
+        other => panic!("Expected Suspended, got: {:?}", other),
     };
 
     // Reconstruct Thread from RunContext for resume
@@ -6491,11 +6491,11 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
         .unwrap_err();
 
     let (suspended_run_ctx, interaction) = match err {
-        AgentLoopError::PendingInteraction {
+        AgentLoopError::Suspended {
             run_ctx,
             interaction,
         } => (*run_ctx, *interaction),
-        other => panic!("Expected PendingInteraction, got: {:?}", other),
+        other => panic!("Expected Suspended, got: {:?}", other),
     };
 
     // Reconstruct Thread from RunContext for resume

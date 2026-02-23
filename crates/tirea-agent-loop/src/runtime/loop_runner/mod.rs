@@ -1298,17 +1298,17 @@ pub async fn run_loop(
         ($termination:expr, $response:expr, $failure:expr) => {{
             let reason: TerminationReason = $termination;
             // When suspended calls exist, unresolved external input should keep
-            // the run in PendingInteraction regardless of plugin termination hint.
+            // the run in Suspended regardless of plugin termination hint.
             let final_termination = if !matches!(
                 reason,
                 TerminationReason::Error | TerminationReason::Cancelled
             ) && has_suspended_calls(&run_ctx)
             {
-                TerminationReason::PendingInteraction
+                TerminationReason::Suspended
             } else {
                 reason
             };
-            let final_response = if final_termination == TerminationReason::PendingInteraction {
+            let final_response = if final_termination == TerminationReason::Suspended {
                 None
             } else {
                 $response
@@ -1634,7 +1634,7 @@ pub async fn run_loop(
                 .iter()
                 .any(|r| !matches!(r.outcome, crate::contracts::ToolCallOutcome::Suspended));
             if !has_completed {
-                terminate_run!(TerminationReason::PendingInteraction, None, None);
+                terminate_run!(TerminationReason::Suspended, None, None);
             }
         }
 

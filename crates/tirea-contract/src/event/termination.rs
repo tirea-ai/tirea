@@ -37,8 +37,8 @@ pub enum TerminationReason {
     Stopped(StopReason),
     /// External run cancellation signal was received.
     Cancelled,
-    /// Run paused waiting for external interaction input.
-    PendingInteraction,
+    /// Run paused waiting for external suspended tool-call resolution.
+    Suspended,
     /// Run ended due to an error path.
     Error,
 }

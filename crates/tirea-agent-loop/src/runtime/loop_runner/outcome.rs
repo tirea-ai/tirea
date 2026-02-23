@@ -82,7 +82,7 @@ pub enum AgentLoopError {
     /// The returned run context includes any patches applied up to the point where the
     /// interaction was requested (including persisting suspended tool calls).
     #[error("Pending interaction: {id} ({action})", id = interaction.id, action = interaction.action)]
-    PendingInteraction {
+    Suspended {
         run_ctx: Box<crate::contracts::RunContext>,
         interaction: Box<Interaction>,
     },
@@ -99,7 +99,7 @@ impl AgentLoopError {
         match self {
             Self::Stopped { reason, .. } => TerminationReason::Stopped(reason.clone()),
             Self::Cancelled { .. } => TerminationReason::Cancelled,
-            Self::PendingInteraction { .. } => TerminationReason::PendingInteraction,
+            Self::Suspended { .. } => TerminationReason::Suspended,
             Self::LlmError(_) | Self::StateError(_) => TerminationReason::Error,
         }
     }

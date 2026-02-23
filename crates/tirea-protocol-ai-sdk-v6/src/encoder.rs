@@ -309,7 +309,7 @@ impl AiSdkEncoder {
         match reason {
             TerminationReason::NaturalEnd
             | TerminationReason::PluginRequested
-            | TerminationReason::PendingInteraction => "stop",
+            | TerminationReason::Suspended => "stop",
             TerminationReason::Cancelled => "other",
             TerminationReason::Error => "error",
             TerminationReason::Stopped(stop_reason) => match stop_reason {

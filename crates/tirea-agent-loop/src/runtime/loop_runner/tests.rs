@@ -702,7 +702,7 @@ fn test_agent_loop_error_termination_reason_mapping() {
     };
     assert_eq!(cancelled.termination_reason(), TerminationReason::Cancelled);
 
-    let pending = AgentLoopError::PendingInteraction {
+    let pending = AgentLoopError::Suspended {
         run_ctx: Box::new(RunContext::new(
             "test",
             json!({}),
@@ -713,7 +713,7 @@ fn test_agent_loop_error_termination_reason_mapping() {
     };
     assert_eq!(
         pending.termination_reason(),
-        TerminationReason::PendingInteraction
+        TerminationReason::Suspended
     );
 
     let llm = AgentLoopError::LlmError("offline".to_string());
@@ -2045,11 +2045,11 @@ fn test_execute_tools_with_pending_phase_plugin() {
             .unwrap_err();
 
         let (thread, interaction) = match err {
-            AgentLoopError::PendingInteraction {
+            AgentLoopError::Suspended {
                 run_ctx: thread,
                 interaction,
             } => (thread, interaction),
-            other => panic!("Expected PendingInteraction error, got: {:?}", other),
+            other => panic!("Expected Suspended error, got: {:?}", other),
         };
 
         assert_eq!(interaction.id, "confirm_1");
@@ -2606,11 +2606,11 @@ fn test_execute_tools_with_config_with_pending_plugin() {
             .unwrap_err();
 
         let (thread, interaction) = match err {
-            AgentLoopError::PendingInteraction {
+            AgentLoopError::Suspended {
                 run_ctx: thread,
                 interaction,
             } => (thread, interaction),
-            other => panic!("Expected PendingInteraction error, got: {:?}", other),
+            other => panic!("Expected Suspended error, got: {:?}", other),
         };
 
         assert_eq!(interaction.id, "confirm_1");
@@ -2977,7 +2977,7 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
             .expect("failed to set suspended interaction");
             step.pending_patches.push(patch);
             step.skip_inference = true;
-            step.termination_request = Some(TerminationReason::PendingInteraction);
+            step.termination_request = Some(TerminationReason::Suspended);
         });
     }
 
@@ -3004,7 +3004,7 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
     assert!(matches!(
         events.get(3),
         Some(AgentEvent::RunFinish {
-            termination: TerminationReason::PendingInteraction,
+            termination: TerminationReason::Suspended,
             ..
         })
     ));
@@ -3023,7 +3023,7 @@ async fn test_stream_termination_request_with_suspended_only_state_emits_pending
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.termination_request = Some(TerminationReason::PendingInteraction);
+                step.termination_request = Some(TerminationReason::Suspended);
                 step.skip_inference = true;
             }
         });
@@ -3071,7 +3071,7 @@ async fn test_stream_termination_request_with_suspended_only_state_emits_pending
     assert!(matches!(
         events.get(3),
         Some(AgentEvent::RunFinish {
-            termination: TerminationReason::PendingInteraction,
+            termination: TerminationReason::Suspended,
             ..
         })
     ));
@@ -4079,7 +4079,7 @@ async fn test_run_loop_skip_inference_with_suspended_state_returns_suspended_int
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     assert!(matches!(
         outcome.termination,
-        TerminationReason::PendingInteraction
+        TerminationReason::Suspended
     ));
 
     let interaction = outcome
@@ -4151,7 +4151,7 @@ async fn test_run_loop_skip_inference_with_suspended_only_state_returns_suspende
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     assert!(matches!(
         outcome.termination,
-        TerminationReason::PendingInteraction
+        TerminationReason::Suspended
     ));
 }
 
@@ -5525,7 +5525,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
             .expect("failed to set suspended interaction");
             step.pending_patches.push(patch);
             step.skip_inference = true;
-            step.termination_request = Some(TerminationReason::PendingInteraction);
+            step.termination_request = Some(TerminationReason::Suspended);
         });
     }
 
@@ -5546,7 +5546,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
         run_loop(&nonstream_config, tools.clone(), run_ctx, None, None, None).await;
     assert_eq!(
         nonstream_outcome.termination,
-        TerminationReason::PendingInteraction
+        TerminationReason::Suspended
     );
     let nonstream_interaction = nonstream_outcome
         .run_ctx
@@ -5563,7 +5563,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
 
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::PendingInteraction)
+        Some(TerminationReason::Suspended)
     );
     let stream_interaction =
         extract_requested_interaction(&events).expect("stream should emit requested interaction");
@@ -5620,7 +5620,7 @@ async fn test_golden_run_loop_and_stream_no_plugins_pending_state_alignment() {
     .await;
     assert_eq!(
         nonstream_outcome.termination,
-        TerminationReason::PendingInteraction
+        TerminationReason::Suspended
     );
     assert_eq!(nonstream_outcome.stats.llm_calls, 1);
 
@@ -5633,7 +5633,7 @@ async fn test_golden_run_loop_and_stream_no_plugins_pending_state_alignment() {
     .await;
     assert_eq!(
         extract_termination(&stream_events),
-        Some(TerminationReason::PendingInteraction)
+        Some(TerminationReason::Suspended)
     );
     let stream_inference_count = stream_events
         .iter()
@@ -6704,7 +6704,7 @@ async fn test_stream_frontend_use_as_tool_result_emits_single_tool_call_start() 
     assert!(matches!(
         events.last(),
         Some(AgentEvent::RunFinish {
-            termination: TerminationReason::PendingInteraction,
+            termination: TerminationReason::Suspended,
             ..
         })
     ));
@@ -6923,7 +6923,7 @@ async fn test_stream_parallel_multiple_pending_emits_all_suspended() {
     );
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::PendingInteraction)
+        Some(TerminationReason::Suspended)
     );
     // Per-call suspension: each suspended tool emits its own Pending event
     assert_eq!(
@@ -7725,11 +7725,11 @@ async fn test_sequential_tools_stop_after_first_suspended_interaction() {
         .await
         .expect_err("sequential mode should pause on first suspended interaction");
     let (thread, interaction) = match err {
-        AgentLoopError::PendingInteraction {
+        AgentLoopError::Suspended {
             run_ctx: thread,
             interaction,
         } => (thread, interaction),
-        other => panic!("expected PendingInteraction, got: {other:?}"),
+        other => panic!("expected Suspended, got: {other:?}"),
     };
     assert_eq!(interaction.id, "confirm_call_1");
     assert_eq!(
@@ -7790,11 +7790,11 @@ async fn test_parallel_tools_allow_single_suspended_interaction_per_round() {
         .await
         .expect_err("parallel mode should suspend all interactions and pause");
     let (thread, interaction) = match err {
-        AgentLoopError::PendingInteraction {
+        AgentLoopError::Suspended {
             run_ctx: thread,
             interaction,
         } => (thread, interaction),
-        other => panic!("expected PendingInteraction, got: {other:?}"),
+        other => panic!("expected Suspended, got: {other:?}"),
     };
     // First suspended call's interaction is returned
     assert_eq!(interaction.id, "confirm_call_1");
@@ -7965,11 +7965,11 @@ fn test_plugin_order_affects_outcome() {
             Arc::new(PendingPhasePlugin),
         ];
         let r2 = execute_tools_with_plugins(thread, &result, &tools, false, &plugins_order2).await;
-        // Should be PendingInteraction (not blocked).
-        assert!(r2.is_err(), "Order 2 should result in PendingInteraction");
+        // Should be Suspended (not blocked).
+        assert!(r2.is_err(), "Order 2 should result in Suspended");
         match r2.unwrap_err() {
-            AgentLoopError::PendingInteraction { .. } => {}
-            other => panic!("Expected PendingInteraction, got: {:?}", other),
+            AgentLoopError::Suspended { .. } => {}
+            other => panic!("Expected Suspended, got: {:?}", other),
         }
     });
 }
@@ -8225,7 +8225,7 @@ async fn test_run_step_skip_inference_with_suspended_state_returns_suspended_int
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     assert!(matches!(
         outcome.termination,
-        TerminationReason::PendingInteraction
+        TerminationReason::Suspended
     ));
 
     let interaction = outcome
@@ -9580,16 +9580,16 @@ async fn test_stream_permission_intercept_emits_tool_call_start_for_frontend() {
         "PermissionConfirm must emit exactly one ToolCallReady event: {events:?}"
     );
 
-    // The run should terminate with PendingInteraction (waiting for frontend response)
+    // The run should terminate with Suspended (waiting for frontend response)
     assert!(
         matches!(
             events.last(),
             Some(AgentEvent::RunFinish {
-                termination: TerminationReason::PendingInteraction,
+                termination: TerminationReason::Suspended,
                 ..
             })
         ),
-        "run should pause with PendingInteraction: {events:?}"
+        "run should pause with Suspended: {events:?}"
     );
 }
 
@@ -9658,7 +9658,7 @@ async fn test_nonstream_mixed_pending_and_completed_tools_continues_loop() {
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
     let outcome = run_loop(&config, tool_map([EchoTool]), run_ctx, None, None, None).await;
-    assert_eq!(outcome.termination, TerminationReason::PendingInteraction);
+    assert_eq!(outcome.termination, TerminationReason::Suspended);
     assert_eq!(
         outcome.stats.llm_calls, 2,
         "non-stream should continue to a second inference round when partial tool results are available"
@@ -9725,7 +9725,7 @@ async fn test_nonstream_single_pending_tool_enters_waiting() {
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
     let outcome = run_loop(&config, tool_map([EchoTool]), run_ctx, None, None, None).await;
-    assert_eq!(outcome.termination, TerminationReason::PendingInteraction);
+    assert_eq!(outcome.termination, TerminationReason::Suspended);
     assert_eq!(
         outcome.stats.llm_calls, 1,
         "single pending tool should pause without entering a second inference round"
@@ -9746,7 +9746,7 @@ async fn test_nonstream_single_pending_tool_enters_waiting() {
 
 /// When some tool calls complete and one is pending, the run should continue
 /// to the next inference round so the LLM sees the completed results. The run
-/// should eventually terminate with PendingInteraction.
+/// should eventually terminate with Suspended.
 #[tokio::test]
 async fn test_stream_mixed_pending_and_completed_tools_continues_loop() {
     struct PendingOnlyCall2Plugin;
@@ -9817,11 +9817,11 @@ async fn test_stream_mixed_pending_and_completed_tools_continues_loop() {
         "call_3 should have ToolCallDone: {events:?}"
     );
 
-    // Run should terminate with PendingInteraction.
+    // Run should terminate with Suspended.
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::PendingInteraction),
-        "run should eventually pause with PendingInteraction: {events:?}"
+        Some(TerminationReason::Suspended),
+        "run should eventually pause with Suspended: {events:?}"
     );
 
     // Exactly one Pending event should be emitted.
@@ -9836,7 +9836,7 @@ async fn test_stream_mixed_pending_and_completed_tools_continues_loop() {
 }
 
 /// When ALL tool calls are pending, the run should terminate immediately
-/// with PendingInteraction (no need for another inference round).
+/// with Suspended (no need for another inference round).
 #[tokio::test]
 async fn test_stream_all_tools_pending_pauses_run() {
     struct PendingAllToolsPlugin;
@@ -9883,8 +9883,8 @@ async fn test_stream_all_tools_pending_pauses_run() {
 
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::PendingInteraction),
-        "run should pause with PendingInteraction: {events:?}"
+        Some(TerminationReason::Suspended),
+        "run should pause with Suspended: {events:?}"
     );
 }
 
@@ -9934,10 +9934,10 @@ async fn test_stream_mixed_pending_persists_interaction_state() {
     let stream = run_loop_stream(config, tools, run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
-    // Run should terminate with PendingInteraction.
+    // Run should terminate with Suspended.
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::PendingInteraction),
+        Some(TerminationReason::Suspended),
     );
 
     // The state snapshot should contain the suspended interaction.
@@ -9992,14 +9992,14 @@ async fn test_no_plugins_loop_ignores_pending() {
 
     // The run should complete with NaturalEnd — the core ignores pending state.
     // The backward-compat boundary in terminate_run!/finish_run! overrides the
-    // reason to PendingInteraction when the state has one, but only for
+    // reason to Suspended when the state has one, but only for
     // non-Error/non-Cancelled reasons.  Since inference ran and returned text,
-    // the reason is NaturalEnd, which gets overridden to PendingInteraction.
+    // the reason is NaturalEnd, which gets overridden to Suspended.
     // This is the expected thin boundary behavior.
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::PendingInteraction),
-        "backward-compat boundary should override to PendingInteraction: {events:?}"
+        Some(TerminationReason::Suspended),
+        "backward-compat boundary should override to Suspended: {events:?}"
     );
 
     // Crucially, inference DID run (the core didn't short-circuit).
@@ -10047,7 +10047,7 @@ async fn test_nonstream_completed_tool_round_does_not_clear_existing_suspended_c
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
     let outcome = run_loop(&config, tool_map([EchoTool]), run_ctx, None, None, None).await;
-    assert_eq!(outcome.termination, TerminationReason::PendingInteraction);
+    assert_eq!(outcome.termination, TerminationReason::Suspended);
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     assert!(
         state
@@ -10094,7 +10094,7 @@ async fn test_stream_completed_tool_round_does_not_clear_existing_suspended_call
 
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::PendingInteraction)
+        Some(TerminationReason::Suspended)
     );
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
     assert!(
@@ -10384,7 +10384,7 @@ async fn test_run_loop_decision_channel_ignores_unknown_interaction_id() {
         Some(decision_rx),
     )
     .await;
-    assert_eq!(outcome.termination, TerminationReason::PendingInteraction);
+    assert_eq!(outcome.termination, TerminationReason::Suspended);
     let final_state = outcome.run_ctx.snapshot().expect("snapshot");
     assert!(
         final_state
@@ -10469,7 +10469,7 @@ async fn test_stream_decision_channel_ignores_unknown_interaction_id() {
 
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::PendingInteraction)
+        Some(TerminationReason::Suspended)
     );
     assert!(
         !events

@@ -296,7 +296,7 @@ impl AgentPlugin for InteractionPlugin {
             .values()
             .any(|call| !self.has_response_for_call(call));
         if has_unresolved {
-            ctx.request_termination(TerminationReason::PendingInteraction);
+            ctx.request_termination(TerminationReason::Suspended);
         }
     }
 
@@ -1068,8 +1068,8 @@ mod tests {
         );
         assert_eq!(
             step.termination_request,
-            Some(TerminationReason::PendingInteraction),
-            "should request PendingInteraction termination"
+            Some(TerminationReason::Suspended),
+            "should request Suspended termination"
         );
     }
 
@@ -1139,7 +1139,7 @@ mod tests {
         plugin.run_phase(Phase::BeforeInference, &mut step).await;
         assert_eq!(
             step.termination_request,
-            Some(TerminationReason::PendingInteraction),
+            Some(TerminationReason::Suspended),
             "first call should request termination"
         );
 
