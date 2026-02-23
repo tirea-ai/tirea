@@ -762,14 +762,23 @@ pub(super) async fn execute_single_tool_with_phases(
             None,
         )
     } else if step.tool_pending() {
-        let interaction = step
-            .tool
+        let suspend_ticket = step.tool.as_ref().and_then(|t| t.suspend_ticket.clone());
+        let interaction = suspend_ticket
             .as_ref()
-            .and_then(|t| t.pending_interaction.clone());
-        let frontend_invocation = step
-            .tool
+            .map(|ticket| ticket.interaction.clone())
+            .or_else(|| {
+                step.tool
+                    .as_ref()
+                    .and_then(|t| t.pending_interaction.clone())
+            });
+        let frontend_invocation = suspend_ticket
             .as_ref()
-            .and_then(|t| t.pending_frontend_invocation.clone());
+            .and_then(|ticket| ticket.frontend_invocation.clone())
+            .or_else(|| {
+                step.tool
+                    .as_ref()
+                    .and_then(|t| t.pending_frontend_invocation.clone())
+            });
         let suspended_interaction = interaction.unwrap_or_else(|| {
             crate::contracts::Interaction::new(call.id.clone(), format!("tool:{}", call.name))
                 .with_message("Waiting for user confirmation")

@@ -4,7 +4,7 @@ use crate::contracts::event::interaction::ResponseRouting;
 use crate::contracts::plugin::phase::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
     BeforeToolExecuteContext, Phase, RunEndContext, RunStartContext, StepEndContext,
-    StepStartContext,
+    StepStartContext, SuspendTicket,
 };
 use crate::contracts::runtime::control::LoopControlExt;
 use crate::contracts::runtime::ActivityManager;
@@ -1256,6 +1256,58 @@ fn test_execute_tools_rejects_non_orthogonal_tool_gate_state() {
                 err,
                 AgentLoopError::StateError(ref message)
                 if message.contains("blocked and pending are mutually exclusive")
+            ),
+            "unexpected error: {err:?}"
+        );
+    });
+}
+
+struct InvalidSuspendTicketMutationPlugin;
+
+#[async_trait]
+impl AgentPlugin for InvalidSuspendTicketMutationPlugin {
+    fn id(&self) -> &str {
+        "invalid_suspend_ticket_mutation"
+    }
+
+    phase_dispatch_methods!(|phase, step| {
+        if phase != Phase::AfterToolExecute {
+            return;
+        }
+        if let Some(tool) = step.tool.as_mut() {
+            tool.suspend_ticket = Some(SuspendTicket::new(
+                Interaction::new("late_suspend", "confirm").with_message("late ticket"),
+            ));
+        }
+    });
+}
+
+#[test]
+fn test_execute_tools_rejects_suspend_ticket_mutation_outside_before_tool_execute() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let thread = Thread::new("test");
+        let result = StreamResult {
+            text: "invalid".to_string(),
+            tool_calls: vec![crate::contracts::thread::ToolCall::new(
+                "call_1",
+                "echo",
+                json!({"message": "test"}),
+            )],
+            usage: None,
+        };
+        let tools = tool_map([EchoTool]);
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(InvalidSuspendTicketMutationPlugin)];
+
+        let err = execute_tools_with_plugins(thread, &result, &tools, true, &plugins)
+            .await
+            .expect_err("suspend ticket mutation outside BeforeToolExecute should fail");
+
+        assert!(
+            matches!(
+                err,
+                AgentLoopError::StateError(ref message)
+                if message.contains("mutated tool gate outside BeforeToolExecute")
             ),
             "unexpected error: {err:?}"
         );

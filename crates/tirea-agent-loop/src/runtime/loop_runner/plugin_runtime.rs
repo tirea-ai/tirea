@@ -41,10 +41,12 @@ fn phase_mutation_snapshot(step: &StepContext<'_>) -> PhaseMutationSnapshot {
         tool_name: step.tool.as_ref().map(|t| t.name.clone()),
         tool_blocked: step.tool_blocked(),
         tool_pending: step.tool_pending(),
-        tool_pending_interaction_id: step
-            .tool
-            .as_ref()
-            .and_then(|t| t.pending_interaction.as_ref().map(|i| i.id.clone())),
+        tool_pending_interaction_id: step.tool.as_ref().and_then(|t| {
+            t.suspend_ticket
+                .as_ref()
+                .map(|ticket| ticket.interaction.id.clone())
+                .or_else(|| t.pending_interaction.as_ref().map(|i| i.id.clone()))
+        }),
         tool_has_result: step.tool.as_ref().and_then(|t| t.result.as_ref()).is_some(),
     }
 }

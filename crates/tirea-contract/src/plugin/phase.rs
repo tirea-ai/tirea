@@ -168,6 +168,8 @@ pub struct ToolContext {
     pub block_reason: Option<String>,
     /// Whether execution is pending user confirmation.
     pub pending: bool,
+    /// Canonical suspend ticket carrying pause payload.
+    pub suspend_ticket: Option<SuspendTicket>,
     /// Pending interaction (legacy format, kept for backward compatibility).
     pub pending_interaction: Option<Interaction>,
     /// Structured frontend tool invocation (first-class model).
@@ -186,6 +188,7 @@ impl ToolContext {
             blocked: false,
             block_reason: None,
             pending: false,
+            suspend_ticket: None,
             pending_interaction: None,
             pending_frontend_invocation: None,
         }
@@ -428,6 +431,7 @@ impl<'a> StepContext<'a> {
             tool.blocked = false;
             tool.block_reason = None;
             tool.pending = false;
+            tool.suspend_ticket = None;
             tool.pending_interaction = None;
             tool.pending_frontend_invocation = None;
         }
@@ -441,6 +445,7 @@ impl<'a> StepContext<'a> {
             tool.blocked = true;
             tool.block_reason = Some(reason.into());
             tool.pending = false;
+            tool.suspend_ticket = None;
             tool.pending_interaction = None;
             tool.pending_frontend_invocation = None;
         }
@@ -454,6 +459,7 @@ impl<'a> StepContext<'a> {
             tool.blocked = false;
             tool.block_reason = None;
             tool.pending = true;
+            tool.suspend_ticket = Some(ticket.clone());
             tool.pending_interaction = Some(ticket.interaction);
             tool.pending_frontend_invocation = ticket.frontend_invocation;
         }
@@ -521,6 +527,9 @@ impl<'a> StepContext<'a> {
         // Check if any tool is pending
         if let Some(ref tool) = self.tool {
             if tool.pending {
+                if let Some(ticket) = tool.suspend_ticket.as_ref() {
+                    return StepOutcome::Pending(ticket.interaction.clone());
+                }
                 if let Some(ref interaction) = tool.pending_interaction {
                     return StepOutcome::Pending(interaction.clone());
                 }
@@ -689,6 +698,9 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
             };
         }
         if tool.pending {
+            if let Some(ticket) = tool.suspend_ticket.as_ref() {
+                return ToolGateDecision::Suspend(ticket.clone());
+            }
             if let Some(interaction) = tool.pending_interaction.as_ref() {
                 return ToolGateDecision::Suspend(SuspendTicket {
                     interaction: interaction.clone(),
@@ -1123,6 +1135,61 @@ mod tests {
         match ctx.result() {
             StepOutcome::Pending(i) => assert_eq!(i.id, "confirm_1"),
             _ => panic!("Expected Pending result"),
+        }
+    }
+
+    #[test]
+    fn test_step_result_pending_prefers_suspend_ticket() {
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
+
+        let call = ToolCall::new("call_1", "write_file", json!({}));
+        ctx.tool = Some(ToolContext::new(&call));
+
+        let ticket_interaction =
+            Interaction::new("ticket_1", "confirm").with_message("Suspend via ticket");
+        let legacy_interaction =
+            Interaction::new("legacy_1", "confirm").with_message("Legacy pending interaction");
+
+        if let Some(tool) = ctx.tool.as_mut() {
+            tool.pending = true;
+            tool.suspend_ticket = Some(SuspendTicket::new(ticket_interaction.clone()));
+            tool.pending_interaction = Some(legacy_interaction);
+        }
+
+        match ctx.result() {
+            StepOutcome::Pending(interaction) => {
+                assert_eq!(interaction.id, ticket_interaction.id);
+            }
+            other => panic!("Expected Pending result, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_before_tool_execute_decision_prefers_suspend_ticket() {
+        let fix = TestFixture::new();
+        let mut step = fix.step(vec![]);
+
+        let call = ToolCall::new("call_1", "write_file", json!({}));
+        step.tool = Some(ToolContext::new(&call));
+
+        let ticket_interaction =
+            Interaction::new("ticket_2", "confirm").with_message("Suspend via ticket");
+        let legacy_interaction =
+            Interaction::new("legacy_2", "confirm").with_message("Legacy pending interaction");
+
+        if let Some(tool) = step.tool.as_mut() {
+            tool.pending = true;
+            tool.suspend_ticket = Some(SuspendTicket::new(ticket_interaction.clone()));
+            tool.pending_interaction = Some(legacy_interaction);
+        }
+
+        let ctx = BeforeToolExecuteContext::new(&mut step);
+        match ctx.decision() {
+            ToolGateDecision::Suspend(ticket) => {
+                assert_eq!(ticket.interaction.id, ticket_interaction.id);
+            }
+            other => panic!("Expected Suspend decision, got: {other:?}"),
         }
     }
 
