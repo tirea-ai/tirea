@@ -4773,6 +4773,22 @@ fn frontend_plugin_from_request(request: &RunAgentInput) -> TestFrontendToolPlug
     )
 }
 
+fn suspended_interaction(step: &StepContext<'_>) -> Option<Interaction> {
+    step.tool
+        .as_ref()
+        .and_then(|tool| tool.suspend_ticket.as_ref())
+        .map(|ticket| ticket.interaction.clone())
+}
+
+fn suspended_frontend_invocation(
+    step: &StepContext<'_>,
+) -> Option<tirea_agentos::contracts::FrontendToolInvocation> {
+    step.tool
+        .as_ref()
+        .and_then(|tool| tool.suspend_ticket.as_ref())
+        .and_then(|ticket| ticket.frontend_invocation.clone())
+}
+
 /// Test scenario: Complete frontend tool flow from request to AG-UI events
 #[tokio::test]
 async fn test_scenario_frontend_tool_request_to_agui() {
@@ -4815,13 +4831,7 @@ async fn test_scenario_frontend_tool_request_to_agui() {
     assert!(step.tool_pending());
 
     // 6. Get interaction and convert to AG-UI
-    let interaction = step
-        .tool
-        .as_ref()
-        .unwrap()
-        .pending_interaction
-        .clone()
-        .unwrap();
+    let interaction = suspended_interaction(&step).expect("pending interaction should exist");
 
     let events = interaction_to_ag_ui_events(&interaction);
 
@@ -4885,13 +4895,7 @@ async fn test_scenario_multiple_frontend_tools_sequence() {
 
         assert!(step.tool_pending(), "Tool {} should be pending", tool_name);
 
-        let interaction = step
-            .tool
-            .as_ref()
-            .unwrap()
-            .pending_interaction
-            .as_ref()
-            .unwrap();
+        let interaction = suspended_interaction(&step).expect("pending interaction should exist");
         assert_eq!(interaction.id, call_id);
         assert_eq!(interaction.action, format!("tool:{}", tool_name));
         assert_eq!(interaction.parameters, args);
@@ -4940,13 +4944,7 @@ async fn test_scenario_frontend_tool_complex_args() {
 
     assert!(step.tool_pending());
 
-    let interaction = step
-        .tool
-        .as_ref()
-        .unwrap()
-        .pending_interaction
-        .as_ref()
-        .unwrap();
+    let interaction = suspended_interaction(&step).expect("pending interaction should exist");
 
     // Verify complex args are preserved
     assert_eq!(interaction.parameters, complex_args);
@@ -4980,13 +4978,7 @@ async fn test_scenario_frontend_tool_empty_args() {
         plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
 
         assert!(step.tool_pending());
-        let interaction = step
-            .tool
-            .as_ref()
-            .unwrap()
-            .pending_interaction
-            .as_ref()
-            .unwrap();
+        let interaction = suspended_interaction(&step).expect("pending interaction should exist");
         assert_eq!(interaction.parameters, json!({}));
     }
 
@@ -5001,13 +4993,7 @@ async fn test_scenario_frontend_tool_empty_args() {
         plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
 
         assert!(step.tool_pending());
-        let interaction = step
-            .tool
-            .as_ref()
-            .unwrap()
-            .pending_interaction
-            .as_ref()
-            .unwrap();
+        let interaction = suspended_interaction(&step).expect("pending interaction should exist");
         assert_eq!(interaction.parameters, Value::Null);
     }
 }
@@ -5045,13 +5031,7 @@ async fn test_scenario_frontend_tool_special_names() {
             tool_name
         );
 
-        let interaction = step
-            .tool
-            .as_ref()
-            .unwrap()
-            .pending_interaction
-            .as_ref()
-            .unwrap();
+        let interaction = suspended_interaction(&step).expect("pending interaction should exist");
         assert_eq!(
             interaction.action,
             format!("tool:{}", tool_name),
@@ -5172,13 +5152,7 @@ async fn test_scenario_frontend_tool_full_event_pipeline() {
     plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
 
     // 2. Agent loop would create AgentEvent::Pending
-    let interaction = step
-        .tool
-        .as_ref()
-        .unwrap()
-        .pending_interaction
-        .clone()
-        .unwrap();
+    let interaction = suspended_interaction(&step).expect("pending interaction should exist");
     let agent_event = AgentEvent::Pending { interaction };
 
     // 3. Convert to AG-UI events with context
@@ -5217,7 +5191,7 @@ async fn test_scenario_backend_tool_passthrough() {
     assert!(!step.tool_pending(), "Backend tool should not be pending");
     assert!(!step.tool_blocked(), "Backend tool should not be blocked");
     assert!(
-        step.tool.as_ref().unwrap().pending_interaction.is_none(),
+        suspended_interaction(&step).is_none(),
         "No interaction should be created"
     );
 }
@@ -5286,13 +5260,7 @@ async fn test_scenario_permission_approved_complete_flow() {
     plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
 
     assert!(step.tool_pending());
-    let interaction = step
-        .tool
-        .as_ref()
-        .unwrap()
-        .pending_interaction
-        .clone()
-        .unwrap();
+    let interaction = suspended_interaction(&step).expect("pending interaction should exist");
 
     // Phase 2: Convert to AG-UI events
     let ag_ui_events = interaction_to_ag_ui_events(&interaction);
@@ -5342,13 +5310,7 @@ async fn test_scenario_permission_denied_complete_flow() {
     plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
 
     assert!(step.tool_pending());
-    let interaction = step
-        .tool
-        .as_ref()
-        .unwrap()
-        .pending_interaction
-        .clone()
-        .unwrap();
+    let interaction = suspended_interaction(&step).expect("pending interaction should exist");
 
     // Phase 2-3: Client denies
     let client_response_request =
@@ -5399,13 +5361,7 @@ async fn test_scenario_frontend_tool_execution_complete_flow() {
     plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
 
     assert!(step.tool_pending());
-    let interaction = step
-        .tool
-        .as_ref()
-        .unwrap()
-        .pending_interaction
-        .clone()
-        .unwrap();
+    let interaction = suspended_interaction(&step).expect("pending interaction should exist");
 
     // Verify action format
     assert_eq!(interaction.action, "tool:copyToClipboard");
@@ -5446,13 +5402,7 @@ async fn test_scenario_multiple_interactions_sequence() {
     step1.tool = Some(ToolContext::new(&call1));
 
     plugin.run_phase(Phase::BeforeToolExecute, &mut step1).await;
-    let interaction1 = step1
-        .tool
-        .as_ref()
-        .unwrap()
-        .pending_interaction
-        .clone()
-        .unwrap();
+    let interaction1 = suspended_interaction(&step1).expect("pending interaction should exist");
 
     // Second tool: read_file
     let fix2 = TestFixture::new();
@@ -5462,13 +5412,7 @@ async fn test_scenario_multiple_interactions_sequence() {
     step2.tool = Some(ToolContext::new(&call2));
 
     plugin.run_phase(Phase::BeforeToolExecute, &mut step2).await;
-    let interaction2 = step2
-        .tool
-        .as_ref()
-        .unwrap()
-        .pending_interaction
-        .clone()
-        .unwrap();
+    let interaction2 = suspended_interaction(&step2).expect("pending interaction should exist");
 
     // Client responds to both
     let response_request = RunAgentInput::new("t1".to_string(), "r1".to_string())
@@ -5737,13 +5681,7 @@ async fn test_scenario_e2e_permission_to_response_flow() {
         .await;
     assert!(step1.tool_pending(), "Permission ask should create pending");
 
-    let interaction = step1
-        .tool
-        .as_ref()
-        .unwrap()
-        .pending_interaction
-        .clone()
-        .unwrap();
+    let interaction = suspended_interaction(&step1).expect("pending interaction should exist");
     // Frontend tool invocation: id = fc_<uuid>, action = "tool:PermissionConfirm"
     assert!(
         interaction.id.starts_with("fc_"),
@@ -5833,13 +5771,7 @@ async fn test_scenario_frontend_tool_with_response_plugin() {
         .await;
     assert!(step1.tool_pending(), "Frontend tool should create pending");
 
-    let interaction = step1
-        .tool
-        .as_ref()
-        .unwrap()
-        .pending_interaction
-        .clone()
-        .unwrap();
+    let interaction = suspended_interaction(&step1).expect("pending interaction should exist");
     assert_eq!(interaction.action, "tool:showDialog");
 
     // Step 2: Client executes and returns result
@@ -6154,13 +6086,7 @@ async fn test_permission_flow_approval_e2e() {
         "Tool should be pending after permission ask"
     );
 
-    let interaction = step
-        .tool
-        .as_ref()
-        .unwrap()
-        .pending_interaction
-        .clone()
-        .unwrap();
+    let interaction = suspended_interaction(&step).expect("pending interaction should exist");
     // Frontend tool invocation: id = fc_<uuid>, action = "tool:PermissionConfirm"
     assert!(
         interaction.id.starts_with("fc_"),
@@ -6221,13 +6147,7 @@ async fn test_permission_flow_denial_e2e() {
     plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
     assert!(step.tool_pending());
 
-    let interaction = step
-        .tool
-        .as_ref()
-        .unwrap()
-        .pending_interaction
-        .clone()
-        .unwrap();
+    let interaction = suspended_interaction(&step).expect("pending interaction should exist");
 
     // Phase 2: Client denies
     let response_request = RunAgentInput::new("t1".to_string(), "r1".to_string()).with_message(
@@ -6277,13 +6197,7 @@ async fn test_permission_flow_multiple_tools_mixed() {
 
     let plugin = PermissionPlugin;
     plugin.run_phase(Phase::BeforeToolExecute, &mut step1).await;
-    let int1 = step1
-        .tool
-        .as_ref()
-        .unwrap()
-        .pending_interaction
-        .clone()
-        .unwrap();
+    let int1 = suspended_interaction(&step1).expect("pending interaction should exist");
 
     // Tool 2: Will be denied
     let fix2 = TestFixture::new();
@@ -6292,13 +6206,7 @@ async fn test_permission_flow_multiple_tools_mixed() {
     let call2 = ToolCall::new("call_2", "write_file", json!({}));
     step2.tool = Some(ToolContext::new(&call2));
     plugin.run_phase(Phase::BeforeToolExecute, &mut step2).await;
-    let int2 = step2
-        .tool
-        .as_ref()
-        .unwrap()
-        .pending_interaction
-        .clone()
-        .unwrap();
+    let int2 = suspended_interaction(&step2).expect("pending interaction should exist");
 
     // Client responds: approve first, deny second
     let response_request = RunAgentInput::new("t1".to_string(), "r1".to_string())
@@ -6693,13 +6601,7 @@ async fn test_frontend_tool_flow_creates_pending() {
 
     assert!(step.tool_pending(), "Frontend tool should be pending");
 
-    let interaction = step
-        .tool
-        .as_ref()
-        .unwrap()
-        .pending_interaction
-        .clone()
-        .unwrap();
+    let interaction = suspended_interaction(&step).expect("pending interaction should exist");
     assert_eq!(interaction.action, "tool:copyToClipboard");
     assert_eq!(interaction.id, "call_copy");
 }
@@ -7266,13 +7168,7 @@ async fn test_plugin_interaction_permission_and_frontend() {
     assert!(step.tool_pending(), "Tool should be pending");
 
     // The interaction should be from frontend plugin (tool:modifySettings)
-    let interaction = step
-        .tool
-        .as_ref()
-        .unwrap()
-        .pending_interaction
-        .clone()
-        .unwrap();
+    let interaction = suspended_interaction(&step).expect("pending interaction should exist");
     assert!(
         interaction.action.starts_with("tool:") || interaction.action == "confirm",
         "Interaction action should be from one of the plugins"
@@ -12884,20 +12780,9 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
         "PermissionPlugin should create pending"
     );
 
-    let interaction = step1
-        .tool
-        .as_ref()
-        .unwrap()
-        .pending_interaction
-        .clone()
-        .unwrap();
-    let invocation = step1
-        .tool
-        .as_ref()
-        .unwrap()
-        .pending_frontend_invocation
-        .clone()
-        .unwrap();
+    let interaction = suspended_interaction(&step1).expect("pending interaction should exist");
+    let invocation =
+        suspended_frontend_invocation(&step1).expect("pending frontend invocation should exist");
 
     // Phase 2: Simulate persisted session with pending_interaction + placeholder
     let persisted_thread = Thread::with_initial_state(
