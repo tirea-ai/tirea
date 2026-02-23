@@ -4,10 +4,8 @@ pub mod stream;
 pub mod suspension;
 pub mod termination;
 
-pub use stream::{
-    clear_runtime_event_envelope_meta, register_runtime_event_envelope_meta, AgentEvent,
-};
+pub use stream::AgentEvent;
 pub use suspension::{
     FrontendToolInvocation, InvocationOrigin, ResponseRouting, Suspension, SuspensionResponse,
 };
-pub use termination::{StopConditionSpec, StopReason, TerminationReason};
+pub use termination::{StoppedReason, TerminationReason};

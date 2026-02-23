@@ -15,9 +15,31 @@
 
 use crate::contracts::thread::ToolCall;
 use crate::contracts::RunContext;
-pub use crate::contracts::StopReason;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::time::Duration;
+
+/// Why stop-condition evaluation requested loop termination.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+pub enum StopReason {
+    /// Maximum tool-call rounds reached.
+    MaxRoundsReached,
+    /// Total elapsed time exceeded the configured limit.
+    TimeoutReached,
+    /// Cumulative token usage exceeded the configured budget.
+    TokenBudgetExceeded,
+    /// A specific tool was called that triggers termination.
+    ToolCalled(String),
+    /// LLM output matched a stop pattern.
+    ContentMatched(String),
+    /// Too many consecutive tool execution failures.
+    ConsecutiveErrorsExceeded,
+    /// Identical tool call patterns detected across rounds.
+    LoopDetected,
+    /// Custom stop reason from a user-defined condition.
+    Custom(String),
+}
 
 // ---------------------------------------------------------------------------
 // StopCheckContext
@@ -179,7 +201,6 @@ impl LoopDetection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::StopConditionSpec;
     use serde_json::json;
     use std::sync::LazyLock;
     use tirea_contract::RunConfig;
@@ -446,42 +467,5 @@ mod tests {
             let back: StopReason = serde_json::from_str(&json).unwrap();
             assert_eq!(reason, back);
         }
-    }
-
-    // -- StopConditionSpec --
-
-    #[test]
-    fn stop_condition_spec_serialization_roundtrip() {
-        let specs = vec![
-            StopConditionSpec::MaxRounds { rounds: 5 },
-            StopConditionSpec::Timeout { seconds: 30 },
-            StopConditionSpec::TokenBudget { max_total: 1000 },
-            StopConditionSpec::ConsecutiveErrors { max: 3 },
-            StopConditionSpec::StopOnTool {
-                tool_name: "finish".to_string(),
-            },
-            StopConditionSpec::ContentMatch {
-                pattern: "DONE".to_string(),
-            },
-            StopConditionSpec::LoopDetection { window: 4 },
-        ];
-        for spec in specs {
-            let json = serde_json::to_string(&spec).unwrap();
-            let back: StopConditionSpec = serde_json::from_str(&json).unwrap();
-            assert_eq!(spec, back);
-        }
-    }
-
-    #[test]
-    fn stop_condition_spec_json_format() {
-        let spec = StopConditionSpec::MaxRounds { rounds: 5 };
-        let json = serde_json::to_string(&spec).unwrap();
-        assert_eq!(json, r#"{"type":"max_rounds","rounds":5}"#);
-
-        let spec = StopConditionSpec::StopOnTool {
-            tool_name: "done".to_string(),
-        };
-        let json = serde_json::to_string(&spec).unwrap();
-        assert_eq!(json, r#"{"type":"stop_on_tool","tool_name":"done"}"#);
     }
 }

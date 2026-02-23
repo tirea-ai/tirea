@@ -1,5 +1,5 @@
 use super::*;
-use crate::contracts::StopReason;
+use crate::engine::stop_conditions::StopReason;
 use serde_json::{json, Value};
 
 /// Aggregated token usage for one loop run.
@@ -102,7 +102,30 @@ impl AgentLoopError {
     /// Normalize loop errors into lifecycle termination semantics.
     pub fn termination_reason(&self) -> TerminationReason {
         match self {
-            Self::Stopped { reason, .. } => TerminationReason::Stopped(reason.clone()),
+            Self::Stopped { reason, .. } => TerminationReason::Stopped(match reason {
+                StopReason::MaxRoundsReached => {
+                    crate::contracts::StoppedReason::new("max_rounds_reached")
+                }
+                StopReason::TimeoutReached => {
+                    crate::contracts::StoppedReason::new("timeout_reached")
+                }
+                StopReason::TokenBudgetExceeded => {
+                    crate::contracts::StoppedReason::new("token_budget_exceeded")
+                }
+                StopReason::ToolCalled(tool_name) => {
+                    crate::contracts::StoppedReason::with_detail("tool_called", tool_name.clone())
+                }
+                StopReason::ContentMatched(pattern) => {
+                    crate::contracts::StoppedReason::with_detail("content_matched", pattern.clone())
+                }
+                StopReason::ConsecutiveErrorsExceeded => {
+                    crate::contracts::StoppedReason::new("consecutive_errors_exceeded")
+                }
+                StopReason::LoopDetected => crate::contracts::StoppedReason::new("loop_detected"),
+                StopReason::Custom(reason) => {
+                    crate::contracts::StoppedReason::with_detail("custom", reason.clone())
+                }
+            }),
             Self::Cancelled { .. } => TerminationReason::Cancelled,
             Self::Suspended { .. } => TerminationReason::Suspended,
             Self::LlmError(_) | Self::StateError(_) => TerminationReason::Error,

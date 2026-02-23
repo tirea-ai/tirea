@@ -5,5 +5,11 @@ mod serde_impl;
 mod tests;
 mod wire;
 
-pub use envelope_meta::{clear_runtime_event_envelope_meta, register_runtime_event_envelope_meta};
 pub use event::AgentEvent;
+
+#[doc(hidden)]
+pub mod internal {
+    pub use super::envelope_meta::{
+        clear_runtime_event_envelope_meta, register_runtime_event_envelope_meta,
+    };
+}

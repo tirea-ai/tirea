@@ -40,6 +40,7 @@
 
 mod config;
 mod core;
+mod event_envelope_meta;
 mod outcome;
 mod plugin_runtime;
 mod run_state;

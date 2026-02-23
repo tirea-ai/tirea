@@ -69,26 +69,6 @@ macro_rules! impl_shared_agent_builder_methods {
     };
 }
 
-/// Builder methods for declarative stop-condition specs.
-#[macro_export]
-macro_rules! impl_stop_condition_spec_builder_methods {
-    () => {
-        /// Add a declarative stop policy spec.
-        #[must_use]
-        pub fn with_stop_condition_spec(mut self, spec: StopConditionSpec) -> Self {
-            self.stop_condition_specs.push(spec);
-            self
-        }
-
-        /// Set all declarative stop policy specs, replacing any previously set.
-        #[must_use]
-        pub fn with_stop_condition_specs(mut self, specs: Vec<StopConditionSpec>) -> Self {
-            self.stop_condition_specs = specs;
-            self
-        }
-    };
-}
-
 /// Builder methods for runtime instance fields (plugins).
 ///
 /// Only used by AgentConfig (loop layer) which directly holds plugin and
@@ -137,8 +117,8 @@ pub use thread::{
 
 // event
 pub use event::{
-    AgentEvent, FrontendToolInvocation, InvocationOrigin, ResponseRouting, StopConditionSpec,
-    StopReason, Suspension, SuspensionResponse, TerminationReason,
+    AgentEvent, FrontendToolInvocation, InvocationOrigin, ResponseRouting, StoppedReason,
+    Suspension, SuspensionResponse, TerminationReason,
 };
 
 // tool

@@ -6,12 +6,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
-use tirea_agentos::orchestrator::AgentDefinition;
+use tirea_agentos::orchestrator::{AgentDefinition, StopConditionSpec};
 use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder, ModelDefinition};
 use tirea_agentos_server::http::{self, AppState};
 use tirea_contract::tool::context::ToolCallContext;
 use tirea_contract::tool::contract::{Tool, ToolDescriptor, ToolError, ToolResult};
-use tirea_contract::StopConditionSpec;
 use tirea_extension_permission::PermissionPlugin;
 use tirea_store_adapters::FileStore;
 

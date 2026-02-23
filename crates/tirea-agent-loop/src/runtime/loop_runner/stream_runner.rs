@@ -64,7 +64,7 @@ impl StreamEventEmitter {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_millis() as u64)
             .unwrap_or(0);
-        crate::contracts::event::stream::register_runtime_event_envelope_meta(
+        super::event_envelope_meta::register_runtime_event_envelope_meta(
             &event,
             &self.run_id,
             &self.thread_id,

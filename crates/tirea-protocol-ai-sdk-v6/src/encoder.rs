@@ -1,7 +1,7 @@
 use super::UIStreamEvent;
 use serde_json::Value;
 use std::collections::HashSet;
-use tirea_contract::{AgentEvent, StopReason, TerminationReason, ToolStatus};
+use tirea_contract::{AgentEvent, TerminationReason, ToolStatus};
 
 /// Data event name for a full state snapshot payload.
 pub const DATA_EVENT_STATE_SNAPSHOT: &str = "state-snapshot";
@@ -307,14 +307,12 @@ impl AiSdkEncoder {
             | TerminationReason::Suspended => "stop",
             TerminationReason::Cancelled => "other",
             TerminationReason::Error => "error",
-            TerminationReason::Stopped(stop_reason) => match stop_reason {
-                StopReason::MaxRoundsReached
-                | StopReason::TimeoutReached
-                | StopReason::TokenBudgetExceeded => "length",
-                StopReason::ToolCalled(_) => "tool-calls",
-                StopReason::ContentMatched(_) => "stop",
-                StopReason::ConsecutiveErrorsExceeded | StopReason::LoopDetected => "error",
-                StopReason::Custom(_) => "other",
+            TerminationReason::Stopped(stopped) => match stopped.code.as_str() {
+                "max_rounds_reached" | "timeout_reached" | "token_budget_exceeded" => "length",
+                "tool_called" => "tool-calls",
+                "content_matched" => "stop",
+                "consecutive_errors_exceeded" | "loop_detected" => "error",
+                _ => "other",
             },
         }
     }

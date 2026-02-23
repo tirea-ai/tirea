@@ -15,9 +15,9 @@ use crate::contracts::storage::VersionPrecondition;
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{Message, Role, Thread, ToolCall};
 use crate::contracts::tool::{ToolDescriptor, ToolError, ToolResult};
-use crate::contracts::StopReason;
 use crate::contracts::TerminationReason;
 use crate::contracts::{RunContext, Suspension, ToolCallContext};
+use crate::engine::stop_conditions::StopReason;
 use crate::runtime::activity::ActivityHub;
 use async_trait::async_trait;
 use genai::chat::{
@@ -816,7 +816,7 @@ fn test_agent_loop_error_termination_reason_mapping() {
     };
     assert_eq!(
         stopped.termination_reason(),
-        TerminationReason::Stopped(StopReason::MaxRoundsReached)
+        TerminationReason::Stopped(crate::contracts::StoppedReason::new("max_rounds_reached",))
     );
 
     let cancelled = AgentLoopError::Cancelled {

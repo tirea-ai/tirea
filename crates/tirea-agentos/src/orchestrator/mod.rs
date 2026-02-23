@@ -49,7 +49,9 @@ pub use composition::{
     ProviderRegistryError, RegistryBundle, RegistrySet, StopPolicyRegistry,
     StopPolicyRegistryError, ToolPluginBundle, ToolRegistry, ToolRegistryError,
 };
-pub use stop_policy_plugin::{StopPolicy, StopPolicyInput, StopPolicyStats};
+pub use stop_policy_plugin::{
+    StopConditionSpec, StopPolicy, StopPolicyInput, StopPolicyStats, StopReason,
+};
 
 pub use crate::runtime::loop_runner::ResolvedRun;
 

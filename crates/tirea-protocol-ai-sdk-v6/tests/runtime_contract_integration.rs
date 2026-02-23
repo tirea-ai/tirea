@@ -1,6 +1,6 @@
 #![allow(missing_docs)]
 
-use tirea_contract::{AgentEvent, ProtocolOutputEncoder, StopReason, TerminationReason};
+use tirea_contract::{AgentEvent, ProtocolOutputEncoder, StoppedReason, TerminationReason};
 use tirea_protocol_ai_sdk_v6::{AiSdkV6ProtocolEncoder, UIStreamEvent};
 
 #[test]
@@ -46,7 +46,7 @@ fn protocol_encoder_closes_text_before_tool_and_maps_finish_reason() {
         thread_id: "thread_1".to_string(),
         run_id: "run_1".to_string(),
         result: None,
-        termination: TerminationReason::Stopped(StopReason::MaxRoundsReached),
+        termination: TerminationReason::Stopped(StoppedReason::new("max_rounds_reached")),
     });
     assert_eq!(finish_events.len(), 1);
     assert!(matches!(

@@ -7,10 +7,90 @@ use crate::contracts::plugin::phase::{AfterInferenceContext, PluginPhaseContext}
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::StreamResult;
 use crate::contracts::thread::{Message, Role, ToolCall};
-use crate::contracts::{RunContext, StopConditionSpec, StopReason, ToolResult};
+use crate::contracts::{RunContext, StoppedReason, ToolResult};
 use tirea_state::State;
 
 pub const STOP_POLICY_PLUGIN_ID: &str = "stop_policy";
+
+/// Why stop-policy evaluation requested loop termination.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+pub enum StopReason {
+    /// Maximum tool-call rounds reached.
+    MaxRoundsReached,
+    /// Total elapsed time exceeded the configured limit.
+    TimeoutReached,
+    /// Cumulative token usage exceeded the configured budget.
+    TokenBudgetExceeded,
+    /// A specific tool was called that triggers termination.
+    ToolCalled(String),
+    /// LLM output matched a stop pattern.
+    ContentMatched(String),
+    /// Too many consecutive tool execution failures.
+    ConsecutiveErrorsExceeded,
+    /// Identical tool call patterns detected across rounds.
+    LoopDetected,
+    /// Custom stop reason from a user-defined condition.
+    Custom(String),
+}
+
+impl StopReason {
+    fn into_stopped_reason(self) -> StoppedReason {
+        match self {
+            Self::MaxRoundsReached => StoppedReason::new("max_rounds_reached"),
+            Self::TimeoutReached => StoppedReason::new("timeout_reached"),
+            Self::TokenBudgetExceeded => StoppedReason::new("token_budget_exceeded"),
+            Self::ToolCalled(tool_name) => StoppedReason::with_detail("tool_called", tool_name),
+            Self::ContentMatched(pattern) => StoppedReason::with_detail("content_matched", pattern),
+            Self::ConsecutiveErrorsExceeded => StoppedReason::new("consecutive_errors_exceeded"),
+            Self::LoopDetected => StoppedReason::new("loop_detected"),
+            Self::Custom(reason) => StoppedReason::with_detail("custom", reason),
+        }
+    }
+}
+
+impl From<crate::engine::stop_conditions::StopReason> for StopReason {
+    fn from(value: crate::engine::stop_conditions::StopReason) -> Self {
+        match value {
+            crate::engine::stop_conditions::StopReason::MaxRoundsReached => Self::MaxRoundsReached,
+            crate::engine::stop_conditions::StopReason::TimeoutReached => Self::TimeoutReached,
+            crate::engine::stop_conditions::StopReason::TokenBudgetExceeded => {
+                Self::TokenBudgetExceeded
+            }
+            crate::engine::stop_conditions::StopReason::ToolCalled(tool_name) => {
+                Self::ToolCalled(tool_name)
+            }
+            crate::engine::stop_conditions::StopReason::ContentMatched(pattern) => {
+                Self::ContentMatched(pattern)
+            }
+            crate::engine::stop_conditions::StopReason::ConsecutiveErrorsExceeded => {
+                Self::ConsecutiveErrorsExceeded
+            }
+            crate::engine::stop_conditions::StopReason::LoopDetected => Self::LoopDetected,
+            crate::engine::stop_conditions::StopReason::Custom(reason) => Self::Custom(reason),
+        }
+    }
+}
+
+/// Declarative stop-condition configuration consumed by [`StopPolicyPlugin`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum StopConditionSpec {
+    /// Stop after a fixed number of tool-call rounds.
+    MaxRounds { rounds: usize },
+    /// Stop after a wall-clock duration (in seconds) elapses.
+    Timeout { seconds: u64 },
+    /// Stop when cumulative token usage exceeds a budget. 0 = unlimited.
+    TokenBudget { max_total: usize },
+    /// Stop after N consecutive rounds where all tools failed. 0 = disabled.
+    ConsecutiveErrors { max: usize },
+    /// Stop when a specific tool is called by the LLM.
+    StopOnTool { tool_name: String },
+    /// Stop when LLM output text contains a literal pattern.
+    ContentMatch { pattern: String },
+    /// Stop when identical tool call patterns repeat within a sliding window.
+    LoopDetection { window: usize },
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 #[tirea(path = "__kernel.stop_policy_runtime")]
@@ -100,7 +180,7 @@ macro_rules! impl_builtin_stop_policy {
 
             fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason> {
                 let ctx = stop_check_ctx_from_input(input);
-                self.evaluate(&ctx)
+                self.evaluate(&ctx).map(StopReason::from)
             }
         }
     };
@@ -226,7 +306,9 @@ impl AgentPlugin for StopPolicyPlugin {
         };
         for condition in &self.conditions {
             if let Some(reason) = condition.evaluate(&input) {
-                step.request_termination(crate::contracts::TerminationReason::Stopped(reason));
+                step.request_termination(crate::contracts::TerminationReason::Stopped(
+                    reason.into_stopped_reason(),
+                ));
                 break;
             }
         }
@@ -416,5 +498,34 @@ mod tests {
         assert_eq!(stats.last_text, "r1");
         assert_eq!(stats.last_tool_calls.len(), 1);
         assert_eq!(stats.last_tool_calls[0].id, "c1");
+    }
+
+    #[test]
+    fn stop_condition_spec_serialization_roundtrip() {
+        let specs = vec![
+            StopConditionSpec::MaxRounds { rounds: 5 },
+            StopConditionSpec::Timeout { seconds: 30 },
+            StopConditionSpec::TokenBudget { max_total: 1000 },
+            StopConditionSpec::ConsecutiveErrors { max: 3 },
+            StopConditionSpec::StopOnTool {
+                tool_name: "finish".to_string(),
+            },
+            StopConditionSpec::ContentMatch {
+                pattern: "DONE".to_string(),
+            },
+            StopConditionSpec::LoopDetection { window: 4 },
+        ];
+        for spec in specs {
+            let encoded = serde_json::to_string(&spec).unwrap();
+            let restored: StopConditionSpec = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(restored, spec);
+        }
+    }
+
+    #[test]
+    fn stop_reason_maps_to_stopped_reason_payload() {
+        let mapped = StopReason::ToolCalled("finish".to_string()).into_stopped_reason();
+        assert_eq!(mapped.code, "tool_called");
+        assert_eq!(mapped.detail.as_deref(), Some("finish"));
     }
 }
