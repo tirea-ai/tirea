@@ -11,7 +11,7 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tirea_agentos::contracts::storage::{AgentStateReader, AgentStateStore};
+use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
 use tirea_agentos::contracts::tool::Tool;
 use tirea_agentos::orchestrator::AgentDefinition;
 use tirea_agentos::orchestrator::AgentOsBuilder;
@@ -64,7 +64,7 @@ async fn post_sse_with_retry(app: axum::Router, uri: &str, payload: Value) -> (S
     last.expect("retry loop must produce at least one response")
 }
 
-fn make_os(write_store: Arc<dyn AgentStateStore>) -> tirea_agentos::orchestrator::AgentOs {
+fn make_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::orchestrator::AgentOs {
     let def = AgentDefinition {
         id: "deepseek".to_string(),
         model: "deepseek-chat".to_string(),
@@ -83,7 +83,7 @@ If runtime context entries are provided, treat them as authoritative facts and a
 }
 
 /// Build AgentOs with a calculator tool and multi-round support.
-fn make_tool_os(write_store: Arc<dyn AgentStateStore>) -> tirea_agentos::orchestrator::AgentOs {
+fn make_tool_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::orchestrator::AgentOs {
     let def = AgentDefinition {
         id: "calc".to_string(),
         model: "deepseek-chat".to_string(),
@@ -109,9 +109,7 @@ fn make_tool_os(write_store: Arc<dyn AgentStateStore>) -> tirea_agentos::orchest
 }
 
 /// Build AgentOs for multi-turn conversation tests.
-fn make_multiturn_os(
-    write_store: Arc<dyn AgentStateStore>,
-) -> tirea_agentos::orchestrator::AgentOs {
+fn make_multiturn_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::orchestrator::AgentOs {
     let def = AgentDefinition {
         id: "chat".to_string(),
         model: "deepseek-chat".to_string(),
@@ -179,7 +177,7 @@ async fn e2e_ai_sdk_sse_with_deepseek() {
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    let saved = storage.load_agent_state("e2e-sdk").await.unwrap();
+    let saved = storage.load_thread("e2e-sdk").await.unwrap();
     assert!(saved.is_some(), "thread not persisted");
     let saved = saved.unwrap();
     assert!(
@@ -231,7 +229,7 @@ async fn e2e_ag_ui_sse_with_deepseek() {
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    let saved = storage.load_agent_state("e2e-agui").await.unwrap();
+    let saved = storage.load_thread("e2e-agui").await.unwrap();
     assert!(saved.is_some(), "thread not persisted");
     let saved = saved.unwrap();
     assert!(
@@ -303,7 +301,7 @@ async fn e2e_ai_sdk_client_disconnect_cancels_inflight_stream() {
     tokio::time::sleep(std::time::Duration::from_millis(900)).await;
 
     let saved = storage
-        .load_agent_state("e2e-sdk-cancel")
+        .load_thread("e2e-sdk-cancel")
         .await
         .unwrap()
         .expect("thread should exist after disconnect");
@@ -376,7 +374,7 @@ async fn e2e_ai_sdk_tool_call_with_deepseek() {
 
     // Thread should be persisted with tool call history.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    let saved = storage.load_agent_state("e2e-sdk-tool").await.unwrap();
+    let saved = storage.load_thread("e2e-sdk-tool").await.unwrap();
     assert!(saved.is_some(), "thread not persisted");
 }
 
@@ -490,11 +488,7 @@ async fn e2e_ai_sdk_multiturn_with_deepseek() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Verify session has messages from turn 1.
-    let saved = storage
-        .load_agent_state("e2e-sdk-multi")
-        .await
-        .unwrap()
-        .unwrap();
+    let saved = storage.load_thread("e2e-sdk-multi").await.unwrap().unwrap();
     assert!(
         saved.messages.len() >= 2,
         "turn 1 should persist at least user + assistant messages, got {}",

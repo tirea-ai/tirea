@@ -242,6 +242,7 @@ impl std::fmt::Debug for AgentConfig {
 
 impl AgentConfig {
     tirea_contract::impl_shared_agent_builder_methods!();
+    tirea_contract::impl_stop_condition_spec_builder_methods!();
     tirea_contract::impl_loop_config_builder_methods!();
 
     /// Set tool executor strategy.

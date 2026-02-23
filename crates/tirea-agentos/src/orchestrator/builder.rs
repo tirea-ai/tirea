@@ -205,7 +205,7 @@ impl AgentOsBuilder {
         self
     }
 
-    pub fn with_agent_state_store(mut self, agent_state_store: Arc<dyn AgentStateStore>) -> Self {
+    pub fn with_agent_state_store(mut self, agent_state_store: Arc<dyn ThreadStore>) -> Self {
         self.agent_state_store = Some(agent_state_store);
         self
     }

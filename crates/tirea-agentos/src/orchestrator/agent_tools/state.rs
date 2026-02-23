@@ -21,7 +21,7 @@ pub(super) fn as_delegation_record(
         status: summary.status,
         assistant: summary.assistant.clone(),
         error: summary.error.clone(),
-        agent_state: thread,
+        thread,
     }
 }
 
@@ -226,14 +226,13 @@ pub(super) async fn reconcile_persisted_runs(
             let next = as_delegation_record(
                 summary,
                 current.parent_run_id.clone(),
-                thread.or_else(|| current.agent_state.clone()),
+                thread.or_else(|| current.thread.clone()),
             );
             if current.status != next.status
                 || current.assistant != next.assistant
                 || current.error != next.error
                 || current.parent_run_id != next.parent_run_id
-                || current.agent_state.as_ref().map(|s| &s.id)
-                    != next.agent_state.as_ref().map(|s| &s.id)
+                || current.thread.as_ref().map(|s| &s.id) != next.thread.as_ref().map(|s| &s.id)
             {
                 runs.insert(run_id.clone(), next);
                 changed = true;

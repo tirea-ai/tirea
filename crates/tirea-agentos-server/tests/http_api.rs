@@ -8,8 +8,8 @@ use std::sync::Arc;
 use tirea_agentos::contracts::plugin::phase::BeforeInferenceContext;
 use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::storage::{
-    AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStore,
-    AgentStateStoreError, AgentStateWriter, Committed,
+    Committed, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore,
+    ThreadStoreError, ThreadWriter,
 };
 use tirea_agentos::contracts::thread::Thread;
 use tirea_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
@@ -53,12 +53,12 @@ fn make_os() -> AgentOs {
     make_os_with_storage(Arc::new(MemoryStore::new()))
 }
 
-fn make_os_with_storage(write_store: Arc<dyn AgentStateStore>) -> AgentOs {
+fn make_os_with_storage(write_store: Arc<dyn ThreadStore>) -> AgentOs {
     make_os_with_storage_and_tools(write_store, HashMap::new())
 }
 
 fn make_os_with_storage_and_tools(
-    write_store: Arc<dyn AgentStateStore>,
+    write_store: Arc<dyn ThreadStore>,
     tools: HashMap<String, Arc<dyn Tool>>,
 ) -> AgentOs {
     let def = AgentDefinition {
@@ -80,7 +80,7 @@ fn make_os_with_storage_and_tools(
 }
 
 fn make_os_with_slow_terminate_plugin_requested_plugin(
-    write_store: Arc<dyn AgentStateStore>,
+    write_store: Arc<dyn ThreadStore>,
 ) -> AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
@@ -175,11 +175,11 @@ impl RecordingStorage {
 }
 
 #[async_trait]
-impl AgentStateWriter for RecordingStorage {
-    async fn create(&self, thread: &Thread) -> Result<Committed, AgentStateStoreError> {
+impl ThreadWriter for RecordingStorage {
+    async fn create(&self, thread: &Thread) -> Result<Committed, ThreadStoreError> {
         let mut threads = self.threads.write().await;
         if threads.contains_key(&thread.id) {
-            return Err(AgentStateStoreError::AlreadyExists);
+            return Err(ThreadStoreError::AlreadyExists);
         }
         threads.insert(thread.id.clone(), thread.clone());
         self.saves.fetch_add(1, Ordering::SeqCst);
@@ -192,7 +192,7 @@ impl AgentStateWriter for RecordingStorage {
         id: &str,
         delta: &ThreadChangeSet,
         _precondition: tirea_agentos::contracts::storage::VersionPrecondition,
-    ) -> Result<Committed, AgentStateStoreError> {
+    ) -> Result<Committed, ThreadStoreError> {
         let mut threads = self.threads.write().await;
         if let Some(thread) = threads.get_mut(id) {
             for msg in &delta.messages {
@@ -205,13 +205,13 @@ impl AgentStateWriter for RecordingStorage {
         Ok(Committed { version: 0 })
     }
 
-    async fn delete(&self, id: &str) -> Result<(), AgentStateStoreError> {
+    async fn delete(&self, id: &str) -> Result<(), ThreadStoreError> {
         let mut threads = self.threads.write().await;
         threads.remove(id);
         Ok(())
     }
 
-    async fn save(&self, thread: &Thread) -> Result<(), AgentStateStoreError> {
+    async fn save(&self, thread: &Thread) -> Result<(), ThreadStoreError> {
         let mut threads = self.threads.write().await;
         threads.insert(thread.id.clone(), thread.clone());
         self.saves.fetch_add(1, Ordering::SeqCst);
@@ -221,19 +221,19 @@ impl AgentStateWriter for RecordingStorage {
 }
 
 #[async_trait]
-impl AgentStateReader for RecordingStorage {
-    async fn load(&self, id: &str) -> Result<Option<AgentStateHead>, AgentStateStoreError> {
+impl ThreadReader for RecordingStorage {
+    async fn load(&self, id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
         let threads = self.threads.read().await;
-        Ok(threads.get(id).map(|t| AgentStateHead {
+        Ok(threads.get(id).map(|t| ThreadHead {
             agent_state: t.clone(),
             version: 0,
         }))
     }
 
-    async fn list_agent_states(
+    async fn list_threads(
         &self,
-        query: &AgentStateListQuery,
-    ) -> Result<AgentStateListPage, AgentStateStoreError> {
+        query: &ThreadListQuery,
+    ) -> Result<ThreadListPage, ThreadStoreError> {
         let threads = self.threads.read().await;
         let mut ids: Vec<String> = threads.keys().cloned().collect();
         ids.sort();
@@ -244,7 +244,7 @@ impl AgentStateReader for RecordingStorage {
         let slice = &ids[offset..end];
         let has_more = slice.len() > limit;
         let items: Vec<String> = slice.iter().take(limit).cloned().collect();
-        Ok(AgentStateListPage {
+        Ok(ThreadListPage {
             items,
             total,
             has_more,
@@ -278,7 +278,7 @@ async fn test_sessions_query_endpoints() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    let page: tirea_agentos::contracts::storage::AgentStateListPage =
+    let page: tirea_agentos::contracts::storage::ThreadListPage =
         serde_json::from_slice(&body).unwrap();
     assert_eq!(page.items, vec!["s1".to_string()]);
     assert_eq!(page.total, 1);
@@ -349,7 +349,7 @@ async fn test_ai_sdk_sse_and_persists_session() {
         "missing finish: {text}"
     );
 
-    let saved = storage.load_agent_state("t1").await.unwrap().unwrap();
+    let saved = storage.load_thread("t1").await.unwrap().unwrap();
     assert_eq!(saved.id, "t1");
     assert_eq!(saved.messages.len(), 1);
     assert_eq!(saved.messages[0].content, "hi");
@@ -382,7 +382,7 @@ async fn test_ai_sdk_sse_accepts_messages_request_shape() {
     );
 
     let saved = storage
-        .load_agent_state("t-messages-shape")
+        .load_thread("t-messages-shape")
         .await
         .unwrap()
         .unwrap();
@@ -416,11 +416,7 @@ async fn test_ai_sdk_sse_messages_request_uses_id_when_session_id_missing() {
         "missing finish event: {text}"
     );
 
-    let saved = storage
-        .load_agent_state("t-id-only")
-        .await
-        .unwrap()
-        .unwrap();
+    let saved = storage.load_thread("t-id-only").await.unwrap().unwrap();
     assert_eq!(saved.messages.len(), 1);
     assert_eq!(saved.messages[0].content, "id-fallback-input");
 }
@@ -428,7 +424,7 @@ async fn test_ai_sdk_sse_messages_request_uses_id_when_session_id_missing() {
 #[tokio::test]
 async fn test_ai_sdk_sse_messages_request_requires_user_text() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let payload = json!({
@@ -448,7 +444,7 @@ async fn test_ai_sdk_sse_messages_request_requires_user_text() {
 #[tokio::test]
 async fn test_ai_sdk_sse_messages_request_requires_thread_identifier() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let payload = json!({
@@ -498,7 +494,7 @@ async fn test_ai_sdk_sse_accepts_messages_content_array_shape() {
     );
 
     let saved = storage
-        .load_agent_state("t-content-array")
+        .load_thread("t-content-array")
         .await
         .unwrap()
         .unwrap();
@@ -654,7 +650,7 @@ async fn test_agui_sse_and_persists_session() {
         "missing RUN_FINISHED: {text}"
     );
 
-    let saved = storage.load_agent_state("th1").await.unwrap().unwrap();
+    let saved = storage.load_thread("th1").await.unwrap().unwrap();
     assert_eq!(saved.id, "th1");
     assert_eq!(saved.messages.len(), 1);
 }
@@ -696,7 +692,7 @@ async fn test_industry_common_persistence_saves_user_message_before_run_complete
         "expected at least 2 saves (user ingress + final)"
     );
 
-    let saved = storage.load_agent_state("t2").await.unwrap().unwrap();
+    let saved = storage.load_thread("t2").await.unwrap().unwrap();
     assert_eq!(saved.messages.len(), 1);
     assert_eq!(saved.messages[0].content, "hi");
 }
@@ -741,7 +737,7 @@ async fn test_industry_common_persistence_saves_inbound_request_messages_agui() 
         "expected at least 2 saves (request ingress + final)"
     );
 
-    let saved = storage.load_agent_state("th2").await.unwrap().unwrap();
+    let saved = storage.load_thread("th2").await.unwrap().unwrap();
     assert_eq!(saved.messages.len(), 1);
     assert_eq!(saved.messages[0].content, "hello");
 }
@@ -780,7 +776,7 @@ async fn test_agui_sse_idless_user_message_not_duplicated_by_internal_reapply() 
 
     let _ = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     let saved = storage
-        .load_agent_state("th-idless-once")
+        .load_thread("th-idless-once")
         .await
         .unwrap()
         .unwrap();
@@ -854,7 +850,7 @@ async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, Value) {
     (status, json)
 }
 
-fn make_app(os: Arc<AgentOs>, read_store: Arc<dyn AgentStateReader>) -> axum::Router {
+fn make_app(os: Arc<AgentOs>, read_store: Arc<dyn ThreadReader>) -> axum::Router {
     router(AppState { os, read_store })
 }
 
@@ -865,7 +861,7 @@ fn make_app(os: Arc<AgentOs>, read_store: Arc<dyn AgentStateReader>) -> axum::Ro
 #[tokio::test]
 async fn test_health_returns_200() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let resp = app
@@ -887,7 +883,7 @@ async fn test_health_returns_200() {
 #[tokio::test]
 async fn test_get_session_not_found() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let (status, body) = get_json(app, "/v1/threads/nonexistent").await;
@@ -905,7 +901,7 @@ async fn test_get_session_not_found() {
 #[tokio::test]
 async fn test_get_session_messages_not_found() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let (status, body) = get_json(app, "/v1/threads/nonexistent/messages").await;
@@ -923,7 +919,7 @@ async fn test_get_session_messages_not_found() {
 #[tokio::test]
 async fn test_ai_sdk_sse_empty_thread_id() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let payload = json!({ "id": "  ", "messages": [{ "role": "user", "content": "hi" }] });
@@ -938,7 +934,7 @@ async fn test_ai_sdk_sse_empty_thread_id() {
 #[tokio::test]
 async fn test_ai_sdk_sse_empty_input() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let payload = json!({ "id": "s1", "messages": [{ "role": "user", "content": "  " }] });
@@ -953,7 +949,7 @@ async fn test_ai_sdk_sse_empty_input() {
 #[tokio::test]
 async fn test_ai_sdk_sse_agent_not_found() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let payload = json!({ "id": "s1", "messages": [{ "role": "user", "content": "hi" }] });
@@ -968,7 +964,7 @@ async fn test_ai_sdk_sse_agent_not_found() {
 #[tokio::test]
 async fn test_ai_sdk_sse_rejects_legacy_payload_shape() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let payload = json!({
@@ -986,7 +982,7 @@ async fn test_ai_sdk_sse_rejects_legacy_payload_shape() {
 #[tokio::test]
 async fn test_ai_sdk_sse_malformed_json() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let resp = app
@@ -1011,7 +1007,7 @@ async fn test_ai_sdk_sse_malformed_json() {
 #[tokio::test]
 async fn test_agui_sse_agent_not_found() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let payload = json!({
@@ -1030,7 +1026,7 @@ async fn test_agui_sse_agent_not_found() {
 #[tokio::test]
 async fn test_agui_sse_empty_thread_id() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let payload = json!({
@@ -1048,7 +1044,7 @@ async fn test_agui_sse_empty_thread_id() {
 #[tokio::test]
 async fn test_agui_sse_empty_run_id() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let payload = json!({
@@ -1066,7 +1062,7 @@ async fn test_agui_sse_empty_run_id() {
 #[tokio::test]
 async fn test_agui_sse_malformed_json() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let resp = app
@@ -1088,7 +1084,7 @@ async fn test_agui_sse_malformed_json() {
 async fn test_agui_sse_session_id_mismatch() {
     let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStore::new());
-    let read_store: Arc<dyn AgentStateReader> = storage.clone();
+    let read_store: Arc<dyn ThreadReader> = storage.clone();
 
     // Pre-save a session with id "real-id".
     storage.save(&Thread::new("real-id")).await.unwrap();
@@ -1106,9 +1102,9 @@ async fn test_agui_sse_session_id_mismatch() {
 struct FailingStorage;
 
 #[async_trait]
-impl AgentStateWriter for FailingStorage {
-    async fn create(&self, _thread: &Thread) -> Result<Committed, AgentStateStoreError> {
-        Err(AgentStateStoreError::Io(std::io::Error::new(
+impl ThreadWriter for FailingStorage {
+    async fn create(&self, _thread: &Thread) -> Result<Committed, ThreadStoreError> {
+        Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk write denied",
         )))
@@ -1119,22 +1115,22 @@ impl AgentStateWriter for FailingStorage {
         _id: &str,
         _delta: &tirea_agentos::contracts::ThreadChangeSet,
         _precondition: tirea_agentos::contracts::storage::VersionPrecondition,
-    ) -> Result<Committed, AgentStateStoreError> {
-        Err(AgentStateStoreError::Io(std::io::Error::new(
+    ) -> Result<Committed, ThreadStoreError> {
+        Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk write denied",
         )))
     }
 
-    async fn delete(&self, _id: &str) -> Result<(), AgentStateStoreError> {
-        Err(AgentStateStoreError::Io(std::io::Error::new(
+    async fn delete(&self, _id: &str) -> Result<(), ThreadStoreError> {
+        Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk delete denied",
         )))
     }
 
-    async fn save(&self, _thread: &Thread) -> Result<(), AgentStateStoreError> {
-        Err(AgentStateStoreError::Io(std::io::Error::new(
+    async fn save(&self, _thread: &Thread) -> Result<(), ThreadStoreError> {
+        Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk write denied",
         )))
@@ -1142,19 +1138,19 @@ impl AgentStateWriter for FailingStorage {
 }
 
 #[async_trait]
-impl AgentStateReader for FailingStorage {
-    async fn load(&self, _id: &str) -> Result<Option<AgentStateHead>, AgentStateStoreError> {
-        Err(AgentStateStoreError::Io(std::io::Error::new(
+impl ThreadReader for FailingStorage {
+    async fn load(&self, _id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
+        Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk read denied",
         )))
     }
 
-    async fn list_agent_states(
+    async fn list_threads(
         &self,
-        _query: &AgentStateListQuery,
-    ) -> Result<AgentStateListPage, AgentStateStoreError> {
-        Err(AgentStateStoreError::Io(std::io::Error::new(
+        _query: &ThreadListQuery,
+    ) -> Result<ThreadListPage, ThreadStoreError> {
+        Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk list denied",
         )))
@@ -1164,7 +1160,7 @@ impl AgentStateReader for FailingStorage {
 #[tokio::test]
 async fn test_list_sessions_storage_error() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(FailingStorage);
+    let read_store: Arc<dyn ThreadReader> = Arc::new(FailingStorage);
     let app = make_app(os, read_store);
 
     let (status, body) = get_json(app, "/v1/threads").await;
@@ -1178,7 +1174,7 @@ async fn test_list_sessions_storage_error() {
 #[tokio::test]
 async fn test_get_session_storage_error() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(FailingStorage);
+    let read_store: Arc<dyn ThreadReader> = Arc::new(FailingStorage);
     let app = make_app(os, read_store);
 
     let (status, body) = get_json(app, "/v1/threads/s1").await;
@@ -1192,7 +1188,7 @@ async fn test_get_session_storage_error() {
 #[tokio::test]
 async fn test_ai_sdk_sse_storage_load_error() {
     let os = Arc::new(make_os_with_storage(Arc::new(FailingStorage)));
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(FailingStorage);
+    let read_store: Arc<dyn ThreadReader> = Arc::new(FailingStorage);
     let app = make_app(os, read_store);
 
     let payload = json!({ "id": "s1", "messages": [{ "role": "user", "content": "hi" }] });
@@ -1207,7 +1203,7 @@ async fn test_ai_sdk_sse_storage_load_error() {
 #[tokio::test]
 async fn test_agui_sse_storage_load_error() {
     let os = Arc::new(make_os_with_storage(Arc::new(FailingStorage)));
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(FailingStorage);
+    let read_store: Arc<dyn ThreadReader> = Arc::new(FailingStorage);
     let app = make_app(os, read_store);
 
     let payload = json!({
@@ -1227,9 +1223,9 @@ async fn test_agui_sse_storage_load_error() {
 struct SaveFailStorage;
 
 #[async_trait]
-impl AgentStateWriter for SaveFailStorage {
-    async fn create(&self, _thread: &Thread) -> Result<Committed, AgentStateStoreError> {
-        Err(AgentStateStoreError::Io(std::io::Error::new(
+impl ThreadWriter for SaveFailStorage {
+    async fn create(&self, _thread: &Thread) -> Result<Committed, ThreadStoreError> {
+        Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk write denied",
         )))
@@ -1240,19 +1236,19 @@ impl AgentStateWriter for SaveFailStorage {
         _id: &str,
         _delta: &tirea_agentos::contracts::ThreadChangeSet,
         _precondition: tirea_agentos::contracts::storage::VersionPrecondition,
-    ) -> Result<Committed, AgentStateStoreError> {
-        Err(AgentStateStoreError::Io(std::io::Error::new(
+    ) -> Result<Committed, ThreadStoreError> {
+        Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk write denied",
         )))
     }
 
-    async fn delete(&self, _id: &str) -> Result<(), AgentStateStoreError> {
+    async fn delete(&self, _id: &str) -> Result<(), ThreadStoreError> {
         Ok(())
     }
 
-    async fn save(&self, _thread: &Thread) -> Result<(), AgentStateStoreError> {
-        Err(AgentStateStoreError::Io(std::io::Error::new(
+    async fn save(&self, _thread: &Thread) -> Result<(), ThreadStoreError> {
+        Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk write denied",
         )))
@@ -1260,16 +1256,16 @@ impl AgentStateWriter for SaveFailStorage {
 }
 
 #[async_trait]
-impl AgentStateReader for SaveFailStorage {
-    async fn load(&self, _id: &str) -> Result<Option<AgentStateHead>, AgentStateStoreError> {
+impl ThreadReader for SaveFailStorage {
+    async fn load(&self, _id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
         Ok(None)
     }
 
-    async fn list_agent_states(
+    async fn list_threads(
         &self,
-        _query: &AgentStateListQuery,
-    ) -> Result<AgentStateListPage, AgentStateStoreError> {
-        Ok(AgentStateListPage {
+        _query: &ThreadListQuery,
+    ) -> Result<ThreadListPage, ThreadStoreError> {
+        Ok(ThreadListPage {
             items: vec![],
             total: 0,
             has_more: false,
@@ -1280,7 +1276,7 @@ impl AgentStateReader for SaveFailStorage {
 #[tokio::test]
 async fn test_ai_sdk_sse_storage_save_error() {
     let os = Arc::new(make_os_with_storage(Arc::new(SaveFailStorage)));
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(SaveFailStorage);
+    let read_store: Arc<dyn ThreadReader> = Arc::new(SaveFailStorage);
     let app = make_app(os, read_store);
 
     let payload = json!({ "id": "s1", "messages": [{ "role": "user", "content": "hi" }] });
@@ -1295,7 +1291,7 @@ async fn test_ai_sdk_sse_storage_save_error() {
 #[tokio::test]
 async fn test_agui_sse_storage_save_error() {
     let os = Arc::new(make_os_with_storage(Arc::new(SaveFailStorage)));
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(SaveFailStorage);
+    let read_store: Arc<dyn ThreadReader> = Arc::new(SaveFailStorage);
     let app = make_app(os, read_store);
 
     // Send a message so the session has changes to persist.
@@ -1331,7 +1327,7 @@ fn make_session_with_n_messages(id: &str, n: usize) -> Thread {
 async fn test_messages_pagination_default_params() {
     let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStore::new());
-    let read_store: Arc<dyn AgentStateReader> = storage.clone();
+    let read_store: Arc<dyn ThreadReader> = storage.clone();
     let thread = make_session_with_n_messages("s1", 5);
     storage.save(&thread).await.unwrap();
     let app = make_app(os, read_store);
@@ -1350,7 +1346,7 @@ async fn test_messages_pagination_default_params() {
 async fn test_messages_pagination_with_limit() {
     let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStore::new());
-    let read_store: Arc<dyn AgentStateReader> = storage.clone();
+    let read_store: Arc<dyn ThreadReader> = storage.clone();
     let thread = make_session_with_n_messages("s1", 10);
     storage.save(&thread).await.unwrap();
     let app = make_app(os, read_store);
@@ -1369,7 +1365,7 @@ async fn test_messages_pagination_with_limit() {
 async fn test_messages_pagination_cursor_forward() {
     let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStore::new());
-    let read_store: Arc<dyn AgentStateReader> = storage.clone();
+    let read_store: Arc<dyn ThreadReader> = storage.clone();
     let thread = make_session_with_n_messages("s1", 10);
     storage.save(&thread).await.unwrap();
     let app = make_app(os, read_store);
@@ -1387,7 +1383,7 @@ async fn test_messages_pagination_cursor_forward() {
 async fn test_messages_pagination_desc_order() {
     let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStore::new());
-    let read_store: Arc<dyn AgentStateReader> = storage.clone();
+    let read_store: Arc<dyn ThreadReader> = storage.clone();
     let thread = make_session_with_n_messages("s1", 10);
     storage.save(&thread).await.unwrap();
     let app = make_app(os, read_store);
@@ -1407,7 +1403,7 @@ async fn test_messages_pagination_desc_order() {
 async fn test_messages_pagination_limit_clamped() {
     let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStore::new());
-    let read_store: Arc<dyn AgentStateReader> = storage.clone();
+    let read_store: Arc<dyn ThreadReader> = storage.clone();
     let thread = make_session_with_n_messages("s1", 300);
     storage.save(&thread).await.unwrap();
     let app = make_app(os, read_store);
@@ -1424,7 +1420,7 @@ async fn test_messages_pagination_limit_clamped() {
 #[tokio::test]
 async fn test_messages_pagination_not_found() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let (status, body) = get_json(app, "/v1/threads/nonexistent/messages?limit=10").await;
@@ -1439,7 +1435,7 @@ async fn test_messages_pagination_not_found() {
 async fn test_list_threads_filters_by_parent_thread_id() {
     let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStore::new());
-    let read_store: Arc<dyn AgentStateReader> = storage.clone();
+    let read_store: Arc<dyn ThreadReader> = storage.clone();
 
     storage
         .save(&Thread::new("t-parent-1").with_parent_thread_id("p-root"))
@@ -1455,7 +1451,7 @@ async fn test_list_threads_filters_by_parent_thread_id() {
     let (status, body) = get_json(app, "/v1/threads?parent_thread_id=p-root").await;
     assert_eq!(status, StatusCode::OK);
 
-    let page: tirea_agentos::contracts::storage::AgentStateListPage =
+    let page: tirea_agentos::contracts::storage::ThreadListPage =
         serde_json::from_value(body).unwrap();
     assert_eq!(page.total, 2);
     assert_eq!(page.items, vec!["t-parent-1", "t-parent-2"]);
@@ -1465,7 +1461,7 @@ async fn test_list_threads_filters_by_parent_thread_id() {
 async fn test_messages_filter_by_visibility_and_run_id() {
     let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStore::new());
-    let read_store: Arc<dyn AgentStateReader> = storage.clone();
+    let read_store: Arc<dyn ThreadReader> = storage.clone();
 
     let thread = Thread::new("s-filter")
         .with_message(
@@ -1531,7 +1527,7 @@ async fn test_messages_filter_by_visibility_and_run_id() {
 async fn test_protocol_history_endpoints_hide_internal_messages_by_default() {
     let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStore::new());
-    let read_store: Arc<dyn AgentStateReader> = storage.clone();
+    let read_store: Arc<dyn ThreadReader> = storage.clone();
 
     let thread = Thread::new("s-internal-history")
         .with_message(tirea_agentos::contracts::thread::Message::user(
@@ -1573,7 +1569,7 @@ async fn test_protocol_history_endpoints_hide_internal_messages_by_default() {
 async fn test_ai_sdk_history_encodes_tool_messages_as_tool_invocation_parts() {
     let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStore::new());
-    let read_store: Arc<dyn AgentStateReader> = storage.clone();
+    let read_store: Arc<dyn ThreadReader> = storage.clone();
 
     let thread = Thread::new("s-tool-history")
         .with_message(
@@ -1639,7 +1635,7 @@ async fn test_ai_sdk_history_encodes_tool_messages_as_tool_invocation_parts() {
 async fn test_ai_sdk_history_encodes_assistant_tool_call_input_as_input_available() {
     let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStore::new());
-    let read_store: Arc<dyn AgentStateReader> = storage.clone();
+    let read_store: Arc<dyn ThreadReader> = storage.clone();
 
     let thread = Thread::new("s-tool-input-history").with_message(
         tirea_agentos::contracts::thread::Message::assistant_with_tool_calls(
@@ -1684,7 +1680,7 @@ async fn test_ai_sdk_history_encodes_assistant_tool_call_input_as_input_availabl
 async fn test_messages_run_id_cursor_order_combination_boundaries() {
     let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStore::new());
-    let read_store: Arc<dyn AgentStateReader> = storage.clone();
+    let read_store: Arc<dyn ThreadReader> = storage.clone();
 
     let mut thread = Thread::new("s-run-cursor-boundary");
     for i in 0..6usize {
@@ -1873,11 +1869,7 @@ async fn test_agui_pending_approval_resumes_and_replays_tool_call() {
         "resume run should finish: {body}"
     );
 
-    let saved = storage
-        .load_agent_state("th-approve")
-        .await
-        .unwrap()
-        .unwrap();
+    let saved = storage.load_thread("th-approve").await.unwrap().unwrap();
     let replayed_tool = saved.messages.iter().find(|m| {
         m.role == tirea_agentos::contracts::thread::Role::Tool
             && m.tool_call_id.as_deref() == Some("call_1")
@@ -1930,7 +1922,7 @@ async fn test_agui_pending_denial_clears_pending_without_replay() {
         "denied resume run should still finish: {body}"
     );
 
-    let saved = storage.load_agent_state("th-deny").await.unwrap().unwrap();
+    let saved = storage.load_thread("th-deny").await.unwrap().unwrap();
     let replayed_tool = saved.messages.iter().find(|m| {
         m.role == tirea_agentos::contracts::thread::Role::Tool
             && m.tool_call_id.as_deref() == Some("call_1")
@@ -1999,11 +1991,7 @@ async fn test_ai_sdk_permission_approval_replays_backend_tool_call() {
         "approved resume should replay original backend call: {body}"
     );
 
-    let saved = storage
-        .load_agent_state("th-ai-approve")
-        .await
-        .unwrap()
-        .unwrap();
+    let saved = storage.load_thread("th-ai-approve").await.unwrap().unwrap();
     let replayed_tool = saved.messages.iter().find(|m| {
         m.role == tirea_agentos::contracts::thread::Role::Tool
             && m.tool_call_id.as_deref() == Some("call_1")
@@ -2069,11 +2057,7 @@ async fn test_ai_sdk_permission_denial_emits_output_denied_without_replay() {
         "denied resume should emit tool-output-denied: {body}"
     );
 
-    let saved = storage
-        .load_agent_state("th-ai-deny")
-        .await
-        .unwrap()
-        .unwrap();
+    let saved = storage.load_thread("th-ai-deny").await.unwrap().unwrap();
     let replayed_tool = saved.messages.iter().find(|m| {
         m.role == tirea_agentos::contracts::thread::Role::Tool
             && m.tool_call_id.as_deref() == Some("call_1")
@@ -2136,7 +2120,7 @@ async fn test_ai_sdk_tool_approval_response_part_replays_backend_tool_call() {
     );
 
     let saved = storage
-        .load_agent_state("th-ai-approve-part")
+        .load_thread("th-ai-approve-part")
         .await
         .unwrap()
         .unwrap();
@@ -2192,7 +2176,7 @@ async fn test_ai_sdk_tool_approval_response_part_denial_emits_output_denied() {
     );
 
     let saved = storage
-        .load_agent_state("th-ai-deny-part")
+        .load_thread("th-ai-deny-part")
         .await
         .unwrap()
         .unwrap();
@@ -2251,11 +2235,7 @@ async fn test_ai_sdk_ask_output_available_replays_with_frontend_payload() {
         "ask resume should emit tool-output-available: {body}"
     );
 
-    let saved = storage
-        .load_agent_state("th-ai-ask")
-        .await
-        .unwrap()
-        .unwrap();
+    let saved = storage.load_thread("th-ai-ask").await.unwrap().unwrap();
     let replayed_tool = saved.messages.iter().find(|m| {
         m.role == tirea_agentos::contracts::thread::Role::Tool
             && m.tool_call_id.as_deref() == Some("ask_call_1")
@@ -2285,7 +2265,7 @@ async fn test_ai_sdk_ask_output_available_replays_with_frontend_payload() {
 #[tokio::test]
 async fn test_old_routes_return_404() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let old_routes = vec![
@@ -2316,7 +2296,7 @@ async fn test_old_routes_return_404() {
 #[tokio::test]
 async fn test_new_protocol_routes_are_reachable() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     // POST to new AG-UI run endpoint — valid request should succeed (200 SSE stream)
@@ -2358,7 +2338,7 @@ async fn test_new_protocol_routes_are_reachable() {
 #[tokio::test]
 async fn test_protocol_routes_reject_wrong_methods() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     // GET on a POST-only endpoint
@@ -2440,7 +2420,7 @@ async fn test_protocol_isolation_no_cross_routing() {
 #[tokio::test]
 async fn test_unknown_protocol_prefix_returns_404() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let resp = app
@@ -2462,7 +2442,7 @@ async fn test_unknown_protocol_prefix_returns_404() {
 #[tokio::test]
 async fn test_ai_sdk_route_sets_protocol_headers() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let payload = json!({
@@ -2545,7 +2525,7 @@ async fn test_ai_sdk_run_syncs_full_ui_message_snapshot() {
     assert!(body.contains(r#""type":"finish""#));
 
     let saved = storage
-        .load_agent_state("aisdk-sync-thread")
+        .load_thread("aisdk-sync-thread")
         .await
         .expect("load should not fail")
         .expect("thread should exist");
@@ -2609,7 +2589,7 @@ async fn test_ai_sdk_regenerate_request_replaces_snapshot() {
     assert_eq!(status, StatusCode::OK);
 
     let saved = storage
-        .load_agent_state("aisdk-regenerate-thread")
+        .load_thread("aisdk-regenerate-thread")
         .await
         .expect("load should not fail")
         .expect("thread should exist");

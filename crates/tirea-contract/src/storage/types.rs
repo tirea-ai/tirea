@@ -67,7 +67,7 @@ pub struct MessagePage {
 
 /// Pagination query for Thread lists.
 #[derive(Debug, Clone)]
-pub struct AgentStateListQuery {
+pub struct ThreadListQuery {
     /// Number of items to skip (0-based).
     pub offset: usize,
     /// Maximum number of items to return (clamped to 1..=200).
@@ -78,7 +78,7 @@ pub struct AgentStateListQuery {
     pub parent_thread_id: Option<String>,
 }
 
-impl Default for AgentStateListQuery {
+impl Default for ThreadListQuery {
     fn default() -> Self {
         Self {
             offset: 0,
@@ -91,7 +91,7 @@ impl Default for AgentStateListQuery {
 
 /// Paginated Thread list response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentStateListPage {
+pub struct ThreadListPage {
     pub items: Vec<String>,
     pub total: usize,
     pub has_more: bool,
@@ -167,7 +167,7 @@ pub fn paginate_in_memory(
 
 /// Storage-level errors.
 #[derive(Debug, Error)]
-pub enum AgentStateStoreError {
+pub enum ThreadStoreError {
     /// Thread not found.
     #[error("Thread not found: {0}")]
     NotFound(String),
@@ -212,7 +212,7 @@ pub struct Committed {
 
 /// Thread plus current storage version.
 #[derive(Debug, Clone)]
-pub struct AgentStateHead {
-    pub agent_state: Thread,
+pub struct ThreadHead {
+    pub thread: Thread,
     pub version: Version,
 }

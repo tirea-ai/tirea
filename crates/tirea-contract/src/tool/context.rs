@@ -51,6 +51,49 @@ pub struct ToolCallContext<'a> {
     cancellation_token: Option<&'a CancellationToken>,
 }
 
+/// Initialization params for [`ToolCallContext`].
+pub struct ToolCallContextInit<'a> {
+    doc: &'a DocCell,
+    ops: &'a Mutex<Vec<Op>>,
+    call_id: String,
+    source: String,
+    run_config: &'a RunConfig,
+    pending_messages: &'a Mutex<Vec<Arc<Message>>>,
+    activity_manager: Option<Arc<dyn ActivityManager>>,
+    cancellation_token: Option<&'a CancellationToken>,
+}
+
+impl<'a> ToolCallContextInit<'a> {
+    /// Create init params without cancellation token.
+    pub fn new(
+        doc: &'a DocCell,
+        ops: &'a Mutex<Vec<Op>>,
+        call_id: impl Into<String>,
+        source: impl Into<String>,
+        run_config: &'a RunConfig,
+        pending_messages: &'a Mutex<Vec<Arc<Message>>>,
+        activity_manager: Option<Arc<dyn ActivityManager>>,
+    ) -> Self {
+        Self {
+            doc,
+            ops,
+            call_id: call_id.into(),
+            source: source.into(),
+            run_config,
+            pending_messages,
+            activity_manager,
+            cancellation_token: None,
+        }
+    }
+
+    /// Attach cancellation token.
+    #[must_use]
+    pub fn with_cancellation_token(mut self, token: &'a CancellationToken) -> Self {
+        self.cancellation_token = Some(token);
+        self
+    }
+}
+
 impl<'a> ToolCallContext<'a> {
     /// Create a new tool call context.
     pub fn new(
@@ -62,7 +105,7 @@ impl<'a> ToolCallContext<'a> {
         pending_messages: &'a Mutex<Vec<Arc<Message>>>,
         activity_manager: Option<Arc<dyn ActivityManager>>,
     ) -> Self {
-        Self::new_with_cancellation(
+        Self::from_init(ToolCallContextInit::new(
             doc,
             ops,
             call_id,
@@ -70,30 +113,20 @@ impl<'a> ToolCallContext<'a> {
             run_config,
             pending_messages,
             activity_manager,
-            None,
-        )
+        ))
     }
 
-    /// Create a new tool call context with an optional run cancellation token.
-    pub fn new_with_cancellation(
-        doc: &'a DocCell,
-        ops: &'a Mutex<Vec<Op>>,
-        call_id: impl Into<String>,
-        source: impl Into<String>,
-        run_config: &'a RunConfig,
-        pending_messages: &'a Mutex<Vec<Arc<Message>>>,
-        activity_manager: Option<Arc<dyn ActivityManager>>,
-        cancellation_token: Option<&'a CancellationToken>,
-    ) -> Self {
+    /// Create a new tool call context from an init envelope.
+    pub fn from_init(init: ToolCallContextInit<'a>) -> Self {
         Self {
-            doc,
-            ops,
-            call_id: call_id.into(),
-            source: source.into(),
-            run_config,
-            pending_messages,
-            activity_manager,
-            cancellation_token,
+            doc: init.doc,
+            ops: init.ops,
+            call_id: init.call_id,
+            source: init.source,
+            run_config: init.run_config,
+            pending_messages: init.pending_messages,
+            activity_manager: init.activity_manager,
+            cancellation_token: init.cancellation_token,
         }
     }
 
@@ -565,15 +598,9 @@ mod tests {
         let pending = Mutex::new(Vec::new());
         let token = CancellationToken::new();
 
-        let ctx = ToolCallContext::new_with_cancellation(
-            &doc,
-            &ops,
-            "call-1",
-            "test",
-            &scope,
-            &pending,
-            None,
-            Some(&token),
+        let ctx = ToolCallContext::from_init(
+            ToolCallContextInit::new(&doc, &ops, "call-1", "test", &scope, &pending, None)
+                .with_cancellation_token(&token),
         );
 
         let token_for_task = token.clone();
@@ -582,10 +609,9 @@ mod tests {
             token_for_task.cancel();
         });
 
-        let done = timeout(Duration::from_millis(300), ctx.cancelled())
+        timeout(Duration::from_millis(300), ctx.cancelled())
             .await
             .expect("cancelled() should resolve after token cancellation");
-        assert_eq!(done, ());
     }
 
     #[tokio::test]

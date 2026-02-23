@@ -12,7 +12,7 @@ use testcontainers_modules::postgres::Postgres;
 use tirea_agentos::contracts::plugin::phase::BeforeInferenceContext;
 use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::storage::{
-    AgentStateReader, AgentStateStore, AgentStateWriter, VersionPrecondition,
+    ThreadReader, ThreadStore, ThreadWriter, VersionPrecondition,
 };
 use tirea_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
 use tirea_agentos_server::http::{router, AppState};
@@ -32,7 +32,7 @@ impl AgentPlugin for TerminatePluginRequestedPlugin {
     }
 }
 
-fn make_os(write_store: Arc<dyn AgentStateStore>) -> AgentOs {
+fn make_os(write_store: Arc<dyn ThreadStore>) -> AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
         plugin_ids: vec!["terminate_plugin_requested_e2e_nats_postgres".into()],
@@ -166,13 +166,13 @@ impl FlakySaveStore {
 }
 
 #[async_trait]
-impl AgentStateWriter for FlakySaveStore {
+impl ThreadWriter for FlakySaveStore {
     async fn create(
         &self,
         thread: &tirea_agentos::contracts::thread::Thread,
     ) -> Result<
         tirea_agentos::contracts::storage::Committed,
-        tirea_agentos::contracts::storage::AgentStateStoreError,
+        tirea_agentos::contracts::storage::ThreadStoreError,
     > {
         self.inner.create(thread).await
     }
@@ -184,7 +184,7 @@ impl AgentStateWriter for FlakySaveStore {
         precondition: VersionPrecondition,
     ) -> Result<
         tirea_agentos::contracts::storage::Committed,
-        tirea_agentos::contracts::storage::AgentStateStoreError,
+        tirea_agentos::contracts::storage::ThreadStoreError,
     > {
         self.inner.append(id, delta, precondition).await
     }
@@ -192,18 +192,18 @@ impl AgentStateWriter for FlakySaveStore {
     async fn delete(
         &self,
         id: &str,
-    ) -> Result<(), tirea_agentos::contracts::storage::AgentStateStoreError> {
+    ) -> Result<(), tirea_agentos::contracts::storage::ThreadStoreError> {
         self.inner.delete(id).await
     }
 
     async fn save(
         &self,
         thread: &tirea_agentos::contracts::thread::Thread,
-    ) -> Result<(), tirea_agentos::contracts::storage::AgentStateStoreError> {
+    ) -> Result<(), tirea_agentos::contracts::storage::ThreadStoreError> {
         let remaining = self.fail_saves_remaining.load(Ordering::SeqCst);
         if remaining > 0 {
             self.fail_saves_remaining.fetch_sub(1, Ordering::SeqCst);
-            return Err(tirea_agentos::contracts::storage::AgentStateStoreError::Io(
+            return Err(tirea_agentos::contracts::storage::ThreadStoreError::Io(
                 std::io::Error::other("injected save failure"),
             ));
         }
@@ -212,25 +212,25 @@ impl AgentStateWriter for FlakySaveStore {
 }
 
 #[async_trait]
-impl AgentStateReader for FlakySaveStore {
+impl ThreadReader for FlakySaveStore {
     async fn load(
         &self,
         id: &str,
     ) -> Result<
-        Option<tirea_agentos::contracts::storage::AgentStateHead>,
-        tirea_agentos::contracts::storage::AgentStateStoreError,
+        Option<tirea_agentos::contracts::storage::ThreadHead>,
+        tirea_agentos::contracts::storage::ThreadStoreError,
     > {
         self.inner.load(id).await
     }
 
-    async fn list_agent_states(
+    async fn list_threads(
         &self,
-        query: &tirea_agentos::contracts::storage::AgentStateListQuery,
+        query: &tirea_agentos::contracts::storage::ThreadListQuery,
     ) -> Result<
-        tirea_agentos::contracts::storage::AgentStateListPage,
-        tirea_agentos::contracts::storage::AgentStateStoreError,
+        tirea_agentos::contracts::storage::ThreadListPage,
+        tirea_agentos::contracts::storage::ThreadStoreError,
     > {
-        self.inner.list_agent_states(query).await
+        self.inner.list_threads(query).await
     }
 }
 
@@ -255,7 +255,7 @@ async fn e2e_http_ai_sdk_persists_through_nats_buffered_postgres() {
 
     let nats_client = async_nats::connect(&nats_url).await.unwrap();
     let jetstream = async_nats::jetstream::new(nats_client);
-    let inner_store: Arc<dyn AgentStateStore> = postgres_store.clone();
+    let inner_store: Arc<dyn ThreadStore> = postgres_store.clone();
     let write_store = Arc::new(
         NatsBufferedThreadWriter::new(inner_store, jetstream)
             .await
@@ -263,7 +263,7 @@ async fn e2e_http_ai_sdk_persists_through_nats_buffered_postgres() {
     );
 
     let os = Arc::new(make_os(write_store));
-    let read_store: Arc<dyn AgentStateReader> = postgres_store.clone();
+    let read_store: Arc<dyn ThreadReader> = postgres_store.clone();
     let app = router(AppState { os, read_store });
 
     let payload =
@@ -282,7 +282,7 @@ async fn e2e_http_ai_sdk_persists_through_nats_buffered_postgres() {
     let mut persisted = None;
     for _ in 0..30usize {
         persisted = postgres_store
-            .load_agent_state("np-e2e-thread")
+            .load_thread("np-e2e-thread")
             .await
             .expect("load should not fail");
         if persisted.is_some() {
@@ -318,7 +318,7 @@ async fn e2e_nats_buffered_postgres_recover_replays_pending_deltas() {
 
     let nats_client = async_nats::connect(&nats_url).await.unwrap();
     let jetstream = async_nats::jetstream::new(nats_client);
-    let inner_store: Arc<dyn AgentStateStore> = postgres_store.clone();
+    let inner_store: Arc<dyn ThreadStore> = postgres_store.clone();
     let storage = NatsBufferedThreadWriter::new(inner_store, jetstream)
         .await
         .expect("nats buffered store should initialize");
@@ -361,7 +361,7 @@ async fn e2e_nats_buffered_postgres_recover_replays_pending_deltas() {
         .expect("append should succeed");
 
     let before = postgres_store
-        .load_agent_state("np-recover")
+        .load_thread("np-recover")
         .await
         .expect("load should not fail")
         .expect("thread should exist");
@@ -371,7 +371,7 @@ async fn e2e_nats_buffered_postgres_recover_replays_pending_deltas() {
     assert_eq!(recovered, 2);
 
     let after = postgres_store
-        .load_agent_state("np-recover")
+        .load_thread("np-recover")
         .await
         .expect("load should not fail")
         .expect("thread should exist");
@@ -408,7 +408,7 @@ async fn e2e_http_same_thread_concurrent_runs_preserve_all_user_messages() {
 
     let nats_client = async_nats::connect(&nats_url).await.unwrap();
     let jetstream = async_nats::jetstream::new(nats_client);
-    let inner_store: Arc<dyn AgentStateStore> = postgres_store.clone();
+    let inner_store: Arc<dyn ThreadStore> = postgres_store.clone();
     let write_store = Arc::new(
         NatsBufferedThreadWriter::new(inner_store, jetstream)
             .await
@@ -416,7 +416,7 @@ async fn e2e_http_same_thread_concurrent_runs_preserve_all_user_messages() {
     );
 
     let os = Arc::new(make_os(write_store));
-    let read_store: Arc<dyn AgentStateReader> = postgres_store.clone();
+    let read_store: Arc<dyn ThreadReader> = postgres_store.clone();
     let app = router(AppState { os, read_store });
 
     let total = 8usize;
@@ -472,7 +472,7 @@ async fn e2e_http_same_thread_concurrent_runs_preserve_all_user_messages() {
     let mut persisted = None;
     for _ in 0..40usize {
         let current = postgres_store
-            .load_agent_state("np-same-thread")
+            .load_thread("np-same-thread")
             .await
             .expect("load should not fail");
         if let Some(thread) = current {
@@ -518,7 +518,7 @@ async fn e2e_nats_buffered_postgres_recover_deduplicates_duplicate_message_ids()
 
     let nats_client = async_nats::connect(&nats_url).await.unwrap();
     let jetstream = async_nats::jetstream::new(nats_client);
-    let inner_store: Arc<dyn AgentStateStore> = postgres_store.clone();
+    let inner_store: Arc<dyn ThreadStore> = postgres_store.clone();
     let storage = NatsBufferedThreadWriter::new(inner_store, jetstream)
         .await
         .expect("nats buffered store should initialize");
@@ -555,7 +555,7 @@ async fn e2e_nats_buffered_postgres_recover_deduplicates_duplicate_message_ids()
     assert_eq!(recovered, 2, "both buffered deltas should be consumed");
 
     let after = postgres_store
-        .load_agent_state("np-dedup")
+        .load_thread("np-dedup")
         .await
         .expect("load should not fail")
         .expect("thread should exist");
@@ -592,7 +592,7 @@ async fn e2e_nats_buffered_postgres_flush_retry_after_transient_save_failure() {
     let flaky_inner = Arc::new(FlakySaveStore::new(postgres_store.clone(), 1));
     let nats_client = async_nats::connect(&nats_url).await.unwrap();
     let jetstream = async_nats::jetstream::new(nats_client);
-    let inner_store: Arc<dyn AgentStateStore> = flaky_inner;
+    let inner_store: Arc<dyn ThreadStore> = flaky_inner;
     let storage = NatsBufferedThreadWriter::new(inner_store, jetstream)
         .await
         .expect("nats buffered store should initialize");
@@ -639,7 +639,7 @@ async fn e2e_nats_buffered_postgres_flush_retry_after_transient_save_failure() {
     );
 
     let before_recover = postgres_store
-        .load_agent_state("np-flaky")
+        .load_thread("np-flaky")
         .await
         .expect("load should not fail")
         .expect("thread should exist");
@@ -653,7 +653,7 @@ async fn e2e_nats_buffered_postgres_flush_retry_after_transient_save_failure() {
     assert_eq!(recovered, 2, "recover should replay both pending deltas");
 
     let after_recover = postgres_store
-        .load_agent_state("np-flaky")
+        .load_thread("np-flaky")
         .await
         .expect("load should not fail")
         .expect("thread should exist");

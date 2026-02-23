@@ -1,9 +1,7 @@
 #![allow(missing_docs)]
 
 use serde_json::{json, Value};
-use tirea_contract::{
-    AgentEvent, ProtocolInputAdapter, Role, TerminationReason, ToolResult,
-};
+use tirea_contract::{AgentEvent, ProtocolInputAdapter, Role, TerminationReason, ToolResult};
 use tirea_protocol_ag_ui::{AgUiEventContext, AgUiInputAdapter, Event, Message, RunAgentInput};
 
 fn event_type(event: &Event) -> String {
@@ -36,10 +34,19 @@ fn agui_context_pending_closes_text_and_emits_interaction_tool_events() {
 
     // Pending is represented by standard tool call events.
     assert_eq!(pending_start_events.len(), 2);
-    assert!(matches!(pending_start_events[0], Event::TextMessageEnd { .. }));
-    assert!(matches!(pending_start_events[1], Event::ToolCallStart { .. }));
+    assert!(matches!(
+        pending_start_events[0],
+        Event::TextMessageEnd { .. }
+    ));
+    assert!(matches!(
+        pending_start_events[1],
+        Event::ToolCallStart { .. }
+    ));
     assert_eq!(pending_ready_events.len(), 2);
-    assert!(matches!(pending_ready_events[0], Event::ToolCallArgs { .. }));
+    assert!(matches!(
+        pending_ready_events[0],
+        Event::ToolCallArgs { .. }
+    ));
     assert!(matches!(pending_ready_events[1], Event::ToolCallEnd { .. }));
 }
 
@@ -264,10 +271,19 @@ fn agui_contract_hitl_roundtrip_maps_requested_and_response_ids() {
         arguments: json!({ "path": "notes.md" }),
     });
     assert_eq!(requested_start_events.len(), 1);
-    assert!(matches!(requested_start_events[0], Event::ToolCallStart { .. }));
+    assert!(matches!(
+        requested_start_events[0],
+        Event::ToolCallStart { .. }
+    ));
     assert_eq!(requested_ready_events.len(), 2);
-    assert!(matches!(requested_ready_events[0], Event::ToolCallArgs { .. }));
-    assert!(matches!(requested_ready_events[1], Event::ToolCallEnd { .. }));
+    assert!(matches!(
+        requested_ready_events[0],
+        Event::ToolCallArgs { .. }
+    ));
+    assert!(matches!(
+        requested_ready_events[1],
+        Event::ToolCallEnd { .. }
+    ));
 
     // ToolCallResumed is intentionally consumed by runtime and not emitted as AG-UI event.
     let resolved_events = ctx.on_agent_event(&AgentEvent::ToolCallResumed {

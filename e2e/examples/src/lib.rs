@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tirea_agentos::contracts::plugin::AgentPlugin;
-use tirea_agentos::contracts::storage::{AgentStateReader, AgentStateStore};
+use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
 use tirea_agentos::contracts::tool::Tool;
 use tirea_agentos::orchestrator::{AgentDefinition, AgentOsBuilder, ModelDefinition};
 use tirea_agentos::runtime::loop_runner::tool_map_from_arc;
@@ -72,10 +72,10 @@ pub async fn serve(
     }
 
     let file_store = Arc::new(FileStore::new(args.storage_dir));
-    builder = builder.with_agent_state_store(file_store.clone() as Arc<dyn AgentStateStore>);
+    builder = builder.with_agent_state_store(file_store.clone() as Arc<dyn ThreadStore>);
 
     let os = builder.build().expect("failed to build AgentOs");
-    let read_store: Arc<dyn AgentStateReader> = file_store;
+    let read_store: Arc<dyn ThreadReader> = file_store;
 
     let app = http::router(AppState {
         os: Arc::new(os),

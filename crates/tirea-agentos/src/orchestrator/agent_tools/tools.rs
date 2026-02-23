@@ -280,7 +280,7 @@ impl AgentRunTool {
                 status: DelegationStatus::Running,
                 assistant: None,
                 error: None,
-                agent_state: Some(thread),
+                thread: Some(thread),
             };
             if let Err(err) = ctx
                 .state_of::<DelegationState>()
@@ -311,7 +311,7 @@ impl AgentRunTool {
             status: completion.status,
             assistant: completion.assistant.clone(),
             error: completion.error.clone(),
-            agent_state: Some(completion.thread.clone()),
+            thread: Some(completion.thread.clone()),
         };
         let summary = self
             .manager
@@ -475,7 +475,7 @@ impl Tool for AgentRunTool {
                         return Ok(error.into_tool_result(tool_name));
                     }
 
-                    let mut child_thread = match persisted.agent_state {
+                    let mut child_thread = match persisted.thread {
                         Some(s) => s,
                         None => {
                             return Ok(tool_error(

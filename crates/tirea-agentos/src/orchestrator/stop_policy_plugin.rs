@@ -121,7 +121,7 @@ impl AgentPlugin for StopPolicyPlugin {
             step.run_config().clone(),
         );
         let input = StopPolicyInput {
-            agent_state: &run_ctx,
+            run_ctx: &run_ctx,
             stats: StopPolicyStats {
                 step: message_stats.step,
                 step_tool_call_count: message_stats.step_tool_call_count,

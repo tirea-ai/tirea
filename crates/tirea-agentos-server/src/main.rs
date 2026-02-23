@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tirea_agentos::contracts::storage::{AgentStateReader, AgentStateStore};
+use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
 use tirea_agentos::orchestrator::AgentDefinition;
 use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder, ModelDefinition};
 use tirea_agentos_server::http::{self, AppState};
@@ -175,7 +175,7 @@ impl Tool for FinishTool {
 fn build_os(
     cfg: Option<Config>,
     tensorzero_url: Option<String>,
-    write_store: Arc<dyn AgentStateStore>,
+    write_store: Arc<dyn ThreadStore>,
 ) -> AgentOs {
     let mut builder = AgentOsBuilder::new()
         .with_agent_state_store(write_store)
@@ -287,8 +287,8 @@ async fn main() {
     };
 
     let file_store = Arc::new(FileStore::new(args.storage_dir));
-    let write_store: Arc<dyn AgentStateStore> = file_store.clone();
-    let read_store: Arc<dyn AgentStateReader> = file_store.clone();
+    let write_store: Arc<dyn ThreadStore> = file_store.clone();
+    let read_store: Arc<dyn ThreadReader> = file_store.clone();
     let os = Arc::new(build_os(cfg, args.tensorzero_url, write_store));
 
     let app = http::router(AppState {

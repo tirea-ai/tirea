@@ -1,6 +1,6 @@
 use super::*;
 use crate::contracts::plugin::phase::{BeforeInferenceContext, RunEndContext};
-use crate::contracts::storage::{AgentStateReader, AgentStateWriter};
+use crate::contracts::storage::{ThreadReader, ThreadWriter};
 use crate::contracts::thread::Thread;
 use crate::contracts::tool::ToolDescriptor;
 use crate::contracts::tool::{ToolError, ToolResult};
@@ -57,29 +57,29 @@ impl FailOnNthAppendStorage {
 }
 
 #[async_trait]
-impl crate::contracts::storage::AgentStateReader for FailOnNthAppendStorage {
+impl crate::contracts::storage::ThreadReader for FailOnNthAppendStorage {
     async fn load(
         &self,
         thread_id: &str,
     ) -> Result<
-        Option<crate::contracts::storage::AgentStateHead>,
-        crate::contracts::storage::AgentStateStoreError,
+        Option<crate::contracts::storage::ThreadHead>,
+        crate::contracts::storage::ThreadStoreError,
     > {
-        <tirea_store_adapters::MemoryStore as crate::contracts::storage::AgentStateReader>::load(
+        <tirea_store_adapters::MemoryStore as crate::contracts::storage::ThreadReader>::load(
             self.inner.as_ref(),
             thread_id,
         )
         .await
     }
 
-    async fn list_agent_states(
+    async fn list_threads(
         &self,
-        query: &crate::contracts::storage::AgentStateListQuery,
+        query: &crate::contracts::storage::ThreadListQuery,
     ) -> Result<
-        crate::contracts::storage::AgentStateListPage,
-        crate::contracts::storage::AgentStateStoreError,
+        crate::contracts::storage::ThreadListPage,
+        crate::contracts::storage::ThreadStoreError,
     > {
-        <tirea_store_adapters::MemoryStore as crate::contracts::storage::AgentStateReader>::list_agent_states(
+        <tirea_store_adapters::MemoryStore as crate::contracts::storage::ThreadReader>::list_threads(
             self.inner.as_ref(),
             query,
         )
@@ -88,13 +88,13 @@ impl crate::contracts::storage::AgentStateReader for FailOnNthAppendStorage {
 }
 
 #[async_trait]
-impl crate::contracts::storage::AgentStateWriter for FailOnNthAppendStorage {
+impl crate::contracts::storage::ThreadWriter for FailOnNthAppendStorage {
     async fn create(
         &self,
         thread: &Thread,
-    ) -> Result<crate::contracts::storage::Committed, crate::contracts::storage::AgentStateStoreError>
+    ) -> Result<crate::contracts::storage::Committed, crate::contracts::storage::ThreadStoreError>
     {
-        <tirea_store_adapters::MemoryStore as crate::contracts::storage::AgentStateWriter>::create(
+        <tirea_store_adapters::MemoryStore as crate::contracts::storage::ThreadWriter>::create(
             self.inner.as_ref(),
             thread,
         )
@@ -106,17 +106,15 @@ impl crate::contracts::storage::AgentStateWriter for FailOnNthAppendStorage {
         thread_id: &str,
         changeset: &crate::contracts::ThreadChangeSet,
         precondition: crate::contracts::storage::VersionPrecondition,
-    ) -> Result<crate::contracts::storage::Committed, crate::contracts::storage::AgentStateStoreError>
+    ) -> Result<crate::contracts::storage::Committed, crate::contracts::storage::ThreadStoreError>
     {
         let append_idx = self.append_calls.fetch_add(1, Ordering::SeqCst) + 1;
         if append_idx == self.fail_on_nth_append {
-            return Err(
-                crate::contracts::storage::AgentStateStoreError::Serialization(format!(
-                    "injected append failure on call {append_idx}"
-                )),
-            );
+            return Err(crate::contracts::storage::ThreadStoreError::Serialization(
+                format!("injected append failure on call {append_idx}"),
+            ));
         }
-        <tirea_store_adapters::MemoryStore as crate::contracts::storage::AgentStateWriter>::append(
+        <tirea_store_adapters::MemoryStore as crate::contracts::storage::ThreadWriter>::append(
             self.inner.as_ref(),
             thread_id,
             changeset,
@@ -128,8 +126,8 @@ impl crate::contracts::storage::AgentStateWriter for FailOnNthAppendStorage {
     async fn delete(
         &self,
         thread_id: &str,
-    ) -> Result<(), crate::contracts::storage::AgentStateStoreError> {
-        <tirea_store_adapters::MemoryStore as crate::contracts::storage::AgentStateWriter>::delete(
+    ) -> Result<(), crate::contracts::storage::ThreadStoreError> {
+        <tirea_store_adapters::MemoryStore as crate::contracts::storage::ThreadWriter>::delete(
             self.inner.as_ref(),
             thread_id,
         )
@@ -139,8 +137,8 @@ impl crate::contracts::storage::AgentStateWriter for FailOnNthAppendStorage {
     async fn save(
         &self,
         thread: &Thread,
-    ) -> Result<(), crate::contracts::storage::AgentStateStoreError> {
-        <tirea_store_adapters::MemoryStore as crate::contracts::storage::AgentStateWriter>::save(
+    ) -> Result<(), crate::contracts::storage::ThreadStoreError> {
+        <tirea_store_adapters::MemoryStore as crate::contracts::storage::ThreadWriter>::save(
             self.inner.as_ref(),
             thread,
         )
@@ -1453,9 +1451,7 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
-        .with_agent_state_store(
-            storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
-        )
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_registered_plugin(
             "terminate_plugin_requested",
             Arc::new(TerminatePluginRequestedPlugin),
@@ -1473,7 +1469,7 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
 
     // Verify initial state
     let head = storage.load("t1").await.unwrap().unwrap();
-    assert_eq!(head.agent_state.state, json!({"counter": 0}));
+    assert_eq!(head.thread.state, json!({"counter": 0}));
 
     // Run with frontend state that replaces the thread state
     let request = RunRequest {
@@ -1493,7 +1489,7 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
 
     // Verify state was replaced in storage
     let head = storage.load("t1").await.unwrap().unwrap();
-    let state = head.agent_state.rebuild_state().unwrap();
+    let state = head.thread.rebuild_state().unwrap();
     assert_eq!(state, json!({"counter": 42, "new_field": true}));
 }
 
@@ -1517,9 +1513,7 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
-        .with_agent_state_store(
-            storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
-        )
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_registered_plugin(
             "terminate_plugin_requested",
             Arc::new(TerminatePluginRequestedPlugin),
@@ -1548,7 +1542,7 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
 
     // Verify state was set as initial state
     let head = storage.load("t-new").await.unwrap().unwrap();
-    let state = head.agent_state.rebuild_state().unwrap();
+    let state = head.thread.rebuild_state().unwrap();
     assert_eq!(state, json!({"initial": true}));
 }
 
@@ -1572,9 +1566,7 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
-        .with_agent_state_store(
-            storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
-        )
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_registered_plugin(
             "terminate_plugin_requested",
             Arc::new(TerminatePluginRequestedPlugin),
@@ -1607,7 +1599,7 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
 
     // Verify state was not changed
     let head = storage.load("t1").await.unwrap().unwrap();
-    let state = head.agent_state.rebuild_state().unwrap();
+    let state = head.thread.rebuild_state().unwrap();
     assert_eq!(state, json!({"counter": 5}));
 }
 
@@ -1630,9 +1622,7 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
-        .with_agent_state_store(
-            storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
-        )
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_registered_plugin(
             "terminate_plugin_requested",
             Arc::new(TerminatePluginRequestedPlugin),
@@ -1674,12 +1664,12 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
     );
 
     let head = storage.load("t-prepare").await.unwrap().unwrap();
-    assert_eq!(head.agent_state.messages.len(), 1);
+    assert_eq!(head.thread.messages.len(), 1);
     assert_eq!(
-        head.agent_state.messages[0].role,
+        head.thread.messages[0].role,
         crate::contracts::thread::Role::User
     );
-    assert_eq!(head.agent_state.messages[0].content, "hello");
+    assert_eq!(head.thread.messages[0].content, "hello");
 }
 
 #[tokio::test]
@@ -1702,9 +1692,7 @@ async fn execute_prepared_runs_stream() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
-        .with_agent_state_store(
-            storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
-        )
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_registered_plugin(
             "terminate_plugin_requested",
             Arc::new(TerminatePluginRequestedPlugin),
@@ -1789,7 +1777,7 @@ fn make_decision_test_os(storage: Arc<tirea_store_adapters::MemoryStore>) -> Age
         Arc::new(DecisionEchoTool) as Arc<dyn Tool>,
     );
     AgentOs::builder()
-        .with_agent_state_store(storage as Arc<dyn crate::contracts::storage::AgentStateStore>)
+        .with_agent_state_store(storage as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_tools(tools)
         .with_registered_plugin(
             "decision_terminate_plugin_requested",
@@ -2050,7 +2038,7 @@ async fn run_stream_initial_decisions_denied_returns_tool_error_and_clears_suspe
     );
 
     let saved = storage.load(thread_id).await.unwrap().unwrap();
-    let rebuilt = saved.agent_state.rebuild_state().unwrap();
+    let rebuilt = saved.thread.rebuild_state().unwrap();
     assert!(
         rebuilt
             .get("__suspended_tool_calls")
@@ -2144,7 +2132,7 @@ async fn run_stream_initial_decisions_cancelled_returns_tool_error_and_clears_su
     );
 
     let saved = storage.load(thread_id).await.unwrap().unwrap();
-    let rebuilt = saved.agent_state.rebuild_state().unwrap();
+    let rebuilt = saved.thread.rebuild_state().unwrap();
     assert!(
         rebuilt
             .get("__suspended_tool_calls")
@@ -2258,7 +2246,7 @@ async fn run_stream_initial_decisions_partial_match_keeps_unresolved_suspended_c
     );
 
     let saved = storage.load(thread_id).await.unwrap().unwrap();
-    let rebuilt = saved.agent_state.rebuild_state().unwrap();
+    let rebuilt = saved.thread.rebuild_state().unwrap();
     let suspended_calls = rebuilt
         .get("__suspended_tool_calls")
         .and_then(|rt| rt.get("calls"))
@@ -2354,7 +2342,7 @@ async fn run_stream_initial_decisions_ignore_unknown_target() {
     );
 
     let saved = storage.load(thread_id).await.unwrap().unwrap();
-    let rebuilt = saved.agent_state.rebuild_state().unwrap();
+    let rebuilt = saved.thread.rebuild_state().unwrap();
     assert!(
         rebuilt
             .get("__suspended_tool_calls")
@@ -2443,7 +2431,7 @@ async fn run_stream_duplicate_initial_decisions_are_idempotent() {
     assert_eq!(done_count, 1, "duplicate decisions should replay tool once");
 
     let saved = storage.load(thread_id).await.unwrap().unwrap();
-    let rebuilt = saved.agent_state.rebuild_state().unwrap();
+    let rebuilt = saved.thread.rebuild_state().unwrap();
     assert!(
         rebuilt
             .get("__suspended_tool_calls")
@@ -2460,9 +2448,7 @@ async fn run_stream_checkpoint_append_failure_keeps_persisted_prefix_consistent(
 
     let storage = Arc::new(FailOnNthAppendStorage::new(2));
     let os = AgentOs::builder()
-        .with_agent_state_store(
-            storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
-        )
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_registered_plugin(
             "terminate_with_run_end_patch",
             Arc::new(TerminateWithRunEndPatchPlugin),
@@ -2511,23 +2497,23 @@ async fn run_stream_checkpoint_append_failure_keeps_persisted_prefix_consistent(
     );
 
     let head = storage.load("t-checkpoint-fail").await.unwrap().unwrap();
-    let state = head.agent_state.rebuild_state().unwrap();
+    let state = head.thread.rebuild_state().unwrap();
     assert_eq!(
         state,
         json!({"base": 1}),
         "failed checkpoint must not mutate persisted state"
     );
     assert_eq!(
-        head.agent_state.messages.len(),
+        head.thread.messages.len(),
         1,
         "only user message delta should be persisted before checkpoint failure"
     );
     assert_eq!(
-        head.agent_state.messages[0].role,
+        head.thread.messages[0].role,
         crate::contracts::thread::Role::User
     );
     assert_eq!(
-        head.agent_state.messages[0].content.as_str(),
+        head.thread.messages[0].content.as_str(),
         "hello",
         "unexpected persisted user message content"
     );
@@ -2548,9 +2534,7 @@ async fn run_stream_checkpoint_failure_on_existing_thread_keeps_storage_unchange
     storage.create(&initial).await.unwrap();
 
     let os = AgentOs::builder()
-        .with_agent_state_store(
-            storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
-        )
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_registered_plugin(
             "terminate_with_run_end_patch",
             Arc::new(TerminateWithRunEndPatchPlugin),
@@ -2594,14 +2578,14 @@ async fn run_stream_checkpoint_failure_on_existing_thread_keeps_storage_unchange
     );
 
     let head = storage.load("t-existing-fail").await.unwrap().unwrap();
-    let state = head.agent_state.rebuild_state().unwrap();
+    let state = head.thread.rebuild_state().unwrap();
     assert_eq!(
         state,
         json!({"counter": 5}),
         "existing state must stay unchanged when first checkpoint append fails"
     );
     assert!(
-        head.agent_state.state.get("run_end_marker").is_none(),
+        head.thread.state.get("run_end_marker").is_none(),
         "failed checkpoint must not persist RunEnd patch"
     );
     assert_eq!(head.version, 0, "failed append must not advance version");
@@ -2627,7 +2611,7 @@ fn build_errors_on_reserved_plugin_id_agent_recovery_in_builder_agent() {
 #[test]
 fn builder_with_agent_state_store_exposes_accessor() {
     let agent_state_store = Arc::new(tirea_store_adapters::MemoryStore::new())
-        as Arc<dyn crate::contracts::storage::AgentStateStore>;
+        as Arc<dyn crate::contracts::storage::ThreadStore>;
     let os = AgentOs::builder()
         .with_agent_state_store(agent_state_store)
         .build()
@@ -2638,7 +2622,7 @@ fn builder_with_agent_state_store_exposes_accessor() {
 #[tokio::test]
 async fn load_agent_state_without_store_returns_not_configured() {
     let os = AgentOs::builder().build().unwrap();
-    let err = os.load_agent_state("t1").await.unwrap_err();
+    let err = os.load_thread("t1").await.unwrap_err();
     assert!(matches!(err, AgentOsRunError::AgentStateStoreNotConfigured));
 }
 

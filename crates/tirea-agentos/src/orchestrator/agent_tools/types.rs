@@ -48,8 +48,8 @@ pub struct DelegationRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     /// Last known child session snapshot for resume/recovery.
-    #[serde(default, rename = "thread", skip_serializing_if = "Option::is_none")]
-    pub agent_state: Option<Thread>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<Thread>,
 }
 
 /// Persisted sub-agent delegation state at `state["agent_runs"]`.

@@ -12,8 +12,8 @@ use std::convert::Infallible;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use tirea_agentos::contracts::storage::{
-    AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStore, MessagePage,
-    MessageQuery, SortOrder,
+    MessagePage, MessageQuery, SortOrder, ThreadListPage, ThreadListQuery, ThreadReader,
+    ThreadStore,
 };
 use tirea_agentos::contracts::thread::{Thread, Visibility};
 use tirea_agentos::contracts::{AgentEvent, ToolCallDecision};
@@ -35,7 +35,7 @@ use crate::transport::pump_encoded_stream;
 #[derive(Clone)]
 pub struct AppState {
     pub os: Arc<AgentOs>,
-    pub read_store: Arc<dyn AgentStateReader>,
+    pub read_store: Arc<dyn ThreadReader>,
 }
 
 #[derive(Default)]
@@ -153,7 +153,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         // Generic thread resources
-        .route("/v1/threads", get(list_agent_states))
+        .route("/v1/threads", get(list_threads))
         .route("/v1/threads/:id", get(get_thread))
         .route("/v1/threads/:id/messages", get(get_thread_messages))
         // Protocol subtrees
@@ -196,11 +196,11 @@ struct ThreadListParams {
     parent_thread_id: Option<String>,
 }
 
-async fn list_agent_states(
+async fn list_threads(
     State(st): State<AppState>,
     Query(params): Query<ThreadListParams>,
-) -> Result<Json<AgentStateListPage>, ApiError> {
-    let query = AgentStateListQuery {
+) -> Result<Json<ThreadListPage>, ApiError> {
+    let query = ThreadListQuery {
         offset: params.offset.unwrap_or(0),
         limit: params.limit.clamp(1, 200),
         resource_id: None,
@@ -219,7 +219,7 @@ async fn get_thread(
 ) -> Result<Json<Thread>, ApiError> {
     let Some(thread) = st
         .read_store
-        .load_agent_state(&id)
+        .load_thread(&id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
     else {
@@ -261,7 +261,7 @@ async fn get_thread_messages(
         .await
         .map(Json)
         .map_err(|e| match e {
-            tirea_agentos::contracts::storage::AgentStateStoreError::NotFound(_) => {
+            tirea_agentos::contracts::storage::ThreadStoreError::NotFound(_) => {
                 ApiError::ThreadNotFound(id)
             }
             other => ApiError::Internal(other.to_string()),
@@ -301,7 +301,7 @@ fn parse_message_query(params: &MessageQueryParams) -> MessageQuery {
 }
 
 async fn load_message_page(
-    read_store: &Arc<dyn AgentStateReader>,
+    read_store: &Arc<dyn ThreadReader>,
     thread_id: &str,
     params: &MessageQueryParams,
 ) -> Result<MessagePage, ApiError> {
@@ -310,7 +310,7 @@ async fn load_message_page(
         .load_messages(thread_id, &query)
         .await
         .map_err(|e| match e {
-            tirea_agentos::contracts::storage::AgentStateStoreError::NotFound(_) => {
+            tirea_agentos::contracts::storage::ThreadStoreError::NotFound(_) => {
                 ApiError::ThreadNotFound(thread_id.to_string())
             }
             other => ApiError::Internal(other.to_string()),
@@ -611,7 +611,7 @@ async fn sync_ai_sdk_thread_snapshot(
     st: &AppState,
     req: &AiSdkV6RunRequest,
 ) -> Result<(), ApiError> {
-    let store: Arc<dyn AgentStateStore> = st
+    let store: Arc<dyn ThreadStore> = st
         .os
         .agent_state_store()
         .cloned()
@@ -622,7 +622,7 @@ async fn sync_ai_sdk_thread_snapshot(
         .await
         .map_err(|err| ApiError::Internal(err.to_string()))?
     {
-        Some(head) => head.agent_state,
+        Some(head) => head.thread,
         None => Thread::new(req.thread_id.clone()),
     };
 

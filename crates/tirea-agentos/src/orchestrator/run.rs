@@ -3,11 +3,11 @@ use crate::contracts::storage::VersionPrecondition;
 use crate::runtime::loop_runner::run_loop_stream;
 
 impl AgentOs {
-    pub fn agent_state_store(&self) -> Option<&Arc<dyn AgentStateStore>> {
+    pub fn agent_state_store(&self) -> Option<&Arc<dyn ThreadStore>> {
         self.agent_state_store.as_ref()
     }
 
-    fn require_agent_state_store(&self) -> Result<&Arc<dyn AgentStateStore>, AgentOsRunError> {
+    fn require_agent_state_store(&self) -> Result<&Arc<dyn ThreadStore>, AgentOsRunError> {
         self.agent_state_store
             .as_ref()
             .ok_or(AgentOsRunError::AgentStateStoreNotConfigured)
@@ -19,10 +19,7 @@ impl AgentOs {
 
     /// Load a thread from storage. Returns the thread and its version.
     /// If the thread does not exist, returns `None`.
-    pub async fn load_agent_state(
-        &self,
-        id: &str,
-    ) -> Result<Option<AgentStateHead>, AgentOsRunError> {
+    pub async fn load_thread(&self, id: &str) -> Result<Option<ThreadHead>, AgentOsRunError> {
         let agent_state_store = self.require_agent_state_store()?;
         Ok(agent_state_store.load(id).await?)
     }
@@ -61,7 +58,7 @@ impl AgentOs {
         let mut state_snapshot_for_delta: Option<serde_json::Value> = None;
         let (mut thread, mut version) = match agent_state_store.load(&thread_id).await? {
             Some(head) => {
-                let mut t = head.agent_state;
+                let mut t = head.thread;
                 if let Some(state) = frontend_state {
                     t.state = state.clone();
                     t.patches.clear();

@@ -1,6 +1,6 @@
 //! NATS JetStream-buffered storage decorator.
 //!
-//! Wraps an inner [`AgentStateWriter`] (typically PostgreSQL) and routes delta
+//! Wraps an inner [`ThreadWriter`] (typically PostgreSQL) and routes delta
 //! writes through NATS JetStream instead of hitting the database per-delta.
 //!
 //! # Run-end flush strategy
@@ -29,8 +29,8 @@ use futures::StreamExt;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tirea_contract::storage::{
-    AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStore,
-    AgentStateStoreError, AgentStateWriter, Committed, VersionPrecondition,
+    Committed, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore,
+    ThreadStoreError, ThreadWriter, VersionPrecondition,
 };
 use tirea_contract::{CheckpointReason, Thread, ThreadChangeSet};
 
@@ -45,12 +45,12 @@ fn delta_subject(thread_id: &str) -> String {
     format!("{SUBJECT_PREFIX}.{thread_id}.deltas")
 }
 
-/// A [`AgentStateWriter`] decorator that buffers deltas in NATS JetStream and
+/// A [`ThreadWriter`] decorator that buffers deltas in NATS JetStream and
 /// flushes the final thread to the inner storage at run end.
 ///
 /// # Query consistency (CQRS)
 ///
-/// [`load`](AgentStateReader::load) always reads from the inner (durable) storage.
+/// [`load`](ThreadReader::load) always reads from the inner (durable) storage.
 /// During an active run, queries return the **last-flushed snapshot** — they do
 /// not include deltas that are buffered in NATS but not yet flushed.
 ///
@@ -58,7 +58,7 @@ fn delta_subject(thread_id: &str) -> String {
 /// stream.  Callers that need up-to-date messages during a run should consume
 /// the event stream rather than polling the query API.
 pub struct NatsBufferedThreadWriter {
-    inner: Arc<dyn AgentStateStore>,
+    inner: Arc<dyn ThreadStore>,
     jetstream: jetstream::Context,
 }
 
@@ -70,7 +70,7 @@ impl NatsBufferedThreadWriter {
     ///
     /// `jetstream` is an already-connected JetStream context.
     pub async fn new(
-        inner: Arc<dyn AgentStateStore>,
+        inner: Arc<dyn ThreadStore>,
         jetstream: jetstream::Context,
     ) -> Result<Self, async_nats::Error> {
         // Ensure the stream exists (idempotent).
@@ -168,7 +168,7 @@ impl NatsBufferedThreadWriter {
         }
 
         let mut thread = match self.inner.load(thread_id).await? {
-            Some(head) => head.agent_state,
+            Some(head) => head.thread,
             None => Thread::new(thread_id.to_string()),
         };
 
@@ -227,8 +227,8 @@ impl NatsBufferedThreadWriter {
 }
 
 #[async_trait]
-impl AgentStateWriter for NatsBufferedThreadWriter {
-    async fn create(&self, thread: &Thread) -> Result<Committed, AgentStateStoreError> {
+impl ThreadWriter for NatsBufferedThreadWriter {
+    async fn create(&self, thread: &Thread) -> Result<Committed, ThreadStoreError> {
         self.inner.create(thread).await
     }
 
@@ -236,29 +236,29 @@ impl AgentStateWriter for NatsBufferedThreadWriter {
     ///
     /// The delta is durably stored in JetStream and will be purged after the
     /// run-end `save()` succeeds.  If publishing fails the error is mapped to
-    /// [`AgentStateStoreError::Io`].
+    /// [`ThreadStoreError::Io`].
     async fn append(
         &self,
         thread_id: &str,
         delta: &ThreadChangeSet,
         precondition: VersionPrecondition,
-    ) -> Result<Committed, AgentStateStoreError> {
+    ) -> Result<Committed, ThreadStoreError> {
         let payload = serde_json::to_vec(delta)
-            .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
+            .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
 
         self.jetstream
             .publish(delta_subject(thread_id), payload.into())
             .await
-            .map_err(|e| AgentStateStoreError::Io(std::io::Error::other(e)))?
+            .map_err(|e| ThreadStoreError::Io(std::io::Error::other(e)))?
             .await
-            .map_err(|e| AgentStateStoreError::Io(std::io::Error::other(e)))?;
+            .map_err(|e| ThreadStoreError::Io(std::io::Error::other(e)))?;
 
         if delta.reason == CheckpointReason::RunFinished {
             self.flush_thread_buffer(thread_id)
                 .await
                 .map_err(|e| match e {
                     NatsBufferedThreadWriterError::JetStream(msg) => {
-                        AgentStateStoreError::Io(std::io::Error::other(msg))
+                        ThreadStoreError::Io(std::io::Error::other(msg))
                     }
                     NatsBufferedThreadWriterError::Storage(err) => err,
                 })?;
@@ -271,13 +271,13 @@ impl AgentStateWriter for NatsBufferedThreadWriter {
         Ok(Committed { version })
     }
 
-    async fn delete(&self, thread_id: &str) -> Result<(), AgentStateStoreError> {
+    async fn delete(&self, thread_id: &str) -> Result<(), ThreadStoreError> {
         self.inner.delete(thread_id).await
     }
 
     /// Run-end flush: saves the final materialized thread to the inner storage
     /// and purges the corresponding NATS JetStream messages.
-    async fn save(&self, thread: &Thread) -> Result<(), AgentStateStoreError> {
+    async fn save(&self, thread: &Thread) -> Result<(), ThreadStoreError> {
         // Write to durable storage.
         self.inner.save(thread).await?;
 
@@ -291,16 +291,16 @@ impl AgentStateWriter for NatsBufferedThreadWriter {
 }
 
 #[async_trait]
-impl AgentStateReader for NatsBufferedThreadWriter {
-    async fn load(&self, thread_id: &str) -> Result<Option<AgentStateHead>, AgentStateStoreError> {
+impl ThreadReader for NatsBufferedThreadWriter {
+    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
         self.inner.load(thread_id).await
     }
 
-    async fn list_agent_states(
+    async fn list_threads(
         &self,
-        query: &AgentStateListQuery,
-    ) -> Result<AgentStateListPage, AgentStateStoreError> {
-        self.inner.list_agent_states(query).await
+        query: &ThreadListQuery,
+    ) -> Result<ThreadListPage, ThreadStoreError> {
+        self.inner.list_threads(query).await
     }
 }
 
@@ -333,5 +333,5 @@ pub enum NatsBufferedThreadWriterError {
     JetStream(String),
 
     #[error("storage error: {0}")]
-    Storage(#[from] AgentStateStoreError),
+    Storage(#[from] ThreadStoreError),
 }

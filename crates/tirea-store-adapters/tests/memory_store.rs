@@ -1,12 +1,11 @@
 use serde_json::json;
 use std::sync::Arc;
 use tirea_contract::storage::{
-    AgentStateReader, AgentStateStore, AgentStateStoreError, AgentStateSync, AgentStateWriter,
-    VersionPrecondition,
+    ThreadReader, ThreadStore, ThreadStoreError, ThreadSync, ThreadWriter, VersionPrecondition,
 };
 use tirea_contract::thread::ThreadChangeSet;
 use tirea_contract::{
-    AgentStateListQuery, CheckpointReason, Message, MessageMetadata, MessageQuery, Role, Thread,
+    CheckpointReason, Message, MessageMetadata, MessageQuery, Role, Thread, ThreadListQuery,
 };
 use tirea_state::{path, Op, Patch, TrackedPatch};
 use tirea_store_adapters::MemoryStore;
@@ -17,7 +16,7 @@ async fn test_memory_storage_save_load() {
     let thread = Thread::new("test-1").with_message(Message::user("Hello"));
 
     storage.save(&thread).await.unwrap();
-    let loaded = storage.load_agent_state("test-1").await.unwrap();
+    let loaded = storage.load_thread("test-1").await.unwrap();
 
     assert!(loaded.is_some());
     let loaded = loaded.unwrap();
@@ -28,7 +27,7 @@ async fn test_memory_storage_save_load() {
 #[tokio::test]
 async fn test_memory_storage_load_not_found() {
     let storage = MemoryStore::new();
-    let loaded = storage.load_agent_state("nonexistent").await.unwrap();
+    let loaded = storage.load_thread("nonexistent").await.unwrap();
     assert!(loaded.is_none());
 }
 
@@ -38,10 +37,10 @@ async fn test_memory_storage_delete() {
     let thread = Thread::new("test-1");
 
     storage.save(&thread).await.unwrap();
-    assert!(storage.load_agent_state("test-1").await.unwrap().is_some());
+    assert!(storage.load_thread("test-1").await.unwrap().is_some());
 
     storage.delete("test-1").await.unwrap();
-    assert!(storage.load_agent_state("test-1").await.unwrap().is_none());
+    assert!(storage.load_thread("test-1").await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -72,7 +71,7 @@ async fn test_memory_storage_update_session() {
     storage.save(&thread).await.unwrap();
 
     // Load and verify
-    let loaded = storage.load_agent_state("test-1").await.unwrap().unwrap();
+    let loaded = storage.load_thread("test-1").await.unwrap().unwrap();
     assert_eq!(loaded.message_count(), 2);
 }
 
@@ -88,7 +87,7 @@ async fn test_memory_storage_with_state_and_patches() {
 
     storage.save(&thread).await.unwrap();
 
-    let loaded = storage.load_agent_state("test-1").await.unwrap().unwrap();
+    let loaded = storage.load_thread("test-1").await.unwrap().unwrap();
     assert_eq!(loaded.patch_count(), 1);
     assert_eq!(loaded.state["counter"], 0);
 
@@ -165,7 +164,7 @@ async fn test_memory_storage_load_messages() {
         limit: 3,
         ..Default::default()
     };
-    let page = AgentStateReader::load_messages(&storage, "test-1", &query)
+    let page = ThreadReader::load_messages(&storage, "test-1", &query)
         .await
         .unwrap();
 
@@ -178,8 +177,8 @@ async fn test_memory_storage_load_messages() {
 async fn test_memory_storage_load_messages_not_found() {
     let storage = MemoryStore::new();
     let query = MessageQuery::default();
-    let result = AgentStateReader::load_messages(&storage, "nonexistent", &query).await;
-    assert!(matches!(result, Err(AgentStateStoreError::NotFound(_))));
+    let result = ThreadReader::load_messages(&storage, "nonexistent", &query).await;
+    assert!(matches!(result, Err(ThreadStoreError::NotFound(_))));
 }
 
 #[tokio::test]
@@ -196,7 +195,7 @@ async fn test_memory_storage_message_count() {
 async fn test_memory_storage_message_count_not_found() {
     let storage = MemoryStore::new();
     let result = storage.message_count("nonexistent").await;
-    assert!(matches!(result, Err(AgentStateStoreError::NotFound(_))));
+    assert!(matches!(result, Err(ThreadStoreError::NotFound(_))));
 }
 
 // ========================================================================
@@ -220,7 +219,7 @@ async fn test_memory_storage_load_messages_filters_visibility() {
     storage.save(&thread).await.unwrap();
 
     // Default query (visibility = All)
-    let page = AgentStateReader::load_messages(&storage, "test-vis", &MessageQuery::default())
+    let page = ThreadReader::load_messages(&storage, "test-vis", &MessageQuery::default())
         .await
         .unwrap();
     assert_eq!(page.messages.len(), 4);
@@ -230,7 +229,7 @@ async fn test_memory_storage_load_messages_filters_visibility() {
         visibility: None,
         ..Default::default()
     };
-    let page = AgentStateReader::load_messages(&storage, "test-vis", &query)
+    let page = ThreadReader::load_messages(&storage, "test-vis", &query)
         .await
         .unwrap();
     assert_eq!(page.messages.len(), 6);
@@ -282,7 +281,7 @@ async fn test_memory_storage_load_messages_by_run_id() {
         visibility: None,
         ..Default::default()
     };
-    let page = AgentStateReader::load_messages(&storage, "test-run", &query)
+    let page = ThreadReader::load_messages(&storage, "test-run", &query)
         .await
         .unwrap();
     assert_eq!(page.messages.len(), 3);
@@ -302,7 +301,7 @@ async fn test_list_paginated_default() {
             .unwrap();
     }
     let page = storage
-        .list_paginated(&AgentStateListQuery::default())
+        .list_paginated(&ThreadListQuery::default())
         .await
         .unwrap();
     assert_eq!(page.items.len(), 5);
@@ -320,7 +319,7 @@ async fn test_list_paginated_with_limit() {
             .unwrap();
     }
     let page = storage
-        .list_paginated(&AgentStateListQuery {
+        .list_paginated(&ThreadListQuery {
             offset: 0,
             limit: 3,
             ..Default::default()
@@ -344,7 +343,7 @@ async fn test_list_paginated_with_offset() {
             .unwrap();
     }
     let page = storage
-        .list_paginated(&AgentStateListQuery {
+        .list_paginated(&ThreadListQuery {
             offset: 3,
             limit: 10,
             ..Default::default()
@@ -367,7 +366,7 @@ async fn test_list_paginated_offset_beyond_total() {
             .unwrap();
     }
     let page = storage
-        .list_paginated(&AgentStateListQuery {
+        .list_paginated(&ThreadListQuery {
             offset: 100,
             limit: 10,
             ..Default::default()
@@ -383,7 +382,7 @@ async fn test_list_paginated_offset_beyond_total() {
 async fn test_list_paginated_empty() {
     let storage = MemoryStore::new();
     let page = storage
-        .list_paginated(&AgentStateListQuery::default())
+        .list_paginated(&ThreadListQuery::default())
         .await
         .unwrap();
     assert!(page.items.is_empty());
@@ -392,7 +391,7 @@ async fn test_list_paginated_empty() {
 }
 
 // ========================================================================
-// AgentStateWriter / AgentStateReader / AgentStateSync tests
+// ThreadWriter / ThreadReader / ThreadSync tests
 // ========================================================================
 
 fn sample_delta(run_id: &str, reason: CheckpointReason) -> ThreadChangeSet {
@@ -410,12 +409,12 @@ fn sample_delta(run_id: &str, reason: CheckpointReason) -> ThreadChangeSet {
 async fn test_thread_store_trait_object_roundtrip() {
     use std::sync::Arc;
 
-    let agent_state_store: Arc<dyn AgentStateStore> = Arc::new(MemoryStore::new());
+    let agent_state_store: Arc<dyn ThreadStore> = Arc::new(MemoryStore::new());
     let thread = Thread::new("trait-object-t1").with_message(Message::user("hi"));
 
     agent_state_store.create(&thread).await.unwrap();
     let loaded = agent_state_store
-        .load_agent_state("trait-object-t1")
+        .load_thread("trait-object-t1")
         .await
         .unwrap()
         .unwrap();
@@ -431,10 +430,10 @@ async fn test_thread_store_create_and_load() {
     let committed = store.create(&thread).await.unwrap();
     assert_eq!(committed.version, 0);
 
-    let head = AgentStateReader::load(&store, "t1").await.unwrap().unwrap();
+    let head = ThreadReader::load(&store, "t1").await.unwrap().unwrap();
     assert_eq!(head.version, 0);
-    assert_eq!(head.agent_state.id, "t1");
-    assert_eq!(head.agent_state.message_count(), 1);
+    assert_eq!(head.thread.id, "t1");
+    assert_eq!(head.thread.message_count(), 1);
 }
 
 #[tokio::test]
@@ -442,7 +441,7 @@ async fn test_thread_store_create_already_exists() {
     let store = MemoryStore::new();
     store.create(&Thread::new("t1")).await.unwrap();
     let err = store.create(&Thread::new("t1")).await.unwrap_err();
-    assert!(matches!(err, AgentStateStoreError::AlreadyExists));
+    assert!(matches!(err, ThreadStoreError::AlreadyExists));
 }
 
 #[tokio::test]
@@ -457,9 +456,9 @@ async fn test_thread_store_append() {
         .unwrap();
     assert_eq!(committed.version, 1);
 
-    let head = AgentStateReader::load(&store, "t1").await.unwrap().unwrap();
+    let head = ThreadReader::load(&store, "t1").await.unwrap().unwrap();
     assert_eq!(head.version, 1);
-    assert_eq!(head.agent_state.message_count(), 1); // from delta
+    assert_eq!(head.thread.message_count(), 1); // from delta
 }
 
 #[tokio::test]
@@ -470,18 +469,15 @@ async fn test_thread_store_append_not_found() {
         .append("missing", &delta, VersionPrecondition::Any)
         .await
         .unwrap_err();
-    assert!(matches!(err, AgentStateStoreError::NotFound(_)));
+    assert!(matches!(err, ThreadStoreError::NotFound(_)));
 }
 
 #[tokio::test]
 async fn test_thread_store_delete() {
     let store = MemoryStore::new();
     store.create(&Thread::new("t1")).await.unwrap();
-    AgentStateWriter::delete(&store, "t1").await.unwrap();
-    assert!(AgentStateReader::load(&store, "t1")
-        .await
-        .unwrap()
-        .is_none());
+    ThreadWriter::delete(&store, "t1").await.unwrap();
+    assert!(ThreadReader::load(&store, "t1").await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -503,9 +499,9 @@ async fn test_thread_store_append_with_snapshot() {
         .await
         .unwrap();
 
-    let head = AgentStateReader::load(&store, "t1").await.unwrap().unwrap();
-    assert_eq!(head.agent_state.state, json!({"counter": 42}));
-    assert!(head.agent_state.patches.is_empty());
+    let head = ThreadReader::load(&store, "t1").await.unwrap().unwrap();
+    assert_eq!(head.thread.state, json!({"counter": 42}));
+    assert!(head.thread.patches.is_empty());
 }
 
 #[tokio::test]
@@ -549,7 +545,7 @@ async fn test_thread_query_list_threads() {
     store.create(&Thread::new("t2")).await.unwrap();
 
     let page = store
-        .list_agent_states(&AgentStateListQuery::default())
+        .list_threads(&ThreadListQuery::default())
         .await
         .unwrap();
     assert_eq!(page.items.len(), 2);
@@ -570,11 +566,11 @@ async fn test_thread_query_list_threads_by_parent() {
         .unwrap();
     store.create(&Thread::new("unrelated")).await.unwrap();
 
-    let query = AgentStateListQuery {
+    let query = ThreadListQuery {
         parent_thread_id: Some("parent".to_string()),
         ..Default::default()
     };
-    let page = store.list_agent_states(&query).await.unwrap();
+    let page = store.list_threads(&query).await.unwrap();
     assert_eq!(page.items.len(), 2);
     assert!(page.items.contains(&"child-1".to_string()));
     assert!(page.items.contains(&"child-2".to_string()));
@@ -588,7 +584,7 @@ async fn test_thread_query_load_messages() {
         .with_message(Message::assistant("hi"));
     store.create(&thread).await.unwrap();
 
-    let page = AgentStateReader::load_messages(
+    let page = ThreadReader::load_messages(
         &store,
         "t1",
         &MessageQuery {
@@ -706,16 +702,16 @@ async fn test_full_agent_run_via_append() {
     assert_eq!(committed.version, 4);
 
     // 6. Verify final state
-    let head = AgentStateReader::load(&store, "t1").await.unwrap().unwrap();
+    let head = ThreadReader::load(&store, "t1").await.unwrap().unwrap();
     assert_eq!(head.version, 4);
-    assert_eq!(head.agent_state.message_count(), 4); // user + assistant + tool + assistant
-    assert_eq!(head.agent_state.patch_count(), 1);
+    assert_eq!(head.thread.message_count(), 4); // user + assistant + tool + assistant
+    assert_eq!(head.thread.patch_count(), 1);
 
-    let state = head.agent_state.rebuild_state().unwrap();
+    let state = head.thread.rebuild_state().unwrap();
     assert_eq!(state["result"], 4);
 }
 
-/// Verify AgentStateSync::load_deltas can replay the full run history.
+/// Verify ThreadSync::load_deltas can replay the full run history.
 #[tokio::test]
 async fn test_delta_replay_reconstructs_thread() {
     let store = MemoryStore::new();
@@ -774,7 +770,7 @@ async fn test_delta_replay_reconstructs_thread() {
         reconstructed.patches.extend(d.patches.iter().cloned());
     }
 
-    let loaded = store.load_agent_state("t1").await.unwrap().unwrap();
+    let loaded = store.load_thread("t1").await.unwrap().unwrap();
     assert_eq!(reconstructed.message_count(), loaded.message_count());
     assert_eq!(reconstructed.patch_count(), loaded.patch_count());
 
@@ -834,18 +830,18 @@ async fn test_append_preserves_patch_provenance() {
         .unwrap();
 
     // Verify provenance survived
-    let head = AgentStateReader::load(&store, "t1").await.unwrap().unwrap();
-    assert_eq!(head.agent_state.patches.len(), 1);
+    let head = ThreadReader::load(&store, "t1").await.unwrap().unwrap();
+    assert_eq!(head.thread.patches.len(), 1);
     assert_eq!(
-        head.agent_state.patches[0].source.as_deref(),
+        head.thread.patches[0].source.as_deref(),
         Some("tool:weather")
     );
     assert_eq!(
-        head.agent_state.patches[0].description.as_deref(),
+        head.thread.patches[0].description.as_deref(),
         Some("Set weather data")
     );
 
-    // Also via AgentStateSync
+    // Also via ThreadSync
     let deltas = store.load_deltas("t1", 0).await.unwrap();
     assert_eq!(deltas[0].patches[0].source.as_deref(), Some("tool:weather"));
 }
@@ -876,11 +872,8 @@ async fn test_append_preserves_parent_run_id() {
     assert_eq!(deltas[0].run_id, "child-run-1");
     assert_eq!(deltas[0].parent_run_id.as_deref(), Some("parent-run-1"));
 
-    let head = AgentStateReader::load(&store, "child")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(head.agent_state.parent_thread_id.as_deref(), Some("parent"));
+    let head = ThreadReader::load(&store, "child").await.unwrap().unwrap();
+    assert_eq!(head.thread.parent_thread_id.as_deref(), Some("parent"));
 }
 
 /// Empty delta produces no change but still increments version.
@@ -906,9 +899,9 @@ async fn test_append_empty_delta() {
         .unwrap();
     assert_eq!(committed.version, 1);
 
-    let head = AgentStateReader::load(&store, "t1").await.unwrap().unwrap();
+    let head = ThreadReader::load(&store, "t1").await.unwrap().unwrap();
     assert_eq!(head.version, 1);
-    assert_eq!(head.agent_state.message_count(), 1); // unchanged
+    assert_eq!(head.thread.message_count(), 1); // unchanged
 }
 
 /// Simulates what `run_stream` does when the frontend sends a state snapshot
@@ -937,12 +930,9 @@ async fn frontend_state_replaces_existing_thread_state_in_user_message_delta() {
         .unwrap();
 
     // Verify current state: base={"counter":0}, 1 patch → rebuilt={"counter":5}
-    let head = AgentStateReader::load(&store, "t1").await.unwrap().unwrap();
-    assert_eq!(
-        head.agent_state.rebuild_state().unwrap(),
-        json!({"counter": 5})
-    );
-    assert_eq!(head.agent_state.patches.len(), 1);
+    let head = ThreadReader::load(&store, "t1").await.unwrap().unwrap();
+    assert_eq!(head.thread.rebuild_state().unwrap(), json!({"counter": 5}));
+    assert_eq!(head.thread.patches.len(), 1);
 
     // 2. Frontend sends state={"counter":10, "name":"Alice"} along with a user message.
     //    This simulates what run_stream does: include snapshot in UserMessage delta.
@@ -961,14 +951,10 @@ async fn frontend_state_replaces_existing_thread_state_in_user_message_delta() {
         .unwrap();
 
     // 3. Verify: state is fully replaced, patches cleared
-    let head = AgentStateReader::load(&store, "t1").await.unwrap().unwrap();
-    assert_eq!(head.agent_state.state, frontend_state);
-    assert!(head.agent_state.patches.is_empty());
-    assert_eq!(head.agent_state.rebuild_state().unwrap(), frontend_state);
+    let head = ThreadReader::load(&store, "t1").await.unwrap().unwrap();
+    assert_eq!(head.thread.state, frontend_state);
+    assert!(head.thread.patches.is_empty());
+    assert_eq!(head.thread.rebuild_state().unwrap(), frontend_state);
     // User message was also persisted
-    assert!(head
-        .agent_state
-        .messages
-        .iter()
-        .any(|m| m.role == Role::User));
+    assert!(head.thread.messages.iter().any(|m| m.role == Role::User));
 }

@@ -16,8 +16,8 @@ use testcontainers_modules::nats::Nats;
 use tirea_contract::storage::VersionPrecondition;
 use tirea_contract::thread::ThreadChangeSet;
 use tirea_contract::{
-    AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStoreError,
-    AgentStateWriter, CheckpointReason, Committed, Message, MessageQuery, Thread,
+    CheckpointReason, Committed, Message, MessageQuery, Thread, ThreadListPage, ThreadListQuery,
+    ThreadReader, ThreadStoreError, ThreadWriter,
 };
 use tirea_store_adapters::{MemoryStore, NatsBufferedThreadWriter};
 
@@ -78,25 +78,25 @@ impl CountingDelayStore {
 }
 
 #[async_trait::async_trait]
-impl AgentStateReader for CountingDelayStore {
+impl ThreadReader for CountingDelayStore {
     async fn load(
         &self,
         thread_id: &str,
-    ) -> Result<Option<tirea_contract::storage::AgentStateHead>, AgentStateStoreError> {
+    ) -> Result<Option<tirea_contract::storage::ThreadHead>, ThreadStoreError> {
         self.inner.load(thread_id).await
     }
 
-    async fn list_agent_states(
+    async fn list_threads(
         &self,
-        query: &AgentStateListQuery,
-    ) -> Result<AgentStateListPage, AgentStateStoreError> {
-        self.inner.list_agent_states(query).await
+        query: &ThreadListQuery,
+    ) -> Result<ThreadListPage, ThreadStoreError> {
+        self.inner.list_threads(query).await
     }
 }
 
 #[async_trait::async_trait]
-impl AgentStateWriter for CountingDelayStore {
-    async fn create(&self, thread: &Thread) -> Result<Committed, AgentStateStoreError> {
+impl ThreadWriter for CountingDelayStore {
+    async fn create(&self, thread: &Thread) -> Result<Committed, ThreadStoreError> {
         self.inner.create(thread).await
     }
 
@@ -105,7 +105,7 @@ impl AgentStateWriter for CountingDelayStore {
         thread_id: &str,
         delta: &ThreadChangeSet,
         precondition: VersionPrecondition,
-    ) -> Result<Committed, AgentStateStoreError> {
+    ) -> Result<Committed, ThreadStoreError> {
         self.append_calls.fetch_add(1, Ordering::Relaxed);
         if !self.append_delay.is_zero() {
             tokio::time::sleep(self.append_delay).await;
@@ -113,11 +113,11 @@ impl AgentStateWriter for CountingDelayStore {
         self.inner.append(thread_id, delta, precondition).await
     }
 
-    async fn delete(&self, thread_id: &str) -> Result<(), AgentStateStoreError> {
+    async fn delete(&self, thread_id: &str) -> Result<(), ThreadStoreError> {
         self.inner.delete(thread_id).await
     }
 
-    async fn save(&self, thread: &Thread) -> Result<(), AgentStateStoreError> {
+    async fn save(&self, thread: &Thread) -> Result<(), ThreadStoreError> {
         self.save_calls.fetch_add(1, Ordering::Relaxed);
         if !self.save_delay.is_zero() {
             tokio::time::sleep(self.save_delay).await;
@@ -148,25 +148,25 @@ impl FailFirstSaveStore {
 }
 
 #[async_trait::async_trait]
-impl AgentStateReader for FailFirstSaveStore {
+impl ThreadReader for FailFirstSaveStore {
     async fn load(
         &self,
         thread_id: &str,
-    ) -> Result<Option<tirea_contract::storage::AgentStateHead>, AgentStateStoreError> {
+    ) -> Result<Option<tirea_contract::storage::ThreadHead>, ThreadStoreError> {
         self.inner.load(thread_id).await
     }
 
-    async fn list_agent_states(
+    async fn list_threads(
         &self,
-        query: &AgentStateListQuery,
-    ) -> Result<AgentStateListPage, AgentStateStoreError> {
-        self.inner.list_agent_states(query).await
+        query: &ThreadListQuery,
+    ) -> Result<ThreadListPage, ThreadStoreError> {
+        self.inner.list_threads(query).await
     }
 }
 
 #[async_trait::async_trait]
-impl AgentStateWriter for FailFirstSaveStore {
-    async fn create(&self, thread: &Thread) -> Result<Committed, AgentStateStoreError> {
+impl ThreadWriter for FailFirstSaveStore {
+    async fn create(&self, thread: &Thread) -> Result<Committed, ThreadStoreError> {
         self.inner.create(thread).await
     }
 
@@ -175,18 +175,18 @@ impl AgentStateWriter for FailFirstSaveStore {
         thread_id: &str,
         delta: &ThreadChangeSet,
         precondition: VersionPrecondition,
-    ) -> Result<Committed, AgentStateStoreError> {
+    ) -> Result<Committed, ThreadStoreError> {
         self.inner.append(thread_id, delta, precondition).await
     }
 
-    async fn delete(&self, thread_id: &str) -> Result<(), AgentStateStoreError> {
+    async fn delete(&self, thread_id: &str) -> Result<(), ThreadStoreError> {
         self.inner.delete(thread_id).await
     }
 
-    async fn save(&self, thread: &Thread) -> Result<(), AgentStateStoreError> {
+    async fn save(&self, thread: &Thread) -> Result<(), ThreadStoreError> {
         self.save_calls.fetch_add(1, Ordering::Relaxed);
         if self.fail_next_save.swap(false, Ordering::AcqRel) {
-            return Err(AgentStateStoreError::Io(std::io::Error::other(
+            return Err(ThreadStoreError::Io(std::io::Error::other(
                 "injected save failure",
             )));
         }
@@ -206,7 +206,7 @@ async fn test_create_delegates_to_inner() {
 
     let loaded = inner.load("t1").await.unwrap();
     assert!(loaded.is_some());
-    assert_eq!(loaded.unwrap().agent_state.id, "t1");
+    assert_eq!(loaded.unwrap().thread.id, "t1");
 }
 
 #[tokio::test]
@@ -236,8 +236,8 @@ async fn test_append_does_not_write_to_inner() {
 
     // Inner should still have only the original message
     let loaded = inner.load("t1").await.unwrap().unwrap();
-    assert_eq!(loaded.agent_state.messages.len(), 1);
-    assert_eq!(loaded.agent_state.messages[0].content, "hello");
+    assert_eq!(loaded.thread.messages.len(), 1);
+    assert_eq!(loaded.thread.messages[0].content, "hello");
 }
 
 #[tokio::test]
@@ -272,9 +272,9 @@ async fn test_save_flushes_to_inner_and_purges_nats() {
     storage.save(&final_thread).await.unwrap();
 
     let loaded = inner.load("t1").await.unwrap().unwrap();
-    assert_eq!(loaded.agent_state.messages.len(), 2);
-    assert_eq!(loaded.agent_state.messages[0].content, "hello");
-    assert_eq!(loaded.agent_state.messages[1].content, "world");
+    assert_eq!(loaded.thread.messages.len(), 2);
+    assert_eq!(loaded.thread.messages[0].content, "hello");
+    assert_eq!(loaded.thread.messages[1].content, "world");
 }
 
 #[tokio::test]
@@ -352,7 +352,7 @@ async fn test_recover_replays_unacked_deltas() {
 
     // Inner storage should now have all messages
     let loaded = inner.load("t1").await.unwrap().unwrap();
-    assert_eq!(loaded.agent_state.messages.len(), 3); // hello + response 1 + response 2
+    assert_eq!(loaded.thread.messages.len(), 3); // hello + response 1 + response 2
 }
 
 // ============================================================================
@@ -392,15 +392,15 @@ async fn test_query_returns_last_flush_snapshot_during_active_run() {
     // Query via NatsBufferedThreadWriter.load() — should see first-run snapshot.
     let head = storage.load("t1").await.unwrap().unwrap();
     assert_eq!(
-        head.agent_state.messages.len(),
+        head.thread.messages.len(),
         2,
         "load() should return the pre-run snapshot (2 messages), not include buffered delta"
     );
-    assert_eq!(head.agent_state.messages[0].content, "hello");
-    assert_eq!(head.agent_state.messages[1].content, "first reply");
+    assert_eq!(head.thread.messages[0].content, "hello");
+    assert_eq!(head.thread.messages[1].content, "first reply");
 }
 
-/// load_messages() (AgentStateReader default) also reads from the inner storage,
+/// load_messages() (ThreadReader default) also reads from the inner storage,
 /// so during a run it returns the last-flushed message list.
 #[tokio::test]
 async fn test_load_messages_returns_last_flush_snapshot_during_active_run() {
@@ -431,7 +431,7 @@ async fn test_load_messages_returns_last_flush_snapshot_during_active_run() {
     }
 
     // Query messages through the inner storage (which NatsBufferedThreadWriter delegates to).
-    let page = AgentStateReader::load_messages(inner.as_ref(), "t1", &MessageQuery::default())
+    let page = ThreadReader::load_messages(inner.as_ref(), "t1", &MessageQuery::default())
         .await
         .unwrap();
     assert_eq!(
@@ -469,7 +469,7 @@ async fn test_query_accurate_after_run_end_flush() {
 
     // Before flush: load sees 1 message.
     let pre = storage.load("t1").await.unwrap().unwrap();
-    assert_eq!(pre.agent_state.messages.len(), 1);
+    assert_eq!(pre.thread.messages.len(), 1);
 
     // Run-end flush.
     let final_thread = Thread::new("t1")
@@ -479,11 +479,11 @@ async fn test_query_accurate_after_run_end_flush() {
 
     // After flush: load sees 2 messages.
     let post = storage.load("t1").await.unwrap().unwrap();
-    assert_eq!(post.agent_state.messages.len(), 2);
-    assert_eq!(post.agent_state.messages[1].content, "world");
+    assert_eq!(post.thread.messages.len(), 2);
+    assert_eq!(post.thread.messages[1].content, "world");
 
     // load_messages also sees 2.
-    let page = AgentStateReader::load_messages(inner.as_ref(), "t1", &MessageQuery::default())
+    let page = ThreadReader::load_messages(inner.as_ref(), "t1", &MessageQuery::default())
         .await
         .unwrap();
     assert_eq!(page.messages.len(), 2);
@@ -538,12 +538,12 @@ async fn test_multi_run_query_sees_previous_run_data() {
     // Query during run 2: sees run 1's flushed state (2 messages), not run 2's delta.
     let head = storage.load("t1").await.unwrap().unwrap();
     assert_eq!(
-        head.agent_state.messages.len(),
+        head.thread.messages.len(),
         2,
         "during run 2, query should see run 1's flushed state (q1 + a1)"
     );
-    assert_eq!(head.agent_state.messages[0].content, "q1");
-    assert_eq!(head.agent_state.messages[1].content, "a1");
+    assert_eq!(head.thread.messages[0].content, "q1");
+    assert_eq!(head.thread.messages[1].content, "a1");
 
     // Flush run 2.
     let run2_thread = Thread::new("t1")
@@ -554,7 +554,7 @@ async fn test_multi_run_query_sees_previous_run_data() {
 
     // Now query sees all 3 messages.
     let head = storage.load("t1").await.unwrap().unwrap();
-    assert_eq!(head.agent_state.messages.len(), 3);
+    assert_eq!(head.thread.messages.len(), 3);
 }
 
 #[tokio::test]
@@ -581,7 +581,7 @@ async fn test_run_finished_append_auto_flushes_to_inner() {
         .unwrap();
 
     let pre = inner.load("t-auto").await.unwrap().unwrap();
-    assert_eq!(pre.agent_state.messages.len(), 1);
+    assert_eq!(pre.thread.messages.len(), 1);
 
     let delta2 = ThreadChangeSet {
         run_id: "r-auto".to_string(),
@@ -597,10 +597,10 @@ async fn test_run_finished_append_auto_flushes_to_inner() {
         .unwrap();
 
     let post = inner.load("t-auto").await.unwrap().unwrap();
-    assert_eq!(post.agent_state.messages.len(), 3);
-    assert_eq!(post.agent_state.messages[0].content, "hello");
-    assert_eq!(post.agent_state.messages[1].content, "first");
-    assert_eq!(post.agent_state.messages[2].content, "second");
+    assert_eq!(post.thread.messages.len(), 3);
+    assert_eq!(post.thread.messages[0].content, "hello");
+    assert_eq!(post.thread.messages[1].content, "first");
+    assert_eq!(post.thread.messages[2].content, "second");
 }
 
 #[tokio::test]
@@ -678,8 +678,8 @@ async fn test_buffered_vs_direct_write_latency_and_amplification() {
     let direct_loaded = direct.load("direct").await.unwrap().unwrap();
     let buffered_loaded = buffered_inner.load("buffered").await.unwrap().unwrap();
     assert_eq!(
-        direct_loaded.agent_state.messages.len(),
-        buffered_loaded.agent_state.messages.len()
+        direct_loaded.thread.messages.len(),
+        buffered_loaded.thread.messages.len()
     );
 
     assert_eq!(direct.append_calls(), rounds);
@@ -735,22 +735,22 @@ async fn test_run_finished_flush_failure_can_be_recovered() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, AgentStateStoreError::Io(_)),
+        matches!(err, ThreadStoreError::Io(_)),
         "expected injected save failure, got: {err:?}"
     );
 
     let before_recover = inner.load("t-fail").await.unwrap().unwrap();
-    assert_eq!(before_recover.agent_state.messages.len(), 1);
+    assert_eq!(before_recover.thread.messages.len(), 1);
     assert_eq!(inner.save_calls(), 1);
 
     let recovered = storage.recover().await.unwrap();
     assert_eq!(recovered, 2);
 
     let after_recover = inner.load("t-fail").await.unwrap().unwrap();
-    assert_eq!(after_recover.agent_state.messages.len(), 3);
-    assert_eq!(after_recover.agent_state.messages[0].content, "hello");
-    assert_eq!(after_recover.agent_state.messages[1].content, "step");
-    assert_eq!(after_recover.agent_state.messages[2].content, "finish");
+    assert_eq!(after_recover.thread.messages.len(), 3);
+    assert_eq!(after_recover.thread.messages[0].content, "hello");
+    assert_eq!(after_recover.thread.messages[1].content, "step");
+    assert_eq!(after_recover.thread.messages[2].content, "finish");
 
     let recovered_again = storage.recover().await.unwrap();
     assert_eq!(recovered_again, 0);
@@ -787,9 +787,9 @@ async fn test_duplicate_run_finished_delta_is_idempotent_by_message_id() {
         .unwrap();
 
     let loaded = inner.load("t-idempotent").await.unwrap().unwrap();
-    assert_eq!(loaded.agent_state.messages.len(), 2);
-    assert_eq!(loaded.agent_state.messages[0].content, "hello");
-    assert_eq!(loaded.agent_state.messages[1].content, "done");
+    assert_eq!(loaded.thread.messages.len(), 2);
+    assert_eq!(loaded.thread.messages[0].content, "hello");
+    assert_eq!(loaded.thread.messages[1].content, "done");
 }
 
 #[tokio::test]
@@ -844,5 +844,5 @@ async fn test_concurrent_appends_flush_to_consistent_snapshot() {
         .unwrap();
 
     let loaded = inner.load("t-concurrent").await.unwrap().unwrap();
-    assert_eq!(loaded.agent_state.messages.len(), rounds + 1);
+    assert_eq!(loaded.thread.messages.len(), rounds + 1);
 }

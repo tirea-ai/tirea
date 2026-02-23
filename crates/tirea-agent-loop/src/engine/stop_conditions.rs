@@ -82,7 +82,7 @@ impl<'a> StopCheckContext<'a> {
     /// Convert legacy context shape to canonical stop-policy input.
     pub fn as_policy_input(&'a self) -> StopPolicyInput<'a> {
         StopPolicyInput {
-            agent_state: self.run_ctx,
+            run_ctx: self.run_ctx,
             stats: StopPolicyStats {
                 step: self.rounds,
                 step_tool_call_count: self.last_tool_calls.len(),
@@ -115,7 +115,7 @@ fn stop_check_context_from_policy_input<'a>(
         last_tool_calls: input.stats.last_tool_calls,
         last_text: input.stats.last_text,
         tool_call_history: input.stats.tool_call_history,
-        run_ctx: input.agent_state,
+        run_ctx: input.run_ctx,
     }
 }
 

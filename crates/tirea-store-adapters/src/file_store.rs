@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use std::path::PathBuf;
 use tirea_contract::storage::{
-    AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
-    AgentStateStoreError, AgentStateWriter, Committed, VersionPrecondition,
+    Committed, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStoreError,
+    ThreadWriter, VersionPrecondition,
 };
 use tirea_contract::{Thread, ThreadChangeSet, Version};
 use tokio::io::AsyncWriteExt;
@@ -20,16 +20,16 @@ impl FileStore {
         }
     }
 
-    pub(super) fn thread_path(&self, thread_id: &str) -> Result<PathBuf, AgentStateStoreError> {
+    pub(super) fn thread_path(&self, thread_id: &str) -> Result<PathBuf, ThreadStoreError> {
         Self::validate_thread_id(thread_id)?;
         Ok(self.base_path.join(format!("{}.json", thread_id)))
     }
 
     /// Validate that a session ID is safe for use as a filename.
     /// Rejects path separators, `..`, and control characters.
-    fn validate_thread_id(thread_id: &str) -> Result<(), AgentStateStoreError> {
+    fn validate_thread_id(thread_id: &str) -> Result<(), ThreadStoreError> {
         if thread_id.is_empty() {
-            return Err(AgentStateStoreError::InvalidId(
+            return Err(ThreadStoreError::InvalidId(
                 "thread id cannot be empty".to_string(),
             ));
         }
@@ -38,12 +38,12 @@ impl FileStore {
             || thread_id.contains("..")
             || thread_id.contains('\0')
         {
-            return Err(AgentStateStoreError::InvalidId(format!(
+            return Err(ThreadStoreError::InvalidId(format!(
                 "thread id contains invalid characters: {thread_id:?}"
             )));
         }
         if thread_id.chars().any(|c| c.is_control()) {
-            return Err(AgentStateStoreError::InvalidId(format!(
+            return Err(ThreadStoreError::InvalidId(format!(
                 "thread id contains control characters: {thread_id:?}"
             )));
         }
@@ -52,15 +52,15 @@ impl FileStore {
 }
 
 #[async_trait]
-impl AgentStateWriter for FileStore {
-    async fn create(&self, thread: &Thread) -> Result<Committed, AgentStateStoreError> {
+impl ThreadWriter for FileStore {
+    async fn create(&self, thread: &Thread) -> Result<Committed, ThreadStoreError> {
         let path = self.thread_path(&thread.id)?;
         if path.exists() {
-            return Err(AgentStateStoreError::AlreadyExists);
+            return Err(ThreadStoreError::AlreadyExists);
         }
         // Serialize with version=0 embedded
-        let head = AgentStateHead {
-            agent_state: thread.clone(),
+        let head = ThreadHead {
+            thread: thread.clone(),
             version: 0,
         };
         self.save_head(&head).await?;
@@ -72,26 +72,26 @@ impl AgentStateWriter for FileStore {
         thread_id: &str,
         delta: &ThreadChangeSet,
         precondition: VersionPrecondition,
-    ) -> Result<Committed, AgentStateStoreError> {
+    ) -> Result<Committed, ThreadStoreError> {
         let head = self
             .load_head(thread_id)
             .await?
-            .ok_or_else(|| AgentStateStoreError::NotFound(thread_id.to_string()))?;
+            .ok_or_else(|| ThreadStoreError::NotFound(thread_id.to_string()))?;
 
         if let VersionPrecondition::Exact(expected) = precondition {
             if head.version != expected {
-                return Err(AgentStateStoreError::VersionConflict {
+                return Err(ThreadStoreError::VersionConflict {
                     expected,
                     actual: head.version,
                 });
             }
         }
 
-        let mut agent_state = head.agent_state;
-        delta.apply_to(&mut agent_state);
+        let mut thread = head.thread;
+        delta.apply_to(&mut thread);
         let new_version = head.version + 1;
-        let new_head = AgentStateHead {
-            agent_state,
+        let new_head = ThreadHead {
+            thread,
             version: new_version,
         };
         self.save_head(&new_head).await?;
@@ -100,7 +100,7 @@ impl AgentStateWriter for FileStore {
         })
     }
 
-    async fn delete(&self, thread_id: &str) -> Result<(), AgentStateStoreError> {
+    async fn delete(&self, thread_id: &str) -> Result<(), ThreadStoreError> {
         let path = self.thread_path(thread_id)?;
         if path.exists() {
             tokio::fs::remove_file(&path).await?;
@@ -108,13 +108,13 @@ impl AgentStateWriter for FileStore {
         Ok(())
     }
 
-    async fn save(&self, thread: &Thread) -> Result<(), AgentStateStoreError> {
+    async fn save(&self, thread: &Thread) -> Result<(), ThreadStoreError> {
         let next_version = self
             .load_head(&thread.id)
             .await?
             .map_or(0, |head| head.version.saturating_add(1));
-        let head = AgentStateHead {
-            agent_state: thread.clone(),
+        let head = ThreadHead {
+            thread: thread.clone(),
             version: next_version,
         };
         self.save_head(&head).await
@@ -122,15 +122,15 @@ impl AgentStateWriter for FileStore {
 }
 
 #[async_trait]
-impl AgentStateReader for FileStore {
-    async fn load(&self, thread_id: &str) -> Result<Option<AgentStateHead>, AgentStateStoreError> {
+impl ThreadReader for FileStore {
+    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
         self.load_head(thread_id).await
     }
 
-    async fn list_agent_states(
+    async fn list_threads(
         &self,
-        query: &AgentStateListQuery,
-    ) -> Result<AgentStateListPage, AgentStateStoreError> {
+        query: &ThreadListQuery,
+    ) -> Result<ThreadListPage, ThreadStoreError> {
         // Read directory for all thread IDs
         let mut all = if !self.base_path.exists() {
             Vec::new()
@@ -155,7 +155,7 @@ impl AgentStateReader for FileStore {
             let mut filtered = Vec::new();
             for id in &all {
                 if let Some(head) = self.load(id).await? {
-                    if head.agent_state.resource_id.as_deref() == Some(resource_id.as_str()) {
+                    if head.thread.resource_id.as_deref() == Some(resource_id.as_str()) {
                         filtered.push(id.clone());
                     }
                 }
@@ -168,9 +168,7 @@ impl AgentStateReader for FileStore {
             let mut filtered = Vec::new();
             for id in &all {
                 if let Some(head) = self.load(id).await? {
-                    if head.agent_state.parent_thread_id.as_deref()
-                        == Some(parent_thread_id.as_str())
-                    {
+                    if head.thread.parent_thread_id.as_deref() == Some(parent_thread_id.as_str()) {
                         filtered.push(id.clone());
                     }
                 }
@@ -186,7 +184,7 @@ impl AgentStateReader for FileStore {
         let slice = &all[offset..end];
         let has_more = slice.len() > limit;
         let items: Vec<String> = slice.iter().take(limit).cloned().collect();
-        Ok(AgentStateListPage {
+        Ok(ThreadListPage {
             items,
             total,
             has_more,
@@ -196,52 +194,46 @@ impl AgentStateReader for FileStore {
 
 impl FileStore {
     /// Load a thread head (thread + version) from file.
-    async fn load_head(
-        &self,
-        thread_id: &str,
-    ) -> Result<Option<AgentStateHead>, AgentStateStoreError> {
+    async fn load_head(&self, thread_id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
         let path = self.thread_path(thread_id)?;
         if !path.exists() {
             return Ok(None);
         }
         let content = tokio::fs::read_to_string(&path).await?;
-        // Try to parse as AgentStateHead first (new format with version).
+        // Try to parse as ThreadHead first (new format with version).
         if let Ok(head) = serde_json::from_str::<VersionedThread>(&content) {
             let thread: Thread = serde_json::from_str(&content)
-                .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
-            Ok(Some(AgentStateHead {
-                agent_state: thread,
+                .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
+            Ok(Some(ThreadHead {
+                thread,
                 version: head._version.unwrap_or(0),
             }))
         } else {
             let thread: Thread = serde_json::from_str(&content)
-                .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
-            Ok(Some(AgentStateHead {
-                agent_state: thread,
-                version: 0,
-            }))
+                .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
+            Ok(Some(ThreadHead { thread, version: 0 }))
         }
     }
 
     /// Save a thread head (thread + version) to file atomically.
-    async fn save_head(&self, head: &AgentStateHead) -> Result<(), AgentStateStoreError> {
+    async fn save_head(&self, head: &ThreadHead) -> Result<(), ThreadStoreError> {
         if !self.base_path.exists() {
             tokio::fs::create_dir_all(&self.base_path).await?;
         }
-        let path = self.thread_path(&head.agent_state.id)?;
+        let path = self.thread_path(&head.thread.id)?;
 
         // Embed version into the JSON
-        let mut v = serde_json::to_value(&head.agent_state)
-            .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
+        let mut v = serde_json::to_value(&head.thread)
+            .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
         if let Some(obj) = v.as_object_mut() {
             obj.insert("_version".to_string(), serde_json::json!(head.version));
         }
         let content = serde_json::to_string_pretty(&v)
-            .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
+            .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
 
         let tmp_path = self.base_path.join(format!(
             ".{}.{}.tmp",
-            head.agent_state.id,
+            head.thread.id,
             uuid::Uuid::new_v4().simple()
         ));
 
@@ -265,7 +257,7 @@ impl FileStore {
 
         if let Err(e) = write_result {
             let _ = tokio::fs::remove_file(&tmp_path).await;
-            return Err(AgentStateStoreError::Io(e));
+            return Err(ThreadStoreError::Io(e));
         }
         Ok(())
     }
@@ -285,7 +277,7 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
     use tirea_contract::{
-        storage::AgentStateReader, AgentStateWriter, CheckpointReason, Message, MessageQuery,
+        storage::ThreadReader, CheckpointReason, Message, MessageQuery, ThreadWriter,
     };
     use tirea_state::{path, Op, Patch, TrackedPatch};
 
@@ -305,7 +297,7 @@ mod tests {
         let thread = Thread::new("test-1").with_message(Message::user("hello"));
         storage.save(&thread).await.unwrap();
 
-        let loaded = storage.load_agent_state("test-1").await.unwrap().unwrap();
+        let loaded = storage.load_thread("test-1").await.unwrap().unwrap();
         assert_eq!(loaded.id, "test-1");
         assert_eq!(loaded.message_count(), 1);
     }
@@ -406,9 +398,9 @@ mod tests {
         let store2 = FileStore::new(temp_dir.path());
         let head = store2.load("t1").await.unwrap().unwrap();
         assert_eq!(head.version, 3);
-        assert_eq!(head.agent_state.message_count(), 2);
-        assert!(head.agent_state.patches.is_empty());
-        assert_eq!(head.agent_state.state, json!({"greeted": true}));
+        assert_eq!(head.thread.message_count(), 2);
+        assert!(head.thread.patches.is_empty());
+        assert_eq!(head.thread.state, json!({"greeted": true}));
     }
 
     #[test]

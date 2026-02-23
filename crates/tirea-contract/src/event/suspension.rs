@@ -203,8 +203,7 @@ impl FrontendToolInvocation {
         }
     }
 
-    /// Convert to an `Suspension` for backward compatibility with the
-    /// existing event system during the transition period.
+    /// Convert to a generic `Suspension` payload used by the runtime event stream.
     pub fn to_suspension(&self) -> Suspension {
         Suspension::new(&self.call_id, format!("tool:{}", self.tool_name))
             .with_parameters(self.arguments.clone())
@@ -233,7 +232,7 @@ pub enum InvocationOrigin {
 
 /// How to route the frontend's response after it completes execution.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(from = "ResponseRoutingWire", into = "ResponseRoutingWire")]
+#[serde(tag = "strategy", rename_all = "snake_case")]
 pub enum ResponseRouting {
     /// Replay the original backend tool.
     ///
@@ -246,38 +245,6 @@ pub enum ResponseRouting {
     UseAsToolResult,
     /// Pass the frontend result to the LLM as an independent message.
     PassToLLM,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "strategy", rename_all = "snake_case")]
-enum ResponseRoutingWire {
-    ReplayOriginalTool,
-    /// The frontend result IS the tool result — inject it directly into
-    /// the LLM message history as the tool call response.
-    /// Used for direct frontend tools (e.g. copyToClipboard).
-    UseAsToolResult,
-    /// Pass the frontend result to the LLM as an independent message.
-    PassToLLM,
-}
-
-impl From<ResponseRoutingWire> for ResponseRouting {
-    fn from(value: ResponseRoutingWire) -> Self {
-        match value {
-            ResponseRoutingWire::ReplayOriginalTool => Self::ReplayOriginalTool,
-            ResponseRoutingWire::UseAsToolResult => Self::UseAsToolResult,
-            ResponseRoutingWire::PassToLLM => Self::PassToLLM,
-        }
-    }
-}
-
-impl From<ResponseRouting> for ResponseRoutingWire {
-    fn from(value: ResponseRouting) -> Self {
-        match value {
-            ResponseRouting::ReplayOriginalTool => Self::ReplayOriginalTool,
-            ResponseRouting::UseAsToolResult => Self::UseAsToolResult,
-            ResponseRouting::PassToLLM => Self::PassToLLM,
-        }
-    }
 }
 
 #[cfg(test)]

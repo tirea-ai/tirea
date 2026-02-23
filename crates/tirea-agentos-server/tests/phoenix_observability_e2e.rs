@@ -8,7 +8,7 @@ use phoenix_test_helpers::{
 };
 use serde_json::json;
 use std::sync::Arc;
-use tirea_agentos::contracts::storage::AgentStateStore;
+use tirea_agentos::contracts::storage::ThreadStore;
 use tirea_agentos::extensions::observability::{InMemorySink, LLMMetryPlugin};
 use tirea_agentos::orchestrator::AgentDefinition;
 use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder, ModelDefinition};
@@ -16,7 +16,7 @@ use tirea_agentos_server::http::{router, AppState};
 use tower::ServiceExt;
 
 fn make_os(
-    write_store: Arc<dyn AgentStateStore>,
+    write_store: Arc<dyn ThreadStore>,
     provider_client: genai::Client,
     configured_model: &str,
     wire_model: &str,

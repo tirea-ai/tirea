@@ -1,8 +1,10 @@
 use crate::event::suspension::{FrontendToolInvocation, Suspension};
 use crate::runtime::activity::ActivityManager;
-use crate::runtime::control::SuspendedCall;
+use crate::runtime::control::{
+    first_suspended_invocation_from_state, first_suspension_from_state, suspended_calls_from_state,
+    SuspendedCall,
+};
 use crate::runtime::delta::RunDelta;
-use crate::runtime::state_paths::SUSPENDED_TOOL_CALLS_STATE_PATH;
 use crate::thread::Message;
 use crate::tool::context::ToolCallContext;
 use crate::RunConfig;
@@ -99,32 +101,24 @@ impl RunContext {
     /// This rebuilds state and returns the suspension from the smallest
     /// suspended call ID.
     pub fn first_suspension(&self) -> Option<Suspension> {
-        let mut calls: Vec<SuspendedCall> = self.suspended_calls().into_values().collect();
-        calls.sort_by(|left, right| left.call_id.cmp(&right.call_id));
-        calls.into_iter().next().map(|call| call.suspension)
+        self.snapshot()
+            .ok()
+            .and_then(|state| first_suspension_from_state(&state))
     }
 
     /// Read all suspended calls from durable control state.
-    pub fn suspended_calls(
-        &self,
-    ) -> std::collections::HashMap<String, crate::runtime::control::SuspendedCall> {
+    pub fn suspended_calls(&self) -> std::collections::HashMap<String, SuspendedCall> {
         self.snapshot()
             .ok()
-            .and_then(|state| {
-                state
-                    .get(SUSPENDED_TOOL_CALLS_STATE_PATH)
-                    .and_then(|s| s.get("calls"))
-                    .cloned()
-            })
-            .and_then(|value| serde_json::from_value(value).ok())
+            .map(|state| suspended_calls_from_state(&state))
             .unwrap_or_default()
     }
 
     /// Read the first suspended invocation from durable control state.
     pub fn first_suspended_invocation(&self) -> Option<FrontendToolInvocation> {
-        let mut calls: Vec<SuspendedCall> = self.suspended_calls().into_values().collect();
-        calls.sort_by(|left, right| left.call_id.cmp(&right.call_id));
-        calls.into_iter().next().map(|call| call.invocation)
+        self.snapshot()
+            .ok()
+            .and_then(|state| first_suspended_invocation_from_state(&state))
     }
 
     // =========================================================================

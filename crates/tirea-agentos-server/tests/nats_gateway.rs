@@ -17,7 +17,7 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::nats::Nats;
 use tirea_agentos::contracts::plugin::phase::BeforeInferenceContext;
 use tirea_agentos::contracts::plugin::AgentPlugin;
-use tirea_agentos::contracts::storage::{AgentStateReader, AgentStateStore};
+use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
 use tirea_agentos::orchestrator::AgentDefinition;
 use tirea_agentos::orchestrator::AgentOsBuilder;
 use tirea_agentos_server::nats::NatsGateway;
@@ -36,7 +36,7 @@ impl AgentPlugin for TerminatePluginRequestedPlugin {
     }
 }
 
-fn make_os(storage: Arc<dyn AgentStateStore>) -> tirea_agentos::orchestrator::AgentOs {
+fn make_os(storage: Arc<dyn ThreadStore>) -> tirea_agentos::orchestrator::AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
         plugin_ids: vec!["terminate_plugin_requested_test".into()],
@@ -227,7 +227,7 @@ async fn test_nats_agui_happy_path() {
     // Wait for checkpoint persistence.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    let saved = storage.load_agent_state("nats-agui-1").await.unwrap();
+    let saved = storage.load_thread("nats-agui-1").await.unwrap();
     assert!(saved.is_some(), "thread not persisted");
     let saved = saved.unwrap();
     assert!(
@@ -307,7 +307,7 @@ async fn test_nats_aisdk_happy_path() {
     // Wait for checkpoint persistence.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    let saved = storage.load_agent_state("nats-sdk-1").await.unwrap();
+    let saved = storage.load_thread("nats-sdk-1").await.unwrap();
     assert!(saved.is_some(), "thread not persisted");
     let saved = saved.unwrap();
     assert!(
@@ -410,7 +410,7 @@ async fn test_nats_aisdk_agent_not_found() {
 
     // Unknown agent should fail fast without persisting user input.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    let saved = storage.load_agent_state("s1").await.unwrap();
+    let saved = storage.load_thread("s1").await.unwrap();
     assert!(
         saved.is_none(),
         "thread should not be persisted when agent is missing"
@@ -670,7 +670,7 @@ async fn test_nats_gateway_restart_still_handles_requests() {
     );
 
     tokio::time::sleep(std::time::Duration::from_millis(350)).await;
-    let first_saved = storage.load_agent_state("nats-restart-1").await.unwrap();
+    let first_saved = storage.load_thread("nats-restart-1").await.unwrap();
     assert!(first_saved.is_some(), "first request should be persisted");
 
     handle1.abort();
@@ -695,7 +695,7 @@ async fn test_nats_gateway_restart_still_handles_requests() {
     );
 
     tokio::time::sleep(std::time::Duration::from_millis(350)).await;
-    let second_saved = storage.load_agent_state("nats-restart-2").await.unwrap();
+    let second_saved = storage.load_thread("nats-restart-2").await.unwrap();
     assert!(second_saved.is_some(), "second request should be persisted");
 
     handle2.abort();
@@ -737,7 +737,7 @@ async fn test_nats_agui_concurrent_24_requests_all_persisted() {
     tokio::time::sleep(std::time::Duration::from_millis(700)).await;
     for (thread_id, content) in results {
         let saved = storage
-            .load_agent_state(&thread_id)
+            .load_thread(&thread_id)
             .await
             .unwrap()
             .unwrap_or_else(|| panic!("thread should be persisted: {thread_id}"));
@@ -805,7 +805,7 @@ async fn test_nats_agui_slow_consumer_still_finishes_and_persists() {
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let saved = storage
-        .load_agent_state("nats-slow-consumer")
+        .load_thread("nats-slow-consumer")
         .await
         .unwrap()
         .expect("thread should be persisted");

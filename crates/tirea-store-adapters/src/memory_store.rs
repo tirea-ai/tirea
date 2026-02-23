@@ -1,12 +1,12 @@
 use async_trait::async_trait;
 use tirea_contract::storage::{
-    AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
-    AgentStateStoreError, AgentStateSync, AgentStateWriter, VersionPrecondition,
+    ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStoreError, ThreadSync,
+    ThreadWriter, VersionPrecondition,
 };
 use tirea_contract::{Committed, Thread, ThreadChangeSet, Version};
 
 struct MemoryEntry {
-    agent_state: Thread,
+    thread: Thread,
     version: Version,
     deltas: Vec<ThreadChangeSet>,
 }
@@ -25,16 +25,16 @@ impl MemoryStore {
 }
 
 #[async_trait]
-impl AgentStateWriter for MemoryStore {
-    async fn create(&self, thread: &Thread) -> Result<Committed, AgentStateStoreError> {
+impl ThreadWriter for MemoryStore {
+    async fn create(&self, thread: &Thread) -> Result<Committed, ThreadStoreError> {
         let mut entries = self.entries.write().await;
         if entries.contains_key(&thread.id) {
-            return Err(AgentStateStoreError::AlreadyExists);
+            return Err(ThreadStoreError::AlreadyExists);
         }
         entries.insert(
             thread.id.clone(),
             MemoryEntry {
-                agent_state: thread.clone(),
+                thread: thread.clone(),
                 version: 0,
                 deltas: Vec::new(),
             },
@@ -47,22 +47,22 @@ impl AgentStateWriter for MemoryStore {
         thread_id: &str,
         delta: &ThreadChangeSet,
         precondition: VersionPrecondition,
-    ) -> Result<Committed, AgentStateStoreError> {
+    ) -> Result<Committed, ThreadStoreError> {
         let mut entries = self.entries.write().await;
         let entry = entries
             .get_mut(thread_id)
-            .ok_or_else(|| AgentStateStoreError::NotFound(thread_id.to_string()))?;
+            .ok_or_else(|| ThreadStoreError::NotFound(thread_id.to_string()))?;
 
         if let VersionPrecondition::Exact(expected) = precondition {
             if entry.version != expected {
-                return Err(AgentStateStoreError::VersionConflict {
+                return Err(ThreadStoreError::VersionConflict {
                     expected,
                     actual: entry.version,
                 });
             }
         }
 
-        delta.apply_to(&mut entry.agent_state);
+        delta.apply_to(&mut entry.thread);
         entry.version += 1;
         entry.deltas.push(delta.clone());
         Ok(Committed {
@@ -70,19 +70,19 @@ impl AgentStateWriter for MemoryStore {
         })
     }
 
-    async fn delete(&self, thread_id: &str) -> Result<(), AgentStateStoreError> {
+    async fn delete(&self, thread_id: &str) -> Result<(), ThreadStoreError> {
         let mut entries = self.entries.write().await;
         entries.remove(thread_id);
         Ok(())
     }
 
-    async fn save(&self, thread: &Thread) -> Result<(), AgentStateStoreError> {
+    async fn save(&self, thread: &Thread) -> Result<(), ThreadStoreError> {
         let mut entries = self.entries.write().await;
         let version = entries.get(&thread.id).map_or(0, |e| e.version + 1);
         entries.insert(
             thread.id.clone(),
             MemoryEntry {
-                agent_state: thread.clone(),
+                thread: thread.clone(),
                 version,
                 deltas: Vec::new(),
             },
@@ -92,32 +92,32 @@ impl AgentStateWriter for MemoryStore {
 }
 
 #[async_trait]
-impl AgentStateReader for MemoryStore {
-    async fn load(&self, thread_id: &str) -> Result<Option<AgentStateHead>, AgentStateStoreError> {
+impl ThreadReader for MemoryStore {
+    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
         let entries = self.entries.read().await;
-        Ok(entries.get(thread_id).map(|e| AgentStateHead {
-            agent_state: e.agent_state.clone(),
+        Ok(entries.get(thread_id).map(|e| ThreadHead {
+            thread: e.thread.clone(),
             version: e.version,
         }))
     }
 
-    async fn list_agent_states(
+    async fn list_threads(
         &self,
-        query: &AgentStateListQuery,
-    ) -> Result<AgentStateListPage, AgentStateStoreError> {
+        query: &ThreadListQuery,
+    ) -> Result<ThreadListPage, ThreadStoreError> {
         let entries = self.entries.read().await;
         let mut ids: Vec<String> = entries
             .iter()
             .filter(|(_, e)| {
                 if let Some(ref rid) = query.resource_id {
-                    e.agent_state.resource_id.as_deref() == Some(rid.as_str())
+                    e.thread.resource_id.as_deref() == Some(rid.as_str())
                 } else {
                     true
                 }
             })
             .filter(|(_, e)| {
                 if let Some(ref pid) = query.parent_thread_id {
-                    e.agent_state.parent_thread_id.as_deref() == Some(pid.as_str())
+                    e.thread.parent_thread_id.as_deref() == Some(pid.as_str())
                 } else {
                     true
                 }
@@ -132,7 +132,7 @@ impl AgentStateReader for MemoryStore {
         let slice = &ids[offset..end];
         let has_more = slice.len() > limit;
         let items: Vec<String> = slice.iter().take(limit).cloned().collect();
-        Ok(AgentStateListPage {
+        Ok(ThreadListPage {
             items,
             total,
             has_more,
@@ -141,16 +141,16 @@ impl AgentStateReader for MemoryStore {
 }
 
 #[async_trait]
-impl AgentStateSync for MemoryStore {
+impl ThreadSync for MemoryStore {
     async fn load_deltas(
         &self,
         thread_id: &str,
         after_version: Version,
-    ) -> Result<Vec<ThreadChangeSet>, AgentStateStoreError> {
+    ) -> Result<Vec<ThreadChangeSet>, ThreadStoreError> {
         let entries = self.entries.read().await;
         let entry = entries
             .get(thread_id)
-            .ok_or_else(|| AgentStateStoreError::NotFound(thread_id.to_string()))?;
+            .ok_or_else(|| ThreadStoreError::NotFound(thread_id.to_string()))?;
         // Deltas are 1-indexed: delta[0] produced version 1, delta[1] produced version 2, etc.
         let skip = after_version as usize;
         Ok(entry.deltas[skip..].to_vec())

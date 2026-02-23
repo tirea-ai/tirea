@@ -3,9 +3,8 @@
 pub mod traits;
 pub mod types;
 
-pub use traits::{AgentStateReader, AgentStateStore, AgentStateSync, AgentStateWriter};
+pub use traits::{ThreadReader, ThreadStore, ThreadSync, ThreadWriter};
 pub use types::{
-    paginate_in_memory, AgentStateHead, AgentStateListPage, AgentStateListQuery,
-    AgentStateStoreError, Committed, MessagePage, MessageQuery, MessageWithCursor, SortOrder,
-    VersionPrecondition,
+    paginate_in_memory, Committed, MessagePage, MessageQuery, MessageWithCursor, SortOrder,
+    ThreadHead, ThreadListPage, ThreadListQuery, ThreadStoreError, VersionPrecondition,
 };

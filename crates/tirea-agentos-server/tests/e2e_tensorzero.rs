@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tirea_agentos::contracts::storage::{AgentStateReader, AgentStateStore};
+use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
 use tirea_agentos::contracts::tool::Tool;
 use tirea_agentos::orchestrator::AgentDefinition;
 use tirea_agentos::orchestrator::{AgentOsBuilder, ModelDefinition};
@@ -106,7 +106,7 @@ async fn tensorzero_chat_smoke_ready() -> Result<(), String> {
     Ok(())
 }
 
-fn make_os(write_store: Arc<dyn AgentStateStore>) -> tirea_agentos::orchestrator::AgentOs {
+fn make_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::orchestrator::AgentOs {
     // Model name: "openai::tensorzero::function_name::agent_chat"
     //   - genai sees "openai::" prefix → selects OpenAI adapter (→ /v1/chat/completions)
     //   - genai strips the "openai::" namespace → sends "tensorzero::function_name::agent_chat"
@@ -234,7 +234,7 @@ async fn e2e_tensorzero_ai_sdk_sse() {
 
     // Thread persistence.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    let saved = storage.load_agent_state("tz-sdk-1").await.unwrap();
+    let saved = storage.load_thread("tz-sdk-1").await.unwrap();
     assert!(saved.is_some(), "thread not persisted");
 }
 
@@ -319,7 +319,7 @@ async fn e2e_tensorzero_ag_ui_sse() {
 
     // Thread persistence.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    let saved = storage.load_agent_state("tz-agui-1").await.unwrap();
+    let saved = storage.load_thread("tz-agui-1").await.unwrap();
     assert!(saved.is_some(), "thread not persisted");
 }
 
@@ -411,7 +411,7 @@ fn make_tz_client() -> genai::Client {
         .build()
 }
 
-fn make_tool_os(write_store: Arc<dyn AgentStateStore>) -> tirea_agentos::orchestrator::AgentOs {
+fn make_tool_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::orchestrator::AgentOs {
     let def = AgentDefinition {
         id: "calc".to_string(),
         model: "deepseek".to_string(),

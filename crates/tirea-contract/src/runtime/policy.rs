@@ -31,7 +31,7 @@ pub struct StopPolicyStats<'a> {
 /// Canonical stop-policy input: run context + runtime stats.
 pub struct StopPolicyInput<'a> {
     /// Current run context.
-    pub agent_state: &'a RunContext,
+    pub run_ctx: &'a RunContext,
     /// Runtime run stats.
     pub stats: StopPolicyStats<'a>,
 }

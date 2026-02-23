@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use tirea_agent_loop::contracts::storage::{AgentStateReader, AgentStateWriter};
+use tirea_agent_loop::contracts::storage::{ThreadReader, ThreadWriter};
 use tirea_agent_loop::contracts::thread::Message;
 use tirea_agent_loop::contracts::thread::Thread as ConversationAgentState;
 use tirea_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
@@ -720,7 +720,7 @@ async fn test_session_persistence() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load the session (simulating app restart)
     let loaded_thread = storage
-        .load_agent_state("persist-test")
+        .load_thread("persist-test")
         .await?
         .ok_or("Thread not found")?;
 
@@ -1190,7 +1190,7 @@ async fn test_long_conversation() -> Result<(), Box<dyn std::error::Error>> {
     let save_time = save_start.elapsed();
 
     let load_start = std::time::Instant::now();
-    let loaded = storage.load_agent_state("test-long-conv").await?.unwrap();
+    let loaded = storage.load_thread("test-long-conv").await?.unwrap();
     let load_time = load_start.elapsed();
 
     println!("\n[Storage Performance]");

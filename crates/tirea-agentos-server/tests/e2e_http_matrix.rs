@@ -5,7 +5,7 @@ use serde_json::json;
 use std::sync::Arc;
 use tirea_agentos::contracts::plugin::phase::BeforeInferenceContext;
 use tirea_agentos::contracts::plugin::AgentPlugin;
-use tirea_agentos::contracts::storage::AgentStateReader;
+use tirea_agentos::contracts::storage::ThreadReader;
 use tirea_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
 use tirea_agentos_server::http::{router, AppState};
 use tirea_store_adapters::MemoryStore;
@@ -162,7 +162,7 @@ async fn e2e_http_matrix_96() {
             );
 
             let ai_saved = store
-                .load_agent_state(&thread_id)
+                .load_thread(&thread_id)
                 .await
                 .expect("load should not fail")
                 .expect("thread should be persisted");
@@ -198,7 +198,7 @@ async fn e2e_http_matrix_96() {
             );
 
             let ag_saved = store
-                .load_agent_state(&format!("matrix-ag-{content_idx}-{run_mode_idx}"))
+                .load_thread(&format!("matrix-ag-{content_idx}-{run_mode_idx}"))
                 .await
                 .expect("load should not fail")
                 .expect("thread should be persisted");
@@ -262,7 +262,7 @@ async fn e2e_http_concurrent_48_all_persisted() {
 
     for i in 0..24usize {
         let ai = store
-            .load_agent_state(&format!("concurrent-ai-{i}"))
+            .load_thread(&format!("concurrent-ai-{i}"))
             .await
             .expect("load should not fail")
             .expect("ai thread should exist");
@@ -274,7 +274,7 @@ async fn e2e_http_concurrent_48_all_persisted() {
         );
 
         let ag = store
-            .load_agent_state(&format!("concurrent-ag-{i}"))
+            .load_thread(&format!("concurrent-ag-{i}"))
             .await
             .expect("load should not fail")
             .expect("ag thread should exist");
@@ -367,7 +367,7 @@ async fn e2e_http_ai_sdk_large_payload_roundtrip() {
     );
 
     let saved = store
-        .load_agent_state("large-payload-thread")
+        .load_thread("large-payload-thread")
         .await
         .expect("load should not fail")
         .expect("thread should be persisted");
@@ -437,7 +437,7 @@ async fn e2e_http_mixed_large_payload_concurrency_64() {
 
     for (thread_id, input) in results {
         let saved = store
-            .load_agent_state(&thread_id)
+            .load_thread(&thread_id)
             .await
             .expect("load should not fail")
             .unwrap_or_else(|| panic!("thread should exist: {thread_id}"));

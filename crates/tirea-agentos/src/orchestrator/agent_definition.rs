@@ -109,6 +109,7 @@ impl std::fmt::Debug for AgentDefinition {
 
 impl AgentDefinition {
     tirea_contract::impl_shared_agent_builder_methods!();
+    tirea_contract::impl_stop_condition_spec_builder_methods!();
 
     #[must_use]
     pub fn with_parallel_tools(mut self, parallel: bool) -> Self {

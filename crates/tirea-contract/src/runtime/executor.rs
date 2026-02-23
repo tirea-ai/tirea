@@ -61,8 +61,6 @@ pub enum ToolCallOutcome {
     Succeeded,
     /// Tool execution failed.
     Failed,
-    /// Tool execution was canceled/denied before completion.
-    Canceled,
 }
 
 impl ToolCallOutcome {

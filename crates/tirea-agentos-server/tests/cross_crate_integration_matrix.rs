@@ -3,7 +3,7 @@ use futures::future::ready;
 use std::sync::Arc;
 use tirea_agentos::contracts::plugin::phase::BeforeInferenceContext;
 use tirea_agentos::contracts::plugin::AgentPlugin;
-use tirea_agentos::contracts::storage::AgentStateReader;
+use tirea_agentos::contracts::storage::ThreadReader;
 use tirea_agentos::contracts::RunRequest;
 use tirea_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
 use tirea_agentos_server::transport::pump_encoded_stream;
@@ -113,7 +113,7 @@ async fn cross_crate_integration_matrix_72() {
                 );
 
                 let saved = store
-                    .load_agent_state(&resolved_thread_id)
+                    .load_thread(&resolved_thread_id)
                     .await
                     .expect("load should not fail")
                     .expect("thread must be persisted");

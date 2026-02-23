@@ -547,7 +547,7 @@ async fn test_tool_reminder_integration() {
 use std::sync::Arc;
 use tempfile::TempDir;
 use tirea_agentos::contracts::runtime::StreamResult;
-use tirea_agentos::contracts::storage::{AgentStateReader, AgentStateWriter};
+use tirea_agentos::contracts::storage::{ThreadReader, ThreadWriter};
 use tirea_agentos::contracts::thread::Message;
 use tirea_agentos::runtime::loop_runner::{execute_tools_with_plugins, tool_map, AgentConfig};
 use tirea_state::{path, Op, Patch, TrackedPatch};
@@ -639,11 +639,7 @@ async fn test_session_storage_roundtrip() {
     storage.save(&thread).await.unwrap();
 
     // Load session
-    let loaded = storage
-        .load_agent_state("storage-test")
-        .await
-        .unwrap()
-        .unwrap();
+    let loaded = storage.load_thread("storage-test").await.unwrap().unwrap();
 
     // Verify
     assert_eq!(loaded.id, "storage-test");
@@ -683,11 +679,7 @@ async fn test_file_storage_session_persistence() {
     assert!(path.exists());
 
     // Load and verify
-    let loaded = storage
-        .load_agent_state("persist-test")
-        .await
-        .unwrap()
-        .unwrap();
+    let loaded = storage.load_thread("persist-test").await.unwrap().unwrap();
     let state = loaded.rebuild_state().unwrap();
 
     assert_eq!(state["user"]["level"], 2);
@@ -716,11 +708,7 @@ async fn test_session_snapshot_and_continue() {
 
     // Save and load
     storage.save(&thread).await.unwrap();
-    let loaded = storage
-        .load_agent_state("snapshot-test")
-        .await
-        .unwrap()
-        .unwrap();
+    let loaded = storage.load_thread("snapshot-test").await.unwrap().unwrap();
 
     // Continue with more patches
     let thread = loaded.with_patch(TrackedPatch::new(
@@ -918,7 +906,7 @@ async fn test_concurrent_storage_operations() {
     for i in 0..100 {
         let storage = Arc::clone(&storage);
         let handle: tokio::task::JoinHandle<
-            Result<(), tirea_agentos::contracts::storage::AgentStateStoreError>,
+            Result<(), tirea_agentos::contracts::storage::ThreadStoreError>,
         > = tokio::spawn(async move {
             let thread =
                 Thread::with_initial_state(format!("concurrent-{}", i), json!({"index": i}))
@@ -1034,7 +1022,7 @@ async fn test_large_session_storage_roundtrip() {
 
     // Load
     let loaded = storage
-        .load_agent_state("large-storage-test")
+        .load_thread("large-storage-test")
         .await
         .unwrap()
         .unwrap();
@@ -1113,11 +1101,7 @@ async fn test_session_recovery_after_partial_save() {
     // "Crash" happens here - we don't save
 
     // Recovery: load from last checkpoint
-    let recovered = storage
-        .load_agent_state("recovery-test")
-        .await
-        .unwrap()
-        .unwrap();
+    let recovered = storage.load_thread("recovery-test").await.unwrap().unwrap();
 
     // Should have state from checkpoint (step 2, not step 3)
     let state = recovered.rebuild_state().unwrap();
@@ -1152,7 +1136,7 @@ async fn test_session_incremental_checkpoints() {
 
     // Verify final state
     let loaded = storage
-        .load_agent_state("checkpoint-test")
+        .load_thread("checkpoint-test")
         .await
         .unwrap()
         .unwrap();
@@ -1163,9 +1147,7 @@ async fn test_session_incremental_checkpoints() {
 
 #[tokio::test]
 async fn test_incremental_checkpoints_via_append() {
-    use tirea_agentos::contracts::storage::{
-        AgentStateSync, AgentStateWriter, VersionPrecondition,
-    };
+    use tirea_agentos::contracts::storage::{ThreadSync, ThreadWriter, VersionPrecondition};
     use tirea_agentos::contracts::{CheckpointReason, ThreadChangeSet};
 
     let storage = MemoryStore::new();
@@ -1206,13 +1188,13 @@ async fn test_incremental_checkpoints_via_append() {
     }
 
     // Verify final state matches
-    let head = AgentStateReader::load(&storage, "append-test")
+    let head = ThreadReader::load(&storage, "append-test")
         .await
         .unwrap()
         .unwrap();
     assert_eq!(head.version, 5);
-    assert_eq!(head.agent_state.message_count(), 50);
-    let state = head.agent_state.rebuild_state().unwrap();
+    assert_eq!(head.thread.message_count(), 50);
+    let state = head.thread.rebuild_state().unwrap();
     assert_eq!(state["progress"], 50);
 
     // Verify delta replay
@@ -1251,7 +1233,7 @@ async fn test_session_recovery_with_snapshot() {
 
     // Continue work
     let mut thread = storage
-        .load_agent_state("snapshot-recovery")
+        .load_thread("snapshot-recovery")
         .await
         .unwrap()
         .unwrap();
@@ -1266,7 +1248,7 @@ async fn test_session_recovery_with_snapshot() {
 
     // Load and verify
     let loaded = storage
-        .load_agent_state("snapshot-recovery")
+        .load_thread("snapshot-recovery")
         .await
         .unwrap()
         .unwrap();
@@ -1822,16 +1804,12 @@ async fn test_storage_error_recovery() {
     storage.save(&thread).await.unwrap();
 
     // Try to load non-existent session
-    let result = storage.load_agent_state("non-existent").await;
+    let result = storage.load_thread("non-existent").await;
     assert!(result.is_ok());
     assert!(result.unwrap().is_none());
 
     // Original session should still be loadable
-    let loaded = storage
-        .load_agent_state("valid-thread")
-        .await
-        .unwrap()
-        .unwrap();
+    let loaded = storage.load_thread("valid-thread").await.unwrap().unwrap();
     assert_eq!(loaded.message_count(), 1);
 }
 
@@ -1850,11 +1828,11 @@ async fn test_concurrent_errors_dont_corrupt_storage() {
     for i in 0..50 {
         let storage = Arc::clone(&storage);
         let handle: tokio::task::JoinHandle<
-            Result<Option<Thread>, tirea_agentos::contracts::storage::AgentStateStoreError>,
+            Result<Option<Thread>, tirea_agentos::contracts::storage::ThreadStoreError>,
         > = tokio::spawn(async move {
             if i % 3 == 0 {
                 // Load
-                storage.load_agent_state("concurrent-test").await
+                storage.load_thread("concurrent-test").await
             } else {
                 // Save (potentially conflicting)
                 let thread = ConversationAgentState::new("concurrent-test")
@@ -1869,7 +1847,7 @@ async fn test_concurrent_errors_dont_corrupt_storage() {
 
     // Storage should still be consistent
     let final_thread = storage
-        .load_agent_state("concurrent-test")
+        .load_thread("concurrent-test")
         .await
         .unwrap()
         .unwrap();
@@ -1990,11 +1968,11 @@ async fn test_file_storage_corrupted_json() {
     let storage = FileStore::new(temp_dir.path());
 
     // Try to load corrupted session
-    let result = storage.load_agent_state("corrupted").await;
+    let result = storage.load_thread("corrupted").await;
     assert!(result.is_err());
 
     match result {
-        Err(tirea_agentos::contracts::storage::AgentStateStoreError::Serialization(msg)) => {
+        Err(tirea_agentos::contracts::storage::ThreadStoreError::Serialization(msg)) => {
             assert!(msg.contains("expected") || msg.contains("key") || !msg.is_empty());
         }
         Err(other) => panic!("Expected Serialization error, got: {:?}", other),
@@ -2432,10 +2410,10 @@ async fn test_session_state_complex_operations() {
 #[test]
 fn test_storage_error_variants() {
     use std::io::{Error as IoError, ErrorKind};
-    use tirea_agentos::contracts::storage::AgentStateStoreError;
+    use tirea_agentos::contracts::storage::ThreadStoreError;
 
     // Test IO error variant
-    let io_error = AgentStateStoreError::from(IoError::new(
+    let io_error = ThreadStoreError::from(IoError::new(
         ErrorKind::PermissionDenied,
         "Permission denied",
     ));
@@ -2443,8 +2421,7 @@ fn test_storage_error_variants() {
     assert!(display.contains("IO error") || display.contains("Permission") || !display.is_empty());
 
     // Test Serialization error variant
-    let serialization_error =
-        AgentStateStoreError::Serialization("Invalid JSON at line 5".to_string());
+    let serialization_error = ThreadStoreError::Serialization("Invalid JSON at line 5".to_string());
     let display = serialization_error.to_string();
     assert!(
         display.contains("Serialization")
@@ -2453,7 +2430,7 @@ fn test_storage_error_variants() {
     );
 
     // Test NotFound error variant
-    let not_found = AgentStateStoreError::NotFound("thread-123".to_string());
+    let not_found = ThreadStoreError::NotFound("thread-123".to_string());
     let display = not_found.to_string();
     assert!(
         display.contains("not found")
@@ -3272,11 +3249,7 @@ async fn test_e2e_session_persistence_restore() {
     let state_before = thread.rebuild_state().unwrap();
 
     // Phase 2: "Restart" - load and continue
-    let mut loaded = storage
-        .load_agent_state("e2e-persist")
-        .await
-        .unwrap()
-        .unwrap();
+    let mut loaded = storage.load_thread("e2e-persist").await.unwrap().unwrap();
 
     // Verify state preserved
     let state_after_load = loaded.rebuild_state().unwrap();
@@ -3414,7 +3387,7 @@ async fn test_e2e_long_conversation() {
     // Storage should handle this efficiently
     let storage = MemoryStore::new();
     storage.save(&thread).await.unwrap();
-    let loaded = storage.load_agent_state("e2e-long").await.unwrap().unwrap();
+    let loaded = storage.load_thread("e2e-long").await.unwrap().unwrap();
     assert_eq!(loaded.message_count(), 200);
 }
 
@@ -3817,7 +3790,7 @@ async fn test_concurrent_session_modifications() {
             storage.save(&thread).await.unwrap();
 
             // Load and verify
-            let loaded = storage.load_agent_state(&thread_id).await.unwrap().unwrap();
+            let loaded = storage.load_thread(&thread_id).await.unwrap().unwrap();
             assert_eq!(loaded.message_count(), 5);
             assert_eq!(loaded.state["value"], i);
 
@@ -3856,15 +3829,11 @@ async fn test_concurrent_read_write_same_session() {
         let handle = tokio::spawn(async move {
             if i % 2 == 0 {
                 // Reader
-                let loaded = storage.load_agent_state("shared-thread").await.unwrap();
+                let loaded = storage.load_thread("shared-thread").await.unwrap();
                 loaded.is_some()
             } else {
                 // Writer (updates the thread)
-                let mut thread = storage
-                    .load_agent_state("shared-thread")
-                    .await
-                    .unwrap()
-                    .unwrap();
+                let mut thread = storage.load_thread("shared-thread").await.unwrap().unwrap();
                 thread = thread.with_message(Message::user(format!("Update {}", i)));
                 storage.save(&thread).await.unwrap();
                 true
@@ -3883,11 +3852,7 @@ async fn test_concurrent_read_write_same_session() {
     assert!(results.iter().all(|&r| r));
 
     // Final session should have messages
-    let final_thread = storage
-        .load_agent_state("shared-thread")
-        .await
-        .unwrap()
-        .unwrap();
+    let final_thread = storage.load_thread("shared-thread").await.unwrap().unwrap();
     assert!(final_thread.message_count() >= 1);
 }
 
@@ -3943,7 +3908,7 @@ async fn test_concurrent_tool_executions_isolated() {
 async fn test_storage_session_not_found() {
     let storage = MemoryStore::new();
 
-    let result = storage.load_agent_state("nonexistent").await.unwrap();
+    let result = storage.load_thread("nonexistent").await.unwrap();
     assert!(result.is_none());
 }
 
@@ -3973,7 +3938,7 @@ async fn test_storage_overwrite_session() {
 
     // Load and verify overwritten
     let loaded = storage
-        .load_agent_state("overwrite-test")
+        .load_thread("overwrite-test")
         .await
         .unwrap()
         .unwrap();
@@ -3992,7 +3957,7 @@ async fn test_file_storage_special_characters_in_id() {
 
     storage.save(&thread).await.unwrap();
     let loaded = storage
-        .load_agent_state("session_with-special.chars_123")
+        .load_thread("session_with-special.chars_123")
         .await
         .unwrap();
 
@@ -4027,7 +3992,7 @@ async fn test_file_storage_concurrent_writes_different_sessions() {
     // Verify all 20 sessions were persisted.
     for i in 0..20 {
         let loaded = storage
-            .load_agent_state(&format!("session_{}", i))
+            .load_thread(&format!("session_{}", i))
             .await
             .unwrap();
         assert!(loaded.is_some(), "session_{} should exist", i);
@@ -4060,7 +4025,7 @@ async fn test_file_storage_concurrent_writes_same_session() {
     }
 
     // The session file should be valid (no corruption).
-    let loaded = storage.load_agent_state("shared_session").await.unwrap();
+    let loaded = storage.load_thread("shared_session").await.unwrap();
     assert!(loaded.is_some(), "shared_session should exist");
     let thread = loaded.unwrap();
     assert_eq!(thread.message_count(), 1);
@@ -4105,11 +4070,7 @@ async fn test_file_storage_read_write_interleaved() {
     }
 
     // After all writes complete, a final read should succeed.
-    let final_thread = storage
-        .load_agent_state("interleaved")
-        .await
-        .unwrap()
-        .unwrap();
+    let final_thread = storage.load_thread("interleaved").await.unwrap().unwrap();
     assert!(final_thread.message_count() >= 1);
 }
 
@@ -4121,11 +4082,7 @@ async fn test_storage_empty_session() {
     let thread = ConversationAgentState::new("empty-thread");
     storage.save(&thread).await.unwrap();
 
-    let loaded = storage
-        .load_agent_state("empty-thread")
-        .await
-        .unwrap()
-        .unwrap();
+    let loaded = storage.load_thread("empty-thread").await.unwrap().unwrap();
     assert_eq!(loaded.message_count(), 0);
     assert_eq!(loaded.patch_count(), 0);
 }
@@ -4152,11 +4109,7 @@ async fn test_storage_large_state() {
 
     storage.save(&thread).await.unwrap();
 
-    let loaded = storage
-        .load_agent_state("large-state")
-        .await
-        .unwrap()
-        .unwrap();
+    let loaded = storage.load_thread("large-state").await.unwrap().unwrap();
     let state = loaded.rebuild_state().unwrap();
 
     assert!(state.as_object().unwrap().len() >= 1000);
@@ -4269,7 +4222,7 @@ async fn test_e2e_system_prompt_in_session() {
     storage.save(&thread).await.unwrap();
 
     let loaded = storage
-        .load_agent_state("system-prompt-test")
+        .load_thread("system-prompt-test")
         .await
         .unwrap()
         .unwrap();
@@ -4881,9 +4834,9 @@ impl AgentPlugin for TestFrontendToolPlugin {
             },
             ResponseRouting::ReplayOriginalTool,
         );
-        step.suspend(tirea_agentos::contracts::plugin::phase::SuspendTicket::from_invocation(
-            invocation,
-        ));
+        step.suspend(
+            tirea_agentos::contracts::plugin::phase::SuspendTicket::from_invocation(invocation),
+        );
     }
 }
 

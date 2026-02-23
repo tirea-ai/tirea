@@ -3,9 +3,8 @@ use async_trait::async_trait;
 use sqlx::{Postgres, QueryBuilder};
 use std::collections::HashSet;
 use tirea_contract::storage::{
-    AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
-    AgentStateStoreError, AgentStateWriter, Committed, MessagePage, MessageQuery,
-    MessageWithCursor, SortOrder, VersionPrecondition,
+    Committed, MessagePage, MessageQuery, MessageWithCursor, SortOrder, ThreadHead, ThreadListPage,
+    ThreadListQuery, ThreadReader, ThreadStoreError, ThreadWriter, VersionPrecondition,
 };
 use tirea_contract::{Message, Thread, ThreadChangeSet, Visibility};
 
@@ -43,7 +42,7 @@ impl PostgresStore {
     }
 
     /// Ensure the storage tables exist (idempotent).
-    pub async fn ensure_table(&self) -> Result<(), AgentStateStoreError> {
+    pub async fn ensure_table(&self) -> Result<(), ThreadStoreError> {
         let statements = vec![
             format!(
                 "CREATE TABLE IF NOT EXISTS {} (id TEXT PRIMARY KEY, data JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now())",
@@ -71,22 +70,22 @@ impl PostgresStore {
             sqlx::query(&sql)
                 .execute(&self.pool)
                 .await
-                .map_err(|e| AgentStateStoreError::Io(std::io::Error::other(e.to_string())))?;
+                .map_err(|e| ThreadStoreError::Io(std::io::Error::other(e.to_string())))?;
         }
         Ok(())
     }
 
-    fn sql_err(e: sqlx::Error) -> AgentStateStoreError {
-        AgentStateStoreError::Io(std::io::Error::other(e.to_string()))
+    fn sql_err(e: sqlx::Error) -> ThreadStoreError {
+        ThreadStoreError::Io(std::io::Error::other(e.to_string()))
     }
 }
 
 #[cfg(feature = "postgres")]
 #[async_trait]
-impl AgentStateWriter for PostgresStore {
-    async fn create(&self, thread: &Thread) -> Result<Committed, AgentStateStoreError> {
+impl ThreadWriter for PostgresStore {
+    async fn create(&self, thread: &Thread) -> Result<Committed, ThreadStoreError> {
         let mut v = serde_json::to_value(thread)
-            .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
+            .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
         if let Some(obj) = v.as_object_mut() {
             obj.insert("messages".to_string(), serde_json::Value::Array(Vec::new()));
             obj.insert("_version".to_string(), serde_json::Value::Number(0.into()));
@@ -105,7 +104,7 @@ impl AgentStateWriter for PostgresStore {
                 if e.to_string().contains("duplicate key")
                     || e.to_string().contains("unique constraint")
                 {
-                    AgentStateStoreError::AlreadyExists
+                    ThreadStoreError::AlreadyExists
                 } else {
                     Self::sql_err(e)
                 }
@@ -118,7 +117,7 @@ impl AgentStateWriter for PostgresStore {
         );
         for msg in &thread.messages {
             let data = serde_json::to_value(msg.as_ref())
-                .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
+                .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
             let message_id = msg.id.as_deref();
             let (run_id, step_index) = msg
                 .metadata
@@ -144,7 +143,7 @@ impl AgentStateWriter for PostgresStore {
         thread_id: &str,
         delta: &ThreadChangeSet,
         precondition: VersionPrecondition,
-    ) -> Result<Committed, AgentStateStoreError> {
+    ) -> Result<Committed, ThreadStoreError> {
         let mut tx = self.pool.begin().await.map_err(Self::sql_err)?;
 
         // Lock the row for atomic read-modify-write.
@@ -156,13 +155,13 @@ impl AgentStateWriter for PostgresStore {
             .map_err(Self::sql_err)?;
 
         let Some((mut v,)) = row else {
-            return Err(AgentStateStoreError::NotFound(thread_id.to_string()));
+            return Err(ThreadStoreError::NotFound(thread_id.to_string()));
         };
 
         let current_version = v.get("_version").and_then(|v| v.as_u64()).unwrap_or(0);
         if let VersionPrecondition::Exact(expected) = precondition {
             if current_version != expected {
-                return Err(AgentStateStoreError::VersionConflict {
+                return Err(ThreadStoreError::VersionConflict {
                     expected,
                     actual: current_version,
                 });
@@ -223,7 +222,7 @@ impl AgentStateWriter for PostgresStore {
             );
             for msg in &delta.messages {
                 let data = serde_json::to_value(msg.as_ref())
-                    .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
+                    .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
                 let message_id = msg.id.as_deref();
                 let (run_id, step_index) = msg
                     .metadata
@@ -248,7 +247,7 @@ impl AgentStateWriter for PostgresStore {
         })
     }
 
-    async fn delete(&self, thread_id: &str) -> Result<(), AgentStateStoreError> {
+    async fn delete(&self, thread_id: &str) -> Result<(), ThreadStoreError> {
         // CASCADE will delete messages automatically.
         let sql = format!("DELETE FROM {} WHERE id = $1", self.table);
         sqlx::query(&sql)
@@ -259,10 +258,10 @@ impl AgentStateWriter for PostgresStore {
         Ok(())
     }
 
-    async fn save(&self, thread: &Thread) -> Result<(), AgentStateStoreError> {
+    async fn save(&self, thread: &Thread) -> Result<(), ThreadStoreError> {
         // Serialize session skeleton (without messages).
         let mut v = serde_json::to_value(thread)
-            .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
+            .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
         if let Some(obj) = v.as_object_mut() {
             obj.insert("messages".to_string(), serde_json::Value::Array(Vec::new()));
         }
@@ -310,7 +309,7 @@ impl AgentStateWriter for PostgresStore {
             let mut rows = Vec::with_capacity(new_messages.len());
             for msg in &new_messages {
                 let data = serde_json::to_value(*msg)
-                    .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
+                    .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
                 let message_id = msg.id.clone();
                 let (run_id, step_index) = msg
                     .metadata
@@ -344,8 +343,8 @@ impl AgentStateWriter for PostgresStore {
 
 #[cfg(feature = "postgres")]
 #[async_trait]
-impl AgentStateReader for PostgresStore {
-    async fn load(&self, thread_id: &str) -> Result<Option<AgentStateHead>, AgentStateStoreError> {
+impl ThreadReader for PostgresStore {
+    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
         let sql = format!("SELECT data FROM {} WHERE id = $1", self.table);
         let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
             .bind(thread_id)
@@ -375,19 +374,16 @@ impl AgentStateReader for PostgresStore {
             obj.remove("_version");
         }
 
-        let agent_state: Thread = serde_json::from_value(v)
-            .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
-        Ok(Some(AgentStateHead {
-            agent_state,
-            version,
-        }))
+        let thread: Thread = serde_json::from_value(v)
+            .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
+        Ok(Some(ThreadHead { thread, version }))
     }
 
     async fn load_messages(
         &self,
         thread_id: &str,
         query: &MessageQuery,
-    ) -> Result<MessagePage, AgentStateStoreError> {
+    ) -> Result<MessagePage, ThreadStoreError> {
         // Check session exists.
         let exists_sql = format!("SELECT 1 FROM {} WHERE id = $1", self.table);
         let exists: Option<(i32,)> = sqlx::query_as(&exists_sql)
@@ -396,7 +392,7 @@ impl AgentStateReader for PostgresStore {
             .await
             .map_err(Self::sql_err)?;
         if exists.is_none() {
-            return Err(AgentStateStoreError::NotFound(thread_id.to_string()));
+            return Err(ThreadStoreError::NotFound(thread_id.to_string()));
         }
 
         let limit = query.limit.clamp(1, 200);
@@ -502,7 +498,7 @@ impl AgentStateReader for PostgresStore {
         })
     }
 
-    async fn message_count(&self, thread_id: &str) -> Result<usize, AgentStateStoreError> {
+    async fn message_count(&self, thread_id: &str) -> Result<usize, ThreadStoreError> {
         // Check session exists.
         let exists_sql = format!("SELECT 1 FROM {} WHERE id = $1", self.table);
         let exists: Option<(i32,)> = sqlx::query_as(&exists_sql)
@@ -511,7 +507,7 @@ impl AgentStateReader for PostgresStore {
             .await
             .map_err(Self::sql_err)?;
         if exists.is_none() {
-            return Err(AgentStateStoreError::NotFound(thread_id.to_string()));
+            return Err(ThreadStoreError::NotFound(thread_id.to_string()));
         }
 
         let sql = format!(
@@ -526,10 +522,10 @@ impl AgentStateReader for PostgresStore {
         Ok(row.0 as usize)
     }
 
-    async fn list_agent_states(
+    async fn list_threads(
         &self,
-        query: &AgentStateListQuery,
-    ) -> Result<AgentStateListPage, AgentStateStoreError> {
+        query: &ThreadListQuery,
+    ) -> Result<ThreadListPage, ThreadStoreError> {
         let limit = query.limit.clamp(1, 200);
         let fetch_limit = (limit + 1) as i64;
         let offset = query.offset as i64;
@@ -587,7 +583,7 @@ impl AgentStateReader for PostgresStore {
         let has_more = rows.len() > limit;
         let items = rows.into_iter().take(limit).collect();
 
-        Ok(AgentStateListPage {
+        Ok(ThreadListPage {
             items,
             total: total as usize,
             has_more,

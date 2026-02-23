@@ -4,7 +4,7 @@
 /// Builder methods for pure-data fields shared by both AgentConfig and AgentDefinition.
 ///
 /// Covers: id, model, system_prompt, max_rounds, chat_options, fallback_models,
-/// llm_retry_policy, stop_condition_specs.
+/// llm_retry_policy.
 #[macro_export]
 macro_rules! impl_shared_agent_builder_methods {
     () => {
@@ -66,7 +66,13 @@ macro_rules! impl_shared_agent_builder_methods {
             self.llm_retry_policy = policy;
             self
         }
+    };
+}
 
+/// Builder methods for declarative stop-condition specs.
+#[macro_export]
+macro_rules! impl_stop_condition_spec_builder_methods {
+    () => {
         /// Add a declarative stop policy spec.
         #[must_use]
         pub fn with_stop_condition_spec(mut self, spec: StopConditionSpec) -> Self {
@@ -151,8 +157,9 @@ pub use event::{
 
 // tool
 pub use tool::{
-    ActivityContext, Tool, ToolCallContext, ToolDescriptor, ToolError, ToolProgressState,
-    ToolRegistry, ToolRegistryError, ToolResult, ToolStatus, TOOL_PROGRESS_ACTIVITY_TYPE,
+    ActivityContext, Tool, ToolCallContext, ToolCallContextInit, ToolDescriptor, ToolError,
+    ToolProgressState, ToolRegistry, ToolRegistryError, ToolResult, ToolStatus,
+    TOOL_PROGRESS_ACTIVITY_TYPE,
 };
 
 // plugin
@@ -171,9 +178,9 @@ pub use runtime::{
 
 // storage
 pub use storage::{
-    paginate_in_memory, AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
-    AgentStateStore, AgentStateStoreError, AgentStateSync, AgentStateWriter, Committed,
-    MessagePage, MessageQuery, MessageWithCursor, SortOrder, VersionPrecondition,
+    paginate_in_memory, Committed, MessagePage, MessageQuery, MessageWithCursor, SortOrder,
+    ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore, ThreadStoreError,
+    ThreadSync, ThreadWriter, VersionPrecondition,
 };
 
 // protocol

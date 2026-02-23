@@ -3,9 +3,8 @@
 //! These types define durable runtime control state for cross-step and cross-run
 //! flow control (suspended tool calls, resume decisions, and inference error envelope).
 
-use crate::event::suspension::{
-    FrontendToolInvocation, InvocationOrigin, ResponseRouting, Suspension, SuspensionResponse,
-};
+use crate::event::suspension::{FrontendToolInvocation, Suspension, SuspensionResponse};
+use crate::runtime::state_paths::SUSPENDED_TOOL_CALLS_STATE_PATH;
 use crate::thread::Thread;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -26,52 +25,13 @@ pub struct InferenceError {
 ///
 /// The core loop only stores `call_id` + generic `Suspension`; it does not
 /// interpret the semantics (policy checks, frontend tools, user confirmation).
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SuspendedCall {
     pub call_id: String,
     pub tool_name: String,
     pub suspension: Suspension,
     /// Frontend invocation metadata for routing decisions.
     pub invocation: FrontendToolInvocation,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct SuspendedCallWire {
-    call_id: String,
-    tool_name: String,
-    suspension: Suspension,
-    #[serde(default)]
-    invocation: Option<FrontendToolInvocation>,
-}
-
-impl<'de> Deserialize<'de> for SuspendedCall {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let wire = SuspendedCallWire::deserialize(deserializer)?;
-        let invocation = wire.invocation.unwrap_or_else(|| {
-            // Upgrade legacy suspended-call entries that predate first-class
-            // frontend invocation metadata.
-            FrontendToolInvocation::new(
-                wire.call_id.clone(),
-                wire.tool_name.clone(),
-                wire.suspension.parameters.clone(),
-                InvocationOrigin::ToolCallIntercepted {
-                    backend_call_id: wire.call_id.clone(),
-                    backend_tool_name: wire.tool_name.clone(),
-                    backend_arguments: wire.suspension.parameters.clone(),
-                },
-                ResponseRouting::ReplayOriginalTool,
-            )
-        });
-        Ok(Self {
-            call_id: wire.call_id,
-            tool_name: wire.tool_name,
-            suspension: wire.suspension,
-            invocation,
-        })
-    }
 }
 
 /// Durable suspended tool-call map persisted at `state["__suspended_tool_calls"]`.
@@ -195,6 +155,35 @@ pub struct InferenceErrorState {
     pub error: Option<InferenceError>,
 }
 
+/// Parse suspended tool calls from a rebuilt state snapshot.
+pub fn suspended_calls_from_state(state: &Value) -> HashMap<String, SuspendedCall> {
+    state
+        .get(SUSPENDED_TOOL_CALLS_STATE_PATH)
+        .and_then(|value| value.get("calls"))
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
+}
+
+fn first_suspended_call(calls: &HashMap<String, SuspendedCall>) -> Option<&SuspendedCall> {
+    calls
+        .iter()
+        .min_by(|(left, _), (right, _)| left.cmp(right))
+        .map(|(_, call)| call)
+}
+
+/// Read the first suspension from suspended call state.
+pub fn first_suspension_from_state(state: &Value) -> Option<Suspension> {
+    let calls = suspended_calls_from_state(state);
+    first_suspended_call(&calls).map(|call| call.suspension.clone())
+}
+
+/// Read the first suspended invocation from suspended call state.
+pub fn first_suspended_invocation_from_state(state: &Value) -> Option<FrontendToolInvocation> {
+    let calls = suspended_calls_from_state(state);
+    first_suspended_call(&calls).map(|call| call.invocation.clone())
+}
+
 /// Helpers for reading suspended-call state from `Thread`.
 pub trait SuspendedCallsExt {
     /// Read the first suspension from durable control state.
@@ -203,18 +192,9 @@ pub trait SuspendedCallsExt {
 
 impl SuspendedCallsExt for Thread {
     fn first_suspension(&self) -> Option<Suspension> {
-        self.rebuild_state().ok().and_then(|state| {
-            let calls = state
-                .get(SuspendedToolCallsState::PATH)
-                .and_then(|v| v.get("calls"))
-                .cloned()
-                .and_then(|v| serde_json::from_value::<HashMap<String, SuspendedCall>>(v).ok())
-                .unwrap_or_default();
-            calls
-                .iter()
-                .min_by(|(left, _), (right, _)| left.cmp(right))
-                .map(|(_, call)| call.suspension.clone())
-        })
+        self.rebuild_state()
+            .ok()
+            .and_then(|state| first_suspension_from_state(&state))
     }
 }
 

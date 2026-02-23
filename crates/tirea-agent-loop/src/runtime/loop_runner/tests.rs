@@ -400,9 +400,7 @@ fn set_single_suspended_call(
     invocation: Option<crate::contracts::FrontendToolInvocation>,
 ) -> Result<tirea_state::TrackedPatch, AgentLoopError> {
     let invocation = invocation.unwrap_or_else(|| test_frontend_invocation(&suspension));
-    let call_id = invocation
-        .call_id
-        .clone();
+    let call_id = invocation.call_id.clone();
     let tool_name = invocation.tool_name.clone();
     set_agent_suspended_calls(
         state,
@@ -840,11 +838,11 @@ fn test_agent_loop_error_termination_reason_mapping() {
         suspended_call: Box::new({
             let suspension = Suspension::new("int_1", "confirm");
             SuspendedCall {
-            call_id: "call_1".to_string(),
-            tool_name: "confirm_tool".to_string(),
-            invocation: test_frontend_invocation(&suspension),
-            suspension,
-        }
+                call_id: "call_1".to_string(),
+                tool_name: "confirm_tool".to_string(),
+                invocation: test_frontend_invocation(&suspension),
+                suspension,
+            }
         }),
     };
     assert_eq!(pending.termination_reason(), TerminationReason::Suspended);
@@ -2276,23 +2274,24 @@ fn test_apply_tool_results_suspends_all_interactions() {
     first.suspended_call = Some({
         let suspension = Suspension::new("confirm_1", "confirm").with_message("approve first tool");
         crate::contracts::SuspendedCall {
-        call_id: "call_1".to_string(),
-        tool_name: "test_tool".to_string(),
-        invocation: test_frontend_invocation(&suspension),
-        suspension,
-    }
+            call_id: "call_1".to_string(),
+            tool_name: "test_tool".to_string(),
+            invocation: test_frontend_invocation(&suspension),
+            suspension,
+        }
     });
 
     let mut second = tool_execution_result("call_2", None);
     second.outcome = crate::contracts::ToolCallOutcome::Suspended;
     second.suspended_call = Some({
-        let suspension = Suspension::new("confirm_2", "confirm").with_message("approve second tool");
+        let suspension =
+            Suspension::new("confirm_2", "confirm").with_message("approve second tool");
         crate::contracts::SuspendedCall {
-        call_id: "call_2".to_string(),
-        tool_name: "test_tool".to_string(),
-        invocation: test_frontend_invocation(&suspension),
-        suspension,
-    }
+            call_id: "call_2".to_string(),
+            tool_name: "test_tool".to_string(),
+            invocation: test_frontend_invocation(&suspension),
+            suspension,
+        }
     });
 
     let applied = apply_tool_results_to_session(&mut run_ctx, &[first, second], None, false)
@@ -2675,6 +2674,20 @@ fn test_execute_tools_with_config_denied_response_is_applied_via_run_start_resum
                                 "id": "call_1",
                                 "action": "tool:echo",
                                 "parameters": { "source": "permission" }
+                            },
+                            "invocation": {
+                                "call_id": "call_1",
+                                "tool_name": "echo",
+                                "arguments": { "source": "permission" },
+                                "origin": {
+                                    "type": "tool_call_intercepted",
+                                    "backend_call_id": "call_1",
+                                    "backend_tool_name": "echo",
+                                    "backend_arguments": { "source": "permission" }
+                                },
+                                "routing": {
+                                    "strategy": "replay_original_tool"
+                                }
                             }
                         }
                     }
@@ -2857,20 +2870,20 @@ fn test_set_agent_suspended_calls_compat_view_uses_smallest_call_id() {
             {
                 let suspension = Suspension::new("int_b", "confirm").with_message("b");
                 SuspendedCall {
-                call_id: "call_b".to_string(),
-                tool_name: "echo".to_string(),
-                invocation: test_frontend_invocation(&suspension),
-                suspension,
-            }
+                    call_id: "call_b".to_string(),
+                    tool_name: "echo".to_string(),
+                    invocation: test_frontend_invocation(&suspension),
+                    suspension,
+                }
             },
             {
                 let suspension = Suspension::new("int_a", "confirm").with_message("a");
                 SuspendedCall {
-                call_id: "call_a".to_string(),
-                tool_name: "echo".to_string(),
-                invocation: test_frontend_invocation(&suspension),
-                suspension,
-            }
+                    call_id: "call_a".to_string(),
+                    tool_name: "echo".to_string(),
+                    invocation: test_frontend_invocation(&suspension),
+                    suspension,
+                }
             },
         ],
     )
@@ -3073,6 +3086,20 @@ async fn test_stream_run_start_outbox_resolution_emits_after_run_start() {
                             "id": "resolution_1",
                             "action": "confirm",
                             "parameters": {}
+                        },
+                        "invocation": {
+                            "call_id": "call_1",
+                            "tool_name": "echo",
+                            "arguments": {},
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "call_1",
+                                "backend_tool_name": "echo",
+                                "backend_arguments": {}
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
                         }
                     }
                 }
@@ -3200,6 +3227,20 @@ async fn test_stream_run_action_with_suspended_only_state_emits_pending_events()
                             "action": "recover_agent_run",
                             "message": "resume?",
                             "parameters": {}
+                        },
+                        "invocation": {
+                            "call_id": "recover_1",
+                            "tool_name": "recover_agent_run",
+                            "arguments": {},
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "recover_1",
+                                "backend_tool_name": "recover_agent_run",
+                                "backend_arguments": {}
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
                         }
                     }
                 }
@@ -4297,6 +4338,20 @@ async fn test_run_loop_terminate_plugin_requested_with_suspended_only_state_retu
                             "action": "recover_agent_run",
                             "message": "resume?",
                             "parameters": {}
+                        },
+                        "invocation": {
+                            "call_id": "recover_1",
+                            "tool_name": "recover_agent_run",
+                            "arguments": {},
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "recover_1",
+                                "backend_tool_name": "recover_agent_run",
+                                "backend_arguments": {}
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
                         }
                     }
                 }
@@ -10299,6 +10354,20 @@ async fn test_nonstream_completed_tool_round_does_not_clear_existing_suspended_c
                             "action": "confirm",
                             "message": "still waiting",
                             "parameters": {}
+                        },
+                        "invocation": {
+                            "call_id": "leftover_confirm",
+                            "tool_name": "echo",
+                            "arguments": {},
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "leftover_confirm",
+                                "backend_tool_name": "echo",
+                                "backend_arguments": {}
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
                         }
                     }
                 }
@@ -10345,6 +10414,20 @@ async fn test_stream_completed_tool_round_does_not_clear_existing_suspended_call
                             "action": "confirm",
                             "message": "still waiting",
                             "parameters": {}
+                        },
+                        "invocation": {
+                            "call_id": "leftover_confirm",
+                            "tool_name": "echo",
+                            "arguments": {},
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "leftover_confirm",
+                                "backend_tool_name": "echo",
+                                "backend_arguments": {}
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
                         }
                     }
                 }
@@ -10822,6 +10905,20 @@ async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
                             "action": "confirm",
                             "message": "still waiting",
                             "parameters": {}
+                        },
+                        "invocation": {
+                            "call_id": "call_keep",
+                            "tool_name": "echo",
+                            "arguments": {},
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "call_keep",
+                                "backend_tool_name": "echo",
+                                "backend_arguments": {}
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
                         }
                     }
                 }
@@ -10900,6 +10997,20 @@ async fn test_stream_decision_channel_ignores_unknown_target_id() {
                             "action": "confirm",
                             "message": "still waiting",
                             "parameters": {}
+                        },
+                        "invocation": {
+                            "call_id": "call_keep",
+                            "tool_name": "echo",
+                            "arguments": {},
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "call_keep",
+                                "backend_tool_name": "echo",
+                                "backend_arguments": {}
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
                         }
                     }
                 }
@@ -11130,6 +11241,20 @@ async fn test_run_loop_decision_channel_cancel_emits_single_tool_result_message(
                         "suspension": {
                             "id": "call_pending",
                             "action": "tool:echo"
+                        },
+                        "invocation": {
+                            "call_id": "call_pending",
+                            "tool_name": "echo",
+                            "arguments": { "message": "cancel-run" },
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "call_pending",
+                                "backend_tool_name": "echo",
+                                "backend_arguments": { "message": "cancel-run" }
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
                         }
                     }
                 }
@@ -11657,7 +11782,19 @@ async fn test_stream_decision_channel_drains_while_inference_stream_is_running()
                 "call_pending": {
                     "call_id": "call_pending",
                     "tool_name": "echo",
-                    "suspension": suspended_interaction.clone()
+                    "suspension": suspended_interaction.clone(),
+                    "invocation": {
+                        "call_id": "call_pending",
+                        "tool_name": "echo",
+                        "arguments": { "message": "approved during stream" },
+                        "origin": {
+                            "type": "tool_call_intercepted",
+                            "backend_call_id": "call_pending",
+                            "backend_tool_name": "echo",
+                            "backend_arguments": { "message": "approved during stream" }
+                        },
+                        "routing": { "strategy": "replay_original_tool" }
+                    }
                 }
             }
         }

@@ -7,9 +7,7 @@ use futures::Stream;
 use genai::Client;
 
 use crate::contracts::plugin::AgentPlugin;
-use crate::contracts::storage::{
-    AgentStateHead, AgentStateStore, AgentStateStoreError, VersionPrecondition,
-};
+use crate::contracts::storage::{ThreadHead, ThreadStore, ThreadStoreError, VersionPrecondition};
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::Message;
 use crate::contracts::thread::Thread;
@@ -56,11 +54,11 @@ pub use crate::runtime::loop_runner::ResolvedRun;
 
 #[derive(Clone)]
 struct AgentStateStoreStateCommitter {
-    agent_state_store: Arc<dyn AgentStateStore>,
+    agent_state_store: Arc<dyn ThreadStore>,
 }
 
 impl AgentStateStoreStateCommitter {
-    fn new(agent_state_store: Arc<dyn AgentStateStore>) -> Self {
+    fn new(agent_state_store: Arc<dyn ThreadStore>) -> Self {
         Self { agent_state_store }
     }
 }
@@ -267,7 +265,7 @@ pub enum AgentOsRunError {
     Loop(#[from] AgentLoopError),
 
     #[error("agent state store error: {0}")]
-    AgentStateStore(#[from] AgentStateStoreError),
+    ThreadStore(#[from] ThreadStoreError),
 
     #[error("agent state store not configured")]
     AgentStateStoreNotConfigured,
@@ -347,7 +345,7 @@ pub struct AgentOs {
     skills_config: SkillsConfig,
     agent_runs: Arc<AgentRunManager>,
     agent_tools: AgentToolsConfig,
-    agent_state_store: Option<Arc<dyn AgentStateStore>>,
+    agent_state_store: Option<Arc<dyn ThreadStore>>,
 }
 
 #[derive(Clone)]
@@ -371,5 +369,5 @@ pub struct AgentOsBuilder {
     skills_refresh_interval: Option<Duration>,
     skills_config: SkillsConfig,
     agent_tools: AgentToolsConfig,
-    agent_state_store: Option<Arc<dyn AgentStateStore>>,
+    agent_state_store: Option<Arc<dyn ThreadStore>>,
 }
