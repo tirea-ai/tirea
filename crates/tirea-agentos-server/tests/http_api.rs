@@ -1737,7 +1737,7 @@ fn pending_permission_frontend_thread(id: &str, payload: &str) -> Thread {
                     "call_1": {
                         "call_id": "call_1",
                         "tool_name": "echo",
-                        "interaction": {
+                        "suspension": {
                             "id": "fc_perm_1",
                             "action": "tool:PermissionConfirm",
                             "parameters": {
@@ -1745,7 +1745,7 @@ fn pending_permission_frontend_thread(id: &str, payload: &str) -> Thread {
                                 "tool_args": { "message": payload }
                             }
                         },
-                        "frontend_invocation": {
+                        "invocation": {
                             "call_id": "fc_perm_1",
                             "tool_name": "PermissionConfirm",
                             "arguments": {
@@ -1792,14 +1792,14 @@ fn pending_ask_frontend_thread(id: &str, question: &str) -> Thread {
                     "ask_call_1": {
                         "call_id": "ask_call_1",
                         "tool_name": "askUserQuestion",
-                        "interaction": {
+                        "suspension": {
                             "id": "ask_call_1",
                             "action": "tool:askUserQuestion",
                             "parameters": {
                                 "question": question
                             }
                         },
-                        "frontend_invocation": {
+                        "invocation": {
                             "call_id": "ask_call_1",
                             "tool_name": "askUserQuestion",
                             "arguments": {
@@ -2182,7 +2182,7 @@ async fn test_ai_sdk_tool_approval_response_part_denial_emits_output_denied() {
     assert_eq!(status, StatusCode::OK);
     assert!(
         body.contains(r#""type":"tool-output-denied""#)
-            && body.contains(r#""toolCallId":"fc_perm_1""#),
+            && body.contains(r#""toolCallId":"call_1""#),
         "denied response-part resume should emit tool-output-denied: {body}"
     );
 

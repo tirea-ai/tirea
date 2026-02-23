@@ -123,8 +123,8 @@ fn interaction_responses_filter_to_pending_ids_when_state_exists() {
                     "call_pending": {
                         "call_id": "call_pending",
                         "tool_name": "confirm",
-                        "interaction": { "id": "call_pending", "action": "confirm" },
-                        "frontend_invocation": { "call_id": "call_pending" }
+                        "suspension": { "id": "call_pending", "action": "confirm" },
+                        "invocation": { "call_id": "call_pending" }
                     }
                 }
             }

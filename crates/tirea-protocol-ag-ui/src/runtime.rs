@@ -372,11 +372,11 @@ mod tests {
                         "call_copy_1": {
                             "call_id": "call_copy_1",
                             "tool_name": "copyToClipboard",
-                            "interaction": {
+                            "suspension": {
                                 "id": "call_copy_1",
                                 "action": "tool:copyToClipboard"
                             },
-                            "frontend_invocation": {
+                            "invocation": {
                                 "call_id": "call_copy_1",
                                 "tool_name": "copyToClipboard",
                                 "routing": { "strategy": "use_as_tool_result" },

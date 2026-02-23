@@ -375,14 +375,14 @@ impl RunAgentInput {
         {
             for call in calls.values() {
                 if let Some(id) = call
-                    .get("frontend_invocation")
+                    .get("invocation")
                     .and_then(|v| v.get("call_id"))
                     .and_then(Value::as_str)
                 {
                     ids.insert(id.to_string());
                 }
                 if let Some(id) = call
-                    .get("interaction")
+                    .get("suspension")
                     .and_then(|v| v.get("id"))
                     .and_then(Value::as_str)
                 {
