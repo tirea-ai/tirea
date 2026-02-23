@@ -394,7 +394,9 @@ commit-msg:
 pre-push:
   commands:
     validate:
-      run: pnpm run validate
+      run: |
+        scripts/check-rustfmt-changed.sh
+        cargo clippy --workspace --lib --bins --examples -- -D clippy::correctness
 
 post-rewrite:
   commands:
