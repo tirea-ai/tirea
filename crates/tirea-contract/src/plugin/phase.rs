@@ -643,8 +643,8 @@ impl<'s, 'a> BeforeInferenceContext<'s, 'a> {
         self.step.include_only(tool_ids);
     }
 
-    /// Skip current inference.
-    pub fn skip_inference(&mut self) {
+    /// Terminate current run as plugin-requested before inference.
+    pub fn terminate_plugin_requested(&mut self) {
         self.step
             .set_run_action(RunAction::Terminate(TerminationReason::PluginRequested));
     }

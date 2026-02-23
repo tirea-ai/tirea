@@ -158,7 +158,7 @@ impl AgentPlugin for SkipWithRunEndPatchPlugin {
     }
 
     async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-        step.skip_inference();
+        step.terminate_plugin_requested();
     }
 
     async fn run_end(&self, step: &mut RunEndContext<'_, '_>) {
@@ -896,7 +896,7 @@ async fn run_and_run_stream_work_without_llm_when_skip_inference() {
         }
 
         async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-            step.skip_inference();
+            step.terminate_plugin_requested();
         }
     }
 
@@ -1444,7 +1444,7 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
             "skip"
         }
         async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-            step.skip_inference();
+            step.terminate_plugin_requested();
         }
     }
 
@@ -1505,7 +1505,7 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
             "skip"
         }
         async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-            step.skip_inference();
+            step.terminate_plugin_requested();
         }
     }
 
@@ -1557,7 +1557,7 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
             "skip"
         }
         async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-            step.skip_inference();
+            step.terminate_plugin_requested();
         }
     }
 
@@ -1612,7 +1612,7 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
             "skip"
         }
         async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-            step.skip_inference();
+            step.terminate_plugin_requested();
         }
     }
 
@@ -1681,7 +1681,7 @@ async fn execute_prepared_runs_stream() {
             "skip"
         }
         async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-            step.skip_inference();
+            step.terminate_plugin_requested();
         }
     }
 
@@ -1742,7 +1742,7 @@ impl AgentPlugin for DecisionSkipPlugin {
     }
 
     async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-        step.skip_inference();
+        step.terminate_plugin_requested();
     }
 }
 

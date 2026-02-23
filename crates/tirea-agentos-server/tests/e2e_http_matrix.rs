@@ -20,7 +20,7 @@ impl AgentPlugin for SkipInferencePlugin {
     }
 
     async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-        step.skip_inference();
+        step.terminate_plugin_requested();
     }
 }
 

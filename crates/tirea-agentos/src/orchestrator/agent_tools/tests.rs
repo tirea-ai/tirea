@@ -306,7 +306,7 @@ impl AgentPlugin for SlowSkipPlugin {
 
     async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
         tokio::time::sleep(Duration::from_millis(120)).await;
-        step.skip_inference();
+        step.terminate_plugin_requested();
     }
 }
 
