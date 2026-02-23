@@ -930,6 +930,62 @@ async fn run_and_run_stream_work_without_llm_when_skip_inference() {
     assert!(matches!(ev, AgentEvent::RunFinish { .. }));
 }
 
+#[tokio::test]
+async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_conditions_to_loop() {
+    use crate::contracts::runtime::StopPolicyInput;
+    use crate::contracts::StopReason;
+    use futures::StreamExt;
+
+    #[derive(Debug)]
+    struct AlwaysStopPolicy;
+
+    impl crate::contracts::runtime::StopPolicy for AlwaysStopPolicy {
+        fn id(&self) -> &str {
+            "always_stop"
+        }
+
+        fn evaluate(&self, _input: &StopPolicyInput<'_>) -> Option<StopReason> {
+            Some(StopReason::Custom("always".to_string()))
+        }
+    }
+
+    let os = AgentOs::builder()
+        .with_stop_policy("always", Arc::new(AlwaysStopPolicy))
+        .with_agent(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini").with_stop_condition_id("always"),
+        )
+        .with_agent_state_store(Arc::new(tirea_store_adapters::MemoryStore::new()))
+        .build()
+        .unwrap();
+
+    let run = os
+        .run_stream(RunRequest {
+            agent_id: "a1".to_string(),
+            thread_id: Some("stop-plugin-thread".to_string()),
+            run_id: None,
+            parent_run_id: None,
+            resource_id: None,
+            state: Some(json!({})),
+            messages: vec![crate::contracts::thread::Message::user("go")],
+            initial_decisions: vec![],
+        })
+        .await
+        .unwrap();
+
+    let events: Vec<_> = run.events.collect().await;
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::RunFinish {
+                termination: TerminationReason::Stopped(StopReason::Custom(reason)),
+                ..
+            } if reason == "always"
+        )),
+        "stop_policy plugin should terminate run with configured stop reason: {events:?}"
+    );
+}
+
 #[test]
 fn resolve_sets_runtime_caller_agent_id() {
     let os = AgentOs::builder()
@@ -2760,6 +2816,16 @@ async fn resolve_wires_stop_conditions_from_registry() {
         .unwrap();
 
     let resolved = os.resolve("a1").unwrap();
-    assert_eq!(resolved.config.stop_conditions.len(), 1);
-    assert_eq!(resolved.config.stop_conditions[0].id(), "test_stop");
+    assert!(
+        resolved.config.stop_conditions.is_empty(),
+        "stop policies should not be passed into loop config"
+    );
+    assert!(
+        resolved
+            .config
+            .plugins
+            .iter()
+            .any(|plugin| plugin.id() == "stop_policy"),
+        "stop policies should be handled by stop_policy plugin"
+    );
 }

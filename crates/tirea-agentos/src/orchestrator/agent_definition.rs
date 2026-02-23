@@ -1,4 +1,4 @@
-use crate::contracts::runtime::{StopPolicy, ToolExecutor};
+use crate::contracts::runtime::ToolExecutor;
 use crate::contracts::StopConditionSpec;
 use crate::runtime::loop_runner::{
     AgentConfig, LlmRetryPolicy, ParallelToolExecutor, SequentialToolExecutor,
@@ -176,11 +176,10 @@ impl AgentDefinition {
         self
     }
 
-    /// Convert into loop-facing config with the given resolved plugins and stop conditions.
+    /// Convert into loop-facing config with the given resolved plugins.
     pub(crate) fn into_loop_config(
         self,
         plugins: Vec<Arc<dyn crate::contracts::plugin::AgentPlugin>>,
-        stop_conditions: Vec<Arc<dyn StopPolicy>>,
     ) -> AgentConfig {
         let tool_executor: Arc<dyn ToolExecutor> = if self.parallel_tools {
             Arc::new(ParallelToolExecutor)
@@ -197,8 +196,8 @@ impl AgentDefinition {
             fallback_models: self.fallback_models,
             llm_retry_policy: self.llm_retry_policy,
             plugins,
-            stop_conditions,
-            stop_condition_specs: self.stop_condition_specs,
+            stop_conditions: Vec::new(),
+            stop_condition_specs: Vec::new(),
             step_tool_provider: None,
             llm_executor: None,
         }

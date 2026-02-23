@@ -31,6 +31,7 @@ mod builder;
 mod composition;
 mod policy;
 mod run;
+mod stop_policy_plugin;
 mod wiring;
 
 #[cfg(test)]

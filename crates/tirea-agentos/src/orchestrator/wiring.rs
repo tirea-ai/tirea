@@ -2,6 +2,7 @@ use super::agent_tools::{
     AGENT_RECOVERY_PLUGIN_ID, AGENT_TOOLS_PLUGIN_ID, SCOPE_CALLER_AGENT_ID_KEY,
 };
 use super::policy::{filter_tools_in_place, set_scope_filters_from_definition_if_absent};
+use super::stop_policy_plugin::{StopPolicyPlugin, STOP_POLICY_PLUGIN_ID};
 use super::*;
 use crate::extensions::skills::{
     InMemorySkillRegistry, Skill, SkillRegistry, SKILLS_BUNDLE_ID, SKILLS_DISCOVERY_PLUGIN_ID,
@@ -71,6 +72,7 @@ impl AgentOs {
             SKILLS_RUNTIME_PLUGIN_ID,
             AGENT_TOOLS_PLUGIN_ID,
             AGENT_RECOVERY_PLUGIN_ID,
+            STOP_POLICY_PLUGIN_ID,
         ]
     }
 
@@ -443,7 +445,7 @@ impl AgentOs {
             frozen_skills,
         )?);
         let system_plugins = self.merge_wiring_bundles(&system_bundles, tools)?;
-        let all_plugins = ResolvedPlugins::default()
+        let mut all_plugins = ResolvedPlugins::default()
             .with_global(system_plugins)
             .with_agent_default(resolved_plugins)
             .into_plugins()?;
@@ -451,8 +453,14 @@ impl AgentOs {
         // Resolve stop conditions from stop_condition_ids
         let stop_conditions =
             self.resolve_stop_condition_id_list(&definition.stop_condition_ids)?;
+        let stop_plugin =
+            StopPolicyPlugin::new(stop_conditions, definition.stop_condition_specs.clone());
+        if !stop_plugin.is_empty() {
+            all_plugins.push(Arc::new(stop_plugin));
+            AgentOs::ensure_unique_plugin_ids(&all_plugins)?;
+        }
 
-        Ok(definition.into_loop_config(all_plugins, stop_conditions))
+        Ok(definition.into_loop_config(all_plugins))
     }
 
     fn resolve_model(&self, cfg: &mut AgentConfig) -> Result<(), AgentOsResolveError> {
@@ -490,14 +498,21 @@ impl AgentOs {
         let skills_bundles =
             self.build_skills_wiring_bundles(&resolved_plugins, self.freeze_skill_registry())?;
         let skills_plugins = self.merge_wiring_bundles(&skills_bundles, tools)?;
-        let all_plugins = ResolvedPlugins::default()
+        let mut all_plugins = ResolvedPlugins::default()
             .with_global(skills_plugins)
             .with_agent_default(resolved_plugins)
             .into_plugins()?;
 
         let stop_conditions =
             self.resolve_stop_condition_id_list(&definition.stop_condition_ids)?;
-        Ok(definition.into_loop_config(all_plugins, stop_conditions))
+        let stop_plugin =
+            StopPolicyPlugin::new(stop_conditions, definition.stop_condition_specs.clone());
+        if !stop_plugin.is_empty() {
+            all_plugins.push(Arc::new(stop_plugin));
+            AgentOs::ensure_unique_plugin_ids(&all_plugins)?;
+        }
+
+        Ok(definition.into_loop_config(all_plugins))
     }
 
     /// Check whether an agent with the given ID is registered.
