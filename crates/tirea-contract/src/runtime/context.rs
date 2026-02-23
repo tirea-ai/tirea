@@ -91,14 +91,14 @@ impl RunContext {
     }
 
     // =========================================================================
-    // Pending interaction
+    // Suspended calls
     // =========================================================================
 
-    /// Read pending interaction from durable control state.
+    /// Read the first suspended interaction from durable control state.
     ///
     /// This rebuilds state and returns the interaction from the smallest
     /// suspended call ID.
-    pub fn pending_interaction(&self) -> Option<Interaction> {
+    pub fn first_suspended_interaction(&self) -> Option<Interaction> {
         let mut calls: Vec<SuspendedCall> = self.suspended_calls().into_values().collect();
         calls.sort_by(|left, right| left.call_id.cmp(&right.call_id));
         calls.into_iter().next().map(|call| call.interaction)
@@ -120,8 +120,8 @@ impl RunContext {
             .unwrap_or_default()
     }
 
-    /// Read pending frontend invocation from durable control state.
-    pub fn pending_frontend_invocation(&self) -> Option<FrontendToolInvocation> {
+    /// Read the first suspended frontend invocation from durable control state.
+    pub fn first_suspended_frontend_invocation(&self) -> Option<FrontendToolInvocation> {
         let mut calls: Vec<SuspendedCall> = self.suspended_calls().into_values().collect();
         calls.sort_by(|left, right| left.call_id.cmp(&right.call_id));
         calls

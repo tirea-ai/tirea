@@ -8,7 +8,7 @@ use crate::contracts::plugin::phase::{
     BeforeToolExecuteContext, Phase, RunEndContext, RunStartContext, StepEndContext,
     StepStartContext, SuspendTicket,
 };
-use crate::contracts::runtime::control::LoopControlExt;
+use crate::contracts::runtime::control::SuspendedCallsExt;
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::LlmExecutor;
 use crate::contracts::storage::VersionPrecondition;
@@ -2724,7 +2724,7 @@ fn test_set_agent_suspended_calls_compat_view_uses_smallest_call_id() {
     .expect("set suspended calls");
     let thread = Thread::with_initial_state("test", base_state).with_patch(patch);
     let pending = thread
-        .pending_interaction()
+        .first_suspended_interaction()
         .expect("pending interaction expected");
     assert_eq!(pending.id, "int_a");
 }
@@ -4084,7 +4084,7 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
 
     let interaction = outcome
         .run_ctx
-        .pending_interaction()
+        .first_suspended_interaction()
         .expect("should have pending interaction");
     assert_eq!(interaction.action, "recover_agent_run");
     assert_eq!(interaction.message, "resume?");
@@ -5550,7 +5550,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
     );
     let nonstream_interaction = nonstream_outcome
         .run_ctx
-        .pending_interaction()
+        .first_suspended_interaction()
         .expect("non-stream outcome should have pending interaction");
 
     let (events, stream_thread) = run_mock_stream_with_final_thread(
@@ -8230,7 +8230,7 @@ async fn test_run_step_skip_inference_with_pending_state_returns_pending_interac
 
     let interaction = outcome
         .run_ctx
-        .pending_interaction()
+        .first_suspended_interaction()
         .expect("should have pending interaction");
     assert_eq!(interaction.action, "recover_agent_run");
     assert_eq!(interaction.message, "resume step?");

@@ -160,8 +160,8 @@ pub use plugin::{AgentPlugin, Phase, PhasePolicy, StepContext, StepOutcome, Tool
 
 // runtime
 pub use runtime::{
-    ActivityManager, InferenceError, InferenceErrorState, LlmExecutor, LoopControlExt, RunContext,
-    RunDelta, StopPolicy, StopPolicyInput, StopPolicyStats, StreamResult, SuspendedCall,
+    ActivityManager, InferenceError, InferenceErrorState, LlmExecutor, RunContext, RunDelta,
+    StopPolicy, StopPolicyInput, StopPolicyStats, StreamResult, SuspendedCall, SuspendedCallsExt,
     SuspendedToolCallsState, ToolCallDecision, ToolCallOutcome, ToolExecution,
     ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
 };

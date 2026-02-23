@@ -91,7 +91,7 @@ pub(super) fn build_recovery_interaction(run_id: &str, run: &DelegationRecord) -
     }))
 }
 
-pub(super) fn parse_pending_interaction_from_state(state: &Value) -> Option<Interaction> {
+pub(super) fn parse_first_suspended_interaction_from_state(state: &Value) -> Option<Interaction> {
     let calls = state
         .get(SUSPENDED_TOOL_CALLS_STATE_PATH)
         .and_then(|a| a.get("calls"))
@@ -104,7 +104,7 @@ pub(super) fn parse_pending_interaction_from_state(state: &Value) -> Option<Inte
         .map(|(_, call)| call.interaction.clone())
 }
 
-pub(super) fn has_pending_recovery_interaction(state: &Value) -> bool {
+pub(super) fn has_suspended_recovery_interaction(state: &Value) -> bool {
     state
         .get(SUSPENDED_TOOL_CALLS_STATE_PATH)
         .and_then(|a| a.get("calls"))
@@ -115,7 +115,7 @@ pub(super) fn has_pending_recovery_interaction(state: &Value) -> bool {
         .any(|call| call.interaction.action == AGENT_RECOVERY_INTERACTION_ACTION)
 }
 
-pub(super) fn set_pending_recovery_interaction(
+pub(super) fn set_suspended_recovery_interaction(
     step: &impl PluginPhaseContext,
     interaction: Interaction,
 ) {

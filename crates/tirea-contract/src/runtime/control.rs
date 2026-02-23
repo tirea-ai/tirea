@@ -155,14 +155,14 @@ pub struct InferenceErrorState {
     pub error: Option<InferenceError>,
 }
 
-/// Helpers for accessing loop control state from `Thread`.
-pub trait LoopControlExt {
-    /// Read pending interaction from durable control state.
-    fn pending_interaction(&self) -> Option<Interaction>;
+/// Helpers for reading suspended-call state from `Thread`.
+pub trait SuspendedCallsExt {
+    /// Read the first suspended interaction from durable control state.
+    fn first_suspended_interaction(&self) -> Option<Interaction>;
 }
 
-impl LoopControlExt for Thread {
-    fn pending_interaction(&self) -> Option<Interaction> {
+impl SuspendedCallsExt for Thread {
+    fn first_suspended_interaction(&self) -> Option<Interaction> {
         self.rebuild_state().ok().and_then(|state| {
             let calls = state
                 .get(SuspendedToolCallsState::PATH)

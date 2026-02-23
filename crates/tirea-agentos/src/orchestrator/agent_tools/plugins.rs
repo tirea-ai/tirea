@@ -19,7 +19,7 @@ impl AgentRecoveryPlugin {
             return;
         }
 
-        let has_pending_interaction = has_pending_recovery_interaction(&state);
+        let has_suspended_recovery = has_suspended_recovery_interaction(&state);
 
         let outcome =
             reconcile_persisted_runs(self.manager.as_ref(), step.thread_id(), &mut runs).await;
@@ -30,7 +30,7 @@ impl AgentRecoveryPlugin {
             }
         }
 
-        if has_pending_interaction || outcome.orphaned_run_ids.is_empty() {
+        if has_suspended_recovery || outcome.orphaned_run_ids.is_empty() {
             return;
         }
 
@@ -58,7 +58,7 @@ impl AgentRecoveryPlugin {
             ToolPermissionBehavior::Deny => {}
             ToolPermissionBehavior::Ask => {
                 let interaction = build_recovery_interaction(&run_id, run);
-                set_pending_recovery_interaction(step, interaction);
+                set_suspended_recovery_interaction(step, interaction);
             }
         }
     }
@@ -66,10 +66,11 @@ impl AgentRecoveryPlugin {
     async fn on_before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
         let state = step.snapshot();
 
-        let Some(pending) = parse_pending_interaction_from_state(&state) else {
+        let Some(suspended_interaction) = parse_first_suspended_interaction_from_state(&state)
+        else {
             return;
         };
-        if pending.action == AGENT_RECOVERY_INTERACTION_ACTION {
+        if suspended_interaction.action == AGENT_RECOVERY_INTERACTION_ACTION {
             step.skip_inference();
         }
     }

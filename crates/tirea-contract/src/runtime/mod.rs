@@ -13,8 +13,9 @@ pub mod state_paths;
 pub use activity::ActivityManager;
 pub use context::RunContext;
 pub use control::{
-    InferenceError, InferenceErrorState, LoopControlExt, ResumeDecision, ResumeDecisionAction,
+    InferenceError, InferenceErrorState, ResumeDecision, ResumeDecisionAction,
     ResumeDecisionsState, SuspendedCall, SuspendedToolCallsState, ToolCallDecision,
+    SuspendedCallsExt,
 };
 pub use delta::RunDelta;
 pub use executor::{
