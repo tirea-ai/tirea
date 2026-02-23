@@ -10071,6 +10071,111 @@ async fn test_no_plugins_loop_ignores_pending() {
 }
 
 #[tokio::test]
+async fn test_nonstream_run_start_added_pending_pauses_before_inference() {
+    struct RunStartPendingPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for RunStartPendingPlugin {
+        fn id(&self) -> &str {
+            "run_start_pending_nonstream"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase != Phase::RunStart {
+                return;
+            }
+            let state = step.snapshot();
+            let patch = set_single_suspended_call(
+                &state,
+                Suspension::new("recover_1", "recover_agent_run").with_message("resume?"),
+                None,
+            )
+            .expect("failed to set suspended interaction");
+            step.pending_patches.push(patch);
+        });
+    }
+
+    let provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("done"))]));
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(RunStartPendingPlugin) as Arc<dyn AgentPlugin>)
+        .with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
+
+    assert_eq!(outcome.termination, TerminationReason::Suspended);
+    assert_eq!(outcome.stats.llm_calls, 0, "inference should not run");
+    assert_eq!(
+        outcome
+            .run_ctx
+            .first_suspension()
+            .expect("suspension expected")
+            .action,
+        "recover_agent_run"
+    );
+}
+
+#[tokio::test]
+async fn test_stream_run_start_added_pending_emits_and_pauses_before_inference() {
+    struct RunStartPendingPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for RunStartPendingPlugin {
+        fn id(&self) -> &str {
+            "run_start_pending_stream"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase != Phase::RunStart {
+                return;
+            }
+            let state = step.snapshot();
+            let patch = set_single_suspended_call(
+                &state,
+                Suspension::new("recover_1", "recover_agent_run").with_message("resume?"),
+                None,
+            )
+            .expect("failed to set suspended interaction");
+            step.pending_patches.push(patch);
+        });
+    }
+
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(RunStartPendingPlugin) as Arc<dyn AgentPlugin>);
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let events = run_mock_stream(
+        MockStreamProvider::new(vec![MockResponse::text("done")]),
+        config,
+        thread,
+        HashMap::new(),
+    )
+    .await;
+
+    assert!(matches!(events.first(), Some(AgentEvent::RunStart { .. })));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AgentEvent::ToolCallSuspendRequested { suspension }
+            if suspension.id == "recover_1" && suspension.action == "recover_agent_run"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AgentEvent::ToolCallSuspended { suspension }
+            if suspension.id == "recover_1" && suspension.action == "recover_agent_run"
+    )));
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::Suspended),
+        "run should pause before inference: {events:?}"
+    );
+    let inference_count = events
+        .iter()
+        .filter(|event| matches!(event, AgentEvent::InferenceComplete { .. }))
+        .count();
+    assert_eq!(inference_count, 0, "inference should not run: {events:?}");
+}
+
+#[tokio::test]
 async fn test_nonstream_completed_tool_round_does_not_clear_existing_suspended_calls() {
     let thread = Thread::with_initial_state(
         "test",

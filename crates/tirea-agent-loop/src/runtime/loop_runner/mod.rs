@@ -399,20 +399,16 @@ pub(super) async fn run_step_prepare_phases(
     run_ctx: &RunContext,
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
     config: &AgentConfig,
-) -> Result<
-    (Vec<Message>, Vec<String>, RunAction, Vec<TrackedPatch>),
-    AgentLoopError,
-> {
-    let ((messages, filtered_tools, run_action), pending) =
-        run_phase_block(
-            run_ctx,
-            tool_descriptors,
-            &config.plugins,
-            &[Phase::StepStart, Phase::BeforeInference],
-            |_| {},
-            |step| inference_inputs_from_step(step, &config.system_prompt),
-        )
-        .await?;
+) -> Result<(Vec<Message>, Vec<String>, RunAction, Vec<TrackedPatch>), AgentLoopError> {
+    let ((messages, filtered_tools, run_action), pending) = run_phase_block(
+        run_ctx,
+        tool_descriptors,
+        &config.plugins,
+        &[Phase::StepStart, Phase::BeforeInference],
+        |_| {},
+        |step| inference_inputs_from_step(step, &config.system_prompt),
+    )
+    .await?;
     Ok((messages, filtered_tools, run_action, pending))
 }
 
@@ -525,8 +521,40 @@ pub(super) fn has_suspended_calls(run_ctx: &RunContext) -> bool {
     !suspended_calls_from_ctx(run_ctx).is_empty()
 }
 
+pub(super) fn suspended_call_ids(run_ctx: &RunContext) -> HashSet<String> {
+    suspended_calls_from_ctx(run_ctx).into_keys().collect()
+}
+
+pub(super) fn newly_suspended_call_ids(
+    run_ctx: &RunContext,
+    baseline_ids: &HashSet<String>,
+) -> HashSet<String> {
+    suspended_calls_from_ctx(run_ctx)
+        .into_keys()
+        .filter(|id| !baseline_ids.contains(id))
+        .collect()
+}
+
 pub(super) fn suspended_call_pending_events(run_ctx: &RunContext) -> Vec<AgentEvent> {
     let mut calls: Vec<SuspendedCall> = suspended_calls_from_ctx(run_ctx).into_values().collect();
+    calls.sort_by(|left, right| left.call_id.cmp(&right.call_id));
+    calls
+        .into_iter()
+        .flat_map(|call| pending_tool_events(&call.suspension, call.invocation.as_ref()))
+        .collect()
+}
+
+pub(super) fn suspended_call_pending_events_for_ids(
+    run_ctx: &RunContext,
+    call_ids: &HashSet<String>,
+) -> Vec<AgentEvent> {
+    if call_ids.is_empty() {
+        return Vec::new();
+    }
+    let mut calls: Vec<SuspendedCall> = suspended_calls_from_ctx(run_ctx)
+        .into_iter()
+        .filter_map(|(call_id, call)| call_ids.contains(&call_id).then_some(call))
+        .collect();
     calls.sort_by(|left, right| left.call_id.cmp(&right.call_id));
     calls
         .into_iter()
@@ -1253,6 +1281,7 @@ pub async fn run_loop(
     let run_identity = stream_core::resolve_stream_run_identity(&mut run_ctx);
     let run_id = run_identity.run_id;
     let parent_run_id = run_identity.parent_run_id;
+    let baseline_suspended_call_ids = suspended_call_ids(&run_ctx);
     let pending_delta_commit =
         PendingDeltaCommitContext::new(&run_id, parent_run_id.as_deref(), state_committer.as_ref());
     let initial_step_tools = match resolve_step_tool_snapshot(&step_tool_provider, &run_ctx).await {
@@ -1349,6 +1378,10 @@ pub async fn run_loop(
             None,
             Some(outcome::LoopFailure::State(error.to_string()))
         );
+    }
+    let run_start_new_suspended = newly_suspended_call_ids(&run_ctx, &baseline_suspended_call_ids);
+    if !run_start_new_suspended.is_empty() {
+        terminate_run!(TerminationReason::Suspended, None, None);
     }
     loop {
         if let Err(error) = apply_decisions_and_replay(

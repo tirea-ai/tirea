@@ -62,18 +62,6 @@ impl AgentRecoveryPlugin {
             }
         }
     }
-
-    async fn on_before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-        let state = step.snapshot();
-
-        let Some(suspended_interaction) = parse_first_suspended_interaction_from_state(&state)
-        else {
-            return;
-        };
-        if suspended_interaction.action == AGENT_RECOVERY_INTERACTION_ACTION {
-            step.skip_inference();
-        }
-    }
 }
 
 #[async_trait]
@@ -84,10 +72,6 @@ impl AgentPlugin for AgentRecoveryPlugin {
 
     async fn run_start(&self, ctx: &mut RunStartContext<'_, '_>) {
         self.on_run_start(ctx).await;
-    }
-
-    async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
-        self.on_before_inference(ctx).await;
     }
 }
 

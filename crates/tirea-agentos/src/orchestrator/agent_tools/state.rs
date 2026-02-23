@@ -91,19 +91,6 @@ pub(super) fn build_recovery_interaction(run_id: &str, run: &DelegationRecord) -
     }))
 }
 
-pub(super) fn parse_first_suspended_interaction_from_state(state: &Value) -> Option<Suspension> {
-    let calls = state
-        .get(SUSPENDED_TOOL_CALLS_STATE_PATH)
-        .and_then(|a| a.get("calls"))
-        .cloned()
-        .and_then(|v| serde_json::from_value::<HashMap<String, SuspendedCall>>(v).ok())
-        .unwrap_or_default();
-    calls
-        .iter()
-        .min_by(|(left, _), (right, _)| left.cmp(right))
-        .map(|(_, call)| call.suspension.clone())
-}
-
 pub(super) fn has_suspended_recovery_interaction(state: &Value) -> bool {
     state
         .get(SUSPENDED_TOOL_CALLS_STATE_PATH)

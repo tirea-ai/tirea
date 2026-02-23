@@ -113,6 +113,34 @@ fn event_type_name(event: &AgentEvent) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PendingEventKey {
+    kind: &'static str,
+    id: String,
+}
+
+fn pending_event_key(event: &AgentEvent) -> Option<PendingEventKey> {
+    match event {
+        AgentEvent::ToolCallSuspendRequested { suspension } => Some(PendingEventKey {
+            kind: "suspend_requested",
+            id: suspension.id.clone(),
+        }),
+        AgentEvent::ToolCallSuspended { suspension } => Some(PendingEventKey {
+            kind: "suspended",
+            id: suspension.id.clone(),
+        }),
+        AgentEvent::ToolCallStart { id, .. } => Some(PendingEventKey {
+            kind: "tool_start",
+            id: id.clone(),
+        }),
+        AgentEvent::ToolCallReady { id, .. } => Some(PendingEventKey {
+            kind: "tool_ready",
+            id: id.clone(),
+        }),
+        _ => None,
+    }
+}
+
 pub(super) fn run_stream(
     config: AgentConfig,
     tools: HashMap<String, Arc<dyn Tool>>,
@@ -136,6 +164,7 @@ pub(super) fn run_stream(
         let run_identity = resolve_stream_run_identity(&mut run_ctx);
         let run_id = run_identity.run_id;
         let parent_run_id = run_identity.parent_run_id;
+        let baseline_suspended_call_ids = suspended_call_ids(&run_ctx);
         let pending_delta_commit = PendingDeltaCommitContext::new(
             &run_id,
             parent_run_id.as_deref(),
@@ -277,8 +306,26 @@ pub(super) fn run_stream(
             }
         };
 
+        let mut emitted_run_start_pending_keys = HashSet::new();
         for event in run_start_drain.events {
+            if let Some(key) = pending_event_key(&event) {
+                emitted_run_start_pending_keys.insert(key);
+            }
             yield emitter.emit_existing(event);
+        }
+        let run_start_new_suspended =
+            newly_suspended_call_ids(&run_ctx, &baseline_suspended_call_ids);
+        if !run_start_new_suspended.is_empty() {
+            for event in suspended_call_pending_events_for_ids(&run_ctx, &run_start_new_suspended) {
+                let should_emit = match pending_event_key(&event) {
+                    Some(key) => emitted_run_start_pending_keys.insert(key),
+                    None => true,
+                };
+                if should_emit {
+                    yield emitter.emit_existing(event);
+                }
+            }
+            finish_run!(TerminationReason::Suspended, None);
         }
 
         loop {

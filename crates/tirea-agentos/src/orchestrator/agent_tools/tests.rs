@@ -1076,7 +1076,7 @@ async fn agent_stop_tool_stops_descendant_runs() {
 }
 
 #[tokio::test]
-async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
+async fn recovery_plugin_reconciles_orphan_running_and_records_confirmation() {
     let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
     let child_thread = crate::contracts::thread::Thread::new("child-run")
         .with_message(crate::contracts::thread::Message::user("seed"));
@@ -1120,8 +1120,8 @@ async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
     let mut before = fixture2.step(vec![]);
     plugin.run_phase(Phase::BeforeInference, &mut before).await;
     assert!(
-        before.skip_inference,
-        "recovery confirmation should pause inference"
+        !before.skip_inference,
+        "recovery plugin should not control inference flow in BeforeInference"
     );
 }
 
