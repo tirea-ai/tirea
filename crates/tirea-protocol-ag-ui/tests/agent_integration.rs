@@ -12581,14 +12581,28 @@ fn state_with_suspended_call(
     suspension: Value,
     invocation: Option<Value>,
 ) -> Value {
-    let mut entry = json!({
+    let invocation = invocation.unwrap_or_else(|| {
+        json!({
+            "call_id": call_id,
+            "tool_name": tool_name,
+            "arguments": {},
+            "origin": {
+                "type": "tool_call_intercepted",
+                "backend_call_id": call_id,
+                "backend_tool_name": tool_name,
+                "backend_arguments": {}
+            },
+            "routing": {
+                "strategy": "replay_original_tool"
+            }
+        })
+    });
+    let entry = json!({
         "call_id": call_id,
         "tool_name": tool_name,
         "suspension": suspension,
+        "invocation": invocation,
     });
-    if let Some(invocation) = invocation {
-        entry["invocation"] = invocation;
-    }
     json!({
         "__suspended_tool_calls": {
             "calls": {

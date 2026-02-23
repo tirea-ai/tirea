@@ -23,6 +23,21 @@ use tempfile::TempDir;
 use tirea_contract::testing::TestFixture;
 use tirea_contract::TerminationReason;
 
+fn decision_for(
+    target_id: &str,
+    action: crate::contracts::runtime::ResumeDecisionAction,
+    result: Value,
+) -> crate::contracts::ToolCallDecision {
+    crate::contracts::ToolCallDecision {
+        target_id: target_id.to_string(),
+        decision_id: format!("decision_{target_id}"),
+        action,
+        reason: None,
+        result,
+        updated_at: 0,
+    }
+}
+
 fn make_skills_root() -> (TempDir, PathBuf) {
     let td = TempDir::new().unwrap();
     let root = td.path().join("skills");
@@ -1856,8 +1871,9 @@ async fn run_stream_exposes_decision_sender_and_replays_suspended_calls() {
         .await
         .unwrap();
 
-    run.submit_decision(crate::contracts::SuspensionResponse::new(
+    run.submit_decision(decision_for(
         "call_pending",
+        crate::contracts::runtime::ResumeDecisionAction::Resume,
         json!(true),
     ))
     .expect("decision channel should be connected");
@@ -1935,11 +1951,11 @@ async fn run_stream_replays_initial_decisions_without_submit_decision() {
             resource_id: None,
             state: None,
             messages: vec![],
-            initial_decisions: vec![tirea_contract::SuspensionResponse::new(
+            initial_decisions: vec![decision_for(
                 "call_pending",
+                crate::contracts::runtime::ResumeDecisionAction::Resume,
                 json!(true),
-            )
-            .into()],
+            )],
         })
         .await
         .unwrap();
@@ -2013,11 +2029,11 @@ async fn run_stream_initial_decisions_denied_returns_tool_error_and_clears_suspe
             resource_id: None,
             state: None,
             messages: vec![],
-            initial_decisions: vec![tirea_contract::SuspensionResponse::new(
+            initial_decisions: vec![decision_for(
                 "call_pending",
+                crate::contracts::runtime::ResumeDecisionAction::Cancel,
                 json!(false),
-            )
-            .into()],
+            )],
         })
         .await
         .unwrap();
@@ -2107,11 +2123,11 @@ async fn run_stream_initial_decisions_cancelled_returns_tool_error_and_clears_su
             resource_id: None,
             state: None,
             messages: vec![],
-            initial_decisions: vec![tirea_contract::SuspensionResponse::new(
+            initial_decisions: vec![decision_for(
                 "call_pending",
+                crate::contracts::runtime::ResumeDecisionAction::Cancel,
                 cancel_payload.clone(),
-            )
-            .into()],
+            )],
         })
         .await
         .unwrap();
@@ -2220,11 +2236,11 @@ async fn run_stream_initial_decisions_partial_match_keeps_unresolved_suspended_c
             resource_id: None,
             state: None,
             messages: vec![],
-            initial_decisions: vec![tirea_contract::SuspensionResponse::new(
+            initial_decisions: vec![decision_for(
                 "call_approved",
+                crate::contracts::runtime::ResumeDecisionAction::Resume,
                 json!(true),
-            )
-            .into()],
+            )],
         })
         .await
         .unwrap();
@@ -2317,11 +2333,11 @@ async fn run_stream_initial_decisions_ignore_unknown_target() {
             resource_id: None,
             state: None,
             messages: vec![],
-            initial_decisions: vec![tirea_contract::SuspensionResponse::new(
+            initial_decisions: vec![decision_for(
                 "unknown_call",
+                crate::contracts::runtime::ResumeDecisionAction::Resume,
                 json!(true),
-            )
-            .into()],
+            )],
         })
         .await
         .unwrap();
@@ -2398,8 +2414,11 @@ async fn run_stream_duplicate_initial_decisions_are_idempotent() {
         .with_message(crate::contracts::thread::Message::user("resume"));
     storage.create(&thread).await.unwrap();
 
-    let decision: tirea_contract::ToolCallDecision =
-        tirea_contract::SuspensionResponse::new("call_pending", json!(true)).into();
+    let decision: tirea_contract::ToolCallDecision = decision_for(
+        "call_pending",
+        crate::contracts::runtime::ResumeDecisionAction::Resume,
+        json!(true),
+    );
     let run = os
         .run_stream(RunRequest {
             agent_id: "a1".to_string(),

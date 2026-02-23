@@ -683,7 +683,7 @@ async fn drain_resume_decisions_and_replay(
                     run_ctx,
                     &suspended_call.call_id,
                     Some(&suspended_call.tool_name),
-                    &decision_result,
+                    decision.reason.as_deref(),
                 ));
                 suspended_to_clear.push(call_id);
             }
@@ -870,76 +870,21 @@ fn normalize_frontend_tool_result(
     }
 }
 
-fn denied_reason_from_response(result: &serde_json::Value) -> Option<String> {
-    match result {
-        serde_json::Value::String(text) if !text.trim().is_empty() => Some(text.clone()),
-        serde_json::Value::Object(obj) => {
-            let direct_reason = obj
-                .get("reason")
-                .and_then(serde_json::Value::as_str)
-                .or_else(|| obj.get("message").and_then(serde_json::Value::as_str))
-                .or_else(|| obj.get("error").and_then(serde_json::Value::as_str))
-                .map(str::to_string);
-            if direct_reason.is_some() {
-                return direct_reason;
-            }
-            if response_indicates_cancel(result) {
-                return Some("User canceled the action".to_string());
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-fn response_indicates_cancel(result: &serde_json::Value) -> bool {
-    const CANCEL_TOKENS: &[&str] = &["cancel", "canceled", "cancelled", "abort", "aborted"];
-
-    match result {
-        serde_json::Value::String(text) => {
-            let lower = text.trim().to_lowercase();
-            CANCEL_TOKENS.iter().any(|token| lower == *token)
-        }
-        serde_json::Value::Object(obj) => {
-            ["cancel", "canceled", "cancelled", "abort", "aborted"]
-                .iter()
-                .any(|key| {
-                    obj.get(*key)
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(false)
-                })
-                || ["status", "decision", "action"].iter().any(|key| {
-                    obj.get(*key)
-                        .and_then(serde_json::Value::as_str)
-                        .map(|value| {
-                            let lower = value.trim().to_lowercase();
-                            CANCEL_TOKENS.iter().any(|token| lower == *token)
-                        })
-                        .unwrap_or(false)
-                })
-        }
-        _ => false,
-    }
-}
-
 fn denied_tool_result_for_call(
     run_ctx: &RunContext,
     call_id: &str,
     fallback_tool_name: Option<&str>,
-    response_result: &serde_json::Value,
+    decision_reason: Option<&str>,
 ) -> ToolResult {
     let tool_name = fallback_tool_name
         .filter(|name| !name.is_empty())
         .map(str::to_string)
         .or_else(|| find_tool_call_in_messages(run_ctx, call_id).map(|call| call.name))
         .unwrap_or_else(|| "tool".to_string());
-    let reason = denied_reason_from_response(response_result).unwrap_or_else(|| {
-        if response_indicates_cancel(response_result) {
-            "User canceled the action".to_string()
-        } else {
-            "User denied the action".to_string()
-        }
-    });
+    let reason = decision_reason
+        .map(str::to_string)
+        .filter(|reason| !reason.trim().is_empty())
+        .unwrap_or_else(|| "User denied the action".to_string());
     ToolResult::error(tool_name, reason)
 }
 
@@ -947,10 +892,10 @@ fn append_denied_tool_result_message(
     run_ctx: &mut RunContext,
     call_id: &str,
     fallback_tool_name: Option<&str>,
-    response_result: &serde_json::Value,
+    decision_reason: Option<&str>,
 ) -> AgentEvent {
     let denied_result =
-        denied_tool_result_for_call(run_ctx, call_id, fallback_tool_name, response_result);
+        denied_tool_result_for_call(run_ctx, call_id, fallback_tool_name, decision_reason);
     let message_id = gen_message_id();
     let denied_message = tool_response(call_id, &denied_result).with_id(message_id.clone());
     run_ctx.add_message(Arc::new(denied_message));
@@ -1018,10 +963,7 @@ fn resume_decision_from_response(response: &ToolCallDecision) -> ResumeDecision 
         decision_id: response.decision_id.clone(),
         action: response.action.clone(),
         result: response.result.clone(),
-        reason: response
-            .reason
-            .clone()
-            .or_else(|| denied_reason_from_response(&response.result)),
+        reason: response.reason.clone(),
         updated_at: response.updated_at,
     }
 }

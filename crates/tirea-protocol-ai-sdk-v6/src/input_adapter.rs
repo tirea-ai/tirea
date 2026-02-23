@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use tirea_contract::runtime::ResumeDecisionAction;
 use tirea_contract::{
     Message, MessageMetadata, ProtocolInputAdapter, Role, RunRequest, SuspensionResponse, ToolCall,
     ToolCallDecision,
@@ -124,7 +125,7 @@ impl AiSdkV6RunRequest {
     pub fn suspension_decisions(&self) -> Vec<ToolCallDecision> {
         self.interaction_responses()
             .into_iter()
-            .map(Into::into)
+            .map(interaction_response_to_decision)
             .collect()
     }
 
@@ -474,6 +475,119 @@ fn approval_response_value(approved: bool, reason: Option<String>) -> Value {
         result.insert("reason".to_string(), Value::String(reason));
     }
     Value::Object(result)
+}
+
+fn interaction_response_to_decision(response: SuspensionResponse) -> ToolCallDecision {
+    let action = decision_action_from_result(&response.result);
+    let reason = if matches!(action, ResumeDecisionAction::Cancel) {
+        decision_reason_from_result(&response.result)
+    } else {
+        None
+    };
+    ToolCallDecision {
+        target_id: response.target_id.clone(),
+        decision_id: format!("decision_{}", response.target_id),
+        action,
+        result: response.result,
+        reason,
+        updated_at: current_unix_millis(),
+    }
+}
+
+fn decision_action_from_result(result: &Value) -> ResumeDecisionAction {
+    match result {
+        Value::Bool(approved) => {
+            if *approved {
+                ResumeDecisionAction::Resume
+            } else {
+                ResumeDecisionAction::Cancel
+            }
+        }
+        Value::String(value) => {
+            if is_denied_token(value) {
+                ResumeDecisionAction::Cancel
+            } else {
+                ResumeDecisionAction::Resume
+            }
+        }
+        Value::Object(obj) => {
+            if obj
+                .get("approved")
+                .and_then(Value::as_bool)
+                .map(|approved| !approved)
+                .unwrap_or(false)
+            {
+                return ResumeDecisionAction::Cancel;
+            }
+            if [
+                "denied",
+                "reject",
+                "rejected",
+                "cancel",
+                "canceled",
+                "cancelled",
+                "abort",
+                "aborted",
+            ]
+            .iter()
+            .any(|key| obj.get(*key).and_then(Value::as_bool).unwrap_or(false))
+            {
+                return ResumeDecisionAction::Cancel;
+            }
+            if ["status", "decision", "action"].iter().any(|key| {
+                obj.get(*key)
+                    .and_then(Value::as_str)
+                    .map(is_denied_token)
+                    .unwrap_or(false)
+            }) {
+                return ResumeDecisionAction::Cancel;
+            }
+            ResumeDecisionAction::Resume
+        }
+        _ => ResumeDecisionAction::Resume,
+    }
+}
+
+fn decision_reason_from_result(result: &Value) -> Option<String> {
+    match result {
+        Value::String(text) => {
+            if text.trim().is_empty() {
+                None
+            } else {
+                Some(text.to_string())
+            }
+        }
+        Value::Object(obj) => obj
+            .get("reason")
+            .and_then(Value::as_str)
+            .or_else(|| obj.get("message").and_then(Value::as_str))
+            .or_else(|| obj.get("error").and_then(Value::as_str))
+            .map(str::to_string),
+        _ => None,
+    }
+}
+
+fn is_denied_token(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "false"
+            | "no"
+            | "denied"
+            | "deny"
+            | "reject"
+            | "rejected"
+            | "cancel"
+            | "canceled"
+            | "cancelled"
+            | "abort"
+            | "aborted"
+    )
+}
+
+fn current_unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64)
 }
 
 fn extract_text_from_parts(parts: &[Value]) -> String {

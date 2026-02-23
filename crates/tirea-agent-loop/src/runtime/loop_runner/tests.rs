@@ -414,6 +414,22 @@ fn set_single_suspended_call(
     )
 }
 
+fn test_decision(
+    target_id: &str,
+    action: crate::contracts::runtime::ResumeDecisionAction,
+    result: Value,
+    reason: Option<&str>,
+) -> crate::contracts::ToolCallDecision {
+    crate::contracts::ToolCallDecision {
+        target_id: target_id.to_string(),
+        decision_id: format!("decision_{target_id}"),
+        action,
+        result,
+        reason: reason.map(str::to_string),
+        updated_at: 0,
+    }
+}
+
 #[derive(Debug, Default)]
 struct TestInteractionPlugin {
     responses: std::collections::HashMap<String, Value>,
@@ -10886,7 +10902,12 @@ async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
         .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
     let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
     decision_tx
-        .send(crate::contracts::SuspensionResponse::new("unknown_call", json!(true)).into())
+        .send(test_decision(
+            "unknown_call",
+            crate::contracts::runtime::ResumeDecisionAction::Resume,
+            json!(true),
+            None,
+        ))
         .expect("send decision");
     drop(decision_tx);
 
@@ -10981,7 +11002,12 @@ async fn test_stream_decision_channel_ignores_unknown_target_id() {
         Arc::new(ChannelStateCommitter::new(checkpoint_tx));
     let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
     decision_tx
-        .send(crate::contracts::SuspensionResponse::new("unknown_call", json!(true)).into())
+        .send(test_decision(
+            "unknown_call",
+            crate::contracts::runtime::ResumeDecisionAction::Resume,
+            json!(true),
+            None,
+        ))
         .expect("send decision");
     drop(decision_tx);
 
@@ -11137,13 +11163,12 @@ async fn test_run_loop_decision_channel_resolves_suspended_call() {
 
     ready.notified().await;
     decision_tx
-        .send(
-            crate::contracts::SuspensionResponse::new(
-                "call_pending",
-                json!({"approved": true, "message": "need approval"}),
-            )
-            .into(),
-        )
+        .send(test_decision(
+            "call_pending",
+            crate::contracts::runtime::ResumeDecisionAction::Resume,
+            json!({"approved": true, "message": "need approval"}),
+            None,
+        ))
         .expect("send decision");
     release.notify_one();
 
@@ -11232,13 +11257,12 @@ async fn test_run_loop_decision_channel_cancel_emits_single_tool_result_message(
 
     let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
     decision_tx
-        .send(
-            crate::contracts::SuspensionResponse::new(
-                "call_pending",
-                json!({"status": "cancelled", "reason": "User canceled in UI"}),
-            )
-            .into(),
-        )
+        .send(test_decision(
+            "call_pending",
+            crate::contracts::runtime::ResumeDecisionAction::Cancel,
+            json!({"status": "cancelled", "reason": "User canceled in UI"}),
+            Some("User canceled in UI"),
+        ))
         .expect("send cancel decision");
     drop(decision_tx);
 
@@ -11389,13 +11413,12 @@ async fn test_run_loop_stream_decision_channel_emits_resolution_and_replay() {
 
     ready.notified().await;
     decision_tx
-        .send(
-            crate::contracts::SuspensionResponse::new(
-                "call_pending",
-                json!({"approved": true, "message": "need approval"}),
-            )
-            .into(),
-        )
+        .send(test_decision(
+            "call_pending",
+            crate::contracts::runtime::ResumeDecisionAction::Resume,
+            json!({"approved": true, "message": "need approval"}),
+            None,
+        ))
         .expect("send decision");
     release.notify_one();
 
@@ -11528,13 +11551,12 @@ async fn test_run_loop_decision_channel_buffers_early_response_for_all_suspended
 
     entered.notified().await;
     decision_tx
-        .send(
-            crate::contracts::SuspensionResponse::new(
-                "call_pending",
-                json!({"approved": true, "message": "need approval"}),
-            )
-            .into(),
-        )
+        .send(test_decision(
+            "call_pending",
+            crate::contracts::runtime::ResumeDecisionAction::Resume,
+            json!({"approved": true, "message": "need approval"}),
+            None,
+        ))
         .expect("send decision");
     allow_pending.notify_one();
 
@@ -11658,13 +11680,12 @@ async fn test_stream_decision_channel_buffers_early_response_for_all_suspended_t
 
     entered.notified().await;
     decision_tx
-        .send(
-            crate::contracts::SuspensionResponse::new(
-                "call_pending",
-                json!({"approved": true, "message": "need approval"}),
-            )
-            .into(),
-        )
+        .send(test_decision(
+            "call_pending",
+            crate::contracts::runtime::ResumeDecisionAction::Resume,
+            json!({"approved": true, "message": "need approval"}),
+            None,
+        ))
         .expect("send decision");
     allow_pending.notify_one();
 
@@ -11774,7 +11795,12 @@ async fn test_stream_decision_channel_drains_while_inference_stream_is_running()
 
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     decision_tx
-        .send(crate::contracts::SuspensionResponse::new("call_pending", json!(true)).into())
+        .send(test_decision(
+            "call_pending",
+            crate::contracts::runtime::ResumeDecisionAction::Resume,
+            json!(true),
+            None,
+        ))
         .expect("send decision");
     tokio::time::sleep(std::time::Duration::from_millis(40)).await;
     token.cancel();
@@ -11885,7 +11911,12 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_resume_decisio
 
     let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
     decision_tx
-        .send(crate::contracts::SuspensionResponse::new("fc_perm_1", json!(true)).into())
+        .send(test_decision(
+            "fc_perm_1",
+            crate::contracts::runtime::ResumeDecisionAction::Resume,
+            json!(true),
+            None,
+        ))
         .expect("send decision");
     drop(decision_tx);
 

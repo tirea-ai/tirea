@@ -297,11 +297,11 @@ pub struct RunStream {
 
 impl RunStream {
     /// Submit one interaction decision to the active run.
-    pub fn submit_decision<D: Into<ToolCallDecision>>(
+    pub fn submit_decision(
         &self,
-        response: D,
+        decision: ToolCallDecision,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<ToolCallDecision>> {
-        self.decision_tx.send(response.into())
+        self.decision_tx.send(decision)
     }
 }
 

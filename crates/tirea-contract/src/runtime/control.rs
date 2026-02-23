@@ -3,7 +3,7 @@
 //! These types define durable runtime control state for cross-step and cross-run
 //! flow control (suspended tool calls, resume decisions, and inference error envelope).
 
-use crate::event::suspension::{FrontendToolInvocation, Suspension, SuspensionResponse};
+use crate::event::suspension::{FrontendToolInvocation, Suspension};
 use crate::runtime::state_paths::SUSPENDED_TOOL_CALLS_STATE_PATH;
 use crate::thread::Thread;
 use serde::{Deserialize, Serialize};
@@ -80,43 +80,33 @@ pub struct ToolCallDecision {
 }
 
 impl ToolCallDecision {
-    /// Build a decision from a suspension response payload.
-    pub fn from_suspension_response(response: SuspensionResponse, updated_at: u64) -> Self {
-        let action = if SuspensionResponse::is_denied(&response.result) {
-            ResumeDecisionAction::Cancel
-        } else {
-            ResumeDecisionAction::Resume
-        };
-        let reason = if matches!(action, ResumeDecisionAction::Cancel) {
-            response
-                .result
-                .as_object()
-                .and_then(|obj| {
-                    obj.get("reason")
-                        .and_then(Value::as_str)
-                        .or_else(|| obj.get("message").and_then(Value::as_str))
-                })
-                .map(str::to_string)
-        } else {
-            None
-        };
+    /// Build an explicit resume decision.
+    pub fn resume(target_id: impl Into<String>, result: Value, updated_at: u64) -> Self {
         Self {
-            target_id: response.target_id.clone(),
-            decision_id: format!("decision_{}", response.target_id),
-            action,
-            result: response.result,
-            reason,
+            target_id: target_id.into(),
+            decision_id: String::new(),
+            action: ResumeDecisionAction::Resume,
+            result,
+            reason: None,
             updated_at,
         }
     }
-}
 
-impl From<SuspensionResponse> for ToolCallDecision {
-    fn from(response: SuspensionResponse) -> Self {
-        let updated_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64);
-        Self::from_suspension_response(response, updated_at)
+    /// Build an explicit cancel decision.
+    pub fn cancel(
+        target_id: impl Into<String>,
+        result: Value,
+        reason: Option<String>,
+        updated_at: u64,
+    ) -> Self {
+        Self {
+            target_id: target_id.into(),
+            decision_id: String::new(),
+            action: ResumeDecisionAction::Cancel,
+            result,
+            reason,
+            updated_at,
+        }
     }
 }
 
@@ -201,6 +191,7 @@ impl SuspendedCallsExt for Thread {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::suspension::SuspensionResponse;
     use serde_json::Value;
 
     #[test]
@@ -226,9 +217,9 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_decision_from_suspension_response_resume() {
-        let response = SuspensionResponse::new("fc_1", Value::Bool(true));
-        let decision = ToolCallDecision::from_suspension_response(response, 123);
+    fn tool_call_decision_resume_constructor_sets_resume_action() {
+        let mut decision = ToolCallDecision::resume("fc_1", Value::Bool(true), 123);
+        decision.decision_id = "decision_fc_1".to_string();
         assert_eq!(decision.target_id, "fc_1");
         assert_eq!(decision.decision_id, "decision_fc_1");
         assert!(matches!(decision.action, ResumeDecisionAction::Resume));
@@ -238,15 +229,21 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_decision_from_suspension_response_cancel_with_reason() {
-        let response = SuspensionResponse::new(
+    fn tool_call_decision_cancel_constructor_sets_cancel_action() {
+        let mut decision = ToolCallDecision::cancel(
             "fc_2",
-            serde_json::json!({
-                "approved": false,
-                "reason": "denied by user"
-            }),
+            SuspensionResponse::new(
+                "fc_2",
+                serde_json::json!({
+                    "approved": false,
+                    "reason": "denied by user"
+                }),
+            )
+            .result,
+            Some("denied by user".to_string()),
+            456,
         );
-        let decision = ToolCallDecision::from_suspension_response(response, 456);
+        decision.decision_id = "decision_fc_2".to_string();
         assert!(matches!(decision.action, ResumeDecisionAction::Cancel));
         assert_eq!(decision.reason.as_deref(), Some("denied by user"));
         assert_eq!(decision.updated_at, 456);

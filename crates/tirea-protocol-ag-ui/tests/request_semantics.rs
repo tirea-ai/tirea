@@ -100,7 +100,7 @@ fn approved_and_denied_ids_follow_runtime_interaction_semantics() {
 
     assert_eq!(
         request.approved_target_ids(),
-        vec!["approved_bool", "approved_object"]
+        vec!["approved_bool", "approved_object", "neither"]
     );
     assert_eq!(
         request.denied_target_ids(),
