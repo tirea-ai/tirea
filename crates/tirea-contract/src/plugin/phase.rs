@@ -449,22 +449,7 @@ impl<'a> StepContext<'a> {
         }
     }
 
-    /// Internal compat helper while migrating plugins to gate decisions.
-    pub fn allow(&mut self) {
-        self.proceed();
-    }
-
-    /// Internal compat helper while migrating plugins to gate decisions.
-    pub fn deny(&mut self, reason: impl Into<String>) {
-        self.cancel(reason);
-    }
-
-    /// Internal compat helper while migrating plugins to gate decisions.
-    pub fn ask(&mut self, interaction: Interaction) {
-        self.suspend(SuspendTicket::new(interaction));
-    }
-
-    /// Internal compat helper while migrating plugins to `SuspendTicket`.
+    /// Suspend current tool and request a frontend tool invocation.
     ///
     /// Returns the generated frontend call id when tool context is present.
     pub fn ask_frontend_tool(
@@ -707,11 +692,6 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
 
     pub fn suspend(&mut self, ticket: SuspendTicket) {
         self.step.suspend(ticket);
-    }
-
-    /// Backward-compatible alias for `suspend(SuspendTicket::new(interaction))`.
-    pub fn ask_confirm(&mut self, interaction: Interaction) {
-        self.suspend(SuspendTicket::new(interaction));
     }
 
     /// Backward-compatible wrapper for frontend-tool suspend tickets.
@@ -998,7 +978,7 @@ mod tests {
         let call = ToolCall::new("call_1", "delete_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
 
-        ctx.deny("Permission denied");
+        ctx.cancel("Permission denied");
 
         assert!(ctx.tool_blocked());
         assert!(!ctx.tool_pending());
@@ -1018,7 +998,7 @@ mod tests {
         ctx.tool = Some(ToolContext::new(&call));
 
         let interaction = Interaction::new("confirm_1", "confirm").with_message("Allow write?");
-        ctx.ask(interaction);
+        ctx.suspend(SuspendTicket::new(interaction));
 
         assert!(ctx.tool_pending());
         assert!(!ctx.tool_blocked());
@@ -1035,8 +1015,8 @@ mod tests {
         ctx.tool = Some(ToolContext::new(&call));
 
         let interaction = Interaction::new("confirm_1", "confirm").with_message("Allow write?");
-        ctx.ask(interaction);
-        ctx.allow();
+        ctx.suspend(SuspendTicket::new(interaction));
+        ctx.proceed();
 
         assert!(!ctx.tool_pending());
         assert!(!ctx.tool_blocked());
@@ -1052,16 +1032,18 @@ mod tests {
         let call = ToolCall::new("call_1", "write_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
 
-        ctx.deny("denied");
+        ctx.cancel("denied");
         assert!(ctx.tool_blocked());
         assert!(!ctx.tool_pending());
 
-        ctx.ask(Interaction::new("confirm_1", "confirm").with_message("Allow write?"));
+        ctx.suspend(SuspendTicket::new(
+            Interaction::new("confirm_1", "confirm").with_message("Allow write?"),
+        ));
         assert!(!ctx.tool_blocked());
         assert!(ctx.tool_pending());
         assert!(ctx.tool.as_ref().unwrap().block_reason.is_none());
 
-        ctx.allow();
+        ctx.proceed();
         assert!(!ctx.tool_blocked());
         assert!(!ctx.tool_pending());
         assert!(ctx.tool.as_ref().unwrap().suspend_ticket.is_none());
@@ -1111,7 +1093,7 @@ mod tests {
         ctx.tool = Some(ToolContext::new(&call));
 
         let interaction = Interaction::new("confirm_1", "confirm").with_message("Allow?");
-        ctx.ask(interaction.clone());
+        ctx.suspend(SuspendTicket::new(interaction.clone()));
 
         match ctx.result() {
             StepOutcome::Pending(i) => assert_eq!(i.id, "confirm_1"),
@@ -1347,7 +1329,7 @@ mod tests {
         let mut ctx = fix.step(vec![]);
 
         // No tool context, block should not panic
-        ctx.deny("test");
+        ctx.cancel("test");
 
         assert!(!ctx.tool_blocked()); // tool_blocked returns false when no tool
     }
@@ -1358,7 +1340,7 @@ mod tests {
         let mut ctx = fix.step(vec![]);
 
         let interaction = Interaction::new("id", "confirm").with_message("test");
-        ctx.ask(interaction);
+        ctx.suspend(SuspendTicket::new(interaction));
 
         assert!(!ctx.tool_pending()); // tool_pending returns false when no tool
     }
@@ -1372,7 +1354,7 @@ mod tests {
         ctx.tool = Some(ToolContext::new(&call));
 
         // Confirm without pending should not panic
-        ctx.allow();
+        ctx.proceed();
 
         assert!(!ctx.tool_pending());
     }
@@ -1466,7 +1448,7 @@ mod tests {
 
         let call = ToolCall::new("call_copy", "copyToClipboard", json!({"text": "hello"}));
         ctx.tool = Some(ToolContext::new(&call));
-        ctx.deny("old deny state");
+        ctx.cancel("old deny state");
 
         let call_id = ctx.ask_frontend_tool(
             "copyToClipboard",

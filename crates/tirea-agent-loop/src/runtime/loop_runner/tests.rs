@@ -1126,7 +1126,7 @@ impl AgentPlugin for BlockingPhasePlugin {
 
     phase_dispatch_methods!(|phase, step| {
         if phase == Phase::BeforeToolExecute && step.tool_name() == Some("echo") {
-            step.deny("Echo tool is blocked");
+            step.cancel("Echo tool is blocked");
         }
     });
 }
@@ -1172,7 +1172,7 @@ impl AgentPlugin for InvalidAfterToolMutationPlugin {
 
     phase_dispatch_methods!(|phase, step| {
         if phase == Phase::AfterToolExecute {
-            step.deny("too late");
+            step.cancel("too late");
         }
     });
 }
@@ -1454,7 +1454,7 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
                 .unwrap_or(false);
 
             if !allow_exec {
-                step.deny("missing plugin.allow_exec in state");
+                step.cancel("missing plugin.allow_exec in state");
             }
         });
     }
@@ -1962,7 +1962,9 @@ impl AgentPlugin for PendingPhasePlugin {
     phase_dispatch_methods!(|phase, step| {
         if phase == Phase::BeforeToolExecute && step.tool_name() == Some("echo") {
             use crate::contracts::Interaction;
-            step.ask(Interaction::new("confirm_1", "confirm").with_message("Execute echo?"));
+            step.suspend(SuspendTicket::new(
+                Interaction::new("confirm_1", "confirm").with_message("Execute echo?"),
+            ));
         }
     });
 }
@@ -3942,10 +3944,10 @@ async fn test_run_loop_legacy_run_start_replay_queue_is_ignored() {
                     );
                 }
                 Phase::BeforeToolExecute if step.tool_call_id() == Some("replay_call_1") => {
-                    step.ask(
+                    step.suspend(SuspendTicket::new(
                         Interaction::new("confirm_replay_call_1", "confirm")
                             .with_message("approve first replay"),
-                    );
+                    ));
                 }
                 Phase::BeforeInference => {
                     step.skip_inference = true;
@@ -6751,10 +6753,10 @@ async fn test_stream_legacy_run_start_replay_queue_is_ignored() {
                     );
                 }
                 Phase::BeforeToolExecute if step.tool_call_id() == Some("replay_call_1") => {
-                    step.ask(
+                    step.suspend(SuspendTicket::new(
                         Interaction::new("confirm_replay_call_1", "confirm")
                             .with_message("approve first replay"),
-                    );
+                    ));
                 }
                 Phase::BeforeInference => {
                     step.skip_inference = true;
@@ -6833,10 +6835,10 @@ async fn test_stream_parallel_multiple_pending_emits_all_suspended() {
             match phase {
                 Phase::BeforeToolExecute => {
                     if let Some(call_id) = step.tool_call_id() {
-                        step.ask(
+                        step.suspend(SuspendTicket::new(
                             Interaction::new(format!("confirm_{call_id}"), "confirm")
                                 .with_message("needs confirmation"),
-                        );
+                        ));
                     }
                 }
                 Phase::RunEnd => {
@@ -7640,10 +7642,10 @@ async fn test_sequential_tools_stop_after_first_pending_interaction() {
                     .lock()
                     .expect("lock poisoned")
                     .push(call_id.to_string());
-                step.ask(
+                step.suspend(SuspendTicket::new(
                     Interaction::new(format!("confirm_{call_id}"), "confirm")
                         .with_message("needs confirmation"),
-                );
+                ));
             }
         });
     }
@@ -7705,10 +7707,10 @@ async fn test_parallel_tools_allow_single_pending_interaction_per_round() {
                     .lock()
                     .expect("lock poisoned")
                     .push(call_id.to_string());
-                step.ask(
+                step.suspend(SuspendTicket::new(
                     Interaction::new(format!("confirm_{call_id}"), "confirm")
                         .with_message("needs confirmation"),
-                );
+                ));
             }
         });
     }
@@ -7859,7 +7861,7 @@ impl AgentPlugin for ConditionalBlockPlugin {
 
     phase_dispatch_methods!(|phase, step| {
         if phase == Phase::BeforeToolExecute && step.tool_pending() {
-            step.deny("Blocked because tool was pending".to_string());
+            step.cancel("Blocked because tool was pending".to_string());
         }
     });
 }
@@ -9555,10 +9557,10 @@ async fn test_nonstream_mixed_pending_and_completed_tools_continues_loop() {
             if phase == Phase::BeforeToolExecute {
                 if let Some(call_id) = step.tool_call_id() {
                     if call_id == "call_2" {
-                        step.ask(
+                        step.suspend(SuspendTicket::new(
                             Interaction::new("confirm_call_2", "confirm")
                                 .with_message("approve delete?"),
-                        );
+                        ));
                     }
                 }
             }
@@ -9642,10 +9644,10 @@ async fn test_nonstream_single_pending_tool_enters_waiting() {
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeToolExecute {
                 if let Some(call_id) = step.tool_call_id() {
-                    step.ask(
+                    step.suspend(SuspendTicket::new(
                         Interaction::new(format!("confirm_{call_id}"), "confirm")
                             .with_message("needs confirmation"),
-                    );
+                    ));
                 }
             }
         });
@@ -9704,10 +9706,10 @@ async fn test_stream_mixed_pending_and_completed_tools_continues_loop() {
                 if let Some(call_id) = step.tool_call_id() {
                     if call_id == "call_2" {
                         use crate::contracts::Interaction;
-                        step.ask(
+                        step.suspend(SuspendTicket::new(
                             Interaction::new("confirm_call_2", "confirm")
                                 .with_message("approve delete?"),
-                        );
+                        ));
                     }
                 }
             }
@@ -9793,10 +9795,10 @@ async fn test_stream_all_tools_pending_pauses_run() {
             if phase == Phase::BeforeToolExecute {
                 if let Some(call_id) = step.tool_call_id() {
                     use crate::contracts::Interaction;
-                    step.ask(
+                    step.suspend(SuspendTicket::new(
                         Interaction::new(format!("confirm_{call_id}"), "confirm")
                             .with_message("needs confirmation"),
-                    );
+                    ));
                 }
             }
         });
@@ -9847,10 +9849,10 @@ async fn test_stream_mixed_pending_persists_interaction_state() {
                 if let Some(call_id) = step.tool_call_id() {
                     if call_id == "call_2" {
                         use crate::contracts::Interaction;
-                        step.ask(
+                        step.suspend(SuspendTicket::new(
                             Interaction::new("confirm_call_2", "confirm")
                                 .with_message("approve delete?"),
-                        );
+                        ));
                     }
                 }
             }

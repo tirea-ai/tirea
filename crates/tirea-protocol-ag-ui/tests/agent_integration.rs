@@ -4737,7 +4737,7 @@ impl AgentPlugin for TestFrontendToolPlugin {
     async fn before_tool_execute(&self, step: &mut BeforeToolExecuteContext<'_, '_>) {
         if !matches!(
             step.decision(),
-            tirea_agentos::contracts::plugin::phase::ToolDecision::Proceed
+            tirea_agentos::contracts::plugin::phase::ToolGateDecision::Proceed
         ) {
             return;
         }
@@ -4757,7 +4757,9 @@ impl AgentPlugin for TestFrontendToolPlugin {
         let args = step.tool_args().cloned().unwrap_or_default();
         let interaction =
             Interaction::new(tool_call_id, format!("tool:{tool_name}")).with_parameters(args);
-        step.ask_confirm(interaction);
+        step.suspend(tirea_agentos::contracts::plugin::phase::SuspendTicket::new(
+            interaction,
+        ));
     }
 }
 
