@@ -16,7 +16,7 @@ use tirea_agentos::contracts::storage::{
     MessageQuery, SortOrder,
 };
 use tirea_agentos::contracts::thread::{Thread, Visibility};
-use tirea_agentos::contracts::{AgentEvent, SuspensionResponse, ToolCallDecision};
+use tirea_agentos::contracts::{AgentEvent, ToolCallDecision};
 use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError, RunStream};
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
 use tirea_contract::{ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder};
@@ -445,17 +445,17 @@ where
 
 async fn try_forward_decisions_to_active_run(
     active_key: &str,
-    responses: Vec<SuspensionResponse>,
+    decisions: Vec<ToolCallDecision>,
 ) -> bool {
-    if responses.is_empty() {
+    if decisions.is_empty() {
         return false;
     }
     let Some(decision_tx) = active_run_registry().decision_tx_for(active_key).await else {
         return false;
     };
 
-    for response in responses {
-        if decision_tx.send(response.into()).is_err() {
+    for decision in decisions {
+        if decision_tx.send(decision).is_err() {
             active_run_registry().remove(active_key).await;
             return false;
         }
@@ -486,17 +486,17 @@ async fn run_ai_sdk_sse(
             ));
         }
     }
-    if !req.has_user_input() && !req.has_interaction_responses() {
+    if !req.has_user_input() && !req.has_suspension_decisions() {
         return Err(ApiError::BadRequest(
-            "request must include user input or interaction responses".to_string(),
+            "request must include user input or suspension decisions".to_string(),
         ));
     }
 
-    let interaction_responses = req.interaction_responses();
-    let decision_only = !req.has_user_input() && !interaction_responses.is_empty();
+    let suspension_decisions = req.suspension_decisions();
+    let decision_only = !req.has_user_input() && !suspension_decisions.is_empty();
     if decision_only {
         let key = active_run_key("ai_sdk", &agent_id, &req.thread_id);
-        if try_forward_decisions_to_active_run(&key, interaction_responses).await {
+        if try_forward_decisions_to_active_run(&key, suspension_decisions).await {
             return Ok((
                 StatusCode::ACCEPTED,
                 Json(serde_json::json!({
@@ -547,11 +547,11 @@ async fn run_ag_ui_sse(
     req.validate()
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
-    let interaction_responses = req.interaction_responses();
-    let decision_only = !req.has_user_input() && !interaction_responses.is_empty();
+    let suspension_decisions = req.suspension_decisions();
+    let decision_only = !req.has_user_input() && !suspension_decisions.is_empty();
     if decision_only {
         let key = active_run_key("ag_ui", &agent_id, &req.thread_id);
-        if try_forward_decisions_to_active_run(&key, interaction_responses).await {
+        if try_forward_decisions_to_active_run(&key, suspension_decisions).await {
             return Ok((
                 StatusCode::ACCEPTED,
                 Json(serde_json::json!({
