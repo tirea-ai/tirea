@@ -40,7 +40,6 @@ impl Tool for AddTripTool {
                 },
                 "required": ["trips"]
             }))
-            .with_confirmation(true)
     }
 
     async fn execute(
@@ -170,7 +169,6 @@ impl Tool for DeleteTripTool {
             },
             "required": ["trip_ids"]
         }))
-        .with_confirmation(true)
     }
 
     async fn execute(

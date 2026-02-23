@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Generic interaction request for client-side actions.
+/// Generic suspension request for client-side actions.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Interaction {
-    /// Unique interaction ID.
+pub struct Suspension {
+    /// Unique suspension ID.
     pub id: String,
     /// Action identifier (freeform string, meaning defined by caller).
     pub action: String,
@@ -19,8 +19,8 @@ pub struct Interaction {
     pub response_schema: Option<Value>,
 }
 
-impl Interaction {
-    /// Create a new interaction with id and action.
+impl Suspension {
+    /// Create a new suspension with id and action.
     pub fn new(id: impl Into<String>, action: impl Into<String>) -> Self {
         Self {
             id: id.into(),
@@ -50,16 +50,16 @@ impl Interaction {
     }
 }
 
-/// Generic interaction response.
+/// Generic suspension response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InteractionResponse {
-    /// The interaction ID this response is for.
-    pub interaction_id: String,
+pub struct SuspensionResponse {
+    /// The suspension target ID this response is for.
+    pub target_id: String,
     /// Result value (structure defined by the action type).
     pub result: Value,
 }
 
-impl InteractionResponse {
+impl SuspensionResponse {
     fn deny_string_token(value: &str) -> bool {
         matches!(
             value,
@@ -98,10 +98,10 @@ impl InteractionResponse {
             })
     }
 
-    /// Create a new interaction response.
-    pub fn new(interaction_id: impl Into<String>, result: Value) -> Self {
+    /// Create a new suspension response.
+    pub fn new(target_id: impl Into<String>, result: Value) -> Self {
         Self {
-            interaction_id: interaction_id.into(),
+            target_id: target_id.into(),
             result,
         }
     }
@@ -166,7 +166,7 @@ impl InteractionResponse {
 
 /// A frontend tool invocation record persisted to thread state.
 ///
-/// Replaces the `Interaction` struct for frontend tool call tracking. Each
+/// Replaces the `Suspension` struct for frontend tool call tracking. Each
 /// invocation captures the frontend tool being called, its origin context
 /// (which plugin/tool triggered it), and the routing strategy for handling
 /// the frontend's response.
@@ -203,10 +203,10 @@ impl FrontendToolInvocation {
         }
     }
 
-    /// Convert to an `Interaction` for backward compatibility with the
+    /// Convert to an `Suspension` for backward compatibility with the
     /// existing event system during the transition period.
-    pub fn to_interaction(&self) -> Interaction {
-        Interaction::new(&self.call_id, format!("tool:{}", self.tool_name))
+    pub fn to_suspension(&self) -> Suspension {
+        Suspension::new(&self.call_id, format!("tool:{}", self.tool_name))
             .with_parameters(self.arguments.clone())
     }
 }
@@ -288,7 +288,7 @@ impl From<ResponseRouting> for ResponseRoutingWire {
 
 #[cfg(test)]
 mod tests {
-    use super::{InteractionResponse, ResponseRouting};
+    use super::{SuspensionResponse, ResponseRouting};
     use serde_json::json;
 
     #[test]
@@ -314,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn interaction_response_treats_cancel_variants_as_denied() {
+    fn suspension_response_treats_cancel_variants_as_denied() {
         let denied_cases = [
             json!("cancelled"),
             json!("canceled"),
@@ -325,7 +325,7 @@ mod tests {
         ];
         for case in denied_cases {
             assert!(
-                InteractionResponse::is_denied(&case),
+                SuspensionResponse::is_denied(&case),
                 "expected denied for case: {case}"
             );
         }

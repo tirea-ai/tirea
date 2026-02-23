@@ -763,14 +763,14 @@ pub(super) async fn execute_single_tool_with_phases(
         )
     } else if step.tool_pending() {
         let suspend_ticket = step.tool.as_ref().and_then(|t| t.suspend_ticket.clone());
-        let interaction = suspend_ticket
+        let suspension = suspend_ticket
             .as_ref()
             .map(|ticket| ticket.suspension.clone());
         let invocation = suspend_ticket
             .as_ref()
             .and_then(|ticket| ticket.invocation.clone());
-        let suspended_interaction = interaction.unwrap_or_else(|| {
-            crate::contracts::Interaction::new(call.id.clone(), format!("tool:{}", call.name))
+        let suspended_call_suspension = suspension.unwrap_or_else(|| {
+            crate::contracts::Suspension::new(call.id.clone(), format!("tool:{}", call.name))
                 .with_message("Execution suspended; awaiting external decision")
         });
         (
@@ -786,7 +786,7 @@ pub(super) async fn execute_single_tool_with_phases(
             Some(SuspendedCall {
                 call_id: call.id.clone(),
                 tool_name: call.name.clone(),
-                suspension: suspended_interaction,
+                suspension: suspended_call_suspension,
                 invocation,
             }),
         )

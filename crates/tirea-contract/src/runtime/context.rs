@@ -1,4 +1,4 @@
-use crate::event::interaction::{FrontendToolInvocation, Interaction};
+use crate::event::suspension::{FrontendToolInvocation, Suspension};
 use crate::runtime::activity::ActivityManager;
 use crate::runtime::control::SuspendedCall;
 use crate::runtime::delta::RunDelta;
@@ -94,11 +94,11 @@ impl RunContext {
     // Suspended calls
     // =========================================================================
 
-    /// Read the first suspended interaction from durable control state.
+    /// Read the first suspension from durable control state.
     ///
-    /// This rebuilds state and returns the interaction from the smallest
+    /// This rebuilds state and returns the suspension from the smallest
     /// suspended call ID.
-    pub fn first_suspended_interaction(&self) -> Option<Interaction> {
+    pub fn first_suspension(&self) -> Option<Suspension> {
         let mut calls: Vec<SuspendedCall> = self.suspended_calls().into_values().collect();
         calls.sort_by(|left, right| left.call_id.cmp(&right.call_id));
         calls.into_iter().next().map(|call| call.suspension)

@@ -210,7 +210,6 @@ impl Tool for DeleteResourcesTool {
             },
             "required": ["resource_ids"]
         }))
-        .with_confirmation(true)
     }
 
     async fn execute(

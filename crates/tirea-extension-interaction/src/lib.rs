@@ -9,10 +9,10 @@ pub const INTERACTION_PLUGIN_ID: &str = "interaction";
 #[cfg(test)]
 pub(crate) const RECOVERY_RESUME_TOOL_ID: &str = "agent_run";
 
-/// Interaction action used for agent run recovery confirmation.
+/// Suspension action used for agent run recovery confirmation.
 pub const AGENT_RECOVERY_INTERACTION_ACTION: &str = "recover_agent_run";
 
-/// Interaction ID prefix used for agent run recovery confirmation.
+/// Suspension ID prefix used for agent run recovery confirmation.
 pub const AGENT_RECOVERY_INTERACTION_PREFIX: &str = "agent_recovery_";
 
 pub use interaction_plugin::InteractionPlugin;

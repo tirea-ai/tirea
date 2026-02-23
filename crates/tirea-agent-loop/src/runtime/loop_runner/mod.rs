@@ -60,7 +60,7 @@ use crate::contracts::tool::{Tool, ToolResult};
 use crate::contracts::RunContext;
 use crate::contracts::StopReason;
 use crate::contracts::{
-    AgentEvent, FrontendToolInvocation, Interaction, SuspendedCall, TerminationReason,
+    AgentEvent, FrontendToolInvocation, Suspension, SuspendedCall, TerminationReason,
     ToolCallDecision,
 };
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
@@ -501,13 +501,13 @@ pub(super) async fn complete_step_after_inference(
     Ok(())
 }
 
-pub(super) fn interaction_requested_pending_events(interaction: &Interaction) -> [AgentEvent; 2] {
+pub(super) fn suspension_requested_pending_events(suspension: &Suspension) -> [AgentEvent; 2] {
     [
         AgentEvent::ToolCallSuspendRequested {
-            suspension: interaction.clone(),
+            suspension: suspension.clone(),
         },
         AgentEvent::ToolCallSuspended {
-            suspension: interaction.clone(),
+            suspension: suspension.clone(),
         },
     ]
 }
@@ -521,7 +521,7 @@ pub(super) fn interaction_requested_pending_events(interaction: &Interaction) ->
 /// Falls back to legacy `ToolCallSuspendRequested` + `ToolCallSuspended` events when no
 /// `FrontendToolInvocation` is provided.
 pub(super) fn pending_tool_events(
-    interaction: &Interaction,
+    suspension: &Suspension,
     invocation: Option<&FrontendToolInvocation>,
 ) -> Vec<AgentEvent> {
     if let Some(inv) = invocation {
@@ -537,7 +537,7 @@ pub(super) fn pending_tool_events(
             },
         ]
     } else {
-        interaction_requested_pending_events(interaction).to_vec()
+        suspension_requested_pending_events(suspension).to_vec()
     }
 }
 

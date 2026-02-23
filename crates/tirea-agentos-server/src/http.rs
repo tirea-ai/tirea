@@ -16,7 +16,7 @@ use tirea_agentos::contracts::storage::{
     MessageQuery, SortOrder,
 };
 use tirea_agentos::contracts::thread::{Thread, Visibility};
-use tirea_agentos::contracts::{AgentEvent, InteractionResponse, ToolCallDecision};
+use tirea_agentos::contracts::{AgentEvent, SuspensionResponse, ToolCallDecision};
 use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError, RunStream};
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
 use tirea_contract::{ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder};
@@ -445,7 +445,7 @@ where
 
 async fn try_forward_decisions_to_active_run(
     active_key: &str,
-    responses: Vec<InteractionResponse>,
+    responses: Vec<SuspensionResponse>,
 ) -> bool {
     if responses.is_empty() {
         return false;

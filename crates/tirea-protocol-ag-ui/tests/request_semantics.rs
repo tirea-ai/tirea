@@ -44,7 +44,7 @@ fn interaction_responses_ignore_non_tool_messages_and_tool_without_id() {
 
     let responses = request.interaction_responses();
     assert_eq!(responses.len(), 1);
-    assert_eq!(responses[0].interaction_id, "interaction_1");
+    assert_eq!(responses[0].target_id, "interaction_1");
     assert_eq!(responses[0].result, Value::Bool(false));
     assert!(request.has_any_interaction_responses());
 }
@@ -90,11 +90,11 @@ fn approved_and_denied_ids_follow_runtime_interaction_semantics() {
         .with_message(Message::tool("maybe", "neither"));
 
     assert_eq!(
-        request.approved_interaction_ids(),
+        request.approved_target_ids(),
         vec!["approved_bool", "approved_object"]
     );
     assert_eq!(
-        request.denied_interaction_ids(),
+        request.denied_target_ids(),
         vec![
             "denied_object",
             "cancelled_object",
@@ -105,13 +105,13 @@ fn approved_and_denied_ids_follow_runtime_interaction_semantics() {
 }
 
 #[test]
-fn conflicting_results_for_same_interaction_id_use_last_result() {
+fn conflicting_results_for_same_target_id_use_last_result() {
     let request = RunAgentInput::new("thread_1", "run_1")
         .with_message(Message::tool("true", "same_id"))
         .with_message(Message::tool("false", "same_id"));
 
-    assert!(request.approved_interaction_ids().is_empty());
-    assert_eq!(request.denied_interaction_ids(), vec!["same_id"]);
+    assert!(request.approved_target_ids().is_empty());
+    assert_eq!(request.denied_target_ids(), vec!["same_id"]);
 }
 
 #[test]
@@ -134,7 +134,7 @@ fn interaction_responses_filter_to_pending_ids_when_state_exists() {
 
     let responses = request.interaction_responses();
     assert_eq!(responses.len(), 1);
-    assert_eq!(responses[0].interaction_id, "call_pending");
+    assert_eq!(responses[0].target_id, "call_pending");
 }
 
 #[test]

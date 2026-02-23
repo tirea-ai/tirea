@@ -58,7 +58,7 @@ pub use crate::contracts::plugin::AgentPlugin;
 
 // Phase types for plugins
 pub use crate::contracts::plugin::phase::{Phase, StepContext, StepOutcome, ToolContext};
-pub use crate::contracts::{Interaction, InteractionResponse};
+pub use crate::contracts::{Suspension, SuspensionResponse};
 
 // ── Extension types (require "core" feature) ─────────────────────────────
 

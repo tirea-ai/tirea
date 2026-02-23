@@ -2,7 +2,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use tirea_contract::{
-    InteractionResponse, Message, MessageMetadata, ProtocolInputAdapter, Role, RunRequest, ToolCall,
+    SuspensionResponse, Message, MessageMetadata, ProtocolInputAdapter, Role, RunRequest, ToolCall,
 };
 
 use crate::message::{ToolState, ToolUIPart};
@@ -16,7 +16,7 @@ pub struct AiSdkV6RunRequest {
     pub trigger: Option<AiSdkTrigger>,
     pub message_id: Option<String>,
     messages: Vec<Value>,
-    interaction_responses: Vec<InteractionResponse>,
+    interaction_responses: Vec<SuspensionResponse>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -109,8 +109,8 @@ impl AiSdkV6RunRequest {
         !self.interaction_responses.is_empty()
     }
 
-    /// Interaction responses extracted from incoming UI messages.
-    pub fn interaction_responses(&self) -> Vec<InteractionResponse> {
+    /// Suspension responses extracted from incoming UI messages.
+    pub fn interaction_responses(&self) -> Vec<SuspensionResponse> {
         self.interaction_responses.clone()
     }
 
@@ -204,7 +204,7 @@ fn extract_last_user_text(messages: &[Value]) -> Option<String> {
     None
 }
 
-fn extract_interaction_responses(messages: &[Value]) -> Vec<InteractionResponse> {
+fn extract_interaction_responses(messages: &[Value]) -> Vec<SuspensionResponse> {
     let mut latest_by_id: HashMap<String, (usize, Value)> = HashMap::new();
     let mut ordinal = 0usize;
 
@@ -217,17 +217,17 @@ fn extract_interaction_responses(messages: &[Value]) -> Vec<InteractionResponse>
         }
 
         for part in message_parts(message) {
-            if let Some((interaction_id, result)) = parse_interaction_response_part(&part) {
-                latest_by_id.insert(interaction_id, (ordinal, result));
+            if let Some((target_id, result)) = parse_interaction_response_part(&part) {
+                latest_by_id.insert(target_id, (ordinal, result));
                 ordinal += 1;
             }
         }
     }
 
-    let mut responses: Vec<(usize, InteractionResponse)> = latest_by_id
+    let mut responses: Vec<(usize, SuspensionResponse)> = latest_by_id
         .into_iter()
-        .map(|(interaction_id, (idx, result))| {
-            (idx, InteractionResponse::new(interaction_id, result))
+        .map(|(target_id, (idx, result))| {
+            (idx, SuspensionResponse::new(target_id, result))
         })
         .collect();
     responses.sort_by_key(|(idx, _)| *idx);
@@ -426,7 +426,7 @@ fn parse_approval_responded_part(part: &Value) -> Option<(String, Value)> {
         .and_then(Value::as_str)
         .map(str::to_string);
     let approval = part.get("approval");
-    let interaction_id = approval
+    let target_id = approval
         .and_then(|v| v.get("id"))
         .and_then(Value::as_str)
         .map(str::to_string)
@@ -439,7 +439,7 @@ fn parse_approval_responded_part(part: &Value) -> Option<(String, Value)> {
         .and_then(|v| v.get("reason"))
         .and_then(Value::as_str)
         .map(str::to_string);
-    Some((interaction_id, approval_response_value(approved, reason)))
+    Some((target_id, approval_response_value(approved, reason)))
 }
 
 fn parse_tool_ui_part(part: &Value) -> Option<ToolUIPart> {
@@ -634,7 +634,7 @@ mod tests {
 
         let responses = req.interaction_responses();
         assert_eq!(responses.len(), 1);
-        assert_eq!(responses[0].interaction_id, "fc_perm_1");
+        assert_eq!(responses[0].target_id, "fc_perm_1");
         assert_eq!(responses[0].result["approved"], true);
         assert_eq!(responses[0].result["reason"], "looks safe");
     }
@@ -659,7 +659,7 @@ mod tests {
 
         let responses = req.interaction_responses();
         assert_eq!(responses.len(), 1);
-        assert_eq!(responses[0].interaction_id, "fc_perm_7");
+        assert_eq!(responses[0].target_id, "fc_perm_7");
         assert_eq!(responses[0].result["approved"], false);
         assert_eq!(responses[0].result["reason"], "denied by user");
     }
@@ -684,7 +684,7 @@ mod tests {
 
         let responses = req.interaction_responses();
         assert_eq!(responses.len(), 1);
-        assert_eq!(responses[0].interaction_id, "ask_call_1");
+        assert_eq!(responses[0].target_id, "ask_call_1");
         assert_eq!(responses[0].result["answer"], "blue");
     }
 
@@ -707,7 +707,7 @@ mod tests {
 
         let responses = req.interaction_responses();
         assert_eq!(responses.len(), 1);
-        assert_eq!(responses[0].interaction_id, "call_1");
+        assert_eq!(responses[0].target_id, "call_1");
         assert_eq!(responses[0].result, Value::Bool(false));
     }
 
@@ -731,7 +731,7 @@ mod tests {
 
         let responses = req.interaction_responses();
         assert_eq!(responses.len(), 1);
-        assert_eq!(responses[0].interaction_id, "call_err_1");
+        assert_eq!(responses[0].target_id, "call_err_1");
         assert_eq!(responses[0].result["approved"], false);
         assert_eq!(responses[0].result["error"], "frontend failed");
     }
@@ -755,7 +755,7 @@ mod tests {
 
         let responses = req.interaction_responses();
         assert_eq!(responses.len(), 1);
-        assert_eq!(responses[0].interaction_id, "call_err_default");
+        assert_eq!(responses[0].target_id, "call_err_default");
         assert_eq!(responses[0].result["approved"], false);
         assert_eq!(responses[0].result["error"], "tool output error");
     }
@@ -782,7 +782,7 @@ mod tests {
 
         let responses = req.interaction_responses();
         assert_eq!(responses.len(), 1);
-        assert_eq!(responses[0].interaction_id, "fc_perm_fallback");
+        assert_eq!(responses[0].target_id, "fc_perm_fallback");
         assert_eq!(responses[0].result["approved"], true);
     }
 
@@ -805,13 +805,13 @@ mod tests {
 
         let responses = req.interaction_responses();
         assert_eq!(responses.len(), 1);
-        assert_eq!(responses[0].interaction_id, "fc_perm_10");
+        assert_eq!(responses[0].target_id, "fc_perm_10");
         assert_eq!(responses[0].result["approved"], true);
         assert!(responses[0].result.get("reason").is_none());
     }
 
     #[test]
-    fn latest_interaction_response_wins_for_same_interaction_id() {
+    fn latest_interaction_response_wins_for_same_target_id() {
         let req: AiSdkV6RunRequest = serde_json::from_value(json!({
             "id": "t6",
             "messages": [
@@ -846,7 +846,7 @@ mod tests {
 
         let responses = req.interaction_responses();
         assert_eq!(responses.len(), 1);
-        assert_eq!(responses[0].interaction_id, "fc_perm_9");
+        assert_eq!(responses[0].target_id, "fc_perm_9");
         assert_eq!(responses[0].result["approved"], false);
         assert_eq!(responses[0].result["reason"], "user changed mind");
     }

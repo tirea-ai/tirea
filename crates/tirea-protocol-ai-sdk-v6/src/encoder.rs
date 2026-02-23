@@ -1,7 +1,7 @@
 use super::UIStreamEvent;
 use serde_json::Value;
 use std::collections::HashSet;
-use tirea_contract::{AgentEvent, Interaction, StopReason, TerminationReason, ToolStatus};
+use tirea_contract::{AgentEvent, Suspension, StopReason, TerminationReason, ToolStatus};
 
 /// Data event name for a full state snapshot payload.
 pub const DATA_EVENT_STATE_SNAPSHOT: &str = "state-snapshot";
@@ -400,7 +400,7 @@ impl AiSdkEncoder {
         events
     }
 
-    fn map_interaction_requested(&self, interaction: &Interaction) -> Vec<UIStreamEvent> {
+    fn map_interaction_requested(&self, interaction: &Suspension) -> Vec<UIStreamEvent> {
         let tool_name = interaction
             .action
             .strip_prefix("tool:")
@@ -427,7 +427,7 @@ impl AiSdkEncoder {
         if let Some(err) = result.get("error").and_then(Value::as_str) {
             return vec![UIStreamEvent::tool_output_error(target_id, err)];
         }
-        if tirea_contract::InteractionResponse::is_denied(result) {
+        if tirea_contract::SuspensionResponse::is_denied(result) {
             return vec![UIStreamEvent::tool_output_denied(target_id)];
         }
         vec![UIStreamEvent::tool_output_available(

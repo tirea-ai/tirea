@@ -3,7 +3,7 @@
 //! These types define durable runtime control state for cross-step and cross-run
 //! flow control (suspended tool calls, resume decisions, and inference error envelope).
 
-use crate::event::interaction::{FrontendToolInvocation, Interaction, InteractionResponse};
+use crate::event::suspension::{FrontendToolInvocation, Suspension, SuspensionResponse};
 use crate::thread::Thread;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -22,13 +22,13 @@ pub struct InferenceError {
 
 /// A tool call that has been suspended, awaiting external resolution.
 ///
-/// The core loop only stores `call_id` + generic `Interaction`; it does not
+/// The core loop only stores `call_id` + generic `Suspension`; it does not
 /// interpret the semantics (permissions, frontend tools, user confirmation).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SuspendedCall {
     pub call_id: String,
     pub tool_name: String,
-    pub suspension: Interaction,
+    pub suspension: Suspension,
     /// Optional frontend invocation metadata for routing decisions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invocation: Option<FrontendToolInvocation>,
@@ -59,7 +59,7 @@ pub enum ResumeDecisionAction {
 ///
 /// `target_id` may refer to:
 /// - suspended `call_id`
-/// - interaction id
+/// - suspension id
 /// - frontend invocation call id
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolCallDecision {
@@ -69,7 +69,7 @@ pub struct ToolCallDecision {
     pub decision_id: String,
     /// Resume or cancel action.
     pub action: ResumeDecisionAction,
-    /// Raw response payload from interaction/frontend.
+    /// Raw response payload from suspension/frontend.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub result: Value,
     /// Optional human-readable reason.
@@ -80,9 +80,9 @@ pub struct ToolCallDecision {
 }
 
 impl ToolCallDecision {
-    /// Build a decision from a legacy interaction response payload.
-    pub fn from_interaction_response(response: InteractionResponse, updated_at: u64) -> Self {
-        let action = if InteractionResponse::is_denied(&response.result) {
+    /// Build a decision from a suspension response payload.
+    pub fn from_suspension_response(response: SuspensionResponse, updated_at: u64) -> Self {
+        let action = if SuspensionResponse::is_denied(&response.result) {
             ResumeDecisionAction::Cancel
         } else {
             ResumeDecisionAction::Resume
@@ -101,8 +101,8 @@ impl ToolCallDecision {
             None
         };
         Self {
-            target_id: response.interaction_id.clone(),
-            decision_id: format!("decision_{}", response.interaction_id),
+            target_id: response.target_id.clone(),
+            decision_id: format!("decision_{}", response.target_id),
             action,
             result: response.result,
             reason,
@@ -111,12 +111,12 @@ impl ToolCallDecision {
     }
 }
 
-impl From<InteractionResponse> for ToolCallDecision {
-    fn from(response: InteractionResponse) -> Self {
+impl From<SuspensionResponse> for ToolCallDecision {
+    fn from(response: SuspensionResponse) -> Self {
         let updated_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64);
-        Self::from_interaction_response(response, updated_at)
+        Self::from_suspension_response(response, updated_at)
     }
 }
 
@@ -127,7 +127,7 @@ pub struct ResumeDecision {
     pub decision_id: String,
     /// Resume or cancel action.
     pub action: ResumeDecisionAction,
-    /// Raw response payload from interaction frontend.
+    /// Raw response payload from suspension frontend.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub result: Value,
     /// Optional human-readable reason.
@@ -157,12 +157,12 @@ pub struct InferenceErrorState {
 
 /// Helpers for reading suspended-call state from `Thread`.
 pub trait SuspendedCallsExt {
-    /// Read the first suspended interaction from durable control state.
-    fn first_suspended_interaction(&self) -> Option<Interaction>;
+    /// Read the first suspension from durable control state.
+    fn first_suspension(&self) -> Option<Suspension>;
 }
 
 impl SuspendedCallsExt for Thread {
-    fn first_suspended_interaction(&self) -> Option<Interaction> {
+    fn first_suspension(&self) -> Option<Suspension> {
         self.rebuild_state().ok().and_then(|state| {
             let calls = state
                 .get(SuspendedToolCallsState::PATH)
@@ -184,13 +184,13 @@ mod tests {
     use serde_json::Value;
 
     #[test]
-    fn test_interaction_new() {
-        let interaction = Interaction::new("int_1", "confirm");
-        assert_eq!(interaction.id, "int_1");
-        assert_eq!(interaction.action, "confirm");
-        assert!(interaction.message.is_empty());
-        assert_eq!(interaction.parameters, Value::Null);
-        assert!(interaction.response_schema.is_none());
+    fn test_suspension_new() {
+        let suspension = Suspension::new("int_1", "confirm");
+        assert_eq!(suspension.id, "int_1");
+        assert_eq!(suspension.action, "confirm");
+        assert!(suspension.message.is_empty());
+        assert_eq!(suspension.parameters, Value::Null);
+        assert!(suspension.response_schema.is_none());
     }
 
     #[test]
@@ -206,9 +206,9 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_decision_from_interaction_response_resume() {
-        let response = InteractionResponse::new("fc_1", Value::Bool(true));
-        let decision = ToolCallDecision::from_interaction_response(response, 123);
+    fn tool_call_decision_from_suspension_response_resume() {
+        let response = SuspensionResponse::new("fc_1", Value::Bool(true));
+        let decision = ToolCallDecision::from_suspension_response(response, 123);
         assert_eq!(decision.target_id, "fc_1");
         assert_eq!(decision.decision_id, "decision_fc_1");
         assert!(matches!(decision.action, ResumeDecisionAction::Resume));
@@ -218,15 +218,15 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_decision_from_interaction_response_cancel_with_reason() {
-        let response = InteractionResponse::new(
+    fn tool_call_decision_from_suspension_response_cancel_with_reason() {
+        let response = SuspensionResponse::new(
             "fc_2",
             serde_json::json!({
                 "approved": false,
                 "reason": "denied by user"
             }),
         );
-        let decision = ToolCallDecision::from_interaction_response(response, 456);
+        let decision = ToolCallDecision::from_suspension_response(response, 456);
         assert!(matches!(decision.action, ResumeDecisionAction::Cancel));
         assert_eq!(decision.reason.as_deref(), Some("denied by user"));
         assert_eq!(decision.updated_at, 456);

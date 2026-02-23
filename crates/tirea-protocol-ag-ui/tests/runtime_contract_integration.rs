@@ -2,7 +2,7 @@
 
 use serde_json::{json, Value};
 use tirea_contract::{
-    AgentEvent, Interaction, ProtocolInputAdapter, Role, TerminationReason, ToolResult,
+    AgentEvent, Suspension, ProtocolInputAdapter, Role, TerminationReason, ToolResult,
 };
 use tirea_protocol_ag_ui::{AgUiEventContext, AgUiInputAdapter, Event, Message, RunAgentInput};
 
@@ -25,7 +25,7 @@ fn agui_context_pending_closes_text_and_emits_interaction_tool_events() {
     assert!(matches!(text_events[1], Event::TextMessageContent { .. }));
 
     let pending_events = ctx.on_agent_event(&AgentEvent::ToolCallSuspended {
-        suspension: Interaction::new("int_1", "confirm")
+        suspension: Suspension::new("int_1", "confirm")
             .with_message("Allow this action?")
             .with_parameters(serde_json::json!({ "approved": true })),
     });
@@ -41,7 +41,7 @@ fn agui_context_interaction_requested_emits_tool_call_events_for_new_ids() {
 
     // ToolCallSuspendRequested with a never-seen ID → should emit TOOL_CALL_START/ARGS/END
     let events = ctx.on_agent_event(&AgentEvent::ToolCallSuspendRequested {
-        suspension: Interaction::new("new_call_1", "tool:PermissionConfirm")
+        suspension: Suspension::new("new_call_1", "tool:PermissionConfirm")
             .with_message("Allow this?")
             .with_parameters(serde_json::json!({ "question": "ok?" })),
     });
@@ -64,7 +64,7 @@ fn agui_context_interaction_requested_skips_already_emitted_tool_call_ids() {
 
     // Then: ToolCallSuspendRequested for same ID → should be suppressed (already emitted)
     let events = ctx.on_agent_event(&AgentEvent::ToolCallSuspendRequested {
-        suspension: Interaction::new("call_copy", "tool:copyToClipboard")
+        suspension: Suspension::new("call_copy", "tool:copyToClipboard")
             .with_parameters(serde_json::json!({ "text": "hello" })),
     });
 
@@ -83,7 +83,7 @@ fn agui_context_interaction_requested_closes_open_text_stream() {
 
     // ToolCallSuspendRequested for new ID with open text → closes text first
     let events = ctx.on_agent_event(&AgentEvent::ToolCallSuspendRequested {
-        suspension: Interaction::new("new_int_1", "tool:PermissionConfirm")
+        suspension: Suspension::new("new_int_1", "tool:PermissionConfirm")
             .with_parameters(serde_json::json!({})),
     });
 
@@ -238,7 +238,7 @@ fn agui_contract_terminal_event_closes_text_and_suppresses_followup_events() {
 #[test]
 fn agui_contract_hitl_roundtrip_maps_requested_and_response_ids() {
     let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
-    let interaction = Interaction::new("perm_1", "tool:confirm_write")
+    let interaction = Suspension::new("perm_1", "tool:confirm_write")
         .with_message("approve this write?")
         .with_parameters(json!({ "path": "notes.md" }));
 
@@ -261,8 +261,8 @@ fn agui_contract_hitl_roundtrip_maps_requested_and_response_ids() {
         Message::tool("true", "perm_1"),
         Message::tool("false", "perm_2"),
     ]);
-    assert_eq!(request.approved_interaction_ids(), vec!["perm_1"]);
-    assert_eq!(request.denied_interaction_ids(), vec!["perm_2"]);
+    assert_eq!(request.approved_target_ids(), vec!["perm_1"]);
+    assert_eq!(request.denied_target_ids(), vec!["perm_2"]);
 }
 
 #[test]

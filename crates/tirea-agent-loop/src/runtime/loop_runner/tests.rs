@@ -1,6 +1,6 @@
 use super::outcome::LoopFailure;
 use super::*;
-use crate::contracts::event::interaction::{
+use crate::contracts::event::suspension::{
     FrontendToolInvocation, InvocationOrigin, ResponseRouting,
 };
 use crate::contracts::plugin::phase::{
@@ -372,7 +372,7 @@ fn suspend_frontend_tool(
 
 fn set_single_suspended_call(
     state: &Value,
-    suspension: Interaction,
+    suspension: Suspension,
     invocation: Option<crate::contracts::FrontendToolInvocation>,
 ) -> Result<tirea_state::TrackedPatch, AgentLoopError> {
     let call_id = invocation
@@ -712,7 +712,7 @@ fn test_agent_loop_error_termination_reason_mapping() {
         suspended_call: Box::new(SuspendedCall {
             call_id: "call_1".to_string(),
             tool_name: "confirm_tool".to_string(),
-            suspension: Interaction::new("int_1", "confirm"),
+            suspension: Suspension::new("int_1", "confirm"),
             invocation: None,
         }),
     };
@@ -1281,7 +1281,7 @@ impl AgentPlugin for InvalidDualToolGatePlugin {
             tool.blocked = true;
             tool.pending = true;
             tool.suspend_ticket = Some(SuspendTicket::new(
-                Interaction::new("confirm", "confirm").with_message("invalid gate"),
+                Suspension::new("confirm", "confirm").with_message("invalid gate"),
             ));
         }
     });
@@ -1333,7 +1333,7 @@ impl AgentPlugin for InvalidSuspendTicketMutationPlugin {
         }
         if let Some(tool) = step.tool.as_mut() {
             tool.suspend_ticket = Some(SuspendTicket::new(
-                Interaction::new("late_suspend", "confirm").with_message("late ticket"),
+                Suspension::new("late_suspend", "confirm").with_message("late ticket"),
             ));
         }
     });
@@ -2017,9 +2017,9 @@ impl AgentPlugin for PendingPhasePlugin {
 
     phase_dispatch_methods!(|phase, step| {
         if phase == Phase::BeforeToolExecute && step.tool_name() == Some("echo") {
-            use crate::contracts::Interaction;
+            use crate::contracts::Suspension;
             step.suspend(SuspendTicket::new(
-                Interaction::new("confirm_1", "confirm").with_message("Execute echo?"),
+                Suspension::new("confirm_1", "confirm").with_message("Execute echo?"),
             ));
         }
     });
@@ -2135,7 +2135,7 @@ fn test_apply_tool_results_suspends_all_interactions() {
     first.suspended_call = Some(crate::contracts::SuspendedCall {
         call_id: "call_1".to_string(),
         tool_name: "test_tool".to_string(),
-        suspension: Interaction::new("confirm_1", "confirm").with_message("approve first tool"),
+        suspension: Suspension::new("confirm_1", "confirm").with_message("approve first tool"),
         invocation: None,
     });
 
@@ -2144,7 +2144,7 @@ fn test_apply_tool_results_suspends_all_interactions() {
     second.suspended_call = Some(crate::contracts::SuspendedCall {
         call_id: "call_2".to_string(),
         tool_name: "test_tool".to_string(),
-        suspension: Interaction::new("confirm_2", "confirm").with_message("approve second tool"),
+        suspension: Suspension::new("confirm_2", "confirm").with_message("approve second tool"),
         invocation: None,
     });
 
@@ -2669,7 +2669,7 @@ fn test_execute_tools_with_config_preserves_unresolved_suspended_calls_on_succes
         let base_state = json!({});
         let pending_patch = set_single_suspended_call(
             &base_state,
-            Interaction::new("confirm_1", "confirm").with_message("ok"),
+            Suspension::new("confirm_1", "confirm").with_message("ok"),
             None,
         )
         .expect("failed to set suspended interaction for test seed");
@@ -2712,13 +2712,13 @@ fn test_set_agent_suspended_calls_compat_view_uses_smallest_call_id() {
             SuspendedCall {
                 call_id: "call_b".to_string(),
                 tool_name: "echo".to_string(),
-                suspension: Interaction::new("int_b", "confirm").with_message("b"),
+                suspension: Suspension::new("int_b", "confirm").with_message("b"),
                 invocation: None,
             },
             SuspendedCall {
                 call_id: "call_a".to_string(),
                 tool_name: "echo".to_string(),
-                suspension: Interaction::new("int_a", "confirm").with_message("a"),
+                suspension: Suspension::new("int_a", "confirm").with_message("a"),
                 invocation: None,
             },
         ],
@@ -2726,7 +2726,7 @@ fn test_set_agent_suspended_calls_compat_view_uses_smallest_call_id() {
     .expect("set suspended calls");
     let thread = Thread::with_initial_state("test", base_state).with_patch(patch);
     let pending = thread
-        .first_suspended_interaction()
+        .first_suspension()
         .expect("suspended interaction expected");
     assert_eq!(pending.id, "int_a");
 }
@@ -2972,7 +2972,7 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
             let state = step.snapshot();
             let patch = set_single_suspended_call(
                 &state,
-                Interaction::new("agent_recovery_run-1", "recover_agent_run")
+                Suspension::new("agent_recovery_run-1", "recover_agent_run")
                     .with_message("resume?"),
                 None,
             )
@@ -3782,7 +3782,7 @@ async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_contex
 
     let interaction =
         tirea_extension_interaction::InteractionPlugin::from_interaction_responses(vec![
-            crate::contracts::InteractionResponse::new(
+            crate::contracts::SuspensionResponse::new(
                 "call_1",
                 json!({"status": "cancelled", "reason": "User canceled in UI"}),
             ),
@@ -3936,7 +3936,7 @@ async fn test_run_loop_legacy_run_start_outbox_resolution_is_ignored() {
             "__resolved_suspensions": {
                 "resolutions": [
                     {
-                        "interaction_id": "resolution_1",
+                        "target_id": "resolution_1",
                         "result": true
                     }
                 ]
@@ -3960,7 +3960,7 @@ async fn test_run_loop_legacy_run_start_outbox_resolution_is_ignored() {
     assert_eq!(
         resolutions,
         Some(&json!([{
-            "interaction_id": "resolution_1",
+            "target_id": "resolution_1",
             "result": true
         }])),
         "legacy outbox resolutions should be ignored by run-start replay"
@@ -4001,7 +4001,7 @@ async fn test_run_loop_legacy_run_start_replay_queue_is_ignored() {
                 }
                 Phase::BeforeToolExecute if step.tool_call_id() == Some("replay_call_1") => {
                     step.suspend(SuspendTicket::new(
-                        Interaction::new("confirm_replay_call_1", "confirm")
+                        Suspension::new("confirm_replay_call_1", "confirm")
                             .with_message("approve first replay"),
                     ));
                 }
@@ -4060,7 +4060,7 @@ async fn test_run_loop_skip_inference_with_suspended_state_returns_suspended_int
             let state = step.snapshot();
             let patch = set_single_suspended_call(
                 &state,
-                Interaction::new("agent_recovery_run-1", "recover_agent_run")
+                Suspension::new("agent_recovery_run-1", "recover_agent_run")
                     .with_message("resume?"),
                 None,
             )
@@ -4083,7 +4083,7 @@ async fn test_run_loop_skip_inference_with_suspended_state_returns_suspended_int
 
     let interaction = outcome
         .run_ctx
-        .first_suspended_interaction()
+        .first_suspension()
         .expect("should have suspended interaction");
     assert_eq!(interaction.action, "recover_agent_run");
     assert_eq!(interaction.message, "resume?");
@@ -5515,7 +5515,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
             let state = step.snapshot();
             let patch = set_single_suspended_call(
                 &state,
-                Interaction::new("golden_resume_1", "recover_agent_run").with_message("resume me"),
+                Suspension::new("golden_resume_1", "recover_agent_run").with_message("resume me"),
                 None,
             )
             .expect("failed to set suspended interaction");
@@ -5543,7 +5543,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
     assert_eq!(nonstream_outcome.termination, TerminationReason::Suspended);
     let nonstream_interaction = nonstream_outcome
         .run_ctx
-        .first_suspended_interaction()
+        .first_suspension()
         .expect("non-stream outcome should have suspended interaction");
 
     let (events, stream_thread) = run_mock_stream_with_final_thread(
@@ -5588,7 +5588,7 @@ async fn test_golden_run_loop_and_stream_no_plugins_pending_state_alignment() {
     let base_state = json!({});
     let pending_patch = set_single_suspended_call(
         &base_state,
-        Interaction::new("leftover_confirm", "confirm").with_message("stale pending"),
+        Suspension::new("leftover_confirm", "confirm").with_message("stale pending"),
         None,
     )
     .expect("failed to seed suspended interaction");
@@ -6368,7 +6368,7 @@ fn extract_run_finish_response(events: &[AgentEvent]) -> Option<String> {
     })
 }
 
-fn extract_requested_interaction(events: &[AgentEvent]) -> Option<Interaction> {
+fn extract_requested_interaction(events: &[AgentEvent]) -> Option<Suspension> {
     events.iter().find_map(|e| match e {
         AgentEvent::ToolCallSuspendRequested { suspension } => Some(suspension.clone()),
         AgentEvent::ToolCallSuspended { suspension } => Some(suspension.clone()),
@@ -6799,7 +6799,7 @@ async fn test_stream_legacy_run_start_replay_queue_is_ignored() {
                 }
                 Phase::BeforeToolExecute if step.tool_call_id() == Some("replay_call_1") => {
                     step.suspend(SuspendTicket::new(
-                        Interaction::new("confirm_replay_call_1", "confirm")
+                        Suspension::new("confirm_replay_call_1", "confirm")
                             .with_message("approve first replay"),
                     ));
                 }
@@ -6881,7 +6881,7 @@ async fn test_stream_parallel_multiple_pending_emits_all_suspended() {
                 Phase::BeforeToolExecute => {
                     if let Some(call_id) = step.tool_call_id() {
                         step.suspend(SuspendTicket::new(
-                            Interaction::new(format!("confirm_{call_id}"), "confirm")
+                            Suspension::new(format!("confirm_{call_id}"), "confirm")
                                 .with_message("needs confirmation"),
                         ));
                     }
@@ -7667,7 +7667,7 @@ fn test_sequential_tools_partial_failure() {
 }
 
 #[tokio::test]
-async fn test_sequential_tools_stop_after_first_suspended_interaction() {
+async fn test_sequential_tools_stop_after_first_suspension() {
     struct PendingEveryToolPlugin {
         seen_calls: Arc<Mutex<Vec<String>>>,
     }
@@ -7688,7 +7688,7 @@ async fn test_sequential_tools_stop_after_first_suspended_interaction() {
                     .expect("lock poisoned")
                     .push(call_id.to_string());
                 step.suspend(SuspendTicket::new(
-                    Interaction::new(format!("confirm_{call_id}"), "confirm")
+                    Suspension::new(format!("confirm_{call_id}"), "confirm")
                         .with_message("needs confirmation"),
                 ));
             }
@@ -7753,7 +7753,7 @@ async fn test_parallel_tools_allow_single_suspended_interaction_per_round() {
                     .expect("lock poisoned")
                     .push(call_id.to_string());
                 step.suspend(SuspendTicket::new(
-                    Interaction::new(format!("confirm_{call_id}"), "confirm")
+                    Suspension::new(format!("confirm_{call_id}"), "confirm")
                         .with_message("needs confirmation"),
                 ));
             }
@@ -8195,7 +8195,7 @@ async fn test_run_step_skip_inference_with_suspended_state_returns_suspended_int
             let state = step.snapshot();
             let patch = set_single_suspended_call(
                 &state,
-                Interaction::new("agent_recovery_step-1", "recover_agent_run")
+                Suspension::new("agent_recovery_step-1", "recover_agent_run")
                     .with_message("resume step?"),
                 None,
             )
@@ -8217,7 +8217,7 @@ async fn test_run_step_skip_inference_with_suspended_state_returns_suspended_int
 
     let interaction = outcome
         .run_ctx
-        .first_suspended_interaction()
+        .first_suspension()
         .expect("should have suspended interaction");
     assert_eq!(interaction.action, "recover_agent_run");
     assert_eq!(interaction.message, "resume step?");
@@ -9601,7 +9601,7 @@ async fn test_nonstream_mixed_pending_and_completed_tools_continues_loop() {
                 if let Some(call_id) = step.tool_call_id() {
                     if call_id == "call_2" {
                         step.suspend(SuspendTicket::new(
-                            Interaction::new("confirm_call_2", "confirm")
+                            Suspension::new("confirm_call_2", "confirm")
                                 .with_message("approve delete?"),
                         ));
                     }
@@ -9688,7 +9688,7 @@ async fn test_nonstream_single_pending_tool_enters_waiting() {
             if phase == Phase::BeforeToolExecute {
                 if let Some(call_id) = step.tool_call_id() {
                     step.suspend(SuspendTicket::new(
-                        Interaction::new(format!("confirm_{call_id}"), "confirm")
+                        Suspension::new(format!("confirm_{call_id}"), "confirm")
                             .with_message("needs confirmation"),
                     ));
                 }
@@ -9748,9 +9748,9 @@ async fn test_stream_mixed_pending_and_completed_tools_continues_loop() {
             if phase == Phase::BeforeToolExecute {
                 if let Some(call_id) = step.tool_call_id() {
                     if call_id == "call_2" {
-                        use crate::contracts::Interaction;
+                        use crate::contracts::Suspension;
                         step.suspend(SuspendTicket::new(
-                            Interaction::new("confirm_call_2", "confirm")
+                            Suspension::new("confirm_call_2", "confirm")
                                 .with_message("approve delete?"),
                         ));
                     }
@@ -9837,9 +9837,9 @@ async fn test_stream_all_tools_pending_pauses_run() {
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeToolExecute {
                 if let Some(call_id) = step.tool_call_id() {
-                    use crate::contracts::Interaction;
+                    use crate::contracts::Suspension;
                     step.suspend(SuspendTicket::new(
-                        Interaction::new(format!("confirm_{call_id}"), "confirm")
+                        Suspension::new(format!("confirm_{call_id}"), "confirm")
                             .with_message("needs confirmation"),
                     ));
                 }
@@ -9891,9 +9891,9 @@ async fn test_stream_mixed_pending_persists_interaction_state() {
             if phase == Phase::BeforeToolExecute {
                 if let Some(call_id) = step.tool_call_id() {
                     if call_id == "call_2" {
-                        use crate::contracts::Interaction;
+                        use crate::contracts::Suspension;
                         step.suspend(SuspendTicket::new(
-                            Interaction::new("confirm_call_2", "confirm")
+                            Suspension::new("confirm_call_2", "confirm")
                                 .with_message("approve delete?"),
                         ));
                     }
@@ -9955,13 +9955,13 @@ async fn test_stream_mixed_pending_persists_interaction_state() {
 /// only plugins decide about interaction termination.
 #[tokio::test]
 async fn test_no_plugins_loop_ignores_pending() {
-    use crate::contracts::Interaction;
+    use crate::contracts::Suspension;
 
     // Seed state with a pre-existing suspended interaction.
     let base_state = json!({});
     let pending_patch = set_single_suspended_call(
         &base_state,
-        Interaction::new("leftover_confirm", "confirm").with_message("stale pending"),
+        Suspension::new("leftover_confirm", "confirm").with_message("stale pending"),
         None,
     )
     .expect("failed to seed suspended interaction");
@@ -10316,7 +10316,7 @@ async fn test_request_termination_method_stops_stream() {
 }
 
 #[tokio::test]
-async fn test_run_loop_decision_channel_ignores_unknown_interaction_id() {
+async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
     struct SkipInferencePlugin;
 
     #[async_trait]
@@ -10358,7 +10358,7 @@ async fn test_run_loop_decision_channel_ignores_unknown_interaction_id() {
         AgentConfig::new("mock").with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
     let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
     decision_tx
-        .send(crate::contracts::InteractionResponse::new("unknown_call", json!(true)).into())
+        .send(crate::contracts::SuspensionResponse::new("unknown_call", json!(true)).into())
         .expect("send decision");
     drop(decision_tx);
 
@@ -10392,7 +10392,7 @@ async fn test_run_loop_decision_channel_ignores_unknown_interaction_id() {
 }
 
 #[tokio::test]
-async fn test_stream_decision_channel_ignores_unknown_interaction_id() {
+async fn test_stream_decision_channel_ignores_unknown_target_id() {
     struct SkipInferencePlugin;
 
     #[async_trait]
@@ -10437,7 +10437,7 @@ async fn test_stream_decision_channel_ignores_unknown_interaction_id() {
         Arc::new(ChannelStateCommitter::new(checkpoint_tx));
     let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
     decision_tx
-        .send(crate::contracts::InteractionResponse::new("unknown_call", json!(true)).into())
+        .send(crate::contracts::SuspensionResponse::new("unknown_call", json!(true)).into())
         .expect("send decision");
     drop(decision_tx);
 
@@ -10594,7 +10594,7 @@ async fn test_run_loop_decision_channel_resolves_suspended_call() {
     ready.notified().await;
     decision_tx
         .send(
-            crate::contracts::InteractionResponse::new(
+            crate::contracts::SuspensionResponse::new(
                 "call_pending",
                 json!({"approved": true, "message": "need approval"}),
             )
@@ -10673,7 +10673,7 @@ async fn test_run_loop_decision_channel_cancel_emits_single_tool_result_message(
     let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
     decision_tx
         .send(
-            crate::contracts::InteractionResponse::new(
+            crate::contracts::SuspensionResponse::new(
                 "call_pending",
                 json!({"status": "cancelled", "reason": "User canceled in UI"}),
             )
@@ -10830,7 +10830,7 @@ async fn test_run_loop_stream_decision_channel_emits_resolution_and_replay() {
     ready.notified().await;
     decision_tx
         .send(
-            crate::contracts::InteractionResponse::new(
+            crate::contracts::SuspensionResponse::new(
                 "call_pending",
                 json!({"approved": true, "message": "need approval"}),
             )
@@ -10969,7 +10969,7 @@ async fn test_run_loop_decision_channel_buffers_early_response_for_all_suspended
     entered.notified().await;
     decision_tx
         .send(
-            crate::contracts::InteractionResponse::new(
+            crate::contracts::SuspensionResponse::new(
                 "call_pending",
                 json!({"approved": true, "message": "need approval"}),
             )
@@ -11099,7 +11099,7 @@ async fn test_stream_decision_channel_buffers_early_response_for_all_suspended_t
     entered.notified().await;
     decision_tx
         .send(
-            crate::contracts::InteractionResponse::new(
+            crate::contracts::SuspensionResponse::new(
                 "call_pending",
                 json!({"approved": true, "message": "need approval"}),
             )
@@ -11202,7 +11202,7 @@ async fn test_stream_decision_channel_drains_while_inference_stream_is_running()
 
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     decision_tx
-        .send(crate::contracts::InteractionResponse::new("call_pending", json!(true)).into())
+        .send(crate::contracts::SuspensionResponse::new("call_pending", json!(true)).into())
         .expect("send decision");
     tokio::time::sleep(std::time::Duration::from_millis(40)).await;
     token.cancel();
@@ -11313,7 +11313,7 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_resume_decisio
 
     let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
     decision_tx
-        .send(crate::contracts::InteractionResponse::new("fc_perm_1", json!(true)).into())
+        .send(crate::contracts::SuspensionResponse::new("fc_perm_1", json!(true)).into())
         .expect("send decision");
     drop(decision_tx);
 

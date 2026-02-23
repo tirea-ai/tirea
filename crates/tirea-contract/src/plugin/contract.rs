@@ -68,7 +68,7 @@ pub trait AgentPlugin: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::Interaction;
+    use crate::event::Suspension;
     use crate::plugin::phase::{StepContext, SuspendTicket, ToolContext};
     use crate::testing::TestFixture;
     use crate::thread::ToolCall;
@@ -216,7 +216,7 @@ mod tests {
             if let Some(tool_id) = ctx.tool_name() {
                 if self.confirm_tools.contains(&tool_id.to_string()) {
                     ctx.suspend(SuspendTicket::new(
-                        Interaction::new("confirm", "confirm").with_message("Execute this tool?"),
+                        Suspension::new("confirm", "confirm").with_message("Execute this tool?"),
                     ));
                 }
             }

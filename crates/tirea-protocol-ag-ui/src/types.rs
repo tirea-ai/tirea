@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use tirea_contract::InteractionResponse;
+use tirea_contract::SuspensionResponse;
 use tirea_contract::{gen_message_id, RunRequest, Visibility};
 use tracing::warn;
 
@@ -311,7 +311,7 @@ impl RunAgentInput {
     }
 
     /// Extract all interaction responses from tool messages.
-    pub fn interaction_responses(&self) -> Vec<InteractionResponse> {
+    pub fn interaction_responses(&self) -> Vec<SuspensionResponse> {
         let expected_ids = self.suspended_call_response_ids();
         let mut latest_by_id: HashMap<String, (usize, Value)> = HashMap::new();
 
@@ -333,9 +333,9 @@ impl RunAgentInput {
                 latest_by_id.insert(id, (idx, result));
             });
 
-        let mut responses: Vec<(usize, InteractionResponse)> = latest_by_id
+        let mut responses: Vec<(usize, SuspensionResponse)> = latest_by_id
             .into_iter()
-            .map(|(id, (idx, result))| (idx, InteractionResponse::new(id, result)))
+            .map(|(id, (idx, result))| (idx, SuspensionResponse::new(id, result)))
             .collect();
         responses.sort_by_key(|(idx, _)| *idx);
         responses
@@ -345,20 +345,20 @@ impl RunAgentInput {
     }
 
     /// Get all approved interaction IDs.
-    pub fn approved_interaction_ids(&self) -> Vec<String> {
+    pub fn approved_target_ids(&self) -> Vec<String> {
         self.interaction_responses()
             .into_iter()
             .filter(|r| r.approved())
-            .map(|r| r.interaction_id)
+            .map(|r| r.target_id)
             .collect()
     }
 
     /// Get all denied interaction IDs.
-    pub fn denied_interaction_ids(&self) -> Vec<String> {
+    pub fn denied_target_ids(&self) -> Vec<String> {
         self.interaction_responses()
             .into_iter()
             .filter(|r| r.denied())
-            .map(|r| r.interaction_id)
+            .map(|r| r.target_id)
             .collect()
     }
 

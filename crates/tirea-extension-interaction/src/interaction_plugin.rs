@@ -9,7 +9,7 @@ use crate::AGENT_RECOVERY_INTERACTION_ACTION;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tirea_contract::event::interaction::ResponseRouting;
+use tirea_contract::event::suspension::ResponseRouting;
 use tirea_contract::event::termination::TerminationReason;
 use tirea_contract::plugin::phase::{
     BeforeInferenceContext, BeforeToolExecuteContext, PluginPhaseContext, RunStartContext,
@@ -20,14 +20,14 @@ use tirea_contract::runtime::control::{
     SuspendedToolCallsState,
 };
 use tirea_contract::runtime::state_paths::SUSPENDED_TOOL_CALLS_STATE_PATH;
-use tirea_contract::{InteractionResponse, SuspendedCall};
+use tirea_contract::{SuspensionResponse, SuspendedCall};
 
 /// Unified interaction plugin.
 ///
 /// This plugin is strategy-agnostic: it applies interaction responses from the
 /// inbound request to suspended tool calls.
 pub struct InteractionPlugin {
-    /// Interaction responses keyed by interaction ID.
+    /// Suspension responses keyed by interaction ID.
     responses: HashMap<String, serde_json::Value>,
     /// Guards the `before_inference` check so it only runs on the first call per run.
     /// On the first BeforeInference, we check for unresolved suspended interactions
@@ -58,11 +58,11 @@ impl InteractionPlugin {
     }
 
     /// Build plugin from explicit interaction response payloads.
-    pub fn from_interaction_responses(responses: Vec<InteractionResponse>) -> Self {
+    pub fn from_interaction_responses(responses: Vec<SuspensionResponse>) -> Self {
         Self {
             responses: responses
                 .into_iter()
-                .map(|r| (r.interaction_id, r.result))
+                .map(|r| (r.target_id, r.result))
                 .collect(),
             first_inference_checked: AtomicBool::new(false),
         }
@@ -79,21 +79,21 @@ impl InteractionPlugin {
     }
 
     /// Return a raw response payload for an interaction id.
-    fn result_for(&self, interaction_id: &str) -> Option<&serde_json::Value> {
-        self.responses.get(interaction_id)
+    fn result_for(&self, target_id: &str) -> Option<&serde_json::Value> {
+        self.responses.get(target_id)
     }
 
     /// Check if an interaction ID is approved.
-    pub fn is_approved(&self, interaction_id: &str) -> bool {
-        self.result_for(interaction_id)
-            .map(InteractionResponse::is_approved)
+    pub fn is_approved(&self, target_id: &str) -> bool {
+        self.result_for(target_id)
+            .map(SuspensionResponse::is_approved)
             .unwrap_or(false)
     }
 
     /// Check if an interaction ID is denied.
-    pub fn is_denied(&self, interaction_id: &str) -> bool {
-        self.result_for(interaction_id)
-            .map(InteractionResponse::is_denied)
+    pub fn is_denied(&self, target_id: &str) -> bool {
+        self.result_for(target_id)
+            .map(SuspensionResponse::is_denied)
             .unwrap_or(false)
     }
 
@@ -193,10 +193,10 @@ impl InteractionPlugin {
             let result_payload = self.result_for(&response_key).cloned();
             let is_denied = result_payload
                 .as_ref()
-                .is_some_and(InteractionResponse::is_denied);
+                .is_some_and(SuspensionResponse::is_denied);
             let is_approved = result_payload
                 .as_ref()
-                .is_some_and(InteractionResponse::is_approved);
+                .is_some_and(SuspensionResponse::is_approved);
             let resolution_value = result_payload
                 .clone()
                 .unwrap_or(serde_json::Value::Bool(!is_denied));
@@ -448,7 +448,7 @@ mod tests {
             .unwrap_or_default()
     }
 
-    fn interaction_resolutions_from_state(state: &serde_json::Value) -> Vec<InteractionResponse> {
+    fn interaction_resolutions_from_state(state: &serde_json::Value) -> Vec<SuspensionResponse> {
         let decisions = resume_decisions_from_state(state);
         if decisions.is_empty() {
             return Vec::new();
@@ -465,7 +465,7 @@ mod tests {
             .into_iter()
             .filter_map(|call_id| {
                 let decision = decisions.get(&call_id)?;
-                let interaction_id = suspended
+                let target_id = suspended
                     .get(&call_id)
                     .map(|call| call.suspension.id.clone())
                     .unwrap_or(call_id.clone());
@@ -474,7 +474,7 @@ mod tests {
                 } else {
                     decision.result.clone()
                 };
-                Some(InteractionResponse::new(interaction_id, result))
+                Some(SuspensionResponse::new(target_id, result))
             })
             .collect()
     }
@@ -920,7 +920,7 @@ mod tests {
             }
         });
         let fixture = TestFixture::new_with_state(state);
-        let plugin = InteractionPlugin::from_interaction_responses(vec![InteractionResponse::new(
+        let plugin = InteractionPlugin::from_interaction_responses(vec![SuspensionResponse::new(
             "call_copy",
             json!({
                 "ok": true,
@@ -941,7 +941,7 @@ mod tests {
 
         let resolutions = interaction_resolutions_from_state(&updated);
         assert_eq!(resolutions.len(), 1);
-        assert_eq!(resolutions[0].interaction_id, "call_copy");
+        assert_eq!(resolutions[0].target_id, "call_copy");
         assert_eq!(resolutions[0].result["ok"], true);
         assert_eq!(resolutions[0].result["copied"], "hello");
     }

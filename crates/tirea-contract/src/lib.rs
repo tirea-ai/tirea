@@ -145,7 +145,7 @@ pub use thread::{
 
 // event
 pub use event::{
-    AgentEvent, FrontendToolInvocation, Interaction, InteractionResponse, InvocationOrigin,
+    AgentEvent, FrontendToolInvocation, Suspension, SuspensionResponse, InvocationOrigin,
     ResponseRouting, StopConditionSpec, StopReason, TerminationReason,
 };
 

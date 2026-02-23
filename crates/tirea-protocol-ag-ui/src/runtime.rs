@@ -9,7 +9,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tirea_agent_loop::runtime::loop_runner::ResolvedRun;
-use tirea_contract::event::interaction::{
+use tirea_contract::event::suspension::{
     FrontendToolInvocation, InvocationOrigin, ResponseRouting,
 };
 use tirea_contract::plugin::phase::{
@@ -480,7 +480,7 @@ mod tests {
 
     #[tokio::test]
     async fn frontend_pending_plugin_marks_frontend_call_as_pending() {
-        use tirea_contract::event::interaction::{InvocationOrigin, ResponseRouting};
+        use tirea_contract::event::suspension::{InvocationOrigin, ResponseRouting};
 
         let plugin =
             FrontendToolPendingPlugin::new(["copyToClipboard".to_string()].into_iter().collect());

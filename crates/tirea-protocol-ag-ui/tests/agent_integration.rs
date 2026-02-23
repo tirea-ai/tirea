@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use tirea_agentos::contracts::thread::Role as ThreadRole;
 use tirea_agentos::contracts::thread::Thread as ConversationAgentState;
 use tirea_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
-use tirea_agentos::contracts::InteractionResponse;
+use tirea_agentos::contracts::SuspensionResponse;
 use tirea_agentos::contracts::ToolCallContext;
 use tirea_agentos::extensions::interaction::InteractionPlugin;
 use tirea_agentos::extensions::reminder::SystemReminder;
@@ -2971,7 +2971,7 @@ async fn test_sequential_execution_with_mixed_patch_results() {
 
 #[test]
 fn test_agent_loop_error_all_variants() {
-    use tirea_agentos::contracts::Interaction;
+    use tirea_agentos::contracts::Suspension;
     use tirea_agentos::runtime::loop_runner::AgentLoopError;
 
     // LlmError
@@ -3012,7 +3012,7 @@ fn test_agent_loop_error_all_variants() {
         suspended_call: Box::new(tirea_agentos::contracts::SuspendedCall {
             call_id: "call_1".to_string(),
             tool_name: "confirm_tool".to_string(),
-            suspension: Interaction::new("int_1", "confirm"),
+            suspension: Suspension::new("int_1", "confirm"),
             invocation: None,
         }),
     };
@@ -4486,18 +4486,18 @@ fn test_stream_collector_tool_chunk_with_empty_string_arguments() {
 }
 
 // ============================================================================
-// Interaction to AG-UI Conversion Scenario Tests
+// Suspension to AG-UI Conversion Scenario Tests
 // ============================================================================
 
 use tirea_agentos::contracts::AgentEvent;
-use tirea_agentos::contracts::Interaction;
+use tirea_agentos::contracts::Suspension;
 use tirea_protocol_ag_ui::{AgUiEventContext, Event};
 
-/// Test complete scenario: Permission confirmation via Interaction → AG-UI
+/// Test complete scenario: Permission confirmation via Suspension → AG-UI
 #[test]
 fn test_scenario_permission_confirmation_to_ag_ui() {
-    // 1. Plugin creates an Interaction for permission confirmation
-    let interaction = Interaction::new("perm_write_file_123", "confirm")
+    // 1. Plugin creates an Suspension for permission confirmation
+    let interaction = Suspension::new("perm_write_file_123", "confirm")
         .with_message("Allow tool 'write_file' to write to /etc/config?")
         .with_parameters(json!({
             "tool_id": "write_file",
@@ -4528,7 +4528,7 @@ fn test_scenario_permission_confirmation_to_ag_ui() {
 #[test]
 fn test_scenario_custom_frontend_action_to_ag_ui() {
     // 1. Create a custom frontend action interaction
-    let interaction = Interaction::new("picker_001", "file_picker")
+    let interaction = Suspension::new("picker_001", "file_picker")
         .with_message("Select a configuration file")
         .with_parameters(json!({
             "accept": [".json", ".yaml", ".toml"],
@@ -4593,9 +4593,9 @@ fn test_scenario_text_interrupted_by_interaction() {
         .iter()
         .any(|e| matches!(e, Event::TextMessageContent { .. })));
 
-    // 3. Interaction interrupts (e.g., permission needed)
+    // 3. Suspension interrupts (e.g., permission needed)
     let interaction =
-        Interaction::new("int_1", "confirm").with_message("Proceed with file operation?");
+        Suspension::new("int_1", "confirm").with_message("Proceed with file operation?");
     let pending_event = AgentEvent::ToolCallSuspended {
         suspension: interaction,
     };
@@ -4622,7 +4622,7 @@ fn test_scenario_various_interaction_types() {
     ];
 
     for (id, action, message) in interactions {
-        let interaction = Interaction::new(id, action).with_message(message);
+        let interaction = Suspension::new(id, action).with_message(message);
 
         let events = interaction_to_ag_ui_events(&interaction);
 
@@ -4709,8 +4709,8 @@ where
 
 fn interaction_plugin_from_request(request: &RunAgentInput) -> InteractionPlugin {
     InteractionPlugin::with_responses(
-        request.approved_interaction_ids(),
-        request.denied_interaction_ids(),
+        request.approved_target_ids(),
+        request.denied_target_ids(),
     )
 }
 
@@ -4756,7 +4756,7 @@ impl AgentPlugin for TestFrontendToolPlugin {
 
         let args = step.tool_args().cloned().unwrap_or_default();
         let interaction =
-            Interaction::new(tool_call_id, format!("tool:{tool_name}")).with_parameters(args);
+            Suspension::new(tool_call_id, format!("tool:{tool_name}")).with_parameters(args);
         step.suspend(tirea_agentos::contracts::plugin::phase::SuspendTicket::new(
             interaction,
         ));
@@ -4773,7 +4773,7 @@ fn frontend_plugin_from_request(request: &RunAgentInput) -> TestFrontendToolPlug
     )
 }
 
-fn suspended_interaction(step: &StepContext<'_>) -> Option<Interaction> {
+fn suspended_interaction(step: &StepContext<'_>) -> Option<Suspension> {
     step.tool
         .as_ref()
         .and_then(|tool| tool.suspend_ticket.as_ref())
@@ -5084,7 +5084,7 @@ async fn test_scenario_frontend_tool_case_sensitivity() {
 fn test_scenario_frontend_tool_wire_format() {
     // Create interaction as InteractionPlugin would
     let interaction =
-        Interaction::new("call_abc123", "tool:showNotification").with_parameters(json!({
+        Suspension::new("call_abc123", "tool:showNotification").with_parameters(json!({
             "title": "Success",
             "message": "Operation completed",
             "type": "info",
@@ -5275,11 +5275,11 @@ async fn test_scenario_permission_approved_complete_flow() {
 
     // Phase 4: Check approval
     assert!(client_response_request
-        .approved_interaction_ids()
+        .approved_target_ids()
         .iter()
         .any(|id| id == &interaction.id));
     assert!(!client_response_request
-        .denied_interaction_ids()
+        .denied_target_ids()
         .iter()
         .any(|id| id == &interaction.id));
 
@@ -5287,7 +5287,7 @@ async fn test_scenario_permission_approved_complete_flow() {
     let response = client_response_request
         .interaction_responses()
         .into_iter()
-        .find(|response| response.interaction_id == interaction.id.as_str())
+        .find(|response| response.target_id == interaction.id.as_str())
         .unwrap();
     assert!(response.approved());
 }
@@ -5322,18 +5322,18 @@ async fn test_scenario_permission_denied_complete_flow() {
 
     // Phase 4: Check denial
     assert!(client_response_request
-        .denied_interaction_ids()
+        .denied_target_ids()
         .iter()
         .any(|id| id == &interaction.id));
     assert!(!client_response_request
-        .approved_interaction_ids()
+        .approved_target_ids()
         .iter()
         .any(|id| id == &interaction.id));
 
     let response = client_response_request
         .interaction_responses()
         .into_iter()
-        .find(|response| response.interaction_id == interaction.id.as_str())
+        .find(|response| response.target_id == interaction.id.as_str())
         .unwrap();
     assert!(response.denied());
 }
@@ -5383,7 +5383,7 @@ async fn test_scenario_frontend_tool_execution_complete_flow() {
     let response = client_response_request
         .interaction_responses()
         .into_iter()
-        .find(|response| response.interaction_id == interaction.id.as_str())
+        .find(|response| response.target_id == interaction.id.as_str())
         .unwrap();
 
     assert!(response.result["success"].as_bool().unwrap());
@@ -5429,11 +5429,11 @@ async fn test_scenario_multiple_interactions_sequence() {
 
     // Verify responses
     assert!(response_request
-        .approved_interaction_ids()
+        .approved_target_ids()
         .iter()
         .any(|id| id == &interaction1.id));
     assert!(response_request
-        .denied_interaction_ids()
+        .denied_target_ids()
         .iter()
         .any(|id| id == &interaction2.id));
 
@@ -5463,7 +5463,7 @@ fn test_scenario_frontend_tool_complex_result() {
     let response = client_response_request
         .interaction_responses()
         .into_iter()
-        .find(|response| response.interaction_id == "file_picker_call_1")
+        .find(|response| response.target_id == "file_picker_call_1")
         .unwrap();
 
     assert!(response.result["success"].as_bool().unwrap());
@@ -5490,7 +5490,7 @@ fn test_scenario_permission_custom_response_format() {
     );
 
     assert!(request1
-        .approved_interaction_ids()
+        .approved_target_ids()
         .iter()
         .any(|id| id == "perm_1"));
 
@@ -5503,7 +5503,7 @@ fn test_scenario_permission_custom_response_format() {
     );
 
     assert!(request2
-        .denied_interaction_ids()
+        .denied_target_ids()
         .iter()
         .any(|id| id == "perm_2"));
 
@@ -5513,12 +5513,12 @@ fn test_scenario_permission_custom_response_format() {
     );
 
     assert!(request3
-        .approved_interaction_ids()
+        .approved_target_ids()
         .iter()
         .any(|id| id == "perm_3"));
 }
 
-/// Test scenario: Interaction response with input value
+/// Test scenario: Suspension response with input value
 #[test]
 fn test_scenario_input_interaction_response() {
     // User provides text input
@@ -5529,7 +5529,7 @@ fn test_scenario_input_interaction_response() {
     let response = request
         .interaction_responses()
         .into_iter()
-        .find(|response| response.interaction_id == "input_name_1")
+        .find(|response| response.target_id == "input_name_1")
         .unwrap();
     assert_eq!(response.result, Value::String("John Doe".into()));
 
@@ -5551,7 +5551,7 @@ fn test_scenario_select_interaction_response() {
     let response = request
         .interaction_responses()
         .into_iter()
-        .find(|response| response.interaction_id == "select_option_1")
+        .find(|response| response.target_id == "select_option_1")
         .unwrap();
     assert_eq!(response.result["selected_index"], 2);
     assert_eq!(response.result["selected_value"], "Option C");
@@ -5575,9 +5575,9 @@ fn test_scenario_mixed_messages_with_interaction_response() {
     assert!(request
         .interaction_responses()
         .iter()
-        .any(|response| response.interaction_id == "perm_write_1"));
+        .any(|response| response.target_id == "perm_write_1"));
     assert!(request
-        .approved_interaction_ids()
+        .approved_target_ids()
         .iter()
         .any(|id| id == "perm_write_1"));
 
@@ -5620,7 +5620,7 @@ async fn test_scenario_interaction_response_plugin_blocks_denied() {
         .expect("denied response should create resume decision");
     assert!(matches!(decision.action, ResumeDecisionAction::Cancel));
 
-    // Interaction plugin no longer applies gate decisions in BeforeToolExecute.
+    // Suspension plugin no longer applies gate decisions in BeforeToolExecute.
     let call = ToolCall::new("call_write", "write_file", json!({"path": "/etc/config"}));
     step.tool = Some(ToolContext::new(&call));
     plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
@@ -5696,7 +5696,7 @@ async fn test_scenario_e2e_permission_to_response_flow() {
     let response_request = RunAgentInput::new("t1".to_string(), "r1".to_string())
         .with_message(tirea_protocol_ag_ui::Message::tool("true", &interaction.id));
     assert!(response_request
-        .approved_interaction_ids()
+        .approved_target_ids()
         .iter()
         .any(|id| id == &interaction.id));
 
@@ -5791,7 +5791,7 @@ async fn test_scenario_frontend_tool_with_response_plugin() {
     let response = response_request
         .interaction_responses()
         .into_iter()
-        .find(|response| response.interaction_id == interaction.id.as_str())
+        .find(|response| response.target_id == interaction.id.as_str())
         .unwrap();
     assert!(response.result["success"].as_bool().unwrap());
     assert_eq!(response.result["user_clicked"], "OK");
@@ -5826,7 +5826,7 @@ fn test_scenario_agui_context_state_after_pending() {
         .any(|e| matches!(e, Event::TextMessageStart { .. })));
 
     // Pending interaction arrives
-    let interaction = Interaction::new("perm_1", "confirm").with_message("Allow?");
+    let interaction = Suspension::new("perm_1", "confirm").with_message("Allow?");
     let pending_event = AgentEvent::ToolCallSuspended {
         suspension: interaction,
     };
@@ -6001,7 +6001,7 @@ fn test_agui_stream_pending_no_run_finished() {
     let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     // Pending interaction
-    let interaction = Interaction::new("perm_1", "confirm").with_message("Allow tool execution?");
+    let interaction = Suspension::new("perm_1", "confirm").with_message("Allow tool execution?");
     let pending = AgentEvent::ToolCallSuspended {
         suspension: interaction,
     };
@@ -6110,7 +6110,7 @@ async fn test_permission_flow_approval_e2e() {
         .with_message(tirea_protocol_ag_ui::Message::tool("true", &interaction.id));
 
     assert!(response_request
-        .approved_interaction_ids()
+        .approved_target_ids()
         .iter()
         .any(|id| id == &interaction.id));
 
@@ -6161,7 +6161,7 @@ async fn test_permission_flow_denial_e2e() {
     );
 
     assert!(response_request
-        .denied_interaction_ids()
+        .denied_target_ids()
         .iter()
         .any(|id| id == &interaction.id));
 
@@ -6411,7 +6411,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
         tirea_protocol_ag_ui::Message::tool("false", &interaction.id),
     );
     assert!(deny_request
-        .denied_interaction_ids()
+        .denied_target_ids()
         .iter()
         .any(|id| id == &interaction.id));
 
@@ -6519,7 +6519,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
     let approve_request = RunAgentInput::new("t1", "r1")
         .with_message(tirea_protocol_ag_ui::Message::tool("true", &interaction.id));
     assert!(approve_request
-        .approved_interaction_ids()
+        .approved_target_ids()
         .iter()
         .any(|id| id == &interaction.id));
 
@@ -6626,7 +6626,7 @@ fn test_frontend_tool_flow_result_from_client() {
     let response = response_request
         .interaction_responses()
         .into_iter()
-        .find(|response| response.interaction_id == "call_copy")
+        .find(|response| response.target_id == "call_copy")
         .unwrap();
     assert!(response.result["success"].as_bool().unwrap());
     assert_eq!(response.result["bytes_copied"], 11);
@@ -6699,7 +6699,7 @@ fn test_frontend_tool_flow_complex_result() {
     let response = response_request
         .interaction_responses()
         .into_iter()
-        .find(|response| response.interaction_id == "file_picker_call")
+        .find(|response| response.target_id == "file_picker_call")
         .unwrap();
     assert!(response.result["success"].as_bool().unwrap());
     assert_eq!(
@@ -6873,22 +6873,22 @@ fn test_error_flow_run_finish_cancelled() {
 #[tokio::test]
 async fn test_resume_flow_with_approval() {
     // Simulate: Previous run ended with pending permission
-    let interaction_id = "call_x";
+    let target_id = "call_x";
 
     // New request includes approval
     let request = RunAgentInput::new("t1".to_string(), "r2".to_string())
-        .with_message(tirea_protocol_ag_ui::Message::tool("true", interaction_id));
+        .with_message(tirea_protocol_ag_ui::Message::tool("true", target_id));
 
     let plugin = interaction_plugin_from_request(&request);
     assert!(plugin.has_responses());
-    assert!(plugin.is_approved(interaction_id));
+    assert!(plugin.is_approved(target_id));
 
     // Tool execution should not be blocked
     let thread = ConversationAgentState::new("test");
     let fix = TestFixture::new();
     let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
-    let call = ToolCall::new(interaction_id, "tool_x", json!({}));
+    let call = ToolCall::new(target_id, "tool_x", json!({}));
     step.tool = Some(ToolContext::new(&call));
 
     plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
@@ -6898,22 +6898,22 @@ async fn test_resume_flow_with_approval() {
 /// Test: Resume with denial blocks execution
 #[tokio::test]
 async fn test_resume_flow_with_denial() {
-    let interaction_id = "call_dangerous";
+    let target_id = "call_dangerous";
 
     let request = RunAgentInput::new("t1".to_string(), "r2".to_string())
-        .with_message(tirea_protocol_ag_ui::Message::tool("no", interaction_id));
+        .with_message(tirea_protocol_ag_ui::Message::tool("no", target_id));
 
     let plugin = interaction_plugin_from_request(&request);
-    assert!(plugin.is_denied(interaction_id));
+    assert!(plugin.is_denied(target_id));
 
     // Thread must have the suspended interaction persisted.
     let thread = Thread::with_initial_state(
         "test",
         state_with_suspended_call(
-            interaction_id,
+            target_id,
             "dangerous_tool",
             json!({
-                "id": interaction_id,
+                "id": target_id,
                 "action": "tool:dangerous_tool",
                 "parameters": { "source": "permission" }
             }),
@@ -6926,7 +6926,7 @@ async fn test_resume_flow_with_denial() {
     plugin.run_phase(Phase::RunStart, &mut step).await;
     let decisions = resume_decisions_from_state(&fix.updated_state());
     let decision = decisions
-        .get(interaction_id)
+        .get(target_id)
         .expect("denied response should create decision");
     assert!(matches!(decision.action, ResumeDecisionAction::Cancel));
 }
@@ -7019,7 +7019,7 @@ async fn test_resume_flow_partial_responses() {
 }
 
 // ============================================================================
-// Plugin Interaction Flow Tests
+// Plugin Suspension Flow Tests
 // ============================================================================
 
 /// Test: combined AG-UI plugin handles both frontend and interaction responses
@@ -7177,7 +7177,7 @@ async fn test_plugin_interaction_permission_and_frontend() {
     let interaction = suspended_interaction(&step).expect("suspended interaction should exist");
     assert!(
         interaction.action.starts_with("tool:") || interaction.action == "confirm",
-        "Interaction action should be from one of the plugins"
+        "Suspension action should be from one of the plugins"
     );
 }
 
@@ -7584,10 +7584,10 @@ fn test_full_reconnection_scenario() {
 #[tokio::test]
 async fn test_multiple_suspended_interactions_flow() {
     // Create 3 suspended interactions
-    let interactions: Vec<Interaction> = vec![
-        Interaction::new("perm_read", "confirm").with_message("Allow reading files?"),
-        Interaction::new("perm_write", "confirm").with_message("Allow writing files?"),
-        Interaction::new("perm_exec", "confirm").with_message("Allow executing commands?"),
+    let interactions: Vec<Suspension> = vec![
+        Suspension::new("perm_read", "confirm").with_message("Allow reading files?"),
+        Suspension::new("perm_write", "confirm").with_message("Allow writing files?"),
+        Suspension::new("perm_exec", "confirm").with_message("Allow executing commands?"),
     ];
 
     // Convert all to AG-UI events
@@ -9400,28 +9400,28 @@ fn test_request_unicode_messages() {
 }
 
 // ============================================================================
-// Interaction Response Tests
+// Suspension Response Tests
 // ============================================================================
 //
 // Per AG-UI spec: Human-in-the-loop approval/denial flows
 //
 
-/// Test: Interaction response approval
+/// Test: Suspension response approval
 /// Protocol: User approves suspended interaction
 #[test]
 fn test_interaction_response_approval() {
-    let response = InteractionResponse::new("int_123", json!({"approved": true}));
+    let response = SuspensionResponse::new("int_123", json!({"approved": true}));
 
     let json = serde_json::to_string(&response).unwrap();
-    assert!(json.contains(r#""interaction_id":"int_123""#));
+    assert!(json.contains(r#""target_id":"int_123""#));
     assert!(json.contains(r#""approved":true"#));
 }
 
-/// Test: Interaction response denial
+/// Test: Suspension response denial
 /// Protocol: User denies suspended interaction
 #[test]
 fn test_interaction_response_denial() {
-    let response = InteractionResponse::new(
+    let response = SuspensionResponse::new(
         "int_123",
         json!({"approved": false, "reason": "Not authorized"}),
     );
@@ -9431,11 +9431,11 @@ fn test_interaction_response_denial() {
     assert!(json.contains(r#""reason":"Not authorized""#));
 }
 
-/// Test: Interaction response with custom data
+/// Test: Suspension response with custom data
 /// Protocol: Response can include user-provided data
 #[test]
 fn test_interaction_response_with_data() {
-    let response = InteractionResponse::new(
+    let response = SuspensionResponse::new(
         "input_1",
         json!({
             "value": "user input text",
@@ -11289,30 +11289,30 @@ fn test_run_agent_request_frontend_tool_lookup_via_frontend_tools() {
 }
 
 // ============================================================================
-// P1 - InteractionResponse Coverage (Lines 1235-1288)
+// P1 - SuspensionResponse Coverage (Lines 1235-1288)
 // ============================================================================
 //
 // AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
-// InteractionResponse parsing: approval/denial from various value formats
+// SuspensionResponse parsing: approval/denial from various value formats
 //
 
-/// Test: InteractionResponse.is_approved with bool true
+/// Test: SuspensionResponse.is_approved with bool true
 /// Protocol: Boolean true indicates approval
 /// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
 #[test]
 fn test_interaction_response_is_approved_bool_true() {
-    assert!(InteractionResponse::is_approved(&json!(true)));
+    assert!(SuspensionResponse::is_approved(&json!(true)));
 }
 
-/// Test: InteractionResponse.is_approved with bool false
+/// Test: SuspensionResponse.is_approved with bool false
 /// Protocol: Boolean false is NOT approval
 /// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
 #[test]
 fn test_interaction_response_is_approved_bool_false() {
-    assert!(!InteractionResponse::is_approved(&json!(false)));
+    assert!(!SuspensionResponse::is_approved(&json!(false)));
 }
 
-/// Test: InteractionResponse.is_approved with string variants
+/// Test: SuspensionResponse.is_approved with string variants
 /// Protocol: Various affirmative strings indicate approval
 /// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
 #[test]
@@ -11322,51 +11322,51 @@ fn test_interaction_response_is_approved_strings() {
     ];
     for s in approved_strings {
         assert!(
-            InteractionResponse::is_approved(&json!(s)),
+            SuspensionResponse::is_approved(&json!(s)),
             "'{}' should be approved",
             s
         );
     }
 
     // Case insensitive
-    assert!(InteractionResponse::is_approved(&json!("TRUE")));
-    assert!(InteractionResponse::is_approved(&json!("Yes")));
-    assert!(InteractionResponse::is_approved(&json!("APPROVED")));
+    assert!(SuspensionResponse::is_approved(&json!("TRUE")));
+    assert!(SuspensionResponse::is_approved(&json!("Yes")));
+    assert!(SuspensionResponse::is_approved(&json!("APPROVED")));
 }
 
-/// Test: InteractionResponse.is_approved with object
+/// Test: SuspensionResponse.is_approved with object
 /// Protocol: Object with approved=true or allowed=true indicates approval
 /// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
 #[test]
 fn test_interaction_response_is_approved_object() {
-    assert!(InteractionResponse::is_approved(&json!({"approved": true})));
-    assert!(InteractionResponse::is_approved(&json!({"allowed": true})));
-    assert!(!InteractionResponse::is_approved(
+    assert!(SuspensionResponse::is_approved(&json!({"approved": true})));
+    assert!(SuspensionResponse::is_approved(&json!({"allowed": true})));
+    assert!(!SuspensionResponse::is_approved(
         &json!({"approved": false})
     ));
-    assert!(!InteractionResponse::is_approved(&json!({"other": true})));
+    assert!(!SuspensionResponse::is_approved(&json!({"other": true})));
 }
 
-/// Test: InteractionResponse.is_approved with non-matchable values
+/// Test: SuspensionResponse.is_approved with non-matchable values
 /// Protocol: null, number, array should not match as approved
 /// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
 #[test]
 fn test_interaction_response_is_approved_non_matchable() {
-    assert!(!InteractionResponse::is_approved(&json!(null)));
-    assert!(!InteractionResponse::is_approved(&json!(42)));
-    assert!(!InteractionResponse::is_approved(&json!([1, 2, 3])));
+    assert!(!SuspensionResponse::is_approved(&json!(null)));
+    assert!(!SuspensionResponse::is_approved(&json!(42)));
+    assert!(!SuspensionResponse::is_approved(&json!([1, 2, 3])));
 }
 
-/// Test: InteractionResponse.is_denied with bool
+/// Test: SuspensionResponse.is_denied with bool
 /// Protocol: Boolean false indicates denial
 /// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
 #[test]
 fn test_interaction_response_is_denied_bool() {
-    assert!(InteractionResponse::is_denied(&json!(false)));
-    assert!(!InteractionResponse::is_denied(&json!(true)));
+    assert!(SuspensionResponse::is_denied(&json!(false)));
+    assert!(!SuspensionResponse::is_denied(&json!(true)));
 }
 
-/// Test: InteractionResponse.is_denied with string variants
+/// Test: SuspensionResponse.is_denied with string variants
 /// Protocol: Various negative strings indicate denial
 /// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
 #[test]
@@ -11374,56 +11374,56 @@ fn test_interaction_response_is_denied_strings() {
     let denied_strings = vec!["false", "no", "denied", "deny", "reject", "cancel", "abort"];
     for s in denied_strings {
         assert!(
-            InteractionResponse::is_denied(&json!(s)),
+            SuspensionResponse::is_denied(&json!(s)),
             "'{}' should be denied",
             s
         );
     }
 
     // Case insensitive
-    assert!(InteractionResponse::is_denied(&json!("FALSE")));
-    assert!(InteractionResponse::is_denied(&json!("No")));
-    assert!(InteractionResponse::is_denied(&json!("DENIED")));
+    assert!(SuspensionResponse::is_denied(&json!("FALSE")));
+    assert!(SuspensionResponse::is_denied(&json!("No")));
+    assert!(SuspensionResponse::is_denied(&json!("DENIED")));
 }
 
-/// Test: InteractionResponse.is_denied with object
+/// Test: SuspensionResponse.is_denied with object
 /// Protocol: Object with approved=false or denied=true indicates denial
 /// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
 #[test]
 fn test_interaction_response_is_denied_object() {
-    assert!(InteractionResponse::is_denied(&json!({"approved": false})));
-    assert!(InteractionResponse::is_denied(&json!({"denied": true})));
-    assert!(!InteractionResponse::is_denied(&json!({"approved": true})));
-    assert!(!InteractionResponse::is_denied(&json!({"other": false})));
+    assert!(SuspensionResponse::is_denied(&json!({"approved": false})));
+    assert!(SuspensionResponse::is_denied(&json!({"denied": true})));
+    assert!(!SuspensionResponse::is_denied(&json!({"approved": true})));
+    assert!(!SuspensionResponse::is_denied(&json!({"other": false})));
 }
 
-/// Test: InteractionResponse.is_denied with non-matchable values
+/// Test: SuspensionResponse.is_denied with non-matchable values
 /// Protocol: null, number, array should not match as denied
 /// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
 #[test]
 fn test_interaction_response_is_denied_non_matchable() {
-    assert!(!InteractionResponse::is_denied(&json!(null)));
-    assert!(!InteractionResponse::is_denied(&json!(42)));
-    assert!(!InteractionResponse::is_denied(&json!([1, 2, 3])));
+    assert!(!SuspensionResponse::is_denied(&json!(null)));
+    assert!(!SuspensionResponse::is_denied(&json!(42)));
+    assert!(!SuspensionResponse::is_denied(&json!([1, 2, 3])));
 }
 
-/// Test: InteractionResponse.approved() and .denied() instance methods
+/// Test: SuspensionResponse.approved() and .denied() instance methods
 /// Protocol: Instance methods delegate to static is_approved/is_denied
 /// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
 #[test]
 fn test_interaction_response_instance_methods() {
-    let approved = InteractionResponse::new("int_1", json!(true));
+    let approved = SuspensionResponse::new("int_1", json!(true));
     assert!(approved.approved());
     assert!(!approved.denied());
 
-    let denied = InteractionResponse::new("int_2", json!(false));
+    let denied = SuspensionResponse::new("int_2", json!(false));
     assert!(!denied.approved());
     assert!(denied.denied());
 
-    let string_approved = InteractionResponse::new("int_3", json!("yes"));
+    let string_approved = SuspensionResponse::new("int_3", json!("yes"));
     assert!(string_approved.approved());
 
-    let object_denied = InteractionResponse::new("int_4", json!({"approved": false}));
+    let object_denied = SuspensionResponse::new("int_4", json!({"approved": false}));
     assert!(object_denied.denied());
 }
 
@@ -12002,7 +12002,7 @@ fn test_agent_event_error_produces_run_error() {
 /// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
 #[test]
 fn test_agent_event_pending_ends_text() {
-    use tirea_agentos::contracts::Interaction;
+    use tirea_agentos::contracts::Suspension;
 
     let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
@@ -12013,7 +12013,7 @@ fn test_agent_event_pending_ends_text() {
     let _ = ctx.on_agent_event(&text);
 
     // Pending interaction
-    let interaction = Interaction::new("perm_1", "confirm");
+    let interaction = Suspension::new("perm_1", "confirm");
     let pending = AgentEvent::ToolCallSuspended {
         suspension: interaction,
     };
@@ -12178,14 +12178,14 @@ fn test_tool_call_start_includes_parent_message_id() {
     }
 }
 
-/// Test: Interaction.to_ag_ui_events produces complete tool call sequence
-/// Protocol: Interaction maps to TOOL_CALL_START → TOOL_CALL_ARGS → TOOL_CALL_END
+/// Test: Suspension.to_ag_ui_events produces complete tool call sequence
+/// Protocol: Suspension maps to TOOL_CALL_START → TOOL_CALL_ARGS → TOOL_CALL_END
 /// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
 #[test]
 fn test_interaction_to_ag_ui_events() {
-    use tirea_agentos::contracts::Interaction;
+    use tirea_agentos::contracts::Suspension;
 
-    let interaction = Interaction::new("int_1", "confirm_delete")
+    let interaction = Suspension::new("int_1", "confirm_delete")
         .with_parameters(json!({"file": "important.txt"}));
 
     let events = interaction_to_ag_ui_events(&interaction);
@@ -12823,7 +12823,7 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
     let approve_request = RunAgentInput::new("t1".to_string(), "r1".to_string())
         .with_message(tirea_protocol_ag_ui::Message::tool("true", &interaction.id));
     assert!(approve_request
-        .approved_interaction_ids()
+        .approved_target_ids()
         .iter()
         .any(|id| id == &interaction.id));
 
@@ -12876,7 +12876,7 @@ async fn test_hitl_replay_denial_does_not_schedule() {
     let deny_request = RunAgentInput::new("t1".to_string(), "r1".to_string())
         .with_message(tirea_protocol_ag_ui::Message::tool("false", pending_id));
     assert!(!deny_request
-        .approved_interaction_ids()
+        .approved_target_ids()
         .iter()
         .any(|id| id == pending_id));
 

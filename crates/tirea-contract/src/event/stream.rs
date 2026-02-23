@@ -1,4 +1,4 @@
-use crate::event::interaction::Interaction;
+use crate::event::suspension::Suspension;
 use crate::event::termination::TerminationReason;
 use crate::runtime::ToolCallOutcome;
 use crate::tool::contract::ToolResult;
@@ -94,12 +94,12 @@ pub enum AgentEvent {
         patch: Vec<Value>,
     },
 
-    /// Interaction request created.
-    ToolCallSuspendRequested { suspension: Interaction },
-    /// Interaction resolution received.
+    /// Suspension request created.
+    ToolCallSuspendRequested { suspension: Suspension },
+    /// Suspension resolution received.
     ToolCallResumed { target_id: String, result: Value },
     /// Tool call suspended waiting for external resolution.
-    ToolCallSuspended { suspension: Interaction },
+    ToolCallSuspended { suspension: Suspension },
 
     /// Error occurred.
     Error { message: String },
@@ -383,7 +383,7 @@ struct ActivityDeltaData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ToolCallSuspendRequestedData {
-    suspension: Interaction,
+    suspension: Suspension,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -394,7 +394,7 @@ struct ToolCallResumedData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ToolCallSuspendedData {
-    suspension: Interaction,
+    suspension: Suspension,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

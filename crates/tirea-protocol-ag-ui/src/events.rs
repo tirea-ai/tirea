@@ -2,7 +2,7 @@ use crate::types::Role;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use tirea_contract::Interaction;
+use tirea_contract::Suspension;
 use tracing::warn;
 
 // Base Event Fields
@@ -754,11 +754,11 @@ impl Event {
 }
 
 // ============================================================================
-// Interaction to AG-UI Conversion
+// Suspension to AG-UI Conversion
 // ============================================================================
 
 /// Convert one interaction to AG-UI tool call events.
-pub fn interaction_to_ag_ui_events(interaction: &Interaction) -> Vec<Event> {
+pub fn interaction_to_ag_ui_events(interaction: &Suspension) -> Vec<Event> {
     let args = json!({
         "id": interaction.id,
         "message": interaction.message,
@@ -783,7 +783,7 @@ pub fn interaction_to_ag_ui_events(interaction: &Interaction) -> Vec<Event> {
                 Err(err) => {
                     warn!(
                         error = %err,
-                        interaction_id = %interaction.id,
+                        target_id = %interaction.id,
                         "failed to serialize interaction arguments for AG-UI"
                     );
                     "{}".to_string()

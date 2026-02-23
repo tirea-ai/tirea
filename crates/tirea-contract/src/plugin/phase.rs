@@ -5,9 +5,9 @@
 //! - `StepContext`: Mutable context passed through all phases
 //! - `ToolContext`: Tool-call state carried by `StepContext`
 
-use crate::event::interaction::{FrontendToolInvocation, Interaction};
+use crate::event::suspension::{FrontendToolInvocation, Suspension};
 #[cfg(test)]
-use crate::event::interaction::{InvocationOrigin, ResponseRouting};
+use crate::event::suspension::{InvocationOrigin, ResponseRouting};
 use crate::event::termination::TerminationReason;
 use crate::runtime::result::StreamResult;
 use crate::thread::{Message, ToolCall};
@@ -106,19 +106,19 @@ pub enum StepOutcome {
     Continue,
     /// Thread complete.
     Complete,
-    /// Pending user interaction.
-    Pending(Interaction),
+    /// Pending external suspension.
+    Pending(Suspension),
 }
 
 /// Suspension payload for `ToolGateDecision::Suspend`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SuspendTicket {
-    pub suspension: Interaction,
+    pub suspension: Suspension,
     pub invocation: Option<FrontendToolInvocation>,
 }
 
 impl SuspendTicket {
-    pub fn new(suspension: Interaction) -> Self {
+    pub fn new(suspension: Suspension) -> Self {
         Self {
             suspension,
             invocation: None,
@@ -126,7 +126,7 @@ impl SuspendTicket {
     }
 
     pub fn from_invocation(invocation: FrontendToolInvocation) -> Self {
-        let suspension = invocation.to_interaction();
+        let suspension = invocation.to_suspension();
         Self {
             suspension,
             invocation: Some(invocation),
@@ -467,7 +467,7 @@ impl<'a> StepContext<'a> {
                 if let Some(ticket) = tool.suspend_ticket.as_ref() {
                     return StepOutcome::Pending(ticket.suspension.clone());
                 }
-                return StepOutcome::Pending(Interaction::new(
+                return StepOutcome::Pending(Suspension::new(
                     tool.id.clone(),
                     format!("tool:{}", tool.name),
                 ));
@@ -639,7 +639,7 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
             if let Some(ticket) = tool.suspend_ticket.as_ref() {
                 return ToolGateDecision::Suspend(ticket.clone());
             }
-            return ToolGateDecision::Suspend(SuspendTicket::new(Interaction::new(
+            return ToolGateDecision::Suspend(SuspendTicket::new(Suspension::new(
                 tool.id.clone(),
                 format!("tool:{}", tool.name),
             )));
@@ -955,7 +955,7 @@ mod tests {
         let call = ToolCall::new("call_1", "write_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
 
-        let interaction = Interaction::new("confirm_1", "confirm").with_message("Allow write?");
+        let interaction = Suspension::new("confirm_1", "confirm").with_message("Allow write?");
         ctx.suspend(SuspendTicket::new(interaction));
 
         assert!(ctx.tool_pending());
@@ -972,7 +972,7 @@ mod tests {
         let call = ToolCall::new("call_1", "write_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
 
-        let interaction = Interaction::new("confirm_1", "confirm").with_message("Allow write?");
+        let interaction = Suspension::new("confirm_1", "confirm").with_message("Allow write?");
         ctx.suspend(SuspendTicket::new(interaction));
         ctx.proceed();
 
@@ -995,7 +995,7 @@ mod tests {
         assert!(!ctx.tool_pending());
 
         ctx.suspend(SuspendTicket::new(
-            Interaction::new("confirm_1", "confirm").with_message("Allow write?"),
+            Suspension::new("confirm_1", "confirm").with_message("Allow write?"),
         ));
         assert!(!ctx.tool_blocked());
         assert!(ctx.tool_pending());
@@ -1050,7 +1050,7 @@ mod tests {
         let call = ToolCall::new("call_1", "write_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
 
-        let interaction = Interaction::new("confirm_1", "confirm").with_message("Allow?");
+        let interaction = Suspension::new("confirm_1", "confirm").with_message("Allow?");
         ctx.suspend(SuspendTicket::new(interaction.clone()));
 
         match ctx.result() {
@@ -1068,7 +1068,7 @@ mod tests {
         ctx.tool = Some(ToolContext::new(&call));
 
         let ticket_interaction =
-            Interaction::new("ticket_1", "confirm").with_message("Suspend via ticket");
+            Suspension::new("ticket_1", "confirm").with_message("Suspend via ticket");
 
         if let Some(tool) = ctx.tool.as_mut() {
             tool.pending = true;
@@ -1092,7 +1092,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let ticket_interaction =
-            Interaction::new("ticket_2", "confirm").with_message("Suspend via ticket");
+            Suspension::new("ticket_2", "confirm").with_message("Suspend via ticket");
 
         if let Some(tool) = step.tool.as_mut() {
             tool.pending = true;
@@ -1297,7 +1297,7 @@ mod tests {
         let fix = TestFixture::new();
         let mut ctx = fix.step(vec![]);
 
-        let interaction = Interaction::new("id", "confirm").with_message("test");
+        let interaction = Suspension::new("id", "confirm").with_message("test");
         ctx.suspend(SuspendTicket::new(interaction));
 
         assert!(!ctx.tool_pending()); // tool_pending returns false when no tool
@@ -1390,7 +1390,7 @@ mod tests {
 
         assert!(tool_ctx.suspend_ticket.is_none());
 
-        let interaction = Interaction::new("confirm_1", "confirm").with_message("Test?");
+        let interaction = Suspension::new("confirm_1", "confirm").with_message("Test?");
         tool_ctx.suspend_ticket = Some(SuspendTicket::new(interaction.clone()));
 
         assert_eq!(
@@ -1442,7 +1442,7 @@ mod tests {
             InvocationOrigin::PluginInitiated { .. }
         ));
 
-        // Backward-compat Interaction should also be set
+        // Backward-compat Suspension should also be set
         let interaction = ctx
             .tool
             .as_ref()

@@ -1,11 +1,11 @@
-//! Run lifecycle events, interactions, and termination reasons.
+//! Run lifecycle events, suspensions, and termination reasons.
 
-pub mod interaction;
+pub mod suspension;
 pub mod stream;
 pub mod termination;
 
-pub use interaction::{
-    FrontendToolInvocation, Interaction, InteractionResponse, InvocationOrigin, ResponseRouting,
+pub use suspension::{
+    FrontendToolInvocation, Suspension, SuspensionResponse, InvocationOrigin, ResponseRouting,
 };
 pub use stream::{
     clear_runtime_event_envelope_meta, register_runtime_event_envelope_meta, AgentEvent,

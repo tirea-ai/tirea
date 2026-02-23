@@ -18,7 +18,7 @@ pub enum ToolStatus {
     Success,
     /// Execution succeeded with warnings.
     Warning,
-    /// Execution is pending (waiting for user interaction).
+    /// Execution is pending (waiting for suspension resolution).
     Pending,
     /// Execution failed.
     Error,

@@ -68,13 +68,13 @@ pub(super) fn collect_descendant_run_ids_from_state(
     super::collect_descendant_run_ids(&children_by_parent, root_run_id, include_root)
 }
 
-pub(super) fn recovery_interaction_id(run_id: &str) -> String {
+pub(super) fn recovery_target_id(run_id: &str) -> String {
     format!("{AGENT_RECOVERY_INTERACTION_PREFIX}{run_id}")
 }
 
-pub(super) fn build_recovery_interaction(run_id: &str, run: &DelegationRecord) -> Interaction {
-    Interaction::new(
-        recovery_interaction_id(run_id),
+pub(super) fn build_recovery_interaction(run_id: &str, run: &DelegationRecord) -> Suspension {
+    Suspension::new(
+        recovery_target_id(run_id),
         AGENT_RECOVERY_INTERACTION_ACTION,
     )
     .with_message(format!(
@@ -91,7 +91,7 @@ pub(super) fn build_recovery_interaction(run_id: &str, run: &DelegationRecord) -
     }))
 }
 
-pub(super) fn parse_first_suspended_interaction_from_state(state: &Value) -> Option<Interaction> {
+pub(super) fn parse_first_suspended_interaction_from_state(state: &Value) -> Option<Suspension> {
     let calls = state
         .get(SUSPENDED_TOOL_CALLS_STATE_PATH)
         .and_then(|a| a.get("calls"))
@@ -117,7 +117,7 @@ pub(super) fn has_suspended_recovery_interaction(state: &Value) -> bool {
 
 pub(super) fn set_suspended_recovery_interaction(
     step: &impl PluginPhaseContext,
-    interaction: Interaction,
+    interaction: Suspension,
 ) {
     let state = step.state_of::<SuspendedToolCallsState>();
     let mut calls = state.calls().ok().unwrap_or_default();
@@ -139,7 +139,7 @@ pub(super) fn schedule_recovery_replay(
     run_id: &str,
     run: &DelegationRecord,
 ) {
-    let call_id = recovery_interaction_id(run_id);
+    let call_id = recovery_target_id(run_id);
     let suspended_state = step.state_of::<SuspendedToolCallsState>();
     let mut suspended_calls = suspended_state.calls().ok().unwrap_or_default();
 

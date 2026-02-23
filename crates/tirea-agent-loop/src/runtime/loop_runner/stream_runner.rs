@@ -703,7 +703,7 @@ pub(super) fn run_stream(
                 });
             }
 
-            // Emit suspended-call interaction event(s) first.
+            // Emit suspended-call events first.
             for exec_result in &results {
                 if let Some(ref suspended_call) = exec_result.suspended_call {
                     // UseAsToolResult frontend tools (e.g. deleteTask) reuse the
@@ -714,7 +714,7 @@ pub(super) fn run_stream(
                     // use a new fc_xxx call_id that the LLM never streamed, so we
                     // MUST emit ToolCallStart/Ready here for the frontend to see it.
                     if let Some(ref inv) = suspended_call.invocation {
-                        if matches!(inv.routing, crate::contracts::event::interaction::ResponseRouting::UseAsToolResult) {
+                        if matches!(inv.routing, crate::contracts::event::suspension::ResponseRouting::UseAsToolResult) {
                             continue;
                         }
                     }
