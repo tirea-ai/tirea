@@ -101,7 +101,7 @@ impl RunContext {
     pub fn first_suspended_interaction(&self) -> Option<Interaction> {
         let mut calls: Vec<SuspendedCall> = self.suspended_calls().into_values().collect();
         calls.sort_by(|left, right| left.call_id.cmp(&right.call_id));
-        calls.into_iter().next().map(|call| call.interaction)
+        calls.into_iter().next().map(|call| call.suspension)
     }
 
     /// Read all suspended calls from durable control state.
@@ -124,10 +124,7 @@ impl RunContext {
     pub fn first_suspended_frontend_invocation(&self) -> Option<FrontendToolInvocation> {
         let mut calls: Vec<SuspendedCall> = self.suspended_calls().into_values().collect();
         calls.sort_by(|left, right| left.call_id.cmp(&right.call_id));
-        calls
-            .into_iter()
-            .next()
-            .and_then(|call| call.frontend_invocation)
+        calls.into_iter().next().and_then(|call| call.invocation)
     }
 
     // =========================================================================

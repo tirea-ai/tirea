@@ -372,14 +372,14 @@ fn suspend_frontend_tool(
 
 fn set_single_suspended_call(
     state: &Value,
-    interaction: Interaction,
-    frontend_invocation: Option<crate::contracts::FrontendToolInvocation>,
+    suspension: Interaction,
+    invocation: Option<crate::contracts::FrontendToolInvocation>,
 ) -> Result<tirea_state::TrackedPatch, AgentLoopError> {
-    let call_id = frontend_invocation
+    let call_id = invocation
         .as_ref()
         .map(|fi| fi.call_id.clone())
-        .unwrap_or_else(|| interaction.id.clone());
-    let tool_name = frontend_invocation
+        .unwrap_or_else(|| suspension.id.clone());
+    let tool_name = invocation
         .as_ref()
         .map(|fi| fi.tool_name.clone())
         .unwrap_or_default();
@@ -388,8 +388,8 @@ fn set_single_suspended_call(
         vec![crate::contracts::SuspendedCall {
             call_id,
             tool_name,
-            interaction,
-            frontend_invocation,
+            suspension,
+            invocation,
         }],
     )
 }
@@ -712,8 +712,8 @@ fn test_agent_loop_error_termination_reason_mapping() {
         suspended_call: Box::new(SuspendedCall {
             call_id: "call_1".to_string(),
             tool_name: "confirm_tool".to_string(),
-            interaction: Interaction::new("int_1", "confirm"),
-            frontend_invocation: None,
+            suspension: Interaction::new("int_1", "confirm"),
+            invocation: None,
         }),
     };
     assert_eq!(pending.termination_reason(), TerminationReason::Suspended);
@@ -2054,8 +2054,8 @@ fn test_execute_tools_with_pending_phase_plugin() {
             other => panic!("Expected Suspended error, got: {:?}", other),
         };
 
-        assert_eq!(suspended_call.interaction.id, "confirm_1");
-        assert_eq!(suspended_call.interaction.action, "confirm");
+        assert_eq!(suspended_call.suspension.id, "confirm_1");
+        assert_eq!(suspended_call.suspension.action, "confirm");
 
         // Pending tool gets a placeholder tool result to keep message sequence valid.
         assert_eq!(thread.messages().len(), 1);
@@ -2065,7 +2065,7 @@ fn test_execute_tools_with_pending_phase_plugin() {
 
         let state = thread.snapshot().unwrap();
         assert_eq!(
-            state["__suspended_tool_calls"]["calls"]["call_1"]["interaction"]["id"],
+            state["__suspended_tool_calls"]["calls"]["call_1"]["suspension"]["id"],
             "confirm_1"
         );
     });
@@ -2119,7 +2119,7 @@ fn test_invalid_args_are_returned_as_tool_error_before_pending_confirmation() {
             .and_then(|v| v.as_object());
         assert!(
             pending.map_or(true, |calls| calls.is_empty()),
-            "invalid args should not persist suspended interaction: {pending:?}"
+            "invalid args should not persist suspended suspension: {pending:?}"
         );
     });
 }
@@ -2135,8 +2135,8 @@ fn test_apply_tool_results_suspends_all_interactions() {
     first.suspended_call = Some(crate::contracts::SuspendedCall {
         call_id: "call_1".to_string(),
         tool_name: "test_tool".to_string(),
-        interaction: Interaction::new("confirm_1", "confirm").with_message("approve first tool"),
-        frontend_invocation: None,
+        suspension: Interaction::new("confirm_1", "confirm").with_message("approve first tool"),
+        invocation: None,
     });
 
     let mut second = tool_execution_result("call_2", None);
@@ -2144,8 +2144,8 @@ fn test_apply_tool_results_suspends_all_interactions() {
     second.suspended_call = Some(crate::contracts::SuspendedCall {
         call_id: "call_2".to_string(),
         tool_name: "test_tool".to_string(),
-        interaction: Interaction::new("confirm_2", "confirm").with_message("approve second tool"),
-        frontend_invocation: None,
+        suspension: Interaction::new("confirm_2", "confirm").with_message("approve second tool"),
+        invocation: None,
     });
 
     let applied = apply_tool_results_to_session(&mut run_ctx, &[first, second], None, false)
@@ -2166,7 +2166,7 @@ fn test_apply_tool_results_suspends_all_interactions() {
     );
     let state = run_ctx.snapshot().expect("snapshot should succeed");
     assert_eq!(
-        state["__suspended_tool_calls"]["calls"]["call_1"]["interaction"]["id"],
+        state["__suspended_tool_calls"]["calls"]["call_1"]["suspension"]["id"],
         "confirm_1"
     );
     // Per-call map has both entries
@@ -2524,7 +2524,7 @@ fn test_execute_tools_with_config_denied_response_is_applied_via_run_start_resum
                         "call_1": {
                             "call_id": "call_1",
                             "tool_name": "echo",
-                            "interaction": {
+                            "suspension": {
                                 "id": "call_1",
                                 "action": "tool:echo",
                                 "parameters": { "source": "permission" }
@@ -2615,8 +2615,8 @@ fn test_execute_tools_with_config_with_pending_plugin() {
             other => panic!("Expected Suspended error, got: {:?}", other),
         };
 
-        assert_eq!(suspended_call.interaction.id, "confirm_1");
-        assert_eq!(suspended_call.interaction.action, "confirm");
+        assert_eq!(suspended_call.suspension.id, "confirm_1");
+        assert_eq!(suspended_call.suspension.action, "confirm");
 
         // Pending tool gets a placeholder tool result to keep message sequence valid.
         assert_eq!(thread.messages().len(), 1);
@@ -2627,7 +2627,7 @@ fn test_execute_tools_with_config_with_pending_plugin() {
         // Pending interaction should be persisted via RunContext.
         let state = thread.snapshot().unwrap();
         assert_eq!(
-            state["__suspended_tool_calls"]["calls"]["call_1"]["interaction"]["id"],
+            state["__suspended_tool_calls"]["calls"]["call_1"]["suspension"]["id"],
             "confirm_1"
         );
     });
@@ -2712,14 +2712,14 @@ fn test_set_agent_suspended_calls_compat_view_uses_smallest_call_id() {
             SuspendedCall {
                 call_id: "call_b".to_string(),
                 tool_name: "echo".to_string(),
-                interaction: Interaction::new("int_b", "confirm").with_message("b"),
-                frontend_invocation: None,
+                suspension: Interaction::new("int_b", "confirm").with_message("b"),
+                invocation: None,
             },
             SuspendedCall {
                 call_id: "call_a".to_string(),
                 tool_name: "echo".to_string(),
-                interaction: Interaction::new("int_a", "confirm").with_message("a"),
-                frontend_invocation: None,
+                suspension: Interaction::new("int_a", "confirm").with_message("a"),
+                invocation: None,
             },
         ],
     )
@@ -2917,7 +2917,7 @@ async fn test_stream_run_start_outbox_resolution_emits_after_run_start() {
                     "call_1": {
                         "call_id": "call_1",
                         "tool_name": "echo",
-                        "interaction": {
+                        "suspension": {
                             "id": "resolution_1",
                             "action": "confirm",
                             "parameters": {}
@@ -3041,7 +3041,7 @@ async fn test_stream_termination_request_with_suspended_only_state_emits_pending
                     "recover_1": {
                         "call_id": "recover_1",
                         "tool_name": "recover_agent_run",
-                        "interaction": {
+                        "suspension": {
                             "id": "recover_1",
                             "action": "recover_agent_run",
                             "message": "resume?",
@@ -3111,12 +3111,12 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
                     "call_write": {
                         "call_id": "call_write",
                         "tool_name": "write_file",
-                        "interaction": {
+                        "suspension": {
                             "id": "call_write",
                             "action": "tool:write_file",
                             "parameters": { "source": "permission" }
                         },
-                        "frontend_invocation": {
+                        "invocation": {
                             "call_id": "call_write",
                             "tool_name": "PermissionConfirm",
                             "arguments": {
@@ -3190,7 +3190,7 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
                     "call_1": {
                         "call_id": "call_1",
                         "tool_name": "echo",
-                        "interaction": {
+                        "suspension": {
                             "id": "call_1",
                             "action": "tool:echo",
                             "parameters": {
@@ -3202,7 +3202,7 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
                                 }
                             }
                         },
-                        "frontend_invocation": {
+                        "invocation": {
                             "call_id": "call_1",
                             "tool_name": "PermissionConfirm",
                             "arguments": {
@@ -3331,7 +3331,7 @@ async fn test_run_loop_permission_approval_replays_tool_and_clears_outbox() {
                     "call_1": {
                         "call_id": "call_1",
                         "tool_name": "echo",
-                        "interaction": {
+                        "suspension": {
                             "id": "call_1",
                             "action": "tool:echo",
                             "parameters": {
@@ -3343,7 +3343,7 @@ async fn test_run_loop_permission_approval_replays_tool_and_clears_outbox() {
                                 }
                             }
                         },
-                        "frontend_invocation": {
+                        "invocation": {
                             "call_id": "call_1",
                             "tool_name": "PermissionConfirm",
                             "arguments": {
@@ -3460,12 +3460,12 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
                     "call_1": {
                         "call_id": "call_1",
                         "tool_name": "echo",
-                        "interaction": {
+                        "suspension": {
                             "id": "call_1",
                             "action": "tool:echo",
                             "parameters": { "source": "permission" }
                         },
-                        "frontend_invocation": {
+                        "invocation": {
                             "call_id": "call_1",
                             "tool_name": "PermissionConfirm",
                             "arguments": {
@@ -3567,7 +3567,7 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
                     "call_1": {
                         "call_id": "call_1",
                         "tool_name": "echo",
-                        "interaction": {
+                        "suspension": {
                             "id": "call_1",
                             "action": "tool:echo",
                             "parameters": {
@@ -3579,7 +3579,7 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
                                 }
                             }
                         },
-                        "frontend_invocation": {
+                        "invocation": {
                             "call_id": "call_1",
                             "tool_name": "PermissionConfirm",
                             "arguments": {
@@ -3702,11 +3702,11 @@ async fn test_run_loop_permission_denied_appends_tool_result_for_model_context()
                     "call_1": {
                         "call_id": "call_1",
                         "tool_name": "echo",
-                        "interaction": {
+                        "suspension": {
                             "id": "call_1",
                             "action": "tool:echo"
                         },
-                        "frontend_invocation": {
+                        "invocation": {
                             "call_id": "call_1",
                             "tool_name": "PermissionConfirm",
                             "arguments": {
@@ -3799,11 +3799,11 @@ async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_contex
                     "call_1": {
                         "call_id": "call_1",
                         "tool_name": "echo",
-                        "interaction": {
+                        "suspension": {
                             "id": "call_1",
                             "action": "tool:echo"
                         },
-                        "frontend_invocation": {
+                        "invocation": {
                             "call_id": "call_1",
                             "tool_name": "PermissionConfirm",
                             "arguments": {
@@ -4090,7 +4090,7 @@ async fn test_run_loop_skip_inference_with_suspended_state_returns_suspended_int
 
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     assert_eq!(
-        state["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["interaction"]["action"],
+        state["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["suspension"]["action"],
         Value::String("recover_agent_run".to_string())
     );
 
@@ -4132,7 +4132,7 @@ async fn test_run_loop_skip_inference_with_suspended_only_state_returns_suspende
                     "recover_1": {
                         "call_id": "recover_1",
                         "tool_name": "recover_agent_run",
-                        "interaction": {
+                        "suspension": {
                             "id": "recover_1",
                             "action": "recover_agent_run",
                             "message": "resume?",
@@ -5679,7 +5679,7 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
                     "call_1": {
                         "call_id": "call_1",
                         "tool_name": "counting_echo",
-                        "interaction": {
+                        "suspension": {
                             "id": "call_1",
                             "action": "tool:counting_echo",
                             "parameters": {
@@ -5691,7 +5691,7 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
                                 }
                             }
                         },
-                        "frontend_invocation": {
+                        "invocation": {
                             "call_id": "call_1",
                             "tool_name": "PermissionConfirm",
                             "arguments": {
@@ -5817,7 +5817,7 @@ async fn test_nonstream_replay_is_idempotent_across_reruns() {
                     "call_1": {
                         "call_id": "call_1",
                         "tool_name": "counting_echo",
-                        "interaction": {
+                        "suspension": {
                             "id": "call_1",
                             "action": "tool:counting_echo",
                             "parameters": {
@@ -5829,7 +5829,7 @@ async fn test_nonstream_replay_is_idempotent_across_reruns() {
                                 }
                             }
                         },
-                        "frontend_invocation": {
+                        "invocation": {
                             "call_id": "call_1",
                             "tool_name": "PermissionConfirm",
                             "arguments": {
@@ -7721,7 +7721,7 @@ async fn test_sequential_tools_stop_after_first_suspended_interaction() {
         } => (thread, suspended_call),
         other => panic!("expected Suspended, got: {other:?}"),
     };
-    assert_eq!(suspended_call.interaction.id, "confirm_call_1");
+    assert_eq!(suspended_call.suspension.id, "confirm_call_1");
     assert_eq!(
         seen_calls.lock().expect("lock poisoned").clone(),
         vec!["call_1".to_string()],
@@ -7787,7 +7787,7 @@ async fn test_parallel_tools_allow_single_suspended_interaction_per_round() {
         other => panic!("expected Suspended, got: {other:?}"),
     };
     // First suspended call's interaction is returned
-    assert_eq!(suspended_call.interaction.id, "confirm_call_1");
+    assert_eq!(suspended_call.suspension.id, "confirm_call_1");
     let mut seen = seen_calls.lock().expect("lock poisoned").clone();
     seen.sort();
     assert_eq!(
@@ -8224,7 +8224,7 @@ async fn test_run_step_skip_inference_with_suspended_state_returns_suspended_int
 
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     assert_eq!(
-        state["__suspended_tool_calls"]["calls"]["agent_recovery_step-1"]["interaction"]["action"],
+        state["__suspended_tool_calls"]["calls"]["agent_recovery_step-1"]["suspension"]["action"],
         Value::String("recover_agent_run".to_string())
     );
 }
@@ -9942,7 +9942,7 @@ async fn test_stream_mixed_pending_persists_interaction_state() {
             .get("__suspended_tool_calls")
             .and_then(|lc| lc.get("calls"))
             .and_then(|calls| calls.get("call_2"))
-            .and_then(|entry| entry.get("interaction"))
+            .and_then(|entry| entry.get("suspension"))
             .and_then(|pi| pi.get("id"))
             .and_then(|id| id.as_str()),
         Some("confirm_call_2"),
@@ -10010,7 +10010,7 @@ async fn test_nonstream_completed_tool_round_does_not_clear_existing_suspended_c
                     "leftover_confirm": {
                         "call_id": "leftover_confirm",
                         "tool_name": "echo",
-                        "interaction": {
+                        "suspension": {
                             "id": "leftover_confirm",
                             "action": "confirm",
                             "message": "still waiting",
@@ -10056,7 +10056,7 @@ async fn test_stream_completed_tool_round_does_not_clear_existing_suspended_call
                     "leftover_confirm": {
                         "call_id": "leftover_confirm",
                         "tool_name": "echo",
-                        "interaction": {
+                        "suspension": {
                             "id": "leftover_confirm",
                             "action": "confirm",
                             "message": "still waiting",
@@ -10340,7 +10340,7 @@ async fn test_run_loop_decision_channel_ignores_unknown_interaction_id() {
                     "call_keep": {
                         "call_id": "call_keep",
                         "tool_name": "echo",
-                        "interaction": {
+                        "suspension": {
                             "id": "call_keep",
                             "action": "confirm",
                             "message": "still waiting",
@@ -10416,7 +10416,7 @@ async fn test_stream_decision_channel_ignores_unknown_interaction_id() {
                     "call_keep": {
                         "call_id": "call_keep",
                         "tool_name": "echo",
-                        "interaction": {
+                        "suspension": {
                             "id": "call_keep",
                             "action": "confirm",
                             "message": "still waiting",
@@ -10646,7 +10646,7 @@ async fn test_run_loop_decision_channel_cancel_emits_single_tool_result_message(
                     "call_pending": {
                         "call_id": "call_pending",
                         "tool_name": "echo",
-                        "interaction": {
+                        "suspension": {
                             "id": "call_pending",
                             "action": "tool:echo"
                         }
@@ -11176,7 +11176,7 @@ async fn test_stream_decision_channel_drains_while_inference_stream_is_running()
                 "call_pending": {
                     "call_id": "call_pending",
                     "tool_name": "echo",
-                    "interaction": suspended_interaction.clone()
+                    "suspension": suspended_interaction.clone()
                 }
             }
         }
@@ -11295,8 +11295,8 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_resume_decisio
                 "call_write": {
                     "call_id": "call_write",
                     "tool_name": "echo",
-                    "interaction": suspended_interaction.clone(),
-                    "frontend_invocation": suspended_frontend_invocation.clone()
+                    "suspension": suspended_interaction.clone(),
+                    "invocation": suspended_frontend_invocation.clone()
                 }
             }
         }

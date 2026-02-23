@@ -550,7 +550,7 @@ pub(super) fn suspended_call_pending_events(run_ctx: &RunContext) -> Vec<AgentEv
     calls.sort_by(|left, right| left.call_id.cmp(&right.call_id));
     calls
         .into_iter()
-        .flat_map(|call| pending_tool_events(&call.interaction, call.frontend_invocation.as_ref()))
+        .flat_map(|call| pending_tool_events(&call.suspension, call.invocation.as_ref()))
         .collect()
 }
 
@@ -793,8 +793,8 @@ async fn drain_resume_decisions_and_replay(
                         run_ctx.add_thread_patch(patch);
                     }
                     for event in pending_tool_events(
-                        &next_suspended_call.interaction,
-                        next_suspended_call.frontend_invocation.as_ref(),
+                        &next_suspended_call.suspension,
+                        next_suspended_call.invocation.as_ref(),
                     ) {
                         events.push(event);
                     }
@@ -999,7 +999,7 @@ fn replay_tool_call_for_resolution(
         return None;
     }
 
-    if let Some(invocation) = suspended_call.frontend_invocation.as_ref() {
+    if let Some(invocation) = suspended_call.invocation.as_ref() {
         match invocation.routing {
             crate::contracts::ResponseRouting::ReplayOriginalTool => match &invocation.origin {
                 crate::contracts::InvocationOrigin::ToolCallIntercepted {
@@ -1039,7 +1039,7 @@ fn replay_tool_call_for_resolution(
             Some(ToolCall::new(
                 suspended_call.call_id.clone(),
                 suspended_call.tool_name.clone(),
-                suspended_call.interaction.parameters.clone(),
+                suspended_call.suspension.parameters.clone(),
             ))
         }
     })
@@ -1074,9 +1074,9 @@ pub(super) fn resolve_suspended_call(
             suspended_calls
                 .values()
                 .find(|call| {
-                    call.interaction.id == response.target_id
+                    call.suspension.id == response.target_id
                         || call
-                            .frontend_invocation
+                            .invocation
                             .as_ref()
                             .is_some_and(|inv| inv.call_id == response.target_id)
                 })

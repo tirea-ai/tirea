@@ -28,10 +28,10 @@ pub struct InferenceError {
 pub struct SuspendedCall {
     pub call_id: String,
     pub tool_name: String,
-    pub interaction: Interaction,
+    pub suspension: Interaction,
     /// Optional frontend invocation metadata for routing decisions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub frontend_invocation: Option<FrontendToolInvocation>,
+    pub invocation: Option<FrontendToolInvocation>,
 }
 
 /// Durable suspended tool-call map persisted at `state["__suspended_tool_calls"]`.
@@ -173,7 +173,7 @@ impl SuspendedCallsExt for Thread {
             calls
                 .iter()
                 .min_by(|(left, _), (right, _)| left.cmp(right))
-                .map(|(_, call)| call.interaction.clone())
+                .map(|(_, call)| call.suspension.clone())
         })
     }
 }

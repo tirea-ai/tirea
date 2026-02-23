@@ -783,8 +783,8 @@ pub(super) async fn execute_single_tool_with_phases(
             Some(SuspendedCall {
                 call_id: call.id.clone(),
                 tool_name: call.name.clone(),
-                interaction: suspended_interaction,
-                frontend_invocation,
+                suspension: suspended_interaction,
+                invocation: frontend_invocation,
             }),
         )
     } else {

@@ -1107,11 +1107,11 @@ async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
         json!("stopped")
     );
     assert_eq!(
-        updated["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["interaction"]["action"],
+        updated["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["suspension"]["action"],
         json!(AGENT_RECOVERY_INTERACTION_ACTION)
     );
     assert_eq!(
-        updated["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["interaction"]
+        updated["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["suspension"]
             ["parameters"]["run_id"],
         json!("run-1")
     );
@@ -1138,7 +1138,7 @@ async fn recovery_plugin_does_not_override_existing_suspended_interaction() {
                     "existing_1": {
                         "call_id": "existing_1",
                         "tool_name": "confirm",
-                        "interaction": {
+                        "suspension": {
                             "id": "existing_1",
                             "action": "confirm",
                         }
@@ -1169,7 +1169,7 @@ async fn recovery_plugin_does_not_override_existing_suspended_interaction() {
 
     let updated = fixture.updated_state();
     assert_eq!(
-        updated["__suspended_tool_calls"]["calls"]["existing_1"]["interaction"]["id"],
+        updated["__suspended_tool_calls"]["calls"]["existing_1"]["suspension"]["id"],
         json!("existing_1")
     );
 }
@@ -1221,7 +1221,7 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
         json!("agent_run")
     );
     assert_eq!(
-        updated["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["interaction"]
+        updated["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["suspension"]
             ["parameters"]["run_id"],
         json!("run-1")
     );
@@ -1399,7 +1399,7 @@ async fn recovery_plugin_tool_rule_overrides_default_behavior() {
         "tool-level ask should override default allow"
     );
     assert_eq!(
-        updated["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["interaction"]["action"],
+        updated["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["suspension"]["action"],
         json!(AGENT_RECOVERY_INTERACTION_ACTION)
     );
 }

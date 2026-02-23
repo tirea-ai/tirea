@@ -101,7 +101,7 @@ pub(super) fn parse_first_suspended_interaction_from_state(state: &Value) -> Opt
     calls
         .iter()
         .min_by(|(left, _), (right, _)| left.cmp(right))
-        .map(|(_, call)| call.interaction.clone())
+        .map(|(_, call)| call.suspension.clone())
 }
 
 pub(super) fn has_suspended_recovery_interaction(state: &Value) -> bool {
@@ -112,7 +112,7 @@ pub(super) fn has_suspended_recovery_interaction(state: &Value) -> bool {
         .and_then(|v| serde_json::from_value::<HashMap<String, SuspendedCall>>(v).ok())
         .unwrap_or_default()
         .values()
-        .any(|call| call.interaction.action == AGENT_RECOVERY_INTERACTION_ACTION)
+        .any(|call| call.suspension.action == AGENT_RECOVERY_INTERACTION_ACTION)
 }
 
 pub(super) fn set_suspended_recovery_interaction(
@@ -127,8 +127,8 @@ pub(super) fn set_suspended_recovery_interaction(
         SuspendedCall {
             call_id,
             tool_name: AGENT_RUN_TOOL_ID.to_string(),
-            interaction,
-            frontend_invocation: None,
+            suspension: interaction,
+            invocation: None,
         },
     );
     let _ = state.set_calls(calls);
@@ -149,8 +149,8 @@ pub(super) fn schedule_recovery_replay(
             SuspendedCall {
                 call_id: call_id.clone(),
                 tool_name: AGENT_RUN_TOOL_ID.to_string(),
-                interaction: build_recovery_interaction(run_id, run),
-                frontend_invocation: None,
+                suspension: build_recovery_interaction(run_id, run),
+                invocation: None,
             },
         );
     } else if suspended_calls

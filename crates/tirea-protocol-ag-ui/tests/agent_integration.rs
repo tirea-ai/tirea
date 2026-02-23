@@ -3015,8 +3015,8 @@ fn test_agent_loop_error_all_variants() {
         suspended_call: Box::new(tirea_agentos::contracts::SuspendedCall {
             call_id: "call_1".to_string(),
             tool_name: "confirm_tool".to_string(),
-            interaction: Interaction::new("int_1", "confirm"),
-            frontend_invocation: None,
+            suspension: Interaction::new("int_1", "confirm"),
+            invocation: None,
         }),
     };
     let display = pending_err.to_string();
@@ -6316,7 +6316,7 @@ async fn test_e2e_permission_suspend_with_real_tool() {
         AgentLoopError::Suspended {
             run_ctx,
             suspended_call,
-        } => (*run_ctx, suspended_call.interaction.clone()),
+        } => (*run_ctx, suspended_call.suspension.clone()),
         other => panic!("Expected Suspended, got: {:?}", other),
     };
 
@@ -6346,7 +6346,7 @@ async fn test_e2e_permission_suspend_with_real_tool() {
     let pending = state["__suspended_tool_calls"]["calls"]
         .as_object()
         .and_then(|calls| calls.values().next())
-        .and_then(|entry| entry.get("interaction"))
+        .and_then(|entry| entry.get("suspension"))
         .expect("suspended interaction should be persisted");
     assert!(
         pending["id"].as_str().unwrap().starts_with("fc_"),
@@ -6398,7 +6398,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
         AgentLoopError::Suspended {
             run_ctx,
             suspended_call,
-        } => (*run_ctx, suspended_call.interaction.clone()),
+        } => (*run_ctx, suspended_call.suspension.clone()),
         other => panic!("Expected Suspended, got: {:?}", other),
     };
 
@@ -6507,7 +6507,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
         AgentLoopError::Suspended {
             run_ctx,
             suspended_call,
-        } => (*run_ctx, suspended_call.interaction.clone()),
+        } => (*run_ctx, suspended_call.suspension.clone()),
         other => panic!("Expected Suspended, got: {:?}", other),
     };
 
@@ -12470,7 +12470,7 @@ fn replay_calls_from_state(state: &Value) -> Vec<ToolCall> {
                 return None;
             }
             let call = suspended.get(&call_id)?;
-            if let Some(invocation) = call.frontend_invocation.as_ref() {
+            if let Some(invocation) = call.invocation.as_ref() {
                 return Some(match (&invocation.origin, &invocation.routing) {
                     (
                         InvocationOrigin::ToolCallIntercepted {
@@ -12499,7 +12499,7 @@ fn replay_calls_from_state(state: &Value) -> Vec<ToolCall> {
             Some(ToolCall::new(
                 call.call_id.clone(),
                 call.tool_name.clone(),
-                call.interaction.parameters.clone(),
+                call.suspension.parameters.clone(),
             ))
         })
         .collect()
@@ -12517,16 +12517,16 @@ fn resume_decisions_from_state(state: &Value) -> HashMap<String, ResumeDecision>
 fn state_with_suspended_call(
     call_id: &str,
     tool_name: &str,
-    interaction: Value,
-    frontend_invocation: Option<Value>,
+    suspension: Value,
+    invocation: Option<Value>,
 ) -> Value {
     let mut entry = json!({
         "call_id": call_id,
         "tool_name": tool_name,
-        "interaction": interaction,
+        "suspension": suspension,
     });
-    if let Some(frontend_invocation) = frontend_invocation {
-        entry["frontend_invocation"] = frontend_invocation;
+    if let Some(invocation) = invocation {
+        entry["invocation"] = invocation;
     }
     json!({
         "__suspended_tool_calls": {

@@ -713,14 +713,14 @@ pub(super) fn run_stream(
                     // Other routings (e.g. ReplayOriginalTool for PermissionConfirm)
                     // use a new fc_xxx call_id that the LLM never streamed, so we
                     // MUST emit ToolCallStart/Ready here for the frontend to see it.
-                    if let Some(ref inv) = suspended_call.frontend_invocation {
+                    if let Some(ref inv) = suspended_call.invocation {
                         if matches!(inv.routing, crate::contracts::event::interaction::ResponseRouting::UseAsToolResult) {
                             continue;
                         }
                     }
                     for event in pending_tool_events(
-                        &suspended_call.interaction,
-                        suspended_call.frontend_invocation.as_ref(),
+                        &suspended_call.suspension,
+                        suspended_call.invocation.as_ref(),
                     ) {
                         yield emitter.emit_existing(event);
                     }

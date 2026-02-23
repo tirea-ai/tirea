@@ -138,13 +138,10 @@ impl InteractionPlugin {
     }
 
     fn resolve_response_key(&self, call: &SuspendedCall) -> Option<String> {
-        let frontend_id = call
-            .frontend_invocation
-            .as_ref()
-            .map(|inv| inv.call_id.as_str());
+        let frontend_id = call.invocation.as_ref().map(|inv| inv.call_id.as_str());
         [
             frontend_id,
-            Some(call.interaction.id.as_str()),
+            Some(call.suspension.id.as_str()),
             Some(call.call_id.as_str()),
         ]
         .into_iter()
@@ -204,7 +201,7 @@ impl InteractionPlugin {
                 .clone()
                 .unwrap_or(serde_json::Value::Bool(!is_denied));
 
-            if call.interaction.action == AGENT_RECOVERY_INTERACTION_ACTION
+            if call.suspension.action == AGENT_RECOVERY_INTERACTION_ACTION
                 && !is_denied
                 && !is_approved
             {
@@ -212,15 +209,15 @@ impl InteractionPlugin {
             }
 
             let should_continue_use_as_result = result_payload.is_some()
-                && call.frontend_invocation.as_ref().is_some_and(|inv| {
+                && call.invocation.as_ref().is_some_and(|inv| {
                     matches!(
                         inv.routing,
                         ResponseRouting::UseAsToolResult | ResponseRouting::PassToLLM
                     )
                 });
-            let permission_source_without_channel = call.frontend_invocation.is_none()
+            let permission_source_without_channel = call.invocation.is_none()
                 && call
-                    .interaction
+                    .suspension
                     .parameters
                     .get("source")
                     .and_then(serde_json::Value::as_str)
@@ -397,7 +394,7 @@ mod tests {
                     return None;
                 }
                 let call = suspended.get(&call_id)?;
-                if let Some(inv) = call.frontend_invocation.as_ref() {
+                if let Some(inv) = call.invocation.as_ref() {
                     return match &inv.routing {
                         ResponseRouting::ReplayOriginalTool => match &inv.origin {
                             tirea_contract::InvocationOrigin::ToolCallIntercepted {
@@ -436,7 +433,7 @@ mod tests {
                 Some(ToolCall::new(
                     call.call_id.clone(),
                     call.tool_name.clone(),
-                    call.interaction.parameters.clone(),
+                    call.suspension.parameters.clone(),
                 ))
             })
             .collect()
@@ -470,7 +467,7 @@ mod tests {
                 let decision = decisions.get(&call_id)?;
                 let interaction_id = suspended
                     .get(&call_id)
-                    .map(|call| call.interaction.id.clone())
+                    .map(|call| call.suspension.id.clone())
                     .unwrap_or(call_id.clone());
                 let result = if decision.result.is_null() {
                     serde_json::Value::Bool(matches!(decision.action, ResumeDecisionAction::Resume))
@@ -503,14 +500,14 @@ mod tests {
                     "call_write": {
                         "call_id": "call_write",
                         "tool_name": "write_file",
-                        "interaction": {
+                        "suspension": {
                             "id": "fc_ask_1",
                             "action": "tool:write_file",
                             "parameters": {
                                 "source": "permission"
                             }
                         },
-                        "frontend_invocation": {
+                        "invocation": {
                             "call_id": "fc_ask_1",
                             "tool_name": "PermissionConfirm",
                             "arguments": { "tool_name": "write_file", "tool_args": { "path": "b.txt" } },
@@ -565,7 +562,7 @@ mod tests {
                     "call_write": {
                         "call_id": "call_write",
                         "tool_name": "write_file",
-                        "interaction": {
+                        "suspension": {
                             "id": "call_write",
                             "action": "tool:write_file",
                             "parameters": {
@@ -614,11 +611,11 @@ mod tests {
                     "call_copy_1": {
                         "call_id": "call_copy_1",
                         "tool_name": "copyToClipboard",
-                        "interaction": {
+                        "suspension": {
                             "id": "call_copy_1",
                             "action": "tool:copyToClipboard"
                         },
-                        "frontend_invocation": {
+                        "invocation": {
                             "call_id": "call_copy_1",
                             "tool_name": "copyToClipboard",
                             "arguments": { "text": "hello" },
@@ -665,12 +662,12 @@ mod tests {
                     "call_copy_1": {
                         "call_id": "call_copy_1",
                         "tool_name": "copyToClipboard",
-                        "interaction": {
+                        "suspension": {
                             "id": "call_copy_1",
                             "action": "tool:copyToClipboard",
                             "parameters": { "text": "hello" }
                         },
-                        "frontend_invocation": {
+                        "invocation": {
                             "call_id": "call_copy_1",
                             "tool_name": "copyToClipboard",
                             "arguments": { "text": "hello" },
@@ -708,14 +705,14 @@ mod tests {
                     "call_write": {
                         "call_id": "call_write",
                         "tool_name": "write_file",
-                        "interaction": {
+                        "suspension": {
                             "id": "fc_ask_2",
                             "action": "tool:write_file",
                             "parameters": {
                                 "source": "permission"
                             }
                         },
-                        "frontend_invocation": {
+                        "invocation": {
                             "call_id": "fc_ask_2",
                             "tool_name": "PermissionConfirm",
                             "arguments": { "tool_name": "write_file", "tool_args": { "path": "a.txt" } },
@@ -755,14 +752,14 @@ mod tests {
                     "call_write": {
                         "call_id": "call_write",
                         "tool_name": "write_file",
-                        "interaction": {
+                        "suspension": {
                             "id": "fc_ask_3",
                             "action": "tool:write_file",
                             "parameters": {
                                 "source": "permission"
                             }
                         },
-                        "frontend_invocation": {
+                        "invocation": {
                             "call_id": "fc_ask_3",
                             "tool_name": "PermissionConfirm",
                             "arguments": { "tool_name": "write_file", "tool_args": { "path": "b.txt" } },
@@ -802,12 +799,12 @@ mod tests {
                     "call_write": {
                         "call_id": "call_write",
                         "tool_name": "write_file",
-                        "interaction": {
+                        "suspension": {
                             "id": "call_write",
                             "action": "tool:write_file",
                             "parameters": {}
                         },
-                        "frontend_invocation": {
+                        "invocation": {
                             "call_id": "fc_ask_1",
                             "tool_name": "PermissionConfirm",
                             "arguments": { "tool_name": "write_file", "tool_args": { "path": "a.txt" } },
@@ -855,12 +852,12 @@ mod tests {
                     "call_copy": {
                         "call_id": "call_copy",
                         "tool_name": "copyToClipboard",
-                        "interaction": {
+                        "suspension": {
                             "id": "call_copy",
                             "action": "tool:copyToClipboard",
                             "parameters": { "text": "hello" }
                         },
-                        "frontend_invocation": {
+                        "invocation": {
                             "call_id": "call_copy",
                             "tool_name": "copyToClipboard",
                             "arguments": { "text": "hello" },
@@ -901,12 +898,12 @@ mod tests {
                     "call_copy": {
                         "call_id": "call_copy",
                         "tool_name": "copyToClipboard",
-                        "interaction": {
+                        "suspension": {
                             "id": "call_copy",
                             "action": "tool:copyToClipboard",
                             "parameters": { "text": "hello" }
                         },
-                        "frontend_invocation": {
+                        "invocation": {
                             "call_id": "call_copy",
                             "tool_name": "copyToClipboard",
                             "arguments": { "text": "hello" },
@@ -957,7 +954,7 @@ mod tests {
                     "agent_recovery_run-1": {
                         "call_id": "agent_recovery_run-1",
                         "tool_name": "agent_run",
-                        "interaction": {
+                        "suspension": {
                             "id": "agent_recovery_run-1",
                             "action": "recover_agent_run",
                             "parameters": {
@@ -991,7 +988,7 @@ mod tests {
                     "agent_recovery_run-1": {
                         "call_id": "agent_recovery_run-1",
                         "tool_name": "agent_run",
-                        "interaction": {
+                        "suspension": {
                             "id": "agent_recovery_run-1",
                             "action": "recover_agent_run",
                             "parameters": {
@@ -1039,12 +1036,12 @@ mod tests {
                     "fc_ask_1": {
                         "call_id": "fc_ask_1",
                         "tool_name": "write_file",
-                        "interaction": {
+                        "suspension": {
                             "id": "fc_ask_1",
                             "action": "tool:write_file",
                             "parameters": { "source": "permission" }
                         },
-                        "frontend_invocation": {
+                        "invocation": {
                             "call_id": "fc_ask_1",
                             "tool_name": "PermissionConfirm",
                             "arguments": { "tool_name": "write_file" },
@@ -1081,12 +1078,12 @@ mod tests {
                     "fc_ask_1": {
                         "call_id": "fc_ask_1",
                         "tool_name": "write_file",
-                        "interaction": {
+                        "suspension": {
                             "id": "fc_ask_1",
                             "action": "tool:write_file",
                             "parameters": { "source": "permission" }
                         },
-                        "frontend_invocation": {
+                        "invocation": {
                             "call_id": "fc_ask_1",
                             "tool_name": "PermissionConfirm",
                             "arguments": { "tool_name": "write_file" },
@@ -1122,7 +1119,7 @@ mod tests {
                     "confirm_1": {
                         "call_id": "confirm_1",
                         "tool_name": "confirm",
-                        "interaction": {
+                        "suspension": {
                             "id": "confirm_1",
                             "action": "confirm",
                             "parameters": {}
