@@ -501,6 +501,16 @@ impl<'a> StepContext<'a> {
         self.run_action = Some(action);
     }
 
+    /// Emit a state side effect.
+    pub fn emit_state_effect(&mut self, effect: StateEffect) {
+        self.state_effects.push(effect);
+    }
+
+    /// Emit a state patch side effect.
+    pub fn emit_patch(&mut self, patch: TrackedPatch) {
+        self.emit_state_effect(StateEffect::Patch(patch));
+    }
+
     /// Effective run-level action for current step.
     pub fn run_action(&self) -> RunAction {
         if let Some(action) = self.run_action.clone() {

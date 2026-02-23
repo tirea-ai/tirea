@@ -6,7 +6,7 @@ use super::{
     AgentConfig, AgentLoopError, RunCancellationToken, TOOL_SCOPE_CALLER_MESSAGES_KEY,
     TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
-use crate::contracts::plugin::phase::{Phase, StepContext, ToolContext};
+use crate::contracts::plugin::phase::{Phase, StateEffect, StepContext, ToolContext};
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::state_paths::SUSPENDED_TOOL_CALLS_STATE_PATH;
 use crate::contracts::runtime::ActivityManager;
@@ -842,10 +842,15 @@ pub(super) async fn execute_single_tool_with_phases(
     // Flush plugin state ops into pending patches
     let plugin_patch = step.ctx().take_patch();
     if !plugin_patch.patch().is_empty() {
-        step.pending_patches.push(plugin_patch);
+        step.emit_patch(plugin_patch);
     }
 
-    let pending_patches = std::mem::take(&mut step.pending_patches);
+    let mut pending_patches = std::mem::take(&mut step.pending_patches);
+    for effect in std::mem::take(&mut step.state_effects) {
+        match effect {
+            StateEffect::Patch(patch) => pending_patches.push(patch),
+        }
+    }
 
     Ok(ToolExecutionResult {
         execution,

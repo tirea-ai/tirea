@@ -10439,6 +10439,86 @@ async fn test_run_loop_plugin_termination_request_stops_loop() {
 }
 
 #[tokio::test]
+async fn test_run_loop_applies_plugin_state_effect_patch_before_inference() {
+    struct StateEffectPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for StateEffectPlugin {
+        fn id(&self) -> &str {
+            "state_effect_before_inference"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase != Phase::BeforeInference {
+                return;
+            }
+            let patch = tirea_state::TrackedPatch::new(Patch::new().with_op(Op::set(
+                tirea_state::path!("debug", "before_inference_effect"),
+                json!(true),
+            )))
+            .with_source("test:state_effect_before_inference");
+            step.emit_patch(patch);
+            step.set_run_action(crate::contracts::RunAction::Terminate(
+                TerminationReason::PluginRequested,
+            ));
+        });
+    }
+
+    let config =
+        AgentConfig::new("mock").with_plugin(Arc::new(StateEffectPlugin) as Arc<dyn AgentPlugin>);
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
+    assert_eq!(outcome.termination, TerminationReason::PluginRequested);
+    assert_eq!(outcome.stats.llm_calls, 0, "inference should not run");
+    let state = outcome.run_ctx.snapshot().expect("state should rebuild");
+    assert_eq!(state["debug"]["before_inference_effect"], json!(true));
+}
+
+#[tokio::test]
+async fn test_run_loop_applies_plugin_state_effect_patch_after_tool_execute() {
+    struct StateEffectToolPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for StateEffectToolPlugin {
+        fn id(&self) -> &str {
+            "state_effect_after_tool_execute"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::AfterToolExecute && step.tool_call_id() == Some("call_1") {
+                let patch = tirea_state::TrackedPatch::new(Patch::new().with_op(Op::set(
+                    tirea_state::path!("debug", "after_tool_effect"),
+                    json!(true),
+                )))
+                .with_source("test:state_effect_after_tool_execute");
+                step.emit_patch(patch);
+            }
+        });
+    }
+
+    let provider = Arc::new(MockChatProvider::new(vec![
+        Ok(tool_call_chat_response_object_args(
+            "call_1",
+            "echo",
+            json!({"message": "hi"}),
+        )),
+        Ok(text_chat_response("done")),
+    ]));
+    let config = AgentConfig::new("mock")
+        .with_llm_executor(provider as Arc<dyn LlmExecutor>)
+        .with_plugin(Arc::new(StateEffectToolPlugin) as Arc<dyn AgentPlugin>);
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+
+    let outcome = run_loop(&config, tool_map([EchoTool]), run_ctx, None, None, None).await;
+    assert_eq!(outcome.termination, TerminationReason::NaturalEnd);
+    let state = outcome.run_ctx.snapshot().expect("state should rebuild");
+    assert_eq!(state["debug"]["after_tool_effect"], json!(true));
+}
+
+#[tokio::test]
 async fn test_run_loop_after_inference_termination_request_stops_before_tool_execution() {
     struct AfterInferenceTerminatePlugin;
 

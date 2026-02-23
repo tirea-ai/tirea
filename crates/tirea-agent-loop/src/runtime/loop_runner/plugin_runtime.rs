@@ -2,8 +2,8 @@ use super::core::{clear_agent_inference_error, set_agent_inference_error};
 use super::AgentLoopError;
 use crate::contracts::plugin::phase::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
-    BeforeToolExecuteContext, Phase, RunAction, RunEndContext, RunStartContext, StepContext,
-    StepEndContext, StepStartContext,
+    BeforeToolExecuteContext, Phase, RunAction, RunEndContext, RunStartContext, StateEffect,
+    StepContext, StepEndContext, StepStartContext,
 };
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::tool::ToolDescriptor;
@@ -218,7 +218,13 @@ pub(super) async fn emit_phase_checked(
 }
 
 fn take_step_pending_patches(step: &mut StepContext<'_>) -> Vec<TrackedPatch> {
-    std::mem::take(&mut step.pending_patches)
+    let mut pending = std::mem::take(&mut step.pending_patches);
+    for effect in std::mem::take(&mut step.state_effects) {
+        match effect {
+            StateEffect::Patch(patch) => pending.push(patch),
+        }
+    }
+    pending
 }
 
 pub(super) async fn run_phase_block<R, Setup, Extract>(
@@ -260,7 +266,7 @@ where
     }
     let plugin_patch = step.ctx().take_patch();
     if !plugin_patch.patch().is_empty() {
-        step.pending_patches.push(plugin_patch);
+        step.emit_patch(plugin_patch);
     }
     let output = extract(&mut step);
     let pending = take_step_pending_patches(&mut step);
@@ -359,7 +365,7 @@ pub(super) async fn emit_run_end_phase(
         }
         let plugin_patch = step.ctx().take_patch();
         if !plugin_patch.patch().is_empty() {
-            step.pending_patches.push(plugin_patch);
+            step.emit_patch(plugin_patch);
         }
         take_step_pending_patches(&mut step)
     };
