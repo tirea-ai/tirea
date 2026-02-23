@@ -19,12 +19,12 @@ use tirea_agentos_server::http::{router, AppState};
 use tirea_store_adapters::{NatsBufferedThreadWriter, PostgresStore};
 use tower::ServiceExt;
 
-struct SkipInferencePlugin;
+struct TerminatePluginRequestedPlugin;
 
 #[async_trait]
-impl AgentPlugin for SkipInferencePlugin {
+impl AgentPlugin for TerminatePluginRequestedPlugin {
     fn id(&self) -> &str {
-        "skip_inference_e2e_nats_postgres"
+        "terminate_plugin_requested_e2e_nats_postgres"
     }
 
     async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
@@ -35,14 +35,14 @@ impl AgentPlugin for SkipInferencePlugin {
 fn make_os(write_store: Arc<dyn AgentStateStore>) -> AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
-        plugin_ids: vec!["skip_inference_e2e_nats_postgres".into()],
+        plugin_ids: vec!["terminate_plugin_requested_e2e_nats_postgres".into()],
         ..Default::default()
     };
 
     AgentOsBuilder::new()
         .with_registered_plugin(
-            "skip_inference_e2e_nats_postgres",
-            Arc::new(SkipInferencePlugin),
+            "terminate_plugin_requested_e2e_nats_postgres",
+            Arc::new(TerminatePluginRequestedPlugin),
         )
         .with_agent("test", def)
         .with_agent_state_store(write_store)
@@ -98,7 +98,7 @@ async fn start_nats_js() -> Option<(testcontainers::ContainerAsync<Nats>, String
     let container = match Nats::default().with_cmd(["-js"]).start().await {
         Ok(container) => container,
         Err(err) => {
-            eprintln!("skipping e2e_nats_postgres: unable to start NATS container ({err})");
+            eprintln!("ignoring e2e_nats_postgres: unable to start NATS container ({err})");
             return None;
         }
     };
@@ -115,7 +115,7 @@ async fn start_postgres() -> Option<(testcontainers::ContainerAsync<Postgres>, S
     let container = match Postgres::default().start().await {
         Ok(container) => container,
         Err(err) => {
-            eprintln!("skipping e2e_nats_postgres: unable to start Postgres container ({err})");
+            eprintln!("ignoring e2e_nats_postgres: unable to start Postgres container ({err})");
             return None;
         }
     };

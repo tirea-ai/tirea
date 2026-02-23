@@ -22,12 +22,12 @@ use tirea_store_adapters::MemoryStore;
 use tokio::sync::{Notify, RwLock};
 use tower::ServiceExt;
 
-struct SkipInferencePlugin;
+struct TerminatePluginRequestedPlugin;
 
 #[async_trait]
-impl AgentPlugin for SkipInferencePlugin {
+impl AgentPlugin for TerminatePluginRequestedPlugin {
     fn id(&self) -> &str {
-        "skip_inference_test"
+        "terminate_plugin_requested_test"
     }
 
     async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
@@ -35,12 +35,12 @@ impl AgentPlugin for SkipInferencePlugin {
     }
 }
 
-struct SlowSkipInferencePlugin;
+struct SlowTerminatePluginRequestedPlugin;
 
 #[async_trait]
-impl AgentPlugin for SlowSkipInferencePlugin {
+impl AgentPlugin for SlowTerminatePluginRequestedPlugin {
     fn id(&self) -> &str {
-        "slow_skip_inference_test"
+        "slow_terminate_plugin_requested_test"
     }
 
     async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
@@ -63,12 +63,15 @@ fn make_os_with_storage_and_tools(
 ) -> AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
-        plugin_ids: vec!["skip_inference_test".into()],
+        plugin_ids: vec!["terminate_plugin_requested_test".into()],
         ..Default::default()
     };
 
     AgentOsBuilder::new()
-        .with_registered_plugin("skip_inference_test", Arc::new(SkipInferencePlugin))
+        .with_registered_plugin(
+            "terminate_plugin_requested_test",
+            Arc::new(TerminatePluginRequestedPlugin),
+        )
         .with_tools(tools)
         .with_agent("test", def)
         .with_agent_state_store(write_store)
@@ -76,17 +79,19 @@ fn make_os_with_storage_and_tools(
         .unwrap()
 }
 
-fn make_os_with_slow_skip_plugin(write_store: Arc<dyn AgentStateStore>) -> AgentOs {
+fn make_os_with_slow_terminate_plugin_requested_plugin(
+    write_store: Arc<dyn AgentStateStore>,
+) -> AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
-        plugin_ids: vec!["slow_skip_inference_test".into()],
+        plugin_ids: vec!["slow_terminate_plugin_requested_test".into()],
         ..Default::default()
     };
 
     AgentOsBuilder::new()
         .with_registered_plugin(
-            "slow_skip_inference_test",
-            Arc::new(SlowSkipInferencePlugin),
+            "slow_terminate_plugin_requested_test",
+            Arc::new(SlowTerminatePluginRequestedPlugin),
         )
         .with_agent("test", def)
         .with_agent_state_store(write_store)
@@ -334,7 +339,7 @@ async fn test_ai_sdk_sse_and_persists_session() {
         "missing start event: {text}"
     );
     // text-start/text-end are lazy — only emitted when TextDelta events occur.
-    // This test skips inference, so no text is produced.
+    // This test terminates before inference, so no text is produced.
     assert!(
         !text.contains(r#""type":"text-start""#),
         "unexpected text-start without text content: {text}"
@@ -2644,7 +2649,9 @@ async fn test_ai_sdk_regenerate_requires_message_id() {
 #[tokio::test]
 async fn test_ai_sdk_resume_stream_routes_match_expected_behavior() {
     let storage = Arc::new(MemoryStore::new());
-    let os = Arc::new(make_os_with_slow_skip_plugin(storage.clone()));
+    let os = Arc::new(make_os_with_slow_terminate_plugin_requested_plugin(
+        storage.clone(),
+    ));
     let app = make_app(os, storage);
 
     let no_active = app
@@ -2720,7 +2727,9 @@ async fn test_ai_sdk_resume_stream_routes_match_expected_behavior() {
 #[tokio::test]
 async fn test_ai_sdk_decision_only_request_forwards_to_active_run() {
     let storage = Arc::new(MemoryStore::new());
-    let os = Arc::new(make_os_with_slow_skip_plugin(storage.clone()));
+    let os = Arc::new(make_os_with_slow_terminate_plugin_requested_plugin(
+        storage.clone(),
+    ));
     let app = make_app(os, storage);
 
     let first_payload = json!({
@@ -2800,7 +2809,9 @@ async fn test_ai_sdk_decision_only_without_active_run_starts_new_run() {
 #[tokio::test]
 async fn test_ag_ui_decision_only_request_forwards_to_active_run() {
     let storage = Arc::new(MemoryStore::new());
-    let os = Arc::new(make_os_with_slow_skip_plugin(storage.clone()));
+    let os = Arc::new(make_os_with_slow_terminate_plugin_requested_plugin(
+        storage.clone(),
+    ));
     let app = make_app(os, storage);
 
     let first_payload = json!({

@@ -23,12 +23,12 @@ use tirea_agentos::orchestrator::AgentOsBuilder;
 use tirea_agentos_server::nats::NatsGateway;
 use tirea_store_adapters::MemoryStore;
 
-struct SkipInferencePlugin;
+struct TerminatePluginRequestedPlugin;
 
 #[async_trait]
-impl AgentPlugin for SkipInferencePlugin {
+impl AgentPlugin for TerminatePluginRequestedPlugin {
     fn id(&self) -> &str {
-        "skip_inference_test"
+        "terminate_plugin_requested_test"
     }
 
     async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
@@ -39,12 +39,15 @@ impl AgentPlugin for SkipInferencePlugin {
 fn make_os(storage: Arc<dyn AgentStateStore>) -> tirea_agentos::orchestrator::AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
-        plugin_ids: vec!["skip_inference_test".into()],
+        plugin_ids: vec!["terminate_plugin_requested_test".into()],
         ..Default::default()
     };
 
     AgentOsBuilder::new()
-        .with_registered_plugin("skip_inference_test", Arc::new(SkipInferencePlugin))
+        .with_registered_plugin(
+            "terminate_plugin_requested_test",
+            Arc::new(TerminatePluginRequestedPlugin),
+        )
         .with_agent("test", def)
         .with_agent_state_store(storage)
         .build()
@@ -55,7 +58,7 @@ async fn start_nats() -> Option<(testcontainers::ContainerAsync<Nats>, String)> 
     let container = match Nats::default().start().await {
         Ok(container) => container,
         Err(err) => {
-            eprintln!("skipping nats_gateway test: unable to start NATS container ({err})");
+            eprintln!("ignoring nats_gateway test: unable to start NATS container ({err})");
             return None;
         }
     };
@@ -295,7 +298,7 @@ async fn test_nats_aisdk_happy_path() {
         "missing start in: {all}"
     );
     // text-start/text-end are lazy — only emitted when TextDelta events occur.
-    // This test skips inference, so no text is produced.
+    // This test terminates before inference, so no text is produced.
     assert!(
         all.contains("\"type\":\"finish\""),
         "missing finish in: {all}"

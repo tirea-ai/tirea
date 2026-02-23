@@ -11,12 +11,12 @@ use tirea_contract::ProtocolInputAdapter;
 use tirea_protocol_ai_sdk_v6::{AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest};
 use tirea_store_adapters::MemoryStore;
 
-struct SkipInferencePlugin;
+struct TerminatePluginRequestedPlugin;
 
 #[async_trait]
-impl AgentPlugin for SkipInferencePlugin {
+impl AgentPlugin for TerminatePluginRequestedPlugin {
     fn id(&self) -> &str {
-        "skip_inference_cross_crate_matrix"
+        "terminate_plugin_requested_cross_crate_matrix"
     }
 
     async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
@@ -27,14 +27,14 @@ impl AgentPlugin for SkipInferencePlugin {
 fn make_os(store: Arc<MemoryStore>) -> AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
-        plugin_ids: vec!["skip_inference_cross_crate_matrix".into()],
+        plugin_ids: vec!["terminate_plugin_requested_cross_crate_matrix".into()],
         ..Default::default()
     };
 
     AgentOsBuilder::new()
         .with_registered_plugin(
-            "skip_inference_cross_crate_matrix",
-            Arc::new(SkipInferencePlugin),
+            "terminate_plugin_requested_cross_crate_matrix",
+            Arc::new(TerminatePluginRequestedPlugin),
         )
         .with_agent("test", def)
         .with_agent_state_store(store)

@@ -149,12 +149,12 @@ impl crate::contracts::storage::AgentStateWriter for FailOnNthAppendStorage {
 }
 
 #[derive(Debug)]
-struct SkipWithRunEndPatchPlugin;
+struct TerminateWithRunEndPatchPlugin;
 
 #[async_trait]
-impl AgentPlugin for SkipWithRunEndPatchPlugin {
+impl AgentPlugin for TerminateWithRunEndPatchPlugin {
     fn id(&self) -> &str {
-        "skip_with_run_end_patch"
+        "terminate_with_run_end_patch"
     }
 
     async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
@@ -885,14 +885,14 @@ fn build_skill_registry_refresh_interval_starts_periodic_refresh() {
 }
 
 #[tokio::test]
-async fn run_and_run_stream_work_without_llm_when_skip_inference() {
+async fn run_and_run_stream_work_without_llm_when_terminate_plugin_requested() {
     #[derive(Debug)]
-    struct SkipInferencePlugin;
+    struct TerminatePluginRequestedPlugin;
 
     #[async_trait::async_trait]
-    impl AgentPlugin for SkipInferencePlugin {
+    impl AgentPlugin for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
-            "skip_inference"
+            "terminate_plugin_requested"
         }
 
         async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
@@ -901,10 +901,13 @@ async fn run_and_run_stream_work_without_llm_when_skip_inference() {
     }
 
     let os = AgentOs::builder()
-        .with_registered_plugin("skip_inference", Arc::new(SkipInferencePlugin))
+        .with_registered_plugin(
+            "terminate_plugin_requested",
+            Arc::new(TerminatePluginRequestedPlugin),
+        )
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("skip_inference"),
+            AgentDefinition::new("gpt-4o-mini").with_plugin_id("terminate_plugin_requested"),
         )
         .with_agent_state_store(Arc::new(tirea_store_adapters::MemoryStore::new()))
         .build()
@@ -1436,12 +1439,12 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
     use tirea_store_adapters::MemoryStore;
 
     #[derive(Debug)]
-    struct SkipPlugin;
+    struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for SkipPlugin {
+    impl AgentPlugin for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
-            "skip"
+            "terminate_plugin_requested"
         }
         async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
             step.terminate_plugin_requested();
@@ -1453,10 +1456,13 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
         .with_agent_state_store(
             storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
         )
-        .with_registered_plugin("skip", Arc::new(SkipPlugin))
+        .with_registered_plugin(
+            "terminate_plugin_requested",
+            Arc::new(TerminatePluginRequestedPlugin),
+        )
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("skip"),
+            AgentDefinition::new("gpt-4o-mini").with_plugin_id("terminate_plugin_requested"),
         )
         .build()
         .unwrap();
@@ -1497,12 +1503,12 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
     use tirea_store_adapters::MemoryStore;
 
     #[derive(Debug)]
-    struct SkipPlugin;
+    struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for SkipPlugin {
+    impl AgentPlugin for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
-            "skip"
+            "terminate_plugin_requested"
         }
         async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
             step.terminate_plugin_requested();
@@ -1514,10 +1520,13 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
         .with_agent_state_store(
             storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
         )
-        .with_registered_plugin("skip", Arc::new(SkipPlugin))
+        .with_registered_plugin(
+            "terminate_plugin_requested",
+            Arc::new(TerminatePluginRequestedPlugin),
+        )
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("skip"),
+            AgentDefinition::new("gpt-4o-mini").with_plugin_id("terminate_plugin_requested"),
         )
         .build()
         .unwrap();
@@ -1549,12 +1558,12 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
     use tirea_store_adapters::MemoryStore;
 
     #[derive(Debug)]
-    struct SkipPlugin;
+    struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for SkipPlugin {
+    impl AgentPlugin for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
-            "skip"
+            "terminate_plugin_requested"
         }
         async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
             step.terminate_plugin_requested();
@@ -1566,10 +1575,13 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
         .with_agent_state_store(
             storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
         )
-        .with_registered_plugin("skip", Arc::new(SkipPlugin))
+        .with_registered_plugin(
+            "terminate_plugin_requested",
+            Arc::new(TerminatePluginRequestedPlugin),
+        )
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("skip"),
+            AgentDefinition::new("gpt-4o-mini").with_plugin_id("terminate_plugin_requested"),
         )
         .build()
         .unwrap();
@@ -1604,12 +1616,12 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
     use tirea_store_adapters::MemoryStore;
 
     #[derive(Debug)]
-    struct SkipPlugin;
+    struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for SkipPlugin {
+    impl AgentPlugin for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
-            "skip"
+            "terminate_plugin_requested"
         }
         async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
             step.terminate_plugin_requested();
@@ -1621,10 +1633,13 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
         .with_agent_state_store(
             storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
         )
-        .with_registered_plugin("skip", Arc::new(SkipPlugin))
+        .with_registered_plugin(
+            "terminate_plugin_requested",
+            Arc::new(TerminatePluginRequestedPlugin),
+        )
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("skip"),
+            AgentDefinition::new("gpt-4o-mini").with_plugin_id("terminate_plugin_requested"),
         )
         .build()
         .unwrap();
@@ -1673,12 +1688,12 @@ async fn execute_prepared_runs_stream() {
     use tirea_store_adapters::MemoryStore;
 
     #[derive(Debug)]
-    struct SkipPlugin;
+    struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for SkipPlugin {
+    impl AgentPlugin for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
-            "skip"
+            "terminate_plugin_requested"
         }
         async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
             step.terminate_plugin_requested();
@@ -1690,10 +1705,13 @@ async fn execute_prepared_runs_stream() {
         .with_agent_state_store(
             storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
         )
-        .with_registered_plugin("skip", Arc::new(SkipPlugin))
+        .with_registered_plugin(
+            "terminate_plugin_requested",
+            Arc::new(TerminatePluginRequestedPlugin),
+        )
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("skip"),
+            AgentDefinition::new("gpt-4o-mini").with_plugin_id("terminate_plugin_requested"),
         )
         .build()
         .unwrap();
@@ -1733,12 +1751,12 @@ async fn execute_prepared_runs_stream() {
 }
 
 #[derive(Debug)]
-struct DecisionSkipPlugin;
+struct DecisionTerminatePlugin;
 
 #[async_trait]
-impl AgentPlugin for DecisionSkipPlugin {
+impl AgentPlugin for DecisionTerminatePlugin {
     fn id(&self) -> &str {
-        "decision_skip"
+        "decision_terminate_plugin_requested"
     }
 
     async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
@@ -1773,10 +1791,14 @@ fn make_decision_test_os(storage: Arc<tirea_store_adapters::MemoryStore>) -> Age
     AgentOs::builder()
         .with_agent_state_store(storage as Arc<dyn crate::contracts::storage::AgentStateStore>)
         .with_tools(tools)
-        .with_registered_plugin("decision_skip", Arc::new(DecisionSkipPlugin))
+        .with_registered_plugin(
+            "decision_terminate_plugin_requested",
+            Arc::new(DecisionTerminatePlugin),
+        )
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("decision_skip"),
+            AgentDefinition::new("gpt-4o-mini")
+                .with_plugin_id("decision_terminate_plugin_requested"),
         )
         .build()
         .unwrap()
@@ -2322,12 +2344,12 @@ async fn run_stream_checkpoint_append_failure_keeps_persisted_prefix_consistent(
             storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
         )
         .with_registered_plugin(
-            "skip_with_run_end_patch",
-            Arc::new(SkipWithRunEndPatchPlugin),
+            "terminate_with_run_end_patch",
+            Arc::new(TerminateWithRunEndPatchPlugin),
         )
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("skip_with_run_end_patch"),
+            AgentDefinition::new("gpt-4o-mini").with_plugin_id("terminate_with_run_end_patch"),
         )
         .build()
         .unwrap();
@@ -2410,12 +2432,12 @@ async fn run_stream_checkpoint_failure_on_existing_thread_keeps_storage_unchange
             storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
         )
         .with_registered_plugin(
-            "skip_with_run_end_patch",
-            Arc::new(SkipWithRunEndPatchPlugin),
+            "terminate_with_run_end_patch",
+            Arc::new(TerminateWithRunEndPatchPlugin),
         )
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("skip_with_run_end_patch"),
+            AgentDefinition::new("gpt-4o-mini").with_plugin_id("terminate_with_run_end_patch"),
         )
         .build()
         .unwrap();
@@ -2553,7 +2575,7 @@ async fn prepare_run_scope_tool_registry_adds_new_tool() {
 }
 
 #[tokio::test]
-async fn prepare_run_scope_tool_registry_skips_shadowed() {
+async fn prepare_run_scope_tool_registry_omits_shadowed() {
     struct ShadowTool;
     #[async_trait::async_trait]
     impl Tool for ShadowTool {
@@ -2599,7 +2621,7 @@ async fn prepare_run_scope_tool_registry_skips_shadowed() {
         .await
         .unwrap();
 
-    // Backend agent_run wins — frontend shadow is skipped (overlay uses insert-if-absent)
+    // Backend agent_run wins — frontend shadow is omitted (overlay uses insert-if-absent)
     assert!(prepared.tools.contains_key("agent_run"));
     let tool = prepared.tools.get("agent_run").unwrap();
     assert_ne!(tool.descriptor().description, "frontend stub");

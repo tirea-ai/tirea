@@ -11,12 +11,12 @@ use tirea_protocol_ag_ui::{apply_agui_extensions, AgUiInputAdapter, Message, Run
 use tirea_protocol_ai_sdk_v6::{AiSdkV6InputAdapter, AiSdkV6RunRequest};
 use tirea_store_adapters::MemoryStore;
 
-struct SkipInferencePlugin;
+struct TerminatePluginRequestedPlugin;
 
 #[async_trait]
-impl AgentPlugin for SkipInferencePlugin {
+impl AgentPlugin for TerminatePluginRequestedPlugin {
     fn id(&self) -> &str {
-        "skip_inference_parity"
+        "terminate_plugin_requested_parity"
     }
 
     async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
@@ -27,12 +27,15 @@ impl AgentPlugin for SkipInferencePlugin {
 fn make_os() -> AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
-        plugin_ids: vec!["skip_inference_parity".into()],
+        plugin_ids: vec!["terminate_plugin_requested_parity".into()],
         ..Default::default()
     };
 
     AgentOsBuilder::new()
-        .with_registered_plugin("skip_inference_parity", Arc::new(SkipInferencePlugin))
+        .with_registered_plugin(
+            "terminate_plugin_requested_parity",
+            Arc::new(TerminatePluginRequestedPlugin),
+        )
         .with_agent("test", def)
         .with_agent_state_store(Arc::new(MemoryStore::new()))
         .build()

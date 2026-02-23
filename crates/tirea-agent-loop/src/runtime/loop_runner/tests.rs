@@ -2908,12 +2908,12 @@ fn test_execute_tools_sequential_propagates_intermediate_state_apply_errors() {
 // Phase lifecycle helpers & tests for run_loop_stream
 // ========================================================================
 
-/// Plugin that records phases AND skips inference.
-struct RecordAndSkipPlugin {
+/// Plugin that records phases and terminates before inference.
+struct RecordAndTerminatePlugin {
     phases: Arc<Mutex<Vec<Phase>>>,
 }
 
-impl RecordAndSkipPlugin {
+impl RecordAndTerminatePlugin {
     fn new() -> (Self, Arc<Mutex<Vec<Phase>>>) {
         let phases = Arc::new(Mutex::new(Vec::new()));
         (
@@ -2926,9 +2926,9 @@ impl RecordAndSkipPlugin {
 }
 
 #[async_trait]
-impl AgentPlugin for RecordAndSkipPlugin {
+impl AgentPlugin for RecordAndTerminatePlugin {
     fn id(&self) -> &str {
-        "record_and_skip"
+        "record_and_terminate_plugin_requested"
     }
     phase_dispatch_methods!(|this, phase, step| {
         this.phases.lock().unwrap().push(phase);
@@ -2954,8 +2954,8 @@ async fn collect_stream_events(
 }
 
 #[tokio::test]
-async fn test_stream_skip_inference_emits_run_end_phase() {
-    let (recorder, phases) = RecordAndSkipPlugin::new();
+async fn test_stream_terminate_plugin_requested_emits_run_end_phase() {
+    let (recorder, phases) = RecordAndTerminatePlugin::new();
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
@@ -2998,9 +2998,9 @@ async fn test_stream_skip_inference_emits_run_end_phase() {
 }
 
 #[tokio::test]
-async fn test_stream_skip_inference_emits_run_start_and_finish() {
-    // Verify the complete event sequence on skip_inference path
-    let (recorder, _phases) = RecordAndSkipPlugin::new();
+async fn test_stream_terminate_plugin_requested_emits_run_start_and_finish() {
+    // Verify the complete event sequence on terminate_plugin_requested path
+    let (recorder, _phases) = RecordAndTerminatePlugin::new();
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
@@ -3026,7 +3026,7 @@ async fn test_stream_skip_inference_emits_run_start_and_finish() {
 
 #[tokio::test]
 async fn test_stream_run_start_outbox_resolution_emits_after_run_start() {
-    let (recorder, _phases) = RecordAndSkipPlugin::new();
+    let (recorder, _phases) = RecordAndTerminatePlugin::new();
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
@@ -3077,13 +3077,13 @@ async fn test_stream_run_start_outbox_resolution_emits_after_run_start() {
 }
 
 #[tokio::test]
-async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses() {
-    struct PendingSkipPlugin;
+async fn test_stream_terminate_plugin_requested_with_pending_state_emits_pending_and_pauses() {
+    struct PendingTerminatePlugin;
 
     #[async_trait]
-    impl AgentPlugin for PendingSkipPlugin {
+    impl AgentPlugin for PendingTerminatePlugin {
         fn id(&self) -> &str {
-            "pending_skip"
+            "pending_terminate_plugin_requested"
         }
 
         phase_dispatch_methods!(|phase, step| {
@@ -3106,7 +3106,7 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
     }
 
     let config = AgentConfig::new("gpt-4o-mini")
-        .with_plugin(Arc::new(PendingSkipPlugin) as Arc<dyn AgentPlugin>);
+        .with_plugin(Arc::new(PendingTerminatePlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools = HashMap::new();
 
@@ -3136,7 +3136,7 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
 }
 
 #[tokio::test]
-async fn test_stream_termination_request_with_suspended_only_state_emits_pending_events() {
+async fn test_stream_run_action_with_suspended_only_state_emits_pending_events() {
     struct PendingTerminatePlugin;
 
     #[async_trait]
@@ -3204,12 +3204,12 @@ async fn test_stream_termination_request_with_suspended_only_state_emits_pending
 
 #[tokio::test]
 async fn test_stream_emits_interaction_resolved_on_denied_response() {
-    struct SkipInferencePlugin;
+    struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for SkipInferencePlugin {
+    impl AgentPlugin for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
-            "skip_inference"
+            "terminate_plugin_requested"
         }
 
         phase_dispatch_methods!(|phase, step| {
@@ -3225,7 +3225,7 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
         TestInteractionPlugin::with_responses(Vec::new(), vec!["call_write".to_string()]);
     let config = AgentConfig::new("gpt-4o-mini")
         .with_plugin(Arc::new(interaction))
-        .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+        .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::with_initial_state(
         "test",
         serde_json::json!({
@@ -3283,12 +3283,12 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
 
 #[tokio::test]
 async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() {
-    struct SkipInferencePlugin;
+    struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for SkipInferencePlugin {
+    impl AgentPlugin for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
-            "skip_inference_for_permission_approval"
+            "terminate_plugin_requested_for_permission_approval"
         }
 
         phase_dispatch_methods!(|phase, step| {
@@ -3303,7 +3303,7 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
     let interaction = TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(interaction))
-        .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+        .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::with_initial_state(
         "test",
         json!({
@@ -3419,12 +3419,12 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
 
 #[tokio::test]
 async fn test_run_loop_permission_approval_replays_tool_and_clears_outbox() {
-    struct SkipInferencePlugin;
+    struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for SkipInferencePlugin {
+    impl AgentPlugin for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
-            "skip_inference_for_permission_approval_nonstream"
+            "terminate_plugin_requested_for_permission_approval_nonstream"
         }
 
         phase_dispatch_methods!(|phase, step| {
@@ -3439,7 +3439,7 @@ async fn test_run_loop_permission_approval_replays_tool_and_clears_outbox() {
     let interaction = TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(interaction))
-        .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>)
+        .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>)
         .with_llm_executor(Arc::new(MockChatProvider::new(vec![Ok(text_chat_response(
             "unused",
         ))])) as Arc<dyn LlmExecutor>);
@@ -3546,12 +3546,12 @@ async fn test_run_loop_permission_approval_replays_tool_and_clears_outbox() {
 
 #[tokio::test]
 async fn test_stream_permission_approval_replay_commits_before_and_after_replay() {
-    struct SkipInferencePlugin;
+    struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for SkipInferencePlugin {
+    impl AgentPlugin for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
-            "skip_inference_for_permission_approval_checkpoint"
+            "terminate_plugin_requested_for_permission_approval_checkpoint"
         }
 
         phase_dispatch_methods!(|phase, step| {
@@ -3567,7 +3567,7 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
     let interaction = TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(interaction))
-        .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>)
+        .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>)
         .with_llm_executor(
             Arc::new(MockStreamProvider::new(vec![MockResponse::text("unused")]))
                 as Arc<dyn LlmExecutor>,
@@ -3657,12 +3657,12 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
 
 #[tokio::test]
 async fn test_stream_permission_denied_does_not_replay_tool_call() {
-    struct SkipInferencePlugin;
+    struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for SkipInferencePlugin {
+    impl AgentPlugin for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
-            "skip_inference_for_permission_denial"
+            "terminate_plugin_requested_for_permission_denial"
         }
 
         phase_dispatch_methods!(|phase, step| {
@@ -3677,7 +3677,7 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
     let interaction = TestInteractionPlugin::with_responses(Vec::new(), vec!["call_1".to_string()]);
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(interaction))
-        .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+        .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::with_initial_state(
         "test",
         json!({
@@ -3790,12 +3790,12 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
 
 #[tokio::test]
 async fn test_run_loop_permission_denied_appends_tool_result_for_model_context() {
-    struct SkipInferencePlugin;
+    struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for SkipInferencePlugin {
+    impl AgentPlugin for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
-            "skip_inference_for_permission_denial_nonstream"
+            "terminate_plugin_requested_for_permission_denial_nonstream"
         }
 
         phase_dispatch_methods!(|phase, step| {
@@ -3810,7 +3810,7 @@ async fn test_run_loop_permission_denied_appends_tool_result_for_model_context()
     let interaction = TestInteractionPlugin::with_responses(Vec::new(), vec!["call_1".to_string()]);
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(interaction))
-        .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+        .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
 
     let thread = Thread::with_initial_state(
         "test",
@@ -3883,12 +3883,12 @@ async fn test_run_loop_permission_denied_appends_tool_result_for_model_context()
 
 #[tokio::test]
 async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_context() {
-    struct SkipInferencePlugin;
+    struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for SkipInferencePlugin {
+    impl AgentPlugin for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
-            "skip_inference_for_permission_cancel_nonstream"
+            "terminate_plugin_requested_for_permission_cancel_nonstream"
         }
 
         phase_dispatch_methods!(|phase, step| {
@@ -3908,7 +3908,7 @@ async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_contex
     ]);
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(interaction))
-        .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+        .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
 
     let thread = Thread::with_initial_state(
         "test",
@@ -3997,8 +3997,8 @@ async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_contex
 }
 
 #[tokio::test]
-async fn test_run_loop_skip_inference_emits_run_end_phase() {
-    let (recorder, phases) = RecordAndSkipPlugin::new();
+async fn test_run_loop_terminate_plugin_requested_emits_run_end_phase() {
+    let (recorder, phases) = RecordAndTerminatePlugin::new();
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
@@ -4007,7 +4007,7 @@ async fn test_run_loop_skip_inference_emits_run_end_phase() {
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
-    // skip_inference in run_loop terminates with PluginRequested (not NaturalEnd)
+    // terminate_plugin_requested in run_loop terminates with PluginRequested (not NaturalEnd)
     assert!(matches!(
         outcome.termination,
         TerminationReason::PluginRequested
@@ -4031,12 +4031,12 @@ async fn test_run_loop_skip_inference_emits_run_end_phase() {
 
 #[tokio::test]
 async fn test_run_loop_legacy_run_start_outbox_resolution_is_ignored() {
-    struct SkipInferencePlugin;
+    struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for SkipInferencePlugin {
+    impl AgentPlugin for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
-            "skip_inference_non_stream_run_start_outbox"
+            "terminate_plugin_requested_non_stream_run_start_outbox"
         }
 
         phase_dispatch_methods!(|phase, step| {
@@ -4049,7 +4049,7 @@ async fn test_run_loop_legacy_run_start_outbox_resolution_is_ignored() {
     }
 
     let config = AgentConfig::new("gpt-4o-mini")
-        .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+        .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
 
     let thread = Thread::with_initial_state(
         "test",
@@ -4090,10 +4090,10 @@ async fn test_run_loop_legacy_run_start_outbox_resolution_is_ignored() {
 
 #[tokio::test]
 async fn test_run_loop_legacy_run_start_replay_queue_is_ignored() {
-    struct ReplayPendingAndSkipPlugin;
+    struct ReplayPendingAndTerminatePlugin;
 
     #[async_trait]
-    impl AgentPlugin for ReplayPendingAndSkipPlugin {
+    impl AgentPlugin for ReplayPendingAndTerminatePlugin {
         fn id(&self) -> &str {
             "run_start_repending_requeues_nonstream"
         }
@@ -4137,7 +4137,7 @@ async fn test_run_loop_legacy_run_start_replay_queue_is_ignored() {
     }
 
     let config = AgentConfig::new("mock")
-        .with_plugin(Arc::new(ReplayPendingAndSkipPlugin) as Arc<dyn AgentPlugin>);
+        .with_plugin(Arc::new(ReplayPendingAndTerminatePlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(Message::user("resume"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
@@ -4164,15 +4164,16 @@ async fn test_run_loop_legacy_run_start_replay_queue_is_ignored() {
 }
 
 #[tokio::test]
-async fn test_run_loop_skip_inference_with_suspended_state_returns_suspended_interaction() {
-    struct PendingSkipPlugin {
+async fn test_run_loop_terminate_plugin_requested_with_suspended_state_returns_suspended_interaction(
+) {
+    struct PendingTerminatePlugin {
         phases: Arc<Mutex<Vec<Phase>>>,
     }
 
     #[async_trait]
-    impl AgentPlugin for PendingSkipPlugin {
+    impl AgentPlugin for PendingTerminatePlugin {
         fn id(&self) -> &str {
-            "pending_skip_non_stream"
+            "pending_terminate_plugin_requested_non_stream"
         }
 
         phase_dispatch_methods!(|this, phase, step| {
@@ -4196,7 +4197,7 @@ async fn test_run_loop_skip_inference_with_suspended_state_returns_suspended_int
     }
 
     let phases = Arc::new(Mutex::new(Vec::new()));
-    let config = AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(PendingSkipPlugin {
+    let config = AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(PendingTerminatePlugin {
         phases: phases.clone(),
     }) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
@@ -4231,13 +4232,14 @@ async fn test_run_loop_skip_inference_with_suspended_state_returns_suspended_int
 }
 
 #[tokio::test]
-async fn test_run_loop_skip_inference_with_suspended_only_state_returns_suspended_interaction() {
-    struct SkipInferencePlugin;
+async fn test_run_loop_terminate_plugin_requested_with_suspended_only_state_returns_suspended_interaction(
+) {
+    struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for SkipInferencePlugin {
+    impl AgentPlugin for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
-            "skip_inference_non_stream_suspended_only"
+            "terminate_plugin_requested_non_stream_suspended_only"
         }
 
         phase_dispatch_methods!(|phase, step| {
@@ -4250,7 +4252,7 @@ async fn test_run_loop_skip_inference_with_suspended_only_state_returns_suspende
     }
 
     let config = AgentConfig::new("gpt-4o-mini")
-        .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+        .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::with_initial_state(
         "test",
         json!({
@@ -4280,7 +4282,7 @@ async fn test_run_loop_skip_inference_with_suspended_only_state_returns_suspende
 
 #[tokio::test]
 async fn test_run_loop_auto_generated_run_id_is_rfc4122_uuid_v7() {
-    let (recorder, _phases) = RecordAndSkipPlugin::new();
+    let (recorder, _phases) = RecordAndTerminatePlugin::new();
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
@@ -4289,7 +4291,7 @@ async fn test_run_loop_auto_generated_run_id_is_rfc4122_uuid_v7() {
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
-    // skip_inference in run_loop terminates with PluginRequested
+    // terminate_plugin_requested in run_loop terminates with PluginRequested
     assert!(matches!(
         outcome.termination,
         TerminationReason::PluginRequested
@@ -4316,9 +4318,9 @@ async fn test_run_loop_auto_generated_run_id_is_rfc4122_uuid_v7() {
 }
 
 #[tokio::test]
-async fn test_run_loop_phase_sequence_on_skip_inference() {
+async fn test_run_loop_phase_sequence_on_terminate_plugin_requested() {
     // Verify the full phase sequence: RunStart → StepStart → BeforeInference → RunEnd
-    let (recorder, phases) = RecordAndSkipPlugin::new();
+    let (recorder, phases) = RecordAndTerminatePlugin::new();
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
@@ -4327,7 +4329,7 @@ async fn test_run_loop_phase_sequence_on_skip_inference() {
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
-    // skip_inference in run_loop terminates with PluginRequested
+    // terminate_plugin_requested in run_loop terminates with PluginRequested
     assert!(matches!(
         outcome.termination,
         TerminationReason::PluginRequested
@@ -4666,7 +4668,7 @@ fn test_execute_tools_rejects_non_append_reminder_mutation_in_after_tool_execute
 
 #[tokio::test]
 async fn test_stream_run_finish_has_matching_thread_id() {
-    let (recorder, _phases) = RecordAndSkipPlugin::new();
+    let (recorder, _phases) = RecordAndTerminatePlugin::new();
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
@@ -5772,12 +5774,12 @@ async fn test_golden_run_loop_and_stream_no_plugins_pending_state_alignment() {
 
 #[tokio::test]
 async fn test_stream_replay_is_idempotent_across_reruns() {
-    struct SkipInferencePlugin;
+    struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for SkipInferencePlugin {
+    impl AgentPlugin for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
-            "skip_inference_replay_idempotent"
+            "terminate_plugin_requested_replay_idempotent"
         }
 
         phase_dispatch_methods!(|phase, step| {
@@ -5794,7 +5796,7 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
             TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
         AgentConfig::new("mock")
             .with_plugin(Arc::new(interaction))
-            .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>)
+            .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>)
     }
 
     let calls = Arc::new(AtomicUsize::new(0));
@@ -5909,12 +5911,12 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
 
 #[tokio::test]
 async fn test_nonstream_replay_is_idempotent_across_reruns() {
-    struct SkipInferencePlugin;
+    struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for SkipInferencePlugin {
+    impl AgentPlugin for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
-            "skip_inference_replay_idempotent_nonstream"
+            "terminate_plugin_requested_replay_idempotent_nonstream"
         }
 
         phase_dispatch_methods!(|phase, step| {
@@ -5931,7 +5933,7 @@ async fn test_nonstream_replay_is_idempotent_across_reruns() {
             TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
         AgentConfig::new("mock")
             .with_plugin(Arc::new(interaction))
-            .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>)
+            .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>)
             .with_llm_executor(provider)
     }
 
@@ -6833,8 +6835,8 @@ async fn test_stream_frontend_use_as_tool_result_emits_single_tool_call_start() 
 }
 
 #[tokio::test]
-async fn test_stream_skip_inference_force_commits_run_finished_delta() {
-    let (recorder, _phases) = RecordAndSkipPlugin::new();
+async fn test_stream_terminate_plugin_requested_force_commits_run_finished_delta() {
+    let (recorder, _phases) = RecordAndTerminatePlugin::new();
     let committer = Arc::new(RecordingStateCommitter::new(None));
     let thread = Thread::new("test").with_message(Message::user("go"));
     let config = AgentConfig::new("mock")
@@ -6899,10 +6901,10 @@ async fn test_stream_replay_state_failure_emits_error() {
 
 #[tokio::test]
 async fn test_stream_legacy_run_start_replay_queue_is_ignored() {
-    struct ReplayPendingAndSkipPlugin;
+    struct ReplayPendingAndTerminatePlugin;
 
     #[async_trait]
-    impl AgentPlugin for ReplayPendingAndSkipPlugin {
+    impl AgentPlugin for ReplayPendingAndTerminatePlugin {
         fn id(&self) -> &str {
             "run_start_repending_requeues_stream"
         }
@@ -6946,7 +6948,7 @@ async fn test_stream_legacy_run_start_replay_queue_is_ignored() {
     }
 
     let config = AgentConfig::new("mock")
-        .with_plugin(Arc::new(ReplayPendingAndSkipPlugin) as Arc<dyn AgentPlugin>);
+        .with_plugin(Arc::new(ReplayPendingAndTerminatePlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(Message::user("resume"));
     let (events, final_thread) = run_mock_stream_with_final_thread(
         MockStreamProvider::new(vec![MockResponse::text("unused")]),
@@ -7173,8 +7175,8 @@ fn test_apply_tool_results_accepts_disjoint_parallel_state_patches() {
 
 #[tokio::test]
 async fn test_stop_plugin_requested() {
-    // SkipInferencePlugin → PluginRequested.
-    let (recorder, _) = RecordAndSkipPlugin::new();
+    // TerminatePluginRequestedPlugin → PluginRequested.
+    let (recorder, _) = RecordAndTerminatePlugin::new();
     let config = AgentConfig::new("mock").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(Message::user("hi"));
     let tools = HashMap::new();
@@ -7451,7 +7453,7 @@ async fn test_stop_condition_applies_on_natural_end_without_tools() {
 
 #[tokio::test]
 async fn test_run_loop_with_context_cancellation_token() {
-    let (recorder, _phases) = RecordAndSkipPlugin::new();
+    let (recorder, _phases) = RecordAndTerminatePlugin::new();
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
@@ -8267,8 +8269,8 @@ async fn test_message_id_end_to_end_multi_step() {
 }
 
 #[tokio::test]
-async fn test_run_step_skip_inference_returns_empty_result_without_assistant_message() {
-    let (recorder, phases) = RecordAndSkipPlugin::new();
+async fn test_run_step_terminate_plugin_requested_returns_empty_result_without_assistant_message() {
+    let (recorder, phases) = RecordAndTerminatePlugin::new();
     let config = AgentConfig::new("gpt-4o-mini")
         .with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>)
         .with_max_rounds(1);
@@ -8278,7 +8280,7 @@ async fn test_run_step_skip_inference_returns_empty_result_without_assistant_mes
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
 
-    // skip_inference in run_loop terminates with PluginRequested
+    // terminate_plugin_requested in run_loop terminates with PluginRequested
     assert!(matches!(
         outcome.termination,
         TerminationReason::PluginRequested
@@ -8299,13 +8301,14 @@ async fn test_run_step_skip_inference_returns_empty_result_without_assistant_mes
 }
 
 #[tokio::test]
-async fn test_run_step_skip_inference_with_suspended_state_returns_suspended_interaction() {
-    struct PendingSkipStepPlugin;
+async fn test_run_step_terminate_plugin_requested_with_suspended_state_returns_suspended_interaction(
+) {
+    struct PendingTerminateStepPlugin;
 
     #[async_trait]
-    impl AgentPlugin for PendingSkipStepPlugin {
+    impl AgentPlugin for PendingTerminateStepPlugin {
         fn id(&self) -> &str {
-            "pending_skip_step"
+            "pending_terminate_plugin_requested_step"
         }
 
         phase_dispatch_methods!(|phase, step| {
@@ -8328,7 +8331,7 @@ async fn test_run_step_skip_inference_with_suspended_state_returns_suspended_int
     }
 
     let config = AgentConfig::new("gpt-4o-mini")
-        .with_plugin(Arc::new(PendingSkipStepPlugin) as Arc<dyn AgentPlugin>)
+        .with_plugin(Arc::new(PendingTerminateStepPlugin) as Arc<dyn AgentPlugin>)
         .with_max_rounds(1);
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
@@ -8971,9 +8974,9 @@ async fn test_run_loop_patches_accumulate_across_steps() {
 // Category 2: StateCommitter + version evolution
 // =============================================================================
 
-/// commit_pending_delta with force=false skips when delta is empty.
+/// commit_pending_delta with force=false is a no-op when delta is empty.
 #[tokio::test]
-async fn test_commit_pending_delta_skips_when_empty() {
+async fn test_commit_pending_delta_noops_when_empty() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let committer: Arc<dyn StateCommitter> = Arc::new(state_commit::ChannelStateCommitter::new(tx));
 
@@ -8992,7 +8995,7 @@ async fn test_commit_pending_delta_skips_when_empty() {
     .unwrap();
 
     // Nothing should have been sent
-    assert!(rx.try_recv().is_err(), "empty delta should be skipped");
+    assert!(rx.try_recv().is_err(), "empty delta should be ignored");
     // Version unchanged
     assert_eq!(run_ctx.version(), 0);
 }
@@ -10324,7 +10327,7 @@ async fn test_stream_completed_tool_round_does_not_clear_existing_suspended_call
 /// A plugin that sets `request_termination(PluginRequested)` in BeforeInference
 /// should cause the run to terminate immediately without running inference.
 #[tokio::test]
-async fn test_plugin_termination_request_stops_loop() {
+async fn test_plugin_run_action_stops_loop() {
     struct TerminatePlugin;
 
     #[async_trait]
@@ -10454,10 +10457,10 @@ async fn test_stream_rejects_run_action_mutation_outside_inference_phases_v2() {
     );
 }
 
-/// Non-stream run_loop: plugin-driven termination via termination_request
+/// Non-stream run_loop: plugin-driven termination via run_action
 /// stops the loop without running inference.
 #[tokio::test]
-async fn test_run_loop_plugin_termination_request_stops_loop() {
+async fn test_run_loop_plugin_run_action_stops_loop() {
     struct TerminatePlugin;
 
     #[async_trait]
@@ -10577,7 +10580,7 @@ async fn test_run_loop_applies_plugin_state_effect_patch_after_tool_execute() {
 }
 
 #[tokio::test]
-async fn test_run_loop_after_inference_termination_request_stops_before_tool_execution() {
+async fn test_run_loop_after_inference_run_action_stops_before_tool_execution() {
     struct AfterInferenceTerminatePlugin;
 
     #[async_trait]
@@ -10629,7 +10632,7 @@ async fn test_run_loop_after_inference_termination_request_stops_before_tool_exe
 }
 
 #[tokio::test]
-async fn test_stream_after_inference_termination_request_stops_before_tool_events() {
+async fn test_stream_after_inference_run_action_stops_before_tool_events() {
     struct AfterInferenceTerminatePlugin;
 
     #[async_trait]
@@ -10735,12 +10738,12 @@ async fn test_request_termination_method_stops_stream() {
 
 #[tokio::test]
 async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
-    struct SkipInferencePlugin;
+    struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for SkipInferencePlugin {
+    impl AgentPlugin for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
-            "skip_inference_unknown_decision_nonstream"
+            "terminate_plugin_requested_unknown_decision_nonstream"
         }
 
         phase_dispatch_methods!(|phase, step| {
@@ -10774,8 +10777,8 @@ async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
     .with_message(Message::user("continue"));
     let run_ctx =
         RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).expect("run ctx");
-    let config =
-        AgentConfig::new("mock").with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
     let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
     decision_tx
         .send(crate::contracts::SuspensionResponse::new("unknown_call", json!(true)).into())
@@ -10813,12 +10816,12 @@ async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
 
 #[tokio::test]
 async fn test_stream_decision_channel_ignores_unknown_target_id() {
-    struct SkipInferencePlugin;
+    struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for SkipInferencePlugin {
+    impl AgentPlugin for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
-            "skip_inference_unknown_decision_stream"
+            "terminate_plugin_requested_unknown_decision_stream"
         }
 
         phase_dispatch_methods!(|phase, step| {
@@ -10852,8 +10855,8 @@ async fn test_stream_decision_channel_ignores_unknown_target_id() {
     .with_message(Message::user("continue"));
     let run_ctx = RunContext::from_thread(&final_thread, tirea_contract::RunConfig::default())
         .expect("run ctx");
-    let config =
-        AgentConfig::new("mock").with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
     let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
     let state_committer: Arc<dyn StateCommitter> =
         Arc::new(ChannelStateCommitter::new(checkpoint_tx));
@@ -11042,12 +11045,12 @@ async fn test_run_loop_decision_channel_resolves_suspended_call() {
 
 #[tokio::test]
 async fn test_run_loop_decision_channel_cancel_emits_single_tool_result_message() {
-    struct SkipInferencePlugin;
+    struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for SkipInferencePlugin {
+    impl AgentPlugin for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
-            "skip_inference_for_decision_cancel"
+            "terminate_plugin_requested_for_decision_cancel"
         }
 
         phase_dispatch_methods!(|phase, step| {
@@ -11059,8 +11062,8 @@ async fn test_run_loop_decision_channel_cancel_emits_single_tool_result_message(
         });
     }
 
-    let config =
-        AgentConfig::new("mock").with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
 
     let thread = Thread::with_initial_state(
         "test",
