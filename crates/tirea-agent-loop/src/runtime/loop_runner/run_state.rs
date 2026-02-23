@@ -1,7 +1,6 @@
 use super::outcome::{LoopStats, LoopUsage};
 use super::AgentConfig;
-use crate::contracts::runtime::{StopPolicy, StopPolicyInput, StopPolicyStats, StreamResult};
-use crate::contracts::RunContext;
+use crate::contracts::runtime::{StopPolicy, StreamResult};
 use crate::engine::stop_conditions::condition_from_spec;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -99,34 +98,13 @@ impl RunState {
             tool_errors: self.tool_errors,
         }
     }
-
-    pub(super) fn to_policy_input<'a>(
-        &'a self,
-        result: &'a StreamResult,
-        run_ctx: &'a RunContext,
-    ) -> StopPolicyInput<'a> {
-        StopPolicyInput {
-            agent_state: run_ctx,
-            stats: StopPolicyStats {
-                step: self.completed_steps,
-                step_tool_call_count: self.step_tool_call_count,
-                total_tool_call_count: self.tool_calls,
-                total_input_tokens: self.total_input_tokens,
-                total_output_tokens: self.total_output_tokens,
-                consecutive_errors: self.consecutive_errors,
-                elapsed: self.start_time.elapsed(),
-                last_tool_calls: &result.tool_calls,
-                last_text: &result.text,
-                tool_call_history: &self.tool_call_history,
-            },
-        }
-    }
 }
 
 /// Build the effective stop conditions for a run.
 ///
 /// If the user explicitly configured stop conditions, use those.
 /// Otherwise, create a default `MaxRounds` from `config.max_rounds`.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn effective_stop_conditions(config: &AgentConfig) -> Vec<Arc<dyn StopPolicy>> {
     let mut conditions = config.stop_conditions.clone();
     for spec in &config.stop_condition_specs {

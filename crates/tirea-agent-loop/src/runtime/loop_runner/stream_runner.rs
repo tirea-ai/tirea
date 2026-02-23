@@ -128,7 +128,6 @@ pub(super) fn run_stream(
     let executor = llm_executor_for_run(&config);
     let mut run_state = RunState::new();
     let mut last_text = String::new();
-    let stop_conditions = effective_stop_conditions(&config);
     let run_cancellation_token = cancellation_token;
     let step_tool_provider = step_tool_provider_for_run(&config, tools);
         let (activity_tx, mut activity_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -578,11 +577,6 @@ pub(super) fn run_stream(
                 if is_run_cancelled(run_cancellation_token.as_ref()) {
                     finish_run!(TerminationReason::Cancelled, None);
                 }
-                if let Some(reason) =
-                    stop_reason_for_step(&run_state, &result, &run_ctx, &stop_conditions)
-                {
-                    finish_run!(TerminationReason::Stopped(reason), None);
-                }
                 finish_run!(TerminationReason::NaturalEnd, Some(last_text.clone()));
             }
 
@@ -810,11 +804,6 @@ pub(super) fn run_stream(
                 .count();
             run_state.record_tool_step(&result.tool_calls, error_count);
 
-            // Check stop conditions.
-            if let Some(reason) = stop_reason_for_step(&run_state, &result, &run_ctx, &stop_conditions)
-            {
-                finish_run!(TerminationReason::Stopped(reason), None);
-            }
         }
     })
 }

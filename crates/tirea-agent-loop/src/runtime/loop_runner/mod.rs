@@ -51,8 +51,7 @@ mod tool_exec;
 use crate::contracts::plugin::phase::Phase;
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
-    ResumeDecision, ResumeDecisionAction, StopPolicy, StreamResult, ToolExecutionRequest,
-    ToolExecutionResult,
+    ResumeDecision, ResumeDecisionAction, StreamResult, ToolExecutionRequest, ToolExecutionResult,
 };
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
@@ -64,7 +63,6 @@ use crate::contracts::{
     ToolCallDecision,
 };
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
-use crate::engine::stop_conditions::check_stop_policies;
 use crate::runtime::activity::ActivityHub;
 
 use crate::runtime::streaming::StreamCollector;
@@ -102,7 +100,9 @@ use plugin_runtime::emit_phase_checked;
 use plugin_runtime::{
     emit_cleanup_phases_and_apply, emit_phase_block, emit_run_end_phase, run_phase_block,
 };
-use run_state::{effective_stop_conditions, RunState};
+#[cfg(test)]
+use run_state::effective_stop_conditions;
+use run_state::RunState;
 pub use state_commit::ChannelStateCommitter;
 use state_commit::PendingDeltaCommitContext;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -333,16 +333,6 @@ fn build_loop_outcome(
         stats: run_state.stats(),
         failure,
     }
-}
-
-fn stop_reason_for_step(
-    run_state: &RunState,
-    result: &StreamResult,
-    run_ctx: &RunContext,
-    stop_conditions: &[Arc<dyn StopPolicy>],
-) -> Option<StopReason> {
-    let stop_input = run_state.to_policy_input(result, run_ctx);
-    check_stop_policies(stop_conditions, &stop_input)
 }
 
 pub(super) async fn run_llm_with_retry_and_fallback<T, Invoke, Fut>(
@@ -1251,7 +1241,7 @@ async fn recv_decision(
     rx.recv().await
 }
 
-/// Run the full agent loop until completion or a stop condition is met.
+/// Run the full agent loop until completion, suspension, cancellation, or error.
 ///
 /// This is the primary non-streaming entry point. Tools are passed directly
 /// and used as the default tool set unless `config.step_tool_provider` is set
@@ -1266,7 +1256,6 @@ pub async fn run_loop(
 ) -> LoopOutcome {
     let executor = llm_executor_for_run(config);
     let mut run_state = RunState::new();
-    let stop_conditions = effective_stop_conditions(config);
     let mut pending_decisions = VecDeque::new();
     let run_cancellation_token = cancellation_token;
     let mut last_text = String::new();
@@ -1532,11 +1521,6 @@ pub async fn run_loop(
 
         if !result.needs_tools() {
             run_state.record_step_without_tools();
-            if let Some(reason) =
-                stop_reason_for_step(&run_state, &result, &run_ctx, &stop_conditions)
-            {
-                terminate_run!(TerminationReason::Stopped(reason), None, None);
-            }
             terminate_run!(TerminationReason::NaturalEnd, Some(last_text.clone()), None);
         }
 
@@ -1644,12 +1628,6 @@ pub async fn run_loop(
             .filter(|r| r.execution.result.is_error())
             .count();
         run_state.record_tool_step(&result.tool_calls, error_count);
-
-        // Check stop conditions.
-        if let Some(reason) = stop_reason_for_step(&run_state, &result, &run_ctx, &stop_conditions)
-        {
-            terminate_run!(TerminationReason::Stopped(reason), None, None);
-        }
     }
 }
 

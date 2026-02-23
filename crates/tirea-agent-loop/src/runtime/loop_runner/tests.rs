@@ -4918,7 +4918,7 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
 }
 
 #[tokio::test]
-async fn test_nonstream_stop_timeout_condition_triggers_on_natural_end_path() {
+async fn test_nonstream_stop_condition_is_ignored_and_natural_end_wins() {
     let provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response(
         "done now",
     ))]));
@@ -4932,10 +4932,7 @@ async fn test_nonstream_stop_timeout_condition_triggers_on_natural_end_path() {
 
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
-    assert_eq!(
-        outcome.termination,
-        TerminationReason::Stopped(StopReason::TimeoutReached)
-    );
+    assert_eq!(outcome.termination, TerminationReason::NaturalEnd);
     assert!(
         outcome
             .run_ctx
@@ -7018,13 +7015,13 @@ async fn test_stream_parallel_multiple_pending_emits_all_suspended() {
 }
 
 // ========================================================================
-// Stop condition integration tests
+// Core termination integration tests (stop conditions are loop-external)
 // ========================================================================
 
 #[tokio::test]
-async fn test_stop_max_rounds_via_stop_condition() {
-    // Configure MaxRounds(2) as explicit stop condition.
-    // Provider returns tool calls forever → should stop after 2 rounds.
+async fn test_stop_condition_config_is_ignored_in_stream_loop() {
+    // Stop conditions are no longer evaluated by core loop.
+    // Provider returns finite tool calls, then stream naturally ends.
     let responses: Vec<MockResponse> = (0..10)
         .map(|i| {
             MockResponse::text("calling echo").with_tool_call(
@@ -7043,7 +7040,7 @@ async fn test_stop_max_rounds_via_stop_condition() {
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::Stopped(StopReason::MaxRoundsReached))
+        Some(TerminationReason::NaturalEnd)
     );
 }
 
@@ -7142,7 +7139,7 @@ async fn test_stop_plugin_requested() {
 
 #[tokio::test]
 async fn test_stop_on_tool_condition() {
-    // StopOnTool("finish") → first round calls echo, second calls finish.
+    // StopOnTool is no longer evaluated by core loop.
     let responses = vec![
         MockResponse::text("step 1").with_tool_call("c1", "echo", json!({"message": "a"})),
         MockResponse::text("step 2").with_tool_call("c2", "finish_tool", json!({})),
@@ -7175,15 +7172,13 @@ async fn test_stop_on_tool_condition() {
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::Stopped(StopReason::ToolCalled(
-            "finish_tool".to_string(),
-        )))
+        Some(TerminationReason::NaturalEnd)
     );
 }
 
 #[tokio::test]
 async fn test_stop_content_match_condition() {
-    // ContentMatch("FINAL_ANSWER") → second response has it in the text.
+    // ContentMatch is no longer evaluated by core loop.
     let responses = vec![
         MockResponse::text("thinking...").with_tool_call("c1", "echo", json!({"message": "a"})),
         MockResponse::text("here is the FINAL_ANSWER: 42").with_tool_call(
@@ -7204,15 +7199,13 @@ async fn test_stop_content_match_condition() {
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::Stopped(StopReason::ContentMatched(
-            "FINAL_ANSWER".to_string(),
-        )))
+        Some(TerminationReason::NaturalEnd)
     );
 }
 
 #[tokio::test]
 async fn test_stop_token_budget_condition() {
-    // TokenBudget with max_total=500 → second round pushes over budget.
+    // TokenBudget is no longer evaluated by core loop.
     let responses = vec![
         MockResponse::text("step 1")
             .with_tool_call("c1", "echo", json!({"message": "a"}))
@@ -7231,13 +7224,13 @@ async fn test_stop_token_budget_condition() {
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::Stopped(StopReason::TokenBudgetExceeded))
+        Some(TerminationReason::NaturalEnd)
     );
 }
 
 #[tokio::test]
 async fn test_stop_consecutive_errors_condition() {
-    // ConsecutiveErrors(2) → all tool calls fail each round.
+    // ConsecutiveErrors is no longer evaluated by core loop.
     let responses: Vec<MockResponse> = (0..5)
         .map(|i| {
             MockResponse::text(&format!("round {i}")).with_tool_call(
@@ -7257,15 +7250,13 @@ async fn test_stop_consecutive_errors_condition() {
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::Stopped(
-            StopReason::ConsecutiveErrorsExceeded,
-        ))
+        Some(TerminationReason::NaturalEnd)
     );
 }
 
 #[tokio::test]
 async fn test_stop_loop_detection_condition() {
-    // LoopDetection(window=3) → same tool called repeatedly.
+    // LoopDetection is no longer evaluated by core loop.
     let responses: Vec<MockResponse> = (0..5)
         .map(|i| {
             MockResponse::text(&format!("round {i}")).with_tool_call(
@@ -7285,7 +7276,7 @@ async fn test_stop_loop_detection_condition() {
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::Stopped(StopReason::LoopDetected))
+        Some(TerminationReason::NaturalEnd)
     );
 }
 
@@ -7404,9 +7395,7 @@ async fn test_stop_condition_applies_on_natural_end_without_tools() {
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::Stopped(StopReason::ContentMatched(
-            "done".to_string()
-        )))
+        Some(TerminationReason::NaturalEnd)
     );
 }
 
@@ -7432,8 +7421,7 @@ async fn test_run_loop_with_context_cancellation_token() {
 
 #[tokio::test]
 async fn test_stop_first_condition_wins() {
-    // Both MaxRounds(1) and TokenBudget(50) should trigger after round 1.
-    // MaxRounds is first in the list → it wins.
+    // Stop condition order no longer affects core loop termination.
     let responses = vec![MockResponse::text("r1")
         .with_tool_call("c1", "echo", json!({"message": "a"}))
         .with_usage(100, 100)];
@@ -7445,16 +7433,15 @@ async fn test_stop_first_condition_wins() {
     let tools = tool_map([EchoTool]);
 
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
-    // MaxRounds listed first → wins
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::Stopped(StopReason::MaxRoundsReached))
+        Some(TerminationReason::NaturalEnd)
     );
 }
 
 #[tokio::test]
 async fn test_stop_default_max_rounds_from_config() {
-    // No explicit stop_conditions → auto-creates MaxRounds from config.max_rounds.
+    // max_rounds no longer drives termination in core loop.
     let responses: Vec<MockResponse> = (0..5)
         .map(|i| {
             MockResponse::text(&format!("r{i}")).with_tool_call(
@@ -7472,13 +7459,13 @@ async fn test_stop_default_max_rounds_from_config() {
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::Stopped(StopReason::MaxRoundsReached))
+        Some(TerminationReason::NaturalEnd)
     );
 }
 
 #[tokio::test]
 async fn test_stop_max_rounds_counts_no_tool_step() {
-    // Single no-tool step should still count toward MaxRounds.
+    // Single no-tool step should naturally end regardless of MaxRounds config.
     let responses = vec![MockResponse::text("done")];
     let config =
         AgentConfig::new("mock").with_stop_condition(crate::engine::stop_conditions::MaxRounds(1));
@@ -7488,13 +7475,13 @@ async fn test_stop_max_rounds_counts_no_tool_step() {
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::Stopped(StopReason::MaxRoundsReached))
+        Some(TerminationReason::NaturalEnd)
     );
 }
 
 #[tokio::test]
 async fn test_termination_in_run_finish_event() {
-    // Verify RunFinish event structure when stop condition triggers.
+    // Verify RunFinish event structure when natural end triggers.
     let responses =
         vec![MockResponse::text("r1").with_tool_call("c1", "echo", json!({"message": "a"}))];
 
@@ -7516,10 +7503,7 @@ async fn test_termination_in_run_finish_event() {
     }) = finish
     {
         assert_eq!(thread_id, "test-thread");
-        assert_eq!(
-            *termination,
-            TerminationReason::Stopped(StopReason::MaxRoundsReached)
-        );
+        assert_eq!(*termination, TerminationReason::NaturalEnd);
     }
 }
 
@@ -7545,10 +7529,9 @@ async fn test_consecutive_errors_resets_on_success() {
     let thread = Thread::new("test").with_message(Message::user("go"));
 
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
-    // Should hit MaxRounds(3), not ConsecutiveErrors
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::Stopped(StopReason::MaxRoundsReached))
+        Some(TerminationReason::NaturalEnd)
     );
 }
 
@@ -8452,7 +8435,7 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
 }
 
 #[tokio::test]
-async fn test_stop_timeout_condition_triggers_on_natural_end_path() {
+async fn test_stream_stop_condition_is_ignored_and_natural_end_wins() {
     let responses = vec![MockResponse::text("done now")];
     let config = AgentConfig::new("mock").with_stop_condition(
         crate::engine::stop_conditions::Timeout(std::time::Duration::from_secs(0)),
@@ -8463,7 +8446,7 @@ async fn test_stop_timeout_condition_triggers_on_natural_end_path() {
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::Stopped(StopReason::TimeoutReached))
+        Some(TerminationReason::NaturalEnd)
     );
 }
 

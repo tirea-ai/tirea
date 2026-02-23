@@ -135,6 +135,7 @@ macro_rules! impl_stop_policy_via_check {
 }
 
 /// Evaluate canonical stop policies in declaration order and return the first match.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn check_stop_policies(
     conditions: &[Arc<dyn StopPolicy>],
     input: &StopPolicyInput<'_>,
@@ -283,6 +284,7 @@ impl_stop_policy_via_check!(LoopDetection, "loop_detection");
 // ---------------------------------------------------------------------------
 
 /// Resolve contract-level declarative stop condition spec to runtime evaluator.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn condition_from_spec(spec: StopConditionSpec) -> Arc<dyn StopPolicy> {
     match spec {
         StopConditionSpec::MaxRounds { rounds } => Arc::new(MaxRounds(rounds)),
