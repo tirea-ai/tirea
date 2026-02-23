@@ -1890,7 +1890,7 @@ async fn test_agui_pending_approval_resumes_and_replays_tool_call() {
             .and_then(|rt| rt.get("calls"))
             .and_then(|v| v.as_object())
             .map_or(true, |calls| calls.is_empty()),
-        "pending_interaction must be cleared after approval replay"
+        "suspended_interaction must be cleared after approval replay"
     );
 }
 
@@ -1943,7 +1943,7 @@ async fn test_agui_pending_denial_clears_pending_without_replay() {
             .and_then(|rt| rt.get("calls"))
             .and_then(|v| v.as_object())
             .map_or(true, |calls| calls.is_empty()),
-        "pending_interaction must be cleared after denial"
+        "suspended_interaction must be cleared after denial"
     );
 }
 
@@ -2016,7 +2016,7 @@ async fn test_ai_sdk_permission_approval_replays_backend_tool_call() {
             .and_then(|rt| rt.get("calls"))
             .and_then(|v| v.as_object())
             .map_or(true, |calls| calls.is_empty()),
-        "pending_interaction must be cleared after approval replay"
+        "suspended_interaction must be cleared after approval replay"
     );
 }
 
@@ -2086,7 +2086,7 @@ async fn test_ai_sdk_permission_denial_emits_output_denied_without_replay() {
             .and_then(|rt| rt.get("calls"))
             .and_then(|v| v.as_object())
             .map_or(true, |calls| calls.is_empty()),
-        "pending_interaction must be cleared after denial"
+        "suspended_interaction must be cleared after denial"
     );
 }
 
@@ -2268,7 +2268,7 @@ async fn test_ai_sdk_ask_output_available_replays_with_frontend_payload() {
             .and_then(|rt| rt.get("calls"))
             .and_then(|v| v.as_object())
             .map_or(true, |calls| calls.is_empty()),
-        "pending_interaction must be cleared after ask replay"
+        "suspended_interaction must be cleared after ask replay"
     );
 }
 

@@ -832,7 +832,7 @@ async fn e2e_ag_ui_frontend_tools_with_deepseek() {
     let has_tool_call = text.contains("addTask");
     println!("Contains addTask tool reference: {has_tool_call}");
 
-    // The stream should eventually finish (either RUN_FINISHED or a pending interaction).
+    // The stream should eventually finish (either RUN_FINISHED or a suspended interaction).
     let has_run_finished = text.contains(r#""type":"RUN_FINISHED""#);
     let has_tool_call_start = text.contains(r#""type":"TOOL_CALL_START""#);
 
