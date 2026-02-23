@@ -504,10 +504,10 @@ pub(super) async fn complete_step_after_inference(
 pub(super) fn interaction_requested_pending_events(interaction: &Interaction) -> [AgentEvent; 2] {
     [
         AgentEvent::ToolCallSuspendRequested {
-            interaction: interaction.clone(),
+            suspension: interaction.clone(),
         },
         AgentEvent::ToolCallSuspended {
-            interaction: interaction.clone(),
+            suspension: interaction.clone(),
         },
     ]
 }
@@ -689,7 +689,7 @@ async fn drain_resume_decisions_and_replay(
         decisions_to_clear.push(call_id.clone());
         let decision_result = decision_result_value(&decision);
         events.push(AgentEvent::ToolCallResumed {
-            interaction_id: suspended_call.interaction.id.clone(),
+            target_id: suspended_call.call_id.clone(),
             result: decision_result.clone(),
         });
 

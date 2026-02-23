@@ -190,13 +190,13 @@ impl AgUiEventContext {
             // tool call ID hasn't been seen yet (e.g. multi-round replays that
             // produce new suspended interactions, or permission interactions where
             // the frontend tool call was never streamed by the LLM).
-            AgentEvent::ToolCallSuspendRequested { interaction } => {
-                if self.emitted_tool_call_ids.contains(&interaction.id) {
+            AgentEvent::ToolCallSuspendRequested { suspension } => {
+                if self.emitted_tool_call_ids.contains(&suspension.id) {
                     return vec![];
                 }
-                self.emitted_tool_call_ids.insert(interaction.id.clone());
+                self.emitted_tool_call_ids.insert(suspension.id.clone());
                 let mut events = self.close_open_streams();
-                events.extend(interaction_to_ag_ui_events(interaction));
+                events.extend(interaction_to_ag_ui_events(suspension));
                 return events;
             }
             // Pending: close current text stream.

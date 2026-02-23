@@ -95,14 +95,14 @@ pub enum AgentEvent {
     },
 
     /// Interaction request created.
-    ToolCallSuspendRequested { interaction: Interaction },
+    ToolCallSuspendRequested { suspension: Interaction },
     /// Interaction resolution received.
     ToolCallResumed {
-        interaction_id: String,
+        target_id: String,
         result: Value,
     },
     /// Tool call suspended waiting for external resolution.
-    ToolCallSuspended { interaction: Interaction },
+    ToolCallSuspended { suspension: Interaction },
 
     /// Error occurred.
     Error { message: String },
@@ -386,18 +386,18 @@ struct ActivityDeltaData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ToolCallSuspendRequestedData {
-    interaction: Interaction,
+    suspension: Interaction,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ToolCallResumedData {
-    interaction_id: String,
+    target_id: String,
     result: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ToolCallSuspendedData {
-    interaction: Interaction,
+    suspension: Interaction,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -702,7 +702,7 @@ impl Serialize for AgentEvent {
                 })
                 .map_err(serde::ser::Error::custom)?,
             },
-            Self::ToolCallSuspendRequested { interaction } => EventEnvelope {
+            Self::ToolCallSuspendRequested { suspension } => EventEnvelope {
                 event_type: AgentEventType::ToolCallSuspendRequested,
                 run_id: meta_run_id(),
                 thread_id: meta_thread_id(),
@@ -710,12 +710,12 @@ impl Serialize for AgentEvent {
                 timestamp_ms: meta_timestamp_ms(),
                 step_id: meta_step_id(),
                 data: to_data_value(&ToolCallSuspendRequestedData {
-                    interaction: interaction.clone(),
+                    suspension: suspension.clone(),
                 })
                 .map_err(serde::ser::Error::custom)?,
             },
             Self::ToolCallResumed {
-                interaction_id,
+                target_id,
                 result,
             } => EventEnvelope {
                 event_type: AgentEventType::ToolCallResumed,
@@ -725,12 +725,12 @@ impl Serialize for AgentEvent {
                 timestamp_ms: meta_timestamp_ms(),
                 step_id: meta_step_id(),
                 data: to_data_value(&ToolCallResumedData {
-                    interaction_id: interaction_id.clone(),
+                    target_id: target_id.clone(),
                     result: result.clone(),
                 })
                 .map_err(serde::ser::Error::custom)?,
             },
-            Self::ToolCallSuspended { interaction } => EventEnvelope {
+            Self::ToolCallSuspended { suspension } => EventEnvelope {
                 event_type: AgentEventType::ToolCallSuspended,
                 run_id: meta_run_id(),
                 thread_id: meta_thread_id(),
@@ -738,7 +738,7 @@ impl Serialize for AgentEvent {
                 timestamp_ms: meta_timestamp_ms(),
                 step_id: meta_step_id(),
                 data: to_data_value(&ToolCallSuspendedData {
-                    interaction: interaction.clone(),
+                    suspension: suspension.clone(),
                 })
                 .map_err(serde::ser::Error::custom)?,
             },
@@ -926,20 +926,20 @@ impl<'de> Deserialize<'de> for AgentEvent {
             AgentEventType::ToolCallSuspendRequested => {
                 let data: ToolCallSuspendRequestedData = from_data_value(envelope.data)?;
                 Ok(Self::ToolCallSuspendRequested {
-                    interaction: data.interaction,
+                    suspension: data.suspension,
                 })
             }
             AgentEventType::ToolCallResumed => {
                 let data: ToolCallResumedData = from_data_value(envelope.data)?;
                 Ok(Self::ToolCallResumed {
-                    interaction_id: data.interaction_id,
+                    target_id: data.target_id,
                     result: data.result,
                 })
             }
             AgentEventType::ToolCallSuspended => {
                 let data: ToolCallSuspendedData = from_data_value(envelope.data)?;
                 Ok(Self::ToolCallSuspended {
-                    interaction: data.interaction,
+                    suspension: data.suspension,
                 })
             }
             AgentEventType::Error => {

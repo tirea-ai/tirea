@@ -295,13 +295,13 @@ impl AiSdkEncoder {
                 events
             }
             AgentEvent::ToolCallSuspended { .. } => Vec::new(),
-            AgentEvent::ToolCallSuspendRequested { interaction } => {
-                self.map_interaction_requested(interaction)
+            AgentEvent::ToolCallSuspendRequested { suspension } => {
+                self.map_interaction_requested(suspension)
             }
             AgentEvent::ToolCallResumed {
-                interaction_id,
+                target_id,
                 result,
-            } => self.map_interaction_resolved(interaction_id, result),
+            } => self.map_interaction_resolved(target_id, result),
         }
     }
 
@@ -424,15 +424,15 @@ impl AiSdkEncoder {
         events
     }
 
-    fn map_interaction_resolved(&self, interaction_id: &str, result: &Value) -> Vec<UIStreamEvent> {
+    fn map_interaction_resolved(&self, target_id: &str, result: &Value) -> Vec<UIStreamEvent> {
         if let Some(err) = result.get("error").and_then(Value::as_str) {
-            return vec![UIStreamEvent::tool_output_error(interaction_id, err)];
+            return vec![UIStreamEvent::tool_output_error(target_id, err)];
         }
         if tirea_contract::InteractionResponse::is_denied(result) {
-            return vec![UIStreamEvent::tool_output_denied(interaction_id)];
+            return vec![UIStreamEvent::tool_output_denied(target_id)];
         }
         vec![UIStreamEvent::tool_output_available(
-            interaction_id,
+            target_id,
             result.clone(),
         )]
     }
@@ -751,7 +751,7 @@ mod tests {
     fn interaction_resolved_denied_emits_tool_output_denied() {
         let mut enc = AiSdkEncoder::new("run_deny".into());
         let events = enc.on_agent_event(&AgentEvent::ToolCallResumed {
-            interaction_id: "fc_perm_1".to_string(),
+            target_id: "fc_perm_1".to_string(),
             result: json!({ "approved": false, "reason": "nope" }),
         });
         assert!(
@@ -768,7 +768,7 @@ mod tests {
     fn interaction_resolved_error_emits_tool_output_error() {
         let mut enc = AiSdkEncoder::new("run_err".into());
         let events = enc.on_agent_event(&AgentEvent::ToolCallResumed {
-            interaction_id: "ask_call_2".to_string(),
+            target_id: "ask_call_2".to_string(),
             result: json!({ "approved": false, "error": "frontend validation failed" }),
         });
         assert!(
@@ -785,7 +785,7 @@ mod tests {
     fn interaction_resolved_output_payload_emits_tool_output_available() {
         let mut enc = AiSdkEncoder::new("run_ask".into());
         let events = enc.on_agent_event(&AgentEvent::ToolCallResumed {
-            interaction_id: "ask_call_1".to_string(),
+            target_id: "ask_call_1".to_string(),
             result: json!({ "message": "blue" }),
         });
         assert!(

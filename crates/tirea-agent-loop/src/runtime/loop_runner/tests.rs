@@ -2951,9 +2951,9 @@ async fn test_stream_run_start_outbox_resolution_emits_after_run_start() {
     assert!(matches!(
         events.get(1),
         Some(AgentEvent::ToolCallResumed {
-            interaction_id,
+            target_id,
             result
-        }) if interaction_id == "resolution_1" && result == &serde_json::Value::Bool(false)
+        }) if target_id == "call_1" && result == &serde_json::Value::Bool(false)
     ));
     assert!(matches!(events.last(), Some(AgentEvent::RunFinish { .. })));
 }
@@ -2998,13 +2998,13 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
     assert!(matches!(events.first(), Some(AgentEvent::RunStart { .. })));
     assert!(matches!(
         events.get(1),
-        Some(AgentEvent::ToolCallSuspendRequested { interaction })
-            if interaction.action == "recover_agent_run"
+        Some(AgentEvent::ToolCallSuspendRequested { suspension })
+            if suspension.action == "recover_agent_run"
     ));
     assert!(matches!(
         events.get(2),
-        Some(AgentEvent::ToolCallSuspended { interaction })
-            if interaction.action == "recover_agent_run"
+        Some(AgentEvent::ToolCallSuspended { suspension })
+            if suspension.action == "recover_agent_run"
     ));
     assert!(matches!(
         events.get(3),
@@ -3065,13 +3065,13 @@ async fn test_stream_termination_request_with_suspended_only_state_emits_pending
     assert!(matches!(events.first(), Some(AgentEvent::RunStart { .. })));
     assert!(matches!(
         events.get(1),
-        Some(AgentEvent::ToolCallSuspendRequested { interaction })
-            if interaction.action == "recover_agent_run"
+        Some(AgentEvent::ToolCallSuspendRequested { suspension })
+            if suspension.action == "recover_agent_run"
     ));
     assert!(matches!(
         events.get(2),
-        Some(AgentEvent::ToolCallSuspended { interaction })
-            if interaction.action == "recover_agent_run"
+        Some(AgentEvent::ToolCallSuspended { suspension })
+            if suspension.action == "recover_agent_run"
     ));
     assert!(matches!(
         events.get(3),
@@ -3153,9 +3153,9 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
         events.iter().any(|e| matches!(
             e,
             AgentEvent::ToolCallResumed {
-                interaction_id,
+                target_id,
                 result
-            } if interaction_id == "call_write" && result == &serde_json::Value::Bool(false)
+            } if target_id == "call_write" && result == &serde_json::Value::Bool(false)
         )),
         "missing denied ToolCallResumed event: {events:?}"
     );
@@ -3253,9 +3253,9 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
         events.iter().any(|e| matches!(
             e,
             AgentEvent::ToolCallResumed {
-                interaction_id,
+                target_id,
                 result
-            } if interaction_id == "call_1" && result == &serde_json::Value::Bool(true)
+            } if target_id == "call_1" && result == &serde_json::Value::Bool(true)
         )),
         "missing approval ToolCallResumed event: {events:?}"
     );
@@ -3515,8 +3515,8 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
     assert!(
         events.iter().any(|e| matches!(
             e,
-            AgentEvent::ToolCallResumed { interaction_id, result }
-                if interaction_id == "call_1" && result == &serde_json::Value::Bool(true)
+            AgentEvent::ToolCallResumed { target_id, result }
+                if target_id == "call_1" && result == &serde_json::Value::Bool(true)
         )),
         "missing approval ToolCallResumed event: {events:?}"
     );
@@ -3630,9 +3630,9 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
         events.iter().any(|e| matches!(
             e,
             AgentEvent::ToolCallResumed {
-                interaction_id,
+                target_id,
                 result
-            } if interaction_id == "call_1" && result == &serde_json::Value::Bool(false)
+            } if target_id == "call_1" && result == &serde_json::Value::Bool(false)
         )),
         "missing denied ToolCallResumed event: {events:?}"
     );
@@ -6385,8 +6385,8 @@ fn extract_run_finish_response(events: &[AgentEvent]) -> Option<String> {
 
 fn extract_requested_interaction(events: &[AgentEvent]) -> Option<Interaction> {
     events.iter().find_map(|e| match e {
-        AgentEvent::ToolCallSuspendRequested { interaction } => Some(interaction.clone()),
-        AgentEvent::ToolCallSuspended { interaction } => Some(interaction.clone()),
+        AgentEvent::ToolCallSuspendRequested { suspension } => Some(suspension.clone()),
+        AgentEvent::ToolCallSuspended { suspension } => Some(suspension.clone()),
         _ => None,
     })
 }
@@ -10865,7 +10865,7 @@ async fn test_run_loop_stream_decision_channel_emits_resolution_and_replay() {
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AgentEvent::ToolCallResumed { interaction_id, .. } if interaction_id == "call_pending"
+            AgentEvent::ToolCallResumed { target_id, .. } if target_id == "call_pending"
         )),
         "stream should emit ToolCallResumed for call_pending: {events:?}"
     );
@@ -11134,7 +11134,7 @@ async fn test_stream_decision_channel_buffers_early_response_for_all_suspended_t
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AgentEvent::ToolCallResumed { interaction_id, .. } if interaction_id == "call_pending"
+            AgentEvent::ToolCallResumed { target_id, .. } if target_id == "call_pending"
         )),
         "queued decision should resolve once pending call is materialized: {events:?}"
     );
@@ -11233,7 +11233,7 @@ async fn test_stream_decision_channel_drains_while_inference_stream_is_running()
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AgentEvent::ToolCallResumed { interaction_id, .. } if interaction_id == "call_pending"
+            AgentEvent::ToolCallResumed { target_id, .. } if target_id == "call_pending"
         )),
         "decision should be drained while inference stream is still active: {events:?}"
     );
