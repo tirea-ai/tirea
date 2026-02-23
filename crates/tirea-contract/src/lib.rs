@@ -145,14 +145,14 @@ pub use thread::{
 
 // event
 pub use event::{
-    AgentEvent, FrontendToolInvocation, Suspension, SuspensionResponse, InvocationOrigin,
-    ResponseRouting, StopConditionSpec, StopReason, TerminationReason,
+    AgentEvent, FrontendToolInvocation, InvocationOrigin, ResponseRouting, StopConditionSpec,
+    StopReason, Suspension, SuspensionResponse, TerminationReason,
 };
 
 // tool
 pub use tool::{
-    ActivityContext, Tool, ToolCallContext, ToolDescriptor, ToolError, ToolRegistry,
-    ToolRegistryError, ToolResult, ToolStatus,
+    ActivityContext, Tool, ToolCallContext, ToolDescriptor, ToolError, ToolProgressState,
+    ToolRegistry, ToolRegistryError, ToolResult, ToolStatus, TOOL_PROGRESS_ACTIVITY_TYPE,
 };
 
 // plugin

@@ -8,14 +8,32 @@ use crate::runtime::activity::ActivityManager;
 use crate::thread::Message;
 use crate::RunConfig;
 use futures::future::pending;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use tirea_state::{
-    get_at_path, parse_path, DocCell, Op, Patch, PatchSink, State, TireaResult, TrackedPatch,
+    get_at_path, parse_path, DocCell, Op, Patch, PatchSink, State, TireaError, TireaResult,
+    TrackedPatch,
 };
 use tokio_util::sync::CancellationToken;
 
 type PatchHook<'a> = Arc<dyn Fn(&Op) -> TireaResult<()> + Send + Sync + 'a>;
+const TOOL_PROGRESS_STREAM_PREFIX: &str = "tool_call:";
+/// Default activity type used for tool progress updates.
+pub const TOOL_PROGRESS_ACTIVITY_TYPE: &str = "progress";
+
+/// Canonical activity state shape for tool progress updates.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+pub struct ToolProgressState {
+    /// Normalized progress value.
+    pub progress: f64,
+    /// Optional absolute total if the source has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<f64>,
+    /// Optional human-readable progress message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
 
 /// Execution context for tool invocations.
 ///
@@ -219,6 +237,46 @@ impl<'a> ToolCallContext<'a> {
         )
     }
 
+    /// Stable stream id used by default for this tool call's progress activity.
+    pub fn progress_stream_id(&self) -> String {
+        format!("{TOOL_PROGRESS_STREAM_PREFIX}{}", self.call_id)
+    }
+
+    /// Publish a progress update for this tool call.
+    ///
+    /// The update is written to `activity(progress_stream_id(), "progress")`.
+    pub fn report_progress(
+        &self,
+        progress: f64,
+        total: Option<f64>,
+        message: Option<String>,
+    ) -> TireaResult<()> {
+        if !progress.is_finite() {
+            return Err(TireaError::invalid_operation(
+                "progress value must be a finite number",
+            ));
+        }
+        if let Some(total) = total {
+            if !total.is_finite() {
+                return Err(TireaError::invalid_operation(
+                    "progress total must be a finite number",
+                ));
+            }
+            if total < 0.0 {
+                return Err(TireaError::invalid_operation(
+                    "progress total must be non-negative",
+                ));
+            }
+        }
+
+        let activity = self.activity(self.progress_stream_id(), TOOL_PROGRESS_ACTIVITY_TYPE);
+        let state = activity.state::<ToolProgressState>("");
+        state.set_progress(progress)?;
+        state.set_total(total)?;
+        state.set_message(message)?;
+        Ok(())
+    }
+
     // =========================================================================
     // State snapshot
     // =========================================================================
@@ -337,8 +395,10 @@ impl ActivityContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::activity::ActivityManager;
     use crate::runtime::control::InferenceErrorState;
     use serde_json::json;
+    use std::sync::Arc;
     use tokio::time::{timeout, Duration};
     use tokio_util::sync::CancellationToken;
 
@@ -540,5 +600,71 @@ mod tests {
             .await
             .is_err();
         assert!(timed_out, "cancelled() without token should remain pending");
+    }
+
+    #[derive(Default)]
+    struct RecordingActivityManager {
+        events: Mutex<Vec<(String, String, Op)>>,
+    }
+
+    impl ActivityManager for RecordingActivityManager {
+        fn snapshot(&self, _stream_id: &str) -> Value {
+            json!({})
+        }
+
+        fn on_activity_op(&self, stream_id: &str, activity_type: &str, op: &Op) {
+            self.events.lock().unwrap().push((
+                stream_id.to_string(),
+                activity_type.to_string(),
+                op.clone(),
+            ));
+        }
+    }
+
+    #[test]
+    fn test_report_progress_emits_progress_activity() {
+        let doc = DocCell::new(json!({}));
+        let ops = Mutex::new(Vec::new());
+        let scope = RunConfig::default();
+        let pending = Mutex::new(Vec::new());
+        let activity_manager = Arc::new(RecordingActivityManager::default());
+
+        let ctx = ToolCallContext::new(
+            &doc,
+            &ops,
+            "call-1",
+            "test",
+            &scope,
+            &pending,
+            Some(activity_manager.clone()),
+        );
+
+        ctx.report_progress(0.5, Some(10.0), Some("half way".to_string()))
+            .expect("progress should be emitted");
+
+        let events = activity_manager.events.lock().unwrap();
+        assert!(!events.is_empty());
+        assert!(events.iter().all(|(stream_id, activity_type, _)| {
+            stream_id == "tool_call:call-1" && activity_type == "progress"
+        }));
+        assert!(
+            events
+                .iter()
+                .any(|(_, _, op)| op.path().to_string() == "$.progress"),
+            "progress op should be emitted"
+        );
+    }
+
+    #[test]
+    fn test_report_progress_rejects_non_finite_values() {
+        let doc = DocCell::new(json!({}));
+        let ops = Mutex::new(Vec::new());
+        let scope = RunConfig::default();
+        let pending = Mutex::new(Vec::new());
+        let ctx = make_ctx(&doc, &ops, &scope, &pending);
+
+        assert!(ctx.report_progress(f64::NAN, None, None).is_err());
+        assert!(ctx.report_progress(0.5, Some(f64::INFINITY), None).is_err());
+        assert!(ctx.report_progress(0.5, Some(-1.0), None).is_err());
     }
 }

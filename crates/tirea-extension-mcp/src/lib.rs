@@ -1,22 +1,35 @@
+mod client_transport;
+
 use async_trait::async_trait;
+use client_transport::{
+    connect_transport, LegacyMcpTransportAdapter, McpProgressUpdate, McpToolTransport,
+};
 use mcp::transport::{McpServerConnectionConfig, McpTransport, McpTransportError, TransportTypeId};
-use mcp::transport_factory::TransportFactory;
 use mcp::McpToolDefinition;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tirea_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_contract::ToolCallContext;
 use tirea_contract::ToolRegistry;
 use tokio::runtime::Handle;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
 const MCP_META_SERVER: &str = "mcp.server";
 const MCP_META_TOOL: &str = "mcp.tool";
 const MCP_META_TRANSPORT: &str = "mcp.transport";
+const MCP_PROGRESS_MIN_INTERVAL: Duration = Duration::from_millis(100);
+const MCP_PROGRESS_MIN_DELTA: f64 = 0.01;
+
+#[derive(Default)]
+struct ProgressEmitGate {
+    last_emit_at: Option<Instant>,
+    last_progress: Option<f64>,
+    last_message: Option<String>,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum McpToolRegistryError {
@@ -87,7 +100,7 @@ struct McpTool {
     descriptor: ToolDescriptor,
     server_name: String,
     tool_name: String,
-    transport: Arc<dyn McpTransport>,
+    transport: Arc<dyn McpToolTransport>,
 }
 
 impl McpTool {
@@ -95,7 +108,7 @@ impl McpTool {
         tool_id: String,
         server_name: String,
         def: McpToolDefinition,
-        transport: Arc<dyn McpTransport>,
+        transport: Arc<dyn McpToolTransport>,
         transport_type: TransportTypeId,
     ) -> Self {
         let name = def.title.clone().unwrap_or_else(|| def.name.clone());
@@ -137,13 +150,31 @@ impl Tool for McpTool {
     async fn execute(
         &self,
         args: Value,
-        _ctx: &ToolCallContext<'_>,
+        ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
-        let res = self
-            .transport
-            .call_tool(&self.tool_name, args)
-            .await
-            .map_err(map_mcp_error)?;
+        let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
+        let mut call = Box::pin(
+            self.transport
+                .call_tool(&self.tool_name, args, Some(progress_tx)),
+        );
+        let mut gate = ProgressEmitGate::default();
+
+        let res = loop {
+            tokio::select! {
+                result = &mut call => break result,
+                maybe_update = progress_rx.recv() => {
+                    let Some(update) = maybe_update else {
+                        continue;
+                    };
+                    emit_mcp_progress(ctx, &mut gate, update);
+                }
+            }
+        }
+        .map_err(map_mcp_error)?;
+
+        while let Ok(update) = progress_rx.try_recv() {
+            emit_mcp_progress(ctx, &mut gate, update);
+        }
 
         Ok(with_mcp_result_metadata(
             ToolResult::success(self.descriptor.id.clone(), res),
@@ -151,6 +182,53 @@ impl Tool for McpTool {
             &self.tool_name,
         ))
     }
+}
+
+fn emit_mcp_progress(
+    ctx: &ToolCallContext<'_>,
+    gate: &mut ProgressEmitGate,
+    update: McpProgressUpdate,
+) {
+    let Some(normalized_progress) = normalize_progress(&update) else {
+        return;
+    };
+    if !should_emit_progress(gate, normalized_progress, update.message.as_deref()) {
+        return;
+    }
+    let _ = ctx.report_progress(normalized_progress, update.total, update.message);
+}
+
+fn normalize_progress(update: &McpProgressUpdate) -> Option<f64> {
+    if !update.progress.is_finite() {
+        return None;
+    }
+    match update.total {
+        Some(total) if total.is_finite() && total > 0.0 => {
+            Some((update.progress / total).clamp(0.0, 1.0))
+        }
+        _ => Some(update.progress),
+    }
+}
+
+fn should_emit_progress(gate: &mut ProgressEmitGate, progress: f64, message: Option<&str>) -> bool {
+    let now = Instant::now();
+    let interval_elapsed = gate.last_emit_at.map_or(true, |last| {
+        now.duration_since(last) >= MCP_PROGRESS_MIN_INTERVAL
+    });
+    let delta_large_enough = gate.last_progress.map_or(true, |last| {
+        (progress - last).abs() >= MCP_PROGRESS_MIN_DELTA
+    });
+    let message_changed = message != gate.last_message.as_deref();
+    let terminal = progress >= 1.0;
+
+    if !(interval_elapsed || delta_large_enough || message_changed || terminal) {
+        return false;
+    }
+
+    gate.last_emit_at = Some(now);
+    gate.last_progress = Some(progress);
+    gate.last_message = message.map(ToOwned::to_owned);
+    true
 }
 
 fn map_mcp_error(e: McpTransportError) -> ToolError {
@@ -196,7 +274,7 @@ fn to_tool_id(server_name: &str, tool_name: &str) -> Result<String, McpToolRegis
 struct McpServerRuntime {
     name: String,
     transport_type: TransportTypeId,
-    transport: Arc<dyn McpTransport>,
+    transport: Arc<dyn McpToolTransport>,
 }
 
 #[derive(Clone, Default)]
@@ -335,17 +413,29 @@ impl McpToolRegistryManager {
     pub async fn connect(
         configs: impl IntoIterator<Item = McpServerConnectionConfig>,
     ) -> Result<Self, McpToolRegistryError> {
-        let mut entries: Vec<(McpServerConnectionConfig, Arc<dyn McpTransport>)> = Vec::new();
+        let mut entries: Vec<(McpServerConnectionConfig, Arc<dyn McpToolTransport>)> = Vec::new();
         for cfg in configs {
             validate_server_name(&cfg.name)?;
-            let transport = TransportFactory::create(&cfg).await?;
+            let transport = connect_transport(&cfg).await?;
             entries.push((cfg, transport));
         }
-        Self::from_transports(entries).await
+        Self::from_tool_transports(entries).await
     }
 
     pub async fn from_transports(
         entries: impl IntoIterator<Item = (McpServerConnectionConfig, Arc<dyn McpTransport>)>,
+    ) -> Result<Self, McpToolRegistryError> {
+        let wrapped = entries.into_iter().map(|(cfg, transport)| {
+            (
+                cfg,
+                Arc::new(LegacyMcpTransportAdapter::new(transport)) as Arc<dyn McpToolTransport>,
+            )
+        });
+        Self::from_tool_transports(wrapped).await
+    }
+
+    async fn from_tool_transports(
+        entries: impl IntoIterator<Item = (McpServerConnectionConfig, Arc<dyn McpToolTransport>)>,
     ) -> Result<Self, McpToolRegistryError> {
         let servers = Self::build_servers(entries)?;
         let tools = discover_tools(&servers).await?;
@@ -361,7 +451,7 @@ impl McpToolRegistryManager {
     }
 
     fn build_servers(
-        entries: impl IntoIterator<Item = (McpServerConnectionConfig, Arc<dyn McpTransport>)>,
+        entries: impl IntoIterator<Item = (McpServerConnectionConfig, Arc<dyn McpToolTransport>)>,
     ) -> Result<Vec<McpServerRuntime>, McpToolRegistryError> {
         let mut servers: Vec<McpServerRuntime> = Vec::new();
         let mut names: HashSet<String> = HashSet::new();
@@ -523,9 +613,13 @@ impl ToolRegistry for McpToolRegistry {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
     use std::time::Instant;
+    use tirea_contract::runtime::ActivityManager;
+    use tirea_contract::thread::Message;
+    use tirea_state::{DocCell, Op};
 
     #[derive(Debug, Clone)]
     struct FakeTransport {
@@ -586,8 +680,100 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct RecordingActivityManager {
+        events: Mutex<Vec<(String, String, Op)>>,
+    }
+
+    impl ActivityManager for RecordingActivityManager {
+        fn snapshot(&self, _stream_id: &str) -> Value {
+            json!({})
+        }
+
+        fn on_activity_op(&self, stream_id: &str, activity_type: &str, op: &Op) {
+            self.events.lock().unwrap().push((
+                stream_id.to_string(),
+                activity_type.to_string(),
+                op.clone(),
+            ));
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct FakeProgressTransport;
+
+    #[async_trait]
+    impl McpToolTransport for FakeProgressTransport {
+        async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+            Ok(vec![McpToolDefinition::new("echo")])
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _args: Value,
+            progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+        ) -> Result<Value, McpTransportError> {
+            if let Some(progress_tx) = progress_tx {
+                let _ = progress_tx.send(McpProgressUpdate {
+                    progress: 3.0,
+                    total: Some(10.0),
+                    message: Some("phase 1".to_string()),
+                });
+                let _ = progress_tx.send(McpProgressUpdate {
+                    progress: 10.0,
+                    total: Some(10.0),
+                    message: Some("done".to_string()),
+                });
+            }
+            Ok(json!({"ok": true}))
+        }
+
+        fn transport_type(&self) -> TransportTypeId {
+            TransportTypeId::Stdio
+        }
+    }
+
     fn cfg(name: &str) -> McpServerConnectionConfig {
         McpServerConnectionConfig::stdio(name, "node", vec!["server.js".to_string()])
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_forwards_progress_to_tool_activity_stream() {
+        let transport = Arc::new(FakeProgressTransport) as Arc<dyn McpToolTransport>;
+        let tool = McpTool::new(
+            "mcp__s1__echo".to_string(),
+            "s1".to_string(),
+            McpToolDefinition::new("echo"),
+            transport,
+            TransportTypeId::Stdio,
+        );
+
+        let activity_manager = Arc::new(RecordingActivityManager::default());
+        let doc = DocCell::new(json!({}));
+        let ops = Mutex::new(Vec::new());
+        let run_config = tirea_contract::RunConfig::default();
+        let pending_messages: Mutex<Vec<Arc<Message>>> = Mutex::new(Vec::new());
+        let ctx = ToolCallContext::new(
+            &doc,
+            &ops,
+            "call-progress",
+            "test",
+            &run_config,
+            &pending_messages,
+            Some(activity_manager.clone()),
+        );
+
+        let result = tool.execute(json!({}), &ctx).await.unwrap();
+        assert!(result.is_success());
+
+        let events = activity_manager.events.lock().unwrap();
+        assert!(!events.is_empty());
+        assert!(events.iter().any(|(stream_id, activity_type, op)| {
+            stream_id == "tool_call:call-progress"
+                && activity_type == "progress"
+                && op.path().to_string() == "$.progress"
+        }));
     }
 
     #[tokio::test]
