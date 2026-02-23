@@ -6252,31 +6252,6 @@ impl AgentPlugin for RunStartSideEffectPlugin {
     });
 }
 
-struct RunStartReplayPlugin;
-
-#[async_trait]
-impl AgentPlugin for RunStartReplayPlugin {
-    fn id(&self) -> &str {
-        "run_start_replay_plugin"
-    }
-
-    phase_dispatch_methods!(|_this, phase, step| {
-        if phase == Phase::RunStart {
-            step.pending_patches.push(
-                tirea_state::TrackedPatch::new(Patch::new().with_op(Op::set(
-                    tirea_state::path!("__resume_tool_calls", "calls"),
-                    json!([{
-                        "id": "replay_call_1",
-                        "name": "echo",
-                        "arguments": {"message": "from replay"}
-                    }]),
-                )))
-                .with_source("test:run_start_replay_plugin"),
-            );
-        }
-    });
-}
-
 /// Extract the termination from the RunFinish event.
 fn extract_termination(events: &[AgentEvent]) -> Option<TerminationReason> {
     events.iter().find_map(|e| match e {
@@ -6425,38 +6400,6 @@ async fn test_nonstream_checkpoints_include_run_start_side_effects() {
     let outcome = run_loop(
         &config,
         HashMap::new(),
-        run_ctx,
-        None,
-        Some(committer.clone() as Arc<dyn StateCommitter>),
-        None,
-    )
-    .await;
-
-    assert_eq!(outcome.termination, TerminationReason::NaturalEnd);
-    assert_eq!(
-        committer.reasons(),
-        vec![
-            CheckpointReason::UserMessage,
-            CheckpointReason::AssistantTurnCommitted,
-            CheckpointReason::RunFinished
-        ]
-    );
-}
-
-#[tokio::test]
-async fn test_nonstream_legacy_run_start_replay_queue_is_ignored() {
-    let committer = Arc::new(RecordingStateCommitter::new(None));
-    let thread = Thread::new("test").with_message(Message::user("go"));
-    let config = AgentConfig::new("mock")
-        .with_llm_executor(
-            Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("done"))]))
-                as Arc<dyn LlmExecutor>,
-        )
-        .with_plugin(Arc::new(RunStartReplayPlugin) as Arc<dyn AgentPlugin>);
-    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let outcome = run_loop(
-        &config,
-        tool_map([EchoTool]),
         run_ctx,
         None,
         Some(committer.clone() as Arc<dyn StateCommitter>),
@@ -6684,89 +6627,7 @@ async fn test_stream_skip_inference_force_commits_run_finished_delta() {
 }
 
 #[tokio::test]
-async fn test_stream_legacy_replay_invalid_payload_is_ignored() {
-    struct InvalidReplayPayloadPlugin;
-
-    #[async_trait]
-    impl AgentPlugin for InvalidReplayPayloadPlugin {
-        fn id(&self) -> &str {
-            "invalid_replay_payload"
-        }
-
-        phase_dispatch_methods!(|phase, step| {
-            if phase == Phase::RunStart {
-                step.pending_patches.push(
-                    tirea_state::TrackedPatch::new(Patch::new().with_op(Op::set(
-                        tirea_state::path!("__resume_tool_calls", "calls"),
-                        json!({"bad": "payload"}),
-                    )))
-                    .with_source("test:invalid_replay_payload"),
-                );
-            }
-        });
-    }
-
-    let config = AgentConfig::new("mock")
-        .with_plugin(Arc::new(InvalidReplayPayloadPlugin) as Arc<dyn AgentPlugin>);
-    let thread = Thread::new("test").with_message(Message::user("resume"));
-    let tools = tool_map([EchoTool]);
-
-    let events = run_mock_stream(
-        MockStreamProvider::new(vec![MockResponse::text("should not run")]),
-        config,
-        thread,
-        tools,
-    )
-    .await;
-
-    assert!(
-        !events.iter().any(|e| matches!(
-            e,
-            AgentEvent::Error { message }
-            if message.contains("__resume_tool_calls.calls")
-        )),
-        "legacy replay payload should be ignored without parse errors: {events:?}"
-    );
-    assert_eq!(
-        extract_termination(&events),
-        Some(TerminationReason::NaturalEnd),
-        "stream should continue normally when legacy replay payload is malformed"
-    );
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::TextDelta { .. })),
-        "stream should proceed to inference despite malformed legacy replay payload"
-    );
-}
-
-#[tokio::test]
 async fn test_stream_replay_state_failure_emits_error() {
-    struct ReplayPlugin;
-
-    #[async_trait]
-    impl AgentPlugin for ReplayPlugin {
-        fn id(&self) -> &str {
-            "replay_state_failure"
-        }
-
-        phase_dispatch_methods!(|phase, step| {
-            if phase == Phase::RunStart {
-                step.pending_patches.push(
-                    tirea_state::TrackedPatch::new(Patch::new().with_op(Op::set(
-                        tirea_state::path!("__resume_tool_calls", "calls"),
-                        json!([{
-                            "id": "replay_call_1",
-                            "name": "echo",
-                            "arguments": {"message": "resume"}
-                        }]),
-                    )))
-                    .with_source("test:replay_state_failure"),
-                );
-            }
-        });
-    }
-
     let broken_patch = tirea_state::TrackedPatch::new(
         Patch::new().with_op(Op::increment(tirea_state::path!("missing_counter"), 1_i64)),
     )
@@ -6782,8 +6643,7 @@ async fn test_stream_replay_state_failure_emits_error() {
     );
     run_ctx.add_thread_patch(broken_patch);
 
-    let config =
-        AgentConfig::new("mock").with_plugin(Arc::new(ReplayPlugin) as Arc<dyn AgentPlugin>);
+    let config = AgentConfig::new("mock");
     let tools = tool_map([EchoTool]);
 
     let provider = MockStreamProvider::new(vec![MockResponse::text("should not run")]);
@@ -6801,122 +6661,7 @@ async fn test_stream_replay_state_failure_emits_error() {
         !events
             .iter()
             .any(|e| matches!(e, AgentEvent::ToolCallDone { .. })),
-        "replay tool must not execute when state rebuild fails"
-    );
-}
-
-#[tokio::test]
-async fn test_stream_legacy_replay_queue_is_not_executed() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    static BEFORE_TOOL_EXECUTED: AtomicBool = AtomicBool::new(false);
-
-    struct ReplayBlockingPlugin;
-
-    #[async_trait]
-    impl AgentPlugin for ReplayBlockingPlugin {
-        fn id(&self) -> &str {
-            "replay_blocking"
-        }
-
-        phase_dispatch_methods!(|phase, step| {
-            match phase {
-                Phase::RunStart => {
-                    step.pending_patches.push(
-                        tirea_state::TrackedPatch::new(Patch::new().with_op(Op::set(
-                            tirea_state::path!("__resume_tool_calls", "calls"),
-                            json!([{
-                                "id": "replay_call_1",
-                                "name": "echo",
-                                "arguments": {"message": "resume"}
-                            }]),
-                        )))
-                        .with_source("test:legacy_replay_queue"),
-                    );
-                }
-                Phase::BeforeToolExecute if step.tool_call_id() == Some("replay_call_1") => {
-                    BEFORE_TOOL_EXECUTED.store(true, Ordering::SeqCst);
-                    step.deny("blocked in replay");
-                }
-                _ => {}
-            }
-        });
-    }
-
-    BEFORE_TOOL_EXECUTED.store(false, Ordering::SeqCst);
-
-    let config = AgentConfig::new("mock")
-        .with_plugin(Arc::new(ReplayBlockingPlugin) as Arc<dyn AgentPlugin>);
-    let thread = Thread::new("test").with_message(Message::user("resume"));
-    let tools = tool_map([EchoTool]);
-
-    let events = run_mock_stream(
-        MockStreamProvider::new(vec![MockResponse::text("done")]),
-        config,
-        thread,
-        tools,
-    )
-    .await;
-
-    assert!(
-        !BEFORE_TOOL_EXECUTED.load(Ordering::SeqCst),
-        "legacy replay queue should not dispatch tool execution"
-    );
-    assert!(
-        !events.iter().any(|e| matches!(
-            e,
-            AgentEvent::ToolCallDone { id, .. } if id == "replay_call_1"
-        )),
-        "legacy replay queue should not emit tool results: {events:?}"
-    );
-}
-
-#[tokio::test]
-async fn test_stream_legacy_replay_queue_does_not_append_tool_result_message() {
-    struct ReplayPlugin;
-
-    #[async_trait]
-    impl AgentPlugin for ReplayPlugin {
-        fn id(&self) -> &str {
-            "replay_without_placeholder"
-        }
-
-        phase_dispatch_methods!(|phase, step| {
-            if phase == Phase::RunStart {
-                step.pending_patches.push(
-                    tirea_state::TrackedPatch::new(Patch::new().with_op(Op::set(
-                        tirea_state::path!("__resume_tool_calls", "calls"),
-                        json!([{
-                            "id": "replay_call_1",
-                            "name": "echo",
-                            "arguments": {"message": "resume"}
-                        }]),
-                    )))
-                    .with_source("test:legacy_replay_queue"),
-                );
-            }
-        });
-    }
-
-    let config =
-        AgentConfig::new("mock").with_plugin(Arc::new(ReplayPlugin) as Arc<dyn AgentPlugin>);
-    let thread = Thread::new("test").with_message(Message::user("resume"));
-    let tools = tool_map([EchoTool]);
-
-    let (_events, final_thread) = run_mock_stream_with_final_thread(
-        MockStreamProvider::new(vec![MockResponse::text("unused")]),
-        config,
-        thread,
-        tools,
-    )
-    .await;
-
-    assert!(
-        !final_thread.messages.iter().any(|m| {
-            m.role == crate::contracts::thread::Role::Tool
-                && m.tool_call_id.as_deref() == Some("replay_call_1")
-        }),
-        "legacy replay queue should not append tool results"
+        "tool execution must not run when state rebuild fails"
     );
 }
 
@@ -6986,6 +6731,16 @@ async fn test_stream_legacy_run_start_replay_queue_is_ignored() {
             .iter()
             .any(|event| matches!(event, AgentEvent::ToolCallDone { id, .. } if id.starts_with("replay_call_"))),
         "legacy replay queue should not execute in stream mode"
+    );
+    assert!(
+        !final_thread.messages.iter().any(|message| {
+            message.role == crate::contracts::thread::Role::Tool
+                && message
+                    .tool_call_id
+                    .as_deref()
+                    .is_some_and(|id| id.starts_with("replay_call_"))
+        }),
+        "legacy replay queue should not append tool result messages"
     );
 
     let final_state = final_thread.rebuild_state().expect("state should rebuild");

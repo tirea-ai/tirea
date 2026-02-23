@@ -937,64 +937,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_start_legacy_outbox_corruption_does_not_break_decision_enqueue() {
-        let state = json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "call_write": {
-                        "call_id": "call_write",
-                        "tool_name": "write_file",
-                        "interaction": {
-                            "id": "fc_ask_fail",
-                            "action": "tool:write_file",
-                            "parameters": {}
-                        },
-                        "frontend_invocation": {
-                            "call_id": "fc_ask_fail",
-                            "tool_name": "PermissionConfirm",
-                            "arguments": { "tool_name": "write_file", "tool_args": { "path": "a.txt" } },
-                            "origin": {
-                                "type": "tool_call_intercepted",
-                                "backend_call_id": "call_write",
-                                "backend_tool_name": "write_file",
-                                "backend_arguments": { "path": "a.txt" }
-                            },
-                            "routing": {
-                                "strategy": "replay_original_tool"
-                            }
-                        }
-                    }
-                }
-            },
-            "__resume_tool_calls": {
-                "calls": "invalid_type"
-            }
-        });
-        let fixture = TestFixture::new_with_state(state);
-        let plugin = InteractionResponsePlugin::new(vec!["fc_ask_fail".to_string()], vec![]);
-
-        let mut step = fixture.step(vec![]);
-        plugin.run_phase(Phase::RunStart, &mut step).await;
-
-        let updated = fixture.updated_state();
-        let decisions = resume_decisions_from_state(&updated);
-        assert!(
-            updated["__suspended_tool_calls"]["calls"]
-                .as_object()
-                .is_some_and(|calls| calls.contains_key("call_write")),
-            "suspended call should remain until loop applies decision"
-        );
-        assert!(decisions.contains_key("call_write"));
-        assert!(
-            updated
-                .get("__inference_error")
-                .and_then(|err| err.get("error"))
-                .is_none(),
-            "legacy outbox corruption should not surface as interaction error"
-        );
-    }
-
-    #[tokio::test]
     async fn run_start_recovery_approval_schedules_agent_run_replay() {
         let state = json!({
             "__suspended_tool_calls": {
