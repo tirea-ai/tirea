@@ -2,7 +2,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use tirea_contract::{
-    SuspensionResponse, Message, MessageMetadata, ProtocolInputAdapter, Role, RunRequest, ToolCall,
+    Message, MessageMetadata, ProtocolInputAdapter, Role, RunRequest, SuspensionResponse,
+    ToolCall, ToolCallDecision,
 };
 
 use crate::message::{ToolState, ToolUIPart};
@@ -109,9 +110,22 @@ impl AiSdkV6RunRequest {
         !self.interaction_responses.is_empty()
     }
 
+    /// Whether the incoming request includes any suspension decisions.
+    pub fn has_suspension_decisions(&self) -> bool {
+        !self.suspension_decisions().is_empty()
+    }
+
     /// Suspension responses extracted from incoming UI messages.
     pub fn interaction_responses(&self) -> Vec<SuspensionResponse> {
         self.interaction_responses.clone()
+    }
+
+    /// Suspension decisions extracted from incoming UI messages.
+    pub fn suspension_decisions(&self) -> Vec<ToolCallDecision> {
+        self.interaction_responses()
+            .into_iter()
+            .map(Into::into)
+            .collect()
     }
 
     /// Raw incoming UI messages from the client payload.
@@ -871,6 +885,10 @@ mod tests {
 
         assert!(!req.has_user_input());
         assert!(req.has_interaction_responses());
+        assert!(req.has_suspension_decisions());
+        let decisions = req.suspension_decisions();
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].target_id, "ask_1");
         let run_request = AiSdkV6InputAdapter::to_run_request("agent".to_string(), req);
         assert!(run_request.messages.is_empty());
     }

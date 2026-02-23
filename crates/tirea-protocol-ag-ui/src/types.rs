@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use tirea_contract::SuspensionResponse;
+use tirea_contract::{SuspensionResponse, ToolCallDecision};
 use tirea_contract::{gen_message_id, RunRequest, Visibility};
 use tracing::warn;
 
@@ -284,6 +284,11 @@ impl RunAgentInput {
         !self.interaction_responses().is_empty()
     }
 
+    /// Check if any suspension decisions exist in this request.
+    pub fn has_any_suspension_decisions(&self) -> bool {
+        !self.suspension_decisions().is_empty()
+    }
+
     /// Check if this request contains non-empty user input.
     pub fn has_user_input(&self) -> bool {
         self.messages
@@ -341,6 +346,14 @@ impl RunAgentInput {
         responses
             .into_iter()
             .map(|(_, response)| response)
+            .collect()
+    }
+
+    /// Extract all suspension decisions from tool messages.
+    pub fn suspension_decisions(&self) -> Vec<ToolCallDecision> {
+        self.interaction_responses()
+            .into_iter()
+            .map(Into::into)
             .collect()
     }
 
