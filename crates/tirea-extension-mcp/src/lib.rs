@@ -1,8 +1,8 @@
 mod client_transport;
 
 use async_trait::async_trait;
-use client_transport::{connect_transport, LegacyMcpTransportAdapter};
-use mcp::transport::{McpServerConnectionConfig, McpTransport, McpTransportError, TransportTypeId};
+use client_transport::connect_transport;
+use mcp::transport::{McpServerConnectionConfig, McpTransportError, TransportTypeId};
 use mcp::McpToolDefinition;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -294,47 +294,6 @@ struct McpRegistryState {
     periodic_refresh: Mutex<Option<PeriodicRefreshRuntime>>,
 }
 
-/// Transport entry accepted by [`McpToolRegistryManager::from_transports`].
-///
-/// Use [`McpTransportEntry::Legacy`] for plain `McpTransport` implementations,
-/// or [`McpTransportEntry::ProgressAware`] for transports that support MCP
-/// `notifications/progress` forwarding into tool activity.
-pub enum McpTransportEntry {
-    Legacy(Arc<dyn McpTransport>),
-    ProgressAware(Arc<dyn McpToolTransport>),
-}
-
-impl McpTransportEntry {
-    /// Wrap a legacy transport without progress callbacks.
-    pub fn legacy(transport: Arc<dyn McpTransport>) -> Self {
-        Self::Legacy(transport)
-    }
-
-    /// Wrap a progress-capable transport.
-    pub fn progress_aware(transport: Arc<dyn McpToolTransport>) -> Self {
-        Self::ProgressAware(transport)
-    }
-
-    fn into_tool_transport(self) -> Arc<dyn McpToolTransport> {
-        match self {
-            Self::Legacy(transport) => Arc::new(LegacyMcpTransportAdapter::new(transport)),
-            Self::ProgressAware(transport) => transport,
-        }
-    }
-}
-
-impl From<Arc<dyn McpTransport>> for McpTransportEntry {
-    fn from(value: Arc<dyn McpTransport>) -> Self {
-        Self::Legacy(value)
-    }
-}
-
-impl From<Arc<dyn McpToolTransport>> for McpTransportEntry {
-    fn from(value: Arc<dyn McpToolTransport>) -> Self {
-        Self::ProgressAware(value)
-    }
-}
-
 fn read_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
     match lock.read() {
         Ok(guard) => guard,
@@ -463,16 +422,10 @@ impl McpToolRegistryManager {
         Self::from_tool_transports(entries).await
     }
 
-    pub async fn from_transports<T>(
-        entries: impl IntoIterator<Item = (McpServerConnectionConfig, T)>,
-    ) -> Result<Self, McpToolRegistryError>
-    where
-        T: Into<McpTransportEntry>,
-    {
-        let wrapped = entries
-            .into_iter()
-            .map(|(cfg, transport)| (cfg, transport.into().into_tool_transport()));
-        Self::from_tool_transports(wrapped).await
+    pub async fn from_transports(
+        entries: impl IntoIterator<Item = (McpServerConnectionConfig, Arc<dyn McpToolTransport>)>,
+    ) -> Result<Self, McpToolRegistryError> {
+        Self::from_tool_transports(entries).await
     }
 
     async fn from_tool_transports(
@@ -694,7 +647,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl McpTransport for FakeTransport {
+    impl McpToolTransport for FakeTransport {
         async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
             self.list_calls.fetch_add(1, Ordering::SeqCst);
             if let Some(message) = self.fail_next_list.lock().unwrap().take() {
@@ -703,17 +656,14 @@ mod tests {
             Ok(self.tools.lock().unwrap().clone())
         }
 
-        async fn call_tool(&self, name: &str, args: Value) -> Result<Value, McpTransportError> {
+        async fn call_tool(
+            &self,
+            name: &str,
+            args: Value,
+            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+        ) -> Result<Value, McpTransportError> {
             self.calls.lock().unwrap().push((name.to_string(), args));
             Ok(serde_json::json!({"ok": true}))
-        }
-
-        async fn shutdown(&self) -> Result<(), McpTransportError> {
-            Ok(())
-        }
-
-        fn is_alive(&self) -> bool {
-            true
         }
 
         fn transport_type(&self) -> TransportTypeId {
@@ -818,10 +768,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn from_transports_accepts_progress_aware_entries() {
+    async fn from_transports_accepts_progress_transport() {
+        let transport = Arc::new(FakeProgressTransport) as Arc<dyn McpToolTransport>;
         let manager = McpToolRegistryManager::from_transports([(
             cfg("s1"),
-            McpTransportEntry::progress_aware(Arc::new(FakeProgressTransport)),
+            transport,
         )])
         .await
         .unwrap();
@@ -865,7 +816,7 @@ mod tests {
         let fake = Arc::new(FakeTransport::new(vec![
             McpToolDefinition::new("echo").with_title("Echo")
         ]));
-        let transport = fake.clone() as Arc<dyn McpTransport>;
+        let transport = fake.clone() as Arc<dyn McpToolTransport>;
 
         let manager = McpToolRegistryManager::from_transports([(cfg("s1"), transport.clone())])
             .await
@@ -897,7 +848,7 @@ mod tests {
     #[tokio::test]
     async fn registry_refresh_discovers_new_tools_without_rebuild() {
         let fake = Arc::new(FakeTransport::new(vec![McpToolDefinition::new("echo")]));
-        let transport = fake.clone() as Arc<dyn McpTransport>;
+        let transport = fake.clone() as Arc<dyn McpToolTransport>;
 
         let manager = McpToolRegistryManager::from_transports([(cfg("s1"), transport.clone())])
             .await
@@ -918,7 +869,7 @@ mod tests {
     #[tokio::test]
     async fn failed_refresh_keeps_last_good_snapshot() {
         let fake = Arc::new(FakeTransport::new(vec![McpToolDefinition::new("echo")]));
-        let transport = fake.clone() as Arc<dyn McpTransport>;
+        let transport = fake.clone() as Arc<dyn McpToolTransport>;
 
         let manager = McpToolRegistryManager::from_transports([(cfg("s1"), transport.clone())])
             .await
@@ -952,7 +903,7 @@ mod tests {
     #[tokio::test]
     async fn periodic_refresh_updates_snapshot_and_can_stop() {
         let fake = Arc::new(FakeTransport::new(vec![McpToolDefinition::new("echo")]));
-        let transport = fake.clone() as Arc<dyn McpTransport>;
+        let transport = fake.clone() as Arc<dyn McpToolTransport>;
         let manager = McpToolRegistryManager::from_transports([(cfg("s1"), transport)])
             .await
             .unwrap();
@@ -1005,7 +956,7 @@ mod tests {
     #[tokio::test]
     async fn periodic_refresh_rejects_duplicate_start() {
         let fake = Arc::new(FakeTransport::new(vec![McpToolDefinition::new("echo")]));
-        let transport = fake.clone() as Arc<dyn McpTransport>;
+        let transport = fake.clone() as Arc<dyn McpToolTransport>;
         let manager = McpToolRegistryManager::from_transports([(cfg("s1"), transport)])
             .await
             .unwrap();
@@ -1027,7 +978,7 @@ mod tests {
     #[tokio::test]
     async fn periodic_refresh_rejects_zero_interval() {
         let fake = Arc::new(FakeTransport::new(vec![McpToolDefinition::new("echo")]));
-        let transport = fake.clone() as Arc<dyn McpTransport>;
+        let transport = fake.clone() as Arc<dyn McpToolTransport>;
         let manager = McpToolRegistryManager::from_transports([(cfg("s1"), transport)])
             .await
             .unwrap();
@@ -1053,7 +1004,7 @@ mod tests {
         let transport = Arc::new(FakeTransport::new(vec![
             McpToolDefinition::new("a-b"),
             McpToolDefinition::new("a_b"),
-        ])) as Arc<dyn McpTransport>;
+        ])) as Arc<dyn McpToolTransport>;
 
         let err = McpToolRegistryManager::from_transports([(cfg("s1"), transport)])
             .await
