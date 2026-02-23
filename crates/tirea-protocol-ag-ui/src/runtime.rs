@@ -2,7 +2,7 @@
 //!
 //! Applies AG-UI–specific extensions to a [`ResolvedRun`]:
 //! frontend tool descriptor stubs, frontend suspended-call strategy,
-//! and interaction-response replay plugin wiring.
+//! and context injection.
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -18,7 +18,6 @@ use tirea_contract::plugin::phase::{
 use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_contract::ToolCallContext;
-use tirea_extension_interaction::InteractionPlugin;
 
 use crate::{build_context_addendum, RunAgentInput};
 
@@ -30,7 +29,7 @@ pub const AGUI_FORWARDED_PROPS_KEY: &str = "agui_forwarded_props";
 /// Apply AG-UI–specific extensions to a [`ResolvedRun`].
 ///
 /// Injects frontend tool stubs, suspended-call plugins, context
-/// injection, and interaction-response replay wiring.
+/// injection, and request model/config overrides.
 pub fn apply_agui_extensions(resolved: &mut ResolvedRun, request: &RunAgentInput) {
     if let Some(model) = request.model.as_ref().filter(|m| !m.trim().is_empty()) {
         resolved.config.model = model.clone();
@@ -81,12 +80,6 @@ pub fn apply_agui_extensions(resolved: &mut ResolvedRun, request: &RunAgentInput
             .config
             .plugins
             .push(Arc::new(ContextInjectionPlugin::new(addendum)));
-    }
-
-    let interaction_plugin =
-        InteractionPlugin::from_interaction_responses(request.interaction_responses());
-    if interaction_plugin.is_active() {
-        resolved.config.plugins.push(Arc::new(interaction_plugin));
     }
 }
 
@@ -330,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn injects_response_only_plugin_when_no_frontend_tools() {
+    fn no_plugins_added_when_only_decisions_are_present() {
         let request = RunAgentInput {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
@@ -351,12 +344,11 @@ mod tests {
         let mut resolved = empty_resolved();
         apply_agui_extensions(&mut resolved, &request);
         assert!(resolved.tools.is_empty());
-        // InteractionPlugin only
-        assert_eq!(resolved.config.plugins.len(), 1);
+        assert!(resolved.config.plugins.is_empty());
     }
 
     #[test]
-    fn injects_response_plugin_for_non_boolean_frontend_tool_payload() {
+    fn no_plugins_added_for_non_boolean_decision_payload_without_frontend_tools() {
         let request = RunAgentInput {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
@@ -399,13 +391,11 @@ mod tests {
         let mut resolved = empty_resolved();
         apply_agui_extensions(&mut resolved, &request);
         assert!(resolved.tools.is_empty());
-        // Non-boolean tool response must still install InteractionPlugin
-        // so routing (e.g. use_as_tool_result) can replay and clear pending state.
-        assert_eq!(resolved.config.plugins.len(), 1);
+        assert!(resolved.config.plugins.is_empty());
     }
 
     #[test]
-    fn injects_frontend_and_response_plugins_together() {
+    fn injects_frontend_plugin_even_when_decisions_are_present() {
         let request = RunAgentInput {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
@@ -428,8 +418,9 @@ mod tests {
         let mut resolved = empty_resolved();
         apply_agui_extensions(&mut resolved, &request);
         assert!(resolved.tools.contains_key("copyToClipboard"));
-        // FrontendToolPendingPlugin + InteractionPlugin
-        assert_eq!(resolved.config.plugins.len(), 2);
+        // FrontendToolPendingPlugin only
+        assert_eq!(resolved.config.plugins.len(), 1);
+        assert_eq!(resolved.config.plugins[0].id(), "agui_frontend_tools");
     }
 
     #[test]

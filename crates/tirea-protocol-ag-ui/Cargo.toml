@@ -9,7 +9,6 @@ description = "AG-UI protocol types and adapters for tirea"
 [dependencies]
 tirea-contract = { version = "0.1.1", path = "../tirea-contract" }
 tirea-agent-loop = { version = "0.1.1", path = "../tirea-agent-loop" }
-tirea-extension-interaction = { version = "0.1.1", path = "../tirea-extension-interaction" }
 async-trait = "0.1"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
