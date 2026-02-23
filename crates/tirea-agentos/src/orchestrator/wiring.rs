@@ -107,7 +107,7 @@ impl AgentOs {
     fn resolve_stop_condition_id_list(
         &self,
         stop_condition_ids: &[String],
-    ) -> Result<Vec<Arc<dyn crate::contracts::runtime::StopPolicy>>, AgentOsWiringError> {
+    ) -> Result<Vec<Arc<dyn crate::engine::stop_conditions::StopPolicy>>, AgentOsWiringError> {
         let mut out = Vec::new();
         for id in stop_condition_ids {
             let id = id.trim();

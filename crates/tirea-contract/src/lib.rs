@@ -89,10 +89,10 @@ macro_rules! impl_stop_condition_spec_builder_methods {
     };
 }
 
-/// Builder methods for runtime instance fields (plugins, stop_conditions).
+/// Builder methods for runtime instance fields (plugins).
 ///
 /// Only used by AgentConfig (loop layer) which directly holds plugin and
-/// stop_condition instances. AgentDefinition uses id-based references instead.
+/// runtime instances. AgentDefinition uses id-based references instead.
 #[macro_export]
 macro_rules! impl_loop_config_builder_methods {
     () => {
@@ -107,20 +107,6 @@ macro_rules! impl_loop_config_builder_methods {
         #[must_use]
         pub fn with_plugin(mut self, plugin: Arc<dyn AgentPlugin>) -> Self {
             self.plugins.push(plugin);
-            self
-        }
-
-        /// Add a stop policy.
-        #[must_use]
-        pub fn with_stop_condition(mut self, condition: impl StopPolicy + 'static) -> Self {
-            self.stop_conditions.push(Arc::new(condition));
-            self
-        }
-
-        /// Set all stop policies, replacing any previously set.
-        #[must_use]
-        pub fn with_stop_conditions(mut self, conditions: Vec<Arc<dyn StopPolicy>>) -> Self {
-            self.stop_conditions = conditions;
             self
         }
     };
@@ -171,9 +157,9 @@ pub use plugin::{
 // runtime
 pub use runtime::{
     ActivityManager, InferenceError, InferenceErrorState, LlmExecutor, RunContext, RunDelta,
-    StopPolicy, StopPolicyInput, StopPolicyStats, StreamResult, SuspendedCall, SuspendedCallsExt,
-    SuspendedToolCallsState, ToolCallDecision, ToolCallOutcome, ToolExecution,
-    ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
+    StreamResult, SuspendedCall, SuspendedCallsExt, SuspendedToolCallsState, ToolCallDecision,
+    ToolCallOutcome, ToolExecution, ToolExecutionRequest, ToolExecutionResult, ToolExecutor,
+    ToolExecutorError,
 };
 
 // storage

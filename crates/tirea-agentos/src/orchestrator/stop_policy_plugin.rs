@@ -5,9 +5,10 @@ use std::sync::Arc;
 
 use crate::contracts::plugin::phase::{AfterInferenceContext, PluginPhaseContext};
 use crate::contracts::plugin::AgentPlugin;
-use crate::contracts::runtime::{StopPolicy, StopPolicyInput, StopPolicyStats, StreamResult};
+use crate::contracts::runtime::StreamResult;
 use crate::contracts::thread::{Message, Role, ToolCall};
 use crate::contracts::{RunContext, StopConditionSpec, ToolResult};
+use crate::engine::stop_conditions::{StopPolicy, StopPolicyInput, StopPolicyStats};
 use tirea_state::State;
 
 pub const STOP_POLICY_PLUGIN_ID: &str = "stop_policy";

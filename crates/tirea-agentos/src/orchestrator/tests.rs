@@ -933,14 +933,14 @@ async fn run_and_run_stream_work_without_llm_when_terminate_plugin_requested() {
 
 #[tokio::test]
 async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_conditions_to_loop() {
-    use crate::contracts::runtime::StopPolicyInput;
     use crate::contracts::StopReason;
+    use crate::engine::stop_conditions::StopPolicyInput;
     use crate::runtime::loop_runner::run_loop;
 
     #[derive(Debug)]
     struct AlwaysStopPolicy;
 
-    impl crate::contracts::runtime::StopPolicy for AlwaysStopPolicy {
+    impl crate::engine::stop_conditions::StopPolicy for AlwaysStopPolicy {
         fn id(&self) -> &str {
             "always_stop"
         }
@@ -2906,13 +2906,13 @@ fn build_errors_if_agent_references_missing_stop_condition() {
 
 #[test]
 fn build_errors_on_duplicate_stop_condition_ref_in_builder_agent() {
-    use crate::contracts::runtime::StopPolicyInput;
     use crate::contracts::StopReason;
+    use crate::engine::stop_conditions::StopPolicyInput;
 
     #[derive(Debug)]
     struct MockStop;
 
-    impl crate::contracts::runtime::StopPolicy for MockStop {
+    impl crate::engine::stop_conditions::StopPolicy for MockStop {
         fn id(&self) -> &str {
             "mock_stop"
         }
@@ -2956,13 +2956,13 @@ fn build_errors_on_empty_stop_condition_ref_in_builder_agent() {
 
 #[tokio::test]
 async fn resolve_wires_stop_conditions_from_registry() {
-    use crate::contracts::runtime::StopPolicyInput;
     use crate::contracts::StopReason;
+    use crate::engine::stop_conditions::StopPolicyInput;
 
     #[derive(Debug)]
     struct TestStopPolicy;
 
-    impl crate::contracts::runtime::StopPolicy for TestStopPolicy {
+    impl crate::engine::stop_conditions::StopPolicy for TestStopPolicy {
         fn id(&self) -> &str {
             "test_stop"
         }

@@ -1,7 +1,7 @@
 use super::outcome::{LoopStats, LoopUsage};
 use super::AgentConfig;
-use crate::contracts::runtime::{StopPolicy, StreamResult};
-use crate::engine::stop_conditions::condition_from_spec;
+use crate::contracts::runtime::StreamResult;
+use crate::engine::stop_conditions::{condition_from_spec, StopPolicy};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;

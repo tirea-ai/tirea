@@ -18,7 +18,7 @@
 //! Implement the [`StopPolicy`] trait for custom logic:
 //!
 //! ```ignore
-//! use tirea::contracts::runtime::{StopPolicy, StopPolicyInput, StopReason};
+//! use tirea::engine::stop_conditions::{StopPolicy, StopPolicyInput, StopReason};
 //!
 //! struct CostLimit { max_cents: usize }
 //!
@@ -36,7 +36,6 @@
 //! }
 //! ```
 
-use crate::contracts::runtime::{StopPolicy, StopPolicyInput, StopPolicyStats};
 use crate::contracts::thread::ToolCall;
 use crate::contracts::RunContext;
 use crate::contracts::StopConditionSpec;
@@ -46,8 +45,49 @@ use std::sync::Arc;
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
-// StopReason
+// Stop policy contract
 // ---------------------------------------------------------------------------
+
+/// Aggregated runtime stats consumed by stop policies.
+pub struct StopPolicyStats<'a> {
+    /// Number of completed steps.
+    pub step: usize,
+    /// Tool calls emitted by the current step.
+    pub step_tool_call_count: usize,
+    /// Total tool calls across the whole run.
+    pub total_tool_call_count: usize,
+    /// Cumulative input tokens across all LLM calls.
+    pub total_input_tokens: usize,
+    /// Cumulative output tokens across all LLM calls.
+    pub total_output_tokens: usize,
+    /// Number of consecutive rounds where all tools failed.
+    pub consecutive_errors: usize,
+    /// Time elapsed since the loop started.
+    pub elapsed: Duration,
+    /// Tool calls from the most recent LLM response.
+    pub last_tool_calls: &'a [ToolCall],
+    /// Text from the most recent LLM response.
+    pub last_text: &'a str,
+    /// History of tool call names per round (most recent last), for loop detection.
+    pub tool_call_history: &'a VecDeque<Vec<String>>,
+}
+
+/// Canonical stop-policy input: run context + runtime stats.
+pub struct StopPolicyInput<'a> {
+    /// Current run context.
+    pub run_ctx: &'a RunContext,
+    /// Runtime run stats.
+    pub stats: StopPolicyStats<'a>,
+}
+
+/// Stop policy contract evaluated by loop/plug-ins.
+pub trait StopPolicy: Send + Sync {
+    /// Unique identifier for this policy.
+    fn id(&self) -> &str;
+
+    /// Evaluate stop decision from canonical input.
+    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason>;
+}
 
 // ---------------------------------------------------------------------------
 // StopCheckContext

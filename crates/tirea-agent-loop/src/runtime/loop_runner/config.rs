@@ -1,10 +1,11 @@
 use super::tool_exec::{ParallelToolExecutor, SequentialToolExecutor};
 use super::AgentLoopError;
 use crate::contracts::plugin::AgentPlugin;
-use crate::contracts::runtime::{LlmExecutor, StopPolicy, ToolExecutor};
+use crate::contracts::runtime::{LlmExecutor, ToolExecutor};
 use crate::contracts::tool::{Tool, ToolDescriptor};
 use crate::contracts::RunContext;
 use crate::contracts::StopConditionSpec;
+use crate::engine::stop_conditions::StopPolicy;
 use async_trait::async_trait;
 use genai::chat::ChatOptions;
 use genai::Client;
@@ -244,6 +245,20 @@ impl AgentConfig {
     tirea_contract::impl_shared_agent_builder_methods!();
     tirea_contract::impl_stop_condition_spec_builder_methods!();
     tirea_contract::impl_loop_config_builder_methods!();
+
+    /// Add a stop policy.
+    #[must_use]
+    pub fn with_stop_condition(mut self, condition: impl StopPolicy + 'static) -> Self {
+        self.stop_conditions.push(Arc::new(condition));
+        self
+    }
+
+    /// Set all stop policies, replacing any previously set.
+    #[must_use]
+    pub fn with_stop_conditions(mut self, conditions: Vec<Arc<dyn StopPolicy>>) -> Self {
+        self.stop_conditions = conditions;
+        self
+    }
 
     /// Set tool executor strategy.
     #[must_use]

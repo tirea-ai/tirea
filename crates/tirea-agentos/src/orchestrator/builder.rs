@@ -144,7 +144,7 @@ impl AgentOsBuilder {
     pub fn with_stop_policy(
         mut self,
         id: impl Into<String>,
-        policy: Arc<dyn crate::contracts::runtime::StopPolicy>,
+        policy: Arc<dyn crate::engine::stop_conditions::StopPolicy>,
     ) -> Self {
         self.stop_policies.insert(id.into(), policy);
         self
