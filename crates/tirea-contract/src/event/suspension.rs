@@ -251,11 +251,7 @@ pub enum ResponseRouting {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "strategy", rename_all = "snake_case")]
 enum ResponseRoutingWire {
-    /// Legacy shape accepted for backward compatibility.
-    ReplayOriginalTool {
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        state_patches: Vec<Value>,
-    },
+    ReplayOriginalTool,
     /// The frontend result IS the tool result — inject it directly into
     /// the LLM message history as the tool call response.
     /// Used for direct frontend tools (e.g. copyToClipboard).
@@ -267,7 +263,7 @@ enum ResponseRoutingWire {
 impl From<ResponseRoutingWire> for ResponseRouting {
     fn from(value: ResponseRoutingWire) -> Self {
         match value {
-            ResponseRoutingWire::ReplayOriginalTool { .. } => Self::ReplayOriginalTool,
+            ResponseRoutingWire::ReplayOriginalTool => Self::ReplayOriginalTool,
             ResponseRoutingWire::UseAsToolResult => Self::UseAsToolResult,
             ResponseRoutingWire::PassToLLM => Self::PassToLLM,
         }
@@ -277,9 +273,7 @@ impl From<ResponseRoutingWire> for ResponseRouting {
 impl From<ResponseRouting> for ResponseRoutingWire {
     fn from(value: ResponseRouting) -> Self {
         match value {
-            ResponseRouting::ReplayOriginalTool => Self::ReplayOriginalTool {
-                state_patches: Vec::new(),
-            },
+            ResponseRouting::ReplayOriginalTool => Self::ReplayOriginalTool,
             ResponseRouting::UseAsToolResult => Self::UseAsToolResult,
             ResponseRouting::PassToLLM => Self::PassToLLM,
         }
@@ -299,17 +293,11 @@ mod tests {
     }
 
     #[test]
-    fn replay_original_tool_deserializes_legacy_state_patches_shape() {
+    fn replay_original_tool_deserializes_canonical_shape() {
         let value = json!({
-            "strategy": "replay_original_tool",
-            "state_patches": [{
-                "op": "set",
-                "path": ["__legacy", "state_patches", "call_1"],
-                "value": true
-            }]
+            "strategy": "replay_original_tool"
         });
-        let routing: ResponseRouting =
-            serde_json::from_value(value).expect("deserialize legacy replay routing");
+        let routing: ResponseRouting = serde_json::from_value(value).expect("deserialize routing");
         assert_eq!(routing, ResponseRouting::ReplayOriginalTool);
     }
 
