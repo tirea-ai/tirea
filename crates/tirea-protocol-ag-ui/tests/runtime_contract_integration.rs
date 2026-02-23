@@ -24,7 +24,7 @@ fn agui_context_pending_closes_text_and_emits_interaction_tool_events() {
     assert!(matches!(text_events[0], Event::TextMessageStart { .. }));
     assert!(matches!(text_events[1], Event::TextMessageContent { .. }));
 
-    let pending_events = ctx.on_agent_event(&AgentEvent::Pending {
+    let pending_events = ctx.on_agent_event(&AgentEvent::ToolCallSuspended {
         interaction: Interaction::new("int_1", "confirm")
             .with_message("Allow this action?")
             .with_parameters(serde_json::json!({ "approved": true })),
@@ -39,8 +39,8 @@ fn agui_context_pending_closes_text_and_emits_interaction_tool_events() {
 fn agui_context_interaction_requested_emits_tool_call_events_for_new_ids() {
     let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
 
-    // InteractionRequested with a never-seen ID → should emit TOOL_CALL_START/ARGS/END
-    let events = ctx.on_agent_event(&AgentEvent::InteractionRequested {
+    // ToolCallSuspendRequested with a never-seen ID → should emit TOOL_CALL_START/ARGS/END
+    let events = ctx.on_agent_event(&AgentEvent::ToolCallSuspendRequested {
         interaction: Interaction::new("new_call_1", "tool:PermissionConfirm")
             .with_message("Allow this?")
             .with_parameters(serde_json::json!({ "question": "ok?" })),
@@ -62,8 +62,8 @@ fn agui_context_interaction_requested_skips_already_emitted_tool_call_ids() {
         name: "copyToClipboard".to_string(),
     });
 
-    // Then: InteractionRequested for same ID → should be suppressed (already emitted)
-    let events = ctx.on_agent_event(&AgentEvent::InteractionRequested {
+    // Then: ToolCallSuspendRequested for same ID → should be suppressed (already emitted)
+    let events = ctx.on_agent_event(&AgentEvent::ToolCallSuspendRequested {
         interaction: Interaction::new("call_copy", "tool:copyToClipboard")
             .with_parameters(serde_json::json!({ "text": "hello" })),
     });
@@ -81,8 +81,8 @@ fn agui_context_interaction_requested_closes_open_text_stream() {
     });
     assert!(ctx.is_text_open());
 
-    // InteractionRequested for new ID with open text → closes text first
-    let events = ctx.on_agent_event(&AgentEvent::InteractionRequested {
+    // ToolCallSuspendRequested for new ID with open text → closes text first
+    let events = ctx.on_agent_event(&AgentEvent::ToolCallSuspendRequested {
         interaction: Interaction::new("new_int_1", "tool:PermissionConfirm")
             .with_parameters(serde_json::json!({})),
     });
@@ -242,7 +242,7 @@ fn agui_contract_hitl_roundtrip_maps_requested_and_response_ids() {
         .with_message("approve this write?")
         .with_parameters(json!({ "path": "notes.md" }));
 
-    let requested_events = ctx.on_agent_event(&AgentEvent::InteractionRequested {
+    let requested_events = ctx.on_agent_event(&AgentEvent::ToolCallSuspendRequested {
         interaction: interaction.clone(),
     });
     assert_eq!(requested_events.len(), 3);
@@ -250,8 +250,8 @@ fn agui_contract_hitl_roundtrip_maps_requested_and_response_ids() {
     assert!(matches!(requested_events[1], Event::ToolCallArgs { .. }));
     assert!(matches!(requested_events[2], Event::ToolCallEnd { .. }));
 
-    // InteractionResolved is intentionally consumed by runtime and not emitted as AG-UI event.
-    let resolved_events = ctx.on_agent_event(&AgentEvent::InteractionResolved {
+    // ToolCallResumed is intentionally consumed by runtime and not emitted as AG-UI event.
+    let resolved_events = ctx.on_agent_event(&AgentEvent::ToolCallResumed {
         interaction_id: "perm_1".to_string(),
         result: Value::Bool(true),
     });

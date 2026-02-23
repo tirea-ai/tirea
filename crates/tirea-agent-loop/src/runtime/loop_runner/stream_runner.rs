@@ -106,9 +106,9 @@ fn event_type_name(event: &AgentEvent) -> &'static str {
         AgentEvent::MessagesSnapshot { .. } => "messages_snapshot",
         AgentEvent::ActivitySnapshot { .. } => "activity_snapshot",
         AgentEvent::ActivityDelta { .. } => "activity_delta",
-        AgentEvent::InteractionRequested { .. } => "interaction_requested",
-        AgentEvent::InteractionResolved { .. } => "interaction_resolved",
-        AgentEvent::Pending { .. } => "pending",
+        AgentEvent::ToolCallSuspendRequested { .. } => "tool_call_suspend_requested",
+        AgentEvent::ToolCallResumed { .. } => "tool_call_resumed",
+        AgentEvent::ToolCallSuspended { .. } => "tool_call_suspended",
         AgentEvent::Error { .. } => "error",
     }
 }

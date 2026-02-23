@@ -95,14 +95,14 @@ pub enum AgentEvent {
     },
 
     /// Interaction request created.
-    InteractionRequested { interaction: Interaction },
+    ToolCallSuspendRequested { interaction: Interaction },
     /// Interaction resolution received.
-    InteractionResolved {
+    ToolCallResumed {
         interaction_id: String,
         result: Value,
     },
-    /// Pending interaction request.
-    Pending { interaction: Interaction },
+    /// Tool call suspended waiting for external resolution.
+    ToolCallSuspended { interaction: Interaction },
 
     /// Error occurred.
     Error { message: String },
@@ -138,9 +138,9 @@ impl AgentEvent {
             Self::MessagesSnapshot { .. } => AgentEventType::MessagesSnapshot,
             Self::ActivitySnapshot { .. } => AgentEventType::ActivitySnapshot,
             Self::ActivityDelta { .. } => AgentEventType::ActivityDelta,
-            Self::InteractionRequested { .. } => AgentEventType::InteractionRequested,
-            Self::InteractionResolved { .. } => AgentEventType::InteractionResolved,
-            Self::Pending { .. } => AgentEventType::Pending,
+            Self::ToolCallSuspendRequested { .. } => AgentEventType::ToolCallSuspendRequested,
+            Self::ToolCallResumed { .. } => AgentEventType::ToolCallResumed,
+            Self::ToolCallSuspended { .. } => AgentEventType::ToolCallSuspended,
             Self::Error { .. } => AgentEventType::Error,
         }
     }
@@ -166,9 +166,9 @@ enum AgentEventType {
     MessagesSnapshot,
     ActivitySnapshot,
     ActivityDelta,
-    InteractionRequested,
-    InteractionResolved,
-    Pending,
+    ToolCallSuspendRequested,
+    ToolCallResumed,
+    ToolCallSuspended,
     Error,
 }
 
@@ -385,18 +385,18 @@ struct ActivityDeltaData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct InteractionRequestedData {
+struct ToolCallSuspendRequestedData {
     interaction: Interaction,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct InteractionResolvedData {
+struct ToolCallResumedData {
     interaction_id: String,
     result: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct PendingData {
+struct ToolCallSuspendedData {
     interaction: Interaction,
 }
 
@@ -702,42 +702,42 @@ impl Serialize for AgentEvent {
                 })
                 .map_err(serde::ser::Error::custom)?,
             },
-            Self::InteractionRequested { interaction } => EventEnvelope {
-                event_type: AgentEventType::InteractionRequested,
+            Self::ToolCallSuspendRequested { interaction } => EventEnvelope {
+                event_type: AgentEventType::ToolCallSuspendRequested,
                 run_id: meta_run_id(),
                 thread_id: meta_thread_id(),
                 seq: meta_seq(),
                 timestamp_ms: meta_timestamp_ms(),
                 step_id: meta_step_id(),
-                data: to_data_value(&InteractionRequestedData {
+                data: to_data_value(&ToolCallSuspendRequestedData {
                     interaction: interaction.clone(),
                 })
                 .map_err(serde::ser::Error::custom)?,
             },
-            Self::InteractionResolved {
+            Self::ToolCallResumed {
                 interaction_id,
                 result,
             } => EventEnvelope {
-                event_type: AgentEventType::InteractionResolved,
+                event_type: AgentEventType::ToolCallResumed,
                 run_id: meta_run_id(),
                 thread_id: meta_thread_id(),
                 seq: meta_seq(),
                 timestamp_ms: meta_timestamp_ms(),
                 step_id: meta_step_id(),
-                data: to_data_value(&InteractionResolvedData {
+                data: to_data_value(&ToolCallResumedData {
                     interaction_id: interaction_id.clone(),
                     result: result.clone(),
                 })
                 .map_err(serde::ser::Error::custom)?,
             },
-            Self::Pending { interaction } => EventEnvelope {
-                event_type: AgentEventType::Pending,
+            Self::ToolCallSuspended { interaction } => EventEnvelope {
+                event_type: AgentEventType::ToolCallSuspended,
                 run_id: meta_run_id(),
                 thread_id: meta_thread_id(),
                 seq: meta_seq(),
                 timestamp_ms: meta_timestamp_ms(),
                 step_id: meta_step_id(),
-                data: to_data_value(&PendingData {
+                data: to_data_value(&ToolCallSuspendedData {
                     interaction: interaction.clone(),
                 })
                 .map_err(serde::ser::Error::custom)?,
@@ -923,22 +923,22 @@ impl<'de> Deserialize<'de> for AgentEvent {
                     patch: data.patch,
                 })
             }
-            AgentEventType::InteractionRequested => {
-                let data: InteractionRequestedData = from_data_value(envelope.data)?;
-                Ok(Self::InteractionRequested {
+            AgentEventType::ToolCallSuspendRequested => {
+                let data: ToolCallSuspendRequestedData = from_data_value(envelope.data)?;
+                Ok(Self::ToolCallSuspendRequested {
                     interaction: data.interaction,
                 })
             }
-            AgentEventType::InteractionResolved => {
-                let data: InteractionResolvedData = from_data_value(envelope.data)?;
-                Ok(Self::InteractionResolved {
+            AgentEventType::ToolCallResumed => {
+                let data: ToolCallResumedData = from_data_value(envelope.data)?;
+                Ok(Self::ToolCallResumed {
                     interaction_id: data.interaction_id,
                     result: data.result,
                 })
             }
-            AgentEventType::Pending => {
-                let data: PendingData = from_data_value(envelope.data)?;
-                Ok(Self::Pending {
+            AgentEventType::ToolCallSuspended => {
+                let data: ToolCallSuspendedData = from_data_value(envelope.data)?;
+                Ok(Self::ToolCallSuspended {
                     interaction: data.interaction,
                 })
             }

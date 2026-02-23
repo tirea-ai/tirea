@@ -294,11 +294,11 @@ impl AiSdkEncoder {
                 events.push(UIStreamEvent::data(DATA_EVENT_ACTIVITY_DELTA, payload));
                 events
             }
-            AgentEvent::Pending { .. } => Vec::new(),
-            AgentEvent::InteractionRequested { interaction } => {
+            AgentEvent::ToolCallSuspended { .. } => Vec::new(),
+            AgentEvent::ToolCallSuspendRequested { interaction } => {
                 self.map_interaction_requested(interaction)
             }
-            AgentEvent::InteractionResolved {
+            AgentEvent::ToolCallResumed {
                 interaction_id,
                 result,
             } => self.map_interaction_resolved(interaction_id, result),
@@ -750,7 +750,7 @@ mod tests {
     #[test]
     fn interaction_resolved_denied_emits_tool_output_denied() {
         let mut enc = AiSdkEncoder::new("run_deny".into());
-        let events = enc.on_agent_event(&AgentEvent::InteractionResolved {
+        let events = enc.on_agent_event(&AgentEvent::ToolCallResumed {
             interaction_id: "fc_perm_1".to_string(),
             result: json!({ "approved": false, "reason": "nope" }),
         });
@@ -767,7 +767,7 @@ mod tests {
     #[test]
     fn interaction_resolved_error_emits_tool_output_error() {
         let mut enc = AiSdkEncoder::new("run_err".into());
-        let events = enc.on_agent_event(&AgentEvent::InteractionResolved {
+        let events = enc.on_agent_event(&AgentEvent::ToolCallResumed {
             interaction_id: "ask_call_2".to_string(),
             result: json!({ "approved": false, "error": "frontend validation failed" }),
         });
@@ -784,7 +784,7 @@ mod tests {
     #[test]
     fn interaction_resolved_output_payload_emits_tool_output_available() {
         let mut enc = AiSdkEncoder::new("run_ask".into());
-        let events = enc.on_agent_event(&AgentEvent::InteractionResolved {
+        let events = enc.on_agent_event(&AgentEvent::ToolCallResumed {
             interaction_id: "ask_call_1".to_string(),
             result: json!({ "message": "blue" }),
         });

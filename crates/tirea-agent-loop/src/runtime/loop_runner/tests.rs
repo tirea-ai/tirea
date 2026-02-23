@@ -2892,7 +2892,7 @@ async fn test_stream_skip_inference_emits_run_start_and_finish() {
         .iter()
         .map(|e| match e {
             AgentEvent::RunStart { .. } => "RunStart",
-            AgentEvent::Pending { .. } => "Pending",
+            AgentEvent::ToolCallSuspended { .. } => "Pending",
             AgentEvent::RunFinish { .. } => "RunFinish",
             AgentEvent::Error { .. } => "Error",
             _ => "Other",
@@ -2945,7 +2945,7 @@ async fn test_stream_run_start_outbox_resolution_emits_after_run_start() {
     assert!(matches!(events.first(), Some(AgentEvent::RunStart { .. })));
     assert!(matches!(
         events.get(1),
-        Some(AgentEvent::InteractionResolved {
+        Some(AgentEvent::ToolCallResumed {
             interaction_id,
             result
         }) if interaction_id == "resolution_1" && result == &serde_json::Value::Bool(false)
@@ -2993,12 +2993,12 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
     assert!(matches!(events.first(), Some(AgentEvent::RunStart { .. })));
     assert!(matches!(
         events.get(1),
-        Some(AgentEvent::InteractionRequested { interaction })
+        Some(AgentEvent::ToolCallSuspendRequested { interaction })
             if interaction.action == "recover_agent_run"
     ));
     assert!(matches!(
         events.get(2),
-        Some(AgentEvent::Pending { interaction })
+        Some(AgentEvent::ToolCallSuspended { interaction })
             if interaction.action == "recover_agent_run"
     ));
     assert!(matches!(
@@ -3060,12 +3060,12 @@ async fn test_stream_termination_request_with_suspended_only_state_emits_pending
     assert!(matches!(events.first(), Some(AgentEvent::RunStart { .. })));
     assert!(matches!(
         events.get(1),
-        Some(AgentEvent::InteractionRequested { interaction })
+        Some(AgentEvent::ToolCallSuspendRequested { interaction })
             if interaction.action == "recover_agent_run"
     ));
     assert!(matches!(
         events.get(2),
-        Some(AgentEvent::Pending { interaction })
+        Some(AgentEvent::ToolCallSuspended { interaction })
             if interaction.action == "recover_agent_run"
     ));
     assert!(matches!(
@@ -3147,12 +3147,12 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
     assert!(
         events.iter().any(|e| matches!(
             e,
-            AgentEvent::InteractionResolved {
+            AgentEvent::ToolCallResumed {
                 interaction_id,
                 result
             } if interaction_id == "call_write" && result == &serde_json::Value::Bool(false)
         )),
-        "missing denied InteractionResolved event: {events:?}"
+        "missing denied ToolCallResumed event: {events:?}"
     );
 }
 
@@ -3247,12 +3247,12 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
     assert!(
         events.iter().any(|e| matches!(
             e,
-            AgentEvent::InteractionResolved {
+            AgentEvent::ToolCallResumed {
                 interaction_id,
                 result
             } if interaction_id == "call_1" && result == &serde_json::Value::Bool(true)
         )),
-        "missing approval InteractionResolved event: {events:?}"
+        "missing approval ToolCallResumed event: {events:?}"
     );
     assert!(
         events.iter().any(|e| matches!(
@@ -3510,10 +3510,10 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
     assert!(
         events.iter().any(|e| matches!(
             e,
-            AgentEvent::InteractionResolved { interaction_id, result }
+            AgentEvent::ToolCallResumed { interaction_id, result }
                 if interaction_id == "call_1" && result == &serde_json::Value::Bool(true)
         )),
-        "missing approval InteractionResolved event: {events:?}"
+        "missing approval ToolCallResumed event: {events:?}"
     );
     assert!(
         events.iter().any(|e| matches!(
@@ -3624,12 +3624,12 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
     assert!(
         events.iter().any(|e| matches!(
             e,
-            AgentEvent::InteractionResolved {
+            AgentEvent::ToolCallResumed {
                 interaction_id,
                 result
             } if interaction_id == "call_1" && result == &serde_json::Value::Bool(false)
         )),
-        "missing denied InteractionResolved event: {events:?}"
+        "missing denied ToolCallResumed event: {events:?}"
     );
     assert!(
         events.iter().any(|event| {
@@ -6380,8 +6380,8 @@ fn extract_run_finish_response(events: &[AgentEvent]) -> Option<String> {
 
 fn extract_requested_interaction(events: &[AgentEvent]) -> Option<Interaction> {
     events.iter().find_map(|e| match e {
-        AgentEvent::InteractionRequested { interaction } => Some(interaction.clone()),
-        AgentEvent::Pending { interaction } => Some(interaction.clone()),
+        AgentEvent::ToolCallSuspendRequested { interaction } => Some(interaction.clone()),
+        AgentEvent::ToolCallSuspended { interaction } => Some(interaction.clone()),
         _ => None,
     })
 }
@@ -6929,7 +6929,7 @@ async fn test_stream_parallel_multiple_pending_emits_all_suspended() {
     assert_eq!(
         events
             .iter()
-            .filter(|e| matches!(e, AgentEvent::Pending { .. }))
+            .filter(|e| matches!(e, AgentEvent::ToolCallSuspended { .. }))
             .count(),
         2,
         "each suspended tool should emit a Pending event"
@@ -9827,7 +9827,7 @@ async fn test_stream_mixed_pending_and_completed_tools_continues_loop() {
     // Exactly one Pending event should be emitted.
     let pending_count = events
         .iter()
-        .filter(|e| matches!(e, AgentEvent::Pending { .. }))
+        .filter(|e| matches!(e, AgentEvent::ToolCallSuspended { .. }))
         .count();
     assert_eq!(
         pending_count, 1,
@@ -10474,8 +10474,8 @@ async fn test_stream_decision_channel_ignores_unknown_interaction_id() {
     assert!(
         !events
             .iter()
-            .any(|event| matches!(event, AgentEvent::InteractionResolved { .. })),
-        "unknown decision should not emit InteractionResolved"
+            .any(|event| matches!(event, AgentEvent::ToolCallResumed { .. })),
+        "unknown decision should not emit ToolCallResumed"
     );
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
     assert!(
@@ -10860,9 +10860,9 @@ async fn test_run_loop_stream_decision_channel_emits_resolution_and_replay() {
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AgentEvent::InteractionResolved { interaction_id, .. } if interaction_id == "call_pending"
+            AgentEvent::ToolCallResumed { interaction_id, .. } if interaction_id == "call_pending"
         )),
-        "stream should emit InteractionResolved for call_pending: {events:?}"
+        "stream should emit ToolCallResumed for call_pending: {events:?}"
     );
     assert!(
         events.iter().any(|event| matches!(
@@ -11129,7 +11129,7 @@ async fn test_stream_decision_channel_buffers_early_response_for_all_suspended_t
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AgentEvent::InteractionResolved { interaction_id, .. } if interaction_id == "call_pending"
+            AgentEvent::ToolCallResumed { interaction_id, .. } if interaction_id == "call_pending"
         )),
         "queued decision should resolve once pending call is materialized: {events:?}"
     );
@@ -11228,7 +11228,7 @@ async fn test_stream_decision_channel_drains_while_inference_stream_is_running()
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AgentEvent::InteractionResolved { interaction_id, .. } if interaction_id == "call_pending"
+            AgentEvent::ToolCallResumed { interaction_id, .. } if interaction_id == "call_pending"
         )),
         "decision should be drained while inference stream is still active: {events:?}"
     );

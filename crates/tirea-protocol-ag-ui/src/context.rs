@@ -35,7 +35,7 @@ pub struct AgUiEventContext {
     /// Last emitted state snapshot, used to compute RFC 6902 deltas.
     last_state: Option<Value>,
     /// Tool call IDs already emitted via normal LLM stream (ToolCallStart).
-    /// Used to avoid emitting duplicate TOOL_CALL events when InteractionRequested
+    /// Used to avoid emitting duplicate TOOL_CALL events when ToolCallSuspendRequested
     /// arrives for a tool call that was already streamed by the LLM.
     emitted_tool_call_ids: HashSet<String>,
     /// Tool call IDs that have received at least one ToolCallDelta (args chunk).
@@ -183,14 +183,14 @@ impl AgUiEventContext {
             AgentEvent::RunFinish { .. } | AgentEvent::Error { .. } => {
                 self.stopped = true;
             }
-            AgentEvent::InteractionResolved { .. } => {
+            AgentEvent::ToolCallResumed { .. } => {
                 return vec![];
             }
-            // InteractionRequested: emit TOOL_CALL events for interactions whose
+            // ToolCallSuspendRequested: emit TOOL_CALL events for interactions whose
             // tool call ID hasn't been seen yet (e.g. multi-round replays that
             // produce new suspended interactions, or permission interactions where
             // the frontend tool call was never streamed by the LLM).
-            AgentEvent::InteractionRequested { interaction } => {
+            AgentEvent::ToolCallSuspendRequested { interaction } => {
                 if self.emitted_tool_call_ids.contains(&interaction.id) {
                     return vec![];
                 }
@@ -201,7 +201,7 @@ impl AgUiEventContext {
             }
             // Pending: close current text stream.
             // Suspended-call interaction details are communicated via STATE_SNAPSHOT.
-            AgentEvent::Pending { .. } => {
+            AgentEvent::ToolCallSuspended { .. } => {
                 return self.close_open_streams();
             }
             _ => {}
@@ -379,7 +379,7 @@ impl AgUiEventContext {
             }
 
             // Pending is handled above (early return).
-            AgentEvent::Pending { .. } => unreachable!(),
+            AgentEvent::ToolCallSuspended { .. } => unreachable!(),
 
             AgentEvent::Error { message } => {
                 let mut events = self.close_reasoning_stream();
@@ -412,7 +412,7 @@ impl AgUiEventContext {
                     Some(false),
                 )]
             }
-            AgentEvent::InteractionRequested { .. } | AgentEvent::InteractionResolved { .. } => {
+            AgentEvent::ToolCallSuspendRequested { .. } | AgentEvent::ToolCallResumed { .. } => {
                 unreachable!()
             }
         }

@@ -50,8 +50,8 @@ fn collect_kinds(events: &[AgentEvent]) -> Vec<&'static str> {
             AgentEvent::ToolCallDone { .. } => "ToolCallDone",
             AgentEvent::ToolCallReady { .. } => "ToolCallReady",
             AgentEvent::ToolCallDelta { .. } => "ToolCallDelta",
-            AgentEvent::Pending { .. } => "Pending",
-            AgentEvent::InteractionResolved { .. } => "InteractionResolved",
+            AgentEvent::ToolCallSuspended { .. } => "ToolCallSuspended",
+            AgentEvent::ToolCallResumed { .. } => "ToolCallResumed",
             AgentEvent::Error { .. } => "Error",
             AgentEvent::StateDelta { .. } => "StateDelta",
             AgentEvent::StateSnapshot { .. } => "StateSnapshot",
@@ -63,7 +63,7 @@ fn collect_kinds(events: &[AgentEvent]) -> Vec<&'static str> {
             AgentEvent::StepStart { .. } => "StepStart",
             AgentEvent::StepEnd => "StepEnd",
             AgentEvent::InferenceComplete { .. } => "InferenceComplete",
-            AgentEvent::InteractionRequested { .. } => "InteractionRequested",
+            AgentEvent::ToolCallSuspendRequested { .. } => "ToolCallSuspendRequested",
         })
         .collect()
 }

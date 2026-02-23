@@ -503,10 +503,10 @@ pub(super) async fn complete_step_after_inference(
 
 pub(super) fn interaction_requested_pending_events(interaction: &Interaction) -> [AgentEvent; 2] {
     [
-        AgentEvent::InteractionRequested {
+        AgentEvent::ToolCallSuspendRequested {
             interaction: interaction.clone(),
         },
-        AgentEvent::Pending {
+        AgentEvent::ToolCallSuspended {
             interaction: interaction.clone(),
         },
     ]
@@ -518,7 +518,7 @@ pub(super) fn interaction_requested_pending_events(interaction: &Interaction) ->
 /// `ToolCallReady` events using the frontend invocation's identity. This makes
 /// frontend tools appear as regular tool calls in the event stream.
 ///
-/// Falls back to legacy `InteractionRequested` + `Pending` events when no
+/// Falls back to legacy `ToolCallSuspendRequested` + `ToolCallSuspended` events when no
 /// `FrontendToolInvocation` is provided.
 pub(super) fn pending_tool_events(
     interaction: &Interaction,
@@ -688,7 +688,7 @@ async fn drain_resume_decisions_and_replay(
         replayed = true;
         decisions_to_clear.push(call_id.clone());
         let decision_result = decision_result_value(&decision);
-        events.push(AgentEvent::InteractionResolved {
+        events.push(AgentEvent::ToolCallResumed {
             interaction_id: suspended_call.interaction.id.clone(),
             result: decision_result.clone(),
         });

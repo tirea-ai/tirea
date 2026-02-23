@@ -1729,7 +1729,7 @@ async fn run_stream_exposes_decision_sender_and_replays_suspended_calls() {
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AgentEvent::InteractionResolved { interaction_id, .. } if interaction_id == "call_pending"
+            AgentEvent::ToolCallResumed { interaction_id, .. } if interaction_id == "call_pending"
         )),
         "run stream should emit interaction resolution: {events:?}"
     );
