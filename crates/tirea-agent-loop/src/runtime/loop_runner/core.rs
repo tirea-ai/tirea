@@ -199,33 +199,6 @@ pub(super) fn clear_suspended_call(
     Ok(ctx.take_tracked_patch("agent_loop"))
 }
 
-/// Backward-compatible alias: set single pending interaction via suspended_calls.
-#[cfg(test)]
-pub(super) fn set_agent_pending_interaction(
-    state: &Value,
-    interaction: crate::contracts::Interaction,
-    frontend_invocation: Option<crate::contracts::FrontendToolInvocation>,
-) -> Result<TrackedPatch, AgentLoopError> {
-    // Create a suspended call from the legacy single-slot data.
-    let call_id = frontend_invocation
-        .as_ref()
-        .map(|fi| fi.call_id.clone())
-        .unwrap_or_else(|| interaction.id.clone());
-    let tool_name = frontend_invocation
-        .as_ref()
-        .map(|fi| fi.tool_name.clone())
-        .unwrap_or_default();
-    set_agent_suspended_calls(
-        state,
-        vec![SuspendedCall {
-            call_id,
-            tool_name,
-            interaction,
-            frontend_invocation,
-        }],
-    )
-}
-
 #[allow(dead_code)]
 pub(super) fn suspended_calls_from_ctx(run_ctx: &RunContext) -> HashMap<String, SuspendedCall> {
     run_ctx.suspended_calls()

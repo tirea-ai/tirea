@@ -370,6 +370,30 @@ fn suspend_frontend_tool(
     Some(call_id)
 }
 
+fn set_single_suspended_call(
+    state: &Value,
+    interaction: Interaction,
+    frontend_invocation: Option<crate::contracts::FrontendToolInvocation>,
+) -> Result<tirea_state::TrackedPatch, AgentLoopError> {
+    let call_id = frontend_invocation
+        .as_ref()
+        .map(|fi| fi.call_id.clone())
+        .unwrap_or_else(|| interaction.id.clone());
+    let tool_name = frontend_invocation
+        .as_ref()
+        .map(|fi| fi.tool_name.clone())
+        .unwrap_or_default();
+    set_agent_suspended_calls(
+        state,
+        vec![crate::contracts::SuspendedCall {
+            call_id,
+            tool_name,
+            interaction,
+            frontend_invocation,
+        }],
+    )
+}
+
 struct EchoTool;
 
 #[async_trait]
@@ -2641,7 +2665,7 @@ fn test_execute_tools_with_config_preserves_unresolved_suspended_calls_on_succes
     rt.block_on(async {
         // Seed a session with a previously persisted pending interaction.
         let base_state = json!({});
-        let pending_patch = set_agent_pending_interaction(
+        let pending_patch = set_single_suspended_call(
             &base_state,
             Interaction::new("confirm_1", "confirm").with_message("ok"),
             None,
@@ -2944,7 +2968,7 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
                 return;
             }
             let state = step.snapshot();
-            let patch = set_agent_pending_interaction(
+            let patch = set_single_suspended_call(
                 &state,
                 Interaction::new("agent_recovery_run-1", "recover_agent_run")
                     .with_message("resume?"),
@@ -4032,7 +4056,7 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
                 return;
             }
             let state = step.snapshot();
-            let patch = set_agent_pending_interaction(
+            let patch = set_single_suspended_call(
                 &state,
                 Interaction::new("agent_recovery_run-1", "recover_agent_run")
                     .with_message("resume?"),
@@ -5493,7 +5517,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
                 return;
             }
             let state = step.snapshot();
-            let patch = set_agent_pending_interaction(
+            let patch = set_single_suspended_call(
                 &state,
                 Interaction::new("golden_resume_1", "recover_agent_run").with_message("resume me"),
                 None,
@@ -5569,7 +5593,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
 #[tokio::test]
 async fn test_golden_run_loop_and_stream_no_plugins_pending_state_alignment() {
     let base_state = json!({});
-    let pending_patch = set_agent_pending_interaction(
+    let pending_patch = set_single_suspended_call(
         &base_state,
         Interaction::new("leftover_confirm", "confirm").with_message("stale pending"),
         None,
@@ -8179,7 +8203,7 @@ async fn test_run_step_skip_inference_with_pending_state_returns_pending_interac
                 return;
             }
             let state = step.snapshot();
-            let patch = set_agent_pending_interaction(
+            let patch = set_single_suspended_call(
                 &state,
                 Interaction::new("agent_recovery_step-1", "recover_agent_run")
                     .with_message("resume step?"),
@@ -9948,7 +9972,7 @@ async fn test_no_plugins_loop_ignores_pending() {
 
     // Seed state with a pre-existing pending interaction.
     let base_state = json!({});
-    let pending_patch = set_agent_pending_interaction(
+    let pending_patch = set_single_suspended_call(
         &base_state,
         Interaction::new("leftover_confirm", "confirm").with_message("stale pending"),
         None,

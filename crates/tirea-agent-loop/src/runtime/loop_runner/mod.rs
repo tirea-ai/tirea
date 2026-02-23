@@ -90,8 +90,6 @@ pub use config::{AgentConfig, GenaiLlmExecutor, LlmRetryPolicy};
 pub use config::{StepToolInput, StepToolProvider, StepToolSnapshot};
 #[cfg(test)]
 use core::build_messages;
-#[cfg(test)]
-use core::set_agent_pending_interaction;
 use core::{
     build_request_for_filtered_tools, clear_resume_decisions, clear_suspended_call,
     inference_inputs_from_step, resume_decisions_from_ctx, set_agent_suspended_calls,
