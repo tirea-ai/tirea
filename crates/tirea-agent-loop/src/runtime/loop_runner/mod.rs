@@ -59,7 +59,7 @@ use crate::contracts::tool::{Tool, ToolResult};
 use crate::contracts::RunContext;
 use crate::contracts::StopReason;
 use crate::contracts::{
-    AgentEvent, FrontendToolInvocation, RunAction, SuspendedCall, Suspension, TerminationReason,
+    AgentEvent, FrontendToolInvocation, RunAction, SuspendedCall, TerminationReason,
     ToolCallDecision,
 };
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
@@ -477,44 +477,22 @@ pub(super) async fn complete_step_after_inference(
     })
 }
 
-pub(super) fn suspension_requested_pending_events(suspension: &Suspension) -> [AgentEvent; 2] {
-    [
-        AgentEvent::ToolCallSuspendRequested {
-            suspension: suspension.clone(),
-        },
-        AgentEvent::ToolCallSuspended {
-            suspension: suspension.clone(),
-        },
-    ]
-}
-
 /// Emit events for a pending frontend tool invocation.
 ///
-/// When a `FrontendToolInvocation` is available, emits standard `ToolCallStart` +
-/// `ToolCallReady` events using the frontend invocation's identity. This makes
-/// frontend tools appear as regular tool calls in the event stream.
-///
-/// Falls back to legacy `ToolCallSuspendRequested` + `ToolCallSuspended` events when no
-/// `FrontendToolInvocation` is provided.
-pub(super) fn pending_tool_events(
-    suspension: &Suspension,
-    invocation: Option<&FrontendToolInvocation>,
-) -> Vec<AgentEvent> {
-    if let Some(inv) = invocation {
-        vec![
-            AgentEvent::ToolCallStart {
-                id: inv.call_id.clone(),
-                name: inv.tool_name.clone(),
-            },
-            AgentEvent::ToolCallReady {
-                id: inv.call_id.clone(),
-                name: inv.tool_name.clone(),
-                arguments: inv.arguments.clone(),
-            },
-        ]
-    } else {
-        suspension_requested_pending_events(suspension).to_vec()
-    }
+/// Emits standard `ToolCallStart` + `ToolCallReady` events using the frontend
+/// invocation's identity, so frontend tools appear as regular tool calls.
+pub(super) fn pending_tool_events(invocation: &FrontendToolInvocation) -> Vec<AgentEvent> {
+    vec![
+        AgentEvent::ToolCallStart {
+            id: invocation.call_id.clone(),
+            name: invocation.tool_name.clone(),
+        },
+        AgentEvent::ToolCallReady {
+            id: invocation.call_id.clone(),
+            name: invocation.tool_name.clone(),
+            arguments: invocation.arguments.clone(),
+        },
+    ]
 }
 
 pub(super) fn has_suspended_calls(run_ctx: &RunContext) -> bool {
@@ -540,7 +518,7 @@ pub(super) fn suspended_call_pending_events(run_ctx: &RunContext) -> Vec<AgentEv
     calls.sort_by(|left, right| left.call_id.cmp(&right.call_id));
     calls
         .into_iter()
-        .flat_map(|call| pending_tool_events(&call.suspension, call.invocation.as_ref()))
+        .flat_map(|call| pending_tool_events(&call.invocation))
         .collect()
 }
 
@@ -558,7 +536,7 @@ pub(super) fn suspended_call_pending_events_for_ids(
     calls.sort_by(|left, right| left.call_id.cmp(&right.call_id));
     calls
         .into_iter()
-        .flat_map(|call| pending_tool_events(&call.suspension, call.invocation.as_ref()))
+        .flat_map(|call| pending_tool_events(&call.invocation))
         .collect()
 }
 
@@ -800,10 +778,7 @@ async fn drain_resume_decisions_and_replay(
                         state_changed = true;
                         run_ctx.add_thread_patch(patch);
                     }
-                    for event in pending_tool_events(
-                        &next_suspended_call.suspension,
-                        next_suspended_call.invocation.as_ref(),
-                    ) {
+                    for event in pending_tool_events(&next_suspended_call.invocation) {
                         events.push(event);
                     }
                     if next_suspended_call.call_id != call_id {
@@ -999,7 +974,7 @@ fn find_tool_call_in_messages(run_ctx: &RunContext, call_id: &str) -> Option<Too
 }
 
 fn replay_tool_call_for_resolution(
-    run_ctx: &RunContext,
+    _run_ctx: &RunContext,
     suspended_call: &SuspendedCall,
     decision: &ToolCallDecision,
 ) -> Option<ToolCall> {
@@ -1007,50 +982,37 @@ fn replay_tool_call_for_resolution(
         return None;
     }
 
-    if let Some(invocation) = suspended_call.invocation.as_ref() {
-        match invocation.routing {
-            crate::contracts::ResponseRouting::ReplayOriginalTool => match &invocation.origin {
-                crate::contracts::InvocationOrigin::ToolCallIntercepted {
-                    backend_call_id,
-                    backend_tool_name,
-                    backend_arguments,
-                } => {
-                    return Some(ToolCall::new(
-                        backend_call_id.clone(),
-                        backend_tool_name.clone(),
-                        backend_arguments.clone(),
-                    ));
-                }
-                crate::contracts::InvocationOrigin::PluginInitiated { .. } => {
-                    return Some(ToolCall::new(
-                        invocation.call_id.clone(),
-                        invocation.tool_name.clone(),
-                        invocation.arguments.clone(),
-                    ));
-                }
-            },
-            crate::contracts::ResponseRouting::UseAsToolResult
-            | crate::contracts::ResponseRouting::PassToLLM => {
+    let invocation = &suspended_call.invocation;
+    match invocation.routing {
+        crate::contracts::ResponseRouting::ReplayOriginalTool => match &invocation.origin {
+            crate::contracts::InvocationOrigin::ToolCallIntercepted {
+                backend_call_id,
+                backend_tool_name,
+                backend_arguments,
+            } => {
+                return Some(ToolCall::new(
+                    backend_call_id.clone(),
+                    backend_tool_name.clone(),
+                    backend_arguments.clone(),
+                ));
+            }
+            crate::contracts::InvocationOrigin::PluginInitiated { .. } => {
                 return Some(ToolCall::new(
                     invocation.call_id.clone(),
                     invocation.tool_name.clone(),
-                    normalize_frontend_tool_result(&decision.result, &invocation.arguments),
+                    invocation.arguments.clone(),
                 ));
             }
+        },
+        crate::contracts::ResponseRouting::UseAsToolResult
+        | crate::contracts::ResponseRouting::PassToLLM => {
+            return Some(ToolCall::new(
+                invocation.call_id.clone(),
+                invocation.tool_name.clone(),
+                normalize_frontend_tool_result(&decision.result, &invocation.arguments),
+            ));
         }
     }
-
-    find_tool_call_in_messages(run_ctx, &suspended_call.call_id).or_else(|| {
-        if suspended_call.tool_name.is_empty() {
-            None
-        } else {
-            Some(ToolCall::new(
-                suspended_call.call_id.clone(),
-                suspended_call.tool_name.clone(),
-                suspended_call.suspension.parameters.clone(),
-            ))
-        }
-    })
 }
 
 fn resume_decision_from_response(response: &ToolCallDecision) -> ResumeDecision {
@@ -1083,10 +1045,7 @@ pub(super) fn resolve_suspended_call(
                 .values()
                 .find(|call| {
                     call.suspension.id == response.target_id
-                        || call
-                            .invocation
-                            .as_ref()
-                            .is_some_and(|inv| inv.call_id == response.target_id)
+                        || call.invocation.call_id == response.target_id
                 })
                 .cloned()
         });

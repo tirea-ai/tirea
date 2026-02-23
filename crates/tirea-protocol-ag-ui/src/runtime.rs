@@ -498,7 +498,7 @@ mod tests {
             .tool
             .as_ref()
             .and_then(|t| t.suspend_ticket.as_ref())
-            .and_then(|ticket| ticket.invocation.as_ref())
+            .map(|ticket| &ticket.invocation)
             .expect("pending frontend invocation should exist");
         assert_eq!(inv.call_id, "call_1");
         assert_eq!(inv.tool_name, "copyToClipboard");

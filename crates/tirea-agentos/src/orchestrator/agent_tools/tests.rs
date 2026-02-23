@@ -1180,6 +1180,18 @@ async fn recovery_plugin_does_not_override_existing_suspended_interaction() {
                         "suspension": {
                             "id": "existing_1",
                             "action": "confirm",
+                        },
+                        "invocation": {
+                            "call_id": "existing_1",
+                            "tool_name": "confirm",
+                            "arguments": {},
+                            "origin": {
+                                "type": "plugin_initiated",
+                                "plugin_id": "agent_recovery"
+                            },
+                            "routing": {
+                                "strategy": "pass_to_llm"
+                            }
                         }
                     }
                 }

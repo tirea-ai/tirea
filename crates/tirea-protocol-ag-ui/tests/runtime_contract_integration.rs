@@ -2,7 +2,7 @@
 
 use serde_json::{json, Value};
 use tirea_contract::{
-    AgentEvent, ProtocolInputAdapter, Role, Suspension, TerminationReason, ToolResult,
+    AgentEvent, ProtocolInputAdapter, Role, TerminationReason, ToolResult,
 };
 use tirea_protocol_ag_ui::{AgUiEventContext, AgUiInputAdapter, Event, Message, RunAgentInput};
 
@@ -24,55 +24,71 @@ fn agui_context_pending_closes_text_and_emits_interaction_tool_events() {
     assert!(matches!(text_events[0], Event::TextMessageStart { .. }));
     assert!(matches!(text_events[1], Event::TextMessageContent { .. }));
 
-    let pending_events = ctx.on_agent_event(&AgentEvent::ToolCallSuspended {
-        suspension: Suspension::new("int_1", "confirm")
-            .with_message("Allow this action?")
-            .with_parameters(serde_json::json!({ "approved": true })),
+    let pending_start_events = ctx.on_agent_event(&AgentEvent::ToolCallStart {
+        id: "int_1".to_string(),
+        name: "PermissionConfirm".to_string(),
+    });
+    let pending_ready_events = ctx.on_agent_event(&AgentEvent::ToolCallReady {
+        id: "int_1".to_string(),
+        name: "PermissionConfirm".to_string(),
+        arguments: serde_json::json!({ "approved": true }),
     });
 
-    // Pending closes text stream but no longer emits tool call events
-    assert_eq!(pending_events.len(), 1);
-    assert!(matches!(pending_events[0], Event::TextMessageEnd { .. }));
+    // Pending is represented by standard tool call events.
+    assert_eq!(pending_start_events.len(), 2);
+    assert!(matches!(pending_start_events[0], Event::TextMessageEnd { .. }));
+    assert!(matches!(pending_start_events[1], Event::ToolCallStart { .. }));
+    assert_eq!(pending_ready_events.len(), 2);
+    assert!(matches!(pending_ready_events[0], Event::ToolCallArgs { .. }));
+    assert!(matches!(pending_ready_events[1], Event::ToolCallEnd { .. }));
 }
 
 #[test]
-fn agui_context_interaction_requested_emits_tool_call_events_for_new_ids() {
+fn agui_context_tool_call_ready_emits_args_and_end_when_no_deltas() {
     let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
 
-    // ToolCallSuspendRequested with a never-seen ID → should emit TOOL_CALL_START/ARGS/END
-    let events = ctx.on_agent_event(&AgentEvent::ToolCallSuspendRequested {
-        suspension: Suspension::new("new_call_1", "tool:PermissionConfirm")
-            .with_message("Allow this?")
-            .with_parameters(serde_json::json!({ "question": "ok?" })),
+    let start_events = ctx.on_agent_event(&AgentEvent::ToolCallStart {
+        id: "new_call_1".to_string(),
+        name: "PermissionConfirm".to_string(),
+    });
+    let ready_events = ctx.on_agent_event(&AgentEvent::ToolCallReady {
+        id: "new_call_1".to_string(),
+        name: "PermissionConfirm".to_string(),
+        arguments: serde_json::json!({ "question": "ok?" }),
     });
 
-    assert_eq!(events.len(), 3);
-    assert!(matches!(events[0], Event::ToolCallStart { .. }));
-    assert!(matches!(events[1], Event::ToolCallArgs { .. }));
-    assert!(matches!(events[2], Event::ToolCallEnd { .. }));
+    assert_eq!(start_events.len(), 1);
+    assert!(matches!(start_events[0], Event::ToolCallStart { .. }));
+    assert_eq!(ready_events.len(), 2);
+    assert!(matches!(ready_events[0], Event::ToolCallArgs { .. }));
+    assert!(matches!(ready_events[1], Event::ToolCallEnd { .. }));
 }
 
 #[test]
-fn agui_context_interaction_requested_skips_already_emitted_tool_call_ids() {
+fn agui_context_tool_call_ready_skips_args_when_delta_already_seen() {
     let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
 
-    // First: LLM streams a ToolCallStart for "call_copy"
     let _ = ctx.on_agent_event(&AgentEvent::ToolCallStart {
         id: "call_copy".to_string(),
         name: "copyToClipboard".to_string(),
     });
-
-    // Then: ToolCallSuspendRequested for same ID → should be suppressed (already emitted)
-    let events = ctx.on_agent_event(&AgentEvent::ToolCallSuspendRequested {
-        suspension: Suspension::new("call_copy", "tool:copyToClipboard")
-            .with_parameters(serde_json::json!({ "text": "hello" })),
+    let _ = ctx.on_agent_event(&AgentEvent::ToolCallDelta {
+        id: "call_copy".to_string(),
+        args_delta: r#"{"text":"hello"}"#.to_string(),
     });
 
-    assert!(events.is_empty());
+    let events = ctx.on_agent_event(&AgentEvent::ToolCallReady {
+        id: "call_copy".to_string(),
+        name: "copyToClipboard".to_string(),
+        arguments: serde_json::json!({ "text": "hello" }),
+    });
+
+    assert_eq!(events.len(), 1);
+    assert!(matches!(events[0], Event::ToolCallEnd { .. }));
 }
 
 #[test]
-fn agui_context_interaction_requested_closes_open_text_stream() {
+fn agui_context_tool_call_start_closes_open_text_stream() {
     let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
 
     // Start text
@@ -81,14 +97,14 @@ fn agui_context_interaction_requested_closes_open_text_stream() {
     });
     assert!(ctx.is_text_open());
 
-    // ToolCallSuspendRequested for new ID with open text → closes text first
-    let events = ctx.on_agent_event(&AgentEvent::ToolCallSuspendRequested {
-        suspension: Suspension::new("new_int_1", "tool:PermissionConfirm")
-            .with_parameters(serde_json::json!({})),
+    // ToolCallStart for a pending frontend tool closes text first.
+    let events = ctx.on_agent_event(&AgentEvent::ToolCallStart {
+        id: "new_int_1".to_string(),
+        name: "PermissionConfirm".to_string(),
     });
 
-    // TEXT_MESSAGE_END + TOOL_CALL_START + TOOL_CALL_ARGS + TOOL_CALL_END
-    assert_eq!(events.len(), 4);
+    // TEXT_MESSAGE_END + TOOL_CALL_START
+    assert_eq!(events.len(), 2);
     assert!(matches!(events[0], Event::TextMessageEnd { .. }));
     assert!(matches!(events[1], Event::ToolCallStart { .. }));
     assert!(!ctx.is_text_open());
@@ -238,17 +254,20 @@ fn agui_contract_terminal_event_closes_text_and_suppresses_followup_events() {
 #[test]
 fn agui_contract_hitl_roundtrip_maps_requested_and_response_ids() {
     let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
-    let interaction = Suspension::new("perm_1", "tool:confirm_write")
-        .with_message("approve this write?")
-        .with_parameters(json!({ "path": "notes.md" }));
-
-    let requested_events = ctx.on_agent_event(&AgentEvent::ToolCallSuspendRequested {
-        suspension: interaction.clone(),
+    let requested_start_events = ctx.on_agent_event(&AgentEvent::ToolCallStart {
+        id: "perm_1".to_string(),
+        name: "confirm_write".to_string(),
     });
-    assert_eq!(requested_events.len(), 3);
-    assert!(matches!(requested_events[0], Event::ToolCallStart { .. }));
-    assert!(matches!(requested_events[1], Event::ToolCallArgs { .. }));
-    assert!(matches!(requested_events[2], Event::ToolCallEnd { .. }));
+    let requested_ready_events = ctx.on_agent_event(&AgentEvent::ToolCallReady {
+        id: "perm_1".to_string(),
+        name: "confirm_write".to_string(),
+        arguments: json!({ "path": "notes.md" }),
+    });
+    assert_eq!(requested_start_events.len(), 1);
+    assert!(matches!(requested_start_events[0], Event::ToolCallStart { .. }));
+    assert_eq!(requested_ready_events.len(), 2);
+    assert!(matches!(requested_ready_events[0], Event::ToolCallArgs { .. }));
+    assert!(matches!(requested_ready_events[1], Event::ToolCallEnd { .. }));
 
     // ToolCallResumed is intentionally consumed by runtime and not emitted as AG-UI event.
     let resolved_events = ctx.on_agent_event(&AgentEvent::ToolCallResumed {

@@ -106,9 +106,7 @@ fn event_type_name(event: &AgentEvent) -> &'static str {
         AgentEvent::MessagesSnapshot { .. } => "messages_snapshot",
         AgentEvent::ActivitySnapshot { .. } => "activity_snapshot",
         AgentEvent::ActivityDelta { .. } => "activity_delta",
-        AgentEvent::ToolCallSuspendRequested { .. } => "tool_call_suspend_requested",
         AgentEvent::ToolCallResumed { .. } => "tool_call_resumed",
-        AgentEvent::ToolCallSuspended { .. } => "tool_call_suspended",
         AgentEvent::Error { .. } => "error",
     }
 }
@@ -121,14 +119,6 @@ struct PendingEventKey {
 
 fn pending_event_key(event: &AgentEvent) -> Option<PendingEventKey> {
     match event {
-        AgentEvent::ToolCallSuspendRequested { suspension } => Some(PendingEventKey {
-            kind: "suspend_requested",
-            id: suspension.id.clone(),
-        }),
-        AgentEvent::ToolCallSuspended { suspension } => Some(PendingEventKey {
-            kind: "suspended",
-            id: suspension.id.clone(),
-        }),
         AgentEvent::ToolCallStart { id, .. } => Some(PendingEventKey {
             kind: "tool_start",
             id: id.clone(),
@@ -770,15 +760,13 @@ pub(super) fn run_stream(
                     // Other routings (e.g. ReplayOriginalTool for PermissionConfirm)
                     // use a new fc_xxx call_id that the LLM never streamed, so we
                     // MUST emit ToolCallStart/Ready here for the frontend to see it.
-                    if let Some(ref inv) = suspended_call.invocation {
-                        if matches!(inv.routing, crate::contracts::event::suspension::ResponseRouting::UseAsToolResult) {
-                            continue;
-                        }
-                    }
-                    for event in pending_tool_events(
-                        &suspended_call.suspension,
-                        suspended_call.invocation.as_ref(),
+                    if matches!(
+                        suspended_call.invocation.routing,
+                        crate::contracts::event::suspension::ResponseRouting::UseAsToolResult
                     ) {
+                        continue;
+                    }
+                    for event in pending_tool_events(&suspended_call.invocation) {
                         yield emitter.emit_existing(event);
                     }
                 }

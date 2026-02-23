@@ -68,6 +68,7 @@ pub trait AgentPlugin: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::suspension::{FrontendToolInvocation, InvocationOrigin, ResponseRouting};
     use crate::event::Suspension;
     use crate::plugin::phase::{StepContext, SuspendTicket, ToolContext};
     use crate::testing::TestFixture;
@@ -88,6 +89,24 @@ mod tests {
     async fn run_after_inference(plugin: &dyn AgentPlugin, step: &mut StepContext<'_>) {
         let mut ctx = AfterInferenceContext::new(step);
         plugin.after_inference(&mut ctx).await;
+    }
+
+    fn test_suspend_ticket(interaction: Suspension) -> SuspendTicket {
+        let tool_name = interaction
+            .action
+            .strip_prefix("tool:")
+            .unwrap_or("TestSuspend")
+            .to_string();
+        let invocation = FrontendToolInvocation::new(
+            interaction.id.clone(),
+            tool_name,
+            interaction.parameters.clone(),
+            InvocationOrigin::PluginInitiated {
+                plugin_id: "contract_tests".to_string(),
+            },
+            ResponseRouting::PassToLLM,
+        );
+        SuspendTicket::from_invocation(invocation)
     }
 
     async fn run_before_tool_execute(plugin: &dyn AgentPlugin, step: &mut StepContext<'_>) {
@@ -215,7 +234,7 @@ mod tests {
         async fn before_tool_execute(&self, ctx: &mut BeforeToolExecuteContext<'_, '_>) {
             if let Some(tool_id) = ctx.tool_name() {
                 if self.confirm_tools.contains(&tool_id.to_string()) {
-                    ctx.suspend(SuspendTicket::new(
+                    ctx.suspend(test_suspend_ticket(
                         Suspension::new("confirm", "confirm").with_message("Execute this tool?"),
                     ));
                 }

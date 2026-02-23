@@ -1,4 +1,4 @@
-use crate::events::{interaction_to_ag_ui_events, Event, ReasoningEncryptedValueSubtype};
+use crate::events::{Event, ReasoningEncryptedValueSubtype};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use tirea_contract::{AgentEvent, TerminationReason};
@@ -34,10 +34,6 @@ pub struct AgUiEventContext {
     stopped: bool,
     /// Last emitted state snapshot, used to compute RFC 6902 deltas.
     last_state: Option<Value>,
-    /// Tool call IDs already emitted via normal LLM stream (ToolCallStart).
-    /// Used to avoid emitting duplicate TOOL_CALL events when ToolCallSuspendRequested
-    /// arrives for a tool call that was already streamed by the LLM.
-    emitted_tool_call_ids: HashSet<String>,
     /// Tool call IDs that have received at least one ToolCallDelta (args chunk).
     /// Used to avoid double-emitting TOOL_CALL_ARGS: when ToolCallReady arrives
     /// for a tool call that never received deltas (e.g. frontend tool invocations),
@@ -61,7 +57,6 @@ impl AgUiEventContext {
             current_step: None,
             stopped: false,
             last_state: None,
-            emitted_tool_call_ids: HashSet::new(),
             tool_ids_with_deltas: HashSet::new(),
         }
     }
@@ -186,24 +181,6 @@ impl AgUiEventContext {
             AgentEvent::ToolCallResumed { .. } => {
                 return vec![];
             }
-            // ToolCallSuspendRequested: emit TOOL_CALL events for interactions whose
-            // tool call ID hasn't been seen yet (e.g. multi-round replays that
-            // produce new suspended interactions, or permission interactions where
-            // the frontend tool call was never streamed by the LLM).
-            AgentEvent::ToolCallSuspendRequested { suspension } => {
-                if self.emitted_tool_call_ids.contains(&suspension.id) {
-                    return vec![];
-                }
-                self.emitted_tool_call_ids.insert(suspension.id.clone());
-                let mut events = self.close_open_streams();
-                events.extend(interaction_to_ag_ui_events(suspension));
-                return events;
-            }
-            // Pending: close current text stream.
-            // Suspended-call interaction details are communicated via STATE_SNAPSHOT.
-            AgentEvent::ToolCallSuspended { .. } => {
-                return self.close_open_streams();
-            }
             _ => {}
         }
 
@@ -268,7 +245,6 @@ impl AgUiEventContext {
             }
 
             AgentEvent::ToolCallStart { id, name } => {
-                self.emitted_tool_call_ids.insert(id.clone());
                 let mut events = self.close_open_streams();
                 events.push(Event::tool_call_start(
                     id,
@@ -378,9 +354,6 @@ impl AgUiEventContext {
                 )]
             }
 
-            // Pending is handled above (early return).
-            AgentEvent::ToolCallSuspended { .. } => unreachable!(),
-
             AgentEvent::Error { message } => {
                 let mut events = self.close_reasoning_stream();
                 events.push(Event::run_error(message, None));
@@ -412,9 +385,7 @@ impl AgUiEventContext {
                     Some(false),
                 )]
             }
-            AgentEvent::ToolCallSuspendRequested { .. } | AgentEvent::ToolCallResumed { .. } => {
-                unreachable!()
-            }
+            AgentEvent::ToolCallResumed { .. } => unreachable!(),
         }
     }
 }

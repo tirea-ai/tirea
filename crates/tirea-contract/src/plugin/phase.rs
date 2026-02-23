@@ -127,28 +127,16 @@ pub enum RunAction {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SuspendTicket {
     pub suspension: Suspension,
-    pub invocation: Option<FrontendToolInvocation>,
+    pub invocation: FrontendToolInvocation,
 }
 
 impl SuspendTicket {
-    pub fn new(suspension: Suspension) -> Self {
-        Self {
-            suspension,
-            invocation: None,
-        }
-    }
-
     pub fn from_invocation(invocation: FrontendToolInvocation) -> Self {
         let suspension = invocation.to_suspension();
         Self {
             suspension,
-            invocation: Some(invocation),
+            invocation,
         }
-    }
-
-    pub fn with_invocation(mut self, invocation: FrontendToolInvocation) -> Self {
-        self.invocation = Some(invocation);
-        self
     }
 }
 
@@ -514,10 +502,9 @@ impl<'a> StepContext<'a> {
                 if let Some(ticket) = tool.suspend_ticket.as_ref() {
                     return ToolAction::Suspend(ticket.clone());
                 }
-                return ToolAction::Suspend(SuspendTicket::new(Suspension::new(
-                    tool.id.clone(),
-                    format!("tool:{}", tool.name),
-                )));
+                return ToolAction::Cancel {
+                    reason: "invalid pending tool state: missing suspend ticket".to_string(),
+                };
             }
         }
         ToolAction::Proceed
@@ -535,10 +522,7 @@ impl<'a> StepContext<'a> {
                 if let Some(ticket) = tool.suspend_ticket.as_ref() {
                     return StepOutcome::Pending(ticket.suspension.clone());
                 }
-                return StepOutcome::Pending(Suspension::new(
-                    tool.id.clone(),
-                    format!("tool:{}", tool.name),
-                ));
+                return StepOutcome::Continue;
             }
         }
 
@@ -767,6 +751,24 @@ mod tests {
             ToolDescriptor::new("write_file", "Write File", "Write a file"),
             ToolDescriptor::new("delete_file", "Delete File", "Delete a file"),
         ]
+    }
+
+    fn test_suspend_ticket(interaction: Suspension) -> SuspendTicket {
+        let tool_name = interaction
+            .action
+            .strip_prefix("tool:")
+            .unwrap_or("TestSuspend")
+            .to_string();
+        let invocation = FrontendToolInvocation::new(
+            interaction.id.clone(),
+            tool_name,
+            interaction.parameters.clone(),
+            InvocationOrigin::PluginInitiated {
+                plugin_id: "phase_tests".to_string(),
+            },
+            ResponseRouting::PassToLLM,
+        );
+        SuspendTicket::from_invocation(invocation)
     }
 
     // =========================================================================
@@ -1031,7 +1033,7 @@ mod tests {
         ctx.tool = Some(ToolContext::new(&call));
 
         let interaction = Suspension::new("confirm_1", "confirm").with_message("Allow write?");
-        ctx.suspend(SuspendTicket::new(interaction));
+        ctx.suspend(test_suspend_ticket(interaction));
 
         assert!(ctx.tool_pending());
         assert!(!ctx.tool_blocked());
@@ -1048,7 +1050,7 @@ mod tests {
         ctx.tool = Some(ToolContext::new(&call));
 
         let interaction = Suspension::new("confirm_1", "confirm").with_message("Allow write?");
-        ctx.suspend(SuspendTicket::new(interaction));
+        ctx.suspend(test_suspend_ticket(interaction));
         ctx.proceed();
 
         assert!(!ctx.tool_pending());
@@ -1069,7 +1071,7 @@ mod tests {
         assert!(ctx.tool_blocked());
         assert!(!ctx.tool_pending());
 
-        ctx.suspend(SuspendTicket::new(
+        ctx.suspend(test_suspend_ticket(
             Suspension::new("confirm_1", "confirm").with_message("Allow write?"),
         ));
         assert!(!ctx.tool_blocked());
@@ -1086,7 +1088,7 @@ mod tests {
             .unwrap()
             .suspend_ticket
             .as_ref()
-            .and_then(|ticket| ticket.invocation.as_ref())
+            .map(|ticket| &ticket.invocation)
             .is_none());
     }
 
@@ -1126,7 +1128,7 @@ mod tests {
         ctx.tool = Some(ToolContext::new(&call));
 
         let interaction = Suspension::new("confirm_1", "confirm").with_message("Allow?");
-        ctx.suspend(SuspendTicket::new(interaction.clone()));
+        ctx.suspend(test_suspend_ticket(interaction.clone()));
 
         match ctx.result() {
             StepOutcome::Pending(i) => assert_eq!(i.id, "confirm_1"),
@@ -1147,7 +1149,7 @@ mod tests {
 
         if let Some(tool) = ctx.tool.as_mut() {
             tool.pending = true;
-            tool.suspend_ticket = Some(SuspendTicket::new(ticket_interaction.clone()));
+            tool.suspend_ticket = Some(test_suspend_ticket(ticket_interaction.clone()));
         }
 
         match ctx.result() {
@@ -1171,7 +1173,7 @@ mod tests {
 
         if let Some(tool) = step.tool.as_mut() {
             tool.pending = true;
-            tool.suspend_ticket = Some(SuspendTicket::new(ticket_interaction.clone()));
+            tool.suspend_ticket = Some(test_suspend_ticket(ticket_interaction.clone()));
         }
 
         let ctx = BeforeToolExecuteContext::new(&mut step);
@@ -1373,7 +1375,7 @@ mod tests {
         let mut ctx = fix.step(vec![]);
 
         let interaction = Suspension::new("id", "confirm").with_message("test");
-        ctx.suspend(SuspendTicket::new(interaction));
+        ctx.suspend(test_suspend_ticket(interaction));
 
         assert!(!ctx.tool_pending()); // tool_pending returns false when no tool
     }
@@ -1466,7 +1468,7 @@ mod tests {
         assert!(tool_ctx.suspend_ticket.is_none());
 
         let interaction = Suspension::new("confirm_1", "confirm").with_message("Test?");
-        tool_ctx.suspend_ticket = Some(SuspendTicket::new(interaction.clone()));
+        tool_ctx.suspend_ticket = Some(test_suspend_ticket(interaction.clone()));
 
         assert_eq!(
             tool_ctx.suspend_ticket.as_ref().unwrap().suspension.id,
@@ -1504,7 +1506,7 @@ mod tests {
             .unwrap()
             .suspend_ticket
             .as_ref()
-            .and_then(|ticket| ticket.invocation.as_ref())
+            .map(|ticket| &ticket.invocation)
             .expect("pending frontend invocation should exist");
         assert_eq!(invocation.call_id, "call_copy");
         assert_eq!(invocation.tool_name, "copyToClipboard");
@@ -1566,7 +1568,7 @@ mod tests {
             .unwrap()
             .suspend_ticket
             .as_ref()
-            .and_then(|ticket| ticket.invocation.as_ref())
+            .map(|ticket| &ticket.invocation)
             .expect("pending frontend invocation should exist");
         assert_eq!(invocation.call_id, call_id);
         assert_eq!(invocation.tool_name, "PermissionConfirm");

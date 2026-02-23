@@ -1,7 +1,7 @@
 use super::UIStreamEvent;
 use serde_json::Value;
 use std::collections::HashSet;
-use tirea_contract::{AgentEvent, StopReason, Suspension, TerminationReason, ToolStatus};
+use tirea_contract::{AgentEvent, StopReason, TerminationReason, ToolStatus};
 
 /// Data event name for a full state snapshot payload.
 pub const DATA_EVENT_STATE_SNAPSHOT: &str = "state-snapshot";
@@ -294,10 +294,6 @@ impl AiSdkEncoder {
                 events.push(UIStreamEvent::data(DATA_EVENT_ACTIVITY_DELTA, payload));
                 events
             }
-            AgentEvent::ToolCallSuspended { .. } => Vec::new(),
-            AgentEvent::ToolCallSuspendRequested { suspension } => {
-                self.map_interaction_requested(suspension)
-            }
             AgentEvent::ToolCallResumed { target_id, result } => {
                 self.map_interaction_resolved(target_id, result)
             }
@@ -397,29 +393,6 @@ impl AiSdkEncoder {
             self.close_reasoning_if_open(&reasoning_id, &mut events);
         }
 
-        events
-    }
-
-    fn map_interaction_requested(&self, interaction: &Suspension) -> Vec<UIStreamEvent> {
-        let tool_name = interaction
-            .action
-            .strip_prefix("tool:")
-            .unwrap_or(interaction.action.as_str())
-            .to_string();
-        let mut events = vec![
-            UIStreamEvent::tool_input_start(interaction.id.clone(), tool_name.clone()),
-            UIStreamEvent::tool_input_available(
-                interaction.id.clone(),
-                tool_name.clone(),
-                interaction.parameters.clone(),
-            ),
-        ];
-        if Self::is_permission_confirmation_tool(&tool_name) {
-            events.push(UIStreamEvent::tool_approval_request(
-                interaction.id.clone(),
-                interaction.id.clone(),
-            ));
-        }
         events
     }
 

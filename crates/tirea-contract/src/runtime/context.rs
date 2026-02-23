@@ -124,7 +124,7 @@ impl RunContext {
     pub fn first_suspended_invocation(&self) -> Option<FrontendToolInvocation> {
         let mut calls: Vec<SuspendedCall> = self.suspended_calls().into_values().collect();
         calls.sort_by(|left, right| left.call_id.cmp(&right.call_id));
-        calls.into_iter().next().and_then(|call| call.invocation)
+        calls.into_iter().next().map(|call| call.invocation)
     }
 
     // =========================================================================

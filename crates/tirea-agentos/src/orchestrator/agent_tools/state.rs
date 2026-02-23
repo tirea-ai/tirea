@@ -1,4 +1,7 @@
 use super::*;
+use tirea_contract::event::suspension::{
+    FrontendToolInvocation, InvocationOrigin, ResponseRouting,
+};
 use tirea_contract::plugin::phase::PluginPhaseContext;
 use tirea_contract::runtime::control::{
     ResumeDecision, ResumeDecisionAction, ResumeDecisionsState, SuspendedCall,
@@ -102,20 +105,36 @@ pub(super) fn has_suspended_recovery_interaction(state: &Value) -> bool {
         .any(|call| call.suspension.action == AGENT_RECOVERY_INTERACTION_ACTION)
 }
 
+fn recovery_invocation(interaction: &Suspension) -> FrontendToolInvocation {
+    FrontendToolInvocation::new(
+        interaction.id.clone(),
+        AGENT_RECOVERY_INTERACTION_ACTION,
+        interaction.parameters.clone(),
+        InvocationOrigin::ToolCallIntercepted {
+            backend_call_id: interaction.id.clone(),
+            backend_tool_name: AGENT_RUN_TOOL_ID.to_string(),
+            backend_arguments: interaction.parameters.clone(),
+        },
+        ResponseRouting::ReplayOriginalTool,
+    )
+}
+
 pub(super) fn set_suspended_recovery_interaction(
     step: &impl PluginPhaseContext,
     interaction: Suspension,
 ) {
     let state = step.state_of::<SuspendedToolCallsState>();
-    let mut calls = state.calls().ok().unwrap_or_default();
+    let Ok(mut calls) = state.calls() else {
+        return;
+    };
     let call_id = interaction.id.clone();
     calls.insert(
         call_id.clone(),
         SuspendedCall {
             call_id,
             tool_name: AGENT_RUN_TOOL_ID.to_string(),
+            invocation: recovery_invocation(&interaction),
             suspension: interaction,
-            invocation: None,
         },
     );
     let _ = state.set_calls(calls);
@@ -128,16 +147,19 @@ pub(super) fn schedule_recovery_replay(
 ) {
     let call_id = recovery_target_id(run_id);
     let suspended_state = step.state_of::<SuspendedToolCallsState>();
-    let mut suspended_calls = suspended_state.calls().ok().unwrap_or_default();
+    let Ok(mut suspended_calls) = suspended_state.calls() else {
+        return;
+    };
 
     if !suspended_calls.contains_key(&call_id) {
+        let interaction = build_recovery_interaction(run_id, run);
         suspended_calls.insert(
             call_id.clone(),
             SuspendedCall {
                 call_id: call_id.clone(),
                 tool_name: AGENT_RUN_TOOL_ID.to_string(),
-                suspension: build_recovery_interaction(run_id, run),
-                invocation: None,
+                invocation: recovery_invocation(&interaction),
+                suspension: interaction,
             },
         );
     } else if suspended_calls
@@ -151,7 +173,9 @@ pub(super) fn schedule_recovery_replay(
     let _ = suspended_state.set_calls(suspended_calls);
 
     let mailbox = step.state_of::<ResumeDecisionsState>();
-    let mut decisions = mailbox.calls().ok().unwrap_or_default();
+    let Ok(mut decisions) = mailbox.calls() else {
+        return;
+    };
     decisions.insert(
         call_id.clone(),
         ResumeDecision {

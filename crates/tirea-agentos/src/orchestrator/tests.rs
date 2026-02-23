@@ -1824,6 +1824,24 @@ async fn run_stream_exposes_decision_sender_and_replays_suspended_calls() {
                         "parameters": {
                             "message": "approved-from-channel"
                         }
+                    },
+                    "invocation": {
+                        "call_id": "call_pending",
+                        "tool_name": "echo",
+                        "arguments": {
+                            "message": "approved-from-channel"
+                        },
+                        "origin": {
+                            "type": "tool_call_intercepted",
+                            "backend_call_id": "call_pending",
+                            "backend_tool_name": "echo",
+                            "backend_arguments": {
+                                "message": "approved-from-channel"
+                            }
+                        },
+                        "routing": {
+                            "strategy": "replay_original_tool"
+                        }
                     }
                 }
             }
@@ -1890,6 +1908,24 @@ async fn run_stream_replays_initial_decisions_without_submit_decision() {
                         "parameters": {
                             "message": "approved-from-request"
                         }
+                    },
+                    "invocation": {
+                        "call_id": "call_pending",
+                        "tool_name": "echo",
+                        "arguments": {
+                            "message": "approved-from-request"
+                        },
+                        "origin": {
+                            "type": "tool_call_intercepted",
+                            "backend_call_id": "call_pending",
+                            "backend_tool_name": "echo",
+                            "backend_arguments": {
+                                "message": "approved-from-request"
+                            }
+                        },
+                        "routing": {
+                            "strategy": "replay_original_tool"
+                        }
                     }
                 }
             }
@@ -1954,6 +1990,20 @@ async fn run_stream_initial_decisions_denied_returns_tool_error_and_clears_suspe
                         "id": "call_pending",
                         "action": "confirm",
                         "parameters": { "message": "denied" }
+                    },
+                    "invocation": {
+                        "call_id": "call_pending",
+                        "tool_name": "echo",
+                        "arguments": { "message": "denied" },
+                        "origin": {
+                            "type": "tool_call_intercepted",
+                            "backend_call_id": "call_pending",
+                            "backend_tool_name": "echo",
+                            "backend_arguments": { "message": "denied" }
+                        },
+                        "routing": {
+                            "strategy": "replay_original_tool"
+                        }
                     }
                 }
             }
@@ -2030,6 +2080,20 @@ async fn run_stream_initial_decisions_cancelled_returns_tool_error_and_clears_su
                         "id": "call_pending",
                         "action": "confirm",
                         "parameters": { "message": "cancelled" }
+                    },
+                    "invocation": {
+                        "call_id": "call_pending",
+                        "tool_name": "echo",
+                        "arguments": { "message": "cancelled" },
+                        "origin": {
+                            "type": "tool_call_intercepted",
+                            "backend_call_id": "call_pending",
+                            "backend_tool_name": "echo",
+                            "backend_arguments": { "message": "cancelled" }
+                        },
+                        "routing": {
+                            "strategy": "replay_original_tool"
+                        }
                     }
                 }
             }
@@ -2110,6 +2174,20 @@ async fn run_stream_initial_decisions_partial_match_keeps_unresolved_suspended_c
                         "id": "call_approved",
                         "action": "confirm",
                         "parameters": { "message": "approve me" }
+                    },
+                    "invocation": {
+                        "call_id": "call_approved",
+                        "tool_name": "echo",
+                        "arguments": { "message": "approve me" },
+                        "origin": {
+                            "type": "tool_call_intercepted",
+                            "backend_call_id": "call_approved",
+                            "backend_tool_name": "echo",
+                            "backend_arguments": { "message": "approve me" }
+                        },
+                        "routing": {
+                            "strategy": "replay_original_tool"
+                        }
                     }
                 },
                 "call_waiting": {
@@ -2119,6 +2197,20 @@ async fn run_stream_initial_decisions_partial_match_keeps_unresolved_suspended_c
                         "id": "call_waiting",
                         "action": "confirm",
                         "parameters": { "message": "still waiting" }
+                    },
+                    "invocation": {
+                        "call_id": "call_waiting",
+                        "tool_name": "echo",
+                        "arguments": { "message": "still waiting" },
+                        "origin": {
+                            "type": "tool_call_intercepted",
+                            "backend_call_id": "call_waiting",
+                            "backend_tool_name": "echo",
+                            "backend_arguments": { "message": "still waiting" }
+                        },
+                        "routing": {
+                            "strategy": "replay_original_tool"
+                        }
                     }
                 }
             }
@@ -2202,6 +2294,20 @@ async fn run_stream_initial_decisions_ignore_unknown_target() {
                         "id": "call_pending",
                         "action": "confirm",
                         "parameters": { "message": "still waiting" }
+                    },
+                    "invocation": {
+                        "call_id": "call_pending",
+                        "tool_name": "echo",
+                        "arguments": { "message": "still waiting" },
+                        "origin": {
+                            "type": "tool_call_intercepted",
+                            "backend_call_id": "call_pending",
+                            "backend_tool_name": "echo",
+                            "backend_arguments": { "message": "still waiting" }
+                        },
+                        "routing": {
+                            "strategy": "replay_original_tool"
+                        }
                     }
                 }
             }
@@ -2278,6 +2384,20 @@ async fn run_stream_duplicate_initial_decisions_are_idempotent() {
                         "id": "call_pending",
                         "action": "confirm",
                         "parameters": { "message": "idempotent" }
+                    },
+                    "invocation": {
+                        "call_id": "call_pending",
+                        "tool_name": "echo",
+                        "arguments": { "message": "idempotent" },
+                        "origin": {
+                            "type": "tool_call_intercepted",
+                            "backend_call_id": "call_pending",
+                            "backend_tool_name": "echo",
+                            "backend_arguments": { "message": "idempotent" }
+                        },
+                        "routing": {
+                            "strategy": "replay_original_tool"
+                        }
                     }
                 }
             }

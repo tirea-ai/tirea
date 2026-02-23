@@ -3,7 +3,9 @@
 //! These types define durable runtime control state for cross-step and cross-run
 //! flow control (suspended tool calls, resume decisions, and inference error envelope).
 
-use crate::event::suspension::{FrontendToolInvocation, Suspension, SuspensionResponse};
+use crate::event::suspension::{
+    FrontendToolInvocation, InvocationOrigin, ResponseRouting, Suspension, SuspensionResponse,
+};
 use crate::thread::Thread;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -24,14 +26,52 @@ pub struct InferenceError {
 ///
 /// The core loop only stores `call_id` + generic `Suspension`; it does not
 /// interpret the semantics (policy checks, frontend tools, user confirmation).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SuspendedCall {
     pub call_id: String,
     pub tool_name: String,
     pub suspension: Suspension,
-    /// Optional frontend invocation metadata for routing decisions.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub invocation: Option<FrontendToolInvocation>,
+    /// Frontend invocation metadata for routing decisions.
+    pub invocation: FrontendToolInvocation,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SuspendedCallWire {
+    call_id: String,
+    tool_name: String,
+    suspension: Suspension,
+    #[serde(default)]
+    invocation: Option<FrontendToolInvocation>,
+}
+
+impl<'de> Deserialize<'de> for SuspendedCall {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = SuspendedCallWire::deserialize(deserializer)?;
+        let invocation = wire.invocation.unwrap_or_else(|| {
+            // Upgrade legacy suspended-call entries that predate first-class
+            // frontend invocation metadata.
+            FrontendToolInvocation::new(
+                wire.call_id.clone(),
+                wire.tool_name.clone(),
+                wire.suspension.parameters.clone(),
+                InvocationOrigin::ToolCallIntercepted {
+                    backend_call_id: wire.call_id.clone(),
+                    backend_tool_name: wire.tool_name.clone(),
+                    backend_arguments: wire.suspension.parameters.clone(),
+                },
+                ResponseRouting::ReplayOriginalTool,
+            )
+        });
+        Ok(Self {
+            call_id: wire.call_id,
+            tool_name: wire.tool_name,
+            suspension: wire.suspension,
+            invocation,
+        })
+    }
 }
 
 /// Durable suspended tool-call map persisted at `state["__suspended_tool_calls"]`.

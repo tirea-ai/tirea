@@ -129,6 +129,12 @@ fn validate_phase_mutation(
             plugin_id
         )));
     }
+    if after.tool_pending && after.tool_suspended_target_id.is_none() {
+        return Err(AgentLoopError::StateError(format!(
+            "plugin '{}' produced invalid tool gate state: pending without suspend ticket ({phase})",
+            plugin_id
+        )));
+    }
 
     if before.tool_has_result != after.tool_has_result {
         return Err(AgentLoopError::StateError(format!(

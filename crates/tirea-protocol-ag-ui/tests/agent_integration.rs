@@ -3011,7 +3011,15 @@ fn test_agent_loop_error_all_variants() {
             call_id: "call_1".to_string(),
             tool_name: "confirm_tool".to_string(),
             suspension: Suspension::new("int_1", "confirm"),
-            invocation: None,
+            invocation: tirea_agentos::contracts::FrontendToolInvocation::new(
+                "int_1".to_string(),
+                "confirm_tool".to_string(),
+                json!({}),
+                tirea_agentos::contracts::InvocationOrigin::PluginInitiated {
+                    plugin_id: "test".to_string(),
+                },
+                tirea_agentos::contracts::ResponseRouting::PassToLLM,
+            ),
         }),
     };
     let display = pending_err.to_string();
@@ -4505,21 +4513,23 @@ fn test_scenario_permission_confirmation_to_ag_ui() {
             }
         }));
 
-    // 2. Create AgentEvent::ToolCallSuspended (what the agent loop would emit)
-    let event = AgentEvent::ToolCallSuspended {
-        suspension: interaction.clone(),
-    };
-
-    // 3. Convert to AG-UI events
+    // 2. Pending frontend tool now emits standard ToolCallStart + ToolCallReady
     let mut ctx = AgUiEventContext::new("thread_123".into(), "run_456".into());
-    let ag_ui_events = ctx.on_agent_event(&event);
+    let start_events = ctx.on_agent_event(&AgentEvent::ToolCallStart {
+        id: interaction.id.clone(),
+        name: "confirm".to_string(),
+    });
+    let ready_events = ctx.on_agent_event(&AgentEvent::ToolCallReady {
+        id: interaction.id.clone(),
+        name: "confirm".to_string(),
+        arguments: interaction.parameters.clone(),
+    });
 
-    // 4. Pending no longer emits tool call events (communicated via STATE_SNAPSHOT)
-    assert_eq!(
-        ag_ui_events.len(),
-        0,
-        "Pending should not emit AG-UI events when no text stream is active"
-    );
+    assert_eq!(start_events.len(), 1);
+    assert!(matches!(start_events[0], Event::ToolCallStart { .. }));
+    assert_eq!(ready_events.len(), 2);
+    assert!(matches!(ready_events[0], Event::ToolCallArgs { .. }));
+    assert!(matches!(ready_events[1], Event::ToolCallEnd { .. }));
 }
 
 /// Test scenario: Custom frontend action (file picker)
@@ -4591,15 +4601,13 @@ fn test_scenario_text_interrupted_by_interaction() {
         .iter()
         .any(|e| matches!(e, Event::TextMessageContent { .. })));
 
-    // 3. Suspension interrupts (e.g., permission needed)
-    let interaction =
-        Suspension::new("int_1", "confirm").with_message("Proceed with file operation?");
-    let pending_event = AgentEvent::ToolCallSuspended {
-        suspension: interaction,
-    };
-    let events3 = ctx.on_agent_event(&pending_event);
+    // 3. Pending frontend tool starts (e.g., permission needed)
+    let events3 = ctx.on_agent_event(&AgentEvent::ToolCallStart {
+        id: "int_1".into(),
+        name: "confirm".into(),
+    });
 
-    // Should end text stream (pending no longer emits tool call events)
+    // Should end text stream before tool call start.
     assert!(!events3.is_empty(), "Should have TextMessageEnd");
     assert!(
         matches!(events3[0], Event::TextMessageEnd { .. }),
@@ -4745,11 +4753,7 @@ impl InteractionPlugin {
             .get(&call.call_id)
             .cloned()
             .or_else(|| self.responses.get(&call.suspension.id).cloned())
-            .or_else(|| {
-                call.invocation
-                    .as_ref()
-                    .and_then(|invocation| self.responses.get(&invocation.call_id).cloned())
-            })
+            .or_else(|| self.responses.get(&call.invocation.call_id).cloned())
     }
 
     fn cancel_reason(result: &Value) -> Option<String> {
@@ -4866,10 +4870,19 @@ impl AgentPlugin for TestFrontendToolPlugin {
         };
 
         let args = step.tool_args().cloned().unwrap_or_default();
-        let interaction =
-            Suspension::new(tool_call_id, format!("tool:{tool_name}")).with_parameters(args);
-        step.suspend(tirea_agentos::contracts::plugin::phase::SuspendTicket::new(
-            interaction,
+        let invocation = tirea_agentos::contracts::FrontendToolInvocation::new(
+            tool_call_id.to_string(),
+            tool_name.to_string(),
+            args.clone(),
+            InvocationOrigin::ToolCallIntercepted {
+                backend_call_id: tool_call_id.to_string(),
+                backend_tool_name: tool_name.to_string(),
+                backend_arguments: args,
+            },
+            ResponseRouting::ReplayOriginalTool,
+        );
+        step.suspend(tirea_agentos::contracts::plugin::phase::SuspendTicket::from_invocation(
+            invocation,
         ));
     }
 }
@@ -4897,7 +4910,7 @@ fn suspended_invocation(
     step.tool
         .as_ref()
         .and_then(|tool| tool.suspend_ticket.as_ref())
-        .and_then(|ticket| ticket.invocation.clone())
+        .map(|ticket| ticket.invocation.clone())
 }
 
 /// Test scenario: Complete frontend tool flow from request to AG-UI events
@@ -5237,7 +5250,7 @@ fn test_scenario_frontend_tool_wire_format() {
     }
 }
 
-/// Test scenario: Frontend tool to AgentEvent::ToolCallSuspended to AG-UI events
+/// Test scenario: Frontend tool pending maps to ToolCallStart/Ready AG-UI events
 #[tokio::test]
 async fn test_scenario_frontend_tool_full_event_pipeline() {
     let doc = json!({});
@@ -5262,19 +5275,27 @@ async fn test_scenario_frontend_tool_full_event_pipeline() {
     // 1. Plugin creates pending state with interaction
     plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
 
-    // 2. Agent loop would create AgentEvent::ToolCallSuspended
-    let interaction = suspended_interaction(&step).expect("suspended interaction should exist");
-    let agent_event = AgentEvent::ToolCallSuspended {
-        suspension: interaction,
-    };
-
-    // 3. Convert to AG-UI events with context
+    // 2. Agent loop now emits ToolCallStart + ToolCallReady for pending frontend tools.
+    let invocation = suspended_invocation(&step).expect("suspended invocation should exist");
     let mut agui_ctx = AgUiEventContext::new("thread_123".into(), "run_456".into());
-    let ag_ui_events = agui_ctx.on_agent_event(&agent_event);
+    let start_events = agui_ctx.on_agent_event(&AgentEvent::ToolCallStart {
+        id: invocation.call_id.clone(),
+        name: invocation.tool_name.clone(),
+    });
+    let ready_events = agui_ctx.on_agent_event(&AgentEvent::ToolCallReady {
+        id: invocation.call_id.clone(),
+        name: invocation.tool_name.clone(),
+        arguments: invocation.arguments.clone(),
+    });
+    let mut ag_ui_events = Vec::new();
+    ag_ui_events.extend(start_events);
+    ag_ui_events.extend(ready_events);
 
-    // 4. Pending no longer emits tool call events (communicated via STATE_SNAPSHOT).
-    //    The original LLM tool call sequence is sufficient for the client.
-    assert_eq!(ag_ui_events.len(), 0);
+    // 3. AG-UI receives a normal tool-call lifecycle for frontend pending tools.
+    assert_eq!(ag_ui_events.len(), 3);
+    assert!(matches!(ag_ui_events[0], Event::ToolCallStart { .. }));
+    assert!(matches!(ag_ui_events[1], Event::ToolCallArgs { .. }));
+    assert!(matches!(ag_ui_events[2], Event::ToolCallEnd { .. }));
 }
 
 /// Test scenario: Backend tool should not be affected by InteractionPlugin
@@ -5933,21 +5954,20 @@ fn test_scenario_agui_context_state_after_pending() {
         .iter()
         .any(|e| matches!(e, Event::TextMessageStart { .. })));
 
-    // Pending interaction arrives
-    let interaction = Suspension::new("perm_1", "confirm").with_message("Allow?");
-    let pending_event = AgentEvent::ToolCallSuspended {
-        suspension: interaction,
-    };
-    let pending_events = ctx.on_agent_event(&pending_event);
+    // Pending frontend tool starts.
+    let pending_start_events = ctx.on_agent_event(&AgentEvent::ToolCallStart {
+        id: "perm_1".into(),
+        name: "confirm".into(),
+    });
 
-    // Should have TextMessageEnd only (pending no longer emits tool call events)
-    assert!(!pending_events.is_empty());
+    // Should end current text stream first.
+    assert!(!pending_start_events.is_empty());
     assert!(
-        matches!(pending_events[0], Event::TextMessageEnd { .. }),
+        matches!(pending_start_events[0], Event::TextMessageEnd { .. }),
         "First event should be TextMessageEnd to close the text stream"
     );
 
-    // After pending, text stream should be ended - verify by checking that
+    // After pending start, text stream should be ended - verify by checking that
     // another text event would start a new stream
     let text_event3 = AgentEvent::TextDelta {
         delta: "New text".into(),
@@ -6108,15 +6128,14 @@ fn test_agui_stream_error_no_run_finished() {
 fn test_agui_stream_pending_no_run_finished() {
     let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
-    // Pending interaction
-    let interaction = Suspension::new("perm_1", "confirm").with_message("Allow tool execution?");
-    let pending = AgentEvent::ToolCallSuspended {
-        suspension: interaction,
+    // Pending frontend tool start
+    let pending = AgentEvent::ToolCallStart {
+        id: "perm_1".into(),
+        name: "confirm".into(),
     };
     let pending_events = ctx.on_agent_event(&pending);
 
-    // Pending interactions no longer emit tool call events (communicated via STATE_SNAPSHOT)
-    assert!(!pending_events
+    assert!(pending_events
         .iter()
         .any(|e| matches!(e, Event::ToolCallStart { .. })));
 
@@ -12105,13 +12124,11 @@ fn test_agent_event_error_produces_run_error() {
     }
 }
 
-/// Test: AgentEvent::ToolCallSuspended ends text and emits tool call events
-/// Protocol: Pending interaction creates tool call events for client
+/// Test: pending ToolCallStart ends text and emits tool call start
+/// Protocol: Pending frontend interaction uses normal tool call events
 /// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
 #[test]
 fn test_agent_event_pending_ends_text() {
-    use tirea_agentos::contracts::Suspension;
-
     let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
 
     // Start text
@@ -12120,10 +12137,10 @@ fn test_agent_event_pending_ends_text() {
     };
     let _ = ctx.on_agent_event(&text);
 
-    // Pending interaction
-    let interaction = Suspension::new("perm_1", "confirm");
-    let pending = AgentEvent::ToolCallSuspended {
-        suspension: interaction,
+    // Pending frontend tool start
+    let pending = AgentEvent::ToolCallStart {
+        id: "perm_1".into(),
+        name: "confirm".into(),
     };
     let events = ctx.on_agent_event(&pending);
 
@@ -12135,12 +12152,11 @@ fn test_agent_event_pending_ends_text() {
         "Should end text stream before pending"
     );
 
-    // Pending interactions are communicated via STATE_SNAPSHOT, not duplicate tool call events
     assert!(
-        !events
+        events
             .iter()
             .any(|e| matches!(e, Event::ToolCallStart { .. })),
-        "Should NOT emit duplicate ToolCallStart for suspended interaction"
+        "Should emit ToolCallStart for pending frontend tool"
     );
 }
 
@@ -12571,37 +12587,28 @@ fn replay_calls_from_state(state: &Value) -> Vec<ToolCall> {
                 return None;
             }
             let call = suspended.get(&call_id)?;
-            if let Some(invocation) = call.invocation.as_ref() {
-                return Some(match (&invocation.origin, &invocation.routing) {
-                    (
-                        InvocationOrigin::ToolCallIntercepted {
-                            backend_call_id,
-                            backend_tool_name,
-                            backend_arguments,
-                        },
-                        ResponseRouting::ReplayOriginalTool,
-                    ) => ToolCall::new(
-                        backend_call_id.clone(),
-                        backend_tool_name.clone(),
-                        backend_arguments.clone(),
-                    ),
-                    (
-                        InvocationOrigin::PluginInitiated { .. },
-                        ResponseRouting::ReplayOriginalTool,
-                    )
-                    | (_, ResponseRouting::UseAsToolResult)
-                    | (_, ResponseRouting::PassToLLM) => ToolCall::new(
-                        invocation.call_id.clone(),
-                        invocation.tool_name.clone(),
-                        invocation.arguments.clone(),
-                    ),
-                });
-            }
-            Some(ToolCall::new(
-                call.call_id.clone(),
-                call.tool_name.clone(),
-                call.suspension.parameters.clone(),
-            ))
+            let invocation = &call.invocation;
+            Some(match (&invocation.origin, &invocation.routing) {
+                (
+                    InvocationOrigin::ToolCallIntercepted {
+                        backend_call_id,
+                        backend_tool_name,
+                        backend_arguments,
+                    },
+                    ResponseRouting::ReplayOriginalTool,
+                ) => ToolCall::new(
+                    backend_call_id.clone(),
+                    backend_tool_name.clone(),
+                    backend_arguments.clone(),
+                ),
+                (InvocationOrigin::PluginInitiated { .. }, ResponseRouting::ReplayOriginalTool)
+                | (_, ResponseRouting::UseAsToolResult)
+                | (_, ResponseRouting::PassToLLM) => ToolCall::new(
+                    invocation.call_id.clone(),
+                    invocation.tool_name.clone(),
+                    invocation.arguments.clone(),
+                ),
+            })
         })
         .collect()
 }
