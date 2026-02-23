@@ -866,6 +866,52 @@ mod tests {
     }
 
     #[test]
+    fn suspension_decisions_preserve_last_write_order() {
+        let req: AiSdkV6RunRequest = serde_json::from_value(json!({
+            "id": "t6b",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "parts": [{
+                        "type": "tool-approval-response",
+                        "approvalId": "perm_1",
+                        "approved": true
+                    }]
+                },
+                {
+                    "role": "assistant",
+                    "parts": [{
+                        "type": "tool-approval-response",
+                        "approvalId": "perm_2",
+                        "approved": true
+                    }]
+                },
+                {
+                    "role": "assistant",
+                    "parts": [{
+                        "type": "tool-approval-response",
+                        "approvalId": "perm_1",
+                        "approved": false
+                    }]
+                }
+            ]
+        }))
+        .expect("messages payload should deserialize");
+
+        let run_request = AiSdkV6InputAdapter::to_run_request("agent".to_string(), req);
+        let decision_targets: Vec<&str> = run_request
+            .initial_decisions
+            .iter()
+            .map(|decision| decision.target_id.as_str())
+            .collect();
+        assert_eq!(
+            decision_targets,
+            vec!["perm_2", "perm_1"],
+            "last-write ordering should be stable after dedup"
+        );
+    }
+
+    #[test]
     fn interaction_only_messages_generate_empty_run_messages() {
         let req: AiSdkV6RunRequest = serde_json::from_value(json!({
             "id": "thread-int-only",

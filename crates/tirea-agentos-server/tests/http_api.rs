@@ -2767,6 +2767,37 @@ async fn test_ai_sdk_decision_only_request_forwards_to_active_run() {
 }
 
 #[tokio::test]
+async fn test_ai_sdk_decision_only_without_active_run_starts_new_run() {
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_storage(storage.clone()));
+    let app = make_app(os, storage);
+
+    let decision_only_payload = json!({
+        "id": "decision-no-active-ai-sdk",
+        "runId": "decision-only-no-active",
+        "messages": [{
+            "role": "assistant",
+            "parts": [{
+                "type": "tool-approval-response",
+                "approvalId": "fc_perm_1",
+                "approved": true
+            }]
+        }]
+    });
+    let (status, body) =
+        post_sse_text(app, "/v1/ai-sdk/agents/test/runs", decision_only_payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains(r#""type":"finish""#),
+        "no-active decision-only request should execute a new run: {body}"
+    );
+    assert!(
+        !body.contains("decision_forwarded"),
+        "no-active decision-only request must not return forwarding ack: {body}"
+    );
+}
+
+#[tokio::test]
 async fn test_ag_ui_decision_only_request_forwards_to_active_run() {
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os_with_slow_skip_plugin(storage.clone()));
@@ -2814,6 +2845,59 @@ async fn test_ag_ui_decision_only_request_forwards_to_active_run() {
     assert_eq!(body["runId"], "run-decision-only");
 
     drop(first_response);
+}
+
+#[tokio::test]
+async fn test_ag_ui_decision_only_without_active_run_starts_new_run() {
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_storage(storage.clone()));
+    let app = make_app(os, storage);
+
+    let decision_only_payload = json!({
+        "threadId": "decision-no-active-ag-ui",
+        "runId": "run-decision-no-active",
+        "messages": [{
+            "role": "tool",
+            "toolCallId": "fc_perm_1",
+            "content": "true"
+        }],
+        "tools": []
+    });
+    let (status, body) =
+        post_sse_text(app, "/v1/ag-ui/agents/test/runs", decision_only_payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("RUN_FINISHED"),
+        "no-active decision-only AG-UI request should execute a new run: {body}"
+    );
+    assert!(
+        !body.contains("decision_forwarded"),
+        "no-active decision-only AG-UI request must not return forwarding ack: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_ai_sdk_request_requires_user_input_or_suspension_decisions() {
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_storage(storage.clone()));
+    let app = make_app(os, storage);
+
+    let payload = json!({
+        "id": "input-or-decision-required",
+        "messages": [{
+            "role": "assistant",
+            "parts": [{ "type": "text", "text": "assistant-only" }]
+        }]
+    });
+    let (status, body) = post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("user input or suspension decisions"),
+        "expected updated validation message: {body}"
+    );
 }
 
 /// Generic thread endpoints remain accessible without protocol prefix.

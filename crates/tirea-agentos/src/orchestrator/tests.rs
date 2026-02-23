@@ -14,13 +14,14 @@ use crate::runtime::loop_runner::{
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use async_trait::async_trait;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tempfile::TempDir;
 use tirea_contract::testing::TestFixture;
+use tirea_contract::TerminationReason;
 
 fn make_skills_root() -> (TempDir, PathBuf) {
     let td = TempDir::new().unwrap();
@@ -1636,60 +1637,63 @@ async fn execute_prepared_runs_stream() {
     );
 }
 
+#[derive(Debug)]
+struct DecisionSkipPlugin;
+
+#[async_trait]
+impl AgentPlugin for DecisionSkipPlugin {
+    fn id(&self) -> &str {
+        "decision_skip"
+    }
+
+    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
+        step.skip_inference();
+    }
+}
+
+#[derive(Debug)]
+struct DecisionEchoTool;
+
+#[async_trait]
+impl Tool for DecisionEchoTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("echo", "Echo", "Echo tool").with_parameters(json!({"type":"object"}))
+    }
+
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
+        Ok(ToolResult::success("echo", args))
+    }
+}
+
+fn make_decision_test_os(storage: Arc<tirea_store_adapters::MemoryStore>) -> AgentOs {
+    let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+    tools.insert(
+        "echo".to_string(),
+        Arc::new(DecisionEchoTool) as Arc<dyn Tool>,
+    );
+    AgentOs::builder()
+        .with_agent_state_store(storage as Arc<dyn crate::contracts::storage::AgentStateStore>)
+        .with_tools(tools)
+        .with_registered_plugin("decision_skip", Arc::new(DecisionSkipPlugin))
+        .with_agent(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini").with_plugin_id("decision_skip"),
+        )
+        .build()
+        .unwrap()
+}
+
 #[tokio::test]
 async fn run_stream_exposes_decision_sender_and_replays_suspended_calls() {
     use futures::StreamExt;
-    use serde_json::Value;
     use tirea_store_adapters::MemoryStore;
 
-    #[derive(Debug)]
-    struct SkipPlugin;
-
-    #[async_trait]
-    impl AgentPlugin for SkipPlugin {
-        fn id(&self) -> &str {
-            "skip"
-        }
-
-        async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-            step.skip_inference();
-        }
-    }
-
-    #[derive(Debug)]
-    struct EchoTool;
-
-    #[async_trait]
-    impl Tool for EchoTool {
-        fn descriptor(&self) -> ToolDescriptor {
-            ToolDescriptor::new("echo", "Echo", "Echo tool")
-                .with_parameters(json!({"type":"object"}))
-        }
-
-        async fn execute(
-            &self,
-            args: Value,
-            _ctx: &ToolCallContext<'_>,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::success("echo", args))
-        }
-    }
-
     let storage = Arc::new(MemoryStore::new());
-    let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-    tools.insert("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>);
-    let os = AgentOs::builder()
-        .with_agent_state_store(
-            storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
-        )
-        .with_tools(tools)
-        .with_registered_plugin("skip", Arc::new(SkipPlugin))
-        .with_agent(
-            "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("skip"),
-        )
-        .build()
-        .unwrap();
+    let os = make_decision_test_os(storage.clone());
 
     let pending_state = json!({
         "__suspended_tool_calls": {
@@ -1752,57 +1756,10 @@ async fn run_stream_exposes_decision_sender_and_replays_suspended_calls() {
 #[tokio::test]
 async fn run_stream_replays_initial_decisions_without_submit_decision() {
     use futures::StreamExt;
-    use serde_json::Value;
     use tirea_store_adapters::MemoryStore;
 
-    #[derive(Debug)]
-    struct SkipPlugin;
-
-    #[async_trait]
-    impl AgentPlugin for SkipPlugin {
-        fn id(&self) -> &str {
-            "skip"
-        }
-
-        async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-            step.skip_inference();
-        }
-    }
-
-    #[derive(Debug)]
-    struct EchoTool;
-
-    #[async_trait]
-    impl Tool for EchoTool {
-        fn descriptor(&self) -> ToolDescriptor {
-            ToolDescriptor::new("echo", "Echo", "Echo tool")
-                .with_parameters(json!({"type":"object"}))
-        }
-
-        async fn execute(
-            &self,
-            args: Value,
-            _ctx: &ToolCallContext<'_>,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::success("echo", args))
-        }
-    }
-
     let storage = Arc::new(MemoryStore::new());
-    let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-    tools.insert("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>);
-    let os = AgentOs::builder()
-        .with_agent_state_store(
-            storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
-        )
-        .with_tools(tools)
-        .with_registered_plugin("skip", Arc::new(SkipPlugin))
-        .with_agent(
-            "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("skip"),
-        )
-        .build()
-        .unwrap();
+    let os = make_decision_test_os(storage.clone());
 
     let pending_state = json!({
         "__suspended_tool_calls": {
@@ -1857,6 +1814,406 @@ async fn run_stream_replays_initial_decisions_without_submit_decision() {
             AgentEvent::ToolCallDone { id, .. } if id == "call_pending"
         )),
         "run stream should replay suspended call from initial decisions: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn run_stream_initial_decisions_denied_returns_tool_error_and_clears_suspended() {
+    use futures::StreamExt;
+    use tirea_store_adapters::MemoryStore;
+
+    let storage = Arc::new(MemoryStore::new());
+    let os = make_decision_test_os(storage.clone());
+    let thread_id = "t-initial-denied";
+    let run_id = "run-initial-denied";
+
+    let pending_state = json!({
+        "__suspended_tool_calls": {
+            "calls": {
+                "call_pending": {
+                    "call_id": "call_pending",
+                    "tool_name": "echo",
+                    "suspension": {
+                        "id": "call_pending",
+                        "action": "confirm",
+                        "parameters": { "message": "denied" }
+                    }
+                }
+            }
+        }
+    });
+    let thread = Thread::with_initial_state(thread_id, pending_state)
+        .with_message(crate::contracts::thread::Message::user("resume"));
+    storage.create(&thread).await.unwrap();
+
+    let run = os
+        .run_stream(RunRequest {
+            agent_id: "a1".to_string(),
+            thread_id: Some(thread_id.to_string()),
+            run_id: Some(run_id.to_string()),
+            parent_run_id: None,
+            resource_id: None,
+            state: None,
+            messages: vec![],
+            initial_decisions: vec![tirea_contract::SuspensionResponse::new(
+                "call_pending",
+                json!(false),
+            )
+            .into()],
+        })
+        .await
+        .unwrap();
+    let events: Vec<_> = run.events.collect().await;
+
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolCallResumed { target_id, result }
+                if target_id == "call_pending" && result == &json!(false)
+        )),
+        "denied decision should be emitted as ToolCallResumed: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolCallDone { id, result, .. }
+                if id == "call_pending" && result.is_error()
+        )),
+        "denied decision should produce ToolCallDone error result: {events:?}"
+    );
+
+    let saved = storage.load(thread_id).await.unwrap().unwrap();
+    let rebuilt = saved.agent_state.rebuild_state().unwrap();
+    assert!(
+        rebuilt
+            .get("__suspended_tool_calls")
+            .and_then(|rt| rt.get("calls"))
+            .and_then(|calls| calls.as_object())
+            .map_or(true, |calls| !calls.contains_key("call_pending")),
+        "resolved denied call must be removed from suspended map: {rebuilt:?}"
+    );
+}
+
+#[tokio::test]
+async fn run_stream_initial_decisions_cancelled_returns_tool_error_and_clears_suspended() {
+    use futures::StreamExt;
+    use tirea_store_adapters::MemoryStore;
+
+    let storage = Arc::new(MemoryStore::new());
+    let os = make_decision_test_os(storage.clone());
+    let thread_id = "t-initial-cancelled";
+
+    let pending_state = json!({
+        "__suspended_tool_calls": {
+            "calls": {
+                "call_pending": {
+                    "call_id": "call_pending",
+                    "tool_name": "echo",
+                    "suspension": {
+                        "id": "call_pending",
+                        "action": "confirm",
+                        "parameters": { "message": "cancelled" }
+                    }
+                }
+            }
+        }
+    });
+    let thread = Thread::with_initial_state(thread_id, pending_state)
+        .with_message(crate::contracts::thread::Message::user("resume"));
+    storage.create(&thread).await.unwrap();
+
+    let cancel_payload = json!({
+        "status": "cancelled",
+        "reason": "user canceled"
+    });
+    let run = os
+        .run_stream(RunRequest {
+            agent_id: "a1".to_string(),
+            thread_id: Some(thread_id.to_string()),
+            run_id: Some("run-initial-cancelled".to_string()),
+            parent_run_id: None,
+            resource_id: None,
+            state: None,
+            messages: vec![],
+            initial_decisions: vec![tirea_contract::SuspensionResponse::new(
+                "call_pending",
+                cancel_payload.clone(),
+            )
+            .into()],
+        })
+        .await
+        .unwrap();
+    let events: Vec<_> = run.events.collect().await;
+
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolCallResumed { target_id, result }
+                if target_id == "call_pending" && result == &cancel_payload
+        )),
+        "cancelled decision should be emitted as ToolCallResumed: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolCallDone { id, result, .. }
+                if id == "call_pending" && result.is_error()
+        )),
+        "cancelled decision should produce ToolCallDone error result: {events:?}"
+    );
+
+    let saved = storage.load(thread_id).await.unwrap().unwrap();
+    let rebuilt = saved.agent_state.rebuild_state().unwrap();
+    assert!(
+        rebuilt
+            .get("__suspended_tool_calls")
+            .and_then(|rt| rt.get("calls"))
+            .and_then(|calls| calls.as_object())
+            .map_or(true, |calls| !calls.contains_key("call_pending")),
+        "resolved cancelled call must be removed from suspended map: {rebuilt:?}"
+    );
+}
+
+#[tokio::test]
+async fn run_stream_initial_decisions_partial_match_keeps_unresolved_suspended_call() {
+    use futures::StreamExt;
+    use tirea_store_adapters::MemoryStore;
+
+    let storage = Arc::new(MemoryStore::new());
+    let os = make_decision_test_os(storage.clone());
+    let thread_id = "t-initial-partial";
+
+    let pending_state = json!({
+        "__suspended_tool_calls": {
+            "calls": {
+                "call_approved": {
+                    "call_id": "call_approved",
+                    "tool_name": "echo",
+                    "suspension": {
+                        "id": "call_approved",
+                        "action": "confirm",
+                        "parameters": { "message": "approve me" }
+                    }
+                },
+                "call_waiting": {
+                    "call_id": "call_waiting",
+                    "tool_name": "echo",
+                    "suspension": {
+                        "id": "call_waiting",
+                        "action": "confirm",
+                        "parameters": { "message": "still waiting" }
+                    }
+                }
+            }
+        }
+    });
+    let thread = Thread::with_initial_state(thread_id, pending_state)
+        .with_message(crate::contracts::thread::Message::user("resume"));
+    storage.create(&thread).await.unwrap();
+
+    let run = os
+        .run_stream(RunRequest {
+            agent_id: "a1".to_string(),
+            thread_id: Some(thread_id.to_string()),
+            run_id: Some("run-initial-partial".to_string()),
+            parent_run_id: None,
+            resource_id: None,
+            state: None,
+            messages: vec![],
+            initial_decisions: vec![tirea_contract::SuspensionResponse::new(
+                "call_approved",
+                json!(true),
+            )
+            .into()],
+        })
+        .await
+        .unwrap();
+    let events: Vec<_> = run.events.collect().await;
+
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolCallDone { id, .. } if id == "call_approved"
+        )),
+        "approved call should be replayed: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::RunFinish {
+                termination: TerminationReason::Suspended,
+                ..
+            }
+        )),
+        "run should remain suspended when unresolved calls remain: {events:?}"
+    );
+
+    let saved = storage.load(thread_id).await.unwrap().unwrap();
+    let rebuilt = saved.agent_state.rebuild_state().unwrap();
+    let suspended_calls = rebuilt
+        .get("__suspended_tool_calls")
+        .and_then(|rt| rt.get("calls"))
+        .and_then(|calls| calls.as_object())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !suspended_calls.contains_key("call_approved"),
+        "resolved call should be removed: {suspended_calls:?}"
+    );
+    assert!(
+        suspended_calls.contains_key("call_waiting"),
+        "unresolved call should remain suspended: {suspended_calls:?}"
+    );
+}
+
+#[tokio::test]
+async fn run_stream_initial_decisions_ignore_unknown_target() {
+    use futures::StreamExt;
+    use tirea_store_adapters::MemoryStore;
+
+    let storage = Arc::new(MemoryStore::new());
+    let os = make_decision_test_os(storage.clone());
+    let thread_id = "t-initial-unknown";
+
+    let pending_state = json!({
+        "__suspended_tool_calls": {
+            "calls": {
+                "call_pending": {
+                    "call_id": "call_pending",
+                    "tool_name": "echo",
+                    "suspension": {
+                        "id": "call_pending",
+                        "action": "confirm",
+                        "parameters": { "message": "still waiting" }
+                    }
+                }
+            }
+        }
+    });
+    let thread = Thread::with_initial_state(thread_id, pending_state)
+        .with_message(crate::contracts::thread::Message::user("resume"));
+    storage.create(&thread).await.unwrap();
+
+    let run = os
+        .run_stream(RunRequest {
+            agent_id: "a1".to_string(),
+            thread_id: Some(thread_id.to_string()),
+            run_id: Some("run-initial-unknown".to_string()),
+            parent_run_id: None,
+            resource_id: None,
+            state: None,
+            messages: vec![],
+            initial_decisions: vec![tirea_contract::SuspensionResponse::new(
+                "unknown_call",
+                json!(true),
+            )
+            .into()],
+        })
+        .await
+        .unwrap();
+    let events: Vec<_> = run.events.collect().await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::ToolCallResumed { .. })),
+        "unknown target should not emit ToolCallResumed: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::RunFinish {
+                termination: TerminationReason::Suspended,
+                ..
+            }
+        )),
+        "run should remain suspended with unresolved original call: {events:?}"
+    );
+
+    let saved = storage.load(thread_id).await.unwrap().unwrap();
+    let rebuilt = saved.agent_state.rebuild_state().unwrap();
+    assert!(
+        rebuilt
+            .get("__suspended_tool_calls")
+            .and_then(|rt| rt.get("calls"))
+            .and_then(|calls| calls.get("call_pending"))
+            .is_some(),
+        "unknown target must not clear suspended call: {rebuilt:?}"
+    );
+}
+
+#[tokio::test]
+async fn run_stream_duplicate_initial_decisions_are_idempotent() {
+    use futures::StreamExt;
+    use tirea_store_adapters::MemoryStore;
+
+    let storage = Arc::new(MemoryStore::new());
+    let os = make_decision_test_os(storage.clone());
+    let thread_id = "t-initial-duplicate";
+
+    let pending_state = json!({
+        "__suspended_tool_calls": {
+            "calls": {
+                "call_pending": {
+                    "call_id": "call_pending",
+                    "tool_name": "echo",
+                    "suspension": {
+                        "id": "call_pending",
+                        "action": "confirm",
+                        "parameters": { "message": "idempotent" }
+                    }
+                }
+            }
+        }
+    });
+    let thread = Thread::with_initial_state(thread_id, pending_state)
+        .with_message(crate::contracts::thread::Message::user("resume"));
+    storage.create(&thread).await.unwrap();
+
+    let decision: tirea_contract::ToolCallDecision =
+        tirea_contract::SuspensionResponse::new("call_pending", json!(true)).into();
+    let run = os
+        .run_stream(RunRequest {
+            agent_id: "a1".to_string(),
+            thread_id: Some(thread_id.to_string()),
+            run_id: Some("run-initial-duplicate".to_string()),
+            parent_run_id: None,
+            resource_id: None,
+            state: None,
+            messages: vec![],
+            initial_decisions: vec![decision.clone(), decision],
+        })
+        .await
+        .unwrap();
+    let events: Vec<_> = run.events.collect().await;
+
+    let resumed_count = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                AgentEvent::ToolCallResumed { target_id, .. } if target_id == "call_pending"
+            )
+        })
+        .count();
+    let done_count = events
+        .iter()
+        .filter(
+            |event| matches!(event, AgentEvent::ToolCallDone { id, .. } if id == "call_pending"),
+        )
+        .count();
+    assert_eq!(resumed_count, 1, "duplicate decisions should resume once");
+    assert_eq!(done_count, 1, "duplicate decisions should replay tool once");
+
+    let saved = storage.load(thread_id).await.unwrap().unwrap();
+    let rebuilt = saved.agent_state.rebuild_state().unwrap();
+    assert!(
+        rebuilt
+            .get("__suspended_tool_calls")
+            .and_then(|rt| rt.get("calls"))
+            .and_then(|calls| calls.as_object())
+            .map_or(true, |calls| !calls.contains_key("call_pending")),
+        "idempotent replay should clear suspended call once: {rebuilt:?}"
     );
 }
 

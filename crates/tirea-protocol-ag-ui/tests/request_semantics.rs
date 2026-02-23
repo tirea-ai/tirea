@@ -124,6 +124,26 @@ fn conflicting_results_for_same_target_id_use_last_result() {
 }
 
 #[test]
+fn suspension_decisions_preserve_last_write_order() {
+    let request = RunAgentInput::new("thread_1", "run_1")
+        .with_message(Message::tool("true", "perm_1"))
+        .with_message(Message::tool("true", "perm_2"))
+        .with_message(Message::tool("false", "perm_1"));
+
+    let run_request = request.into_runtime_run_request("agent".to_string());
+    let decision_targets: Vec<&str> = run_request
+        .initial_decisions
+        .iter()
+        .map(|decision| decision.target_id.as_str())
+        .collect();
+    assert_eq!(
+        decision_targets,
+        vec!["perm_2", "perm_1"],
+        "last-write ordering should be stable after dedup"
+    );
+}
+
+#[test]
 fn interaction_responses_filter_to_pending_ids_when_state_exists() {
     let request = RunAgentInput::new("thread_1", "run_1")
         .with_state(json!({
