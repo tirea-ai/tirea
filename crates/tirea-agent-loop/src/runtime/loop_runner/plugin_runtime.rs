@@ -2,8 +2,8 @@ use super::core::{clear_agent_inference_error, set_agent_inference_error};
 use super::AgentLoopError;
 use crate::contracts::plugin::phase::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
-    BeforeToolExecuteContext, Phase, RunEndContext, RunStartContext, StepContext, StepEndContext,
-    StepStartContext,
+    BeforeToolExecuteContext, Phase, RunAction, RunEndContext, RunStartContext, StepContext,
+    StepEndContext, StepStartContext,
 };
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::tool::ToolDescriptor;
@@ -17,6 +17,7 @@ use tirea_state::{DocCell, TrackedPatch};
 struct PhaseMutationSnapshot {
     skip_inference: bool,
     termination_request: bool,
+    run_action: Option<RunAction>,
     system_context: Vec<String>,
     session_context: Vec<String>,
     system_reminders: Vec<String>,
@@ -33,6 +34,7 @@ fn phase_mutation_snapshot(step: &StepContext<'_>) -> PhaseMutationSnapshot {
     PhaseMutationSnapshot {
         skip_inference: step.skip_inference,
         termination_request: step.termination_request.is_some(),
+        run_action: step.run_action.clone(),
         system_context: step.system_context.clone(),
         session_context: step.session_context.clone(),
         system_reminders: step.system_reminders.clone(),
@@ -81,6 +83,15 @@ fn validate_phase_mutation(
     {
         return Err(AgentLoopError::StateError(format!(
             "plugin '{}' mutated termination_request outside BeforeInference/AfterInference ({phase})",
+            plugin_id
+        )));
+    }
+
+    if before.run_action != after.run_action
+        && !matches!(phase, Phase::BeforeInference | Phase::AfterInference)
+    {
+        return Err(AgentLoopError::StateError(format!(
+            "plugin '{}' mutated run_action outside BeforeInference/AfterInference ({phase})",
             plugin_id
         )));
     }

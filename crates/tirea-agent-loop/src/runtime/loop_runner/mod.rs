@@ -59,7 +59,7 @@ use crate::contracts::tool::{Tool, ToolResult};
 use crate::contracts::RunContext;
 use crate::contracts::StopReason;
 use crate::contracts::{
-    AgentEvent, FrontendToolInvocation, SuspendedCall, Suspension, TerminationReason,
+    AgentEvent, FrontendToolInvocation, RunAction, SuspendedCall, Suspension, TerminationReason,
     ToolCallDecision,
 };
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
@@ -400,16 +400,10 @@ pub(super) async fn run_step_prepare_phases(
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
     config: &AgentConfig,
 ) -> Result<
-    (
-        Vec<Message>,
-        Vec<String>,
-        bool,
-        Option<TerminationReason>,
-        Vec<TrackedPatch>,
-    ),
+    (Vec<Message>, Vec<String>, RunAction, Vec<TrackedPatch>),
     AgentLoopError,
 > {
-    let ((messages, filtered_tools, skip_inference, termination_request), pending) =
+    let ((messages, filtered_tools, run_action), pending) =
         run_phase_block(
             run_ctx,
             tool_descriptors,
@@ -419,20 +413,13 @@ pub(super) async fn run_step_prepare_phases(
             |step| inference_inputs_from_step(step, &config.system_prompt),
         )
         .await?;
-    Ok((
-        messages,
-        filtered_tools,
-        skip_inference,
-        termination_request,
-        pending,
-    ))
+    Ok((messages, filtered_tools, run_action, pending))
 }
 
 pub(super) struct PreparedStep {
     pub(super) messages: Vec<Message>,
     pub(super) filtered_tools: Vec<String>,
-    pub(super) skip_inference: bool,
-    pub(super) termination_request: Option<TerminationReason>,
+    pub(super) run_action: RunAction,
     pub(super) pending_patches: Vec<TrackedPatch>,
 }
 
@@ -441,13 +428,12 @@ pub(super) async fn prepare_step_execution(
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
     config: &AgentConfig,
 ) -> Result<PreparedStep, AgentLoopError> {
-    let (messages, filtered_tools, skip_inference, termination_request, pending) =
+    let (messages, filtered_tools, run_action, pending) =
         run_step_prepare_phases(run_ctx, tool_descriptors, config).await?;
     Ok(PreparedStep {
         messages,
         filtered_tools,
-        skip_inference,
-        termination_request,
+        run_action,
         pending_patches: pending,
     })
 }
@@ -470,7 +456,7 @@ pub(super) async fn complete_step_after_inference(
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
     plugins: &[Arc<dyn crate::contracts::plugin::AgentPlugin>],
 ) -> Result<Option<TerminationReason>, AgentLoopError> {
-    let (termination_request, pending) = run_phase_block(
+    let (run_action, pending) = run_phase_block(
         run_ctx,
         tool_descriptors,
         plugins,
@@ -478,7 +464,7 @@ pub(super) async fn complete_step_after_inference(
         |step| {
             step.response = Some(result.clone());
         },
-        |step| step.termination_request.clone(),
+        |step| step.run_action(),
     )
     .await?;
     run_ctx.add_thread_patches(pending);
@@ -489,7 +475,10 @@ pub(super) async fn complete_step_after_inference(
     let pending =
         emit_phase_block(Phase::StepEnd, run_ctx, tool_descriptors, plugins, |_| {}).await?;
     run_ctx.add_thread_patches(pending);
-    Ok(termination_request)
+    Ok(match run_action {
+        RunAction::Terminate(reason) => Some(reason),
+        RunAction::Continue => None,
+    })
 }
 
 pub(super) fn suspension_requested_pending_events(suspension: &Suspension) -> [AgentEvent; 2] {
@@ -1409,15 +1398,16 @@ pub async fn run_loop(
             };
         run_ctx.add_thread_patches(prepared.pending_patches);
 
-        if let Some(reason) = prepared.termination_request {
-            terminate_run!(reason, None, None);
-        }
-        if prepared.skip_inference {
-            terminate_run!(
-                TerminationReason::PluginRequested,
-                Some(last_text.clone()),
-                None
-            );
+        match prepared.run_action {
+            RunAction::Continue => {}
+            RunAction::Terminate(reason) => {
+                let response = if matches!(reason, TerminationReason::PluginRequested) {
+                    Some(last_text.clone())
+                } else {
+                    None
+                };
+                terminate_run!(reason, response, None);
+            }
         }
 
         // Call LLM with unified retry + fallback model strategy.

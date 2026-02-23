@@ -498,16 +498,6 @@ impl<'a> StepContext<'a> {
 
     /// Set run-level action.
     pub fn set_run_action(&mut self, action: RunAction) {
-        match &action {
-            RunAction::Continue => {
-                self.skip_inference = false;
-                self.termination_request = None;
-            }
-            RunAction::Terminate(reason) => {
-                self.skip_inference = true;
-                self.termination_request = Some(reason.clone());
-            }
-        }
         self.run_action = Some(action);
     }
 
@@ -668,6 +658,7 @@ impl<'s, 'a> BeforeInferenceContext<'s, 'a> {
 
     /// Skip current inference.
     pub fn skip_inference(&mut self) {
+        self.step.skip_inference = true;
         self.step
             .set_run_action(RunAction::Terminate(TerminationReason::PluginRequested));
     }
@@ -676,6 +667,8 @@ impl<'s, 'a> BeforeInferenceContext<'s, 'a> {
     ///
     /// This implicitly sets `skip_inference = true`.
     pub fn request_termination(&mut self, reason: TerminationReason) {
+        self.step.skip_inference = true;
+        self.step.termination_request = Some(reason.clone());
         self.step.set_run_action(RunAction::Terminate(reason));
     }
 }
@@ -699,6 +692,7 @@ impl<'s, 'a> AfterInferenceContext<'s, 'a> {
 
     /// Request run termination with a specific reason after inference has completed.
     pub fn request_termination(&mut self, reason: TerminationReason) {
+        self.step.termination_request = Some(reason.clone());
         self.step.set_run_action(RunAction::Terminate(reason));
     }
 }
@@ -891,7 +885,7 @@ mod tests {
     }
 
     #[test]
-    fn test_after_inference_request_termination_sets_run_action() {
+    fn test_after_inference_request_termination_does_not_set_skip_inference() {
         let fix = TestFixture::new();
         let mut step = fix.step(vec![]);
         {
@@ -902,7 +896,7 @@ mod tests {
             step.termination_request,
             Some(TerminationReason::PluginRequested)
         );
-        assert!(step.skip_inference);
+        assert!(!step.skip_inference);
         assert_eq!(
             step.run_action,
             Some(RunAction::Terminate(TerminationReason::PluginRequested))

@@ -330,17 +330,21 @@ pub(super) fn run_stream(
             let messages = prepared.messages;
             let filtered_tools = prepared.filtered_tools;
 
-            // Plugin-requested termination takes precedence over plain skip_inference.
-            if let Some(reason) = prepared.termination_request {
-                if matches!(reason, TerminationReason::Suspended) {
-                    for event in suspended_call_pending_events(&run_ctx) {
-                        yield emitter.emit_existing(event);
+            match prepared.run_action {
+                RunAction::Continue => {}
+                RunAction::Terminate(reason) => {
+                    if matches!(reason, TerminationReason::Suspended) {
+                        for event in suspended_call_pending_events(&run_ctx) {
+                            yield emitter.emit_existing(event);
+                        }
                     }
+                    let response = if matches!(reason, TerminationReason::PluginRequested) {
+                        Some(last_text.clone())
+                    } else {
+                        None
+                    };
+                    finish_run!(reason, response);
                 }
-                finish_run!(reason, Some(last_text.clone()));
-            }
-            if prepared.skip_inference {
-                finish_run!(TerminationReason::PluginRequested, Some(last_text.clone()));
             }
 
             // Step boundary: starting LLM call

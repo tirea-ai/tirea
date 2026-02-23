@@ -1,5 +1,6 @@
 use super::AgentLoopError;
 use crate::contracts::plugin::phase::StepContext;
+use crate::contracts::RunAction;
 use crate::contracts::runtime::state_paths::{
     INFERENCE_ERROR_STATE_PATH, RESUME_DECISIONS_STATE_PATH, SKILLS_STATE_PATH,
     SUSPENDED_TOOL_CALLS_STATE_PATH,
@@ -98,8 +99,7 @@ pub(super) fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec
 pub(super) type InferenceInputs = (
     Vec<Message>,
     Vec<String>,
-    bool,
-    Option<crate::contracts::TerminationReason>,
+    RunAction,
 );
 
 pub(super) fn inference_inputs_from_step(
@@ -112,14 +112,8 @@ pub(super) fn inference_inputs_from_step(
         .iter()
         .map(|td| td.id.clone())
         .collect::<Vec<_>>();
-    let skip_inference = step.skip_inference;
-    let termination_request = step.termination_request.clone();
-    (
-        messages,
-        filtered_tools,
-        skip_inference,
-        termination_request,
-    )
+    let run_action = step.run_action();
+    (messages, filtered_tools, run_action)
 }
 
 pub(super) fn build_request_for_filtered_tools(
