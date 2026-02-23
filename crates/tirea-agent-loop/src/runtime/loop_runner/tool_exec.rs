@@ -771,12 +771,15 @@ pub(super) async fn execute_single_tool_with_phases(
             .and_then(|ticket| ticket.invocation.clone());
         let suspended_interaction = interaction.unwrap_or_else(|| {
             crate::contracts::Interaction::new(call.id.clone(), format!("tool:{}", call.name))
-                .with_message("Waiting for user confirmation")
+                .with_message("Execution suspended; awaiting external decision")
         });
         (
             ToolExecution {
                 call: call.clone(),
-                result: ToolResult::suspended(&call.name, "Waiting for user confirmation"),
+                result: ToolResult::suspended(
+                    &call.name,
+                    "Execution suspended; awaiting external decision",
+                ),
                 patch: None,
             },
             ToolCallOutcome::Suspended,

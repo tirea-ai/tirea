@@ -162,8 +162,8 @@ pub enum ToolError {
     #[error("Execution failed: {0}")]
     ExecutionFailed(String),
 
-    #[error("Permission denied: {0}")]
-    PermissionDenied(String),
+    #[error("Denied: {0}")]
+    Denied(String),
 
     #[error("Not found: {0}")]
     NotFound(String),
@@ -183,8 +183,6 @@ pub struct ToolDescriptor {
     pub description: String,
     /// JSON schema for parameters.
     pub parameters: Value,
-    /// Whether tool requires confirmation.
-    pub requires_confirmation: bool,
     /// Tool category.
     pub category: Option<String>,
     /// Additional metadata.
@@ -203,7 +201,6 @@ impl ToolDescriptor {
             name: name.into(),
             description: description.into(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
-            requires_confirmation: false,
             category: None,
             metadata: HashMap::new(),
         }
@@ -212,12 +209,6 @@ impl ToolDescriptor {
     /// Set parameters schema.
     pub fn with_parameters(mut self, schema: Value) -> Self {
         self.parameters = schema;
-        self
-    }
-
-    /// Set requires confirmation.
-    pub fn with_confirmation(mut self, requires: bool) -> Self {
-        self.requires_confirmation = requires;
         self
     }
 
@@ -438,9 +429,9 @@ mod tests {
     }
 
     #[test]
-    fn test_tool_error_permission_denied() {
-        let err = ToolError::PermissionDenied("no access".to_string());
-        assert_eq!(err.to_string(), "Permission denied: no access");
+    fn test_tool_error_denied() {
+        let err = ToolError::Denied("no access".to_string());
+        assert_eq!(err.to_string(), "Denied: no access");
     }
 
     #[test]
@@ -654,7 +645,6 @@ mod tests {
         assert_eq!(desc.id, "read_file");
         assert_eq!(desc.name, "Read File");
         assert_eq!(desc.description, "Reads a file from disk");
-        assert!(!desc.requires_confirmation);
         assert!(desc.category.is_none());
         assert!(desc.metadata.is_empty());
         // Default parameters
@@ -673,15 +663,6 @@ mod tests {
         let desc =
             ToolDescriptor::new("read_file", "Read File", "Read").with_parameters(schema.clone());
         assert_eq!(desc.parameters, schema);
-    }
-
-    #[test]
-    fn test_tool_descriptor_with_confirmation() {
-        let desc = ToolDescriptor::new("delete", "Delete", "Delete file").with_confirmation(true);
-        assert!(desc.requires_confirmation);
-
-        let desc2 = ToolDescriptor::new("read", "Read", "Read file").with_confirmation(false);
-        assert!(!desc2.requires_confirmation);
     }
 
     #[test]
@@ -704,21 +685,18 @@ mod tests {
     fn test_tool_descriptor_builder_chain() {
         let desc = ToolDescriptor::new("tool", "Tool", "Desc")
             .with_parameters(json!({"type": "object"}))
-            .with_confirmation(true)
             .with_category("test")
             .with_metadata("key", "value");
 
         assert_eq!(desc.id, "tool");
-        assert!(desc.requires_confirmation);
         assert_eq!(desc.category, Some("test".to_string()));
         assert_eq!(desc.metadata.get("key"), Some(&json!("value")));
     }
 
     #[test]
     fn test_tool_descriptor_serialization() {
-        let desc = ToolDescriptor::new("my_tool", "My Tool", "Does things")
-            .with_category("utilities")
-            .with_confirmation(true);
+        let desc =
+            ToolDescriptor::new("my_tool", "My Tool", "Does things").with_category("utilities");
 
         let json = serde_json::to_string(&desc).unwrap();
         let parsed: ToolDescriptor = serde_json::from_str(&json).unwrap();
@@ -726,7 +704,6 @@ mod tests {
         assert_eq!(parsed.id, "my_tool");
         assert_eq!(parsed.name, "My Tool");
         assert_eq!(parsed.category, Some("utilities".to_string()));
-        assert!(parsed.requires_confirmation);
     }
 
     #[test]

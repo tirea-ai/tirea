@@ -369,7 +369,6 @@ fn test_tool_descriptor_basic() {
     assert_eq!(desc.id, "my_tool");
     assert_eq!(desc.name, "My Tool");
     assert_eq!(desc.description, "A test tool");
-    assert!(!desc.requires_confirmation);
     assert!(desc.category.is_none());
 }
 
@@ -377,11 +376,9 @@ fn test_tool_descriptor_basic() {
 fn test_tool_descriptor_with_options() {
     let desc = ToolDescriptor::new("my_tool", "My Tool", "A test tool")
         .with_parameters(json!({"type": "object"}))
-        .with_confirmation(true)
         .with_category("testing")
         .with_metadata("version", json!("1.0"));
 
-    assert!(desc.requires_confirmation);
     assert_eq!(desc.category, Some("testing".to_string()));
     assert_eq!(desc.metadata.get("version"), Some(&json!("1.0")));
 }
@@ -2022,9 +2019,9 @@ fn test_tool_error_variants_display() {
     let exec_failed = ToolError::ExecutionFailed("Database connection timeout".to_string());
     assert!(exec_failed.to_string().contains("failed"));
 
-    let permission_denied = ToolError::PermissionDenied("Admin access required".to_string());
+    let permission_denied = ToolError::Denied("Admin access required".to_string());
     assert!(
-        permission_denied.to_string().contains("Permission denied")
+        permission_denied.to_string().contains("Denied")
             || permission_denied.to_string().contains("Admin")
     );
 
@@ -3548,7 +3545,6 @@ impl Tool for ConfirmationTool {
             "Dangerous Action",
             "Requires confirmation",
         )
-        .with_confirmation(true)
     }
 
     async fn execute(
@@ -4292,14 +4288,12 @@ fn test_tool_descriptor_all_options() {
             },
             "required": ["required_field"]
         }))
-        .with_confirmation(true)
         .with_category("testing")
         .with_metadata("version", json!("1.0.0"))
         .with_metadata("author", json!("test"));
 
     assert_eq!(desc.id, "full_tool");
     assert_eq!(desc.name, "Full Tool");
-    assert!(desc.requires_confirmation);
     assert_eq!(desc.category, Some("testing".to_string()));
     assert_eq!(desc.metadata.len(), 2);
 }
@@ -4310,7 +4304,6 @@ fn test_tool_descriptor_minimal() {
 
     assert_eq!(desc.id, "minimal");
     assert_eq!(desc.description, "");
-    assert!(!desc.requires_confirmation);
     assert!(desc.category.is_none());
     assert!(desc.metadata.is_empty());
 }

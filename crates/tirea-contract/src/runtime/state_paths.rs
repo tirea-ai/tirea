@@ -11,6 +11,3 @@ pub const RESUME_DECISIONS_STATE_PATH: &str = "__resume_decisions";
 
 /// Durable inference-error envelope (`InferenceErrorState`).
 pub const INFERENCE_ERROR_STATE_PATH: &str = "__inference_error";
-
-/// Durable permission state (`PermissionState`).
-pub const PERMISSIONS_STATE_PATH: &str = "permissions";
