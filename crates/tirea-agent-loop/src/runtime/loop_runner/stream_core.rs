@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 /// Pure stream-loop helpers:
 /// - derive run identity
-/// - read pending interaction from persisted state
+/// - read suspended-call interaction state
 /// - derive result payloads / preallocated message ids
 ///
 /// No plugin execution, tool execution, or event emission happens here.

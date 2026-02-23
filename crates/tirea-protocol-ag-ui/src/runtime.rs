@@ -1,7 +1,7 @@
 //! Runtime wiring for AG-UI requests.
 //!
 //! Applies AG-UI–specific extensions to a [`ResolvedRun`]:
-//! frontend tool descriptor stubs, frontend pending interaction strategy,
+//! frontend tool descriptor stubs, frontend suspended-call strategy,
 //! and interaction-response replay plugin wiring.
 
 use async_trait::async_trait;
@@ -29,7 +29,7 @@ pub const AGUI_FORWARDED_PROPS_KEY: &str = "agui_forwarded_props";
 
 /// Apply AG-UI–specific extensions to a [`ResolvedRun`].
 ///
-/// Injects frontend tool stubs, pending-interaction plugins, context
+/// Injects frontend tool stubs, suspended-call plugins, context
 /// injection, and interaction-response replay wiring.
 pub fn apply_agui_extensions(resolved: &mut ResolvedRun, request: &RunAgentInput) {
     if let Some(model) = request.model.as_ref().filter(|m| !m.trim().is_empty()) {

@@ -125,7 +125,7 @@ impl PermissionContextExt for ToolCallContext<'_> {
 /// This plugin checks permissions in `before_tool_execute`.
 /// - `Allow`: no-op
 /// - `Deny`: block tool
-/// - `Ask`: set tool pending interaction directly
+/// - `Ask`: suspend the tool call and emit a confirmation ticket
 pub struct PermissionPlugin;
 
 #[async_trait]
@@ -216,7 +216,7 @@ mod tests {
     use tirea_contract::thread::ToolCall;
 
     fn apply_interaction_intents(_step: &mut tirea_contract::plugin::phase::StepContext<'_>) {
-        // No-op: permission plugin now sets pending interaction directly.
+        // No-op: permission plugin now writes suspend tickets directly.
     }
 
     async fn run_before_tool_execute(

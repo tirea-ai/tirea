@@ -80,7 +80,7 @@ pub enum AgentLoopError {
     /// Pending user interaction; execution should pause until the client responds.
     ///
     /// The returned run context includes any patches applied up to the point where the
-    /// interaction was requested (including persisting the pending interaction).
+    /// interaction was requested (including persisting suspended tool calls).
     #[error("Pending interaction: {id} ({action})", id = interaction.id, action = interaction.action)]
     PendingInteraction {
         run_ctx: Box<crate::contracts::RunContext>,

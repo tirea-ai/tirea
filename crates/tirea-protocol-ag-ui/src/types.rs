@@ -312,7 +312,7 @@ impl RunAgentInput {
 
     /// Extract all interaction responses from tool messages.
     pub fn interaction_responses(&self) -> Vec<InteractionResponse> {
-        let expected_ids = self.pending_interaction_response_ids();
+        let expected_ids = self.suspended_call_response_ids();
         let mut latest_by_id: HashMap<String, (usize, Value)> = HashMap::new();
 
         self.messages
@@ -362,7 +362,7 @@ impl RunAgentInput {
             .collect()
     }
 
-    fn pending_interaction_response_ids(&self) -> HashSet<String> {
+    fn suspended_call_response_ids(&self) -> HashSet<String> {
         let mut ids = HashSet::new();
         let Some(state) = self.state.as_ref() else {
             return ids;

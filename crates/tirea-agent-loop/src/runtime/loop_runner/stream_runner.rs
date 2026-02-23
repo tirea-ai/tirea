@@ -703,7 +703,7 @@ pub(super) fn run_stream(
                 });
             }
 
-            // Emit pending interaction event(s) first.
+            // Emit suspended-call interaction event(s) first.
             for exec_result in &results {
                 if let Some(ref suspended_call) = exec_result.suspended_call {
                     // UseAsToolResult frontend tools (e.g. deleteTask) reuse the

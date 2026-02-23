@@ -25,7 +25,7 @@ struct PhaseMutationSnapshot {
     tool_name: Option<String>,
     tool_blocked: bool,
     tool_pending: bool,
-    tool_pending_interaction_id: Option<String>,
+    tool_suspended_interaction_id: Option<String>,
     tool_has_result: bool,
 }
 
@@ -41,7 +41,7 @@ fn phase_mutation_snapshot(step: &StepContext<'_>) -> PhaseMutationSnapshot {
         tool_name: step.tool.as_ref().map(|t| t.name.clone()),
         tool_blocked: step.tool_blocked(),
         tool_pending: step.tool_pending(),
-        tool_pending_interaction_id: step.tool.as_ref().and_then(|t| {
+        tool_suspended_interaction_id: step.tool.as_ref().and_then(|t| {
             t.suspend_ticket
                 .as_ref()
                 .map(|ticket| ticket.interaction.id.clone())
@@ -127,7 +127,7 @@ fn validate_phase_mutation(
 
     let tool_gate_changed = before.tool_blocked != after.tool_blocked
         || before.tool_pending != after.tool_pending
-        || before.tool_pending_interaction_id != after.tool_pending_interaction_id;
+        || before.tool_suspended_interaction_id != after.tool_suspended_interaction_id;
     if tool_gate_changed && !policy.allow_tool_gate_mutation {
         return Err(AgentLoopError::StateError(format!(
             "plugin '{}' mutated tool gate outside BeforeToolExecute ({phase})",
