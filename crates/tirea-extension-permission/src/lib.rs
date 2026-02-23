@@ -178,11 +178,11 @@ impl AgentPlugin for PermissionPlugin {
                 // Allowed - do nothing
             }
             ToolPermissionBehavior::Deny => {
-                step.cancel(format!("Tool '{}' is denied", tool_id));
+                step.block(format!("Tool '{}' is denied", tool_id));
             }
             ToolPermissionBehavior::Ask => {
                 if call_id.is_empty() {
-                    step.cancel("Permission check requires non-empty tool call id");
+                    step.block("Permission check requires non-empty tool call id");
                     return;
                 }
                 let tool_args = step.tool_args().cloned().unwrap_or_default();
@@ -469,7 +469,7 @@ mod tests {
             .tool
             .as_ref()
             .and_then(|t| t.suspend_ticket.as_ref())
-            .and_then(|ticket| ticket.invocation.as_ref())
+            .map(|ticket| &ticket.invocation)
             .expect("pending frontend invocation should exist");
         assert_eq!(inv.tool_name, PERMISSION_CONFIRM_TOOL_NAME);
         assert_eq!(inv.arguments["tool_name"], "test_tool");
@@ -537,7 +537,7 @@ mod tests {
             .tool
             .as_ref()
             .and_then(|t| t.suspend_ticket.as_ref())
-            .and_then(|ticket| ticket.invocation.as_ref())
+            .map(|ticket| &ticket.invocation)
             .expect("pending frontend invocation should exist");
         assert_eq!(inv.tool_name, "copyToClipboard");
     }

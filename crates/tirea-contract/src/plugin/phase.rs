@@ -145,7 +145,7 @@ impl SuspendTicket {
 pub enum ToolGateDecision {
     Proceed,
     Suspend(SuspendTicket),
-    Cancel { reason: String },
+    Block { reason: String },
 }
 
 /// Tool-level control action emitted by plugins.
@@ -153,7 +153,7 @@ pub enum ToolGateDecision {
 pub enum ToolAction {
     Proceed,
     Suspend(SuspendTicket),
-    Cancel { reason: String },
+    Block { reason: String },
 }
 
 /// State side effect emitted by plugins.
@@ -429,8 +429,8 @@ impl<'a> StepContext<'a> {
 
     /// Mark the current tool as explicitly allowed.
     ///
-    /// This clears any prior cancel/suspend state.
-    pub fn proceed(&mut self) {
+    /// This clears any prior block/suspend state.
+    pub fn allow(&mut self) {
         if let Some(ref mut tool) = self.tool {
             tool.blocked = false;
             tool.block_reason = None;
@@ -439,10 +439,10 @@ impl<'a> StepContext<'a> {
         }
     }
 
-    /// Mark the current tool as canceled with a reason.
+    /// Mark the current tool as blocked with a reason.
     ///
     /// This clears any prior suspend state.
-    pub fn cancel(&mut self, reason: impl Into<String>) {
+    pub fn block(&mut self, reason: impl Into<String>) {
         if let Some(ref mut tool) = self.tool {
             tool.blocked = true;
             tool.block_reason = Some(reason.into());
@@ -453,7 +453,7 @@ impl<'a> StepContext<'a> {
 
     /// Mark the current tool as suspended with a ticket.
     ///
-    /// This clears any prior cancel state.
+    /// This clears any prior block state.
     pub fn suspend(&mut self, ticket: SuspendTicket) {
         if let Some(ref mut tool) = self.tool {
             tool.blocked = false;
@@ -494,7 +494,7 @@ impl<'a> StepContext<'a> {
     pub fn tool_action(&self) -> ToolAction {
         if let Some(tool) = self.tool.as_ref() {
             if tool.blocked {
-                return ToolAction::Cancel {
+                return ToolAction::Block {
                     reason: tool.block_reason.clone().unwrap_or_default(),
                 };
             }
@@ -502,7 +502,7 @@ impl<'a> StepContext<'a> {
                 if let Some(ticket) = tool.suspend_ticket.as_ref() {
                     return ToolAction::Suspend(ticket.clone());
                 }
-                return ToolAction::Cancel {
+                return ToolAction::Block {
                     reason: "invalid pending tool state: missing suspend ticket".to_string(),
                 };
             }
@@ -684,19 +684,27 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
         match self.step.tool_action() {
             ToolAction::Proceed => ToolGateDecision::Proceed,
             ToolAction::Suspend(ticket) => ToolGateDecision::Suspend(ticket),
-            ToolAction::Cancel { reason } => ToolGateDecision::Cancel { reason },
+            ToolAction::Block { reason } => ToolGateDecision::Block { reason },
         }
     }
 
-    pub fn cancel(&mut self, reason: impl Into<String>) {
-        self.step.cancel(reason);
+    pub fn set_decision(&mut self, decision: ToolGateDecision) {
+        match decision {
+            ToolGateDecision::Proceed => self.step.allow(),
+            ToolGateDecision::Suspend(ticket) => self.step.suspend(ticket),
+            ToolGateDecision::Block { reason } => self.step.block(reason),
+        }
     }
 
-    /// Explicitly proceed with tool execution.
+    pub fn block(&mut self, reason: impl Into<String>) {
+        self.step.block(reason);
+    }
+
+    /// Explicitly allow tool execution.
     ///
-    /// This clears any previous cancel/suspend state set by earlier plugins.
-    pub fn proceed(&mut self) {
-        self.step.proceed();
+    /// This clears any previous block/suspend state set by earlier plugins.
+    pub fn allow(&mut self) {
+        self.step.allow();
     }
 
     pub fn suspend(&mut self, ticket: SuspendTicket) {
@@ -1013,7 +1021,7 @@ mod tests {
         let call = ToolCall::new("call_1", "delete_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
 
-        ctx.cancel("Permission denied");
+        ctx.block("Permission denied");
 
         assert!(ctx.tool_blocked());
         assert!(!ctx.tool_pending());
@@ -1051,7 +1059,7 @@ mod tests {
 
         let interaction = Suspension::new("confirm_1", "confirm").with_message("Allow write?");
         ctx.suspend(test_suspend_ticket(interaction));
-        ctx.proceed();
+        ctx.allow();
 
         assert!(!ctx.tool_pending());
         assert!(!ctx.tool_blocked());
@@ -1067,7 +1075,7 @@ mod tests {
         let call = ToolCall::new("call_1", "write_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
 
-        ctx.cancel("denied");
+        ctx.block("denied");
         assert!(ctx.tool_blocked());
         assert!(!ctx.tool_pending());
 
@@ -1078,7 +1086,7 @@ mod tests {
         assert!(ctx.tool_pending());
         assert!(ctx.tool.as_ref().unwrap().block_reason.is_none());
 
-        ctx.proceed();
+        ctx.allow();
         assert!(!ctx.tool_blocked());
         assert!(!ctx.tool_pending());
         assert!(ctx.tool.as_ref().unwrap().suspend_ticket.is_none());
@@ -1364,7 +1372,7 @@ mod tests {
         let mut ctx = fix.step(vec![]);
 
         // No tool context, block should not panic
-        ctx.cancel("test");
+        ctx.block("test");
 
         assert!(!ctx.tool_blocked()); // tool_blocked returns false when no tool
     }
@@ -1389,7 +1397,7 @@ mod tests {
         ctx.tool = Some(ToolContext::new(&call));
 
         // Confirm without pending should not panic
-        ctx.proceed();
+        ctx.allow();
 
         assert!(!ctx.tool_pending());
     }
@@ -1483,7 +1491,7 @@ mod tests {
 
         let call = ToolCall::new("call_copy", "copyToClipboard", json!({"text": "hello"}));
         ctx.tool = Some(ToolContext::new(&call));
-        ctx.cancel("old deny state");
+        ctx.block("old deny state");
 
         let invocation = FrontendToolInvocation::new(
             "call_copy",

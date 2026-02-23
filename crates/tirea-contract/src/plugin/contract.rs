@@ -207,7 +207,7 @@ mod tests {
         async fn before_tool_execute(&self, ctx: &mut BeforeToolExecuteContext<'_, '_>) {
             if let Some(tool_id) = ctx.tool_name() {
                 if self.denied_tools.contains(&tool_id.to_string()) {
-                    ctx.cancel("Permission denied");
+                    ctx.block("Permission denied");
                 }
             }
         }

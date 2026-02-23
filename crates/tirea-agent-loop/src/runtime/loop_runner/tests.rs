@@ -1313,7 +1313,7 @@ impl AgentPlugin for BlockingPhasePlugin {
 
     phase_dispatch_methods!(|phase, step| {
         if phase == Phase::BeforeToolExecute && step.tool_name() == Some("echo") {
-            step.cancel("Echo tool is blocked");
+            step.block("Echo tool is blocked");
         }
     });
 }
@@ -1359,7 +1359,7 @@ impl AgentPlugin for InvalidAfterToolMutationPlugin {
 
     phase_dispatch_methods!(|phase, step| {
         if phase == Phase::AfterToolExecute {
-            step.cancel("too late");
+            step.block("too late");
         }
     });
 }
@@ -1641,7 +1641,7 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
                 .unwrap_or(false);
 
             if !allow_exec {
-                step.cancel("missing plugin.allow_exec in state");
+                step.block("missing plugin.allow_exec in state");
             }
         });
     }
@@ -8076,7 +8076,7 @@ impl AgentPlugin for ConditionalBlockPlugin {
 
     phase_dispatch_methods!(|phase, step| {
         if phase == Phase::BeforeToolExecute && step.tool_pending() {
-            step.cancel("Blocked because tool was pending".to_string());
+            step.block("Blocked because tool was pending".to_string());
         }
     });
 }

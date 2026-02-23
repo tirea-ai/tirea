@@ -737,7 +737,7 @@ pub(super) async fn execute_single_tool_with_phases(
                 result: ToolResult::error(&call.name, reason),
                 patch: None,
             },
-            ToolCallOutcome::Canceled,
+            ToolCallOutcome::Failed,
             None,
         )
     } else if tool.is_none() {
