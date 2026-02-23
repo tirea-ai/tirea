@@ -93,10 +93,10 @@ use core::build_messages;
 #[cfg(test)]
 use core::set_agent_pending_interaction;
 use core::{
-    build_request_for_filtered_tools, clear_all_suspended_calls, clear_resume_decisions,
-    clear_suspended_call, drain_agent_outbox, enqueue_replay_tool_calls,
-    inference_inputs_from_step, resume_decisions_from_ctx, set_agent_suspended_calls,
-    suspended_calls_from_ctx, upsert_resume_decision,
+    build_request_for_filtered_tools, clear_resume_decisions, clear_suspended_call,
+    drain_agent_outbox, enqueue_replay_tool_calls, inference_inputs_from_step,
+    resume_decisions_from_ctx, set_agent_suspended_calls, suspended_calls_from_ctx,
+    upsert_resume_decision,
 };
 pub use outcome::{tool_map, tool_map_from_arc, AgentLoopError};
 pub use outcome::{LoopOutcome, LoopStats, LoopUsage};
@@ -851,149 +851,7 @@ async fn drain_run_start_outbox_and_replay(
     config: &AgentConfig,
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
 ) -> Result<RunStartDrainOutcome, AgentLoopError> {
-    let mut resume_outcome =
-        drain_resume_decisions_and_replay(run_ctx, tools, config, tool_descriptors).await?;
-
-    let outbox = drain_agent_outbox(run_ctx, "agent_outbox_run_start")?;
-    let mut events = std::mem::take(&mut resume_outcome.events);
-    let mut synthesized_denied_result = false;
-    for resolution in outbox.interaction_resolutions {
-        let interaction_id = resolution.interaction_id;
-        let result = resolution.result;
-        events.push(AgentEvent::InteractionResolved {
-            interaction_id: interaction_id.clone(),
-            result: result.clone(),
-        });
-        if InteractionResponse::is_denied(&result) {
-            events.push(append_denied_tool_result_message(
-                run_ctx,
-                &interaction_id,
-                None,
-                &result,
-            ));
-            synthesized_denied_result = true;
-        }
-    }
-
-    let replay_calls = outbox.replay_tool_calls;
-    if replay_calls.is_empty() {
-        return Ok(RunStartDrainOutcome {
-            events,
-            replayed: resume_outcome.replayed || synthesized_denied_result,
-        });
-    }
-
-    let mut replay_state_changed = false;
-    for (index, tool_call) in replay_calls.iter().enumerate() {
-        let state = run_ctx
-            .snapshot()
-            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-        let tool = tools.get(&tool_call.name).cloned();
-        let rt_for_replay = scope_with_tool_caller_context(run_ctx, &state, Some(config))?;
-        let replay_phase_ctx = ToolPhaseContext {
-            tool_descriptors,
-            plugins: &config.plugins,
-            activity_manager: None,
-            run_config: &rt_for_replay,
-            thread_id: run_ctx.thread_id(),
-            thread_messages: run_ctx.messages(),
-            cancellation_token: None,
-        };
-        let replay_result =
-            execute_single_tool_with_phases(tool.as_deref(), tool_call, &state, &replay_phase_ctx)
-                .await?;
-
-        let replay_msg_id = gen_message_id();
-        let replay_msg = tool_response(&tool_call.id, &replay_result.execution.result)
-            .with_id(replay_msg_id.clone());
-        run_ctx.add_message(Arc::new(replay_msg));
-
-        if !replay_result.reminders.is_empty() {
-            let msgs: Vec<Arc<Message>> = replay_result
-                .reminders
-                .iter()
-                .map(|reminder| {
-                    Arc::new(Message::internal_system(format!(
-                        "<system-reminder>{}</system-reminder>",
-                        reminder
-                    )))
-                })
-                .collect();
-            run_ctx.add_messages(msgs);
-        }
-
-        if let Some(patch) = replay_result.execution.patch.clone() {
-            replay_state_changed = true;
-            run_ctx.add_thread_patch(patch);
-        }
-        if !replay_result.pending_patches.is_empty() {
-            replay_state_changed = true;
-            run_ctx.add_thread_patches(replay_result.pending_patches.clone());
-        }
-
-        events.push(AgentEvent::ToolCallDone {
-            id: tool_call.id.clone(),
-            result: replay_result.execution.result,
-            patch: replay_result.execution.patch,
-            message_id: replay_msg_id,
-        });
-
-        if let Some(suspended_call) = replay_result.suspended_call.clone() {
-            let state = run_ctx
-                .snapshot()
-                .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-            let patch = set_agent_suspended_calls(&state, vec![suspended_call.clone()])?;
-            if !patch.patch().is_empty() {
-                run_ctx.add_thread_patch(patch);
-            }
-            let remaining_replay_calls = replay_calls
-                .iter()
-                .skip(index + 1)
-                .cloned()
-                .collect::<Vec<_>>();
-            if !remaining_replay_calls.is_empty() {
-                let replay_patch = enqueue_replay_tool_calls(&state, remaining_replay_calls)?;
-                if !replay_patch.patch().is_empty() {
-                    run_ctx.add_thread_patch(replay_patch);
-                }
-            }
-            for event in pending_tool_events(
-                &suspended_call.interaction,
-                suspended_call.frontend_invocation.as_ref(),
-            ) {
-                events.push(event);
-            }
-            let snapshot = run_ctx
-                .snapshot()
-                .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-            events.push(AgentEvent::StateSnapshot { snapshot });
-            return Ok(RunStartDrainOutcome {
-                events,
-                replayed: true,
-            });
-        }
-    }
-
-    let state = run_ctx
-        .snapshot()
-        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let clear_patch = clear_all_suspended_calls(&state)?;
-    if !clear_patch.patch().is_empty() {
-        replay_state_changed = true;
-        run_ctx.add_thread_patch(clear_patch);
-    }
-
-    if replay_state_changed {
-        let snapshot = run_ctx
-            .snapshot()
-            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-        events.push(AgentEvent::StateSnapshot { snapshot });
-    }
-
-    Ok(RunStartDrainOutcome {
-        events,
-        replayed: true,
-    })
+    drain_resume_decisions_and_replay(run_ctx, tools, config, tool_descriptors).await
 }
 
 async fn commit_run_start_and_drain_replay(

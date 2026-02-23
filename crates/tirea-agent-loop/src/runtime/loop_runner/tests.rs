@@ -3789,7 +3789,7 @@ async fn test_run_loop_skip_inference_emits_run_end_phase() {
 }
 
 #[tokio::test]
-async fn test_run_loop_run_start_outbox_resolution_is_drained_without_replay() {
+async fn test_run_loop_legacy_run_start_outbox_resolution_is_ignored() {
     struct SkipInferencePlugin;
 
     #[async_trait]
@@ -3835,14 +3835,18 @@ async fn test_run_loop_run_start_outbox_resolution_is_drained_without_replay() {
     let resolutions = state
         .get(RESOLVED_SUSPENSIONS_STATE_PATH)
         .and_then(|outbox| outbox.get("resolutions"));
-    assert!(
-        resolutions.is_none() || resolutions == Some(&json!([])),
-        "run start outbox resolutions should be drained after run start"
+    assert_eq!(
+        resolutions,
+        Some(&json!([{
+            "interaction_id": "resolution_1",
+            "result": true
+        }])),
+        "legacy outbox resolutions should be ignored by run-start replay"
     );
 }
 
 #[tokio::test]
-async fn test_run_loop_run_start_repending_requeues_remaining_replay_calls() {
+async fn test_run_loop_legacy_run_start_replay_queue_is_ignored() {
     struct ReplayPendingAndSkipPlugin;
 
     #[async_trait]
@@ -3890,7 +3894,7 @@ async fn test_run_loop_run_start_repending_requeues_remaining_replay_calls() {
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
     let outcome = run_loop(&config, tool_map([EchoTool]), run_ctx, None, None, None).await;
-    assert_eq!(outcome.termination, TerminationReason::PendingInteraction);
+    assert_eq!(outcome.termination, TerminationReason::PluginRequested);
 
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     let replay_calls = state
@@ -3901,13 +3905,13 @@ async fn test_run_loop_run_start_repending_requeues_remaining_replay_calls() {
         .unwrap_or_default();
     assert_eq!(
         replay_calls.len(),
-        1,
-        "expected one replay call to remain queued"
+        2,
+        "legacy replay queue should remain untouched"
     );
     assert_eq!(
         replay_calls[0]["id"],
-        Value::String("replay_call_2".to_string()),
-        "remaining replay call should be replay_call_2"
+        Value::String("replay_call_1".to_string()),
+        "legacy replay queue order should be preserved"
     );
 }
 
@@ -6423,7 +6427,7 @@ async fn test_nonstream_checkpoints_include_run_start_side_effects() {
 }
 
 #[tokio::test]
-async fn test_nonstream_checkpoints_include_run_start_replay() {
+async fn test_nonstream_legacy_run_start_replay_queue_is_ignored() {
     let committer = Arc::new(RecordingStateCommitter::new(None));
     let thread = Thread::new("test").with_message(Message::user("go"));
     let config = AgentConfig::new("mock")
@@ -6448,7 +6452,6 @@ async fn test_nonstream_checkpoints_include_run_start_replay() {
         committer.reasons(),
         vec![
             CheckpointReason::UserMessage,
-            CheckpointReason::ToolResultsCommitted,
             CheckpointReason::AssistantTurnCommitted,
             CheckpointReason::RunFinished
         ]
@@ -6789,7 +6792,7 @@ async fn test_stream_replay_state_failure_emits_error() {
 }
 
 #[tokio::test]
-async fn test_stream_replay_tool_exec_respects_tool_phases() {
+async fn test_stream_legacy_replay_queue_is_not_executed() {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     static BEFORE_TOOL_EXECUTED: AtomicBool = AtomicBool::new(false);
@@ -6838,30 +6841,21 @@ async fn test_stream_replay_tool_exec_respects_tool_phases() {
     )
     .await;
 
-    let replay_done = events.iter().find(|e| {
-        matches!(
-            e,
-            AgentEvent::ToolCallDone { id, .. } if id == "replay_call_1"
-        )
-    });
-
-    let replay_result = match replay_done {
-        Some(AgentEvent::ToolCallDone { result, .. }) => result,
-        _ => panic!("expected replay ToolCallDone event, got: {events:?}"),
-    };
-
     assert!(
-        BEFORE_TOOL_EXECUTED.load(Ordering::SeqCst),
-        "BeforeToolExecute should run for replayed tool calls"
+        !BEFORE_TOOL_EXECUTED.load(Ordering::SeqCst),
+        "legacy replay queue should not dispatch tool execution"
     );
     assert!(
-        replay_result.is_error(),
-        "blocked replay should produce an error tool result"
+        !events.iter().any(|e| matches!(
+            e,
+            AgentEvent::ToolCallDone { id, .. } if id == "replay_call_1"
+        )),
+        "legacy replay queue should not emit tool results: {events:?}"
     );
 }
 
 #[tokio::test]
-async fn test_stream_replay_without_placeholder_appends_tool_result_message() {
+async fn test_stream_legacy_replay_queue_does_not_append_tool_result_message() {
     struct ReplayPlugin;
 
     #[async_trait]
@@ -6897,27 +6891,17 @@ async fn test_stream_replay_without_placeholder_appends_tool_result_message() {
     )
     .await;
 
-    let msg = final_thread
-        .messages
-        .iter()
-        .find(|m| {
+    assert!(
+        !final_thread.messages.iter().any(|m| {
             m.role == crate::contracts::thread::Role::Tool
                 && m.tool_call_id.as_deref() == Some("replay_call_1")
-        })
-        .expect("replay should append a real tool message when no placeholder exists");
-    assert!(
-        !msg.content.contains("awaiting approval"),
-        "replayed message must not remain placeholder"
-    );
-    assert!(
-        msg.content.contains("\"echoed\":\"resume\""),
-        "unexpected replay tool message: {}",
-        msg.content
+        }),
+        "legacy replay queue should not append tool results"
     );
 }
 
 #[tokio::test]
-async fn test_stream_run_start_repending_requeues_remaining_replay_calls() {
+async fn test_stream_legacy_run_start_replay_queue_is_ignored() {
     struct ReplayPendingAndSkipPlugin;
 
     #[async_trait]
@@ -6972,19 +6956,13 @@ async fn test_stream_run_start_repending_requeues_remaining_replay_calls() {
 
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::PendingInteraction)
+        Some(TerminationReason::PluginRequested)
     );
     assert!(
-        events.iter().any(
-            |event| matches!(event, AgentEvent::ToolCallDone { id, .. } if id == "replay_call_1")
-        ),
-        "first replay call should execute before suspension"
-    );
-    assert!(
-        !events.iter().any(
-            |event| matches!(event, AgentEvent::ToolCallDone { id, .. } if id == "replay_call_2")
-        ),
-        "remaining replay call should not execute in the same run"
+        !events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::ToolCallDone { id, .. } if id.starts_with("replay_call_"))),
+        "legacy replay queue should not execute in stream mode"
     );
 
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
@@ -6996,13 +6974,13 @@ async fn test_stream_run_start_repending_requeues_remaining_replay_calls() {
         .unwrap_or_default();
     assert_eq!(
         replay_calls.len(),
-        1,
-        "expected one replay call to remain queued"
+        2,
+        "legacy replay queue should remain untouched"
     );
     assert_eq!(
         replay_calls[0]["id"],
-        Value::String("replay_call_2".to_string()),
-        "remaining replay call should be replay_call_2"
+        Value::String("replay_call_1".to_string()),
+        "legacy replay queue order should be preserved"
     );
 }
 
