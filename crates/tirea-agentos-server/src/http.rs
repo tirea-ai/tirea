@@ -16,7 +16,7 @@ use tirea_agentos::contracts::storage::{
     MessageQuery, SortOrder,
 };
 use tirea_agentos::contracts::thread::{Thread, Visibility};
-use tirea_agentos::contracts::AgentEvent;
+use tirea_agentos::contracts::{AgentEvent, InteractionResponse};
 use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError, RunStream};
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
 use tirea_contract::{ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder};
@@ -71,6 +71,42 @@ fn ai_sdk_stream_registry() -> &'static AiSdkStreamRegistry {
 
 fn ai_sdk_stream_key(agent_id: &str, chat_id: &str) -> String {
     format!("{agent_id}:{chat_id}")
+}
+
+#[derive(Default)]
+struct ActiveRunRegistry {
+    decisions: RwLock<HashMap<String, tokio::sync::mpsc::UnboundedSender<InteractionResponse>>>,
+}
+
+impl ActiveRunRegistry {
+    async fn register(
+        &self,
+        key: String,
+        decision_tx: tokio::sync::mpsc::UnboundedSender<InteractionResponse>,
+    ) {
+        self.decisions.write().await.insert(key, decision_tx);
+    }
+
+    async fn decision_tx_for(
+        &self,
+        key: &str,
+    ) -> Option<tokio::sync::mpsc::UnboundedSender<InteractionResponse>> {
+        self.decisions.read().await.get(key).cloned()
+    }
+
+    async fn remove(&self, key: &str) {
+        self.decisions.write().await.remove(key);
+    }
+}
+
+static ACTIVE_RUN_REGISTRY: OnceLock<ActiveRunRegistry> = OnceLock::new();
+
+fn active_run_registry() -> &'static ActiveRunRegistry {
+    ACTIVE_RUN_REGISTRY.get_or_init(ActiveRunRegistry::default)
+}
+
+fn active_run_key(protocol: &str, agent_id: &str, thread_id: &str) -> String {
+    format!("{protocol}:{agent_id}:{thread_id}")
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -323,6 +359,7 @@ fn encoded_sse_body<E>(
     trailer: Option<&'static str>,
     fanout: Option<broadcast::Sender<Bytes>>,
     stream_key: Option<String>,
+    active_run_key: Option<String>,
     cancel_on_downstream_close: bool,
 ) -> impl futures::Stream<Item = Result<Bytes, Infallible>> + Send + 'static
 where
@@ -394,6 +431,9 @@ where
         if let Some(stream_key) = stream_key {
             ai_sdk_stream_registry().remove(&stream_key).await;
         }
+        if let Some(active_run_key) = active_run_key {
+            active_run_registry().remove(&active_run_key).await;
+        }
     });
 
     async_stream::stream! {
@@ -401,6 +441,26 @@ where
             yield Ok::<Bytes, Infallible>(chunk);
         }
     }
+}
+
+async fn try_forward_decisions_to_active_run(
+    active_key: &str,
+    responses: Vec<InteractionResponse>,
+) -> bool {
+    if responses.is_empty() {
+        return false;
+    }
+    let Some(decision_tx) = active_run_registry().decision_tx_for(active_key).await else {
+        return false;
+    };
+
+    for response in responses {
+        if decision_tx.send(response).is_err() {
+            active_run_registry().remove(active_key).await;
+            return false;
+        }
+    }
+    true
 }
 
 async fn run_ai_sdk_sse(
@@ -432,6 +492,22 @@ async fn run_ai_sdk_sse(
         ));
     }
 
+    let interaction_responses = req.interaction_responses();
+    let decision_only = !req.has_user_input() && !interaction_responses.is_empty();
+    if decision_only {
+        let key = active_run_key("ai_sdk", &agent_id, &req.thread_id);
+        if try_forward_decisions_to_active_run(&key, interaction_responses).await {
+            return Ok((
+                StatusCode::ACCEPTED,
+                Json(serde_json::json!({
+                    "status": "decision_forwarded",
+                    "threadId": req.thread_id,
+                })),
+            )
+                .into_response());
+        }
+    }
+
     sync_ai_sdk_thread_snapshot(&st, &req).await?;
 
     let mut resolved = st.os.resolve(&agent_id).map_err(AgentOsRunError::from)?;
@@ -444,6 +520,10 @@ async fn run_ai_sdk_sse(
         AgentOs::execute_prepared(prepared.with_cancellation_token(cancellation_token.clone()))?;
     let enc = AiSdkV6ProtocolEncoder::new(run.run_id.clone(), Some(run.thread_id.clone()));
     let stream_key = ai_sdk_stream_key(&agent_id, &run.thread_id);
+    let active_key = active_run_key("ai_sdk", &agent_id, &run.thread_id);
+    active_run_registry()
+        .register(active_key.clone(), run.decision_tx.clone())
+        .await;
     let fanout = ai_sdk_stream_registry().register(stream_key.clone()).await;
     let body_stream = encoded_sse_body(
         run,
@@ -452,6 +532,7 @@ async fn run_ai_sdk_sse(
         Some("data: [DONE]\n\n"),
         Some(fanout),
         Some(stream_key),
+        Some(active_key),
         false,
     );
 
@@ -466,15 +547,45 @@ async fn run_ag_ui_sse(
     req.validate()
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
+    let interaction_responses = req.interaction_responses();
+    let decision_only = !req.has_user_input() && !interaction_responses.is_empty();
+    if decision_only {
+        let key = active_run_key("ag_ui", &agent_id, &req.thread_id);
+        if try_forward_decisions_to_active_run(&key, interaction_responses).await {
+            return Ok((
+                StatusCode::ACCEPTED,
+                Json(serde_json::json!({
+                    "status": "decision_forwarded",
+                    "threadId": req.thread_id,
+                    "runId": req.run_id,
+                })),
+            )
+                .into_response());
+        }
+    }
+
     let mut resolved = st.os.resolve(&agent_id).map_err(AgentOsRunError::from)?;
     apply_agui_extensions(&mut resolved, &req);
-    let run_request = AgUiInputAdapter::to_run_request(agent_id, req);
+    let run_request = AgUiInputAdapter::to_run_request(agent_id.clone(), req);
     let cancellation_token = RunCancellationToken::new();
     let prepared = st.os.prepare_run(run_request, resolved).await?;
     let run =
         AgentOs::execute_prepared(prepared.with_cancellation_token(cancellation_token.clone()))?;
     let enc = AgUiProtocolEncoder::new(run.thread_id.clone(), run.run_id.clone());
-    let body_stream = encoded_sse_body(run, enc, cancellation_token, None, None, None, true);
+    let active_key = active_run_key("ag_ui", &agent_id, &run.thread_id);
+    active_run_registry()
+        .register(active_key.clone(), run.decision_tx.clone())
+        .await;
+    let body_stream = encoded_sse_body(
+        run,
+        enc,
+        cancellation_token,
+        None,
+        None,
+        None,
+        Some(active_key),
+        true,
+    );
 
     Ok(sse_response(body_stream))
 }

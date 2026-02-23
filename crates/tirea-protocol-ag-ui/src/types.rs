@@ -284,6 +284,13 @@ impl RunAgentInput {
         !self.interaction_responses().is_empty()
     }
 
+    /// Check if this request contains non-empty user input.
+    pub fn has_user_input(&self) -> bool {
+        self.messages
+            .iter()
+            .any(|message| message.role == Role::User && !message.content.trim().is_empty())
+    }
+
     /// Convert this AG-UI request to the internal runtime request.
     ///
     /// Mapping rules:

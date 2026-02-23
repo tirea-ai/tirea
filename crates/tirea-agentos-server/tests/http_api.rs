@@ -2717,6 +2717,105 @@ async fn test_ai_sdk_resume_stream_routes_match_expected_behavior() {
     assert_eq!(finished.status(), StatusCode::NO_CONTENT);
 }
 
+#[tokio::test]
+async fn test_ai_sdk_decision_only_request_forwards_to_active_run() {
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_slow_skip_plugin(storage.clone()));
+    let app = make_app(os, storage);
+
+    let first_payload = json!({
+        "id": "decision-forward-ai-sdk",
+        "messages": [{ "role": "user", "content": "start" }]
+    });
+    let first_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ai-sdk/agents/test/runs")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(first_payload.to_string()))
+                .expect("request should build"),
+        )
+        .await
+        .expect("request should succeed");
+    assert_eq!(first_response.status(), StatusCode::OK);
+
+    let decision_only_payload = json!({
+        "id": "decision-forward-ai-sdk",
+        "runId": "decision-only",
+        "messages": [{
+            "role": "assistant",
+            "parts": [{
+                "type": "tool-approval-response",
+                "approvalId": "fc_perm_1",
+                "approved": true
+            }]
+        }]
+    });
+    let (status, body) = post_json(
+        app.clone(),
+        "/v1/ai-sdk/agents/test/runs",
+        decision_only_payload,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(body["status"], "decision_forwarded");
+    assert_eq!(body["threadId"], "decision-forward-ai-sdk");
+
+    drop(first_response);
+}
+
+#[tokio::test]
+async fn test_ag_ui_decision_only_request_forwards_to_active_run() {
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_slow_skip_plugin(storage.clone()));
+    let app = make_app(os, storage);
+
+    let first_payload = json!({
+        "threadId": "decision-forward-ag-ui",
+        "runId": "run-active",
+        "messages": [{ "role": "user", "content": "start" }],
+        "tools": []
+    });
+    let first_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ag-ui/agents/test/runs")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(first_payload.to_string()))
+                .expect("request should build"),
+        )
+        .await
+        .expect("request should succeed");
+    assert_eq!(first_response.status(), StatusCode::OK);
+
+    let decision_only_payload = json!({
+        "threadId": "decision-forward-ag-ui",
+        "runId": "run-decision-only",
+        "messages": [{
+            "role": "tool",
+            "toolCallId": "fc_perm_1",
+            "content": "true"
+        }],
+        "tools": []
+    });
+    let (status, body) = post_json(
+        app.clone(),
+        "/v1/ag-ui/agents/test/runs",
+        decision_only_payload,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(body["status"], "decision_forwarded");
+    assert_eq!(body["threadId"], "decision-forward-ag-ui");
+    assert_eq!(body["runId"], "run-decision-only");
+
+    drop(first_response);
+}
+
 /// Generic thread endpoints remain accessible without protocol prefix.
 #[tokio::test]
 async fn test_generic_thread_endpoints_still_work() {

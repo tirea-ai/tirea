@@ -50,6 +50,22 @@ fn interaction_responses_ignore_non_tool_messages_and_tool_without_id() {
 }
 
 #[test]
+fn has_user_input_only_counts_non_empty_user_messages() {
+    let no_user = RunAgentInput::new("thread_1", "run_1")
+        .with_message(Message::assistant("ignored"))
+        .with_message(Message::tool("true", "interaction_1"));
+    assert!(!no_user.has_user_input());
+
+    let empty_user = RunAgentInput::new("thread_1", "run_1").with_message(Message::user("   "));
+    assert!(!empty_user.has_user_input());
+
+    let with_user = RunAgentInput::new("thread_1", "run_1")
+        .with_message(Message::user("hello"))
+        .with_message(Message::tool("true", "interaction_1"));
+    assert!(with_user.has_user_input());
+}
+
+#[test]
 fn interaction_response_non_json_content_is_preserved_as_string() {
     let request =
         RunAgentInput::new("thread_1", "run_1").with_message(Message::tool("approved", "i1"));

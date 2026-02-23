@@ -57,10 +57,6 @@ pub struct PermissionState {
     pub default_behavior: ToolPermissionBehavior,
     /// Per-tool permission overrides.
     pub tools: HashMap<String, ToolPermissionBehavior>,
-    /// One-shot approved call IDs — each entry allows a single replayed tool
-    /// call to bypass the permission check. Consumed on use.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub approved_calls: HashMap<String, bool>,
 }
 
 /// Frontend tool name for permission confirmation prompts.
@@ -147,8 +143,8 @@ impl AgentPlugin for PermissionPlugin {
             return;
         };
 
-        // Check one-shot approved_calls first (from a prior permission approval).
-        // If this call_id was approved, consume the entry and allow execution.
+        // Resume decisions are written by interaction handling when a suspended
+        // permission call is approved.
         let call_id = step.tool_call_id().unwrap_or_default().to_string();
         if !call_id.is_empty() {
             let has_resume_grant = {
@@ -161,23 +157,6 @@ impl AgentPlugin for PermissionPlugin {
             };
             if has_resume_grant {
                 return;
-            }
-
-            let is_approved = {
-                let state = step.state_of::<PermissionState>();
-                state
-                    .approved_calls()
-                    .ok()
-                    .and_then(|m| m.get(&call_id).copied())
-                    == Some(true)
-            };
-            if is_approved {
-                // Consume once: remove approved entry after use.
-                let state = step.state_of::<PermissionState>();
-                let mut approved = state.approved_calls().ok().unwrap_or_default();
-                approved.remove(&call_id);
-                let _ = state.set_approved_calls(approved);
-                return; // Allow this specific call
             }
         }
 
@@ -211,8 +190,6 @@ impl AgentPlugin for PermissionPlugin {
                     "tool_name": tool_id,
                     "tool_args": tool_args.clone(),
                 });
-                // One-shot approval is set by InteractionResponsePlugin when the
-                // frontend confirms this pending invocation.
                 let invocation = FrontendToolInvocation::new(
                     format!("fc_{call_id}"),
                     PERMISSION_CONFIRM_TOOL_NAME,
@@ -819,17 +796,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_permission_approved_call_allows_once_then_reverts() {
-        // Simulate state after user approved call_1: approved_calls has call_1=true
+    async fn test_permission_resume_decision_bypasses_ask() {
         let fixture = TestFixture::new_with_state(json!({
             "permissions": {
                 "default_behavior": "ask",
-                "tools": {},
-                "approved_calls": { "call_1": true }
+                "tools": {}
+            },
+            "__resume_decisions": {
+                "calls": {
+                    "call_1": {
+                        "decision_id": "fc_call_1",
+                        "action": "resume",
+                        "result": true,
+                        "updated_at": 1
+                    }
+                }
             }
         }));
-
-        // First execution with call_1: should be allowed (one-shot approval)
         let mut step = fixture.step(vec![]);
         let call = ToolCall::new("call_1", "test_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
@@ -837,92 +820,13 @@ mod tests {
         let plugin = PermissionPlugin;
         run_before_tool_execute(&plugin, &mut step).await;
 
-        assert!(!step.tool_blocked(), "approved call_1 should be allowed");
+        assert!(
+            !step.tool_blocked(),
+            "resume-approved call should be allowed"
+        );
         assert!(
             !step.tool_pending(),
-            "approved call_1 should not be pending"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_permission_approved_call_does_not_grant_permanent_allow() {
-        // An approved call_id should NOT make the tool permanently allowed.
-        // A different call_id for the same tool should still trigger Ask.
-        let fixture = TestFixture::new_with_state(json!({
-            "permissions": {
-                "default_behavior": "ask",
-                "tools": {},
-                "approved_calls": { "call_1": true }
-            }
-        }));
-
-        let mut step = fixture.step(vec![]);
-        // Different call_id for the same tool — should still Ask
-        let call = ToolCall::new("call_2", "test_tool", json!({}));
-        step.tool = Some(ToolContext::new(&call));
-
-        let plugin = PermissionPlugin;
-        run_before_tool_execute(&plugin, &mut step).await;
-
-        assert!(
-            step.tool_pending(),
-            "unapproved call_2 for same tool should still require confirmation"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_permission_consumed_approval_not_reusable() {
-        // After consuming an approval (key deleted from state), the same call_id
-        // should not be allowed again if it somehow reappears as false.
-        let fixture = TestFixture::new_with_state(json!({
-            "permissions": {
-                "default_behavior": "ask",
-                "tools": {},
-                "approved_calls": { "call_1": false }
-            }
-        }));
-
-        let mut step = fixture.step(vec![]);
-        let call = ToolCall::new("call_1", "test_tool", json!({}));
-        step.tool = Some(ToolContext::new(&call));
-
-        let plugin = PermissionPlugin;
-        run_before_tool_execute(&plugin, &mut step).await;
-
-        assert!(
-            step.tool_pending(),
-            "non-true approval value should not bypass permission check"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_permission_approval_cleanup_removes_consumed_call() {
-        // Consumed one-shot approvals should be removed from state so they
-        // cannot be reused.
-        let fixture = TestFixture::new_with_state(json!({
-            "permissions": {
-                "default_behavior": "ask",
-                "tools": {},
-                "approved_calls": { "call_1": true }
-            }
-        }));
-
-        let mut step = fixture.step(vec![]);
-        let call = ToolCall::new("call_1", "test_tool", json!({}));
-        step.tool = Some(ToolContext::new(&call));
-
-        let plugin = PermissionPlugin;
-        run_before_tool_execute(&plugin, &mut step).await;
-
-        assert!(!step.tool_pending(), "approved call should be allowed");
-        let approvals = step
-            .state_of::<PermissionState>()
-            .approved_calls()
-            .ok()
-            .unwrap_or_default();
-        assert!(
-            !approvals.contains_key("call_1"),
-            "consumed approval must be removed from state"
+            "resume-approved call should not suspend again"
         );
     }
 }
