@@ -4603,7 +4603,9 @@ fn test_scenario_text_interrupted_by_interaction() {
     // 3. Interaction interrupts (e.g., permission needed)
     let interaction =
         Interaction::new("int_1", "confirm").with_message("Proceed with file operation?");
-    let pending_event = AgentEvent::ToolCallSuspended { suspension: interaction };
+    let pending_event = AgentEvent::ToolCallSuspended {
+        suspension: interaction,
+    };
     let events3 = ctx.on_agent_event(&pending_event);
 
     // Should end text stream (pending no longer emits tool call events)
@@ -4782,7 +4784,7 @@ fn suspended_interaction(step: &StepContext<'_>) -> Option<Interaction> {
     step.tool
         .as_ref()
         .and_then(|tool| tool.suspend_ticket.as_ref())
-        .map(|ticket| ticket.interaction.clone())
+        .map(|ticket| ticket.suspension.clone())
 }
 
 fn suspended_frontend_invocation(
@@ -4791,7 +4793,7 @@ fn suspended_frontend_invocation(
     step.tool
         .as_ref()
         .and_then(|tool| tool.suspend_ticket.as_ref())
-        .and_then(|ticket| ticket.frontend_invocation.clone())
+        .and_then(|ticket| ticket.invocation.clone())
 }
 
 /// Test scenario: Complete frontend tool flow from request to AG-UI events
@@ -5158,7 +5160,9 @@ async fn test_scenario_frontend_tool_full_event_pipeline() {
 
     // 2. Agent loop would create AgentEvent::ToolCallSuspended
     let interaction = suspended_interaction(&step).expect("suspended interaction should exist");
-    let agent_event = AgentEvent::ToolCallSuspended { suspension: interaction };
+    let agent_event = AgentEvent::ToolCallSuspended {
+        suspension: interaction,
+    };
 
     // 3. Convert to AG-UI events with context
     let mut agui_ctx = AgUiEventContext::new("thread_123".into(), "run_456".into());
@@ -5830,7 +5834,9 @@ fn test_scenario_agui_context_state_after_pending() {
 
     // Pending interaction arrives
     let interaction = Interaction::new("perm_1", "confirm").with_message("Allow?");
-    let pending_event = AgentEvent::ToolCallSuspended { suspension: interaction };
+    let pending_event = AgentEvent::ToolCallSuspended {
+        suspension: interaction,
+    };
     let pending_events = ctx.on_agent_event(&pending_event);
 
     // Should have TextMessageEnd only (pending no longer emits tool call events)
@@ -6003,7 +6009,9 @@ fn test_agui_stream_pending_no_run_finished() {
 
     // Pending interaction
     let interaction = Interaction::new("perm_1", "confirm").with_message("Allow tool execution?");
-    let pending = AgentEvent::ToolCallSuspended { suspension: interaction };
+    let pending = AgentEvent::ToolCallSuspended {
+        suspension: interaction,
+    };
     let pending_events = ctx.on_agent_event(&pending);
 
     // Pending interactions no longer emit tool call events (communicated via STATE_SNAPSHOT)
@@ -12013,7 +12021,9 @@ fn test_agent_event_pending_ends_text() {
 
     // Pending interaction
     let interaction = Interaction::new("perm_1", "confirm");
-    let pending = AgentEvent::ToolCallSuspended { suspension: interaction };
+    let pending = AgentEvent::ToolCallSuspended {
+        suspension: interaction,
+    };
     let events = ctx.on_agent_event(&pending);
 
     // Should end text stream

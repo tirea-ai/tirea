@@ -240,7 +240,7 @@ impl AgentPlugin for FrontendToolPendingPlugin {
             },
             ResponseRouting::UseAsToolResult,
         );
-        ctx.suspend(SuspendTicket::from_frontend_invocation(invocation));
+        ctx.suspend(SuspendTicket::from_invocation(invocation));
     }
 }
 
@@ -498,7 +498,7 @@ mod tests {
             .tool
             .as_ref()
             .and_then(|t| t.suspend_ticket.as_ref())
-            .map(|ticket| &ticket.interaction)
+            .map(|ticket| &ticket.suspension)
             .expect("suspended interaction should exist");
         assert_eq!(pending.action, "tool:copyToClipboard");
 
@@ -507,7 +507,7 @@ mod tests {
             .tool
             .as_ref()
             .and_then(|t| t.suspend_ticket.as_ref())
-            .and_then(|ticket| ticket.frontend_invocation.as_ref())
+            .and_then(|ticket| ticket.invocation.as_ref())
             .expect("pending frontend invocation should exist");
         assert_eq!(inv.call_id, "call_1");
         assert_eq!(inv.tool_name, "copyToClipboard");

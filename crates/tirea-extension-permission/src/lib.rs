@@ -201,7 +201,7 @@ impl AgentPlugin for PermissionPlugin {
                     },
                     ResponseRouting::ReplayOriginalTool,
                 );
-                step.suspend(SuspendTicket::from_frontend_invocation(invocation));
+                step.suspend(SuspendTicket::from_invocation(invocation));
             }
         }
     }
@@ -457,7 +457,7 @@ mod tests {
             .tool
             .as_ref()
             .and_then(|t| t.suspend_ticket.as_ref())
-            .map(|ticket| &ticket.interaction)
+            .map(|ticket| &ticket.suspension)
             .expect("suspended interaction should exist");
         assert_eq!(
             interaction.action,
@@ -469,7 +469,7 @@ mod tests {
             .tool
             .as_ref()
             .and_then(|t| t.suspend_ticket.as_ref())
-            .and_then(|ticket| ticket.frontend_invocation.as_ref())
+            .and_then(|ticket| ticket.invocation.as_ref())
             .expect("pending frontend invocation should exist");
         assert_eq!(inv.tool_name, PERMISSION_CONFIRM_TOOL_NAME);
         assert_eq!(inv.arguments["tool_name"], "test_tool");
@@ -525,7 +525,7 @@ mod tests {
             },
             ResponseRouting::UseAsToolResult,
         );
-        step.suspend(SuspendTicket::from_frontend_invocation(invocation));
+        step.suspend(SuspendTicket::from_invocation(invocation));
 
         let plugin = PermissionPlugin;
         run_before_tool_execute(&plugin, &mut step).await;
@@ -537,7 +537,7 @@ mod tests {
             .tool
             .as_ref()
             .and_then(|t| t.suspend_ticket.as_ref())
-            .and_then(|ticket| ticket.frontend_invocation.as_ref())
+            .and_then(|ticket| ticket.invocation.as_ref())
             .expect("pending frontend invocation should exist");
         assert_eq!(inv.tool_name, "copyToClipboard");
     }

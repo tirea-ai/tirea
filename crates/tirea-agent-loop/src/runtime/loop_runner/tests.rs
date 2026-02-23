@@ -366,7 +366,7 @@ fn suspend_frontend_tool(
         },
     };
     let invocation = FrontendToolInvocation::new(&call_id, &tool_name, arguments, origin, routing);
-    step.suspend(SuspendTicket::from_frontend_invocation(invocation));
+    step.suspend(SuspendTicket::from_invocation(invocation));
     Some(call_id)
 }
 
@@ -716,10 +716,7 @@ fn test_agent_loop_error_termination_reason_mapping() {
             frontend_invocation: None,
         }),
     };
-    assert_eq!(
-        pending.termination_reason(),
-        TerminationReason::Suspended
-    );
+    assert_eq!(pending.termination_reason(), TerminationReason::Suspended);
 
     let llm = AgentLoopError::LlmError("offline".to_string());
     assert_eq!(llm.termination_reason(), TerminationReason::Error);
@@ -4082,10 +4079,7 @@ async fn test_run_loop_skip_inference_with_suspended_state_returns_suspended_int
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
-    assert!(matches!(
-        outcome.termination,
-        TerminationReason::Suspended
-    ));
+    assert!(matches!(outcome.termination, TerminationReason::Suspended));
 
     let interaction = outcome
         .run_ctx
@@ -4154,10 +4148,7 @@ async fn test_run_loop_skip_inference_with_suspended_only_state_returns_suspende
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
-    assert!(matches!(
-        outcome.termination,
-        TerminationReason::Suspended
-    ));
+    assert!(matches!(outcome.termination, TerminationReason::Suspended));
 }
 
 #[tokio::test]
@@ -5549,10 +5540,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
 
     let nonstream_outcome =
         run_loop(&nonstream_config, tools.clone(), run_ctx, None, None, None).await;
-    assert_eq!(
-        nonstream_outcome.termination,
-        TerminationReason::Suspended
-    );
+    assert_eq!(nonstream_outcome.termination, TerminationReason::Suspended);
     let nonstream_interaction = nonstream_outcome
         .run_ctx
         .first_suspended_interaction()
@@ -5623,10 +5611,7 @@ async fn test_golden_run_loop_and_stream_no_plugins_pending_state_alignment() {
         None,
     )
     .await;
-    assert_eq!(
-        nonstream_outcome.termination,
-        TerminationReason::Suspended
-    );
+    assert_eq!(nonstream_outcome.termination, TerminationReason::Suspended);
     assert_eq!(nonstream_outcome.stats.llm_calls, 1);
 
     let (stream_events, stream_thread) = run_mock_stream_with_final_thread(
@@ -8228,10 +8213,7 @@ async fn test_run_step_skip_inference_with_suspended_state_returns_suspended_int
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
-    assert!(matches!(
-        outcome.termination,
-        TerminationReason::Suspended
-    ));
+    assert!(matches!(outcome.termination, TerminationReason::Suspended));
 
     let interaction = outcome
         .run_ctx

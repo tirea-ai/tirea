@@ -298,10 +298,9 @@ impl AiSdkEncoder {
             AgentEvent::ToolCallSuspendRequested { suspension } => {
                 self.map_interaction_requested(suspension)
             }
-            AgentEvent::ToolCallResumed {
-                target_id,
-                result,
-            } => self.map_interaction_resolved(target_id, result),
+            AgentEvent::ToolCallResumed { target_id, result } => {
+                self.map_interaction_resolved(target_id, result)
+            }
         }
     }
 

@@ -113,28 +113,28 @@ pub enum StepOutcome {
 /// Suspension payload for `ToolGateDecision::Suspend`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SuspendTicket {
-    pub interaction: Interaction,
-    pub frontend_invocation: Option<FrontendToolInvocation>,
+    pub suspension: Interaction,
+    pub invocation: Option<FrontendToolInvocation>,
 }
 
 impl SuspendTicket {
-    pub fn new(interaction: Interaction) -> Self {
+    pub fn new(suspension: Interaction) -> Self {
         Self {
-            interaction,
-            frontend_invocation: None,
+            suspension,
+            invocation: None,
         }
     }
 
-    pub fn from_frontend_invocation(frontend_invocation: FrontendToolInvocation) -> Self {
-        let interaction = frontend_invocation.to_interaction();
+    pub fn from_invocation(invocation: FrontendToolInvocation) -> Self {
+        let suspension = invocation.to_interaction();
         Self {
-            interaction,
-            frontend_invocation: Some(frontend_invocation),
+            suspension,
+            invocation: Some(invocation),
         }
     }
 
-    pub fn with_frontend_invocation(mut self, frontend_invocation: FrontendToolInvocation) -> Self {
-        self.frontend_invocation = Some(frontend_invocation);
+    pub fn with_invocation(mut self, invocation: FrontendToolInvocation) -> Self {
+        self.invocation = Some(invocation);
         self
     }
 }
@@ -465,7 +465,7 @@ impl<'a> StepContext<'a> {
         if let Some(ref tool) = self.tool {
             if tool.pending {
                 if let Some(ticket) = tool.suspend_ticket.as_ref() {
-                    return StepOutcome::Pending(ticket.interaction.clone());
+                    return StepOutcome::Pending(ticket.suspension.clone());
                 }
                 return StepOutcome::Pending(Interaction::new(
                     tool.id.clone(),
@@ -1011,7 +1011,7 @@ mod tests {
             .unwrap()
             .suspend_ticket
             .as_ref()
-            .and_then(|ticket| ticket.frontend_invocation.as_ref())
+            .and_then(|ticket| ticket.invocation.as_ref())
             .is_none());
     }
 
@@ -1102,7 +1102,7 @@ mod tests {
         let ctx = BeforeToolExecuteContext::new(&mut step);
         match ctx.decision() {
             ToolGateDecision::Suspend(ticket) => {
-                assert_eq!(ticket.interaction.id, ticket_interaction.id);
+                assert_eq!(ticket.suspension.id, ticket_interaction.id);
             }
             other => panic!("Expected Suspend decision, got: {other:?}"),
         }
@@ -1394,13 +1394,13 @@ mod tests {
         tool_ctx.suspend_ticket = Some(SuspendTicket::new(interaction.clone()));
 
         assert_eq!(
-            tool_ctx.suspend_ticket.as_ref().unwrap().interaction.id,
+            tool_ctx.suspend_ticket.as_ref().unwrap().suspension.id,
             "confirm_1"
         );
     }
 
     #[test]
-    fn test_suspend_with_frontend_invocation_direct() {
+    fn test_suspend_with_invocation_direct() {
         let fix = TestFixture::new();
         let mut ctx = fix.step(vec![]);
 
@@ -1417,7 +1417,7 @@ mod tests {
             },
             ResponseRouting::UseAsToolResult,
         );
-        ctx.suspend(SuspendTicket::from_frontend_invocation(invocation));
+        ctx.suspend(SuspendTicket::from_invocation(invocation));
 
         assert!(ctx.tool_pending());
         assert!(!ctx.tool_blocked());
@@ -1429,7 +1429,7 @@ mod tests {
             .unwrap()
             .suspend_ticket
             .as_ref()
-            .and_then(|ticket| ticket.frontend_invocation.as_ref())
+            .and_then(|ticket| ticket.invocation.as_ref())
             .expect("pending frontend invocation should exist");
         assert_eq!(invocation.call_id, "call_copy");
         assert_eq!(invocation.tool_name, "copyToClipboard");
@@ -1449,14 +1449,14 @@ mod tests {
             .unwrap()
             .suspend_ticket
             .as_ref()
-            .map(|ticket| &ticket.interaction)
+            .map(|ticket| &ticket.suspension)
             .unwrap();
         assert_eq!(interaction.id, "call_copy");
         assert_eq!(interaction.action, "tool:copyToClipboard");
     }
 
     #[test]
-    fn test_suspend_with_frontend_invocation_replay_original_tool() {
+    fn test_suspend_with_invocation_replay_original_tool() {
         let fix = TestFixture::new();
         let mut ctx = fix.step(vec![]);
 
@@ -1475,7 +1475,7 @@ mod tests {
             },
             ResponseRouting::ReplayOriginalTool,
         );
-        ctx.suspend(SuspendTicket::from_frontend_invocation(invocation));
+        ctx.suspend(SuspendTicket::from_invocation(invocation));
 
         assert!(ctx.tool_pending());
         // ReplayOriginalTool should use a dedicated frontend call id.
@@ -1491,7 +1491,7 @@ mod tests {
             .unwrap()
             .suspend_ticket
             .as_ref()
-            .and_then(|ticket| ticket.frontend_invocation.as_ref())
+            .and_then(|ticket| ticket.invocation.as_ref())
             .expect("pending frontend invocation should exist");
         assert_eq!(invocation.call_id, call_id);
         assert_eq!(invocation.tool_name, "PermissionConfirm");
@@ -1526,7 +1526,7 @@ mod tests {
             },
             ResponseRouting::UseAsToolResult,
         );
-        ctx.suspend(SuspendTicket::from_frontend_invocation(invocation));
+        ctx.suspend(SuspendTicket::from_invocation(invocation));
         assert!(!ctx.tool_pending());
     }
 

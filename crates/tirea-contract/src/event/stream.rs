@@ -97,10 +97,7 @@ pub enum AgentEvent {
     /// Interaction request created.
     ToolCallSuspendRequested { suspension: Interaction },
     /// Interaction resolution received.
-    ToolCallResumed {
-        target_id: String,
-        result: Value,
-    },
+    ToolCallResumed { target_id: String, result: Value },
     /// Tool call suspended waiting for external resolution.
     ToolCallSuspended { suspension: Interaction },
 
@@ -714,10 +711,7 @@ impl Serialize for AgentEvent {
                 })
                 .map_err(serde::ser::Error::custom)?,
             },
-            Self::ToolCallResumed {
-                target_id,
-                result,
-            } => EventEnvelope {
+            Self::ToolCallResumed { target_id, result } => EventEnvelope {
                 event_type: AgentEventType::ToolCallResumed,
                 run_id: meta_run_id(),
                 thread_id: meta_thread_id(),
