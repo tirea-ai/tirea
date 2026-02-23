@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use tirea_contract::{SuspensionResponse, ToolCallDecision};
 use tirea_contract::{gen_message_id, RunRequest, Visibility};
+use tirea_contract::{SuspensionResponse, ToolCallDecision};
 use tracing::warn;
 
 /// Role for AG-UI input/output messages.
@@ -304,6 +304,7 @@ impl RunAgentInput {
     ///   inbound messages are intentionally skipped at runtime input boundary).
     /// - `resource_id` is not provided by AG-UI and remains `None`.
     pub fn into_runtime_run_request(self, agent_id: String) -> RunRequest {
+        let initial_decisions = self.suspension_decisions();
         RunRequest {
             agent_id,
             thread_id: Some(self.thread_id),
@@ -312,6 +313,7 @@ impl RunAgentInput {
             resource_id: None,
             state: self.state,
             messages: convert_agui_messages(&self.messages),
+            initial_decisions,
         }
     }
 

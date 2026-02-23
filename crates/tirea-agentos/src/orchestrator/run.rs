@@ -51,6 +51,7 @@ impl AgentOs {
         let thread_id = request.thread_id.unwrap_or_else(Self::generate_id);
         let run_id = request.run_id.unwrap_or_else(Self::generate_id);
         let parent_run_id = request.parent_run_id.clone();
+        let initial_decisions = std::mem::take(&mut request.initial_decisions);
 
         // 1. Load or create thread
         //    If frontend sent a state snapshot, apply it:
@@ -122,6 +123,11 @@ impl AgentOs {
         let run_ctx = RunContext::from_thread(&thread, resolved.run_config)
             .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;
         let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
+        for decision in initial_decisions {
+            decision_tx
+                .send(decision)
+                .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;
+        }
 
         Ok(PreparedRun {
             thread_id,

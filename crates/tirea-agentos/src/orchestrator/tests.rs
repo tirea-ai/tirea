@@ -918,6 +918,7 @@ async fn run_and_run_stream_work_without_llm_when_skip_inference() {
             resource_id: None,
             state: Some(json!({})),
             messages: vec![],
+            initial_decisions: vec![],
         })
         .await
         .unwrap();
@@ -1381,6 +1382,7 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
         resource_id: None,
         state: Some(json!({"counter": 42, "new_field": true})),
         messages: vec![crate::contracts::thread::Message::user("hello")],
+        initial_decisions: vec![],
     };
 
     let run_stream = os.run_stream(request).await.unwrap();
@@ -1433,6 +1435,7 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
         resource_id: None,
         state: Some(json!({"initial": true})),
         messages: vec![crate::contracts::thread::Message::user("hello")],
+        initial_decisions: vec![],
     };
 
     let run_stream = os.run_stream(request).await.unwrap();
@@ -1488,6 +1491,7 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
         resource_id: None,
         state: None,
         messages: vec![crate::contracts::thread::Message::user("hello")],
+        initial_decisions: vec![],
     };
 
     let run_stream = os.run_stream(request).await.unwrap();
@@ -1540,6 +1544,7 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
                 resource_id: None,
                 state: Some(json!({"count": 1})),
                 messages: vec![crate::contracts::thread::Message::user("hello")],
+                initial_decisions: vec![],
             },
             resolved,
         )
@@ -1608,6 +1613,7 @@ async fn execute_prepared_runs_stream() {
                 resource_id: None,
                 state: None,
                 messages: vec![crate::contracts::thread::Message::user("hello")],
+                initial_decisions: vec![],
             },
             resolved,
         )
@@ -1715,6 +1721,7 @@ async fn run_stream_exposes_decision_sender_and_replays_suspended_calls() {
             resource_id: None,
             state: None,
             messages: vec![],
+            initial_decisions: vec![],
         })
         .await
         .unwrap();
@@ -1739,6 +1746,117 @@ async fn run_stream_exposes_decision_sender_and_replays_suspended_calls() {
             AgentEvent::ToolCallDone { id, .. } if id == "call_pending"
         )),
         "run stream should replay suspended call after decision: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn run_stream_replays_initial_decisions_without_submit_decision() {
+    use futures::StreamExt;
+    use serde_json::Value;
+    use tirea_store_adapters::MemoryStore;
+
+    #[derive(Debug)]
+    struct SkipPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for SkipPlugin {
+        fn id(&self) -> &str {
+            "skip"
+        }
+
+        async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
+            step.skip_inference();
+        }
+    }
+
+    #[derive(Debug)]
+    struct EchoTool;
+
+    #[async_trait]
+    impl Tool for EchoTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("echo", "Echo", "Echo tool")
+                .with_parameters(json!({"type":"object"}))
+        }
+
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("echo", args))
+        }
+    }
+
+    let storage = Arc::new(MemoryStore::new());
+    let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+    tools.insert("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>);
+    let os = AgentOs::builder()
+        .with_agent_state_store(
+            storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
+        )
+        .with_tools(tools)
+        .with_registered_plugin("skip", Arc::new(SkipPlugin))
+        .with_agent(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini").with_plugin_id("skip"),
+        )
+        .build()
+        .unwrap();
+
+    let pending_state = json!({
+        "__suspended_tool_calls": {
+            "calls": {
+                "call_pending": {
+                    "call_id": "call_pending",
+                    "tool_name": "echo",
+                    "suspension": {
+                        "id": "call_pending",
+                        "action": "confirm",
+                        "parameters": {
+                            "message": "approved-from-request"
+                        }
+                    }
+                }
+            }
+        }
+    });
+    let thread = Thread::with_initial_state("t-decision-initial", pending_state)
+        .with_message(crate::contracts::thread::Message::user("resume"));
+    storage.create(&thread).await.unwrap();
+
+    let run = os
+        .run_stream(RunRequest {
+            agent_id: "a1".to_string(),
+            thread_id: Some("t-decision-initial".to_string()),
+            run_id: Some("run-decision-initial".to_string()),
+            parent_run_id: None,
+            resource_id: None,
+            state: None,
+            messages: vec![],
+            initial_decisions: vec![tirea_contract::SuspensionResponse::new(
+                "call_pending",
+                json!(true),
+            )
+            .into()],
+        })
+        .await
+        .unwrap();
+
+    let events: Vec<_> = run.events.collect().await;
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolCallResumed { target_id, .. } if target_id == "call_pending"
+        )),
+        "run stream should emit interaction resolution from initial decisions: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolCallDone { id, .. } if id == "call_pending"
+        )),
+        "run stream should replay suspended call from initial decisions: {events:?}"
     );
 }
 
@@ -1770,6 +1888,7 @@ async fn run_stream_checkpoint_append_failure_keeps_persisted_prefix_consistent(
         resource_id: None,
         state: Some(json!({"base": 1})),
         messages: vec![crate::contracts::thread::Message::user("hello")],
+        initial_decisions: vec![],
     };
 
     let run_stream = os.run_stream(request).await.unwrap();
@@ -1857,6 +1976,7 @@ async fn run_stream_checkpoint_failure_on_existing_thread_keeps_storage_unchange
         resource_id: None,
         state: None,
         messages: vec![],
+        initial_decisions: vec![],
     };
 
     let run_stream = os.run_stream(request).await.unwrap();
@@ -1968,6 +2088,7 @@ async fn prepare_run_scope_tool_registry_adds_new_tool() {
                 resource_id: None,
                 state: None,
                 messages: vec![Message::user("hello")],
+                initial_decisions: vec![],
             },
             resolved,
         )
@@ -2019,6 +2140,7 @@ async fn prepare_run_scope_tool_registry_skips_shadowed() {
                 resource_id: None,
                 state: None,
                 messages: vec![Message::user("hello")],
+                initial_decisions: vec![],
             },
             resolved,
         )
@@ -2065,6 +2187,7 @@ async fn prepare_run_scope_appends_plugins() {
                 resource_id: None,
                 state: None,
                 messages: vec![Message::user("hello")],
+                initial_decisions: vec![],
             },
             resolved,
         )
@@ -2115,6 +2238,7 @@ async fn prepare_run_scope_rejects_duplicate_plugin_id() {
                 resource_id: None,
                 state: None,
                 messages: vec![Message::user("hello")],
+                initial_decisions: vec![],
             },
             resolved,
         )

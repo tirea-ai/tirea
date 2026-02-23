@@ -2,8 +2,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use tirea_contract::{
-    Message, MessageMetadata, ProtocolInputAdapter, Role, RunRequest, SuspensionResponse,
-    ToolCall, ToolCallDecision,
+    Message, MessageMetadata, ProtocolInputAdapter, Role, RunRequest, SuspensionResponse, ToolCall,
+    ToolCallDecision,
 };
 
 use crate::message::{ToolState, ToolUIPart};
@@ -176,6 +176,7 @@ impl AiSdkV6RunRequest {
     /// - Only extracted user input text is appended as runtime user message.
     /// - `state`, `parent_run_id`, and `resource_id` are not supplied by AI SDK v6 input.
     pub fn into_runtime_run_request(self, agent_id: String) -> RunRequest {
+        let initial_decisions = self.suspension_decisions();
         let mut messages = Vec::new();
         if self.has_user_input() {
             messages.push(Message::user(self.input));
@@ -192,6 +193,7 @@ impl AiSdkV6RunRequest {
             resource_id: None,
             state: None,
             messages,
+            initial_decisions,
         }
     }
 }
@@ -240,9 +242,7 @@ fn extract_interaction_responses(messages: &[Value]) -> Vec<SuspensionResponse> 
 
     let mut responses: Vec<(usize, SuspensionResponse)> = latest_by_id
         .into_iter()
-        .map(|(target_id, (idx, result))| {
-            (idx, SuspensionResponse::new(target_id, result))
-        })
+        .map(|(target_id, (idx, result))| (idx, SuspensionResponse::new(target_id, result)))
         .collect();
     responses.sort_by_key(|(idx, _)| *idx);
     responses
@@ -891,5 +891,7 @@ mod tests {
         assert_eq!(decisions[0].target_id, "ask_1");
         let run_request = AiSdkV6InputAdapter::to_run_request("agent".to_string(), req);
         assert!(run_request.messages.is_empty());
+        assert_eq!(run_request.initial_decisions.len(), 1);
+        assert_eq!(run_request.initial_decisions[0].target_id, "ask_1");
     }
 }

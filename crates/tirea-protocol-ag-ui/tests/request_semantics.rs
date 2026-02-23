@@ -52,6 +52,10 @@ fn interaction_responses_ignore_non_tool_messages_and_tool_without_id() {
     let decisions = request.suspension_decisions();
     assert_eq!(decisions.len(), 1);
     assert_eq!(decisions[0].target_id, "interaction_1");
+
+    let run_request = request.into_runtime_run_request("agent".to_string());
+    assert_eq!(run_request.initial_decisions.len(), 1);
+    assert_eq!(run_request.initial_decisions[0].target_id, "interaction_1");
 }
 
 #[test]

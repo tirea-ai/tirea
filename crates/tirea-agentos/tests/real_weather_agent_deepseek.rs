@@ -213,6 +213,7 @@ Rules:\n\
             messages: vec![Message::user(
                 "What's the current weather in San Francisco? Use the tool.",
             )],
+            initial_decisions: vec![],
         })
         .await
         .map_err(|e| format!("run start failed: {e}"))?;

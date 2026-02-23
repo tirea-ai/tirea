@@ -1,4 +1,5 @@
 use crate::thread::Message;
+use crate::ToolCallDecision;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -19,4 +20,7 @@ pub struct RunRequest {
     pub state: Option<Value>,
     /// Messages to append before running.
     pub messages: Vec<Message>,
+    /// Decisions to enqueue before loop start.
+    #[serde(default)]
+    pub initial_decisions: Vec<ToolCallDecision>,
 }

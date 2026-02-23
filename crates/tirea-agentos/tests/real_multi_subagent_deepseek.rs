@@ -77,6 +77,7 @@ Do not skip tool calls.",
             resource_id: None,
             state: None,
             messages: vec![Message::user("按流程执行，最后给我结果。")],
+            initial_decisions: vec![],
         })
         .await
         .map_err(|e| format!("run start failed: {e}"))?;
