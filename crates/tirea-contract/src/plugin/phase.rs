@@ -1513,7 +1513,7 @@ mod tests {
     }
 
     #[test]
-    fn test_suspend_frontend_invocation_without_tool_context_noop() {
+    fn test_suspend_invocation_without_tool_context_noop() {
         let fix = TestFixture::new();
         let mut ctx = fix.step(vec![]);
 

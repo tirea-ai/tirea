@@ -4787,7 +4787,7 @@ fn suspended_interaction(step: &StepContext<'_>) -> Option<Interaction> {
         .map(|ticket| ticket.suspension.clone())
 }
 
-fn suspended_frontend_invocation(
+fn suspended_invocation(
     step: &StepContext<'_>,
 ) -> Option<tirea_agentos::contracts::FrontendToolInvocation> {
     step.tool
@@ -12444,7 +12444,7 @@ mod llmmetry_tracing {
 }
 
 // ============================================================================
-// InteractionPlugin RunStart / replay_tool_calls state tests
+// InteractionPlugin RunStart / resume-decision state tests
 // ============================================================================
 
 fn replay_calls_from_state(state: &Value) -> Vec<ToolCall> {
@@ -12537,7 +12537,7 @@ fn state_with_suspended_call(
     })
 }
 
-/// Test: on_run_start sets replay_tool_calls when suspended_interaction is approved
+/// Test: on_run_start schedules replay when suspended call is approved
 #[tokio::test]
 async fn test_interaction_response_run_start_sets_replay_on_approval() {
     let pending_id = "call_add_trips";
@@ -12607,7 +12607,7 @@ async fn test_interaction_response_run_start_sets_replay_on_approval() {
     assert_eq!(calls[0].id, pending_id);
 }
 
-/// Test: on_run_start does NOT set replay_tool_calls when interaction is denied
+/// Test: on_run_start does NOT schedule replay when interaction is denied
 #[tokio::test]
 async fn test_interaction_response_run_start_no_replay_on_denial() {
     let pending_id = "call_add_trips";
@@ -12646,7 +12646,7 @@ async fn test_interaction_response_run_start_no_replay_on_denial() {
     let replay = replay_calls_from_state(&fix.updated_state());
     assert!(
         replay.is_empty(),
-        "replay_tool_calls should NOT be set on denial"
+        "replay should NOT be scheduled on denial"
     );
 }
 
@@ -12665,7 +12665,7 @@ async fn test_interaction_response_run_start_no_pending() {
     let replay = replay_calls_from_state(&fix.updated_state());
     assert!(
         replay.is_empty(),
-        "replay_tool_calls should not be set when no suspended interaction"
+        "replay should not be scheduled when no suspended call exists"
     );
 }
 
@@ -12703,7 +12703,7 @@ async fn test_interaction_response_run_start_mismatched_id() {
     let replay = replay_calls_from_state(&fix.updated_state());
     assert!(
         replay.is_empty(),
-        "replay_tool_calls should not be set when IDs don't match"
+        "replay should not be scheduled when IDs don't match"
     );
 }
 
@@ -12775,7 +12775,7 @@ async fn test_interaction_response_run_start_no_tool_calls_in_messages() {
 
 /// Test: Full HITL flow — PermissionPlugin suspends → client approves →
 /// InteractionPlugin detects approval in RunStart →
-/// schedules replay_tool_calls with correct tool call data
+/// schedules replay with correct tool call data
 #[tokio::test]
 async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
     // Phase 1: PermissionPlugin creates suspended interaction
@@ -12796,8 +12796,7 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
     );
 
     let interaction = suspended_interaction(&step1).expect("suspended interaction should exist");
-    let invocation =
-        suspended_frontend_invocation(&step1).expect("pending frontend invocation should exist");
+    let invocation = suspended_invocation(&step1).expect("pending invocation should exist");
 
     // Phase 2: Simulate persisted session with suspended_interaction + placeholder
     let persisted_thread = Thread::with_initial_state(
@@ -12847,7 +12846,7 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
     );
     response_plugin.run_phase(Phase::RunStart, &mut step2).await;
 
-    // Verify: replay_tool_calls is set with correct tool call
+    // Verify: replay is scheduled with correct tool call
     let replay = replay_calls_from_state(&fix2.updated_state());
     assert_eq!(replay.len(), 1, "Should schedule exactly one tool call");
     assert_eq!(replay[0].name, "add_trips");
@@ -13025,7 +13024,7 @@ async fn test_hitl_replay_run_start_does_not_affect_before_tool_execute() {
         .with_message(tirea_protocol_ag_ui::Message::tool("true", pending_id));
     let response_plugin = interaction_plugin_from_request(&approve_request);
 
-    // RunStart sets replay_tool_calls
+    // RunStart schedules replay
     let fix1 = TestFixture::new_with_state(thread.state.clone());
     let ctx_step1 = fix1.ctx();
     let mut step1 = StepContext::new(ctx_step1, &thread.id, &thread.messages, vec![]);

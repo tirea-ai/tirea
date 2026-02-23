@@ -555,7 +555,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_start_replay_requires_frontend_invocation_channel() {
+    async fn run_start_replay_requires_invocation_channel() {
         let state = json!({
             "__suspended_tool_calls": {
                 "calls": {
@@ -599,7 +599,7 @@ mod tests {
         let replay_after = replay_calls_from_state(&updated);
         assert!(
             replay_after.is_empty(),
-            "without frontend_invocation metadata, replay must not happen"
+            "without invocation metadata, replay must not happen"
         );
     }
 
@@ -792,7 +792,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_start_routes_via_frontend_invocation_replay_original_tool() {
+    async fn run_start_routes_via_invocation_replay_original_tool() {
         let state = json!({
             "__suspended_tool_calls": {
                 "calls": {
@@ -845,7 +845,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_start_routes_via_frontend_invocation_use_as_tool_result() {
+    async fn run_start_routes_via_invocation_use_as_tool_result() {
         let state = json!({
             "__suspended_tool_calls": {
                 "calls": {

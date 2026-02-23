@@ -766,7 +766,7 @@ pub(super) async fn execute_single_tool_with_phases(
         let interaction = suspend_ticket
             .as_ref()
             .map(|ticket| ticket.suspension.clone());
-        let frontend_invocation = suspend_ticket
+        let invocation = suspend_ticket
             .as_ref()
             .and_then(|ticket| ticket.invocation.clone());
         let suspended_interaction = interaction.unwrap_or_else(|| {
@@ -784,7 +784,7 @@ pub(super) async fn execute_single_tool_with_phases(
                 call_id: call.id.clone(),
                 tool_name: call.name.clone(),
                 suspension: suspended_interaction,
-                invocation: frontend_invocation,
+                invocation,
             }),
         )
     } else {

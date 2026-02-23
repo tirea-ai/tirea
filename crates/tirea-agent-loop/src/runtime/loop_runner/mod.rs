@@ -522,9 +522,9 @@ pub(super) fn interaction_requested_pending_events(interaction: &Interaction) ->
 /// `FrontendToolInvocation` is provided.
 pub(super) fn pending_tool_events(
     interaction: &Interaction,
-    frontend_invocation: Option<&FrontendToolInvocation>,
+    invocation: Option<&FrontendToolInvocation>,
 ) -> Vec<AgentEvent> {
-    if let Some(inv) = frontend_invocation {
+    if let Some(inv) = invocation {
         vec![
             AgentEvent::ToolCallStart {
                 id: inv.call_id.clone(),

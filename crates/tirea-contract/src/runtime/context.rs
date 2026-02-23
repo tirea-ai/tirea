@@ -120,8 +120,8 @@ impl RunContext {
             .unwrap_or_default()
     }
 
-    /// Read the first suspended frontend invocation from durable control state.
-    pub fn first_suspended_frontend_invocation(&self) -> Option<FrontendToolInvocation> {
+    /// Read the first suspended invocation from durable control state.
+    pub fn first_suspended_invocation(&self) -> Option<FrontendToolInvocation> {
         let mut calls: Vec<SuspendedCall> = self.suspended_calls().into_values().collect();
         calls.sort_by(|left, right| left.call_id.cmp(&right.call_id));
         calls.into_iter().next().and_then(|call| call.invocation)

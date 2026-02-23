@@ -11277,7 +11277,7 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_resume_decisio
         "action": "tool:PermissionConfirm",
         "parameters": { "source": "permission" }
     });
-    let suspended_frontend_invocation = json!({
+    let suspended_invocation = json!({
         "call_id": "fc_perm_1",
         "tool_name": "PermissionConfirm",
         "arguments": { "tool_name": "echo", "tool_args": { "message": "hello" } },
@@ -11296,7 +11296,7 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_resume_decisio
                     "call_id": "call_write",
                     "tool_name": "echo",
                     "suspension": suspended_interaction.clone(),
-                    "invocation": suspended_frontend_invocation.clone()
+                    "invocation": suspended_invocation.clone()
                 }
             }
         }
