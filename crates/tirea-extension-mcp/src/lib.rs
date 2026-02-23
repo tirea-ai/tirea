@@ -1,9 +1,7 @@
 mod client_transport;
 
 use async_trait::async_trait;
-use client_transport::{
-    connect_transport, LegacyMcpTransportAdapter, McpProgressUpdate, McpToolTransport,
-};
+use client_transport::{connect_transport, LegacyMcpTransportAdapter};
 use mcp::transport::{McpServerConnectionConfig, McpTransport, McpTransportError, TransportTypeId};
 use mcp::McpToolDefinition;
 use serde_json::Value;
@@ -17,6 +15,8 @@ use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
+
+pub use client_transport::{McpProgressUpdate, McpToolTransport};
 
 const MCP_META_SERVER: &str = "mcp.server";
 const MCP_META_TOOL: &str = "mcp.tool";
@@ -294,6 +294,47 @@ struct McpRegistryState {
     periodic_refresh: Mutex<Option<PeriodicRefreshRuntime>>,
 }
 
+/// Transport entry accepted by [`McpToolRegistryManager::from_transports`].
+///
+/// Use [`McpTransportEntry::Legacy`] for plain `McpTransport` implementations,
+/// or [`McpTransportEntry::ProgressAware`] for transports that support MCP
+/// `notifications/progress` forwarding into tool activity.
+pub enum McpTransportEntry {
+    Legacy(Arc<dyn McpTransport>),
+    ProgressAware(Arc<dyn McpToolTransport>),
+}
+
+impl McpTransportEntry {
+    /// Wrap a legacy transport without progress callbacks.
+    pub fn legacy(transport: Arc<dyn McpTransport>) -> Self {
+        Self::Legacy(transport)
+    }
+
+    /// Wrap a progress-capable transport.
+    pub fn progress_aware(transport: Arc<dyn McpToolTransport>) -> Self {
+        Self::ProgressAware(transport)
+    }
+
+    fn into_tool_transport(self) -> Arc<dyn McpToolTransport> {
+        match self {
+            Self::Legacy(transport) => Arc::new(LegacyMcpTransportAdapter::new(transport)),
+            Self::ProgressAware(transport) => transport,
+        }
+    }
+}
+
+impl From<Arc<dyn McpTransport>> for McpTransportEntry {
+    fn from(value: Arc<dyn McpTransport>) -> Self {
+        Self::Legacy(value)
+    }
+}
+
+impl From<Arc<dyn McpToolTransport>> for McpTransportEntry {
+    fn from(value: Arc<dyn McpToolTransport>) -> Self {
+        Self::ProgressAware(value)
+    }
+}
+
 fn read_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
     match lock.read() {
         Ok(guard) => guard,
@@ -422,15 +463,15 @@ impl McpToolRegistryManager {
         Self::from_tool_transports(entries).await
     }
 
-    pub async fn from_transports(
-        entries: impl IntoIterator<Item = (McpServerConnectionConfig, Arc<dyn McpTransport>)>,
-    ) -> Result<Self, McpToolRegistryError> {
-        let wrapped = entries.into_iter().map(|(cfg, transport)| {
-            (
-                cfg,
-                Arc::new(LegacyMcpTransportAdapter::new(transport)) as Arc<dyn McpToolTransport>,
-            )
-        });
+    pub async fn from_transports<T>(
+        entries: impl IntoIterator<Item = (McpServerConnectionConfig, T)>,
+    ) -> Result<Self, McpToolRegistryError>
+    where
+        T: Into<McpTransportEntry>,
+    {
+        let wrapped = entries
+            .into_iter()
+            .map(|(cfg, transport)| (cfg, transport.into().into_tool_transport()));
         Self::from_tool_transports(wrapped).await
     }
 
@@ -771,6 +812,49 @@ mod tests {
         assert!(!events.is_empty());
         assert!(events.iter().any(|(stream_id, activity_type, op)| {
             stream_id == "tool_call:call-progress"
+                && activity_type == "progress"
+                && op.path().to_string() == "$.progress"
+        }));
+    }
+
+    #[tokio::test]
+    async fn from_transports_accepts_progress_aware_entries() {
+        let manager = McpToolRegistryManager::from_transports([(
+            cfg("s1"),
+            McpTransportEntry::progress_aware(Arc::new(FakeProgressTransport)),
+        )])
+        .await
+        .unwrap();
+
+        let reg = manager.registry();
+        let tool_id = reg
+            .ids()
+            .into_iter()
+            .find(|id| id.contains("echo"))
+            .unwrap();
+        let tool = reg.get(&tool_id).unwrap();
+
+        let activity_manager = Arc::new(RecordingActivityManager::default());
+        let doc = DocCell::new(json!({}));
+        let ops = Mutex::new(Vec::new());
+        let run_config = tirea_contract::RunConfig::default();
+        let pending_messages: Mutex<Vec<Arc<Message>>> = Mutex::new(Vec::new());
+        let ctx = ToolCallContext::new(
+            &doc,
+            &ops,
+            "call-progress-registry",
+            "test",
+            &run_config,
+            &pending_messages,
+            Some(activity_manager.clone()),
+        );
+
+        let result = tool.execute(json!({}), &ctx).await.unwrap();
+        assert!(result.is_success());
+
+        let events = activity_manager.events.lock().unwrap();
+        assert!(events.iter().any(|(stream_id, activity_type, op)| {
+            stream_id == "tool_call:call-progress-registry"
                 && activity_type == "progress"
                 && op.path().to_string() == "$.progress"
         }));

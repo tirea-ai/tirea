@@ -14,7 +14,12 @@ serde_json = { workspace = true }
 tracing = "0.1"
 
 [dev-dependencies]
+async-trait = "0.1"
+futures = "0.3"
 genai = "0.5"
+mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"] }
+tirea-extension-mcp = { version = "0.1.1", path = "../tirea-extension-mcp" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true

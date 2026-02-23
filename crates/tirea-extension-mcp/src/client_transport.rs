@@ -16,14 +16,14 @@ use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug, Clone)]
-pub(crate) struct McpProgressUpdate {
-    pub(crate) progress: f64,
-    pub(crate) total: Option<f64>,
-    pub(crate) message: Option<String>,
+pub struct McpProgressUpdate {
+    pub progress: f64,
+    pub total: Option<f64>,
+    pub message: Option<String>,
 }
 
 #[async_trait]
-pub(crate) trait McpToolTransport: Send + Sync {
+pub trait McpToolTransport: Send + Sync {
     async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError>;
     async fn call_tool(
         &self,
