@@ -4321,10 +4321,10 @@ async fn test_run_loop_terminate_plugin_requested_emits_run_end_phase() {
 
 #[tokio::test]
 async fn test_legacy_resume_replay_nonstream_resolution_state_is_ignored() {
-    struct TerminatePluginRequestedPlugin;
+    struct LegacyResumeReplayTerminatePlugin;
 
     #[async_trait]
-    impl AgentPlugin for TerminatePluginRequestedPlugin {
+    impl AgentPlugin for LegacyResumeReplayTerminatePlugin {
         fn id(&self) -> &str {
             "legacy_resume_replay_nonstream_resolution_state"
         }
@@ -4339,7 +4339,7 @@ async fn test_legacy_resume_replay_nonstream_resolution_state_is_ignored() {
     }
 
     let config = AgentConfig::new("gpt-4o-mini")
-        .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
+        .with_plugin(Arc::new(LegacyResumeReplayTerminatePlugin) as Arc<dyn AgentPlugin>);
 
     let thread = Thread::with_initial_state(
         "test",
@@ -4380,10 +4380,10 @@ async fn test_legacy_resume_replay_nonstream_resolution_state_is_ignored() {
 
 #[tokio::test]
 async fn test_legacy_resume_replay_nonstream_queue_is_ignored() {
-    struct ReplayPendingAndTerminatePlugin;
+    struct LegacyResumeReplayRequeuePlugin;
 
     #[async_trait]
-    impl AgentPlugin for ReplayPendingAndTerminatePlugin {
+    impl AgentPlugin for LegacyResumeReplayRequeuePlugin {
         fn id(&self) -> &str {
             "legacy_resume_replay_nonstream_queue"
         }
@@ -4427,7 +4427,7 @@ async fn test_legacy_resume_replay_nonstream_queue_is_ignored() {
     }
 
     let config = AgentConfig::new("mock")
-        .with_plugin(Arc::new(ReplayPendingAndTerminatePlugin) as Arc<dyn AgentPlugin>);
+        .with_plugin(Arc::new(LegacyResumeReplayRequeuePlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(Message::user("resume"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
@@ -4435,19 +4435,19 @@ async fn test_legacy_resume_replay_nonstream_queue_is_ignored() {
     assert_eq!(outcome.termination, TerminationReason::PluginRequested);
 
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
-    let replay_calls = state
+    let legacy_replay_calls = state
         .get("__resume_tool_calls")
         .and_then(|legacy| legacy.get("calls"))
         .and_then(|calls| calls.as_array())
         .cloned()
         .unwrap_or_default();
     assert_eq!(
-        replay_calls.len(),
+        legacy_replay_calls.len(),
         2,
         "legacy resume replay queue should remain untouched"
     );
     assert_eq!(
-        replay_calls[0]["id"],
+        legacy_replay_calls[0]["id"],
         Value::String("replay_call_1".to_string()),
         "legacy resume replay queue order should be preserved"
     );
@@ -7212,10 +7212,10 @@ async fn test_stream_replay_state_failure_emits_error() {
 
 #[tokio::test]
 async fn test_legacy_resume_replay_stream_queue_is_ignored() {
-    struct ReplayPendingAndTerminatePlugin;
+    struct LegacyResumeReplayRequeuePlugin;
 
     #[async_trait]
-    impl AgentPlugin for ReplayPendingAndTerminatePlugin {
+    impl AgentPlugin for LegacyResumeReplayRequeuePlugin {
         fn id(&self) -> &str {
             "legacy_resume_replay_stream_queue"
         }
@@ -7259,7 +7259,7 @@ async fn test_legacy_resume_replay_stream_queue_is_ignored() {
     }
 
     let config = AgentConfig::new("mock")
-        .with_plugin(Arc::new(ReplayPendingAndTerminatePlugin) as Arc<dyn AgentPlugin>);
+        .with_plugin(Arc::new(LegacyResumeReplayRequeuePlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(Message::user("resume"));
     let (events, final_thread) = run_mock_stream_with_final_thread(
         MockStreamProvider::new(vec![MockResponse::text("unused")]),
@@ -7291,19 +7291,19 @@ async fn test_legacy_resume_replay_stream_queue_is_ignored() {
     );
 
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
-    let replay_calls = final_state
+    let legacy_replay_calls = final_state
         .get("__resume_tool_calls")
         .and_then(|legacy| legacy.get("calls"))
         .and_then(|calls| calls.as_array())
         .cloned()
         .unwrap_or_default();
     assert_eq!(
-        replay_calls.len(),
+        legacy_replay_calls.len(),
         2,
         "legacy resume replay queue should remain untouched"
     );
     assert_eq!(
-        replay_calls[0]["id"],
+        legacy_replay_calls[0]["id"],
         Value::String("replay_call_1".to_string()),
         "legacy resume replay queue order should be preserved"
     );
