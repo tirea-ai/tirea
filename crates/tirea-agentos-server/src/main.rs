@@ -47,8 +47,8 @@ struct AgentConfigFile {
     #[serde(default)]
     system_prompt: String,
     max_rounds: Option<usize>,
-    parallel_tools: Option<bool>,
-    tool_execution_mode: Option<ToolExecutionModeConfig>,
+    #[serde(default)]
+    tool_execution_mode: ToolExecutionModeConfig,
     #[serde(default)]
     plugin_ids: Vec<String>,
     #[serde(default)]
@@ -61,6 +61,12 @@ enum ToolExecutionModeConfig {
     Sequential,
     ParallelBatchApproval,
     ParallelStreaming,
+}
+
+impl Default for ToolExecutionModeConfig {
+    fn default() -> Self {
+        Self::ParallelStreaming
+    }
 }
 
 impl From<ToolExecutionModeConfig> for ToolExecutionMode {
@@ -215,8 +221,7 @@ fn build_os(
             model: None,
             system_prompt: String::new(),
             max_rounds: None,
-            parallel_tools: None,
-            tool_execution_mode: None,
+            tool_execution_mode: ToolExecutionModeConfig::ParallelStreaming,
             plugin_ids: Vec::new(),
             stop_condition_specs: Vec::new(),
         }],
@@ -253,12 +258,7 @@ fn build_os(
         if let Some(max_rounds) = a.max_rounds {
             def.max_rounds = max_rounds;
         }
-        if let Some(mode) = a.tool_execution_mode {
-            def.tool_execution_mode = Some(mode.into());
-        } else if let Some(parallel) = a.parallel_tools {
-            def.parallel_tools = parallel;
-            def.tool_execution_mode = None;
-        }
+        def.tool_execution_mode = a.tool_execution_mode.into();
         def.plugin_ids = a.plugin_ids;
         def.stop_condition_specs = a.stop_condition_specs;
 

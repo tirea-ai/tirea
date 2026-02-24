@@ -2,7 +2,7 @@ use super::stop_policy_plugin::StopConditionSpec;
 use crate::contracts::runtime::ToolExecutor;
 use crate::runtime::loop_runner::{
     AgentConfig, LlmRetryPolicy, ParallelBatchApprovalToolExecutor, ParallelStreamingToolExecutor,
-    ParallelToolExecutor, SequentialToolExecutor,
+    SequentialToolExecutor,
 };
 use genai::chat::ChatOptions;
 use std::sync::Arc;
@@ -30,12 +30,8 @@ pub struct AgentDefinition {
     pub system_prompt: String,
     /// Maximum number of tool call rounds before stopping.
     pub max_rounds: usize,
-    /// Whether to execute tools in parallel.
-    pub parallel_tools: bool,
-    /// Explicit tool execution strategy override.
-    ///
-    /// When set, this takes precedence over `parallel_tools`.
-    pub tool_execution_mode: Option<ToolExecutionMode>,
+    /// Tool execution strategy.
+    pub tool_execution_mode: ToolExecutionMode,
     /// Chat options for the LLM.
     pub chat_options: Option<ChatOptions>,
     /// Fallback model ids used when the primary model fails.
@@ -71,8 +67,7 @@ impl Default for AgentDefinition {
             model: "gpt-4o-mini".to_string(),
             system_prompt: String::new(),
             max_rounds: 10,
-            parallel_tools: true,
-            tool_execution_mode: None,
+            tool_execution_mode: ToolExecutionMode::ParallelStreaming,
             chat_options: Some(
                 ChatOptions::default()
                     .with_capture_usage(true)
@@ -104,7 +99,6 @@ impl std::fmt::Debug for AgentDefinition {
                 &format!("[{} chars]", self.system_prompt.len()),
             )
             .field("max_rounds", &self.max_rounds)
-            .field("parallel_tools", &self.parallel_tools)
             .field("tool_execution_mode", &self.tool_execution_mode)
             .field("chat_options", &self.chat_options)
             .field("fallback_models", &self.fallback_models)
@@ -138,15 +132,8 @@ impl AgentDefinition {
     }
 
     #[must_use]
-    pub fn with_parallel_tools(mut self, parallel: bool) -> Self {
-        self.parallel_tools = parallel;
-        self.tool_execution_mode = None;
-        self
-    }
-
-    #[must_use]
     pub fn with_tool_execution_mode(mut self, mode: ToolExecutionMode) -> Self {
-        self.tool_execution_mode = Some(mode);
+        self.tool_execution_mode = mode;
         self
     }
 
@@ -216,18 +203,9 @@ impl AgentDefinition {
         plugins: Vec<Arc<dyn crate::contracts::plugin::AgentPlugin>>,
     ) -> AgentConfig {
         let tool_executor: Arc<dyn ToolExecutor> = match self.tool_execution_mode {
-            Some(ToolExecutionMode::Sequential) => Arc::new(SequentialToolExecutor),
-            Some(ToolExecutionMode::ParallelBatchApproval) => {
-                Arc::new(ParallelBatchApprovalToolExecutor)
-            }
-            Some(ToolExecutionMode::ParallelStreaming) => Arc::new(ParallelStreamingToolExecutor),
-            None => {
-                if self.parallel_tools {
-                    Arc::new(ParallelToolExecutor)
-                } else {
-                    Arc::new(SequentialToolExecutor)
-                }
-            }
+            ToolExecutionMode::Sequential => Arc::new(SequentialToolExecutor),
+            ToolExecutionMode::ParallelBatchApproval => Arc::new(ParallelBatchApprovalToolExecutor),
+            ToolExecutionMode::ParallelStreaming => Arc::new(ParallelStreamingToolExecutor),
         };
         AgentConfig {
             id: self.id,
@@ -250,18 +228,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_parallel_tools_flag_still_selects_parallel_executor() {
-        let config = AgentDefinition::default()
-            .with_parallel_tools(true)
-            .into_loop_config(Vec::new());
-        assert_eq!(config.tool_executor.name(), "parallel");
+    fn default_mode_maps_to_parallel_streaming_executor() {
+        let config = AgentDefinition::default().into_loop_config(Vec::new());
+        assert_eq!(config.tool_executor.name(), "parallel_streaming");
     }
 
     #[test]
-    fn explicit_tool_execution_mode_overrides_parallel_flag() {
-        let mut def = AgentDefinition::default().with_parallel_tools(false);
-        def.tool_execution_mode = Some(ToolExecutionMode::ParallelStreaming);
-        let config = def.into_loop_config(Vec::new());
+    fn explicit_tool_execution_mode_is_honored() {
+        let config = AgentDefinition::default()
+            .with_tool_execution_mode(ToolExecutionMode::ParallelStreaming)
+            .into_loop_config(Vec::new());
         assert_eq!(config.tool_executor.name(), "parallel_streaming");
     }
 
