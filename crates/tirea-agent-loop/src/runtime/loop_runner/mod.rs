@@ -891,7 +891,7 @@ async fn drain_resuming_tool_calls_and_replay(
     Ok(RunStartDrainOutcome { events, replayed })
 }
 
-async fn drain_run_start_outbox_and_replay(
+async fn drain_run_start_resume_replay(
     run_ctx: &mut RunContext,
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
@@ -912,7 +912,7 @@ async fn commit_run_start_and_drain_replay(
         .await?;
 
     let run_start_drain =
-        drain_run_start_outbox_and_replay(run_ctx, tools, config, active_tool_descriptors).await?;
+        drain_run_start_resume_replay(run_ctx, tools, config, active_tool_descriptors).await?;
 
     if run_start_drain.replayed {
         pending_delta_commit
@@ -1188,7 +1188,7 @@ async fn replay_after_decisions(
     let decision_tools = resolve_step_tool_snapshot(step_tool_provider, run_ctx).await?;
     *active_tool_descriptors = decision_tools.descriptors.clone();
 
-    let decision_drain = drain_run_start_outbox_and_replay(
+    let decision_drain = drain_run_start_resume_replay(
         run_ctx,
         &decision_tools.tools,
         config,

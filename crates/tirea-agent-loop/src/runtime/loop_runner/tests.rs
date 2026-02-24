@@ -2788,6 +2788,55 @@ fn test_execute_tools_with_config_denied_response_is_applied_via_tool_call_state
 }
 
 #[test]
+fn test_execute_tools_with_config_rejects_illegal_terminal_to_running_transition() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let thread = Thread::with_initial_state(
+            "test",
+            json!({
+                "__tool_call_states": {
+                    "calls": {
+                        "call_1": {
+                            "call_id": "call_1",
+                            "tool_name": "echo",
+                            "arguments": { "message": "already-done" },
+                            "status": "succeeded",
+                            "updated_at": 1
+                        }
+                    }
+                }
+            }),
+        );
+        let result = StreamResult {
+            text: "re-run".to_string(),
+            tool_calls: vec![crate::contracts::thread::ToolCall::new(
+                "call_1",
+                "echo",
+                json!({"message": "should-fail"}),
+            )],
+            usage: None,
+        };
+        let tools = tool_map([EchoTool]);
+        let config = AgentConfig::new("gpt-4");
+
+        let err = execute_tools_with_config(thread, &result, &tools, &config)
+            .await
+            .expect_err("terminal->running transition should fail");
+        let AgentLoopError::StateError(message) = err else {
+            panic!("unexpected error variant");
+        };
+        assert!(
+            message.contains("invalid tool call status transition"),
+            "unexpected error message: {message}"
+        );
+        assert!(
+            message.contains("Succeeded") && message.contains("Running"),
+            "error should include transition details: {message}"
+        );
+    });
+}
+
+#[test]
 fn test_execute_tools_with_config_with_pending_plugin() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -3113,7 +3162,7 @@ async fn test_stream_terminate_plugin_requested_emits_run_start_and_finish() {
 }
 
 #[tokio::test]
-async fn test_stream_run_start_outbox_resolution_emits_after_run_start() {
+async fn test_stream_run_start_resume_replay_emits_after_run_start() {
     let (recorder, _phases) = RecordAndTerminatePlugin::new();
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
@@ -3542,7 +3591,7 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
 }
 
 #[tokio::test]
-async fn test_run_loop_permission_approval_replays_tool_and_clears_outbox() {
+async fn test_run_loop_permission_approval_replays_tool_and_updates_lifecycle_state() {
     struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
@@ -11089,6 +11138,125 @@ async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
             .and_then(|calls| calls.get("unknown_call"))
             .is_none(),
         "unknown decision must not create runtime lifecycle state"
+    );
+}
+
+#[tokio::test]
+async fn test_run_loop_decision_channel_rejects_illegal_terminal_to_resuming_transition() {
+    struct TerminatePluginRequestedPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for TerminatePluginRequestedPlugin {
+        fn id(&self) -> &str {
+            "terminate_plugin_requested_illegal_transition_nonstream"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::BeforeInference {
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
+            }
+        });
+    }
+
+    let thread = Thread::with_initial_state(
+        "test",
+        json!({
+            "__suspended_tool_calls": {
+                "calls": {
+                    "call_pending": {
+                        "call_id": "call_pending",
+                        "tool_name": "echo",
+                        "suspension": {
+                            "id": "call_pending",
+                            "action": "tool:echo"
+                        },
+                        "invocation": {
+                            "call_id": "call_pending",
+                            "tool_name": "echo",
+                            "arguments": { "message": "should-not-replay" },
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "call_pending",
+                                "backend_tool_name": "echo",
+                                "backend_arguments": { "message": "should-not-replay" }
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
+                        }
+                    }
+                }
+            },
+            "__tool_call_states": {
+                "calls": {
+                    "call_pending": {
+                        "call_id": "call_pending",
+                        "tool_name": "echo",
+                        "arguments": { "message": "already-finished" },
+                        "status": "succeeded",
+                        "updated_at": 1
+                    }
+                }
+            }
+        }),
+    )
+    .with_message(Message::assistant_with_tool_calls(
+        "need permission",
+        vec![crate::contracts::thread::ToolCall::new(
+            "call_pending",
+            "echo",
+            json!({"message": "should-not-replay"}),
+        )],
+    ))
+    .with_message(Message::tool(
+        "call_pending",
+        "Tool 'echo' is awaiting approval. Execution paused.",
+    ));
+    let run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).expect("run ctx");
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
+    let tools = tool_map([EchoTool]);
+    let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
+    decision_tx
+        .send(test_decision(
+            "call_pending",
+            crate::contracts::runtime::ResumeDecisionAction::Resume,
+            json!(true),
+            None,
+        ))
+        .expect("send decision");
+    drop(decision_tx);
+
+    let outcome = run_loop(&config, tools, run_ctx, None, None, Some(decision_rx)).await;
+
+    assert_eq!(outcome.termination, TerminationReason::Suspended);
+    assert!(
+        !outcome.run_ctx.messages().iter().any(|message| {
+            message.role == Role::Tool
+                && message.tool_call_id.as_deref() == Some("call_pending")
+                && !message
+                    .content
+                    .contains("is awaiting approval. Execution paused.")
+        }),
+        "illegal transition must not replay resolved tool result"
+    );
+
+    let final_state = outcome.run_ctx.snapshot().expect("snapshot");
+    assert!(
+        final_state
+            .get("__suspended_tool_calls")
+            .and_then(|lc| lc.get("calls"))
+            .and_then(|calls| calls.get("call_pending"))
+            .is_some(),
+        "illegal transition must keep suspended call pending"
+    );
+    assert_eq!(
+        final_state["__tool_call_states"]["calls"]["call_pending"]["status"],
+        json!("succeeded"),
+        "terminal lifecycle state must remain unchanged"
     );
 }
 

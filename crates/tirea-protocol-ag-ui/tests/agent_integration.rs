@@ -5720,7 +5720,7 @@ async fn test_scenario_interaction_response_plugin_blocks_denied() {
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
-    let decisions = resume_decisions_from_state(&fix.updated_state());
+    let decisions = resume_inputs_from_state(&fix.updated_state());
     let decision = decisions
         .get("call_write")
         .expect("denied response should create resume decision");
@@ -6286,7 +6286,7 @@ async fn test_permission_flow_denial_e2e() {
     let ctx_step2 = fix2.ctx();
     let mut step2 = StepContext::new(ctx_step2, &session2.id, &session2.messages, vec![]);
     response_plugin.run_phase(Phase::RunStart, &mut step2).await;
-    let decisions = resume_decisions_from_state(&fix2.updated_state());
+    let decisions = resume_inputs_from_state(&fix2.updated_state());
     let decision = decisions
         .get(&interaction.id)
         .expect("denied interaction should create a decision");
@@ -6341,7 +6341,7 @@ async fn test_permission_flow_multiple_tools_mixed() {
     response_plugin
         .run_phase(Phase::RunStart, &mut resume1)
         .await;
-    let decisions_r1 = resume_decisions_from_state(&fix_r1.updated_state());
+    let decisions_r1 = resume_inputs_from_state(&fix_r1.updated_state());
     let decision_r1 = decisions_r1
         .get(&int1.id)
         .expect("approved interaction should create decision");
@@ -6363,7 +6363,7 @@ async fn test_permission_flow_multiple_tools_mixed() {
     response_plugin
         .run_phase(Phase::RunStart, &mut resume2)
         .await;
-    let decisions_r2 = resume_decisions_from_state(&fix_r2.updated_state());
+    let decisions_r2 = resume_inputs_from_state(&fix_r2.updated_state());
     let decision_r2 = decisions_r2
         .get(&int2.id)
         .expect("denied interaction should create decision");
@@ -7028,7 +7028,7 @@ async fn test_resume_flow_with_denial() {
     let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
     plugin.run_phase(Phase::RunStart, &mut step).await;
-    let decisions = resume_decisions_from_state(&fix.updated_state());
+    let decisions = resume_inputs_from_state(&fix.updated_state());
     let decision = decisions
         .get(target_id)
         .expect("denied response should create decision");
@@ -7065,7 +7065,7 @@ async fn test_resume_flow_multiple_responses() {
         let ctx_step = fix.ctx();
         let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
         plugin.run_phase(Phase::RunStart, &mut step).await;
-        let decisions = resume_decisions_from_state(&fix.updated_state());
+        let decisions = resume_inputs_from_state(&fix.updated_state());
         let action = decisions
             .get(id)
             .map(|d| d.action.clone())
@@ -7222,7 +7222,7 @@ async fn test_plugin_interaction_execution_order() {
 
     // Response plugin run_start persists cancel decision.
     response_plugin.run_phase(Phase::RunStart, &mut step).await;
-    let decisions = resume_decisions_from_state(&fix.updated_state());
+    let decisions = resume_inputs_from_state(&fix.updated_state());
     let decision = decisions
         .get("call_danger")
         .expect("denied response should create decision");
@@ -7751,7 +7751,7 @@ async fn test_multiple_interaction_responses() {
         let ctx_step = fix.ctx();
         let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
         plugin.run_phase(Phase::RunStart, &mut step).await;
-        let decisions = resume_decisions_from_state(&fix.updated_state());
+        let decisions = resume_inputs_from_state(&fix.updated_state());
         let action = decisions
             .get(id)
             .map(|d| d.action.clone())
@@ -12542,7 +12542,7 @@ mod llmmetry_tracing {
 // ============================================================================
 
 fn replay_calls_from_state(state: &Value) -> Vec<ToolCall> {
-    let decisions = resume_decisions_from_state(state);
+    let decisions = resume_inputs_from_state(state);
     if decisions.is_empty() {
         return Vec::new();
     }
@@ -12590,7 +12590,7 @@ fn replay_calls_from_state(state: &Value) -> Vec<ToolCall> {
         .collect()
 }
 
-fn resume_decisions_from_state(state: &Value) -> HashMap<String, ToolCallResume> {
+fn resume_inputs_from_state(state: &Value) -> HashMap<String, ToolCallResume> {
     state
         .get("__tool_call_states")
         .and_then(|agent| agent.get("calls"))
