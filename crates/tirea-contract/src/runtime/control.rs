@@ -8,7 +8,6 @@ use crate::event::suspension::{FrontendToolInvocation, Suspension};
 use crate::runtime::state_paths::{
     RUN_LIFECYCLE_STATE_PATH, SUSPENDED_TOOL_CALLS_STATE_PATH, TOOL_CALL_STATES_STATE_PATH,
 };
-use crate::thread::Thread;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -342,39 +341,6 @@ pub fn run_lifecycle_from_state(state: &Value) -> Option<RunLifecycleState> {
         .get(RUN_LIFECYCLE_STATE_PATH)
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok())
-}
-
-fn first_suspended_call(calls: &HashMap<String, SuspendedCall>) -> Option<&SuspendedCall> {
-    calls
-        .iter()
-        .min_by(|(left, _), (right, _)| left.cmp(right))
-        .map(|(_, call)| call)
-}
-
-/// Read the first suspension from suspended call state.
-pub fn first_suspension_from_state(state: &Value) -> Option<Suspension> {
-    let calls = suspended_calls_from_state(state);
-    first_suspended_call(&calls).map(|call| call.suspension.clone())
-}
-
-/// Read the first suspended invocation from suspended call state.
-pub fn first_suspended_invocation_from_state(state: &Value) -> Option<FrontendToolInvocation> {
-    let calls = suspended_calls_from_state(state);
-    first_suspended_call(&calls).map(|call| call.invocation.clone())
-}
-
-/// Helpers for reading suspended-call state from `Thread`.
-pub trait SuspendedCallsExt {
-    /// Read the first suspension from durable control state.
-    fn first_suspension(&self) -> Option<Suspension>;
-}
-
-impl SuspendedCallsExt for Thread {
-    fn first_suspension(&self) -> Option<Suspension> {
-        self.rebuild_state()
-            .ok()
-            .and_then(|state| first_suspension_from_state(&state))
-    }
 }
 
 #[cfg(test)]

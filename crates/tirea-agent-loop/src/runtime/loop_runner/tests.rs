@@ -8,7 +8,6 @@ use crate::contracts::plugin::phase::{
     BeforeToolExecuteContext, Phase, PluginPhaseContext, RunEndContext, RunStartContext,
     StepEndContext, StepStartContext, SuspendTicket,
 };
-use crate::contracts::runtime::control::SuspendedCallsExt;
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::LlmExecutor;
 use crate::contracts::storage::VersionPrecondition;
@@ -2956,7 +2955,7 @@ fn test_execute_tools_with_config_preserves_unresolved_suspended_calls_on_succes
 }
 
 #[test]
-fn test_set_agent_suspended_calls_compat_view_uses_smallest_call_id() {
+fn test_set_agent_suspended_calls_persists_all_entries() {
     let base_state = json!({});
     let patch = set_agent_suspended_calls(
         &base_state,
@@ -2982,11 +2981,18 @@ fn test_set_agent_suspended_calls_compat_view_uses_smallest_call_id() {
         ],
     )
     .expect("set suspended calls");
-    let thread = Thread::with_initial_state("test", base_state).with_patch(patch);
-    let pending = thread
-        .first_suspension()
-        .expect("suspended interaction expected");
-    assert_eq!(pending.id, "int_a");
+    let run_ctx = RunContext::new(
+        "test",
+        base_state,
+        Vec::<Arc<Message>>::new(),
+        tirea_contract::RunConfig::default(),
+    );
+    let mut run_ctx = run_ctx;
+    run_ctx.add_thread_patch(patch);
+    let suspended = run_ctx.suspended_calls();
+    assert_eq!(suspended.len(), 2);
+    assert_eq!(suspended["call_a"].suspension.id, "int_a");
+    assert_eq!(suspended["call_b"].suspension.id, "int_b");
 }
 
 #[test]
@@ -4498,10 +4504,11 @@ async fn test_run_loop_terminate_plugin_requested_with_suspended_state_returns_s
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     assert!(matches!(outcome.termination, TerminationReason::Suspended));
 
-    let interaction = outcome
-        .run_ctx
-        .first_suspension()
-        .expect("should have suspended interaction");
+    let suspended_calls = outcome.run_ctx.suspended_calls();
+    let interaction = &suspended_calls
+        .get("agent_recovery_run-1")
+        .expect("should have suspended interaction")
+        .suspension;
     assert_eq!(interaction.action, "recover_agent_run");
     assert_eq!(interaction.message, "resume?");
 
@@ -5982,10 +5989,11 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
     let nonstream_outcome =
         run_loop(&nonstream_config, tools.clone(), run_ctx, None, None, None).await;
     assert_eq!(nonstream_outcome.termination, TerminationReason::Suspended);
-    let nonstream_interaction = nonstream_outcome
-        .run_ctx
-        .first_suspension()
-        .expect("non-stream outcome should have suspended interaction");
+    let nonstream_suspended = nonstream_outcome.run_ctx.suspended_calls();
+    let nonstream_interaction = &nonstream_suspended
+        .get("golden_resume_1")
+        .expect("non-stream outcome should have suspended interaction")
+        .suspension;
 
     let (events, stream_thread) = run_mock_stream_with_final_thread(
         MockStreamProvider::new(vec![MockResponse::text("unused")]),
@@ -8719,10 +8727,11 @@ async fn test_run_step_terminate_plugin_requested_with_suspended_state_returns_s
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     assert!(matches!(outcome.termination, TerminationReason::Suspended));
 
-    let interaction = outcome
-        .run_ctx
-        .first_suspension()
-        .expect("should have suspended interaction");
+    let suspended_calls = outcome.run_ctx.suspended_calls();
+    let interaction = &suspended_calls
+        .get("agent_recovery_step-1")
+        .expect("should have suspended interaction")
+        .suspension;
     assert_eq!(interaction.action, "recover_agent_run");
     assert_eq!(interaction.message, "resume step?");
 
@@ -10544,11 +10553,12 @@ async fn test_nonstream_run_start_added_pending_pauses_before_inference() {
 
     assert_eq!(outcome.termination, TerminationReason::Suspended);
     assert_eq!(outcome.stats.llm_calls, 0, "inference should not run");
+    let suspended_calls = outcome.run_ctx.suspended_calls();
     assert_eq!(
-        outcome
-            .run_ctx
-            .first_suspension()
+        suspended_calls
+            .get("recover_1")
             .expect("suspension expected")
+            .suspension
             .action,
         "recover_agent_run"
     );
