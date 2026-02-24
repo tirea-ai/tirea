@@ -53,8 +53,8 @@ use crate::contracts::plugin::phase::Phase;
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
     state_paths::RUN_LIFECYCLE_STATE_PATH, DecisionReplayPolicy, ResumeDecisionAction,
-    RunLifecycleStatus, StreamResult, ToolCallResume, ToolCallState, ToolCallStatus,
-    ToolExecutionRequest, ToolExecutionResult,
+    RunLifecycleStatus, StreamResult, ToolCallResume, ToolCallStatus, ToolExecutionRequest,
+    ToolExecutionResult,
 };
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
@@ -94,7 +94,7 @@ use core::build_messages;
 use core::{
     build_request_for_filtered_tools, clear_suspended_call, inference_inputs_from_step,
     set_agent_suspended_calls, suspended_calls_from_ctx, tool_call_states_from_ctx,
-    upsert_tool_call_state,
+    transition_tool_call_state, upsert_tool_call_state, ToolCallStateSeed, ToolCallStateTransition,
 };
 pub use outcome::{tool_map, tool_map_from_arc, AgentLoopError};
 pub use outcome::{LoopOutcome, LoopStats, LoopUsage};
@@ -1170,29 +1170,25 @@ fn upsert_tool_call_lifecycle_state(
     status: ToolCallStatus,
     resume: Option<ToolCallResume>,
 ) -> Result<bool, AgentLoopError> {
-    let mut tool_state = tool_call_states_from_ctx(run_ctx)
-        .remove(&suspended_call.call_id)
-        .unwrap_or_else(|| ToolCallState {
-            call_id: suspended_call.call_id.clone(),
-            tool_name: suspended_call.tool_name.clone(),
-            arguments: suspended_call.invocation.arguments.clone(),
+    let current_state = tool_call_states_from_ctx(run_ctx).remove(&suspended_call.call_id);
+    let Some(tool_state) = transition_tool_call_state(
+        current_state,
+        ToolCallStateSeed {
+            call_id: &suspended_call.call_id,
+            tool_name: &suspended_call.tool_name,
+            arguments: &suspended_call.invocation.arguments,
             status: ToolCallStatus::Suspended,
             resume_token: Some(suspended_call.invocation.call_id.clone()),
-            resume: None,
-            scratch: Value::Null,
+        },
+        ToolCallStateTransition {
+            status,
+            resume_token: Some(suspended_call.invocation.call_id.clone()),
+            resume,
             updated_at: current_unix_millis(),
-        });
-    let previous_status = tool_state.status;
-    if !previous_status.can_transition_to(status) {
+        },
+    ) else {
         return Ok(false);
-    }
-    tool_state.call_id = suspended_call.call_id.clone();
-    tool_state.tool_name = suspended_call.tool_name.clone();
-    tool_state.arguments = suspended_call.invocation.arguments.clone();
-    tool_state.status = status;
-    tool_state.resume_token = Some(suspended_call.invocation.call_id.clone());
-    tool_state.resume = resume;
-    tool_state.updated_at = current_unix_millis();
+    };
 
     let patch = upsert_tool_call_state(&suspended_call.call_id, tool_state)?;
     if patch.patch().is_empty() {

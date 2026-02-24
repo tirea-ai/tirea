@@ -10,7 +10,8 @@ use crate::contracts::RunAction;
 use crate::contracts::RunContext;
 use crate::contracts::SuspendedCall;
 use crate::runtime::control::{
-    InferenceError, InferenceErrorState, SuspendedToolCallsState, ToolCallState,
+    InferenceError, InferenceErrorState, SuspendedToolCallsState, ToolCallResume, ToolCallState,
+    ToolCallStatus,
 };
 use tirea_state::{DocCell, Op, Path, StateContext, TireaError, TrackedPatch};
 
@@ -205,6 +206,51 @@ pub(super) fn tool_call_states_from_ctx(run_ctx: &RunContext) -> HashMap<String,
         .unwrap_or_default()
 }
 
+pub(super) struct ToolCallStateSeed<'a> {
+    pub(super) call_id: &'a str,
+    pub(super) tool_name: &'a str,
+    pub(super) arguments: &'a Value,
+    pub(super) status: ToolCallStatus,
+    pub(super) resume_token: Option<String>,
+}
+
+pub(super) struct ToolCallStateTransition {
+    pub(super) status: ToolCallStatus,
+    pub(super) resume_token: Option<String>,
+    pub(super) resume: Option<ToolCallResume>,
+    pub(super) updated_at: u64,
+}
+
+pub(super) fn transition_tool_call_state(
+    current: Option<ToolCallState>,
+    seed: ToolCallStateSeed<'_>,
+    transition: ToolCallStateTransition,
+) -> Option<ToolCallState> {
+    let mut tool_state = current.unwrap_or_else(|| ToolCallState {
+        call_id: seed.call_id.to_string(),
+        tool_name: seed.tool_name.to_string(),
+        arguments: seed.arguments.clone(),
+        status: seed.status,
+        resume_token: seed.resume_token.clone(),
+        resume: None,
+        scratch: Value::Null,
+        updated_at: transition.updated_at,
+    });
+    if !tool_state.status.can_transition_to(transition.status) {
+        return None;
+    }
+
+    tool_state.call_id = seed.call_id.to_string();
+    tool_state.tool_name = seed.tool_name.to_string();
+    tool_state.arguments = seed.arguments.clone();
+    tool_state.status = transition.status;
+    tool_state.resume_token = transition.resume_token;
+    tool_state.resume = transition.resume;
+    tool_state.updated_at = transition.updated_at;
+
+    Some(tool_state)
+}
+
 pub(super) fn upsert_tool_call_state(
     call_id: &str,
     tool_state: ToolCallState,
@@ -336,7 +382,7 @@ pub(super) fn drain_agent_append_user_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::control::ToolCallStatus;
+    use crate::runtime::control::{ResumeDecisionAction, ToolCallStatus};
     use serde_json::json;
     use tirea_state::apply_patch;
 
@@ -392,5 +438,78 @@ mod tests {
             panic!("unexpected error type");
         };
         assert!(message.contains("call_id must not be empty"));
+    }
+
+    #[test]
+    fn transition_tool_call_state_applies_seed_and_runtime_fields() {
+        let transitioned = transition_tool_call_state(
+            None,
+            ToolCallStateSeed {
+                call_id: "call_1",
+                tool_name: "echo",
+                arguments: &json!({"message":"hi"}),
+                status: ToolCallStatus::Suspended,
+                resume_token: Some("resume_token_1".to_string()),
+            },
+            ToolCallStateTransition {
+                status: ToolCallStatus::Resuming,
+                resume_token: Some("resume_token_1".to_string()),
+                resume: Some(ToolCallResume {
+                    decision_id: "decision_1".to_string(),
+                    action: ResumeDecisionAction::Resume,
+                    result: json!(true),
+                    reason: None,
+                    updated_at: 42,
+                }),
+                updated_at: 42,
+            },
+        )
+        .expect("transition should be allowed");
+
+        assert_eq!(transitioned.call_id, "call_1");
+        assert_eq!(transitioned.tool_name, "echo");
+        assert_eq!(transitioned.arguments, json!({"message":"hi"}));
+        assert_eq!(transitioned.status, ToolCallStatus::Resuming);
+        assert_eq!(transitioned.resume_token.as_deref(), Some("resume_token_1"));
+        assert_eq!(
+            transitioned
+                .resume
+                .as_ref()
+                .map(|resume| &resume.decision_id),
+            Some(&"decision_1".to_string())
+        );
+        assert_eq!(transitioned.updated_at, 42);
+    }
+
+    #[test]
+    fn transition_tool_call_state_rejects_invalid_lifecycle_transition() {
+        let current = ToolCallState {
+            call_id: "call_1".to_string(),
+            tool_name: "echo".to_string(),
+            arguments: json!({"message":"done"}),
+            status: ToolCallStatus::Succeeded,
+            resume_token: None,
+            resume: None,
+            scratch: Value::Null,
+            updated_at: 1,
+        };
+
+        let transitioned = transition_tool_call_state(
+            Some(current),
+            ToolCallStateSeed {
+                call_id: "call_1",
+                tool_name: "echo",
+                arguments: &json!({"message":"done"}),
+                status: ToolCallStatus::New,
+                resume_token: None,
+            },
+            ToolCallStateTransition {
+                status: ToolCallStatus::Running,
+                resume_token: None,
+                resume: None,
+                updated_at: 2,
+            },
+        );
+        assert!(transitioned.is_none(), "terminal state should not reopen");
     }
 }

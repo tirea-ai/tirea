@@ -1,4 +1,7 @@
-use super::core::{drain_agent_append_user_messages, set_agent_suspended_calls};
+use super::core::{
+    drain_agent_append_user_messages, set_agent_suspended_calls, transition_tool_call_state,
+    ToolCallStateSeed, ToolCallStateTransition,
+};
 use super::plugin_runtime::emit_phase_checked;
 use super::{
     AgentConfig, AgentLoopError, RunCancellationToken, TOOL_SCOPE_CALLER_MESSAGES_KEY,
@@ -8,8 +11,8 @@ use crate::contracts::plugin::phase::{Phase, StateEffect, StepContext, ToolConte
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
-    DecisionReplayPolicy, StreamResult, ToolCallOutcome, ToolCallState, ToolCallStatus,
-    ToolExecution, ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
+    DecisionReplayPolicy, StreamResult, ToolCallOutcome, ToolCallStatus, ToolExecution,
+    ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
 };
 use crate::contracts::thread::Thread;
 use crate::contracts::thread::{Message, MessageMetadata, ToolCall};
@@ -62,66 +65,71 @@ fn now_unix_millis() -> u64 {
         .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64)
 }
 
-fn baseline_tool_call_state(call: &ToolCall) -> ToolCallState {
-    ToolCallState {
-        call_id: call.id.clone(),
-        tool_name: call.name.clone(),
-        arguments: call.arguments.clone(),
-        status: ToolCallStatus::New,
-        resume_token: None,
-        resume: None,
-        scratch: Value::Null,
-        updated_at: now_unix_millis(),
-    }
-}
-
 fn persist_tool_call_status(
     step: &StepContext<'_>,
     call: &ToolCall,
     status: ToolCallStatus,
     suspended_call: Option<&SuspendedCall>,
 ) -> Result<(), AgentLoopError> {
-    let mut runtime_state = step
-        .ctx()
-        .tool_call_state_for(&call.id)
-        .map_err(|e| {
-            AgentLoopError::StateError(format!(
-                "failed to read tool call state for '{}' before setting {:?}: {e}",
-                call.id, status
-            ))
-        })?
-        .unwrap_or_else(|| baseline_tool_call_state(call));
-    let previous_status = runtime_state.status;
-    if !previous_status.can_transition_to(status) {
+    let current_state = step.ctx().tool_call_state_for(&call.id).map_err(|e| {
+        AgentLoopError::StateError(format!(
+            "failed to read tool call state for '{}' before setting {:?}: {e}",
+            call.id, status
+        ))
+    })?;
+    let previous_status = current_state
+        .as_ref()
+        .map(|state| state.status)
+        .unwrap_or(ToolCallStatus::New);
+    let current_resume_token = current_state
+        .as_ref()
+        .and_then(|state| state.resume_token.clone());
+    let current_resume = current_state
+        .as_ref()
+        .and_then(|state| state.resume.clone());
+
+    let (next_resume_token, next_resume) = match status {
+        ToolCallStatus::Running => {
+            if matches!(previous_status, ToolCallStatus::Resuming) {
+                (current_resume_token.clone(), current_resume.clone())
+            } else {
+                (None, None)
+            }
+        }
+        ToolCallStatus::Suspended => (
+            suspended_call
+                .map(|entry| entry.invocation.call_id.clone())
+                .or(current_resume_token.clone()),
+            None,
+        ),
+        ToolCallStatus::Succeeded
+        | ToolCallStatus::Failed
+        | ToolCallStatus::Cancelled
+        | ToolCallStatus::New
+        | ToolCallStatus::Resuming => (current_resume_token, current_resume),
+    };
+
+    let Some(runtime_state) = transition_tool_call_state(
+        current_state,
+        ToolCallStateSeed {
+            call_id: &call.id,
+            tool_name: &call.name,
+            arguments: &call.arguments,
+            status: ToolCallStatus::New,
+            resume_token: None,
+        },
+        ToolCallStateTransition {
+            status,
+            resume_token: next_resume_token,
+            resume: next_resume,
+            updated_at: now_unix_millis(),
+        },
+    ) else {
         return Err(AgentLoopError::StateError(format!(
             "invalid tool call status transition for '{}': {:?} -> {:?}",
             call.id, previous_status, status
         )));
-    }
-
-    runtime_state.call_id = call.id.clone();
-    runtime_state.tool_name = call.name.clone();
-    runtime_state.arguments = call.arguments.clone();
-    runtime_state.status = status;
-    runtime_state.updated_at = now_unix_millis();
-
-    match status {
-        ToolCallStatus::Running => {
-            // Keep resume payload only for explicit Suspended -> Resuming -> Running path.
-            if !matches!(previous_status, ToolCallStatus::Resuming) {
-                runtime_state.resume_token = None;
-                runtime_state.resume = None;
-            }
-        }
-        ToolCallStatus::Suspended => {
-            runtime_state.resume_token = suspended_call
-                .map(|entry| entry.invocation.call_id.clone())
-                .or(runtime_state.resume_token);
-            runtime_state.resume = None;
-        }
-        ToolCallStatus::Succeeded | ToolCallStatus::Failed | ToolCallStatus::Cancelled => {}
-        ToolCallStatus::New | ToolCallStatus::Resuming => {}
-    }
+    };
 
     step.ctx()
         .set_tool_call_state_for(&call.id, runtime_state)
