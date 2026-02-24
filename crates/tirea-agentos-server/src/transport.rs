@@ -162,10 +162,19 @@ where
         })
     };
 
-    let (r1, r2) = tokio::join!(ingress, egress);
-    r1.map_err(|e| TransportError::Internal(e.to_string()))??;
-    r2.map_err(|e| TransportError::Internal(e.to_string()))??;
-    Ok(())
+    fn normalize_relay_result(result: Result<(), TransportError>) -> Result<(), TransportError> {
+        match result {
+            Ok(()) | Err(TransportError::Closed) => Ok(()),
+            Err(other) => Err(other),
+        }
+    }
+
+    let egress_res = egress
+        .await
+        .map_err(|e| TransportError::Internal(e.to_string()))?;
+    cancel.cancel();
+    ingress.abort();
+    normalize_relay_result(egress_res)
 }
 
 /// Pump an internal agent event stream through a protocol output encoder and
