@@ -6887,6 +6887,46 @@ fn test_normalize_termination_for_suspended_calls_keeps_cancelled() {
     assert_eq!(response, Some("ignored".to_string()));
 }
 
+#[test]
+fn test_sync_run_lifecycle_for_termination_persists_status_and_reason() {
+    let cases = vec![
+        (TerminationReason::Suspended, "waiting", None),
+        (TerminationReason::NaturalEnd, "done", Some("natural")),
+        (
+            TerminationReason::PluginRequested,
+            "done",
+            Some("plugin_requested"),
+        ),
+        (TerminationReason::Cancelled, "done", Some("cancelled")),
+        (TerminationReason::Error, "done", Some("error")),
+        (TerminationReason::stopped("limit"), "done", Some("stopped:limit")),
+    ];
+
+    for (termination, expected_status, expected_reason) in cases {
+        let mut run_config = tirea_contract::RunConfig::default();
+        run_config
+            .set("run_id", "run-lifecycle")
+            .expect("set run id");
+        let mut run_ctx =
+            RunContext::from_thread(&Thread::new("lifecycle-state"), run_config).expect("run ctx");
+
+        sync_run_lifecycle_for_termination(&mut run_ctx, &termination)
+            .expect("sync lifecycle patch");
+        let state = run_ctx.snapshot().expect("snapshot");
+
+        assert_eq!(state["__run"]["status"], json!(expected_status));
+        assert_eq!(
+            state["__run"]["done_reason"],
+            expected_reason.map_or(Value::Null, |value| json!(value))
+        );
+        assert_eq!(state["__run"]["id"], json!("run-lifecycle"));
+        assert!(
+            state["__run"]["updated_at"].as_u64().is_some(),
+            "updated_at must be unix millis"
+        );
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CanonicalToolCall {
     id: String,

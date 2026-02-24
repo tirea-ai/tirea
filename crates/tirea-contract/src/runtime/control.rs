@@ -196,6 +196,18 @@ pub enum ToolCallStatus {
 }
 
 impl ToolCallStatus {
+    /// Canonical tool-call lifecycle state machine used by runtime tests.
+    pub const ASCII_STATE_MACHINE: &str = r#"new ------------> running
+ |                  |
+ |                  v
+ +------------> suspended -----> resuming
+                    |               |
+                    +---------------+
+
+running/resuming ---> succeeded
+running/resuming ---> failed
+running/suspended/resuming ---> cancelled"#;
+
     /// Whether this status is terminal (no further lifecycle transition expected).
     pub fn is_terminal(self) -> bool {
         matches!(
@@ -481,5 +493,17 @@ mod tests {
         assert!(diagram.contains("waiting"));
         assert!(diagram.contains("done"));
         assert!(diagram.contains("start"));
+    }
+
+    #[test]
+    fn tool_call_ascii_state_machine_contains_all_states() {
+        let diagram = ToolCallStatus::ASCII_STATE_MACHINE;
+        assert!(diagram.contains("new"));
+        assert!(diagram.contains("running"));
+        assert!(diagram.contains("suspended"));
+        assert!(diagram.contains("resuming"));
+        assert!(diagram.contains("succeeded"));
+        assert!(diagram.contains("failed"));
+        assert!(diagram.contains("cancelled"));
     }
 }
