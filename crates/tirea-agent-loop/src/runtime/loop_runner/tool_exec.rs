@@ -145,8 +145,52 @@ fn map_tool_executor_error(err: AgentLoopError) -> ToolExecutorError {
 }
 
 /// Executes all tool calls concurrently.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ParallelToolExecutor;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParallelToolExecutionMode {
+    Immediate,
+    BatchApproval,
+    Streaming,
+}
+
+/// Executes all tool calls concurrently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParallelToolExecutor {
+    mode: ParallelToolExecutionMode,
+}
+
+impl ParallelToolExecutor {
+    pub const fn immediate() -> Self {
+        Self {
+            mode: ParallelToolExecutionMode::Immediate,
+        }
+    }
+
+    pub const fn batch_approval() -> Self {
+        Self {
+            mode: ParallelToolExecutionMode::BatchApproval,
+        }
+    }
+
+    pub const fn streaming() -> Self {
+        Self {
+            mode: ParallelToolExecutionMode::Streaming,
+        }
+    }
+
+    fn mode_name(self) -> &'static str {
+        match self.mode {
+            ParallelToolExecutionMode::Immediate => "parallel",
+            ParallelToolExecutionMode::BatchApproval => "parallel_batch_approval",
+            ParallelToolExecutionMode::Streaming => "parallel_streaming",
+        }
+    }
+}
+
+impl Default for ParallelToolExecutor {
+    fn default() -> Self {
+        Self::immediate()
+    }
+}
 
 #[async_trait]
 impl ToolExecutor for ParallelToolExecutor {
@@ -161,33 +205,7 @@ impl ToolExecutor for ParallelToolExecutor {
     }
 
     fn name(&self) -> &'static str {
-        "parallel"
-    }
-
-    fn requires_parallel_patch_conflict_check(&self) -> bool {
-        true
-    }
-}
-
-/// Executes all tool calls concurrently and replays suspend decisions only when
-/// all currently suspended calls have been decided.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ParallelBatchApprovalToolExecutor;
-
-#[async_trait]
-impl ToolExecutor for ParallelBatchApprovalToolExecutor {
-    async fn execute(
-        &self,
-        request: ToolExecutionRequest<'_>,
-    ) -> Result<Vec<ToolExecutionResult>, ToolExecutorError> {
-        let phase_ctx = ToolPhaseContext::from_request(&request);
-        execute_tools_parallel_with_phases(request.tools, request.calls, request.state, phase_ctx)
-            .await
-            .map_err(map_tool_executor_error)
-    }
-
-    fn name(&self) -> &'static str {
-        "parallel_batch_approval"
+        self.mode_name()
     }
 
     fn requires_parallel_patch_conflict_check(&self) -> bool {
@@ -195,35 +213,12 @@ impl ToolExecutor for ParallelBatchApprovalToolExecutor {
     }
 
     fn decision_replay_policy(&self) -> DecisionReplayPolicy {
-        DecisionReplayPolicy::BatchAllSuspended
-    }
-}
-
-/// Executes all tool calls concurrently with immediate decision replay.
-///
-/// This is equivalent to [`ParallelToolExecutor`] but has an explicit strategy
-/// label for protocol/runtime wiring that prefers pure streaming behavior.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ParallelStreamingToolExecutor;
-
-#[async_trait]
-impl ToolExecutor for ParallelStreamingToolExecutor {
-    async fn execute(
-        &self,
-        request: ToolExecutionRequest<'_>,
-    ) -> Result<Vec<ToolExecutionResult>, ToolExecutorError> {
-        let phase_ctx = ToolPhaseContext::from_request(&request);
-        execute_tools_parallel_with_phases(request.tools, request.calls, request.state, phase_ctx)
-            .await
-            .map_err(map_tool_executor_error)
-    }
-
-    fn name(&self) -> &'static str {
-        "parallel_streaming"
-    }
-
-    fn requires_parallel_patch_conflict_check(&self) -> bool {
-        true
+        match self.mode {
+            ParallelToolExecutionMode::BatchApproval => DecisionReplayPolicy::BatchAllSuspended,
+            ParallelToolExecutionMode::Immediate | ParallelToolExecutionMode::Streaming => {
+                DecisionReplayPolicy::Immediate
+            }
+        }
     }
 }
 
@@ -545,7 +540,7 @@ pub async fn execute_tools_with_plugins(
     parallel: bool,
     plugins: &[Arc<dyn AgentPlugin>],
 ) -> Result<Thread, AgentLoopError> {
-    let parallel_executor = ParallelToolExecutor;
+    let parallel_executor = ParallelToolExecutor::immediate();
     let sequential_executor = SequentialToolExecutor;
     let executor: &dyn ToolExecutor = if parallel {
         &parallel_executor
@@ -589,8 +584,8 @@ pub async fn execute_tools_with_plugins_and_executor(
     }
 
     let replay_executor: Arc<dyn ToolExecutor> = match executor.decision_replay_policy() {
-        DecisionReplayPolicy::BatchAllSuspended => Arc::new(ParallelBatchApprovalToolExecutor),
-        DecisionReplayPolicy::Immediate => Arc::new(ParallelStreamingToolExecutor),
+        DecisionReplayPolicy::BatchAllSuspended => Arc::new(ParallelToolExecutor::batch_approval()),
+        DecisionReplayPolicy::Immediate => Arc::new(ParallelToolExecutor::streaming()),
     };
     let replay_config = AgentConfig {
         plugins: plugins.to_vec(),

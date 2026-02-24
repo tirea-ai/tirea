@@ -118,8 +118,8 @@ use tool_exec::{
 };
 pub use tool_exec::{
     execute_tools, execute_tools_with_config, execute_tools_with_plugins,
-    execute_tools_with_plugins_and_executor, ParallelBatchApprovalToolExecutor,
-    ParallelStreamingToolExecutor, ParallelToolExecutor, SequentialToolExecutor,
+    execute_tools_with_plugins_and_executor, ParallelToolExecutionMode, ParallelToolExecutor,
+    SequentialToolExecutor,
 };
 
 /// Fully resolved agent wiring ready for execution.

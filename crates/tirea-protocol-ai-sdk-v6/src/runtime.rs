@@ -4,7 +4,7 @@
 //! no additional plugins.
 
 use std::sync::Arc;
-use tirea_agent_loop::runtime::loop_runner::{ParallelBatchApprovalToolExecutor, ResolvedRun};
+use tirea_agent_loop::runtime::loop_runner::{ParallelToolExecutor, ResolvedRun};
 
 use crate::AiSdkV6RunRequest;
 
@@ -12,7 +12,7 @@ use crate::AiSdkV6RunRequest;
 pub fn apply_ai_sdk_extensions(resolved: &mut ResolvedRun, _request: &AiSdkV6RunRequest) {
     // AI SDK transport supports batched approvals; replay only after the full
     // suspended set receives decisions to avoid partial duplicate replays.
-    resolved.config.tool_executor = Arc::new(ParallelBatchApprovalToolExecutor);
+    resolved.config.tool_executor = Arc::new(ParallelToolExecutor::batch_approval());
 }
 
 #[cfg(test)]

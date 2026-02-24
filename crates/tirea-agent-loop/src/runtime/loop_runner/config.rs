@@ -174,7 +174,7 @@ impl Default for AgentConfig {
             model: "gpt-4o-mini".to_string(),
             system_prompt: String::new(),
             max_rounds: 10,
-            tool_executor: Arc::new(ParallelToolExecutor),
+            tool_executor: Arc::new(ParallelToolExecutor::immediate()),
             chat_options: Some(
                 ChatOptions::default()
                     .with_capture_usage(true)
@@ -236,7 +236,7 @@ impl AgentConfig {
     #[must_use]
     pub fn with_parallel_tools(mut self, parallel: bool) -> Self {
         self.tool_executor = if parallel {
-            Arc::new(ParallelToolExecutor)
+            Arc::new(ParallelToolExecutor::immediate())
         } else {
             Arc::new(SequentialToolExecutor)
         };

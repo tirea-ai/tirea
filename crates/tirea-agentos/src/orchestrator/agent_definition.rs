@@ -1,8 +1,7 @@
 use super::stop_policy_plugin::StopConditionSpec;
 use crate::contracts::runtime::ToolExecutor;
 use crate::runtime::loop_runner::{
-    AgentConfig, LlmRetryPolicy, ParallelBatchApprovalToolExecutor, ParallelStreamingToolExecutor,
-    SequentialToolExecutor,
+    AgentConfig, LlmRetryPolicy, ParallelToolExecutor, SequentialToolExecutor,
 };
 use genai::chat::ChatOptions;
 use std::sync::Arc;
@@ -204,8 +203,10 @@ impl AgentDefinition {
     ) -> AgentConfig {
         let tool_executor: Arc<dyn ToolExecutor> = match self.tool_execution_mode {
             ToolExecutionMode::Sequential => Arc::new(SequentialToolExecutor),
-            ToolExecutionMode::ParallelBatchApproval => Arc::new(ParallelBatchApprovalToolExecutor),
-            ToolExecutionMode::ParallelStreaming => Arc::new(ParallelStreamingToolExecutor),
+            ToolExecutionMode::ParallelBatchApproval => {
+                Arc::new(ParallelToolExecutor::batch_approval())
+            }
+            ToolExecutionMode::ParallelStreaming => Arc::new(ParallelToolExecutor::streaming()),
         };
         AgentConfig {
             id: self.id,

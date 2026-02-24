@@ -9,8 +9,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tirea_agent_loop::runtime::loop_runner::{
-    ParallelBatchApprovalToolExecutor, ParallelStreamingToolExecutor, ResolvedRun,
-    SequentialToolExecutor,
+    ParallelToolExecutor, ResolvedRun, SequentialToolExecutor,
 };
 use tirea_contract::event::suspension::{
     FrontendToolInvocation, InvocationOrigin, ResponseRouting,
@@ -99,10 +98,10 @@ fn apply_agui_tool_execution_mode_override(resolved: &mut ResolvedRun, config: &
             resolved.config.tool_executor = Arc::new(SequentialToolExecutor);
         }
         Some("parallel_batch_approval") => {
-            resolved.config.tool_executor = Arc::new(ParallelBatchApprovalToolExecutor);
+            resolved.config.tool_executor = Arc::new(ParallelToolExecutor::batch_approval());
         }
         Some("parallel_streaming") => {
-            resolved.config.tool_executor = Arc::new(ParallelStreamingToolExecutor);
+            resolved.config.tool_executor = Arc::new(ParallelToolExecutor::streaming());
         }
         _ => {}
     }
