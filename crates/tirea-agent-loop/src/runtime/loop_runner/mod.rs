@@ -745,7 +745,7 @@ fn settle_orphan_resuming_tool_states(
         if suspended.contains_key(call_id) {
             continue;
         }
-        let Some(mut state) = states.get(call_id).cloned() else {
+        let Some(state) = states.get(call_id).cloned() else {
             continue;
         };
         let target_status = match &resume.action {
@@ -755,12 +755,27 @@ fn settle_orphan_resuming_tool_states(
         if state.status == target_status && state.resume.as_ref() == Some(resume) {
             continue;
         }
-        state.call_id = call_id.clone();
-        state.status = target_status;
-        state.resume = Some(resume.clone());
-        state.updated_at = current_unix_millis();
 
-        let patch = upsert_tool_call_state(call_id, state)?;
+        let Some(next_state) = transition_tool_call_state(
+            Some(state.clone()),
+            ToolCallStateSeed {
+                call_id: call_id.as_str(),
+                tool_name: state.tool_name.as_str(),
+                arguments: &state.arguments,
+                status: state.status,
+                resume_token: state.resume_token.clone(),
+            },
+            ToolCallStateTransition {
+                status: target_status,
+                resume_token: state.resume_token.clone(),
+                resume: Some(resume.clone()),
+                updated_at: current_unix_millis(),
+            },
+        ) else {
+            continue;
+        };
+
+        let patch = upsert_tool_call_state(call_id, next_state)?;
         if patch.patch().is_empty() {
             continue;
         }

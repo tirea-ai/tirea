@@ -3953,6 +3953,73 @@ async fn test_run_loop_run_start_replay_uses_tool_call_resume_state_without_mail
 }
 
 #[tokio::test]
+async fn test_run_loop_run_start_settles_orphan_resuming_state_without_suspended_call() {
+    struct TerminatePluginRequestedPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for TerminatePluginRequestedPlugin {
+        fn id(&self) -> &str {
+            "terminate_plugin_requested_settle_orphan_resuming_nonstream"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::BeforeInference {
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
+            }
+        });
+    }
+
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
+
+    let thread = Thread::with_initial_state(
+        "test",
+        json!({
+            "__tool_call_states": {
+                "calls": {
+                    "call_orphan": {
+                        "call_id": "call_orphan",
+                        "tool_name": "echo",
+                        "arguments": { "message": "late decision" },
+                        "status": "resuming",
+                        "resume_token": "call_orphan",
+                        "resume": {
+                            "decision_id": "decision_orphan",
+                            "action": "cancel",
+                            "result": false,
+                            "updated_at": 1
+                        },
+                        "updated_at": 1
+                    }
+                }
+            }
+        }),
+    )
+    .with_message(Message::user("continue"));
+
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
+
+    assert_eq!(outcome.termination, TerminationReason::PluginRequested);
+    assert_eq!(outcome.stats.llm_calls, 0, "inference should not run");
+    let final_state = outcome.run_ctx.snapshot().expect("snapshot");
+    assert_eq!(
+        final_state["__tool_call_states"]["calls"]["call_orphan"]["status"],
+        json!("cancelled")
+    );
+    assert_eq!(
+        final_state["__tool_call_states"]["calls"]["call_orphan"]["resume"]["action"],
+        json!("cancel")
+    );
+    assert_eq!(
+        final_state["__tool_call_states"]["calls"]["call_orphan"]["resume_token"],
+        json!("call_orphan")
+    );
+}
+
+#[tokio::test]
 async fn test_stream_permission_denied_does_not_replay_tool_call() {
     struct TerminatePluginRequestedPlugin;
 
