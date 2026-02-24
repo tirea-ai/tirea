@@ -95,6 +95,12 @@ fn persist_tool_call_status(
         })?
         .unwrap_or_else(|| baseline_tool_call_state(call));
     let previous_status = runtime_state.status;
+    if !previous_status.can_transition_to(status) {
+        return Err(AgentLoopError::StateError(format!(
+            "invalid tool call status transition for '{}': {:?} -> {:?}",
+            call.id, previous_status, status
+        )));
+    }
 
     runtime_state.call_id = call.id.clone();
     runtime_state.tool_name = call.name.clone();

@@ -132,6 +132,46 @@ pub enum ToolCallStatus {
     Cancelled,
 }
 
+impl ToolCallStatus {
+    /// Whether this status is terminal (no further lifecycle transition expected).
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            ToolCallStatus::Succeeded | ToolCallStatus::Failed | ToolCallStatus::Cancelled
+        )
+    }
+
+    /// Validate lifecycle transition from `self` to `next`.
+    pub fn can_transition_to(self, next: Self) -> bool {
+        if self == next {
+            return true;
+        }
+
+        match self {
+            ToolCallStatus::New => true,
+            ToolCallStatus::Running => matches!(
+                next,
+                ToolCallStatus::Suspended
+                    | ToolCallStatus::Succeeded
+                    | ToolCallStatus::Failed
+                    | ToolCallStatus::Cancelled
+            ),
+            ToolCallStatus::Suspended => {
+                matches!(next, ToolCallStatus::Resuming | ToolCallStatus::Cancelled)
+            }
+            ToolCallStatus::Resuming => matches!(
+                next,
+                ToolCallStatus::Running
+                    | ToolCallStatus::Suspended
+                    | ToolCallStatus::Succeeded
+                    | ToolCallStatus::Failed
+                    | ToolCallStatus::Cancelled
+            ),
+            ToolCallStatus::Succeeded | ToolCallStatus::Failed | ToolCallStatus::Cancelled => false,
+        }
+    }
+}
+
 /// Resume input payload attached to a suspended tool call.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolCallResume {
@@ -310,5 +350,24 @@ mod tests {
         assert!(matches!(decision.action, ResumeDecisionAction::Cancel));
         assert_eq!(decision.reason.as_deref(), Some("denied by user"));
         assert_eq!(decision.updated_at, 456);
+    }
+
+    #[test]
+    fn tool_call_status_transitions_match_lifecycle() {
+        assert!(ToolCallStatus::New.can_transition_to(ToolCallStatus::Running));
+        assert!(ToolCallStatus::Running.can_transition_to(ToolCallStatus::Suspended));
+        assert!(ToolCallStatus::Suspended.can_transition_to(ToolCallStatus::Resuming));
+        assert!(ToolCallStatus::Resuming.can_transition_to(ToolCallStatus::Running));
+        assert!(ToolCallStatus::Resuming.can_transition_to(ToolCallStatus::Failed));
+        assert!(ToolCallStatus::Running.can_transition_to(ToolCallStatus::Succeeded));
+        assert!(ToolCallStatus::Running.can_transition_to(ToolCallStatus::Failed));
+        assert!(ToolCallStatus::Suspended.can_transition_to(ToolCallStatus::Cancelled));
+    }
+
+    #[test]
+    fn tool_call_status_rejects_terminal_reopen_transitions() {
+        assert!(!ToolCallStatus::Succeeded.can_transition_to(ToolCallStatus::Running));
+        assert!(!ToolCallStatus::Failed.can_transition_to(ToolCallStatus::Resuming));
+        assert!(!ToolCallStatus::Cancelled.can_transition_to(ToolCallStatus::Suspended));
     }
 }

@@ -1055,6 +1055,10 @@ fn upsert_tool_call_lifecycle_state(
             scratch: Value::Null,
             updated_at: current_unix_millis(),
         });
+    let previous_status = tool_state.status;
+    if !previous_status.can_transition_to(status) {
+        return Ok(false);
+    }
     tool_state.call_id = suspended_call.call_id.clone();
     tool_state.tool_name = suspended_call.tool_name.clone();
     tool_state.arguments = suspended_call.invocation.arguments.clone();
