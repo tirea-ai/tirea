@@ -15,7 +15,7 @@ use crate::contracts::runtime::{
     ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
 };
 use crate::contracts::thread::Thread;
-use crate::contracts::thread::{Message, MessageMetadata};
+use crate::contracts::thread::{Message, MessageMetadata, ToolCall};
 use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::contracts::RunContext;
 use crate::contracts::SuspendedCall;
@@ -65,7 +65,7 @@ fn now_unix_millis() -> u64 {
         .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64)
 }
 
-fn baseline_tool_call_state(call: &crate::contracts::thread::ToolCall) -> ToolCallState {
+fn baseline_tool_call_state(call: &ToolCall) -> ToolCallState {
     ToolCallState {
         call_id: call.id.clone(),
         tool_name: call.name.clone(),
@@ -76,6 +76,58 @@ fn baseline_tool_call_state(call: &crate::contracts::thread::ToolCall) -> ToolCa
         scratch: Value::Null,
         updated_at: now_unix_millis(),
     }
+}
+
+fn persist_tool_call_status(
+    step: &StepContext<'_>,
+    call: &ToolCall,
+    status: ToolCallStatus,
+    suspended_call: Option<&SuspendedCall>,
+) -> Result<(), AgentLoopError> {
+    let mut runtime_state = step
+        .ctx()
+        .tool_call_state_for(&call.id)
+        .map_err(|e| {
+            AgentLoopError::StateError(format!(
+                "failed to read tool call state for '{}' before setting {:?}: {e}",
+                call.id, status
+            ))
+        })?
+        .unwrap_or_else(|| baseline_tool_call_state(call));
+    let previous_status = runtime_state.status;
+
+    runtime_state.call_id = call.id.clone();
+    runtime_state.tool_name = call.name.clone();
+    runtime_state.arguments = call.arguments.clone();
+    runtime_state.status = status;
+    runtime_state.updated_at = now_unix_millis();
+
+    match status {
+        ToolCallStatus::Running => {
+            // Keep resume payload only for explicit Suspended -> Resuming -> Running path.
+            if !matches!(previous_status, ToolCallStatus::Resuming) {
+                runtime_state.resume_token = None;
+                runtime_state.resume = None;
+            }
+        }
+        ToolCallStatus::Suspended => {
+            runtime_state.resume_token = suspended_call
+                .map(|entry| entry.invocation.call_id.clone())
+                .or(runtime_state.resume_token);
+            runtime_state.resume = None;
+        }
+        ToolCallStatus::Succeeded | ToolCallStatus::Failed | ToolCallStatus::Cancelled => {}
+        ToolCallStatus::New | ToolCallStatus::Resuming => {}
+    }
+
+    step.ctx()
+        .set_tool_call_state_for(&call.id, runtime_state)
+        .map_err(|e| {
+            AgentLoopError::StateError(format!(
+                "failed to persist tool call state for '{}' as {:?}: {e}",
+                call.id, status
+            ))
+        })
 }
 
 fn map_tool_executor_error(err: AgentLoopError) -> ToolExecutorError {
@@ -484,7 +536,7 @@ pub async fn execute_tools_with_plugins_and_executor(
         plugins: plugins.to_vec(),
         ..AgentConfig::default()
     };
-    let replay = super::drain_resume_decisions_and_replay(
+    let replay = super::drain_resuming_tool_calls_and_replay(
         &mut run_ctx,
         tools,
         &replay_config,
@@ -817,6 +869,7 @@ pub(super) async fn execute_single_tool_with_phases(
             }),
         )
     } else {
+        persist_tool_call_status(&step, call, ToolCallStatus::Running, None)?;
         // Execute the tool with its own ToolCallContext
         let tool_doc = tirea_state::DocCell::new(state.clone());
         let tool_ops = std::sync::Mutex::new(Vec::new());
@@ -870,44 +923,18 @@ pub(super) async fn execute_single_tool_with_phases(
 
     match outcome {
         ToolCallOutcome::Suspended => {
-            let mut runtime_state = step
-                .ctx()
-                .tool_call_state_for(&call.id)
-                .map_err(|e| {
-                    AgentLoopError::StateError(format!(
-                        "failed to read suspended tool call state for '{}': {e}",
-                        call.id
-                    ))
-                })?
-                .unwrap_or_else(|| baseline_tool_call_state(call));
-            runtime_state.call_id = call.id.clone();
-            runtime_state.tool_name = call.name.clone();
-            runtime_state.arguments = call.arguments.clone();
-            runtime_state.status = ToolCallStatus::Suspended;
-            runtime_state.resume_token = suspended_call
-                .as_ref()
-                .map(|call| call.invocation.call_id.clone())
-                .or(runtime_state.resume_token);
-            runtime_state.resume = None;
-            runtime_state.updated_at = now_unix_millis();
-            step.ctx()
-                .set_tool_call_state_for(&call.id, runtime_state)
-                .map_err(|e| {
-                    AgentLoopError::StateError(format!(
-                        "failed to persist suspended tool call state for '{}': {e}",
-                        call.id
-                    ))
-                })?;
+            persist_tool_call_status(
+                &step,
+                call,
+                ToolCallStatus::Suspended,
+                suspended_call.as_ref(),
+            )?;
         }
-        ToolCallOutcome::Succeeded | ToolCallOutcome::Failed => {
-            step.ctx()
-                .clear_tool_call_state_for(&call.id)
-                .map_err(|e| {
-                    AgentLoopError::StateError(format!(
-                        "failed to clear tool call state for '{}': {e}",
-                        call.id
-                    ))
-                })?;
+        ToolCallOutcome::Succeeded => {
+            persist_tool_call_status(&step, call, ToolCallStatus::Succeeded, None)?;
+        }
+        ToolCallOutcome::Failed => {
+            persist_tool_call_status(&step, call, ToolCallStatus::Failed, None)?;
         }
     }
 

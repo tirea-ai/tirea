@@ -32,7 +32,7 @@ use tirea_contract::plugin::phase::{
     BeforeToolExecuteContext, PluginPhaseContext, SuspendTicket, ToolGateDecision,
 };
 use tirea_contract::plugin::AgentPlugin;
-use tirea_contract::runtime::control::{ResumeDecisionAction, ResumeDecisionsState};
+use tirea_contract::runtime::control::ResumeDecisionAction;
 use tirea_contract::tool::context::ToolCallContext;
 use tirea_state::State;
 
@@ -143,18 +143,12 @@ impl AgentPlugin for PermissionPlugin {
             return;
         };
 
-        // Resume decisions are written by interaction handling when a suspended
-        // permission call is approved.
+        // Resumed calls carry decision payload on per-call lifecycle state.
         let call_id = step.tool_call_id().unwrap_or_default().to_string();
         if !call_id.is_empty() {
-            let has_resume_grant = {
-                let state = step.state_of::<ResumeDecisionsState>();
-                state
-                    .calls()
-                    .ok()
-                    .and_then(|calls| calls.get(&call_id).cloned())
-                    .is_some_and(|decision| matches!(decision.action, ResumeDecisionAction::Resume))
-            };
+            let has_resume_grant = step
+                .resume_input()
+                .is_some_and(|resume| matches!(resume.action, ResumeDecisionAction::Resume));
             if has_resume_grant {
                 return;
             }
@@ -807,18 +801,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_permission_resume_decision_bypasses_ask() {
+    async fn test_permission_resume_input_bypasses_ask() {
         let fixture = TestFixture::new_with_state(json!({
             "permissions": {
                 "default_behavior": "ask",
                 "tools": {}
             },
-            "__resume_decisions": {
+            "__tool_call_states": {
                 "calls": {
                     "call_1": {
-                        "decision_id": "fc_call_1",
-                        "action": "resume",
-                        "result": true,
+                        "call_id": "call_1",
+                        "tool_name": "test_tool",
+                        "arguments": {},
+                        "status": "resuming",
+                        "resume_token": "call_1",
+                        "resume": {
+                            "decision_id": "fc_call_1",
+                            "action": "resume",
+                            "result": true,
+                            "updated_at": 1
+                        },
                         "updated_at": 1
                     }
                 }

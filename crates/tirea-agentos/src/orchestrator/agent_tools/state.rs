@@ -4,8 +4,8 @@ use tirea_contract::event::suspension::{
 };
 use tirea_contract::plugin::phase::PluginPhaseContext;
 use tirea_contract::runtime::control::{
-    ResumeDecision, ResumeDecisionAction, ResumeDecisionsState, SuspendedCall,
-    SuspendedToolCallsState,
+    ResumeDecisionAction, SuspendedCall, SuspendedToolCallsState, ToolCallResume, ToolCallState,
+    ToolCallStatesState, ToolCallStatus,
 };
 use tirea_contract::runtime::state_paths::SUSPENDED_TOOL_CALLS_STATE_PATH;
 use tirea_state::State;
@@ -170,23 +170,39 @@ pub(super) fn schedule_recovery_replay(
             call.tool_name = AGENT_RUN_TOOL_ID.to_string();
         }
     }
+    let invocation = suspended_calls
+        .get(&call_id)
+        .map(|call| call.invocation.clone());
     let _ = suspended_state.set_calls(suspended_calls);
 
-    let mailbox = step.state_of::<ResumeDecisionsState>();
-    let Ok(mut decisions) = mailbox.calls() else {
-        return;
+    let updated_at = current_unix_millis();
+    let resume = ToolCallResume {
+        decision_id: call_id.clone(),
+        action: ResumeDecisionAction::Resume,
+        result: serde_json::Value::Bool(true),
+        reason: None,
+        updated_at,
     };
-    decisions.insert(
-        call_id.clone(),
-        ResumeDecision {
-            decision_id: call_id,
-            action: ResumeDecisionAction::Resume,
-            result: serde_json::Value::Bool(true),
-            reason: None,
-            updated_at: current_unix_millis(),
-        },
-    );
-    let _ = mailbox.set_calls(decisions);
+
+    if let Some(invocation) = invocation {
+        let tool_states = step.state_of::<ToolCallStatesState>();
+        if let Ok(mut calls) = tool_states.calls() {
+            calls.insert(
+                call_id.clone(),
+                ToolCallState {
+                    call_id: call_id.clone(),
+                    tool_name: AGENT_RUN_TOOL_ID.to_string(),
+                    arguments: invocation.arguments.clone(),
+                    status: ToolCallStatus::Resuming,
+                    resume_token: Some(invocation.call_id),
+                    resume: Some(resume.clone()),
+                    scratch: serde_json::Value::Null,
+                    updated_at,
+                },
+            );
+            let _ = tool_states.set_calls(calls);
+        }
+    }
 }
 
 fn current_unix_millis() -> u64 {

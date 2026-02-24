@@ -1,8 +1,8 @@
 use super::AgentLoopError;
 use crate::contracts::plugin::phase::StepContext;
 use crate::contracts::runtime::state_paths::{
-    INFERENCE_ERROR_STATE_PATH, RESUME_DECISIONS_STATE_PATH, SKILLS_STATE_PATH,
-    SUSPENDED_TOOL_CALLS_STATE_PATH, TOOL_CALL_STATES_STATE_PATH,
+    INFERENCE_ERROR_STATE_PATH, SKILLS_STATE_PATH, SUSPENDED_TOOL_CALLS_STATE_PATH,
+    TOOL_CALL_STATES_STATE_PATH,
 };
 use crate::contracts::thread::{Message, MessageMetadata, Role};
 use crate::contracts::tool::Tool;
@@ -10,10 +10,9 @@ use crate::contracts::RunAction;
 use crate::contracts::RunContext;
 use crate::contracts::SuspendedCall;
 use crate::runtime::control::{
-    InferenceError, InferenceErrorState, ResumeDecision, ResumeDecisionsState,
-    SuspendedToolCallsState, ToolCallState, ToolCallStatesState,
+    InferenceError, InferenceErrorState, SuspendedToolCallsState, ToolCallState,
 };
-use tirea_state::{DocCell, StateContext, TireaError, TrackedPatch};
+use tirea_state::{DocCell, Op, Path, StateContext, TireaError, TrackedPatch};
 
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -209,20 +208,6 @@ pub(super) fn set_agent_inference_error(
     Ok(ctx.take_tracked_patch("agent_loop"))
 }
 
-pub(super) fn resume_decisions_from_ctx(run_ctx: &RunContext) -> HashMap<String, ResumeDecision> {
-    run_ctx
-        .snapshot()
-        .ok()
-        .and_then(|state| {
-            state
-                .get(RESUME_DECISIONS_STATE_PATH)
-                .and_then(|v| v.get("calls"))
-                .cloned()
-                .and_then(|raw| serde_json::from_value::<HashMap<String, ResumeDecision>>(raw).ok())
-        })
-        .unwrap_or_default()
-}
-
 pub(super) fn tool_call_states_from_ctx(run_ctx: &RunContext) -> HashMap<String, ToolCallState> {
     run_ctx
         .snapshot()
@@ -238,68 +223,28 @@ pub(super) fn tool_call_states_from_ctx(run_ctx: &RunContext) -> HashMap<String,
 }
 
 pub(super) fn upsert_tool_call_state(
-    state: &Value,
     call_id: &str,
     tool_state: ToolCallState,
 ) -> Result<TrackedPatch, AgentLoopError> {
-    let doc = DocCell::new(state.clone());
-    let ctx = StateContext::new(&doc);
-    let runtime = ctx.state_of::<ToolCallStatesState>();
-    let mut calls = runtime.calls().ok().unwrap_or_default();
-    calls.insert(call_id.to_string(), tool_state);
-    runtime.set_calls(calls).map_err(|e| {
-        AgentLoopError::StateError(format!(
-            "failed to set {TOOL_CALL_STATES_STATE_PATH}.calls: {e}"
-        ))
-    })?;
-    Ok(ctx.take_tracked_patch("agent_loop"))
-}
-
-pub(super) fn upsert_resume_decision(
-    state: &Value,
-    call_id: &str,
-    decision: ResumeDecision,
-) -> Result<TrackedPatch, AgentLoopError> {
-    let doc = DocCell::new(state.clone());
-    let ctx = StateContext::new(&doc);
-    let mailbox = ctx.state_of::<ResumeDecisionsState>();
-    let mut decisions = mailbox.calls().ok().unwrap_or_default();
-    decisions.insert(call_id.to_string(), decision);
-    mailbox.set_calls(decisions).map_err(|e| {
-        AgentLoopError::StateError(format!(
-            "failed to set {RESUME_DECISIONS_STATE_PATH}.calls: {e}"
-        ))
-    })?;
-    Ok(ctx.take_tracked_patch("agent_loop"))
-}
-
-pub(super) fn clear_resume_decisions(
-    state: &Value,
-    call_ids: &[String],
-) -> Result<TrackedPatch, AgentLoopError> {
-    if call_ids.is_empty() {
-        return Ok(TrackedPatch::new(tirea_state::Patch::new()).with_source("agent_loop"));
+    if call_id.trim().is_empty() {
+        return Err(AgentLoopError::StateError(
+            "failed to upsert tool call state: call_id must not be empty".to_string(),
+        ));
     }
 
-    let doc = DocCell::new(state.clone());
-    let ctx = StateContext::new(&doc);
-    let mailbox = ctx.state_of::<ResumeDecisionsState>();
-    let mut decisions = mailbox.calls().ok().unwrap_or_default();
-    let mut changed = false;
-    for call_id in call_ids {
-        if decisions.remove(call_id).is_some() {
-            changed = true;
-        }
-    }
-    if !changed {
-        return Ok(ctx.take_tracked_patch("agent_loop"));
-    }
-    mailbox.set_calls(decisions).map_err(|e| {
+    let path = Path::root()
+        .key(TOOL_CALL_STATES_STATE_PATH)
+        .key("calls")
+        .key(call_id);
+    let value = serde_json::to_value(tool_state).map_err(|e| {
         AgentLoopError::StateError(format!(
-            "failed to set {RESUME_DECISIONS_STATE_PATH}.calls: {e}"
+            "failed to serialize tool call state for '{call_id}': {e}"
         ))
     })?;
-    Ok(ctx.take_tracked_patch("agent_loop"))
+    Ok(
+        TrackedPatch::new(tirea_state::Patch::with_ops(vec![Op::set(path, value)]))
+            .with_source("agent_loop"),
+    )
 }
 
 pub(super) fn clear_agent_inference_error(state: &Value) -> Result<TrackedPatch, AgentLoopError> {
@@ -403,4 +348,66 @@ pub(super) fn drain_agent_append_user_messages(
     run_ctx.add_messages(messages);
     run_ctx.add_thread_patches(patches);
     Ok(appended)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::control::ToolCallStatus;
+    use serde_json::json;
+    use tirea_state::apply_patch;
+
+    fn sample_state(call_id: &str, status: ToolCallStatus) -> ToolCallState {
+        ToolCallState {
+            call_id: call_id.to_string(),
+            tool_name: "echo".to_string(),
+            arguments: json!({"msg": call_id}),
+            status,
+            resume_token: None,
+            resume: None,
+            scratch: Value::Null,
+            updated_at: 1,
+        }
+    }
+
+    #[test]
+    fn upsert_tool_call_state_generates_single_call_scoped_patch() {
+        let state = json!({
+            "__tool_call_states": {
+                "calls": {
+                    "call_a": sample_state("call_a", ToolCallStatus::Suspended),
+                    "call_b": sample_state("call_b", ToolCallStatus::Suspended)
+                }
+            }
+        });
+
+        let updated = sample_state("call_a", ToolCallStatus::Resuming);
+        let patch = upsert_tool_call_state("call_a", updated).expect("patch should build");
+        let ops = patch.patch().ops();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(
+            ops[0].path().to_string(),
+            "$.__tool_call_states.calls.call_a"
+        );
+
+        let merged = apply_patch(&state, patch.patch()).expect("patch should apply");
+        assert_eq!(
+            merged["__tool_call_states"]["calls"]["call_a"]["status"],
+            json!("resuming")
+        );
+        assert_eq!(
+            merged["__tool_call_states"]["calls"]["call_b"]["status"],
+            json!("suspended")
+        );
+    }
+
+    #[test]
+    fn upsert_tool_call_state_rejects_empty_call_id() {
+        let error = upsert_tool_call_state(" ", sample_state("x", ToolCallStatus::New))
+            .expect_err("empty call_id must fail");
+        let AgentLoopError::StateError(message) = error else {
+            panic!("unexpected error type");
+        };
+        assert!(message.contains("call_id must not be empty"));
+    }
 }

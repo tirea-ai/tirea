@@ -14,9 +14,7 @@ use crate::runtime::loop_runner::{
 };
 use async_trait::async_trait;
 use serde_json::json;
-use std::collections::HashMap;
 use std::time::Duration;
-use tirea_contract::runtime::{ResumeDecision, ResumeDecisionAction};
 use tirea_contract::testing::TestFixture;
 use tirea_state::apply_patches;
 
@@ -66,15 +64,6 @@ where
             }
         }
     }
-}
-
-fn resume_decisions_from_state(state: &serde_json::Value) -> HashMap<String, ResumeDecision> {
-    state
-        .get("__resume_decisions")
-        .and_then(|v| v.get("calls"))
-        .cloned()
-        .and_then(|raw| serde_json::from_value::<HashMap<String, ResumeDecision>>(raw).ok())
-        .unwrap_or_default()
 }
 
 #[test]
@@ -1257,15 +1246,13 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
-    let decisions = resume_decisions_from_state(&updated);
-    assert!(
-        decisions
-            .get("agent_recovery_run-1")
-            .is_some_and(|decision| {
-                matches!(decision.action, ResumeDecisionAction::Resume)
-                    && decision.result == serde_json::Value::Bool(true)
-            }),
-        "allow should enqueue resume decision for recovery suspended call"
+    assert_eq!(
+        updated["__tool_call_states"]["calls"]["agent_recovery_run-1"]["status"],
+        json!("resuming")
+    );
+    assert_eq!(
+        updated["__tool_call_states"]["calls"]["agent_recovery_run-1"]["resume"]["action"],
+        json!("resume")
     );
     assert_eq!(
         updated["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["tool_name"],
@@ -1314,8 +1301,14 @@ async fn recovery_plugin_auto_deny_when_permission_deny() {
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
-    let decisions = resume_decisions_from_state(&updated);
-    assert!(decisions.is_empty());
+    assert!(
+        updated
+            .get("__tool_call_states")
+            .and_then(|v| v.get("calls"))
+            .and_then(|calls| calls.get("agent_recovery_run-1"))
+            .is_none(),
+        "deny should not set recovery tool-call resume state"
+    );
     assert_eq!(
         updated["agent_runs"]["runs"]["run-1"]["status"],
         json!("stopped")
@@ -1357,12 +1350,13 @@ async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
-    let decisions = resume_decisions_from_state(&updated);
-    assert!(
-        decisions
-            .get("agent_recovery_run-1")
-            .is_some_and(|decision| matches!(decision.action, ResumeDecisionAction::Resume)),
-        "default allow should enqueue resume decision"
+    assert_eq!(
+        updated["__tool_call_states"]["calls"]["agent_recovery_run-1"]["status"],
+        json!("resuming")
+    );
+    assert_eq!(
+        updated["__tool_call_states"]["calls"]["agent_recovery_run-1"]["resume"]["action"],
+        json!("resume")
     );
     assert_eq!(
         updated["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["tool_name"],
@@ -1400,10 +1394,13 @@ async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
-    let decisions = resume_decisions_from_state(&updated);
     assert!(
-        decisions.is_empty(),
-        "deny should not enqueue recovery resume decision"
+        updated
+            .get("__tool_call_states")
+            .and_then(|v| v.get("calls"))
+            .and_then(|calls| calls.get("agent_recovery_run-1"))
+            .is_none(),
+        "deny should not set recovery tool-call resume state"
     );
     assert!(updated
         .get("__suspended_tool_calls")
@@ -1444,10 +1441,13 @@ async fn recovery_plugin_tool_rule_overrides_default_behavior() {
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
-    let decisions = resume_decisions_from_state(&updated);
     assert!(
-        decisions.is_empty(),
-        "tool-level ask should override default allow"
+        updated
+            .get("__tool_call_states")
+            .and_then(|v| v.get("calls"))
+            .and_then(|calls| calls.get("agent_recovery_run-1"))
+            .is_none(),
+        "tool-level ask should not set recovery tool-call resume state"
     );
     assert_eq!(
         updated["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["suspension"]["action"],

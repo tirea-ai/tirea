@@ -4613,7 +4613,9 @@ use tirea_agentos::contracts::plugin::phase::{
     StepContext, StepEndContext, StepStartContext, ToolContext,
 };
 use tirea_agentos::contracts::plugin::AgentPlugin;
-use tirea_agentos::contracts::runtime::control::{ResumeDecision, ResumeDecisionAction};
+use tirea_agentos::contracts::runtime::control::{
+    ResumeDecision, ResumeDecisionAction, ToolCallResume, ToolCallState, ToolCallStatus,
+};
 use tirea_agentos::contracts::thread::ToolCall;
 use tirea_agentos::contracts::{InvocationOrigin, ResponseRouting, SuspendedCall};
 use tirea_protocol_ag_ui::RunAgentInput;
@@ -4720,7 +4722,7 @@ impl InteractionPlugin {
             .map(str::to_string)
     }
 
-    fn to_resume_decision(call_id: &str, result: Value) -> ResumeDecision {
+    fn to_tool_call_resume(call_id: &str, result: Value) -> ToolCallResume {
         let action = if SuspensionResponse::is_denied(&result) {
             ResumeDecisionAction::Cancel
         } else {
@@ -4731,7 +4733,7 @@ impl InteractionPlugin {
         } else {
             None
         };
-        ResumeDecision {
+        ToolCallResume {
             decision_id: format!("decision_{call_id}"),
             action,
             result,
@@ -4763,18 +4765,40 @@ impl AgentPlugin for InteractionPlugin {
             return;
         }
 
-        let mailbox = step.state_of::<tirea_agentos::contracts::runtime::ResumeDecisionsState>();
-        let mut decisions = mailbox.calls().ok().unwrap_or_default();
+        let tool_states = step.state_of::<tirea_agentos::contracts::runtime::ToolCallStatesState>();
+        let mut states = tool_states.calls().ok().unwrap_or_default();
         for (call_id, suspended_call) in suspended_calls {
-            if decisions.contains_key(&call_id) {
+            if states
+                .get(&call_id)
+                .is_some_and(|state| matches!(state.status, ToolCallStatus::Resuming))
+            {
                 continue;
             }
             let Some(result) = self.response_for_call(&suspended_call) else {
                 continue;
             };
-            decisions.insert(call_id.clone(), Self::to_resume_decision(&call_id, result));
+            let resume = Self::to_tool_call_resume(&call_id, result);
+            let updated_at = resume.updated_at;
+            let mut state = states.remove(&call_id).unwrap_or_else(|| ToolCallState {
+                call_id: call_id.clone(),
+                tool_name: suspended_call.tool_name.clone(),
+                arguments: suspended_call.invocation.arguments.clone(),
+                status: ToolCallStatus::Suspended,
+                resume_token: Some(suspended_call.invocation.call_id.clone()),
+                resume: None,
+                scratch: Value::Null,
+                updated_at,
+            });
+            state.call_id = call_id.clone();
+            state.tool_name = suspended_call.tool_name.clone();
+            state.arguments = suspended_call.invocation.arguments.clone();
+            state.status = ToolCallStatus::Resuming;
+            state.resume_token = Some(suspended_call.invocation.call_id.clone());
+            state.resume = Some(resume);
+            state.updated_at = updated_at;
+            states.insert(call_id.clone(), state);
         }
-        let _ = mailbox.set_calls(decisions);
+        let _ = tool_states.set_calls(states);
     }
 }
 
@@ -12568,11 +12592,33 @@ fn replay_calls_from_state(state: &Value) -> Vec<ToolCall> {
 
 fn resume_decisions_from_state(state: &Value) -> HashMap<String, ResumeDecision> {
     state
-        .get("__resume_decisions")
+        .get("__tool_call_states")
         .and_then(|agent| agent.get("calls"))
         .cloned()
-        .and_then(|v| serde_json::from_value::<HashMap<String, ResumeDecision>>(v).ok())
+        .and_then(|v| serde_json::from_value::<HashMap<String, ToolCallState>>(v).ok())
         .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(call_id, tool_state)| {
+            if !matches!(tool_state.status, ToolCallStatus::Resuming) {
+                return None;
+            }
+            let resume = tool_state.resume?;
+            Some((
+                call_id.clone(),
+                ResumeDecision {
+                    decision_id: if resume.decision_id.trim().is_empty() {
+                        call_id
+                    } else {
+                        resume.decision_id
+                    },
+                    action: resume.action,
+                    result: resume.result,
+                    reason: resume.reason,
+                    updated_at: resume.updated_at,
+                },
+            ))
+        })
+        .collect()
 }
 
 fn state_with_suspended_call(

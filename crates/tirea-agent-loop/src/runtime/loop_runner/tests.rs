@@ -475,10 +475,10 @@ impl TestInteractionPlugin {
             .map(str::to_string)
     }
 
-    fn to_resume_decision(
+    fn to_tool_call_resume(
         call_id: &str,
         result: Value,
-    ) -> crate::contracts::runtime::ResumeDecision {
+    ) -> crate::contracts::runtime::ToolCallResume {
         let action = if crate::contracts::SuspensionResponse::is_denied(&result) {
             crate::contracts::runtime::ResumeDecisionAction::Cancel
         } else {
@@ -492,7 +492,7 @@ impl TestInteractionPlugin {
         } else {
             None
         };
-        crate::contracts::runtime::ResumeDecision {
+        crate::contracts::runtime::ToolCallResume {
             decision_id: format!("decision_{call_id}"),
             action,
             result,
@@ -522,18 +522,44 @@ impl AgentPlugin for TestInteractionPlugin {
             return;
         }
 
-        let mailbox = step.state_of::<crate::contracts::runtime::ResumeDecisionsState>();
-        let mut decisions = mailbox.calls().ok().unwrap_or_default();
+        let tool_states = step.state_of::<crate::contracts::runtime::ToolCallStatesState>();
+        let mut states = tool_states.calls().ok().unwrap_or_default();
         for (call_id, suspended_call) in suspended_calls {
-            if decisions.contains_key(&call_id) {
+            if states.get(&call_id).is_some_and(|state| {
+                matches!(
+                    state.status,
+                    crate::contracts::runtime::ToolCallStatus::Resuming
+                )
+            }) {
                 continue;
             }
             let Some(result) = self.resolve_response_for_call(&suspended_call) else {
                 continue;
             };
-            decisions.insert(call_id.clone(), Self::to_resume_decision(&call_id, result));
+            let resume = Self::to_tool_call_resume(&call_id, result);
+            let updated_at = resume.updated_at;
+            let mut state = states.remove(&call_id).unwrap_or_else(|| {
+                crate::contracts::runtime::ToolCallState {
+                    call_id: call_id.clone(),
+                    tool_name: suspended_call.tool_name.clone(),
+                    arguments: suspended_call.invocation.arguments.clone(),
+                    status: crate::contracts::runtime::ToolCallStatus::Suspended,
+                    resume_token: Some(suspended_call.invocation.call_id.clone()),
+                    resume: None,
+                    scratch: Value::Null,
+                    updated_at,
+                }
+            });
+            state.call_id = call_id.clone();
+            state.tool_name = suspended_call.tool_name.clone();
+            state.arguments = suspended_call.invocation.arguments.clone();
+            state.status = crate::contracts::runtime::ToolCallStatus::Resuming;
+            state.resume_token = Some(suspended_call.invocation.call_id.clone());
+            state.resume = Some(resume);
+            state.updated_at = updated_at;
+            states.insert(call_id.clone(), state);
         }
-        let _ = mailbox.set_calls(decisions);
+        let _ = tool_states.set_calls(states);
     }
 }
 
@@ -1221,10 +1247,14 @@ fn test_execute_tools_with_state_changes() {
         let thread = execute_tools(thread, &result, &tools, true).await.unwrap();
 
         assert_eq!(thread.message_count(), 1);
-        assert_eq!(thread.patch_count(), 2);
+        assert_eq!(thread.patch_count(), 3);
 
         let state = thread.rebuild_state().unwrap();
         assert_eq!(state["counter"], 5);
+        assert_eq!(
+            state["__tool_call_states"]["calls"]["call_1"]["status"],
+            json!("succeeded")
+        );
     });
 }
 
@@ -2676,7 +2706,7 @@ fn test_execute_tools_with_config_with_blocking_plugin() {
 }
 
 #[test]
-fn test_execute_tools_with_config_denied_response_is_applied_via_run_start_resume_mailbox() {
+fn test_execute_tools_with_config_denied_response_is_applied_via_tool_call_state_resume() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let thread = Thread::with_initial_state(
@@ -2749,13 +2779,10 @@ fn test_execute_tools_with_config_denied_response_is_applied_via_run_start_resum
             "resolved suspended call should be cleared"
         );
 
-        let decisions = final_state
-            .get("__resume_decisions")
-            .and_then(|a| a.get("calls"))
-            .and_then(|v| v.as_object());
-        assert!(
-            decisions.map_or(true, |calls| !calls.contains_key("call_1")),
-            "consumed decision should be cleared"
+        assert_eq!(
+            final_state["__tool_call_states"]["calls"]["call_1"]["status"],
+            json!("cancelled"),
+            "denied replay should persist cancelled lifecycle state"
         );
     });
 }
@@ -3121,12 +3148,20 @@ async fn test_stream_run_start_outbox_resolution_emits_after_run_start() {
                     }
                 }
             },
-            "__resume_decisions": {
+            "__tool_call_states": {
                 "calls": {
                     "call_1": {
-                        "decision_id": "decision_1",
-                        "action": "cancel",
-                        "result": false,
+                        "call_id": "call_1",
+                        "tool_name": "echo",
+                        "arguments": {},
+                        "status": "resuming",
+                        "resume_token": "call_1",
+                        "resume": {
+                            "decision_id": "decision_1",
+                            "action": "cancel",
+                            "result": false,
+                            "updated_at": 1
+                        },
                         "updated_at": 1
                     }
                 }
@@ -3624,12 +3659,10 @@ async fn test_run_loop_permission_approval_replays_tool_and_clears_outbox() {
         .and_then(|v| v.as_object());
     assert!(suspended.map_or(true, |calls| calls.is_empty()));
 
-    let replay_outbox = state.get("__resume_decisions").and_then(|o| o.get("calls"));
-    assert!(
-        replay_outbox
-            .and_then(|calls| calls.as_object())
-            .map_or(true, |calls| calls.is_empty()),
-        "run_loop should drain resume decisions after run-start replay"
+    assert_eq!(
+        state["__tool_call_states"]["calls"]["call_1"]["status"],
+        json!("succeeded"),
+        "run-start replay should end in succeeded lifecycle state"
     );
 }
 
@@ -3741,6 +3774,125 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
             CheckpointReason::ToolResultsCommitted,
             CheckpointReason::RunFinished
         ]
+    );
+}
+
+#[tokio::test]
+async fn test_run_loop_run_start_replay_uses_tool_call_resume_state_without_mailbox() {
+    struct TerminatePluginRequestedPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for TerminatePluginRequestedPlugin {
+        fn id(&self) -> &str {
+            "terminate_plugin_requested_for_tool_state_replay_nonstream"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::BeforeInference {
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
+            }
+        });
+    }
+
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>)
+        .with_llm_executor(Arc::new(MockChatProvider::new(vec![Ok(text_chat_response(
+            "unused",
+        ))])) as Arc<dyn LlmExecutor>);
+
+    let thread = Thread::with_initial_state(
+        "test",
+        json!({
+            "__suspended_tool_calls": {
+                "calls": {
+                    "call_1": {
+                        "call_id": "call_1",
+                        "tool_name": "echo",
+                        "suspension": {
+                            "id": "call_1",
+                            "action": "tool:echo"
+                        },
+                        "invocation": {
+                            "call_id": "call_1",
+                            "tool_name": "PermissionConfirm",
+                            "arguments": {
+                                "tool_name": "echo",
+                                "tool_args": { "message": "approved-run" }
+                            },
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "call_1",
+                                "backend_tool_name": "echo",
+                                "backend_arguments": { "message": "approved-run" }
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
+                        }
+                    }
+                }
+            },
+            "__tool_call_states": {
+                "calls": {
+                    "call_1": {
+                        "call_id": "call_1",
+                        "tool_name": "echo",
+                        "arguments": { "message": "approved-run" },
+                        "status": "resuming",
+                        "resume_token": "call_1",
+                        "resume": {
+                            "decision_id": "decision_call_1",
+                            "action": "resume",
+                            "result": true,
+                            "updated_at": 1
+                        },
+                        "updated_at": 1
+                    }
+                }
+            }
+        }),
+    )
+    .with_message(Message::assistant_with_tool_calls(
+        "need permission",
+        vec![crate::contracts::thread::ToolCall::new(
+            "call_1",
+            "echo",
+            json!({"message": "approved-run"}),
+        )],
+    ))
+    .with_message(Message::tool(
+        "call_1",
+        "Tool 'echo' is awaiting approval. Execution paused.",
+    ));
+
+    let tools = tool_map([EchoTool]);
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
+
+    assert_eq!(outcome.termination, TerminationReason::PluginRequested);
+    assert!(
+        outcome.run_ctx.messages().iter().any(|message| {
+            message.role == Role::Tool
+                && message.tool_call_id.as_deref() == Some("call_1")
+                && message.content.contains("\"echoed\":\"approved-run\"")
+        }),
+        "run-start replay should execute from tool_call resume state"
+    );
+
+    let final_state = outcome.run_ctx.snapshot().expect("snapshot");
+    assert!(
+        final_state
+            .get("__suspended_tool_calls")
+            .and_then(|a| a.get("calls"))
+            .and_then(|v| v.as_object())
+            .map_or(true, |calls| calls.is_empty()),
+        "replayed call should clear suspended queue"
+    );
+    assert_eq!(
+        final_state["__tool_call_states"]["calls"]["call_1"]["status"],
+        json!("succeeded")
     );
 }
 
@@ -10932,11 +11084,11 @@ async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
     );
     assert!(
         final_state
-            .get("__resume_decisions")
-            .and_then(|mailbox| mailbox.get("calls"))
-            .and_then(|calls| calls.as_object())
-            .map_or(true, |calls| calls.is_empty()),
-        "unknown decision must not enqueue resume decisions"
+            .get("__tool_call_states")
+            .and_then(|states| states.get("calls"))
+            .and_then(|calls| calls.get("unknown_call"))
+            .is_none(),
+        "unknown decision must not create runtime lifecycle state"
     );
 }
 
@@ -11185,6 +11337,15 @@ async fn test_run_loop_decision_channel_resolves_suspended_call() {
         }),
         "resolved call_pending tool result should be appended"
     );
+    let final_state = outcome.run_ctx.snapshot().expect("snapshot");
+    assert_eq!(
+        final_state["__tool_call_states"]["calls"]["call_pending"]["status"],
+        json!("succeeded")
+    );
+    assert_eq!(
+        final_state["__tool_call_states"]["calls"]["call_pending"]["resume"]["action"],
+        json!("resume")
+    );
 }
 
 #[tokio::test]
@@ -11303,6 +11464,14 @@ async fn test_run_loop_decision_channel_cancel_emits_single_tool_result_message(
         .and_then(|a| a.get("calls"))
         .and_then(|v| v.as_object());
     assert!(suspended.map_or(true, |calls| calls.is_empty()));
+    assert_eq!(
+        final_state["__tool_call_states"]["calls"]["call_pending"]["status"],
+        json!("cancelled")
+    );
+    assert_eq!(
+        final_state["__tool_call_states"]["calls"]["call_pending"]["resume"]["action"],
+        json!("cancel")
+    );
 }
 
 #[tokio::test]
@@ -11827,7 +11996,7 @@ async fn test_stream_decision_channel_drains_while_inference_stream_is_running()
 }
 
 #[tokio::test]
-async fn test_run_loop_decision_channel_replay_original_tool_uses_resume_decision_mailbox() {
+async fn test_run_loop_decision_channel_replay_original_tool_uses_tool_call_resume_state() {
     struct OneShotPermissionPlugin;
 
     #[async_trait]
@@ -11840,22 +12009,15 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_resume_decisio
             if phase != Phase::BeforeToolExecute {
                 return;
             }
-            let Some(call_id) = step.tool_call_id().map(str::to_string) else {
-                return;
-            };
-            let has_resume_grant = {
-                let mailbox = step.state_of::<crate::contracts::runtime::ResumeDecisionsState>();
-                mailbox
-                    .calls()
-                    .ok()
-                    .and_then(|calls| calls.get(&call_id).cloned())
-                    .is_some_and(|decision| {
-                        matches!(
-                            decision.action,
-                            crate::contracts::runtime::ResumeDecisionAction::Resume
-                        )
-                    })
-            };
+            let has_resume_grant = step
+                .tool_call_id()
+                .and_then(|call_id| step.ctx().resume_input_for(call_id).ok().flatten())
+                .is_some_and(|resume| {
+                    matches!(
+                        resume.action,
+                        crate::contracts::runtime::ResumeDecisionAction::Resume
+                    )
+                });
             if has_resume_grant {
                 return;
             }
@@ -11934,12 +12096,12 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_resume_decisio
     );
 
     let final_state = outcome.run_ctx.snapshot().expect("snapshot");
-    assert!(
-        final_state
-            .get("__resume_decisions")
-            .and_then(|mailbox| mailbox.get("calls"))
-            .and_then(|calls| calls.get("call_write"))
-            .is_none(),
-        "resume decision should be consumed after replay"
+    assert_eq!(
+        final_state["__tool_call_states"]["calls"]["call_write"]["status"],
+        json!("succeeded")
+    );
+    assert_eq!(
+        final_state["__tool_call_states"]["calls"]["call_write"]["resume"]["action"],
+        json!("resume")
     );
 }

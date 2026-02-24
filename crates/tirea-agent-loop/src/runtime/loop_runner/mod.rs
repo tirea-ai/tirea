@@ -52,8 +52,8 @@ mod tool_exec;
 use crate::contracts::plugin::phase::Phase;
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
-    ResumeDecision, ResumeDecisionAction, StreamResult, ToolCallResume, ToolCallState,
-    ToolCallStatus, ToolExecutionRequest, ToolExecutionResult,
+    ResumeDecisionAction, StreamResult, ToolCallResume, ToolCallState, ToolCallStatus,
+    ToolExecutionRequest, ToolExecutionResult,
 };
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
@@ -91,9 +91,8 @@ pub use config::{StepToolInput, StepToolProvider, StepToolSnapshot};
 #[cfg(test)]
 use core::build_messages;
 use core::{
-    build_request_for_filtered_tools, clear_resume_decisions, clear_suspended_call,
-    inference_inputs_from_step, resume_decisions_from_ctx, set_agent_suspended_calls,
-    suspended_calls_from_ctx, tool_call_states_from_ctx, upsert_resume_decision,
+    build_request_for_filtered_tools, clear_suspended_call, inference_inputs_from_step,
+    set_agent_suspended_calls, suspended_calls_from_ctx, tool_call_states_from_ctx,
     upsert_tool_call_state,
 };
 pub use outcome::{tool_map, tool_map_from_arc, AgentLoopError};
@@ -611,21 +610,76 @@ struct RunStartDrainOutcome {
     replayed: bool,
 }
 
-fn decision_result_value(decision: &ResumeDecision) -> serde_json::Value {
-    if decision.result.is_null() {
-        serde_json::Value::Bool(matches!(decision.action, ResumeDecisionAction::Resume))
+fn decision_result_value(action: &ResumeDecisionAction, result: &Value) -> serde_json::Value {
+    if result.is_null() {
+        serde_json::Value::Bool(matches!(action, ResumeDecisionAction::Resume))
     } else {
-        decision.result.clone()
+        result.clone()
     }
 }
 
-async fn drain_resume_decisions_and_replay(
+fn runtime_resume_inputs(run_ctx: &RunContext) -> HashMap<String, ToolCallResume> {
+    let mut decisions = HashMap::new();
+    for (call_id, state) in tool_call_states_from_ctx(run_ctx) {
+        if !matches!(state.status, ToolCallStatus::Resuming) {
+            continue;
+        }
+        let Some(mut resume) = state.resume else {
+            continue;
+        };
+        if resume.decision_id.trim().is_empty() {
+            resume.decision_id = call_id.clone();
+        }
+        decisions.insert(call_id, resume);
+    }
+    decisions
+}
+
+fn settle_orphan_resuming_tool_states(
+    run_ctx: &mut RunContext,
+    suspended: &HashMap<String, SuspendedCall>,
+    resumes: &HashMap<String, ToolCallResume>,
+) -> Result<bool, AgentLoopError> {
+    let states = tool_call_states_from_ctx(run_ctx);
+    let mut changed = false;
+
+    for (call_id, resume) in resumes {
+        if suspended.contains_key(call_id) {
+            continue;
+        }
+        let Some(mut state) = states.get(call_id).cloned() else {
+            continue;
+        };
+        let target_status = match &resume.action {
+            ResumeDecisionAction::Cancel => ToolCallStatus::Cancelled,
+            ResumeDecisionAction::Resume => ToolCallStatus::Failed,
+        };
+        if state.status == target_status && state.resume.as_ref() == Some(resume) {
+            continue;
+        }
+        state.call_id = call_id.clone();
+        state.status = target_status;
+        state.resume = Some(resume.clone());
+        state.updated_at = current_unix_millis();
+
+        let patch = upsert_tool_call_state(call_id, state)?;
+        if patch.patch().is_empty() {
+            continue;
+        }
+        run_ctx.add_thread_patch(patch);
+        changed = true;
+    }
+
+    Ok(changed)
+}
+
+async fn drain_resuming_tool_calls_and_replay(
     run_ctx: &mut RunContext,
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
 ) -> Result<RunStartDrainOutcome, AgentLoopError> {
-    let decisions = resume_decisions_from_ctx(run_ctx);
+    let decisions = runtime_resume_inputs(run_ctx);
     if decisions.is_empty() {
         return Ok(RunStartDrainOutcome {
             events: Vec::new(),
@@ -634,14 +688,12 @@ async fn drain_resume_decisions_and_replay(
     }
 
     let suspended = suspended_calls_from_ctx(run_ctx);
+    let mut state_changed = false;
+    if settle_orphan_resuming_tool_states(run_ctx, &suspended, &decisions)? {
+        state_changed = true;
+    }
     if suspended.is_empty() {
-        let state = run_ctx
-            .snapshot()
-            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-        let stale_ids = decisions.keys().cloned().collect::<Vec<_>>();
-        let clear_patch = clear_resume_decisions(&state, &stale_ids)?;
-        if !clear_patch.patch().is_empty() {
-            run_ctx.add_thread_patch(clear_patch);
+        if state_changed {
             let snapshot = run_ctx
                 .snapshot()
                 .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
@@ -661,8 +713,6 @@ async fn drain_resume_decisions_and_replay(
     decision_ids.sort();
 
     let mut replayed = false;
-    let mut state_changed = false;
-    let mut decisions_to_clear = Vec::new();
     let mut suspended_to_clear = Vec::new();
 
     for call_id in decision_ids {
@@ -673,8 +723,14 @@ async fn drain_resume_decisions_and_replay(
             continue;
         };
         replayed = true;
-        decisions_to_clear.push(call_id.clone());
-        let decision_result = decision_result_value(&decision);
+        let decision_result = decision_result_value(&decision.action, &decision.result);
+        let resume_payload = to_tool_call_resume(
+            decision.decision_id.clone(),
+            decision.action.clone(),
+            decision_result.clone(),
+            decision.reason.clone(),
+            decision.updated_at,
+        );
         events.push(AgentEvent::ToolCallResumed {
             target_id: suspended_call.call_id.clone(),
             result: decision_result.clone(),
@@ -682,25 +738,42 @@ async fn drain_resume_decisions_and_replay(
 
         match decision.action {
             ResumeDecisionAction::Cancel => {
+                let cancel_reason = resume_payload.reason.clone();
+                if upsert_tool_call_lifecycle_state(
+                    run_ctx,
+                    &suspended_call,
+                    ToolCallStatus::Cancelled,
+                    Some(resume_payload),
+                )? {
+                    state_changed = true;
+                }
                 events.push(append_denied_tool_result_message(
                     run_ctx,
                     &suspended_call.call_id,
                     Some(&suspended_call.tool_name),
-                    decision.reason.as_deref(),
+                    cancel_reason.as_deref(),
                 ));
                 suspended_to_clear.push(call_id);
             }
             ResumeDecisionAction::Resume => {
+                if upsert_tool_call_lifecycle_state(
+                    run_ctx,
+                    &suspended_call,
+                    ToolCallStatus::Resuming,
+                    Some(resume_payload.clone()),
+                )? {
+                    state_changed = true;
+                }
                 let Some(tool_call) = replay_tool_call_for_resolution(
                     run_ctx,
                     &suspended_call,
                     &ToolCallDecision {
                         target_id: suspended_call.call_id.clone(),
-                        decision_id: decision.decision_id.clone(),
-                        action: decision.action.clone(),
-                        result: decision_result.clone(),
-                        reason: decision.reason.clone(),
-                        updated_at: decision.updated_at,
+                        decision_id: resume_payload.decision_id.clone(),
+                        action: resume_payload.action.clone(),
+                        result: resume_payload.result.clone(),
+                        reason: resume_payload.reason.clone(),
+                        updated_at: resume_payload.updated_at,
                     },
                 ) else {
                     continue;
@@ -807,19 +880,6 @@ async fn drain_resume_decisions_and_replay(
             }
         }
     }
-    if !decisions_to_clear.is_empty() {
-        let mut unique = decisions_to_clear;
-        unique.sort();
-        unique.dedup();
-        let state = run_ctx
-            .snapshot()
-            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-        let clear_patch = clear_resume_decisions(&state, &unique)?;
-        if !clear_patch.patch().is_empty() {
-            state_changed = true;
-            run_ctx.add_thread_patch(clear_patch);
-        }
-    }
 
     if state_changed {
         let snapshot = run_ctx
@@ -837,7 +897,7 @@ async fn drain_run_start_outbox_and_replay(
     config: &AgentConfig,
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
 ) -> Result<RunStartDrainOutcome, AgentLoopError> {
-    drain_resume_decisions_and_replay(run_ctx, tools, config, tool_descriptors).await
+    drain_resuming_tool_calls_and_replay(run_ctx, tools, config, tool_descriptors).await
 }
 
 async fn commit_run_start_and_drain_replay(
@@ -961,14 +1021,54 @@ fn replay_tool_call_for_resolution(
     }
 }
 
-fn resume_decision_from_response(response: &ToolCallDecision) -> ResumeDecision {
-    ResumeDecision {
-        decision_id: response.decision_id.clone(),
-        action: response.action.clone(),
-        result: response.result.clone(),
-        reason: response.reason.clone(),
-        updated_at: response.updated_at,
+fn to_tool_call_resume(
+    decision_id: String,
+    action: ResumeDecisionAction,
+    result: Value,
+    reason: Option<String>,
+    updated_at: u64,
+) -> ToolCallResume {
+    ToolCallResume {
+        decision_id,
+        action,
+        result,
+        reason,
+        updated_at,
     }
+}
+
+fn upsert_tool_call_lifecycle_state(
+    run_ctx: &mut RunContext,
+    suspended_call: &SuspendedCall,
+    status: ToolCallStatus,
+    resume: Option<ToolCallResume>,
+) -> Result<bool, AgentLoopError> {
+    let mut tool_state = tool_call_states_from_ctx(run_ctx)
+        .remove(&suspended_call.call_id)
+        .unwrap_or_else(|| ToolCallState {
+            call_id: suspended_call.call_id.clone(),
+            tool_name: suspended_call.tool_name.clone(),
+            arguments: suspended_call.invocation.arguments.clone(),
+            status: ToolCallStatus::Suspended,
+            resume_token: Some(suspended_call.invocation.call_id.clone()),
+            resume: None,
+            scratch: Value::Null,
+            updated_at: current_unix_millis(),
+        });
+    tool_state.call_id = suspended_call.call_id.clone();
+    tool_state.tool_name = suspended_call.tool_name.clone();
+    tool_state.arguments = suspended_call.invocation.arguments.clone();
+    tool_state.status = status;
+    tool_state.resume_token = Some(suspended_call.invocation.call_id.clone());
+    tool_state.resume = resume;
+    tool_state.updated_at = current_unix_millis();
+
+    let patch = upsert_tool_call_state(&suspended_call.call_id, tool_state)?;
+    if patch.patch().is_empty() {
+        return Ok(false);
+    }
+    run_ctx.add_thread_patch(patch);
+    Ok(true)
 }
 
 pub(super) fn resolve_suspended_call(
@@ -996,47 +1096,18 @@ pub(super) fn resolve_suspended_call(
         return Ok(None);
     };
 
-    let decision = resume_decision_from_response(response);
-    let state = run_ctx
-        .snapshot()
-        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let decision_patch = upsert_resume_decision(&state, &suspended_call.call_id, decision)?;
-    if !decision_patch.patch().is_empty() {
-        run_ctx.add_thread_patch(decision_patch);
-    }
-    let mut tool_state = tool_call_states_from_ctx(run_ctx)
-        .remove(&suspended_call.call_id)
-        .unwrap_or_else(|| ToolCallState {
-            call_id: suspended_call.call_id.clone(),
-            tool_name: suspended_call.tool_name.clone(),
-            arguments: suspended_call.invocation.arguments.clone(),
-            status: ToolCallStatus::Suspended,
-            resume_token: Some(suspended_call.invocation.call_id.clone()),
-            resume: None,
-            scratch: Value::Null,
-            updated_at: current_unix_millis(),
-        });
-    tool_state.call_id = suspended_call.call_id.clone();
-    tool_state.tool_name = suspended_call.tool_name.clone();
-    tool_state.arguments = suspended_call.invocation.arguments.clone();
-    tool_state.status = ToolCallStatus::Resuming;
-    tool_state.resume_token = Some(suspended_call.invocation.call_id.clone());
-    tool_state.resume = Some(ToolCallResume {
-        decision_id: response.decision_id.clone(),
-        action: response.action.clone(),
-        result: response.result.clone(),
-        reason: response.reason.clone(),
-        updated_at: response.updated_at,
-    });
-    tool_state.updated_at = current_unix_millis();
-
-    let state = run_ctx
-        .snapshot()
-        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let patch = upsert_tool_call_state(&state, &suspended_call.call_id, tool_state)?;
-    if !patch.patch().is_empty() {
-        run_ctx.add_thread_patch(patch);
-    }
+    let _ = upsert_tool_call_lifecycle_state(
+        run_ctx,
+        &suspended_call,
+        ToolCallStatus::Resuming,
+        Some(to_tool_call_resume(
+            response.decision_id.clone(),
+            response.action.clone(),
+            response.result.clone(),
+            response.reason.clone(),
+            response.updated_at,
+        )),
+    )?;
 
     Ok(Some(DecisionReplayOutcome {
         events: Vec::new(),
