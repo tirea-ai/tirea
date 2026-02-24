@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tirea_agentos::contracts::AgentEvent;
 use tirea_contract::ProtocolOutputEncoder;
+use tokio::sync::{mpsc, Mutex};
 
 /// Common boxed stream for transport endpoints.
 pub type BoxStream<T> = Pin<Box<dyn Stream<Item = Result<T, TransportError>> + Send>>;
@@ -86,6 +87,55 @@ where
     async fn recv(&self) -> Result<BoxStream<RecvMsg>, TransportError>;
     async fn send(&self, item: SendMsg) -> Result<(), TransportError>;
     async fn close(&self) -> Result<(), TransportError>;
+}
+
+/// Generic downstream endpoint backed by one receiver + one sender.
+pub struct ChannelDownstreamEndpoint<RecvMsg, SendMsg>
+where
+    RecvMsg: Send + 'static,
+    SendMsg: Send + 'static,
+{
+    recv_rx: Mutex<Option<mpsc::Receiver<RecvMsg>>>,
+    send_tx: mpsc::UnboundedSender<SendMsg>,
+}
+
+impl<RecvMsg, SendMsg> ChannelDownstreamEndpoint<RecvMsg, SendMsg>
+where
+    RecvMsg: Send + 'static,
+    SendMsg: Send + 'static,
+{
+    pub fn new(recv_rx: mpsc::Receiver<RecvMsg>, send_tx: mpsc::UnboundedSender<SendMsg>) -> Self {
+        Self {
+            recv_rx: Mutex::new(Some(recv_rx)),
+            send_tx,
+        }
+    }
+}
+
+#[async_trait]
+impl<RecvMsg, SendMsg> Endpoint<RecvMsg, SendMsg> for ChannelDownstreamEndpoint<RecvMsg, SendMsg>
+where
+    RecvMsg: Send + 'static,
+    SendMsg: Send + 'static,
+{
+    async fn recv(&self) -> Result<BoxStream<RecvMsg>, TransportError> {
+        let mut guard = self.recv_rx.lock().await;
+        let mut rx = guard.take().ok_or(TransportError::Closed)?;
+        let stream = async_stream::stream! {
+            while let Some(item) = rx.recv().await {
+                yield Ok(item);
+            }
+        };
+        Ok(Box::pin(stream))
+    }
+
+    async fn send(&self, item: SendMsg) -> Result<(), TransportError> {
+        self.send_tx.send(item).map_err(|_| TransportError::Closed)
+    }
+
+    async fn close(&self) -> Result<(), TransportError> {
+        Ok(())
+    }
 }
 
 /// Bound transport session with both sides.
@@ -339,5 +389,30 @@ mod tests {
 
         let result = relay_task.await.expect("relay task should join");
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn channel_downstream_endpoint_bridges_recv_and_send() {
+        let (recv_tx, recv_rx) = mpsc::channel::<u32>(4);
+        let (send_tx, mut send_rx) = mpsc::unbounded_channel::<String>();
+        let endpoint = ChannelDownstreamEndpoint::new(recv_rx, send_tx);
+
+        recv_tx.send(7).await.expect("seed recv channel");
+        drop(recv_tx);
+
+        let mut stream = endpoint.recv().await.expect("recv stream");
+        let first = stream
+            .next()
+            .await
+            .expect("stream item")
+            .expect("stream ok item");
+        assert_eq!(first, 7);
+
+        endpoint
+            .send("ok".to_string())
+            .await
+            .expect("send should work");
+        let sent = send_rx.recv().await.expect("sent item");
+        assert_eq!(sent, "ok");
     }
 }

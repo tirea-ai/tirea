@@ -3,12 +3,12 @@ use std::sync::Arc;
 use tirea_agentos::contracts::{AgentEvent, RunRequest, ToolCallDecision};
 use tirea_agentos::orchestrator::{AgentOs, ResolvedRun, RunStream};
 use tirea_contract::ProtocolOutputEncoder;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 
 use crate::protocol::NatsProtocolError;
 use crate::transport::{
-    pump_encoded_stream, relay_binding, Endpoint, RelayCancellation, SessionId, TransportBinding,
-    TransportCapabilities, TransportError,
+    pump_encoded_stream, relay_binding, ChannelDownstreamEndpoint, Endpoint, RelayCancellation,
+    SessionId, TransportBinding, TransportCapabilities, TransportError,
 };
 
 #[derive(Clone, Debug)]
@@ -38,7 +38,7 @@ where
     E: ProtocolOutputEncoder<InputEvent = AgentEvent> + Send + 'static,
     E::Event: Serialize + Send + 'static,
     ErrEvent: Serialize,
-    BuildEncoder: FnOnce(&tirea_agentos::orchestrator::RunStream) -> E,
+    BuildEncoder: FnOnce(&RunStream) -> E,
     BuildErrorEvent: FnOnce(String) -> ErrEvent,
 {
     let run = match os.prepare_run(run_request, resolved).await {
@@ -76,11 +76,17 @@ where
     let session_thread_id = run.thread_id.clone();
     let encoder = build_encoder(&run);
     let upstream = Arc::new(NatsReplyUpstreamEndpoint::new(client, reply));
-    let downstream = Arc::new(RuntimeRunDownstreamEndpoint::from_run(
-        run,
-        encoder,
-        transport_config.outbound_buffer,
-    ));
+    let decision_tx = run.decision_tx.clone();
+    let (tx, rx) = mpsc::channel::<E::Event>(transport_config.outbound_buffer.max(1));
+    tokio::spawn(async move {
+        let tx_events = tx.clone();
+        pump_encoded_stream(run.events, encoder, move |event| {
+            let tx = tx_events.clone();
+            async move { tx.send(event).await.map_err(|_| ()) }
+        })
+        .await;
+    });
+    let downstream = Arc::new(ChannelDownstreamEndpoint::new(rx, decision_tx));
     let binding = TransportBinding {
         session: SessionId {
             thread_id: session_thread_id,
@@ -131,67 +137,6 @@ where
             .publish(self.reply.clone(), payload.into())
             .await
             .map_err(|e| TransportError::Io(e.to_string()))
-    }
-
-    async fn close(&self) -> Result<(), TransportError> {
-        Ok(())
-    }
-}
-
-struct RuntimeRunDownstreamEndpoint<Evt>
-where
-    Evt: Send + 'static,
-{
-    egress_rx: Mutex<Option<mpsc::Receiver<Evt>>>,
-    decision_tx: mpsc::UnboundedSender<ToolCallDecision>,
-}
-
-impl<Evt> RuntimeRunDownstreamEndpoint<Evt>
-where
-    Evt: Send + 'static,
-{
-    fn from_run<E>(run: RunStream, encoder: E, outbound_buffer: usize) -> Self
-    where
-        E: ProtocolOutputEncoder<InputEvent = AgentEvent, Event = Evt> + Send + 'static,
-    {
-        let decision_tx = run.decision_tx.clone();
-        let (tx, rx) = mpsc::channel::<Evt>(outbound_buffer.max(1));
-        tokio::spawn(async move {
-            let tx_events = tx.clone();
-            pump_encoded_stream(run.events, encoder, move |event| {
-                let tx = tx_events.clone();
-                async move { tx.send(event).await.map_err(|_| ()) }
-            })
-            .await;
-        });
-
-        Self {
-            egress_rx: Mutex::new(Some(rx)),
-            decision_tx,
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl<Evt> Endpoint<Evt, ToolCallDecision> for RuntimeRunDownstreamEndpoint<Evt>
-where
-    Evt: Send + 'static,
-{
-    async fn recv(&self) -> Result<crate::transport::BoxStream<Evt>, TransportError> {
-        let mut guard = self.egress_rx.lock().await;
-        let mut rx = guard.take().ok_or(TransportError::Closed)?;
-        let stream = async_stream::stream! {
-            while let Some(item) = rx.recv().await {
-                yield Ok(item);
-            }
-        };
-        Ok(Box::pin(stream))
-    }
-
-    async fn send(&self, item: ToolCallDecision) -> Result<(), TransportError> {
-        self.decision_tx
-            .send(item)
-            .map_err(|_| TransportError::Closed)
     }
 
     async fn close(&self) -> Result<(), TransportError> {

@@ -10,10 +10,10 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::{Arc, OnceLock};
 use tirea_agentos::contracts::thread::Thread;
-use tirea_agentos::contracts::{AgentEvent, ToolCallDecision};
-use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError, RunStream};
+use tirea_agentos::contracts::ToolCallDecision;
+use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError};
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
-use tirea_contract::{ProtocolInputAdapter, ProtocolOutputEncoder};
+use tirea_contract::ProtocolInputAdapter;
 use tirea_protocol_ai_sdk_v6::{
     apply_ai_sdk_extensions, AiSdkTrigger, AiSdkV6HistoryEncoder, AiSdkV6InputAdapter,
     AiSdkV6ProtocolEncoder, AiSdkV6RunRequest, AI_SDK_VERSION,
@@ -27,8 +27,8 @@ use crate::service::{
     MessageQueryParams,
 };
 use crate::transport::{
-    pump_encoded_stream, relay_binding, Endpoint, RelayCancellation, SessionId, TransportBinding,
-    TransportCapabilities, TransportError,
+    pump_encoded_stream, relay_binding, ChannelDownstreamEndpoint, Endpoint, RelayCancellation,
+    SessionId, TransportBinding, TransportCapabilities, TransportError,
 };
 
 /// AI SDK v6 run endpoint path (to be nested under protocol root).
@@ -162,11 +162,36 @@ async fn run(
         fanout.clone(),
         cancellation_token.clone(),
     ));
-    let downstream = Arc::new(RuntimeRunDownstreamEndpoint::from_run(
-        run,
-        encoder,
-        cancellation_token,
-    ));
+    let decision_tx = run.decision_tx.clone();
+    let (tx, rx) = mpsc::channel::<Bytes>(64);
+    tokio::spawn(async move {
+        let tx_events = tx.clone();
+        let event_cancel_token = cancellation_token.clone();
+        pump_encoded_stream(run.events, encoder, move |event| {
+            let tx = tx_events.clone();
+            let token = event_cancel_token.clone();
+            async move {
+                let json = match serde_json::to_string(&event) {
+                    Ok(json) => json,
+                    Err(err) => {
+                        warn!(error = %err, "failed to serialize SSE protocol event");
+                        token.cancel();
+                        return Ok(());
+                    }
+                };
+                let chunk = Bytes::from(format!("data: {json}\n\n"));
+                tx.send(chunk).await.map_err(|_| {
+                    token.cancel();
+                })
+            }
+        })
+        .await;
+        let trailer = Bytes::from("data: [DONE]\n\n");
+        if tx.send(trailer).await.is_err() {
+            cancellation_token.cancel();
+        }
+    });
+    let downstream = Arc::new(ChannelDownstreamEndpoint::new(rx, decision_tx));
     let binding = TransportBinding {
         session: SessionId { thread_id },
         caps: TransportCapabilities {
@@ -300,78 +325,6 @@ impl Endpoint<ToolCallDecision, Bytes> for HttpSseUpstreamEndpoint {
 
     async fn close(&self) -> Result<(), TransportError> {
         self.cancellation_token.cancel();
-        Ok(())
-    }
-}
-
-struct RuntimeRunDownstreamEndpoint {
-    egress_rx: Mutex<Option<mpsc::Receiver<Bytes>>>,
-    decision_tx: mpsc::UnboundedSender<ToolCallDecision>,
-}
-
-impl RuntimeRunDownstreamEndpoint {
-    fn from_run<E>(run: RunStream, encoder: E, cancellation_token: RunCancellationToken) -> Self
-    where
-        E: ProtocolOutputEncoder<InputEvent = AgentEvent> + Send + 'static,
-        E::Event: serde::Serialize + Send + 'static,
-    {
-        let decision_tx = run.decision_tx.clone();
-        let (tx, rx) = mpsc::channel::<Bytes>(64);
-        tokio::spawn(async move {
-            let tx_events = tx.clone();
-            let event_cancel_token = cancellation_token.clone();
-            pump_encoded_stream(run.events, encoder, move |event| {
-                let tx = tx_events.clone();
-                let token = event_cancel_token.clone();
-                async move {
-                    let json = match serde_json::to_string(&event) {
-                        Ok(json) => json,
-                        Err(err) => {
-                            warn!(error = %err, "failed to serialize SSE protocol event");
-                            token.cancel();
-                            return Ok(());
-                        }
-                    };
-                    let chunk = Bytes::from(format!("data: {json}\n\n"));
-                    tx.send(chunk).await.map_err(|_| {
-                        token.cancel();
-                    })
-                }
-            })
-            .await;
-            let trailer = Bytes::from("data: [DONE]\n\n");
-            if tx.send(trailer).await.is_err() {
-                cancellation_token.cancel();
-            }
-        });
-
-        Self {
-            egress_rx: Mutex::new(Some(rx)),
-            decision_tx,
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl Endpoint<Bytes, ToolCallDecision> for RuntimeRunDownstreamEndpoint {
-    async fn recv(&self) -> Result<crate::transport::BoxStream<Bytes>, TransportError> {
-        let mut guard = self.egress_rx.lock().await;
-        let mut rx = guard.take().ok_or(TransportError::Closed)?;
-        let stream = async_stream::stream! {
-            while let Some(item) = rx.recv().await {
-                yield Ok(item);
-            }
-        };
-        Ok(Box::pin(stream))
-    }
-
-    async fn send(&self, item: ToolCallDecision) -> Result<(), TransportError> {
-        self.decision_tx
-            .send(item)
-            .map_err(|_| TransportError::Closed)
-    }
-
-    async fn close(&self) -> Result<(), TransportError> {
         Ok(())
     }
 }
