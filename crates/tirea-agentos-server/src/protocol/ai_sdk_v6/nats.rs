@@ -8,7 +8,7 @@ use tirea_protocol_ai_sdk_v6::{
     UIStreamEvent,
 };
 
-use crate::protocol::nats_runtime::run_and_publish;
+use crate::protocol::nats_runtime::{run_and_publish, NatsTransportConfig};
 use crate::protocol::NatsProtocolError;
 
 /// Default AI SDK v6 run subject.
@@ -25,12 +25,23 @@ pub async fn serve_on_subject(
     os: Arc<AgentOs>,
     subject: &str,
 ) -> Result<(), NatsProtocolError> {
+    serve_on_subject_with_transport_config(client, os, subject, NatsTransportConfig::default())
+        .await
+}
+
+pub async fn serve_on_subject_with_transport_config(
+    client: async_nats::Client,
+    os: Arc<AgentOs>,
+    subject: &str,
+    transport_config: NatsTransportConfig,
+) -> Result<(), NatsProtocolError> {
     let mut sub = client.subscribe(subject.to_string()).await?;
     while let Some(msg) = sub.next().await {
         let client = client.clone();
         let os = os.clone();
+        let transport_config = transport_config.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_message(client, os, msg).await {
+            if let Err(e) = handle_message(client, os, msg, transport_config).await {
                 tracing::error!(error = %e, "nats aisdk handler failed");
             }
         });
@@ -42,6 +53,7 @@ async fn handle_message(
     client: async_nats::Client,
     os: Arc<AgentOs>,
     msg: async_nats::Message,
+    transport_config: NatsTransportConfig,
 ) -> Result<(), NatsProtocolError> {
     #[derive(Debug, Deserialize)]
     struct Req {
@@ -98,6 +110,7 @@ async fn handle_message(
         resolved,
         reply,
         client,
+        transport_config,
         |run| AiSdkV6ProtocolEncoder::new(run.run_id.clone(), Some(run.thread_id.clone())),
         UIStreamEvent::error,
     )
