@@ -11,14 +11,10 @@ use crate::service::{parse_message_query, ApiError, MessageQueryParams};
 
 pub use crate::service::AppState;
 
-/// Health endpoint path.
-pub const HEALTH_PATH: &str = "/health";
-/// Canonical thread list endpoint path.
-pub const THREADS_PATH: &str = "/v1/threads";
-/// Canonical thread detail endpoint path.
-pub const THREAD_PATH: &str = "/v1/threads/:id";
-/// Canonical thread messages endpoint path.
-pub const THREAD_MESSAGES_PATH: &str = "/v1/threads/:id/messages";
+const HEALTH_PATH: &str = "/health";
+const THREADS_PATH: &str = "/v1/threads";
+const THREAD_PATH: &str = "/v1/threads/:id";
+const THREAD_MESSAGES_PATH: &str = "/v1/threads/:id/messages";
 
 /// Build health routes.
 pub fn health_routes() -> Router<AppState> {

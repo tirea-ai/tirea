@@ -1,4 +1,6 @@
+use futures::StreamExt;
 use serde::Serialize;
+use std::future::Future;
 use std::sync::Arc;
 use tirea_agentos::contracts::{AgentEvent, RunRequest, ToolCallDecision};
 use tirea_agentos::orchestrator::{AgentOs, ResolvedRun, RunStream};
@@ -22,6 +24,35 @@ impl Default for NatsTransportConfig {
             outbound_buffer: 64,
         }
     }
+}
+
+/// Subscribe to a NATS subject and dispatch each message to a handler.
+///
+/// Shared subscribe-loop used by both AG-UI and AI SDK NATS protocol servers.
+pub async fn serve_nats<H, Fut>(
+    client: async_nats::Client,
+    subject: &str,
+    transport_config: NatsTransportConfig,
+    protocol_label: &'static str,
+    handler: H,
+) -> Result<(), NatsProtocolError>
+where
+    H: Fn(async_nats::Client, async_nats::Message, NatsTransportConfig) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<(), NatsProtocolError>> + Send + 'static,
+{
+    let handler = Arc::new(handler);
+    let mut sub = client.subscribe(subject.to_string()).await?;
+    while let Some(msg) = sub.next().await {
+        let client = client.clone();
+        let transport_config = transport_config.clone();
+        let handler = handler.clone();
+        tokio::spawn(async move {
+            if let Err(e) = handler(client, msg, transport_config).await {
+                tracing::error!(error = %e, "nats {protocol_label} handler failed");
+            }
+        });
+    }
+    Ok(())
 }
 
 pub async fn run_and_publish<E, ErrEvent, BuildEncoder, BuildErrorEvent>(

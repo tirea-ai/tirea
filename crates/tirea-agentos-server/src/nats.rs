@@ -1,5 +1,5 @@
-pub use crate::transport::NatsProtocolError;
 use crate::transport::nats::NatsTransportConfig;
+use crate::transport::NatsProtocolError;
 
 #[derive(Clone, Debug)]
 pub struct NatsConfig {

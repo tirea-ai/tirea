@@ -1,4 +1,3 @@
-use futures::StreamExt;
 use serde::Deserialize;
 use std::sync::Arc;
 use tirea_agentos::orchestrator::AgentOs;
@@ -9,7 +8,7 @@ use tirea_protocol_ai_sdk_v6::{
 };
 
 use crate::nats::NatsConfig;
-use crate::transport::nats::{run_and_publish, NatsTransportConfig};
+use crate::transport::nats::{run_and_publish, serve_nats, NatsTransportConfig};
 use crate::transport::NatsProtocolError;
 
 /// Serve AI SDK v6 protocol over NATS using config.
@@ -18,33 +17,17 @@ pub async fn serve(
     os: Arc<AgentOs>,
     config: &NatsConfig,
 ) -> Result<(), NatsProtocolError> {
-    serve_with_subject_and_transport(
+    serve_nats(
         client,
-        os,
         &config.ai_sdk_subject,
         config.transport_config(),
+        "aisdk",
+        move |client, msg, transport_config| {
+            let os = os.clone();
+            async move { handle_message(client, os, msg, transport_config).await }
+        },
     )
     .await
-}
-
-pub(crate) async fn serve_with_subject_and_transport(
-    client: async_nats::Client,
-    os: Arc<AgentOs>,
-    subject: &str,
-    transport_config: NatsTransportConfig,
-) -> Result<(), NatsProtocolError> {
-    let mut sub = client.subscribe(subject.to_string()).await?;
-    while let Some(msg) = sub.next().await {
-        let client = client.clone();
-        let os = os.clone();
-        let transport_config = transport_config.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle_message(client, os, msg, transport_config).await {
-                tracing::error!(error = %e, "nats aisdk handler failed");
-            }
-        });
-    }
-    Ok(())
 }
 
 async fn handle_message(

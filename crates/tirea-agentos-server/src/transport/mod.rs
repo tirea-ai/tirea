@@ -33,21 +33,6 @@ pub struct TransportCapabilities {
     pub resumable_downstream: bool,
 }
 
-/// Required transport capabilities requested by a protocol/router path.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct RequiredCapabilities {
-    pub upstream_async: bool,
-    pub downstream_streaming: bool,
-    pub require_single_channel_bidirectional: bool,
-}
-
-/// Returns true when the transport capabilities satisfy requirements.
-pub fn capabilities_match(req: RequiredCapabilities, got: TransportCapabilities) -> bool {
-    (!req.upstream_async || got.upstream_async)
-        && (!req.downstream_streaming || got.downstream_streaming)
-        && (!req.require_single_channel_bidirectional || got.single_channel_bidirectional)
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum TransportError {
     #[error("session not found: {0}")]
@@ -309,28 +294,6 @@ mod tests {
         async fn close(&self) -> Result<(), TransportError> {
             Ok(())
         }
-    }
-
-    #[test]
-    fn capabilities_match_respects_required_single_channel() {
-        let req = RequiredCapabilities {
-            upstream_async: true,
-            downstream_streaming: true,
-            require_single_channel_bidirectional: true,
-        };
-        let got = TransportCapabilities {
-            upstream_async: true,
-            downstream_streaming: true,
-            single_channel_bidirectional: false,
-            resumable_downstream: true,
-        };
-        assert!(!capabilities_match(req, got));
-
-        let got = TransportCapabilities {
-            single_channel_bidirectional: true,
-            ..got
-        };
-        assert!(capabilities_match(req, got));
     }
 
     #[tokio::test]

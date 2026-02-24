@@ -31,12 +31,9 @@ use crate::transport::{
     TransportBinding, TransportCapabilities,
 };
 
-/// AI SDK v6 run endpoint path (to be nested under protocol root).
-pub const RUN_PATH: &str = "/agents/:agent_id/runs";
-/// AI SDK v6 stream resume path (to be nested under protocol root).
-pub const RESUME_STREAM_PATH: &str = "/agents/:agent_id/runs/:chat_id/stream";
-/// AI SDK v6 history endpoint path (to be nested under protocol root).
-pub const THREAD_MESSAGES_PATH: &str = "/threads/:id/messages";
+const RUN_PATH: &str = "/agents/:agent_id/runs";
+const RESUME_STREAM_PATH: &str = "/agents/:agent_id/runs/:chat_id/stream";
+const THREAD_MESSAGES_PATH: &str = "/threads/:id/messages";
 
 /// Build AI SDK v6 HTTP routes.
 pub fn routes() -> Router<AppState> {

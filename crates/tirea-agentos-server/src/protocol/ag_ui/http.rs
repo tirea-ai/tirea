@@ -25,10 +25,8 @@ use crate::transport::{
     TransportBinding, TransportCapabilities,
 };
 
-/// AG-UI run endpoint path (to be nested under protocol root).
-pub const RUN_PATH: &str = "/agents/:agent_id/runs";
-/// AG-UI history endpoint path (to be nested under protocol root).
-pub const THREAD_MESSAGES_PATH: &str = "/threads/:id/messages";
+const RUN_PATH: &str = "/agents/:agent_id/runs";
+const THREAD_MESSAGES_PATH: &str = "/threads/:id/messages";
 
 /// Build AG-UI HTTP routes.
 pub fn routes() -> Router<AppState> {
