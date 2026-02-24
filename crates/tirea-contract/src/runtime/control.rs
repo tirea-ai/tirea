@@ -36,6 +36,41 @@ pub enum RunLifecycleStatus {
     Done,
 }
 
+impl RunLifecycleStatus {
+    /// Canonical run-lifecycle state machine used by runtime tests.
+    pub const ASCII_STATE_MACHINE: &str = r#"start
+  |
+  v
+running -------> done
+  |
+  v
+waiting -------> done
+  |
+  +-----------> running"#;
+
+    /// Whether this lifecycle status is terminal.
+    pub fn is_terminal(self) -> bool {
+        matches!(self, RunLifecycleStatus::Done)
+    }
+
+    /// Validate lifecycle transition from `self` to `next`.
+    pub fn can_transition_to(self, next: Self) -> bool {
+        if self == next {
+            return true;
+        }
+
+        match self {
+            RunLifecycleStatus::Running => {
+                matches!(next, RunLifecycleStatus::Waiting | RunLifecycleStatus::Done)
+            }
+            RunLifecycleStatus::Waiting => {
+                matches!(next, RunLifecycleStatus::Running | RunLifecycleStatus::Done)
+            }
+            RunLifecycleStatus::Done => false,
+        }
+    }
+}
+
 /// Minimal durable run lifecycle envelope stored at `state["__run"]`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RunLifecycleState {
@@ -422,5 +457,29 @@ mod tests {
         assert_eq!(lifecycle.status, RunLifecycleStatus::Running);
         assert_eq!(lifecycle.done_reason, None);
         assert_eq!(lifecycle.updated_at, 42);
+    }
+
+    #[test]
+    fn run_lifecycle_status_transitions_match_state_machine() {
+        assert!(RunLifecycleStatus::Running.can_transition_to(RunLifecycleStatus::Waiting));
+        assert!(RunLifecycleStatus::Running.can_transition_to(RunLifecycleStatus::Done));
+        assert!(RunLifecycleStatus::Waiting.can_transition_to(RunLifecycleStatus::Running));
+        assert!(RunLifecycleStatus::Waiting.can_transition_to(RunLifecycleStatus::Done));
+        assert!(RunLifecycleStatus::Running.can_transition_to(RunLifecycleStatus::Running));
+    }
+
+    #[test]
+    fn run_lifecycle_status_rejects_done_reopen_transitions() {
+        assert!(!RunLifecycleStatus::Done.can_transition_to(RunLifecycleStatus::Running));
+        assert!(!RunLifecycleStatus::Done.can_transition_to(RunLifecycleStatus::Waiting));
+    }
+
+    #[test]
+    fn run_lifecycle_ascii_state_machine_contains_all_states() {
+        let diagram = RunLifecycleStatus::ASCII_STATE_MACHINE;
+        assert!(diagram.contains("running"));
+        assert!(diagram.contains("waiting"));
+        assert!(diagram.contains("done"));
+        assert!(diagram.contains("start"));
     }
 }

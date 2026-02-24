@@ -5274,7 +5274,9 @@ async fn test_nonstream_natural_end_wins_without_stop_policy() {
     ))]));
     let config = AgentConfig::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let mut run_config = tirea_contract::RunConfig::default();
+    run_config.set("run_id", "run-natural-end").unwrap();
+    let run_ctx = RunContext::from_thread(&thread, run_config).unwrap();
 
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
@@ -5287,6 +5289,10 @@ async fn test_nonstream_natural_end_wins_without_stop_policy() {
             .any(|m| m.role == crate::contracts::thread::Role::Assistant),
         "assistant turn should still be committed before stop check"
     );
+    let final_state = outcome.run_ctx.snapshot().expect("snapshot");
+    assert_eq!(final_state["__run"]["id"], json!("run-natural-end"));
+    assert_eq!(final_state["__run"]["status"], json!("done"));
+    assert_eq!(final_state["__run"]["done_reason"], json!("natural"));
 }
 
 #[tokio::test]
@@ -11098,8 +11104,9 @@ async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
         }),
     )
     .with_message(Message::user("continue"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).expect("run ctx");
+    let mut run_config = tirea_contract::RunConfig::default();
+    run_config.set("run_id", "run-unknown-decision").unwrap();
+    let run_ctx = RunContext::from_thread(&thread, run_config).expect("run ctx");
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
     let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -11140,6 +11147,9 @@ async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
             .is_none(),
         "unknown decision must not create runtime lifecycle state"
     );
+    assert_eq!(final_state["__run"]["id"], json!("run-unknown-decision"));
+    assert_eq!(final_state["__run"]["status"], json!("waiting"));
+    assert!(final_state["__run"]["done_reason"].is_null());
 }
 
 #[tokio::test]

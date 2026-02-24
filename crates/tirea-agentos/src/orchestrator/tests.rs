@@ -2526,6 +2526,7 @@ async fn run_stream_batch_approval_mode_waits_for_all_suspended_decisions_before
 
     let saved_after_first = storage.load(thread_id).await.unwrap().unwrap();
     let state_after_first = saved_after_first.thread.rebuild_state().unwrap();
+    assert_run_lifecycle_state(&state_after_first, "run-initial-batch-1", "waiting", None);
     let calls_after_first = state_after_first
         .get("__suspended_tool_calls")
         .and_then(|rt| rt.get("calls"))
@@ -2574,6 +2575,12 @@ async fn run_stream_batch_approval_mode_waits_for_all_suspended_decisions_before
 
     let saved_after_second = storage.load(thread_id).await.unwrap().unwrap();
     let state_after_second = saved_after_second.thread.rebuild_state().unwrap();
+    assert_run_lifecycle_state(
+        &state_after_second,
+        "run-initial-batch-2",
+        "done",
+        Some("plugin_requested"),
+    );
     assert!(
         state_after_second
             .get("__suspended_tool_calls")
