@@ -8,8 +8,8 @@ use tirea_protocol_ai_sdk_v6::{
     UIStreamEvent,
 };
 
-use crate::protocol::nats_runtime::{run_and_publish, NatsTransportConfig};
-use crate::protocol::NatsProtocolError;
+use crate::transport::nats::{run_and_publish, NatsTransportConfig};
+use crate::transport::NatsProtocolError;
 
 /// Default AI SDK v6 run subject.
 pub const RUN_SUBJECT: &str = "agentos.ai-sdk.runs";

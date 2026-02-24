@@ -7,8 +7,8 @@ use tirea_protocol_ag_ui::{
     apply_agui_extensions, AgUiInputAdapter, AgUiProtocolEncoder, Event, RunAgentInput,
 };
 
-use crate::protocol::nats_runtime::{run_and_publish, NatsTransportConfig};
-use crate::protocol::NatsProtocolError;
+use crate::transport::nats::{run_and_publish, NatsTransportConfig};
+use crate::transport::NatsProtocolError;
 
 /// Default AG-UI run subject.
 pub const RUN_SUBJECT: &str = "agentos.ag-ui.runs";

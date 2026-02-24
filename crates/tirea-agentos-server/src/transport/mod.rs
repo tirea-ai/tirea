@@ -1,3 +1,9 @@
+mod nats_error;
+pub mod http_sse;
+pub mod nats;
+
+pub use nats_error::NatsProtocolError;
+
 use async_trait::async_trait;
 use futures::Stream;
 use futures::StreamExt;
@@ -151,19 +157,6 @@ where
     pub caps: TransportCapabilities,
     pub upstream: Arc<dyn Endpoint<UpMsg, DownMsg>>,
     pub downstream: Arc<dyn Endpoint<DownMsg, UpMsg>>,
-}
-
-/// Factory that binds one transport session.
-#[async_trait]
-pub trait TransportFactory<UpMsg, DownMsg>: Send + Sync
-where
-    UpMsg: Send + 'static,
-    DownMsg: Send + 'static,
-{
-    async fn bind_session(
-        &self,
-        session: SessionId,
-    ) -> Result<TransportBinding<UpMsg, DownMsg>, TransportError>;
 }
 
 /// Relay one bound session bidirectionally:

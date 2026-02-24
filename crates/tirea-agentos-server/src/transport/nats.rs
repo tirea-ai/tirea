@@ -5,7 +5,7 @@ use tirea_agentos::orchestrator::{AgentOs, ResolvedRun, RunStream};
 use tirea_contract::ProtocolOutputEncoder;
 use tokio::sync::mpsc;
 
-use crate::protocol::NatsProtocolError;
+use crate::transport::NatsProtocolError;
 use crate::transport::{
     pump_encoded_stream, relay_binding, ChannelDownstreamEndpoint, Endpoint, RelayCancellation,
     SessionId, TransportBinding, TransportCapabilities, TransportError,

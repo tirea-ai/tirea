@@ -1,6 +1,5 @@
-use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -18,7 +17,7 @@ use tirea_protocol_ai_sdk_v6::{
     apply_ai_sdk_extensions, AiSdkTrigger, AiSdkV6HistoryEncoder, AiSdkV6InputAdapter,
     AiSdkV6ProtocolEncoder, AiSdkV6RunRequest, AI_SDK_VERSION,
 };
-use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::warn;
 
 use crate::service::{
@@ -26,9 +25,10 @@ use crate::service::{
     require_agent_state_store, try_forward_decisions_to_active_run, ApiError, AppState,
     MessageQueryParams,
 };
+use crate::transport::http_sse::{sse_body_stream, sse_response, HttpSseUpstreamEndpoint};
 use crate::transport::{
-    pump_encoded_stream, relay_binding, ChannelDownstreamEndpoint, Endpoint, RelayCancellation,
-    SessionId, TransportBinding, TransportCapabilities, TransportError,
+    pump_encoded_stream, relay_binding, ChannelDownstreamEndpoint, RelayCancellation, SessionId,
+    TransportBinding, TransportCapabilities,
 };
 
 /// AI SDK v6 run endpoint path (to be nested under protocol root).
@@ -156,7 +156,7 @@ async fn run(
     let thread_id = run.thread_id.clone();
     let encoder = AiSdkV6ProtocolEncoder::new(run.run_id.clone(), Some(thread_id.clone()));
     let (sse_tx, sse_rx) = mpsc::channel::<Bytes>(64);
-    let upstream = Arc::new(HttpSseUpstreamEndpoint::new(
+    let upstream = Arc::new(HttpSseUpstreamEndpoint::with_fanout(
         decision_ingress_rx,
         sse_tx,
         fanout.clone(),
@@ -277,80 +277,6 @@ fn upsert_protocol_state(state: &mut Value, snapshot: Value) {
         return;
     };
     protocol_map.insert("ai_sdk".to_string(), snapshot);
-}
-
-struct HttpSseUpstreamEndpoint {
-    ingress_rx: Mutex<Option<mpsc::UnboundedReceiver<ToolCallDecision>>>,
-    sse_tx: mpsc::Sender<Bytes>,
-    fanout: broadcast::Sender<Bytes>,
-    cancellation_token: RunCancellationToken,
-}
-
-impl HttpSseUpstreamEndpoint {
-    fn new(
-        ingress_rx: mpsc::UnboundedReceiver<ToolCallDecision>,
-        sse_tx: mpsc::Sender<Bytes>,
-        fanout: broadcast::Sender<Bytes>,
-        cancellation_token: RunCancellationToken,
-    ) -> Self {
-        Self {
-            ingress_rx: Mutex::new(Some(ingress_rx)),
-            sse_tx,
-            fanout,
-            cancellation_token,
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl Endpoint<ToolCallDecision, Bytes> for HttpSseUpstreamEndpoint {
-    async fn recv(&self) -> Result<crate::transport::BoxStream<ToolCallDecision>, TransportError> {
-        let mut guard = self.ingress_rx.lock().await;
-        let mut rx = guard.take().ok_or(TransportError::Closed)?;
-        let stream = async_stream::stream! {
-            while let Some(item) = rx.recv().await {
-                yield Ok(item);
-            }
-        };
-        Ok(Box::pin(stream))
-    }
-
-    async fn send(&self, item: Bytes) -> Result<(), TransportError> {
-        let _ = self.fanout.send(item.clone());
-        self.sse_tx.send(item).await.map_err(|_| {
-            self.cancellation_token.cancel();
-            TransportError::Closed
-        })
-    }
-
-    async fn close(&self) -> Result<(), TransportError> {
-        self.cancellation_token.cancel();
-        Ok(())
-    }
-}
-
-fn sse_body_stream(
-    mut rx: mpsc::Receiver<Bytes>,
-) -> impl futures::Stream<Item = Result<Bytes, Infallible>> + Send + 'static {
-    async_stream::stream! {
-        while let Some(chunk) = rx.recv().await {
-            yield Ok::<Bytes, Infallible>(chunk);
-        }
-    }
-}
-
-fn sse_response<S>(stream: S) -> Response
-where
-    S: futures::Stream<Item = Result<Bytes, Infallible>> + Send + 'static,
-{
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("text/event-stream"),
-    );
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-    headers.insert(header::CONNECTION, HeaderValue::from_static("keep-alive"));
-    (headers, Body::from_stream(stream)).into_response()
 }
 
 fn ai_sdk_sse_response<S>(stream: S) -> Response
