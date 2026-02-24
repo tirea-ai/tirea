@@ -12,5 +12,5 @@ command = "mdbook-mermaid"
 
 [output.html]
 default-theme = "rust"
-git-repository-url = "https://github.com/chaizhenhua/tirea"
+git-repository-url = "https://github.com/tirea-ai/tirea"
 additional-js = ["mermaid.min.js", "mermaid-init.js"]
