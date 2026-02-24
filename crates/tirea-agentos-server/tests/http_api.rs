@@ -15,7 +15,7 @@ use tirea_agentos::contracts::thread::Thread;
 use tirea_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_agentos::contracts::ThreadChangeSet;
 use tirea_agentos::contracts::ToolCallContext;
-use tirea_agentos::orchestrator::AgentDefinition;
+use tirea_agentos::orchestrator::{AgentDefinition, PendingApprovalPolicy};
 use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder};
 use tirea_agentos_server::http::{router, AppState};
 use tirea_store_adapters::MemoryStore;
@@ -64,6 +64,30 @@ fn make_os_with_storage_and_tools(
     let def = AgentDefinition {
         id: "test".to_string(),
         plugin_ids: vec!["terminate_plugin_requested_test".into()],
+        ..Default::default()
+    };
+
+    AgentOsBuilder::new()
+        .with_registered_plugin(
+            "terminate_plugin_requested_test",
+            Arc::new(TerminatePluginRequestedPlugin),
+        )
+        .with_tools(tools)
+        .with_agent("test", def)
+        .with_agent_state_store(write_store)
+        .build()
+        .unwrap()
+}
+
+fn make_os_with_storage_tools_and_pending_policy(
+    write_store: Arc<dyn ThreadStore>,
+    tools: HashMap<String, Arc<dyn Tool>>,
+    pending_approval_policy: PendingApprovalPolicy,
+) -> AgentOs {
+    let def = AgentDefinition {
+        id: "test".to_string(),
+        plugin_ids: vec!["terminate_plugin_requested_test".into()],
+        pending_approval_policy,
         ..Default::default()
     };
 
@@ -3285,6 +3309,117 @@ async fn test_ag_ui_active_run_with_user_input_and_decision_starts_new_run() {
     );
 
     drop(first_response);
+}
+
+#[tokio::test]
+async fn test_ai_sdk_strict_pending_approval_policy_rejects_new_user_input() {
+    let storage = Arc::new(MemoryStore::new());
+    storage
+        .save(&pending_permission_frontend_thread(
+            "pending-strict-ai-sdk",
+            "strict-payload",
+        ))
+        .await
+        .unwrap();
+
+    let os = Arc::new(make_os_with_storage_tools_and_pending_policy(
+        storage.clone(),
+        HashMap::new(),
+        PendingApprovalPolicy::Strict,
+    ));
+    let app = make_app(os, storage.clone());
+
+    let payload = json!({
+        "id": "pending-strict-ai-sdk",
+        "runId": "run-strict-reject-ai-sdk",
+        "messages": [{ "role": "user", "content": "continue without approval" }]
+    });
+    let (status, body) = post_json(app.clone(), "/v1/ai-sdk/agents/test/runs", payload).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|msg| msg.contains("pending approvals")),
+        "strict policy should return conflict with pending approvals: {body:?}"
+    );
+
+    let saved = storage
+        .load_thread("pending-strict-ai-sdk")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !saved
+            .messages
+            .iter()
+            .any(|m| m.role == tirea_agentos::contracts::thread::Role::User
+                && m.content.contains("continue without approval")),
+        "strict rejection must not append new user input into thread"
+    );
+}
+
+#[tokio::test]
+async fn test_ai_sdk_auto_cancel_pending_approval_policy_cancels_unresolved_before_new_input() {
+    let storage = Arc::new(MemoryStore::new());
+    storage
+        .save(&pending_permission_frontend_thread(
+            "pending-auto-cancel-ai-sdk",
+            "auto-cancel-payload",
+        ))
+        .await
+        .unwrap();
+
+    let os = Arc::new(make_os_with_storage_tools_and_pending_policy(
+        storage.clone(),
+        HashMap::new(),
+        PendingApprovalPolicy::AutoCancel,
+    ));
+    let app = make_app(os, storage.clone());
+
+    let payload = json!({
+        "id": "pending-auto-cancel-ai-sdk",
+        "runId": "run-auto-cancel-ai-sdk",
+        "messages": [{ "role": "user", "content": "continue after cancel" }]
+    });
+    let (status, body) = post_sse_text(app, "/v1/ai-sdk/agents/test/runs", payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains(r#""type":"finish""#),
+        "auto-cancel policy should continue new run and finish: {body}"
+    );
+
+    let saved = storage
+        .load_thread("pending-auto-cancel-ai-sdk")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        saved.messages.iter().any(|m| {
+            m.role == tirea_agentos::contracts::thread::Role::Tool
+                && m.tool_call_id.as_deref() == Some("call_1")
+                && (m.content.contains("superseded by new user input")
+                    || m.content.contains("denied"))
+        }),
+        "auto-cancel should append cancellation tool result for pending approval"
+    );
+    assert!(
+        !saved.messages.iter().any(|m| {
+            m.role == tirea_agentos::contracts::thread::Role::Tool
+                && m.tool_call_id.as_deref() == Some("call_1")
+                && m.content.contains("auto-cancel-payload")
+        }),
+        "auto-cancel should not replay original pending backend tool call"
+    );
+
+    let rebuilt = saved.rebuild_state().unwrap();
+    assert!(
+        rebuilt
+            .get("__suspended_tool_calls")
+            .and_then(|rt| rt.get("calls"))
+            .and_then(|v| v.as_object())
+            .map_or(true, |calls| calls.is_empty()),
+        "auto-cancel should clear suspended calls before continuing new input"
+    );
 }
 
 #[tokio::test]
