@@ -8,10 +8,9 @@ use bytes::Bytes;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use tirea_agentos::contracts::thread::Thread;
-use tirea_agentos::contracts::AgentEvent;
+use tirea_agentos::contracts::{AgentEvent, ToolCallDecision};
 use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError, RunStream};
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
 use tirea_contract::{ProtocolInputAdapter, ProtocolOutputEncoder};
@@ -19,7 +18,7 @@ use tirea_protocol_ai_sdk_v6::{
     apply_ai_sdk_extensions, AiSdkTrigger, AiSdkV6HistoryEncoder, AiSdkV6InputAdapter,
     AiSdkV6ProtocolEncoder, AiSdkV6RunRequest, AI_SDK_VERSION,
 };
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 use tracing::warn;
 
 use crate::service::{
@@ -27,7 +26,10 @@ use crate::service::{
     require_agent_state_store, try_forward_decisions_to_active_run, ApiError, AppState,
     MessageQueryParams,
 };
-use crate::transport::pump_encoded_stream;
+use crate::transport::{
+    pump_encoded_stream, relay_binding, Endpoint, RelayCancellation, SessionId, TransportBinding,
+    TransportCapabilities, TransportError,
+};
 
 /// AI SDK v6 run endpoint path (to be nested under protocol root).
 pub const RUN_PATH: &str = "/agents/:agent_id/runs";
@@ -148,20 +150,44 @@ async fn run(
 
     let stream_key = stream_key(&agent_id, &run.thread_id);
     let active_key = active_run_key("ai_sdk", &agent_id, &run.thread_id);
-    register_active_run(active_key.clone(), run.decision_tx.clone()).await;
-
+    let (decision_ingress_tx, decision_ingress_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
+    register_active_run(active_key.clone(), decision_ingress_tx).await;
     let fanout = stream_registry().register(stream_key.clone()).await;
-    let encoder = AiSdkV6ProtocolEncoder::new(run.run_id.clone(), Some(run.thread_id.clone()));
-    let body_stream = encoded_sse_body(
+    let thread_id = run.thread_id.clone();
+    let encoder = AiSdkV6ProtocolEncoder::new(run.run_id.clone(), Some(thread_id.clone()));
+    let (sse_tx, sse_rx) = mpsc::channel::<Bytes>(64);
+    let upstream = Arc::new(HttpSseUpstreamEndpoint::new(
+        decision_ingress_rx,
+        sse_tx,
+        fanout.clone(),
+        cancellation_token.clone(),
+    ));
+    let downstream = Arc::new(RuntimeRunDownstreamEndpoint::from_run(
         run,
         encoder,
         cancellation_token,
-        fanout,
-        stream_key,
-        active_key,
-    );
+    ));
+    let binding = TransportBinding {
+        session: SessionId { thread_id },
+        caps: TransportCapabilities {
+            upstream_async: true,
+            downstream_streaming: true,
+            single_channel_bidirectional: false,
+            resumable_downstream: true,
+        },
+        upstream,
+        downstream,
+    };
+    let relay_cancel = RelayCancellation::new();
+    tokio::spawn(async move {
+        if let Err(err) = relay_binding(binding, relay_cancel.clone()).await {
+            warn!(error = %err, "ai-sdk transport relay failed");
+        }
+        stream_registry().remove(&stream_key).await;
+        remove_active_run(&active_key).await;
+    });
 
-    Ok(ai_sdk_sse_response(body_stream))
+    Ok(ai_sdk_sse_response(sse_body_stream(sse_rx)))
 }
 
 async fn resume_stream(Path((agent_id, chat_id)): Path<(String, String)>) -> Response {
@@ -228,70 +254,131 @@ fn upsert_protocol_state(state: &mut Value, snapshot: Value) {
     protocol_map.insert("ai_sdk".to_string(), snapshot);
 }
 
-fn encoded_sse_body<E>(
-    run: RunStream,
-    encoder: E,
-    cancellation_token: RunCancellationToken,
+struct HttpSseUpstreamEndpoint {
+    ingress_rx: Mutex<Option<mpsc::UnboundedReceiver<ToolCallDecision>>>,
+    sse_tx: mpsc::Sender<Bytes>,
     fanout: broadcast::Sender<Bytes>,
-    stream_key: String,
-    active_key: String,
-) -> impl futures::Stream<Item = Result<Bytes, Infallible>> + Send + 'static
-where
-    E: ProtocolOutputEncoder<InputEvent = AgentEvent> + Send + 'static,
-    E::Event: serde::Serialize + Send + 'static,
-{
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Bytes>(64);
+    cancellation_token: RunCancellationToken,
+}
 
-    tokio::spawn(async move {
-        let tx_events = tx.clone();
-        let event_cancel_token = cancellation_token.clone();
-        let downstream_closed = Arc::new(AtomicBool::new(false));
-        let send_state = downstream_closed.clone();
-        let fanout_events = fanout.clone();
-
-        pump_encoded_stream(run.events, encoder, move |event| {
-            let tx = tx_events.clone();
-            let token = event_cancel_token.clone();
-            let closed = send_state.clone();
-            let fanout = fanout_events.clone();
-            async move {
-                let json = match serde_json::to_string(&event) {
-                    Ok(json) => json,
-                    Err(err) => {
-                        warn!(error = %err, "failed to serialize SSE protocol event");
-                        closed.store(true, Ordering::Relaxed);
-                        return Ok(());
-                    }
-                };
-                let chunk = Bytes::from(format!("data: {json}\n\n"));
-                let _ = fanout.send(chunk.clone());
-
-                if closed.load(Ordering::Relaxed) {
-                    return Ok(());
-                }
-
-                match tx.send(chunk).await {
-                    Ok(_) => Ok(()),
-                    Err(_) => {
-                        closed.store(true, Ordering::Relaxed);
-                        token.cancel();
-                        Ok(())
-                    }
-                }
-            }
-        })
-        .await;
-
-        let trailer = Bytes::from("data: [DONE]\n\n");
-        let _ = fanout.send(trailer.clone());
-        if tx.send(trailer).await.is_err() {
-            cancellation_token.cancel();
+impl HttpSseUpstreamEndpoint {
+    fn new(
+        ingress_rx: mpsc::UnboundedReceiver<ToolCallDecision>,
+        sse_tx: mpsc::Sender<Bytes>,
+        fanout: broadcast::Sender<Bytes>,
+        cancellation_token: RunCancellationToken,
+    ) -> Self {
+        Self {
+            ingress_rx: Mutex::new(Some(ingress_rx)),
+            sse_tx,
+            fanout,
+            cancellation_token,
         }
+    }
+}
 
-        stream_registry().remove(&stream_key).await;
-        remove_active_run(&active_key).await;
-    });
+#[async_trait::async_trait]
+impl Endpoint<ToolCallDecision, Bytes> for HttpSseUpstreamEndpoint {
+    async fn recv(&self) -> Result<crate::transport::BoxStream<ToolCallDecision>, TransportError> {
+        let mut guard = self.ingress_rx.lock().await;
+        let mut rx = guard.take().ok_or(TransportError::Closed)?;
+        let stream = async_stream::stream! {
+            while let Some(item) = rx.recv().await {
+                yield Ok(item);
+            }
+        };
+        Ok(Box::pin(stream))
+    }
 
+    async fn send(&self, item: Bytes) -> Result<(), TransportError> {
+        let _ = self.fanout.send(item.clone());
+        self.sse_tx.send(item).await.map_err(|_| {
+            self.cancellation_token.cancel();
+            TransportError::Closed
+        })
+    }
+
+    async fn close(&self) -> Result<(), TransportError> {
+        self.cancellation_token.cancel();
+        Ok(())
+    }
+}
+
+struct RuntimeRunDownstreamEndpoint {
+    egress_rx: Mutex<Option<mpsc::Receiver<Bytes>>>,
+    decision_tx: mpsc::UnboundedSender<ToolCallDecision>,
+}
+
+impl RuntimeRunDownstreamEndpoint {
+    fn from_run<E>(run: RunStream, encoder: E, cancellation_token: RunCancellationToken) -> Self
+    where
+        E: ProtocolOutputEncoder<InputEvent = AgentEvent> + Send + 'static,
+        E::Event: serde::Serialize + Send + 'static,
+    {
+        let decision_tx = run.decision_tx.clone();
+        let (tx, rx) = mpsc::channel::<Bytes>(64);
+        tokio::spawn(async move {
+            let tx_events = tx.clone();
+            let event_cancel_token = cancellation_token.clone();
+            pump_encoded_stream(run.events, encoder, move |event| {
+                let tx = tx_events.clone();
+                let token = event_cancel_token.clone();
+                async move {
+                    let json = match serde_json::to_string(&event) {
+                        Ok(json) => json,
+                        Err(err) => {
+                            warn!(error = %err, "failed to serialize SSE protocol event");
+                            token.cancel();
+                            return Ok(());
+                        }
+                    };
+                    let chunk = Bytes::from(format!("data: {json}\n\n"));
+                    tx.send(chunk).await.map_err(|_| {
+                        token.cancel();
+                    })
+                }
+            })
+            .await;
+            let trailer = Bytes::from("data: [DONE]\n\n");
+            if tx.send(trailer).await.is_err() {
+                cancellation_token.cancel();
+            }
+        });
+
+        Self {
+            egress_rx: Mutex::new(Some(rx)),
+            decision_tx,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Endpoint<Bytes, ToolCallDecision> for RuntimeRunDownstreamEndpoint {
+    async fn recv(&self) -> Result<crate::transport::BoxStream<Bytes>, TransportError> {
+        let mut guard = self.egress_rx.lock().await;
+        let mut rx = guard.take().ok_or(TransportError::Closed)?;
+        let stream = async_stream::stream! {
+            while let Some(item) = rx.recv().await {
+                yield Ok(item);
+            }
+        };
+        Ok(Box::pin(stream))
+    }
+
+    async fn send(&self, item: ToolCallDecision) -> Result<(), TransportError> {
+        self.decision_tx
+            .send(item)
+            .map_err(|_| TransportError::Closed)
+    }
+
+    async fn close(&self) -> Result<(), TransportError> {
+        Ok(())
+    }
+}
+
+fn sse_body_stream(
+    mut rx: mpsc::Receiver<Bytes>,
+) -> impl futures::Stream<Item = Result<Bytes, Infallible>> + Send + 'static {
     async_stream::stream! {
         while let Some(chunk) = rx.recv().await {
             yield Ok::<Bytes, Infallible>(chunk);
