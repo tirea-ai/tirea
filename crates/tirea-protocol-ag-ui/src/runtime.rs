@@ -353,7 +353,7 @@ mod tests {
 
         let mut resolved = empty_resolved();
         apply_agui_extensions(&mut resolved, &request);
-        assert_eq!(resolved.config.tool_executor.name(), "parallel");
+        assert_eq!(resolved.config.tool_executor.name(), "parallel_streaming");
         assert!(resolved.tools.contains_key("copyToClipboard"));
         // Only 1 frontend tool (backend tools are not stubs)
         assert_eq!(resolved.tools.len(), 1);
@@ -507,7 +507,7 @@ mod tests {
         let request = RunAgentInput::new("t1", "r1").with_message(Message::user("hello"));
         let mut resolved = empty_resolved();
         apply_agui_extensions(&mut resolved, &request);
-        assert_eq!(resolved.config.tool_executor.name(), "parallel");
+        assert_eq!(resolved.config.tool_executor.name(), "parallel_streaming");
         assert!(resolved.tools.is_empty());
         assert!(resolved.config.plugins.is_empty());
     }

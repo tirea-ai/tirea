@@ -21,7 +21,7 @@ use tirea_agent_loop::contracts::AgentEvent;
 use tirea_agent_loop::contracts::RunContext;
 use tirea_agent_loop::contracts::ToolCallContext;
 use tirea_agent_loop::runtime::loop_runner::{
-    run_loop, run_loop_stream, tool_map_from_arc, AgentConfig,
+    run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, ParallelToolExecutor,
 };
 use tirea_state::State;
 use tirea_store_adapters::{FileStore, MemoryStore};
@@ -798,7 +798,7 @@ async fn test_parallel_tool_calls() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = AgentConfig::new("deepseek-chat")
         .with_max_rounds(3)
-        .with_parallel_tools(true);
+        .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
 
     let thread = ConversationAgentState::new("test-parallel")
         .with_message(Message::system(

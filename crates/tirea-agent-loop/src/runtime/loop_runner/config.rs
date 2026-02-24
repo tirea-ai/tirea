@@ -1,4 +1,4 @@
-use super::tool_exec::{ParallelToolExecutor, SequentialToolExecutor};
+use super::tool_exec::ParallelToolExecutor;
 use super::AgentLoopError;
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::{LlmExecutor, ToolExecutor};
@@ -174,7 +174,7 @@ impl Default for AgentConfig {
             model: "gpt-4o-mini".to_string(),
             system_prompt: String::new(),
             max_rounds: 10,
-            tool_executor: Arc::new(ParallelToolExecutor::immediate()),
+            tool_executor: Arc::new(ParallelToolExecutor::streaming()),
             chat_options: Some(
                 ChatOptions::default()
                     .with_capture_usage(true)
@@ -229,17 +229,6 @@ impl AgentConfig {
     #[must_use]
     pub fn with_tool_executor(mut self, executor: Arc<dyn ToolExecutor>) -> Self {
         self.tool_executor = executor;
-        self
-    }
-
-    /// Set parallel tool execution convenience strategy.
-    #[must_use]
-    pub fn with_parallel_tools(mut self, parallel: bool) -> Self {
-        self.tool_executor = if parallel {
-            Arc::new(ParallelToolExecutor::immediate())
-        } else {
-            Arc::new(SequentialToolExecutor)
-        };
         self
     }
 

@@ -147,7 +147,6 @@ fn map_tool_executor_error(err: AgentLoopError) -> ToolExecutorError {
 /// Executes all tool calls concurrently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParallelToolExecutionMode {
-    Immediate,
     BatchApproval,
     Streaming,
 }
@@ -159,12 +158,6 @@ pub struct ParallelToolExecutor {
 }
 
 impl ParallelToolExecutor {
-    pub const fn immediate() -> Self {
-        Self {
-            mode: ParallelToolExecutionMode::Immediate,
-        }
-    }
-
     pub const fn batch_approval() -> Self {
         Self {
             mode: ParallelToolExecutionMode::BatchApproval,
@@ -179,7 +172,6 @@ impl ParallelToolExecutor {
 
     fn mode_name(self) -> &'static str {
         match self.mode {
-            ParallelToolExecutionMode::Immediate => "parallel",
             ParallelToolExecutionMode::BatchApproval => "parallel_batch_approval",
             ParallelToolExecutionMode::Streaming => "parallel_streaming",
         }
@@ -188,7 +180,7 @@ impl ParallelToolExecutor {
 
 impl Default for ParallelToolExecutor {
     fn default() -> Self {
-        Self::immediate()
+        Self::streaming()
     }
 }
 
@@ -215,9 +207,7 @@ impl ToolExecutor for ParallelToolExecutor {
     fn decision_replay_policy(&self) -> DecisionReplayPolicy {
         match self.mode {
             ParallelToolExecutionMode::BatchApproval => DecisionReplayPolicy::BatchAllSuspended,
-            ParallelToolExecutionMode::Immediate | ParallelToolExecutionMode::Streaming => {
-                DecisionReplayPolicy::Immediate
-            }
+            ParallelToolExecutionMode::Streaming => DecisionReplayPolicy::Immediate,
         }
     }
 }
@@ -540,7 +530,7 @@ pub async fn execute_tools_with_plugins(
     parallel: bool,
     plugins: &[Arc<dyn AgentPlugin>],
 ) -> Result<Thread, AgentLoopError> {
-    let parallel_executor = ParallelToolExecutor::immediate();
+    let parallel_executor = ParallelToolExecutor::streaming();
     let sequential_executor = SequentialToolExecutor;
     let executor: &dyn ToolExecutor = if parallel {
         &parallel_executor

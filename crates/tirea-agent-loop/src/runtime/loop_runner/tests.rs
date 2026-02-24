@@ -771,7 +771,7 @@ fn skill_activation_result(
 fn test_agent_config_default() {
     let config = AgentConfig::default();
     assert_eq!(config.max_rounds, 10);
-    assert_eq!(config.tool_executor.name(), "parallel");
+    assert_eq!(config.tool_executor.name(), "parallel_streaming");
     assert!(config.system_prompt.is_empty());
 }
 
@@ -779,7 +779,7 @@ fn test_agent_config_default() {
 fn test_agent_config_builder() {
     let config = AgentConfig::new("gpt-4")
         .with_max_rounds(5)
-        .with_parallel_tools(false)
+        .with_tool_executor(Arc::new(SequentialToolExecutor))
         .with_system_prompt("You are helpful.");
 
     assert_eq!(config.model, "gpt-4");
@@ -1898,7 +1898,7 @@ async fn test_plugin_state_patch_visible_in_next_step_before_inference() {
     ];
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(StateChannelPlugin) as Arc<dyn AgentPlugin>)
-        .with_parallel_tools(true);
+        .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = tool_map([EchoTool]);
 
@@ -7448,7 +7448,7 @@ async fn test_stream_parallel_multiple_pending_emits_all_suspended() {
 
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(PendingAndRunEndPlugin) as Arc<dyn AgentPlugin>)
-        .with_parallel_tools(true);
+        .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let thread = Thread::new("test").with_message(Message::user("run tools"));
     let responses = vec![MockResponse::text("run both")
         .with_tool_call("call_1", "echo", json!({"message": "a"}))
@@ -10141,7 +10141,7 @@ async fn test_nonstream_mixed_pending_and_completed_tools_continues_loop() {
     ]));
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(PendingOnlyCall2Plugin) as Arc<dyn AgentPlugin>)
-        .with_parallel_tools(true)
+        .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()))
         .with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("run tools"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
@@ -10208,7 +10208,7 @@ async fn test_nonstream_single_pending_tool_enters_waiting() {
     ]));
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(PendingAllToolsPlugin) as Arc<dyn AgentPlugin>)
-        .with_parallel_tools(true)
+        .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()))
         .with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("run tool"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
@@ -10263,7 +10263,7 @@ async fn test_stream_mixed_pending_and_completed_tools_continues_loop() {
 
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(PendingOnlyCall2Plugin) as Arc<dyn AgentPlugin>)
-        .with_parallel_tools(true);
+        .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let thread = Thread::new("test").with_message(Message::user("run tools"));
 
     // First response: 3 tool calls, call_2 will be pending.
@@ -10357,7 +10357,7 @@ async fn test_stream_all_tools_pending_pauses_run() {
 
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(PendingAllToolsPlugin) as Arc<dyn AgentPlugin>)
-        .with_parallel_tools(true);
+        .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let thread = Thread::new("test").with_message(Message::user("run tools"));
     let responses = vec![MockResponse::text("")
         .with_tool_call("call_1", "echo", json!({"message": "a"}))
@@ -10412,7 +10412,7 @@ async fn test_stream_mixed_pending_persists_interaction_state() {
 
     let config = AgentConfig::new("mock")
         .with_plugin(Arc::new(PendingOnlyCall2Plugin) as Arc<dyn AgentPlugin>)
-        .with_parallel_tools(true);
+        .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let thread = Thread::new("test").with_message(Message::user("run tools"));
     let responses = vec![
         MockResponse::text("")
