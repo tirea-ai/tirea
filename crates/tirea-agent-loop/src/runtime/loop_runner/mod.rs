@@ -610,6 +610,58 @@ pub(super) async fn finalize_run_end(
     emit_run_end_phase(run_ctx, tool_descriptors, plugins).await
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunFinishedCommitPolicy {
+    Required,
+    BestEffort,
+}
+
+fn normalize_termination_for_suspended_calls(
+    run_ctx: &RunContext,
+    termination: TerminationReason,
+    response: Option<String>,
+) -> (TerminationReason, Option<String>) {
+    let final_termination = if !matches!(
+        termination,
+        TerminationReason::Error | TerminationReason::Cancelled
+    ) && has_suspended_calls(run_ctx)
+    {
+        TerminationReason::Suspended
+    } else {
+        termination
+    };
+    let final_response = if final_termination == TerminationReason::Suspended {
+        None
+    } else {
+        response
+    };
+    (final_termination, final_response)
+}
+
+async fn persist_run_termination(
+    run_ctx: &mut RunContext,
+    termination: &TerminationReason,
+    tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
+    plugins: &[Arc<dyn crate::contracts::plugin::AgentPlugin>],
+    pending_delta_commit: &PendingDeltaCommitContext<'_>,
+    run_finished_commit_policy: RunFinishedCommitPolicy,
+) -> Result<(), AgentLoopError> {
+    sync_run_lifecycle_for_termination(run_ctx, termination)?;
+    finalize_run_end(run_ctx, tool_descriptors, plugins).await;
+    if let Err(error) = pending_delta_commit
+        .commit(run_ctx, CheckpointReason::RunFinished, true)
+        .await
+    {
+        match run_finished_commit_policy {
+            RunFinishedCommitPolicy::Required => return Err(error),
+            RunFinishedCommitPolicy::BestEffort => {
+                tracing::warn!(error = %error, "failed to commit run-finished delta");
+            }
+        }
+    }
+    Ok(())
+}
+
 fn stream_result_from_chat_response(response: &genai::chat::ChatResponse) -> StreamResult {
     let text = response
         .first_text()
@@ -1390,36 +1442,17 @@ pub async fn run_loop(
     macro_rules! terminate_run {
         ($termination:expr, $response:expr, $failure:expr) => {{
             let reason: TerminationReason = $termination;
-            // When suspended calls exist, unresolved external input should keep
-            // the run in Suspended regardless of plugin termination hint.
-            let final_termination = if !matches!(
-                reason,
-                TerminationReason::Error | TerminationReason::Cancelled
-            ) && has_suspended_calls(&run_ctx)
-            {
-                TerminationReason::Suspended
-            } else {
-                reason
-            };
-            let final_response = if final_termination == TerminationReason::Suspended {
-                None
-            } else {
-                $response
-            };
-            if let Err(error) = sync_run_lifecycle_for_termination(&mut run_ctx, &final_termination)
-            {
-                return build_loop_outcome(
-                    run_ctx,
-                    TerminationReason::Error,
-                    None,
-                    &run_state,
-                    Some(outcome::LoopFailure::State(error.to_string())),
-                );
-            }
-            finalize_run_end(&mut run_ctx, &active_tool_descriptors, &config.plugins).await;
-            if let Err(error) = pending_delta_commit
-                .commit(&mut run_ctx, CheckpointReason::RunFinished, true)
-                .await
+            let (final_termination, final_response) =
+                normalize_termination_for_suspended_calls(&run_ctx, reason, $response);
+            if let Err(error) = persist_run_termination(
+                &mut run_ctx,
+                &final_termination,
+                &active_tool_descriptors,
+                &config.plugins,
+                &pending_delta_commit,
+                RunFinishedCommitPolicy::Required,
+            )
+            .await
             {
                 return build_loop_outcome(
                     run_ctx,

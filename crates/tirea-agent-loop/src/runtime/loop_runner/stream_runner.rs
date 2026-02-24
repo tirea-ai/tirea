@@ -182,43 +182,25 @@ pub(super) fn run_stream(
         };
         let mut active_tool_descriptors = active_tool_snapshot.descriptors.clone();
 
-        macro_rules! emit_run_finished_delta {
-            () => {
-                if let Err(e) = pending_delta_commit
-                    .commit(&mut run_ctx, CheckpointReason::RunFinished, true)
-                    .await
-                {
-                    tracing::warn!(error = %e, "failed to commit run-finished delta");
-                }
-            };
-        }
-
-        macro_rules! ensure_run_finished_delta_or_error {
-            () => {
-                if let Err(e) = pending_delta_commit
-                    .commit(&mut run_ctx, CheckpointReason::RunFinished, true)
-                    .await
-                {
-                    yield emitter.emit_existing(AgentEvent::Error {
-                        message: e.to_string(),
-                    });
-                    return;
-                }
-            };
-        }
-
         macro_rules! terminate_stream_error {
             ($failure:expr, $message:expr) => {{
                 let failure = $failure;
                 let message = $message;
-                if let Err(e) = sync_run_lifecycle_for_termination(&mut run_ctx, &TerminationReason::Error) {
+                if let Err(e) = persist_run_termination(
+                    &mut run_ctx,
+                    &TerminationReason::Error,
+                    &active_tool_descriptors,
+                    &config.plugins,
+                    &pending_delta_commit,
+                    RunFinishedCommitPolicy::BestEffort,
+                )
+                .await
+                {
                     yield emitter.emit_existing(AgentEvent::Error {
                         message: e.to_string(),
                     });
                     return;
                 }
-                finalize_run_end(&mut run_ctx, &active_tool_descriptors, &config.plugins).await;
-                emit_run_finished_delta!();
                 let outcome = build_loop_outcome(
                     run_ctx,
                     TerminationReason::Error,
@@ -237,28 +219,26 @@ pub(super) fn run_stream(
         macro_rules! finish_run {
             ($termination_expr:expr, $response_expr:expr) => {{
                 let reason: TerminationReason = $termination_expr;
-                // When suspended calls exist, unresolved external input should keep
-                // the run in Suspended regardless of plugin termination hint.
-                let final_termination = if !matches!(reason, TerminationReason::Error | TerminationReason::Cancelled)
-                    && has_suspended_calls(&run_ctx)
+                let (final_termination, final_response) = normalize_termination_for_suspended_calls(
+                    &run_ctx,
+                    reason,
+                    $response_expr,
+                );
+                if let Err(e) = persist_run_termination(
+                    &mut run_ctx,
+                    &final_termination,
+                    &active_tool_descriptors,
+                    &config.plugins,
+                    &pending_delta_commit,
+                    RunFinishedCommitPolicy::Required,
+                )
+                .await
                 {
-                    TerminationReason::Suspended
-                } else {
-                    reason
-                };
-                let final_response = if final_termination == TerminationReason::Suspended {
-                    None
-                } else {
-                    $response_expr
-                };
-                if let Err(e) = sync_run_lifecycle_for_termination(&mut run_ctx, &final_termination) {
                     yield emitter.emit_existing(AgentEvent::Error {
                         message: e.to_string(),
                     });
                     return;
                 }
-                finalize_run_end(&mut run_ctx, &active_tool_descriptors, &config.plugins).await;
-                ensure_run_finished_delta_or_error!();
                 let outcome = build_loop_outcome(
                     run_ctx,
                     final_termination,

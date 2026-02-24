@@ -6835,6 +6835,58 @@ fn extract_inference_model(events: &[AgentEvent]) -> Option<String> {
     })
 }
 
+#[test]
+fn test_normalize_termination_for_suspended_calls_forces_waiting() {
+    let mut run_ctx = RunContext::from_thread(
+        &Thread::new("normalize-termination-suspended"),
+        tirea_contract::RunConfig::default(),
+    )
+    .expect("create run context");
+    let state = run_ctx.snapshot().expect("snapshot state");
+    let patch = set_single_suspended_call(
+        &state,
+        Suspension::new("confirm_1", "confirm").with_message("waiting for approval"),
+        None,
+    )
+    .expect("seed suspended call");
+    run_ctx.add_thread_patch(patch);
+
+    let (termination, response) = normalize_termination_for_suspended_calls(
+        &run_ctx,
+        TerminationReason::NaturalEnd,
+        Some("done".to_string()),
+    );
+
+    assert_eq!(termination, TerminationReason::Suspended);
+    assert_eq!(response, None);
+}
+
+#[test]
+fn test_normalize_termination_for_suspended_calls_keeps_cancelled() {
+    let mut run_ctx = RunContext::from_thread(
+        &Thread::new("normalize-termination-cancelled"),
+        tirea_contract::RunConfig::default(),
+    )
+    .expect("create run context");
+    let state = run_ctx.snapshot().expect("snapshot state");
+    let patch = set_single_suspended_call(
+        &state,
+        Suspension::new("confirm_1", "confirm").with_message("waiting for approval"),
+        None,
+    )
+    .expect("seed suspended call");
+    run_ctx.add_thread_patch(patch);
+
+    let (termination, response) = normalize_termination_for_suspended_calls(
+        &run_ctx,
+        TerminationReason::Cancelled,
+        Some("ignored".to_string()),
+    );
+
+    assert_eq!(termination, TerminationReason::Cancelled);
+    assert_eq!(response, Some("ignored".to_string()));
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CanonicalToolCall {
     id: String,
