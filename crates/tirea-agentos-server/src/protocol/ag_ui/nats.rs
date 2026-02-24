@@ -7,28 +7,26 @@ use tirea_protocol_ag_ui::{
     apply_agui_extensions, AgUiInputAdapter, AgUiProtocolEncoder, Event, RunAgentInput,
 };
 
+use crate::nats::NatsConfig;
 use crate::transport::nats::{run_and_publish, NatsTransportConfig};
 use crate::transport::NatsProtocolError;
 
-/// Default AG-UI run subject.
-pub const RUN_SUBJECT: &str = "agentos.ag-ui.runs";
-
-/// Serve AG-UI protocol over NATS using the default subject.
-pub async fn serve(client: async_nats::Client, os: Arc<AgentOs>) -> Result<(), NatsProtocolError> {
-    serve_on_subject(client, os, RUN_SUBJECT).await
-}
-
-/// Serve AG-UI protocol over NATS on a custom subject.
-pub async fn serve_on_subject(
+/// Serve AG-UI protocol over NATS using config.
+pub async fn serve(
     client: async_nats::Client,
     os: Arc<AgentOs>,
-    subject: &str,
+    config: &NatsConfig,
 ) -> Result<(), NatsProtocolError> {
-    serve_on_subject_with_transport_config(client, os, subject, NatsTransportConfig::default())
-        .await
+    serve_with_subject_and_transport(
+        client,
+        os,
+        &config.ag_ui_subject,
+        config.transport_config(),
+    )
+    .await
 }
 
-pub async fn serve_on_subject_with_transport_config(
+pub(crate) async fn serve_with_subject_and_transport(
     client: async_nats::Client,
     os: Arc<AgentOs>,
     subject: &str,

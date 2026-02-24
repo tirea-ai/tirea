@@ -19,6 +19,7 @@ use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
 use tirea_agentos::orchestrator::AgentDefinition;
 use tirea_agentos::orchestrator::AgentOsBuilder;
+use tirea_agentos_server::nats::NatsConfig;
 use tirea_agentos_server::protocol;
 use tirea_store_adapters::MemoryStore;
 
@@ -98,19 +99,23 @@ async fn spawn_gateway_with_storage(
 }
 
 async fn spawn_protocol_services(nats_url: &str, os: Arc<tirea_agentos::orchestrator::AgentOs>) {
-    let client = async_nats::connect(nats_url)
+    let nats_config = NatsConfig::new(nats_url.to_string());
+    let client = nats_config
+        .connect()
         .await
         .expect("failed to connect protocol service to NATS");
     let agui_client = client.clone();
     let aisdk_client = client.clone();
     let os_for_agui = os.clone();
     let os_for_aisdk = os.clone();
+    let config_for_agui = nats_config.clone();
+    let config_for_aisdk = nats_config;
 
     tokio::spawn(async move {
-        let _ = protocol::ag_ui::nats::serve(agui_client, os_for_agui).await;
+        let _ = protocol::ag_ui::nats::serve(agui_client, os_for_agui, &config_for_agui).await;
     });
     tokio::spawn(async move {
-        let _ = protocol::ai_sdk_v6::nats::serve(aisdk_client, os_for_aisdk).await;
+        let _ = protocol::ai_sdk_v6::nats::serve(aisdk_client, os_for_aisdk, &config_for_aisdk).await;
     });
 }
 

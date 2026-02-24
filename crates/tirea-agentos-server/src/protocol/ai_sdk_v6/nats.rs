@@ -8,28 +8,26 @@ use tirea_protocol_ai_sdk_v6::{
     UIStreamEvent,
 };
 
+use crate::nats::NatsConfig;
 use crate::transport::nats::{run_and_publish, NatsTransportConfig};
 use crate::transport::NatsProtocolError;
 
-/// Default AI SDK v6 run subject.
-pub const RUN_SUBJECT: &str = "agentos.ai-sdk.runs";
-
-/// Serve AI SDK v6 protocol over NATS using the default subject.
-pub async fn serve(client: async_nats::Client, os: Arc<AgentOs>) -> Result<(), NatsProtocolError> {
-    serve_on_subject(client, os, RUN_SUBJECT).await
-}
-
-/// Serve AI SDK v6 protocol over NATS on a custom subject.
-pub async fn serve_on_subject(
+/// Serve AI SDK v6 protocol over NATS using config.
+pub async fn serve(
     client: async_nats::Client,
     os: Arc<AgentOs>,
-    subject: &str,
+    config: &NatsConfig,
 ) -> Result<(), NatsProtocolError> {
-    serve_on_subject_with_transport_config(client, os, subject, NatsTransportConfig::default())
-        .await
+    serve_with_subject_and_transport(
+        client,
+        os,
+        &config.ai_sdk_subject,
+        config.transport_config(),
+    )
+    .await
 }
 
-pub async fn serve_on_subject_with_transport_config(
+pub(crate) async fn serve_with_subject_and_transport(
     client: async_nats::Client,
     os: Arc<AgentOs>,
     subject: &str,
