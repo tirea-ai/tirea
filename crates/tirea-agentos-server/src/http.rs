@@ -34,17 +34,13 @@ pub fn thread_routes() -> Router<AppState> {
         .route(THREAD_MESSAGES_PATH, get(get_thread_messages))
 }
 
-/// Deprecated combined router.
+/// Combined default router.
 ///
-/// Prefer explicit assembly in application code:
+/// For full control, assemble routes explicitly in application code:
 /// - `health_routes()`
 /// - `thread_routes()`
 /// - `protocol::ag_ui::http::routes()`
 /// - `protocol::ai_sdk_v6::http::routes()`
-#[deprecated(
-    since = "0.1.1",
-    note = "assemble routes explicitly with health_routes/thread_routes and protocol::*::http::routes"
-)]
 pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(health_routes())

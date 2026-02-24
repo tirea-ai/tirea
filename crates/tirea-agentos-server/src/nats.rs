@@ -20,15 +20,11 @@ impl NatsGateway {
         Ok(Self { os, client })
     }
 
-    /// Deprecated combined NATS gateway.
+    /// Combined default NATS gateway for AG-UI and AI SDK v6 subjects.
     ///
-    /// Prefer explicit protocol composition:
+    /// For full control, run protocol-specific services explicitly:
     /// - `protocol::ag_ui::nats::serve(...)`
     /// - `protocol::ai_sdk_v6::nats::serve(...)`
-    #[deprecated(
-        since = "0.1.1",
-        note = "compose protocol::ag_ui::nats::serve and protocol::ai_sdk_v6::nats::serve explicitly"
-    )]
     pub async fn serve(self) -> Result<(), NatsGatewayError> {
         let agui_client = self.client.clone();
         let aisdk_client = self.client.clone();
