@@ -1,7 +1,8 @@
 //! Runtime control-state schema stored under internal `__*` top-level paths.
 //!
 //! These types define durable runtime control state for cross-step and cross-run
-//! flow control (suspended tool calls, resume decisions, and inference error envelope).
+//! flow control (suspended tool calls, tool-call lifecycle state, and inference
+//! error envelope).
 
 use crate::event::suspension::{FrontendToolInvocation, Suspension};
 use crate::runtime::state_paths::{SUSPENDED_TOOL_CALLS_STATE_PATH, TOOL_CALL_STATES_STATE_PATH};
@@ -108,33 +109,6 @@ impl ToolCallDecision {
             updated_at,
         }
     }
-}
-
-/// One pending decision waiting to be applied to a suspended tool call.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ResumeDecision {
-    /// Idempotency key for the external decision.
-    pub decision_id: String,
-    /// Resume or cancel action.
-    pub action: ResumeDecisionAction,
-    /// Raw response payload from suspension frontend.
-    #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub result: Value,
-    /// Optional human-readable reason.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-    /// Last write timestamp (unix millis).
-    pub updated_at: u64,
-}
-
-/// Durable rendezvous for resume/cancel decisions keyed by `call_id`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-#[tirea(path = "__resume_decisions")]
-pub struct ResumeDecisionsState {
-    /// Pending decisions to apply.
-    #[serde(default)]
-    #[tirea(default = "HashMap::new()")]
-    pub calls: HashMap<String, ResumeDecision>,
 }
 
 /// Tool call lifecycle status for suspend/resume capable execution.
@@ -300,9 +274,6 @@ mod tests {
     fn test_loop_control_state_defaults() {
         let suspended = SuspendedToolCallsState::default();
         assert!(suspended.calls.is_empty());
-
-        let resume_decisions = ResumeDecisionsState::default();
-        assert!(resume_decisions.calls.is_empty());
 
         let err = InferenceErrorState::default();
         assert!(err.error.is_none());

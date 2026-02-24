@@ -4614,7 +4614,7 @@ use tirea_agentos::contracts::plugin::phase::{
 };
 use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::runtime::control::{
-    ResumeDecision, ResumeDecisionAction, ToolCallResume, ToolCallState, ToolCallStatus,
+    ResumeDecisionAction, ToolCallResume, ToolCallState, ToolCallStatus,
 };
 use tirea_agentos::contracts::thread::ToolCall;
 use tirea_agentos::contracts::{InvocationOrigin, ResponseRouting, SuspendedCall};
@@ -12590,7 +12590,7 @@ fn replay_calls_from_state(state: &Value) -> Vec<ToolCall> {
         .collect()
 }
 
-fn resume_decisions_from_state(state: &Value) -> HashMap<String, ResumeDecision> {
+fn resume_decisions_from_state(state: &Value) -> HashMap<String, ToolCallResume> {
     state
         .get("__tool_call_states")
         .and_then(|agent| agent.get("calls"))
@@ -12602,21 +12602,11 @@ fn resume_decisions_from_state(state: &Value) -> HashMap<String, ResumeDecision>
             if !matches!(tool_state.status, ToolCallStatus::Resuming) {
                 return None;
             }
-            let resume = tool_state.resume?;
-            Some((
-                call_id.clone(),
-                ResumeDecision {
-                    decision_id: if resume.decision_id.trim().is_empty() {
-                        call_id
-                    } else {
-                        resume.decision_id
-                    },
-                    action: resume.action,
-                    result: resume.result,
-                    reason: resume.reason,
-                    updated_at: resume.updated_at,
-                },
-            ))
+            let mut resume = tool_state.resume?;
+            if resume.decision_id.trim().is_empty() {
+                resume.decision_id = call_id.clone();
+            }
+            Some((call_id.clone(), resume))
         })
         .collect()
 }
