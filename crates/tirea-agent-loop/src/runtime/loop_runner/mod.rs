@@ -52,8 +52,8 @@ mod tool_exec;
 use crate::contracts::plugin::phase::Phase;
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
-    ResumeDecisionAction, StreamResult, ToolCallResume, ToolCallState, ToolCallStatus,
-    ToolExecutionRequest, ToolExecutionResult,
+    DecisionReplayPolicy, ResumeDecisionAction, StreamResult, ToolCallResume, ToolCallState,
+    ToolCallStatus, ToolExecutionRequest, ToolExecutionResult,
 };
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
@@ -117,7 +117,8 @@ use tool_exec::{
 };
 pub use tool_exec::{
     execute_tools, execute_tools_with_config, execute_tools_with_plugins,
-    execute_tools_with_plugins_and_executor, ParallelToolExecutor, SequentialToolExecutor,
+    execute_tools_with_plugins_and_executor, ParallelBatchApprovalToolExecutor,
+    ParallelStreamingToolExecutor, ParallelToolExecutor, SequentialToolExecutor,
 };
 
 /// Fully resolved agent wiring ready for execution.
@@ -673,6 +674,15 @@ fn settle_orphan_resuming_tool_states(
     Ok(changed)
 }
 
+fn all_suspended_calls_have_resume(
+    suspended: &HashMap<String, SuspendedCall>,
+    resumes: &HashMap<String, ToolCallResume>,
+) -> bool {
+    suspended
+        .keys()
+        .all(|call_id| resumes.contains_key(call_id))
+}
+
 async fn drain_resuming_tool_calls_and_replay(
     run_ctx: &mut RunContext,
     tools: &HashMap<String, Arc<dyn Tool>>,
@@ -693,6 +703,26 @@ async fn drain_resuming_tool_calls_and_replay(
         state_changed = true;
     }
     if suspended.is_empty() {
+        if state_changed {
+            let snapshot = run_ctx
+                .snapshot()
+                .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+            return Ok(RunStartDrainOutcome {
+                events: vec![AgentEvent::StateSnapshot { snapshot }],
+                replayed: false,
+            });
+        }
+        return Ok(RunStartDrainOutcome {
+            events: Vec::new(),
+            replayed: false,
+        });
+    }
+
+    if matches!(
+        config.tool_executor.decision_replay_policy(),
+        DecisionReplayPolicy::BatchAllSuspended
+    ) && !all_suspended_calls_have_resume(&suspended, &decisions)
+    {
         if state_changed {
             let snapshot = run_ctx
                 .snapshot()

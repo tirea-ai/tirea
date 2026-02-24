@@ -8,7 +8,10 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
-use tirea_agent_loop::runtime::loop_runner::ResolvedRun;
+use tirea_agent_loop::runtime::loop_runner::{
+    ParallelBatchApprovalToolExecutor, ParallelStreamingToolExecutor, ResolvedRun,
+    SequentialToolExecutor,
+};
 use tirea_contract::event::suspension::{
     FrontendToolInvocation, InvocationOrigin, ResponseRouting,
 };
@@ -42,6 +45,7 @@ pub fn apply_agui_extensions(resolved: &mut ResolvedRun, request: &RunAgentInput
         resolved.config.system_prompt = system_prompt.clone();
     }
     if let Some(config) = request.config.clone() {
+        apply_agui_tool_execution_mode_override(resolved, &config);
         apply_agui_chat_options_overrides(resolved, &config);
         let _ = resolved.run_config.set(AGUI_CONFIG_KEY, config);
     }
@@ -80,6 +84,27 @@ pub fn apply_agui_extensions(resolved: &mut ResolvedRun, request: &RunAgentInput
             .config
             .plugins
             .push(Arc::new(ContextInjectionPlugin::new(addendum)));
+    }
+}
+
+fn apply_agui_tool_execution_mode_override(resolved: &mut ResolvedRun, config: &Value) {
+    let mode = config
+        .get("toolExecutionMode")
+        .or_else(|| config.get("tool_execution_mode"))
+        .and_then(Value::as_str)
+        .map(|value| value.trim().to_ascii_lowercase());
+
+    match mode.as_deref() {
+        Some("sequential") => {
+            resolved.config.tool_executor = Arc::new(SequentialToolExecutor);
+        }
+        Some("parallel_batch_approval") => {
+            resolved.config.tool_executor = Arc::new(ParallelBatchApprovalToolExecutor);
+        }
+        Some("parallel_streaming") => {
+            resolved.config.tool_executor = Arc::new(ParallelStreamingToolExecutor);
+        }
+        _ => {}
     }
 }
 
@@ -759,6 +784,22 @@ mod tests {
                 "normalizeReasoningContent": true,
                 "reasoningEffort": "high"
             }))
+        );
+    }
+
+    #[test]
+    fn applies_tool_execution_mode_override_from_agui_config() {
+        let mut request = RunAgentInput::new("t1", "r1").with_message(Message::user("hello"));
+        request.config = Some(json!({
+            "toolExecutionMode": "parallel_batch_approval"
+        }));
+
+        let mut resolved = empty_resolved();
+        apply_agui_extensions(&mut resolved, &request);
+
+        assert_eq!(
+            resolved.config.tool_executor.name(),
+            "parallel_batch_approval"
         );
     }
 

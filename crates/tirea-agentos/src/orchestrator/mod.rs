@@ -35,7 +35,7 @@ mod wiring;
 #[cfg(test)]
 mod tests;
 
-pub use agent_definition::AgentDefinition;
+pub use agent_definition::{AgentDefinition, ToolExecutionMode};
 use agent_tools::{
     AgentRecoveryPlugin, AgentRunManager, AgentRunTool, AgentStopTool, AgentToolsPlugin,
 };

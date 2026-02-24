@@ -225,7 +225,7 @@ impl ThreadReader for RecordingStorage {
     async fn load(&self, id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
         let threads = self.threads.read().await;
         Ok(threads.get(id).map(|t| ThreadHead {
-            agent_state: t.clone(),
+            thread: t.clone(),
             version: 0,
         }))
     }
@@ -1835,6 +1835,105 @@ fn pending_ask_frontend_thread(id: &str, question: &str) -> Thread {
     ))
 }
 
+fn pending_permission_frontend_thread_pair(
+    id: &str,
+    first_payload: &str,
+    second_payload: &str,
+) -> Thread {
+    Thread::with_initial_state(
+        id,
+        json!({
+            "__suspended_tool_calls": {
+                "calls": {
+                    "call_1": {
+                        "call_id": "call_1",
+                        "tool_name": "echo",
+                        "suspension": {
+                            "id": "fc_perm_1",
+                            "action": "tool:PermissionConfirm",
+                            "parameters": {
+                                "tool_name": "echo",
+                                "tool_args": { "message": first_payload }
+                            }
+                        },
+                        "invocation": {
+                            "call_id": "fc_perm_1",
+                            "tool_name": "PermissionConfirm",
+                            "arguments": {
+                                "tool_name": "echo",
+                                "tool_args": { "message": first_payload }
+                            },
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "call_1",
+                                "backend_tool_name": "echo",
+                                "backend_arguments": { "message": first_payload }
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
+                        }
+                    },
+                    "call_2": {
+                        "call_id": "call_2",
+                        "tool_name": "echo",
+                        "suspension": {
+                            "id": "fc_perm_2",
+                            "action": "tool:PermissionConfirm",
+                            "parameters": {
+                                "tool_name": "echo",
+                                "tool_args": { "message": second_payload }
+                            }
+                        },
+                        "invocation": {
+                            "call_id": "fc_perm_2",
+                            "tool_name": "PermissionConfirm",
+                            "arguments": {
+                                "tool_name": "echo",
+                                "tool_args": { "message": second_payload }
+                            },
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "call_2",
+                                "backend_tool_name": "echo",
+                                "backend_arguments": { "message": second_payload }
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    )
+    .with_message(
+        tirea_agentos::contracts::thread::Message::assistant_with_tool_calls(
+            "need permissions",
+            vec![
+                tirea_agentos::contracts::thread::ToolCall::new(
+                    "call_1",
+                    "echo",
+                    json!({"message": first_payload}),
+                ),
+                tirea_agentos::contracts::thread::ToolCall::new(
+                    "call_2",
+                    "echo",
+                    json!({"message": second_payload}),
+                ),
+            ],
+        ),
+    )
+    .with_message(tirea_agentos::contracts::thread::Message::tool(
+        "call_1",
+        "Tool 'echo' is awaiting approval. Execution paused.",
+    ))
+    .with_message(tirea_agentos::contracts::thread::Message::tool(
+        "call_2",
+        "Tool 'echo' is awaiting approval. Execution paused.",
+    ))
+}
+
 #[tokio::test]
 async fn test_agui_pending_approval_resumes_and_replays_tool_call() {
     let storage = Arc::new(MemoryStore::new());
@@ -2188,6 +2287,127 @@ async fn test_ai_sdk_tool_approval_response_part_denial_emits_output_denied() {
     assert!(
         replayed_tool.is_none(),
         "denied tool-approval-response must not replay original backend tool call"
+    );
+}
+
+#[tokio::test]
+async fn test_ai_sdk_batch_approval_mode_replays_only_after_all_pending_decisions() {
+    let storage = Arc::new(MemoryStore::new());
+    storage
+        .save(&pending_permission_frontend_thread_pair(
+            "th-ai-batch-approvals",
+            "batch-approved-1",
+            "batch-approved-2",
+        ))
+        .await
+        .unwrap();
+
+    let tools: HashMap<String, Arc<dyn Tool>> =
+        HashMap::from([("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>)]);
+    let os = Arc::new(make_os_with_storage_and_tools(storage.clone(), tools));
+    let app = router(AppState {
+        os,
+        read_store: storage.clone(),
+    });
+
+    // First decision only approves fc_perm_1. Batch approval mode should NOT
+    // replay call_1 yet because call_2 remains undecided.
+    let first_payload = json!({
+        "id": "th-ai-batch-approvals",
+        "runId": "resume-ai-batch-1",
+        "messages": [{
+            "role": "assistant",
+            "parts": [{
+                "type": "tool-approval-response",
+                "approvalId": "fc_perm_1",
+                "approved": true
+            }]
+        }]
+    });
+    let (status, first_body) =
+        post_sse_text(app.clone(), "/v1/ai-sdk/agents/test/runs", first_payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !first_body.contains("batch-approved-1"),
+        "partial approval must not replay call_1 yet: {first_body}"
+    );
+
+    let first_saved = storage
+        .load_thread("th-ai-batch-approvals")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !first_saved.messages.iter().any(|m| {
+            m.role == tirea_agentos::contracts::thread::Role::Tool
+                && m.tool_call_id.as_deref() == Some("call_1")
+                && m.content.contains("batch-approved-1")
+        }),
+        "partial approval should not append replayed result for call_1"
+    );
+    let first_state = first_saved.rebuild_state().unwrap();
+    let first_pending_calls = first_state
+        .get("__suspended_tool_calls")
+        .and_then(|v| v.get("calls"))
+        .and_then(Value::as_object)
+        .expect("suspended calls should still exist after partial approval");
+    assert!(
+        first_pending_calls.contains_key("call_1") && first_pending_calls.contains_key("call_2"),
+        "both calls should remain suspended until batch approvals are complete: {first_pending_calls:?}"
+    );
+
+    // Second decision approves fc_perm_2. Now both suspended calls are decided,
+    // so replay should execute call_1 and call_2 together.
+    let second_payload = json!({
+        "id": "th-ai-batch-approvals",
+        "runId": "resume-ai-batch-2",
+        "messages": [{
+            "role": "assistant",
+            "parts": [{
+                "type": "tool-approval-response",
+                "approvalId": "fc_perm_2",
+                "approved": true
+            }]
+        }]
+    });
+    let (status, second_body) =
+        post_sse_text(app.clone(), "/v1/ai-sdk/agents/test/runs", second_payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        second_body.contains("batch-approved-1") && second_body.contains("batch-approved-2"),
+        "final approval should replay both pending calls: {second_body}"
+    );
+
+    let second_saved = storage
+        .load_thread("th-ai-batch-approvals")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        second_saved.messages.iter().any(|m| {
+            m.role == tirea_agentos::contracts::thread::Role::Tool
+                && m.tool_call_id.as_deref() == Some("call_1")
+                && m.content.contains("batch-approved-1")
+        }),
+        "batch completion should append replayed call_1 result"
+    );
+    assert!(
+        second_saved.messages.iter().any(|m| {
+            m.role == tirea_agentos::contracts::thread::Role::Tool
+                && m.tool_call_id.as_deref() == Some("call_2")
+                && m.content.contains("batch-approved-2")
+        }),
+        "batch completion should append replayed call_2 result"
+    );
+
+    let second_state = second_saved.rebuild_state().unwrap();
+    assert!(
+        second_state
+            .get("__suspended_tool_calls")
+            .and_then(|rt| rt.get("calls"))
+            .and_then(|v| v.as_object())
+            .map_or(true, |calls| calls.is_empty()),
+        "suspended calls must be cleared after full batch approval replay"
     );
 }
 
@@ -2756,6 +2976,122 @@ async fn test_ai_sdk_decision_only_request_forwards_to_active_run() {
 }
 
 #[tokio::test]
+async fn test_ai_sdk_decision_only_batch_request_forwards_to_active_run() {
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_slow_terminate_plugin_requested_plugin(
+        storage.clone(),
+    ));
+    let app = make_app(os, storage);
+
+    let first_payload = json!({
+        "id": "decision-forward-ai-sdk-batch",
+        "messages": [{ "role": "user", "content": "start" }]
+    });
+    let first_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ai-sdk/agents/test/runs")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(first_payload.to_string()))
+                .expect("request should build"),
+        )
+        .await
+        .expect("request should succeed");
+    assert_eq!(first_response.status(), StatusCode::OK);
+
+    let decision_only_payload = json!({
+        "id": "decision-forward-ai-sdk-batch",
+        "runId": "decision-only-batch",
+        "messages": [{
+            "role": "assistant",
+            "parts": [
+                {
+                    "type": "tool-approval-response",
+                    "approvalId": "fc_perm_1",
+                    "approved": true
+                },
+                {
+                    "type": "tool-approval-response",
+                    "approvalId": "fc_perm_2",
+                    "approved": false
+                }
+            ]
+        }]
+    });
+    let (status, body) = post_json(
+        app.clone(),
+        "/v1/ai-sdk/agents/test/runs",
+        decision_only_payload,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(body["status"], "decision_forwarded");
+    assert_eq!(body["threadId"], "decision-forward-ai-sdk-batch");
+
+    drop(first_response);
+}
+
+#[tokio::test]
+async fn test_ai_sdk_active_run_with_user_input_and_decision_starts_new_run() {
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_slow_terminate_plugin_requested_plugin(
+        storage.clone(),
+    ));
+    let app = make_app(os, storage);
+
+    let first_payload = json!({
+        "id": "decision-mixed-ai-sdk",
+        "messages": [{ "role": "user", "content": "start" }]
+    });
+    let first_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ai-sdk/agents/test/runs")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(first_payload.to_string()))
+                .expect("request should build"),
+        )
+        .await
+        .expect("request should succeed");
+    assert_eq!(first_response.status(), StatusCode::OK);
+
+    // Mixed payload: includes historical user message + approval response.
+    // This does NOT qualify as decision-only, so a new run is created.
+    let mixed_payload = json!({
+        "id": "decision-mixed-ai-sdk",
+        "runId": "decision-mixed-run",
+        "messages": [
+            { "role": "user", "content": "start" },
+            {
+                "role": "assistant",
+                "parts": [{
+                    "type": "tool-approval-response",
+                    "approvalId": "fc_perm_1",
+                    "approved": true
+                }]
+            }
+        ]
+    });
+    let (status, body) =
+        post_sse_text(app.clone(), "/v1/ai-sdk/agents/test/runs", mixed_payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains(r#""type":"finish""#),
+        "mixed payload should trigger a new run stream: {body}"
+    );
+    assert!(
+        !body.contains("decision_forwarded"),
+        "mixed payload should not take decision-forward fast path: {body}"
+    );
+
+    drop(first_response);
+}
+
+#[tokio::test]
 async fn test_ai_sdk_decision_only_without_active_run_starts_new_run() {
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os_with_storage(storage.clone()));
@@ -2834,6 +3170,119 @@ async fn test_ag_ui_decision_only_request_forwards_to_active_run() {
     assert_eq!(body["status"], "decision_forwarded");
     assert_eq!(body["threadId"], "decision-forward-ag-ui");
     assert_eq!(body["runId"], "run-decision-only");
+
+    drop(first_response);
+}
+
+#[tokio::test]
+async fn test_ag_ui_decision_only_batch_request_forwards_to_active_run() {
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_slow_terminate_plugin_requested_plugin(
+        storage.clone(),
+    ));
+    let app = make_app(os, storage);
+
+    let first_payload = json!({
+        "threadId": "decision-forward-ag-ui-batch",
+        "runId": "run-active",
+        "messages": [{ "role": "user", "content": "start" }],
+        "tools": []
+    });
+    let first_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ag-ui/agents/test/runs")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(first_payload.to_string()))
+                .expect("request should build"),
+        )
+        .await
+        .expect("request should succeed");
+    assert_eq!(first_response.status(), StatusCode::OK);
+
+    let decision_only_payload = json!({
+        "threadId": "decision-forward-ag-ui-batch",
+        "runId": "run-decision-only-batch",
+        "messages": [
+            {
+                "role": "tool",
+                "toolCallId": "fc_perm_1",
+                "content": "true"
+            },
+            {
+                "role": "tool",
+                "toolCallId": "fc_perm_2",
+                "content": "false"
+            }
+        ],
+        "tools": []
+    });
+    let (status, body) = post_json(
+        app.clone(),
+        "/v1/ag-ui/agents/test/runs",
+        decision_only_payload,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(body["status"], "decision_forwarded");
+    assert_eq!(body["threadId"], "decision-forward-ag-ui-batch");
+    assert_eq!(body["runId"], "run-decision-only-batch");
+
+    drop(first_response);
+}
+
+#[tokio::test]
+async fn test_ag_ui_active_run_with_user_input_and_decision_starts_new_run() {
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_slow_terminate_plugin_requested_plugin(
+        storage.clone(),
+    ));
+    let app = make_app(os, storage);
+
+    let first_payload = json!({
+        "threadId": "decision-mixed-ag-ui",
+        "runId": "run-active",
+        "messages": [{ "role": "user", "content": "start" }],
+        "tools": []
+    });
+    let first_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ag-ui/agents/test/runs")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(first_payload.to_string()))
+                .expect("request should build"),
+        )
+        .await
+        .expect("request should succeed");
+    assert_eq!(first_response.status(), StatusCode::OK);
+
+    // Mixed payload: includes user input + tool decision.
+    // This does NOT qualify as decision-only, so a new run is created.
+    let mixed_payload = json!({
+        "threadId": "decision-mixed-ag-ui",
+        "runId": "run-decision-mixed",
+        "messages": [
+            { "role": "user", "content": "start" },
+            { "role": "tool", "toolCallId": "fc_perm_1", "content": "true" }
+        ],
+        "tools": []
+    });
+    let (status, body) =
+        post_sse_text(app.clone(), "/v1/ag-ui/agents/test/runs", mixed_payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("RUN_FINISHED"),
+        "mixed payload should trigger a new AG-UI run stream: {body}"
+    );
+    assert!(
+        !body.contains("decision_forwarded"),
+        "mixed payload should not take decision-forward fast path: {body}"
+    );
 
     drop(first_response);
 }

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
-use tirea_agentos::orchestrator::{AgentDefinition, StopConditionSpec};
+use tirea_agentos::orchestrator::{AgentDefinition, StopConditionSpec, ToolExecutionMode};
 use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder, ModelDefinition};
 use tirea_agentos_server::http::{self, AppState};
 use tirea_contract::tool::context::ToolCallContext;
@@ -48,10 +48,31 @@ struct AgentConfigFile {
     system_prompt: String,
     max_rounds: Option<usize>,
     parallel_tools: Option<bool>,
+    tool_execution_mode: Option<ToolExecutionModeConfig>,
     #[serde(default)]
     plugin_ids: Vec<String>,
     #[serde(default)]
     stop_condition_specs: Vec<StopConditionSpec>,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum ToolExecutionModeConfig {
+    Sequential,
+    ParallelBatchApproval,
+    ParallelStreaming,
+}
+
+impl From<ToolExecutionModeConfig> for ToolExecutionMode {
+    fn from(value: ToolExecutionModeConfig) -> Self {
+        match value {
+            ToolExecutionModeConfig::Sequential => ToolExecutionMode::Sequential,
+            ToolExecutionModeConfig::ParallelBatchApproval => {
+                ToolExecutionMode::ParallelBatchApproval
+            }
+            ToolExecutionModeConfig::ParallelStreaming => ToolExecutionMode::ParallelStreaming,
+        }
+    }
 }
 
 /// Simple backend tool that returns server information.
@@ -195,6 +216,7 @@ fn build_os(
             system_prompt: String::new(),
             max_rounds: None,
             parallel_tools: None,
+            tool_execution_mode: None,
             plugin_ids: Vec::new(),
             stop_condition_specs: Vec::new(),
         }],
@@ -231,8 +253,11 @@ fn build_os(
         if let Some(max_rounds) = a.max_rounds {
             def.max_rounds = max_rounds;
         }
-        if let Some(parallel) = a.parallel_tools {
+        if let Some(mode) = a.tool_execution_mode {
+            def.tool_execution_mode = Some(mode.into());
+        } else if let Some(parallel) = a.parallel_tools {
             def.parallel_tools = parallel;
+            def.tool_execution_mode = None;
         }
         def.plugin_ids = a.plugin_ids;
         def.stop_condition_specs = a.stop_condition_specs;

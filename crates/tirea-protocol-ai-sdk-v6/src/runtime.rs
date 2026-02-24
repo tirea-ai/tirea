@@ -3,12 +3,17 @@
 //! Applies AI SDK-specific extensions to a [`ResolvedRun`], currently
 //! no additional plugins.
 
-use tirea_agent_loop::runtime::loop_runner::ResolvedRun;
+use std::sync::Arc;
+use tirea_agent_loop::runtime::loop_runner::{ParallelBatchApprovalToolExecutor, ResolvedRun};
 
 use crate::AiSdkV6RunRequest;
 
 /// Apply AI SDK-specific extensions to a [`ResolvedRun`].
-pub fn apply_ai_sdk_extensions(_resolved: &mut ResolvedRun, _request: &AiSdkV6RunRequest) {}
+pub fn apply_ai_sdk_extensions(resolved: &mut ResolvedRun, _request: &AiSdkV6RunRequest) {
+    // AI SDK transport supports batched approvals; replay only after the full
+    // suspended set receives decisions to avoid partial duplicate replays.
+    resolved.config.tool_executor = Arc::new(ParallelBatchApprovalToolExecutor);
+}
 
 #[cfg(test)]
 mod tests {
@@ -37,6 +42,10 @@ mod tests {
         let mut resolved = empty_resolved();
         apply_ai_sdk_extensions(&mut resolved, &req);
         assert!(resolved.config.plugins.is_empty());
+        assert_eq!(
+            resolved.config.tool_executor.name(),
+            "parallel_batch_approval"
+        );
     }
 
     #[test]
@@ -56,5 +65,9 @@ mod tests {
         let mut resolved = empty_resolved();
         apply_ai_sdk_extensions(&mut resolved, &req);
         assert!(resolved.config.plugins.is_empty());
+        assert_eq!(
+            resolved.config.tool_executor.name(),
+            "parallel_batch_approval"
+        );
     }
 }

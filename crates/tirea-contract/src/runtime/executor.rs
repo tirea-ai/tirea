@@ -110,6 +110,15 @@ pub enum ToolExecutorError {
     Failed { message: String },
 }
 
+/// Policy controlling when resume decisions are replayed into tool execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecisionReplayPolicy {
+    /// Replay each resolved suspended call as soon as its decision arrives.
+    Immediate,
+    /// Replay only when all currently suspended calls have decisions.
+    BatchAllSuspended,
+}
+
 /// Strategy abstraction for tool execution.
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
@@ -124,5 +133,10 @@ pub trait ToolExecutor: Send + Sync {
     /// Whether apply step should enforce parallel patch conflict checks.
     fn requires_parallel_patch_conflict_check(&self) -> bool {
         false
+    }
+
+    /// How runtime should replay resolved suspend decisions for this executor.
+    fn decision_replay_policy(&self) -> DecisionReplayPolicy {
+        DecisionReplayPolicy::Immediate
     }
 }

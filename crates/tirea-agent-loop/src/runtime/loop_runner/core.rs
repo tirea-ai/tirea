@@ -144,23 +144,6 @@ pub(super) fn set_agent_suspended_calls(
     Ok(ctx.take_tracked_patch("agent_loop"))
 }
 
-/// Clear all suspended calls.
-pub(super) fn clear_all_suspended_calls(state: &Value) -> Result<TrackedPatch, AgentLoopError> {
-    let doc = DocCell::new(state.clone());
-    let ctx = StateContext::new(&doc);
-    let suspended_state = ctx.state_of::<SuspendedToolCallsState>();
-
-    match suspended_state.set_calls(HashMap::new()) {
-        Ok(()) | Err(TireaError::PathNotFound { .. }) => {}
-        Err(e) => {
-            return Err(AgentLoopError::StateError(format!(
-                "failed to clear {SUSPENDED_TOOL_CALLS_STATE_PATH}.calls: {e}"
-            )))
-        }
-    }
-    Ok(ctx.take_tracked_patch("agent_loop"))
-}
-
 /// Clear one suspended call.
 pub(super) fn clear_suspended_call(
     state: &Value,

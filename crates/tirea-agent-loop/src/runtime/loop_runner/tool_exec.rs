@@ -1,6 +1,4 @@
-use super::core::{
-    clear_all_suspended_calls, drain_agent_append_user_messages, set_agent_suspended_calls,
-};
+use super::core::{drain_agent_append_user_messages, set_agent_suspended_calls};
 use super::plugin_runtime::emit_phase_checked;
 use super::{
     AgentConfig, AgentLoopError, RunCancellationToken, TOOL_SCOPE_CALLER_MESSAGES_KEY,
@@ -8,11 +6,10 @@ use super::{
 };
 use crate::contracts::plugin::phase::{Phase, StateEffect, StepContext, ToolContext};
 use crate::contracts::plugin::AgentPlugin;
-use crate::contracts::runtime::state_paths::SUSPENDED_TOOL_CALLS_STATE_PATH;
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
-    StreamResult, ToolCallOutcome, ToolCallState, ToolCallStatus, ToolExecution,
-    ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
+    DecisionReplayPolicy, StreamResult, ToolCallOutcome, ToolCallState, ToolCallStatus,
+    ToolExecution, ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
 };
 use crate::contracts::thread::Thread;
 use crate::contracts::thread::{Message, MessageMetadata, ToolCall};
@@ -27,7 +24,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tirea_state::{PatchExt, TrackedPatch};
+use tirea_state::{Patch, PatchExt, TrackedPatch};
 
 pub(super) struct AppliedToolResults {
     pub(super) suspended_calls: Vec<SuspendedCall>,
@@ -172,6 +169,64 @@ impl ToolExecutor for ParallelToolExecutor {
     }
 }
 
+/// Executes all tool calls concurrently and replays suspend decisions only when
+/// all currently suspended calls have been decided.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ParallelBatchApprovalToolExecutor;
+
+#[async_trait]
+impl ToolExecutor for ParallelBatchApprovalToolExecutor {
+    async fn execute(
+        &self,
+        request: ToolExecutionRequest<'_>,
+    ) -> Result<Vec<ToolExecutionResult>, ToolExecutorError> {
+        let phase_ctx = ToolPhaseContext::from_request(&request);
+        execute_tools_parallel_with_phases(request.tools, request.calls, request.state, phase_ctx)
+            .await
+            .map_err(map_tool_executor_error)
+    }
+
+    fn name(&self) -> &'static str {
+        "parallel_batch_approval"
+    }
+
+    fn requires_parallel_patch_conflict_check(&self) -> bool {
+        true
+    }
+
+    fn decision_replay_policy(&self) -> DecisionReplayPolicy {
+        DecisionReplayPolicy::BatchAllSuspended
+    }
+}
+
+/// Executes all tool calls concurrently with immediate decision replay.
+///
+/// This is equivalent to [`ParallelToolExecutor`] but has an explicit strategy
+/// label for protocol/runtime wiring that prefers pure streaming behavior.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ParallelStreamingToolExecutor;
+
+#[async_trait]
+impl ToolExecutor for ParallelStreamingToolExecutor {
+    async fn execute(
+        &self,
+        request: ToolExecutionRequest<'_>,
+    ) -> Result<Vec<ToolExecutionResult>, ToolExecutorError> {
+        let phase_ctx = ToolPhaseContext::from_request(&request);
+        execute_tools_parallel_with_phases(request.tools, request.calls, request.state, phase_ctx)
+            .await
+            .map_err(map_tool_executor_error)
+    }
+
+    fn name(&self) -> &'static str {
+        "parallel_streaming"
+    }
+
+    fn requires_parallel_patch_conflict_check(&self) -> bool {
+        true
+    }
+}
+
 /// Executes tool calls one-by-one in call order.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SequentialToolExecutor;
@@ -280,8 +335,14 @@ pub(super) fn apply_tool_results_impl(
             .map(|r| r.execution.clone())
             .collect::<Vec<_>>(),
     );
+    let mut merged_pending_patch = Patch::new();
     for r in results {
-        patches.extend(r.pending_patches.iter().cloned());
+        for pending in &r.pending_patches {
+            merged_pending_patch.extend(pending.patch().clone());
+        }
+    }
+    if !merged_pending_patch.is_empty() {
+        patches.push(TrackedPatch::new(merged_pending_patch).with_source("agent_loop"));
     }
     let mut state_changed = !patches.is_empty();
     run_ctx.add_thread_patches(patches);
@@ -358,21 +419,10 @@ pub(super) fn apply_tool_results_impl(
     }
 
     // Keep unresolved suspended calls until explicit resolution.
-    let state = run_ctx
-        .snapshot()
-        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let has_persisted_suspended = state
-        .get(SUSPENDED_TOOL_CALLS_STATE_PATH)
-        .and_then(|v| v.get("calls"))
-        .and_then(|v| v.as_object())
-        .is_some_and(|m| !m.is_empty());
-    if !has_persisted_suspended {
-        let patch = clear_all_suspended_calls(&state)?;
-        if !patch.patch().is_empty() {
-            state_changed = true;
-            run_ctx.add_thread_patch(patch);
-        }
-    }
+    //
+    // Do not emit a synthetic "clear suspended calls" patch when there are
+    // no suspended calls in state. That no-op clear generated one redundant
+    // control-state patch per tool execution and inflated patch histories.
 
     let state_snapshot = if state_changed {
         Some(
@@ -538,8 +588,13 @@ pub async fn execute_tools_with_plugins_and_executor(
         run_ctx.add_thread_patches(run_start_patches);
     }
 
+    let replay_executor: Arc<dyn ToolExecutor> = match executor.decision_replay_policy() {
+        DecisionReplayPolicy::BatchAllSuspended => Arc::new(ParallelBatchApprovalToolExecutor),
+        DecisionReplayPolicy::Immediate => Arc::new(ParallelStreamingToolExecutor),
+    };
     let replay_config = AgentConfig {
         plugins: plugins.to_vec(),
+        tool_executor: replay_executor,
         ..AgentConfig::default()
     };
     let replay = super::drain_resuming_tool_calls_and_replay(

@@ -1789,11 +1789,23 @@ impl Tool for DecisionEchoTool {
 }
 
 fn make_decision_test_os(storage: Arc<tirea_store_adapters::MemoryStore>) -> AgentOs {
+    make_decision_test_os_with_mode(storage, None)
+}
+
+fn make_decision_test_os_with_mode(
+    storage: Arc<tirea_store_adapters::MemoryStore>,
+    tool_execution_mode: Option<ToolExecutionMode>,
+) -> AgentOs {
     let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
     tools.insert(
         "echo".to_string(),
         Arc::new(DecisionEchoTool) as Arc<dyn Tool>,
     );
+    let mut def =
+        AgentDefinition::new("gpt-4o-mini").with_plugin_id("decision_terminate_plugin_requested");
+    if let Some(mode) = tool_execution_mode {
+        def = def.with_tool_execution_mode(mode);
+    }
     AgentOs::builder()
         .with_agent_state_store(storage as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_tools(tools)
@@ -1801,11 +1813,7 @@ fn make_decision_test_os(storage: Arc<tirea_store_adapters::MemoryStore>) -> Age
             "decision_terminate_plugin_requested",
             Arc::new(DecisionTerminatePlugin),
         )
-        .with_agent(
-            "a1",
-            AgentDefinition::new("gpt-4o-mini")
-                .with_plugin_id("decision_terminate_plugin_requested"),
-        )
+        .with_agent("a1", def)
         .build()
         .unwrap()
 }
@@ -2279,6 +2287,171 @@ async fn run_stream_initial_decisions_partial_match_keeps_unresolved_suspended_c
     assert!(
         suspended_calls.contains_key("call_waiting"),
         "unresolved call should remain suspended: {suspended_calls:?}"
+    );
+}
+
+#[tokio::test]
+async fn run_stream_batch_approval_mode_waits_for_all_suspended_decisions_before_replay() {
+    use futures::StreamExt;
+    use tirea_store_adapters::MemoryStore;
+
+    let storage = Arc::new(MemoryStore::new());
+    let os = make_decision_test_os_with_mode(
+        storage.clone(),
+        Some(ToolExecutionMode::ParallelBatchApproval),
+    );
+    let thread_id = "t-initial-batch";
+
+    let pending_state = json!({
+        "__suspended_tool_calls": {
+            "calls": {
+                "call_approved": {
+                    "call_id": "call_approved",
+                    "tool_name": "echo",
+                    "suspension": {
+                        "id": "call_approved",
+                        "action": "confirm",
+                        "parameters": { "message": "approve me" }
+                    },
+                    "invocation": {
+                        "call_id": "call_approved",
+                        "tool_name": "echo",
+                        "arguments": { "message": "approve me" },
+                        "origin": {
+                            "type": "tool_call_intercepted",
+                            "backend_call_id": "call_approved",
+                            "backend_tool_name": "echo",
+                            "backend_arguments": { "message": "approve me" }
+                        },
+                        "routing": {
+                            "strategy": "replay_original_tool"
+                        }
+                    }
+                },
+                "call_waiting": {
+                    "call_id": "call_waiting",
+                    "tool_name": "echo",
+                    "suspension": {
+                        "id": "call_waiting",
+                        "action": "confirm",
+                        "parameters": { "message": "still waiting" }
+                    },
+                    "invocation": {
+                        "call_id": "call_waiting",
+                        "tool_name": "echo",
+                        "arguments": { "message": "still waiting" },
+                        "origin": {
+                            "type": "tool_call_intercepted",
+                            "backend_call_id": "call_waiting",
+                            "backend_tool_name": "echo",
+                            "backend_arguments": { "message": "still waiting" }
+                        },
+                        "routing": {
+                            "strategy": "replay_original_tool"
+                        }
+                    }
+                }
+            }
+        }
+    });
+    let thread = Thread::with_initial_state(thread_id, pending_state)
+        .with_message(crate::contracts::thread::Message::user("resume"));
+    storage.create(&thread).await.unwrap();
+
+    let first_run = os
+        .run_stream(RunRequest {
+            agent_id: "a1".to_string(),
+            thread_id: Some(thread_id.to_string()),
+            run_id: Some("run-initial-batch-1".to_string()),
+            parent_run_id: None,
+            resource_id: None,
+            state: None,
+            messages: vec![],
+            initial_decisions: vec![decision_for(
+                "call_approved",
+                crate::contracts::runtime::ResumeDecisionAction::Resume,
+                json!(true),
+            )],
+        })
+        .await
+        .unwrap();
+    let first_events: Vec<_> = first_run.events.collect().await;
+
+    assert!(
+        !first_events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolCallDone { id, .. } if id == "call_approved"
+        )),
+        "batch mode should not replay partially approved suspended calls: {first_events:?}"
+    );
+    assert!(
+        first_events.iter().any(|event| matches!(
+            event,
+            AgentEvent::RunFinish {
+                termination: TerminationReason::Suspended,
+                ..
+            }
+        )),
+        "run should remain suspended while unresolved calls exist: {first_events:?}"
+    );
+
+    let saved_after_first = storage.load(thread_id).await.unwrap().unwrap();
+    let state_after_first = saved_after_first.thread.rebuild_state().unwrap();
+    let calls_after_first = state_after_first
+        .get("__suspended_tool_calls")
+        .and_then(|rt| rt.get("calls"))
+        .and_then(|calls| calls.as_object())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        calls_after_first.contains_key("call_approved")
+            && calls_after_first.contains_key("call_waiting"),
+        "both suspended calls should remain until approvals are complete: {calls_after_first:?}"
+    );
+
+    let second_run = os
+        .run_stream(RunRequest {
+            agent_id: "a1".to_string(),
+            thread_id: Some(thread_id.to_string()),
+            run_id: Some("run-initial-batch-2".to_string()),
+            parent_run_id: None,
+            resource_id: None,
+            state: None,
+            messages: vec![],
+            initial_decisions: vec![decision_for(
+                "call_waiting",
+                crate::contracts::runtime::ResumeDecisionAction::Resume,
+                json!(true),
+            )],
+        })
+        .await
+        .unwrap();
+    let second_events: Vec<_> = second_run.events.collect().await;
+
+    assert!(
+        second_events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolCallDone { id, .. } if id == "call_approved"
+        )),
+        "batch completion should replay call_approved: {second_events:?}"
+    );
+    assert!(
+        second_events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolCallDone { id, .. } if id == "call_waiting"
+        )),
+        "batch completion should replay call_waiting: {second_events:?}"
+    );
+
+    let saved_after_second = storage.load(thread_id).await.unwrap().unwrap();
+    let state_after_second = saved_after_second.thread.rebuild_state().unwrap();
+    assert!(
+        state_after_second
+            .get("__suspended_tool_calls")
+            .and_then(|rt| rt.get("calls"))
+            .and_then(|calls| calls.as_object())
+            .map_or(true, |calls| calls.is_empty()),
+        "all suspended calls should be cleared after full batch approval replay"
     );
 }
 

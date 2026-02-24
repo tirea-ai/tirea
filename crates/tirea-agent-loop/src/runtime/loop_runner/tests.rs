@@ -1247,7 +1247,8 @@ fn test_execute_tools_with_state_changes() {
         let thread = execute_tools(thread, &result, &tools, true).await.unwrap();
 
         assert_eq!(thread.message_count(), 1);
-        assert_eq!(thread.patch_count(), 3);
+        // state patch + merged tool lifecycle patch
+        assert_eq!(thread.patch_count(), 2);
 
         let state = thread.rebuild_state().unwrap();
         assert_eq!(state["counter"], 5);
