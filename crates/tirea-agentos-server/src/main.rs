@@ -8,7 +8,8 @@ use std::sync::Arc;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
 use tirea_agentos::orchestrator::{AgentDefinition, StopConditionSpec, ToolExecutionMode};
 use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder, ModelDefinition};
-use tirea_agentos_server::http::{self, AppState};
+use tirea_agentos_server::service::AppState;
+use tirea_agentos_server::{http, protocol};
 use tirea_contract::tool::context::ToolCallContext;
 use tirea_contract::tool::contract::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_extension_permission::PermissionPlugin;
@@ -315,26 +316,38 @@ async fn main() {
     let read_store: Arc<dyn ThreadReader> = file_store.clone();
     let os = Arc::new(build_os(cfg, args.tensorzero_url, write_store));
 
-    let app = http::router(AppState {
-        os: os.clone(),
-        read_store,
-    });
+    let app = axum::Router::new()
+        .merge(http::health_routes())
+        .merge(http::thread_routes())
+        .nest("/v1/ag-ui", protocol::ag_ui::http::routes())
+        .nest("/v1/ai-sdk", protocol::ai_sdk_v6::http::routes())
+        .with_state(AppState {
+            os: os.clone(),
+            read_store,
+        });
 
     if let Some(nats_url) = args.nats_url.clone() {
-        let os = os.clone();
-        tokio::spawn(async move {
-            let gateway =
-                match tirea_agentos_server::nats::NatsGateway::connect(os, &nats_url).await {
-                    Ok(g) => g,
-                    Err(e) => {
-                        eprintln!("nats connect failed: {}", e);
-                        return;
+        match async_nats::connect(&nats_url).await {
+            Ok(client) => {
+                let os_for_agui = os.clone();
+                let os_for_aisdk = os.clone();
+                let client_for_agui = client.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = protocol::ag_ui::nats::serve(client_for_agui, os_for_agui).await
+                    {
+                        eprintln!("nats ag-ui gateway stopped: {}", e);
                     }
-                };
-            if let Err(e) = gateway.serve().await {
-                eprintln!("nats gateway stopped: {}", e);
+                });
+                tokio::spawn(async move {
+                    if let Err(e) = protocol::ai_sdk_v6::nats::serve(client, os_for_aisdk).await {
+                        eprintln!("nats ai-sdk gateway stopped: {}", e);
+                    }
+                });
             }
-        });
+            Err(e) => {
+                eprintln!("nats connect failed: {}", e);
+            }
+        }
     }
 
     let listener = tokio::net::TcpListener::bind(&args.http_addr)
