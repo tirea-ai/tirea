@@ -6,7 +6,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
-use tirea_agentos::orchestrator::{AgentDefinition, StopConditionSpec, ToolExecutionMode};
+use tirea_agentos::orchestrator::{
+    AgentDefinition, PendingApprovalPolicy, StopConditionSpec, ToolExecutionMode,
+};
 use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder, ModelDefinition};
 use tirea_agentos_server::http::{self, AppState};
 use tirea_contract::tool::context::ToolCallContext;
@@ -49,6 +51,7 @@ struct AgentConfigFile {
     max_rounds: Option<usize>,
     parallel_tools: Option<bool>,
     tool_execution_mode: Option<ToolExecutionModeConfig>,
+    pending_approval_policy: Option<PendingApprovalPolicyConfig>,
     #[serde(default)]
     plugin_ids: Vec<String>,
     #[serde(default)]
@@ -71,6 +74,24 @@ impl From<ToolExecutionModeConfig> for ToolExecutionMode {
                 ToolExecutionMode::ParallelBatchApproval
             }
             ToolExecutionModeConfig::ParallelStreaming => ToolExecutionMode::ParallelStreaming,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum PendingApprovalPolicyConfig {
+    Carry,
+    Strict,
+    AutoCancel,
+}
+
+impl From<PendingApprovalPolicyConfig> for PendingApprovalPolicy {
+    fn from(value: PendingApprovalPolicyConfig) -> Self {
+        match value {
+            PendingApprovalPolicyConfig::Carry => PendingApprovalPolicy::Carry,
+            PendingApprovalPolicyConfig::Strict => PendingApprovalPolicy::Strict,
+            PendingApprovalPolicyConfig::AutoCancel => PendingApprovalPolicy::AutoCancel,
         }
     }
 }
@@ -217,6 +238,7 @@ fn build_os(
             max_rounds: None,
             parallel_tools: None,
             tool_execution_mode: None,
+            pending_approval_policy: None,
             plugin_ids: Vec::new(),
             stop_condition_specs: Vec::new(),
         }],
@@ -258,6 +280,9 @@ fn build_os(
         } else if let Some(parallel) = a.parallel_tools {
             def.parallel_tools = parallel;
             def.tool_execution_mode = None;
+        }
+        if let Some(policy) = a.pending_approval_policy {
+            def.pending_approval_policy = policy.into();
         }
         def.plugin_ids = a.plugin_ids;
         def.stop_condition_specs = a.stop_condition_specs;

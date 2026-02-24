@@ -28,6 +28,8 @@ use crate::{build_context_addendum, RunAgentInput};
 pub const AGUI_CONFIG_KEY: &str = "agui_config";
 /// Run-config key carrying AG-UI request `forwardedProps`.
 pub const AGUI_FORWARDED_PROPS_KEY: &str = "agui_forwarded_props";
+/// Run-config key controlling pending approval behavior on new user input.
+pub const AGUI_PENDING_APPROVAL_POLICY_KEY: &str = "pending_approval_policy";
 
 /// Apply AG-UI–specific extensions to a [`ResolvedRun`].
 ///
@@ -46,6 +48,7 @@ pub fn apply_agui_extensions(resolved: &mut ResolvedRun, request: &RunAgentInput
     }
     if let Some(config) = request.config.clone() {
         apply_agui_tool_execution_mode_override(resolved, &config);
+        apply_agui_pending_approval_policy_override(resolved, &config);
         apply_agui_chat_options_overrides(resolved, &config);
         let _ = resolved.run_config.set(AGUI_CONFIG_KEY, config);
     }
@@ -105,6 +108,27 @@ fn apply_agui_tool_execution_mode_override(resolved: &mut ResolvedRun, config: &
             resolved.config.tool_executor = Arc::new(ParallelStreamingToolExecutor);
         }
         _ => {}
+    }
+}
+
+fn apply_agui_pending_approval_policy_override(resolved: &mut ResolvedRun, config: &Value) {
+    let policy = config
+        .get("pendingApprovalPolicy")
+        .or_else(|| config.get("pending_approval_policy"))
+        .and_then(Value::as_str)
+        .map(|value| value.trim().to_ascii_lowercase());
+
+    let run_config_value = match policy.as_deref() {
+        Some("carry") => Some("carry"),
+        Some("strict") => Some("strict"),
+        Some("auto_cancel") => Some("auto_cancel"),
+        _ => None,
+    };
+
+    if let Some(value) = run_config_value {
+        let _ = resolved
+            .run_config
+            .set(AGUI_PENDING_APPROVAL_POLICY_KEY, value);
     }
 }
 
@@ -800,6 +824,22 @@ mod tests {
         assert_eq!(
             resolved.config.tool_executor.name(),
             "parallel_batch_approval"
+        );
+    }
+
+    #[test]
+    fn applies_pending_approval_policy_override_from_agui_config() {
+        let mut request = RunAgentInput::new("t1", "r1").with_message(Message::user("hello"));
+        request.config = Some(json!({
+            "pendingApprovalPolicy": "auto_cancel"
+        }));
+
+        let mut resolved = empty_resolved();
+        apply_agui_extensions(&mut resolved, &request);
+
+        assert_eq!(
+            resolved.run_config.value(AGUI_PENDING_APPROVAL_POLICY_KEY),
+            Some(&json!("auto_cancel"))
         );
     }
 

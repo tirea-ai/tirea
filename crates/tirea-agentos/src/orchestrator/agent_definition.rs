@@ -1,5 +1,5 @@
 use super::stop_policy_plugin::StopConditionSpec;
-use crate::contracts::runtime::ToolExecutor;
+use crate::contracts::runtime::{PendingApprovalPolicy, ToolExecutor};
 use crate::runtime::loop_runner::{
     AgentConfig, LlmRetryPolicy, ParallelBatchApprovalToolExecutor, ParallelStreamingToolExecutor,
     ParallelToolExecutor, SequentialToolExecutor,
@@ -14,6 +14,9 @@ pub enum ToolExecutionMode {
     ParallelBatchApproval,
     ParallelStreaming,
 }
+
+/// Run-config key for pending approval policy.
+pub const RUN_CONFIG_PENDING_APPROVAL_POLICY_KEY: &str = "pending_approval_policy";
 
 /// Agent composition definition owned by AgentOS orchestration.
 ///
@@ -36,6 +39,8 @@ pub struct AgentDefinition {
     ///
     /// When set, this takes precedence over `parallel_tools`.
     pub tool_execution_mode: Option<ToolExecutionMode>,
+    /// Handling policy for unresolved approvals when receiving new user input.
+    pub pending_approval_policy: PendingApprovalPolicy,
     /// Chat options for the LLM.
     pub chat_options: Option<ChatOptions>,
     /// Fallback model ids used when the primary model fails.
@@ -73,6 +78,7 @@ impl Default for AgentDefinition {
             max_rounds: 10,
             parallel_tools: true,
             tool_execution_mode: None,
+            pending_approval_policy: PendingApprovalPolicy::Carry,
             chat_options: Some(
                 ChatOptions::default()
                     .with_capture_usage(true)
@@ -106,6 +112,7 @@ impl std::fmt::Debug for AgentDefinition {
             .field("max_rounds", &self.max_rounds)
             .field("parallel_tools", &self.parallel_tools)
             .field("tool_execution_mode", &self.tool_execution_mode)
+            .field("pending_approval_policy", &self.pending_approval_policy)
             .field("chat_options", &self.chat_options)
             .field("fallback_models", &self.fallback_models)
             .field("llm_retry_policy", &self.llm_retry_policy)
@@ -147,6 +154,12 @@ impl AgentDefinition {
     #[must_use]
     pub fn with_tool_execution_mode(mut self, mode: ToolExecutionMode) -> Self {
         self.tool_execution_mode = Some(mode);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pending_approval_policy(mut self, policy: PendingApprovalPolicy) -> Self {
+        self.pending_approval_policy = policy;
         self
     }
 
@@ -235,6 +248,7 @@ impl AgentDefinition {
             system_prompt: self.system_prompt,
             max_rounds: self.max_rounds,
             tool_executor,
+            pending_approval_policy: self.pending_approval_policy,
             chat_options: self.chat_options,
             fallback_models: self.fallback_models,
             llm_retry_policy: self.llm_retry_policy,
@@ -279,5 +293,20 @@ mod tests {
             .with_tool_execution_mode(ToolExecutionMode::Sequential)
             .into_loop_config(Vec::new());
         assert_eq!(config.tool_executor.name(), "sequential");
+    }
+
+    #[test]
+    fn pending_approval_policy_defaults_to_carry() {
+        assert_eq!(
+            AgentDefinition::default().pending_approval_policy,
+            PendingApprovalPolicy::Carry
+        );
+    }
+
+    #[test]
+    fn pending_approval_policy_builder_sets_value() {
+        let def =
+            AgentDefinition::default().with_pending_approval_policy(PendingApprovalPolicy::Strict);
+        assert_eq!(def.pending_approval_policy, PendingApprovalPolicy::Strict);
     }
 }

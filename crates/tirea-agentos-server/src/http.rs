@@ -7,7 +7,7 @@ use axum::{Json, Router};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -16,8 +16,11 @@ use tirea_agentos::contracts::storage::{
     ThreadStore,
 };
 use tirea_agentos::contracts::thread::{Thread, Visibility};
-use tirea_agentos::contracts::{AgentEvent, ToolCallDecision};
-use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError, RunStream};
+use tirea_agentos::contracts::{AgentEvent, SuspendedCall, ToolCallDecision};
+use tirea_agentos::orchestrator::{
+    AgentOs, AgentOsRunError, PendingApprovalPolicy, RunStream,
+    RUN_CONFIG_PENDING_APPROVAL_POLICY_KEY,
+};
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
 use tirea_contract::{ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder};
 use tirea_protocol_ag_ui::{
@@ -120,6 +123,9 @@ pub enum ApiError {
     #[error("bad request: {0}")]
     BadRequest(String),
 
+    #[error("conflict: {0}")]
+    Conflict(String),
+
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -130,6 +136,7 @@ impl IntoResponse for ApiError {
             ApiError::AgentNotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
             ApiError::ThreadNotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
             ApiError::BadRequest(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            ApiError::Conflict(_) => (StatusCode::CONFLICT, self.to_string()),
             ApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
         };
         let body = Json(serde_json::json!({ "error": msg }));
@@ -463,6 +470,129 @@ async fn try_forward_decisions_to_active_run(
     true
 }
 
+fn pending_approval_policy_from_run_config(
+    run_config: &tirea_contract::RunConfig,
+    default_policy: PendingApprovalPolicy,
+) -> PendingApprovalPolicy {
+    match run_config
+        .value(RUN_CONFIG_PENDING_APPROVAL_POLICY_KEY)
+        .and_then(Value::as_str)
+        .map(|value| value.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("strict") => PendingApprovalPolicy::Strict,
+        Some("auto_cancel") => PendingApprovalPolicy::AutoCancel,
+        Some("carry") => PendingApprovalPolicy::Carry,
+        _ => default_policy,
+    }
+}
+
+fn now_unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64)
+}
+
+async fn load_suspended_calls_for_thread(
+    st: &AppState,
+    thread_id: &str,
+) -> Result<HashMap<String, SuspendedCall>, ApiError> {
+    let Some(store) = st.os.agent_state_store() else {
+        return Ok(HashMap::new());
+    };
+
+    let Some(head) = store
+        .load(thread_id)
+        .await
+        .map_err(|err| ApiError::Internal(err.to_string()))?
+    else {
+        return Ok(HashMap::new());
+    };
+
+    let state = head
+        .thread
+        .rebuild_state()
+        .map_err(|err| ApiError::Internal(err.to_string()))?;
+    Ok(tirea_contract::runtime::control::suspended_calls_from_state(&state))
+}
+
+fn decision_targets_to_call_ids(
+    decisions: &[ToolCallDecision],
+    suspended: &HashMap<String, SuspendedCall>,
+) -> HashSet<String> {
+    let mut call_ids = HashSet::new();
+    for decision in decisions {
+        if suspended.contains_key(&decision.target_id) {
+            call_ids.insert(decision.target_id.clone());
+            continue;
+        }
+        if let Some((call_id, _)) = suspended.iter().find(|(_, call)| {
+            call.suspension.id == decision.target_id
+                || call.invocation.call_id == decision.target_id
+        }) {
+            call_ids.insert(call_id.clone());
+        }
+    }
+    call_ids
+}
+
+async fn pending_approval_policy_decisions_for_user_input(
+    st: &AppState,
+    thread_id: &str,
+    has_user_input: bool,
+    incoming_decisions: &[ToolCallDecision],
+    policy: PendingApprovalPolicy,
+) -> Result<Vec<ToolCallDecision>, ApiError> {
+    if !has_user_input {
+        return Ok(Vec::new());
+    }
+
+    let suspended = load_suspended_calls_for_thread(st, thread_id).await?;
+    if suspended.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let decided_call_ids = decision_targets_to_call_ids(incoming_decisions, &suspended);
+    let mut unresolved_call_ids: Vec<String> = suspended
+        .keys()
+        .filter(|call_id| !decided_call_ids.contains(*call_id))
+        .cloned()
+        .collect();
+    unresolved_call_ids.sort();
+
+    if unresolved_call_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    match policy {
+        PendingApprovalPolicy::Carry => Ok(Vec::new()),
+        PendingApprovalPolicy::Strict => Err(ApiError::Conflict(format!(
+            "pending approvals must be resolved before new user input (unresolved: {})",
+            unresolved_call_ids.join(", ")
+        ))),
+        PendingApprovalPolicy::AutoCancel => {
+            let now = now_unix_millis();
+            let decisions = unresolved_call_ids
+                .into_iter()
+                .map(|call_id| {
+                    let mut decision = ToolCallDecision::cancel(
+                        call_id.clone(),
+                        serde_json::json!({
+                            "approved": false,
+                            "reason": "superseded_by_new_user_input"
+                        }),
+                        Some("superseded by new user input".to_string()),
+                        now,
+                    );
+                    decision.decision_id = format!("auto_cancel:{call_id}:{now}");
+                    decision
+                })
+                .collect();
+            Ok(decisions)
+        }
+    }
+}
+
 async fn run_ai_sdk_sse(
     State(st): State<AppState>,
     Path(agent_id): Path<String>,
@@ -508,12 +638,26 @@ async fn run_ai_sdk_sse(
         }
     }
 
-    sync_ai_sdk_thread_snapshot(&st, &req).await?;
-
     let mut resolved = st.os.resolve(&agent_id).map_err(AgentOsRunError::from)?;
     apply_ai_sdk_extensions(&mut resolved, &req);
+    let pending_policy = pending_approval_policy_from_run_config(
+        &resolved.run_config,
+        resolved.config.pending_approval_policy,
+    );
+    let additional_decisions = pending_approval_policy_decisions_for_user_input(
+        &st,
+        &req.thread_id,
+        req.has_user_input(),
+        &req.suspension_decisions(),
+        pending_policy,
+    )
+    .await?;
+
+    sync_ai_sdk_thread_snapshot(&st, &req).await?;
+
     let mut run_request = AiSdkV6InputAdapter::to_run_request(agent_id.clone(), req);
     run_request.messages.clear();
+    run_request.initial_decisions.extend(additional_decisions);
     let cancellation_token = RunCancellationToken::new();
     let prepared = st.os.prepare_run(run_request, resolved).await?;
     let run =
@@ -566,7 +710,20 @@ async fn run_ag_ui_sse(
 
     let mut resolved = st.os.resolve(&agent_id).map_err(AgentOsRunError::from)?;
     apply_agui_extensions(&mut resolved, &req);
-    let run_request = AgUiInputAdapter::to_run_request(agent_id.clone(), req);
+    let pending_policy = pending_approval_policy_from_run_config(
+        &resolved.run_config,
+        resolved.config.pending_approval_policy,
+    );
+    let additional_decisions = pending_approval_policy_decisions_for_user_input(
+        &st,
+        &req.thread_id,
+        req.has_user_input(),
+        &req.suspension_decisions(),
+        pending_policy,
+    )
+    .await?;
+    let mut run_request = AgUiInputAdapter::to_run_request(agent_id.clone(), req);
+    run_request.initial_decisions.extend(additional_decisions);
     let cancellation_token = RunCancellationToken::new();
     let prepared = st.os.prepare_run(run_request, resolved).await?;
     let run =

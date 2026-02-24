@@ -3288,6 +3288,145 @@ async fn test_ag_ui_active_run_with_user_input_and_decision_starts_new_run() {
 }
 
 #[tokio::test]
+async fn test_ag_ui_strict_pending_approval_policy_rejects_new_user_input() {
+    let storage = Arc::new(MemoryStore::new());
+    storage
+        .save(&pending_permission_frontend_thread(
+            "pending-strict-ag-ui",
+            "strict-payload",
+        ))
+        .await
+        .unwrap();
+    let seeded = storage
+        .load_thread("pending-strict-ag-ui")
+        .await
+        .unwrap()
+        .unwrap();
+    let seeded_state = seeded.rebuild_state().unwrap();
+    assert!(
+        seeded_state
+            .get("__suspended_tool_calls")
+            .and_then(|v| v.get("calls"))
+            .and_then(Value::as_object)
+            .is_some_and(|calls| !calls.is_empty()),
+        "seeded strict test thread must have pending calls"
+    );
+
+    let os = Arc::new(make_os_with_storage(storage.clone()));
+    let app = make_app(os, storage.clone());
+
+    let payload = json!({
+        "threadId": "pending-strict-ag-ui",
+        "runId": "run-strict-reject",
+        "messages": [{ "role": "user", "content": "continue without approval" }],
+        "tools": [],
+        "config": {
+            "pendingApprovalPolicy": "strict"
+        }
+    });
+    let (status, body) = post_json(app.clone(), "/v1/ag-ui/agents/test/runs", payload).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|msg| msg.contains("pending approvals")),
+        "strict policy should return conflict with pending approvals: {body:?}"
+    );
+
+    let saved = storage
+        .load_thread("pending-strict-ag-ui")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !saved
+            .messages
+            .iter()
+            .any(|m| m.role == tirea_agentos::contracts::thread::Role::User
+                && m.content.contains("continue without approval")),
+        "strict rejection must not append new user input into thread"
+    );
+}
+
+#[tokio::test]
+async fn test_ag_ui_auto_cancel_pending_approval_policy_cancels_unresolved_before_new_input() {
+    let storage = Arc::new(MemoryStore::new());
+    storage
+        .save(&pending_permission_frontend_thread(
+            "pending-auto-cancel-ag-ui",
+            "auto-cancel-payload",
+        ))
+        .await
+        .unwrap();
+    let seeded = storage
+        .load_thread("pending-auto-cancel-ag-ui")
+        .await
+        .unwrap()
+        .unwrap();
+    let seeded_state = seeded.rebuild_state().unwrap();
+    assert!(
+        seeded_state
+            .get("__suspended_tool_calls")
+            .and_then(|v| v.get("calls"))
+            .and_then(Value::as_object)
+            .is_some_and(|calls| !calls.is_empty()),
+        "seeded auto-cancel test thread must have pending calls"
+    );
+
+    let os = Arc::new(make_os_with_storage(storage.clone()));
+    let app = make_app(os, storage.clone());
+
+    let payload = json!({
+        "threadId": "pending-auto-cancel-ag-ui",
+        "runId": "run-auto-cancel",
+        "messages": [{ "role": "user", "content": "continue after cancel" }],
+        "tools": [],
+        "config": {
+            "pendingApprovalPolicy": "auto_cancel"
+        }
+    });
+    let (status, body) = post_sse_text(app, "/v1/ag-ui/agents/test/runs", payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("RUN_FINISHED"),
+        "auto-cancel policy should continue new run and finish: {body}"
+    );
+
+    let saved = storage
+        .load_thread("pending-auto-cancel-ag-ui")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        saved.messages.iter().any(|m| {
+            m.role == tirea_agentos::contracts::thread::Role::Tool
+                && m.tool_call_id.as_deref() == Some("call_1")
+                && (m.content.contains("superseded by new user input")
+                    || m.content.contains("denied"))
+        }),
+        "auto-cancel should append cancellation tool result for pending approval"
+    );
+    assert!(
+        !saved.messages.iter().any(|m| {
+            m.role == tirea_agentos::contracts::thread::Role::Tool
+                && m.tool_call_id.as_deref() == Some("call_1")
+                && m.content.contains("auto-cancel-payload")
+        }),
+        "auto-cancel should not replay original pending backend tool call"
+    );
+
+    let rebuilt = saved.rebuild_state().unwrap();
+    assert!(
+        rebuilt
+            .get("__suspended_tool_calls")
+            .and_then(|rt| rt.get("calls"))
+            .and_then(|v| v.as_object())
+            .map_or(true, |calls| calls.is_empty()),
+        "auto-cancel should clear suspended calls before continuing new input"
+    );
+}
+
+#[tokio::test]
 async fn test_ag_ui_decision_only_without_active_run_starts_new_run() {
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os_with_storage(storage.clone()));
