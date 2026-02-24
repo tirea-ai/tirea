@@ -35,10 +35,7 @@ mod wiring;
 #[cfg(test)]
 mod tests;
 
-pub use crate::contracts::runtime::PendingApprovalPolicy;
-pub use agent_definition::{
-    AgentDefinition, ToolExecutionMode, RUN_CONFIG_PENDING_APPROVAL_POLICY_KEY,
-};
+pub use agent_definition::{AgentDefinition, ToolExecutionMode};
 use agent_tools::{
     AgentRecoveryPlugin, AgentRunManager, AgentRunTool, AgentStopTool, AgentToolsPlugin,
 };

@@ -119,18 +119,6 @@ pub enum DecisionReplayPolicy {
     BatchAllSuspended,
 }
 
-/// Policy for handling unresolved approvals when new user input arrives.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PendingApprovalPolicy {
-    /// Keep unresolved approvals and continue with new input.
-    Carry,
-    /// Reject new input until all unresolved approvals are handled.
-    Strict,
-    /// Auto-cancel unresolved approvals before processing new input.
-    AutoCancel,
-}
-
 /// Strategy abstraction for tool execution.
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {

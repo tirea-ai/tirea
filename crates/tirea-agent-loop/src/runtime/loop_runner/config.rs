@@ -1,7 +1,7 @@
 use super::tool_exec::{ParallelToolExecutor, SequentialToolExecutor};
 use super::AgentLoopError;
 use crate::contracts::plugin::AgentPlugin;
-use crate::contracts::runtime::{LlmExecutor, PendingApprovalPolicy, ToolExecutor};
+use crate::contracts::runtime::{LlmExecutor, ToolExecutor};
 use crate::contracts::tool::{Tool, ToolDescriptor};
 use crate::contracts::RunContext;
 use async_trait::async_trait;
@@ -146,8 +146,6 @@ pub struct AgentConfig {
     pub max_rounds: usize,
     /// Tool execution strategy (parallel, sequential, or custom).
     pub tool_executor: Arc<dyn ToolExecutor>,
-    /// Handling policy for unresolved approvals when new user input arrives.
-    pub pending_approval_policy: PendingApprovalPolicy,
     /// Chat options for the LLM.
     pub chat_options: Option<ChatOptions>,
     /// Fallback model ids used when the primary model fails.
@@ -177,7 +175,6 @@ impl Default for AgentConfig {
             system_prompt: String::new(),
             max_rounds: 10,
             tool_executor: Arc::new(ParallelToolExecutor),
-            pending_approval_policy: PendingApprovalPolicy::Carry,
             chat_options: Some(
                 ChatOptions::default()
                     .with_capture_usage(true)
@@ -204,7 +201,6 @@ impl std::fmt::Debug for AgentConfig {
             )
             .field("max_rounds", &self.max_rounds)
             .field("tool_executor", &self.tool_executor.name())
-            .field("pending_approval_policy", &self.pending_approval_policy)
             .field("chat_options", &self.chat_options)
             .field("fallback_models", &self.fallback_models)
             .field("llm_retry_policy", &self.llm_retry_policy)
