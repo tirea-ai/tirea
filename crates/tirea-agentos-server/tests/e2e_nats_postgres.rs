@@ -15,9 +15,19 @@ use tirea_agentos::contracts::storage::{
     ThreadReader, ThreadStore, ThreadWriter, VersionPrecondition,
 };
 use tirea_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
-use tirea_agentos_server::http::{router, AppState};
+use tirea_agentos_server::service::AppState;
+use tirea_agentos_server::{http, protocol};
 use tirea_store_adapters::{NatsBufferedThreadWriter, PostgresStore};
 use tower::ServiceExt;
+
+fn compose_http_app(state: AppState) -> axum::Router {
+    axum::Router::new()
+        .merge(http::health_routes())
+        .merge(http::thread_routes())
+        .nest("/v1/ag-ui", protocol::ag_ui::http::routes())
+        .nest("/v1/ai-sdk", protocol::ai_sdk_v6::http::routes())
+        .with_state(state)
+}
 
 struct TerminatePluginRequestedPlugin;
 
@@ -264,7 +274,7 @@ async fn e2e_http_ai_sdk_persists_through_nats_buffered_postgres() {
 
     let os = Arc::new(make_os(write_store));
     let read_store: Arc<dyn ThreadReader> = postgres_store.clone();
-    let app = router(AppState { os, read_store });
+    let app = compose_http_app(AppState { os, read_store });
 
     let payload =
         ai_sdk_messages_payload("np-e2e-thread", "hello np", Some("np-run-1".to_string()));
@@ -417,7 +427,7 @@ async fn e2e_http_same_thread_concurrent_runs_preserve_all_user_messages() {
 
     let os = Arc::new(make_os(write_store));
     let read_store: Arc<dyn ThreadReader> = postgres_store.clone();
-    let app = router(AppState { os, read_store });
+    let app = compose_http_app(AppState { os, read_store });
 
     let total = 8usize;
     let mut handles = Vec::with_capacity(total);

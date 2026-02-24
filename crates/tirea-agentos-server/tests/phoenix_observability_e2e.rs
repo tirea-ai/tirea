@@ -12,8 +12,18 @@ use tirea_agentos::contracts::storage::ThreadStore;
 use tirea_agentos::extensions::observability::{InMemorySink, LLMMetryPlugin};
 use tirea_agentos::orchestrator::AgentDefinition;
 use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder, ModelDefinition};
-use tirea_agentos_server::http::{router, AppState};
+use tirea_agentos_server::service::AppState;
+use tirea_agentos_server::{http, protocol};
 use tower::ServiceExt;
+
+fn compose_http_app(state: AppState) -> axum::Router {
+    axum::Router::new()
+        .merge(http::health_routes())
+        .merge(http::thread_routes())
+        .nest("/v1/ag-ui", protocol::ag_ui::http::routes())
+        .nest("/v1/ai-sdk", protocol::ai_sdk_v6::http::routes())
+        .with_state(state)
+}
 
 fn make_os(
     write_store: Arc<dyn ThreadStore>,
@@ -111,7 +121,7 @@ async fn e2e_agentos_server_exports_llm_observability_to_phoenix() {
         &observed_model,
         provider_name,
     ));
-    let app = router(AppState {
+    let app = compose_http_app(AppState {
         os,
         read_store: storage.clone(),
     });
@@ -211,7 +221,7 @@ async fn e2e_agentos_server_exports_llm_error_observability_to_phoenix() {
         &observed_model,
         provider_name,
     ));
-    let app = router(AppState {
+    let app = compose_http_app(AppState {
         os,
         read_store: storage.clone(),
     });

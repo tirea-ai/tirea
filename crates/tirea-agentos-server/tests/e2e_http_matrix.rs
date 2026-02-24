@@ -7,9 +7,19 @@ use tirea_agentos::contracts::plugin::phase::BeforeInferenceContext;
 use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::storage::ThreadReader;
 use tirea_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
-use tirea_agentos_server::http::{router, AppState};
+use tirea_agentos_server::service::AppState;
+use tirea_agentos_server::{http, protocol};
 use tirea_store_adapters::MemoryStore;
 use tower::ServiceExt;
+
+fn compose_http_app(state: AppState) -> axum::Router {
+    axum::Router::new()
+        .merge(http::health_routes())
+        .merge(http::thread_routes())
+        .nest("/v1/ag-ui", protocol::ag_ui::http::routes())
+        .nest("/v1/ai-sdk", protocol::ai_sdk_v6::http::routes())
+        .with_state(state)
+}
 
 struct TerminatePluginRequestedPlugin;
 
@@ -110,7 +120,7 @@ async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, serde_json::Valu
 async fn e2e_http_matrix_96() {
     let store = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(store.clone()));
-    let app = router(AppState {
+    let app = compose_http_app(AppState {
         os,
         read_store: store.clone(),
     });
@@ -217,7 +227,7 @@ async fn e2e_http_matrix_96() {
 async fn e2e_http_concurrent_48_all_persisted() {
     let store = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(store.clone()));
-    let app = router(AppState {
+    let app = compose_http_app(AppState {
         os,
         read_store: store.clone(),
     });
@@ -291,7 +301,7 @@ async fn e2e_http_concurrent_48_all_persisted() {
 async fn e2e_http_multiturn_history_endpoints_are_consistent() {
     let store = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(store.clone()));
-    let app = router(AppState {
+    let app = compose_http_app(AppState {
         os,
         read_store: store.clone(),
     });
@@ -348,7 +358,7 @@ async fn e2e_http_multiturn_history_endpoints_are_consistent() {
 async fn e2e_http_ai_sdk_large_payload_roundtrip() {
     let store = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(store.clone()));
-    let app = router(AppState {
+    let app = compose_http_app(AppState {
         os,
         read_store: store.clone(),
     });
@@ -383,7 +393,7 @@ async fn e2e_http_ai_sdk_large_payload_roundtrip() {
 async fn e2e_http_mixed_large_payload_concurrency_64() {
     let store = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(store.clone()));
-    let app = router(AppState {
+    let app = compose_http_app(AppState {
         os,
         read_store: store.clone(),
     });

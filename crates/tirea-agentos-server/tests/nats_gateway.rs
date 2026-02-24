@@ -1,8 +1,7 @@
-//! Integration tests for the NATS gateway using testcontainers.
+//! Integration tests for NATS protocol services using testcontainers.
 //!
 //! These tests spin up a real NATS server in Docker and verify that
-//! `NatsGateway::serve()` correctly handles AG-UI and AI SDK requests
-//! published over NATS.
+//! explicit AG-UI and AI SDK NATS services correctly handle requests.
 //!
 //! Requires Docker to be running. Run with:
 //! ```bash
@@ -20,7 +19,7 @@ use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
 use tirea_agentos::orchestrator::AgentDefinition;
 use tirea_agentos::orchestrator::AgentOsBuilder;
-use tirea_agentos_server::nats::NatsGateway;
+use tirea_agentos_server::protocol;
 use tirea_store_adapters::MemoryStore;
 
 struct TerminatePluginRequestedPlugin;
@@ -71,19 +70,11 @@ async fn start_nats() -> Option<(testcontainers::ContainerAsync<Nats>, String)> 
     Some((container, url))
 }
 
-/// Spawn the gateway and return the NATS client for publishing test requests.
+/// Spawn protocol services and return the NATS client for publishing test requests.
 async fn setup_gateway(nats_url: &str) -> (Arc<MemoryStore>, async_nats::Client) {
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(storage.clone()));
-
-    let gateway = NatsGateway::connect(os, nats_url)
-        .await
-        .expect("failed to connect gateway to NATS");
-
-    // Spawn serve in background — it loops until subscriptions close.
-    tokio::spawn(async move {
-        let _ = gateway.serve().await;
-    });
+    spawn_protocol_services(nats_url, os).await;
 
     // Give the gateway a moment to subscribe.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -100,12 +91,27 @@ async fn spawn_gateway_with_storage(
     storage: Arc<MemoryStore>,
 ) -> tokio::task::JoinHandle<()> {
     let os = Arc::new(make_os(storage));
-    let gateway = NatsGateway::connect(os, nats_url)
-        .await
-        .expect("failed to connect gateway to NATS");
+    let nats_url = nats_url.to_string();
     tokio::spawn(async move {
-        let _ = gateway.serve().await;
+        spawn_protocol_services(&nats_url, os).await;
     })
+}
+
+async fn spawn_protocol_services(nats_url: &str, os: Arc<tirea_agentos::orchestrator::AgentOs>) {
+    let client = async_nats::connect(nats_url)
+        .await
+        .expect("failed to connect protocol service to NATS");
+    let agui_client = client.clone();
+    let aisdk_client = client.clone();
+    let os_for_agui = os.clone();
+    let os_for_aisdk = os.clone();
+
+    tokio::spawn(async move {
+        let _ = protocol::ag_ui::nats::serve(agui_client, os_for_agui).await;
+    });
+    tokio::spawn(async move {
+        let _ = protocol::ai_sdk_v6::nats::serve(aisdk_client, os_for_aisdk).await;
+    });
 }
 
 async fn publish_agui_and_collect(

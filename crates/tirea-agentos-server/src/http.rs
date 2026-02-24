@@ -7,7 +7,6 @@ use serde::Deserialize;
 use tirea_agentos::contracts::storage::{MessagePage, ThreadListPage, ThreadListQuery};
 use tirea_agentos::contracts::thread::Thread;
 
-use crate::protocol;
 use crate::service::{parse_message_query, ApiError, MessageQueryParams};
 
 pub use crate::service::AppState;
@@ -32,22 +31,6 @@ pub fn thread_routes() -> Router<AppState> {
         .route(THREADS_PATH, get(list_threads))
         .route(THREAD_PATH, get(get_thread))
         .route(THREAD_MESSAGES_PATH, get(get_thread_messages))
-}
-
-/// Combined default router.
-///
-/// For full control, assemble routes explicitly in application code:
-/// - `health_routes()`
-/// - `thread_routes()`
-/// - `protocol::ag_ui::http::routes()`
-/// - `protocol::ai_sdk_v6::http::routes()`
-pub fn router(state: AppState) -> Router {
-    Router::new()
-        .merge(health_routes())
-        .merge(thread_routes())
-        .nest("/v1/ag-ui", protocol::ag_ui::http::routes())
-        .nest("/v1/ai-sdk", protocol::ai_sdk_v6::http::routes())
-        .with_state(state)
 }
 
 async fn health() -> impl IntoResponse {

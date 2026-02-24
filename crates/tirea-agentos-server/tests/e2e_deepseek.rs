@@ -15,9 +15,19 @@ use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
 use tirea_agentos::contracts::tool::Tool;
 use tirea_agentos::orchestrator::AgentDefinition;
 use tirea_agentos::orchestrator::AgentOsBuilder;
-use tirea_agentos_server::http::{router, AppState};
+use tirea_agentos_server::service::AppState;
+use tirea_agentos_server::{http, protocol};
 use tirea_store_adapters::MemoryStore;
 use tower::ServiceExt;
+
+fn compose_http_app(state: AppState) -> axum::Router {
+    axum::Router::new()
+        .merge(http::health_routes())
+        .merge(http::thread_routes())
+        .nest("/v1/ag-ui", protocol::ag_ui::http::routes())
+        .nest("/v1/ai-sdk", protocol::ai_sdk_v6::http::routes())
+        .with_state(state)
+}
 
 mod common;
 
@@ -138,7 +148,7 @@ async fn e2e_ai_sdk_sse_with_deepseek() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(storage.clone()));
-    let app = router(AppState {
+    let app = compose_http_app(AppState {
         os,
         read_store: storage.clone(),
     });
@@ -195,7 +205,7 @@ async fn e2e_ag_ui_sse_with_deepseek() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(storage.clone()));
-    let app = router(AppState {
+    let app = compose_http_app(AppState {
         os,
         read_store: storage.clone(),
     });
@@ -250,7 +260,7 @@ async fn e2e_ai_sdk_client_disconnect_cancels_inflight_stream() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(storage.clone()));
-    let app = router(AppState {
+    let app = compose_http_app(AppState {
         os,
         read_store: storage.clone(),
     });
@@ -337,7 +347,7 @@ async fn e2e_ai_sdk_tool_call_with_deepseek() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_tool_os(storage.clone()));
-    let app = router(AppState {
+    let app = compose_http_app(AppState {
         os,
         read_store: storage.clone(),
     });
@@ -391,7 +401,7 @@ async fn e2e_ag_ui_tool_call_with_deepseek() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_tool_os(storage.clone()));
-    let app = router(AppState {
+    let app = compose_http_app(AppState {
         os,
         read_store: storage.clone(),
     });
@@ -461,7 +471,7 @@ async fn e2e_ai_sdk_multiturn_with_deepseek() {
     let os = Arc::new(make_multiturn_os(storage.clone()));
 
     // Turn 1: ask the agent to remember a number.
-    let app1 = router(AppState {
+    let app1 = compose_http_app(AppState {
         os: os.clone(),
         read_store: storage.clone(),
     });
@@ -496,7 +506,7 @@ async fn e2e_ai_sdk_multiturn_with_deepseek() {
     );
 
     // Turn 2: AI SDK client sends full message history.
-    let app2 = router(AppState {
+    let app2 = compose_http_app(AppState {
         os: os.clone(),
         read_store: storage.clone(),
     });
@@ -561,7 +571,7 @@ async fn e2e_ai_sdk_finish_max_rounds_with_deepseek() {
             .expect("failed to build limited AgentOs"),
     );
 
-    let app = router(AppState {
+    let app = compose_http_app(AppState {
         os,
         read_store: storage.clone(),
     });
@@ -620,7 +630,7 @@ async fn e2e_ai_sdk_multistep_tool_with_deepseek() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_tool_os(storage.clone()));
-    let app = router(AppState {
+    let app = compose_http_app(AppState {
         os,
         read_store: storage.clone(),
     });
@@ -709,7 +719,7 @@ async fn e2e_ag_ui_multiturn_with_deepseek() {
     let os = Arc::new(make_multiturn_os(storage.clone()));
 
     // Turn 1.
-    let app1 = router(AppState {
+    let app1 = compose_http_app(AppState {
         os: os.clone(),
         read_store: storage.clone(),
     });
@@ -738,7 +748,7 @@ async fn e2e_ag_ui_multiturn_with_deepseek() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Turn 2: AG-UI sends full message history from client.
-    let app2 = router(AppState {
+    let app2 = compose_http_app(AppState {
         os: os.clone(),
         read_store: storage.clone(),
     });
@@ -783,7 +793,7 @@ async fn e2e_ag_ui_frontend_tools_with_deepseek() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(storage.clone()));
-    let app = router(AppState {
+    let app = compose_http_app(AppState {
         os,
         read_store: storage.clone(),
     });
@@ -858,7 +868,7 @@ async fn e2e_ag_ui_context_readable_with_deepseek() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(storage.clone()));
-    let app = router(AppState {
+    let app = compose_http_app(AppState {
         os,
         read_store: storage.clone(),
     });
@@ -935,7 +945,7 @@ async fn e2e_ag_ui_run_finished_max_rounds_with_deepseek() {
             .expect("failed to build limited AgentOs"),
     );
 
-    let app = router(AppState {
+    let app = compose_http_app(AppState {
         os,
         read_store: storage.clone(),
     });
@@ -989,7 +999,7 @@ async fn e2e_ag_ui_multistep_tool_with_deepseek() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_tool_os(storage.clone()));
-    let app = router(AppState {
+    let app = compose_http_app(AppState {
         os,
         read_store: storage.clone(),
     });
