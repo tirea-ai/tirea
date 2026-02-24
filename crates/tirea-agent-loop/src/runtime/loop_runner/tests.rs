@@ -4320,13 +4320,13 @@ async fn test_run_loop_terminate_plugin_requested_emits_run_end_phase() {
 }
 
 #[tokio::test]
-async fn test_run_loop_legacy_run_start_outbox_resolution_is_ignored() {
+async fn test_legacy_resume_replay_nonstream_resolution_state_is_ignored() {
     struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
     impl AgentPlugin for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
-            "terminate_plugin_requested_non_stream_run_start_outbox"
+            "legacy_resume_replay_nonstream_resolution_state"
         }
 
         phase_dispatch_methods!(|phase, step| {
@@ -4367,25 +4367,25 @@ async fn test_run_loop_legacy_run_start_outbox_resolution_is_ignored() {
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     let resolutions = state
         .get("__resolved_suspensions")
-        .and_then(|outbox| outbox.get("resolutions"));
+        .and_then(|legacy| legacy.get("resolutions"));
     assert_eq!(
         resolutions,
         Some(&json!([{
             "target_id": "resolution_1",
             "result": true
         }])),
-        "legacy outbox resolutions should be ignored by run-start replay"
+        "legacy resume replay resolutions should be ignored by run-start replay"
     );
 }
 
 #[tokio::test]
-async fn test_run_loop_legacy_run_start_replay_queue_is_ignored() {
+async fn test_legacy_resume_replay_nonstream_queue_is_ignored() {
     struct ReplayPendingAndTerminatePlugin;
 
     #[async_trait]
     impl AgentPlugin for ReplayPendingAndTerminatePlugin {
         fn id(&self) -> &str {
-            "run_start_repending_requeues_nonstream"
+            "legacy_resume_replay_nonstream_queue"
         }
 
         phase_dispatch_methods!(|phase, step| {
@@ -4407,7 +4407,7 @@ async fn test_run_loop_legacy_run_start_replay_queue_is_ignored() {
                                 }
                             ]),
                         )))
-                        .with_source("test:legacy_replay_queue"),
+                        .with_source("test:legacy_resume_replay_queue"),
                     );
                 }
                 Phase::BeforeToolExecute if step.tool_call_id() == Some("replay_call_1") => {
@@ -4437,19 +4437,19 @@ async fn test_run_loop_legacy_run_start_replay_queue_is_ignored() {
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     let replay_calls = state
         .get("__resume_tool_calls")
-        .and_then(|outbox| outbox.get("calls"))
+        .and_then(|legacy| legacy.get("calls"))
         .and_then(|calls| calls.as_array())
         .cloned()
         .unwrap_or_default();
     assert_eq!(
         replay_calls.len(),
         2,
-        "legacy replay queue should remain untouched"
+        "legacy resume replay queue should remain untouched"
     );
     assert_eq!(
         replay_calls[0]["id"],
         Value::String("replay_call_1".to_string()),
-        "legacy replay queue order should be preserved"
+        "legacy resume replay queue order should be preserved"
     );
 }
 
@@ -7211,13 +7211,13 @@ async fn test_stream_replay_state_failure_emits_error() {
 }
 
 #[tokio::test]
-async fn test_stream_legacy_run_start_replay_queue_is_ignored() {
+async fn test_legacy_resume_replay_stream_queue_is_ignored() {
     struct ReplayPendingAndTerminatePlugin;
 
     #[async_trait]
     impl AgentPlugin for ReplayPendingAndTerminatePlugin {
         fn id(&self) -> &str {
-            "run_start_repending_requeues_stream"
+            "legacy_resume_replay_stream_queue"
         }
 
         phase_dispatch_methods!(|phase, step| {
@@ -7239,7 +7239,7 @@ async fn test_stream_legacy_run_start_replay_queue_is_ignored() {
                                 }
                             ]),
                         )))
-                        .with_source("test:legacy_replay_queue"),
+                        .with_source("test:legacy_resume_replay_queue"),
                     );
                 }
                 Phase::BeforeToolExecute if step.tool_call_id() == Some("replay_call_1") => {
@@ -7277,7 +7277,7 @@ async fn test_stream_legacy_run_start_replay_queue_is_ignored() {
         !events
             .iter()
             .any(|event| matches!(event, AgentEvent::ToolCallDone { id, .. } if id.starts_with("replay_call_"))),
-        "legacy replay queue should not execute in stream mode"
+        "legacy resume replay queue should not execute in stream mode"
     );
     assert!(
         !final_thread.messages.iter().any(|message| {
@@ -7287,25 +7287,25 @@ async fn test_stream_legacy_run_start_replay_queue_is_ignored() {
                     .as_deref()
                     .is_some_and(|id| id.starts_with("replay_call_"))
         }),
-        "legacy replay queue should not append tool result messages"
+        "legacy resume replay queue should not append tool result messages"
     );
 
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
     let replay_calls = final_state
         .get("__resume_tool_calls")
-        .and_then(|outbox| outbox.get("calls"))
+        .and_then(|legacy| legacy.get("calls"))
         .and_then(|calls| calls.as_array())
         .cloned()
         .unwrap_or_default();
     assert_eq!(
         replay_calls.len(),
         2,
-        "legacy replay queue should remain untouched"
+        "legacy resume replay queue should remain untouched"
     );
     assert_eq!(
         replay_calls[0]["id"],
         Value::String("replay_call_1".to_string()),
-        "legacy replay queue order should be preserved"
+        "legacy resume replay queue order should be preserved"
     );
 }
 
