@@ -12,9 +12,9 @@ pub mod state_paths;
 pub use activity::ActivityManager;
 pub use context::RunContext;
 pub use control::{
-    InferenceError, InferenceErrorState, ResumeDecisionAction, SuspendedCall, SuspendedCallsExt,
-    SuspendedToolCallsState, ToolCallDecision, ToolCallResume, ToolCallState, ToolCallStatesState,
-    ToolCallStatus,
+    InferenceError, InferenceErrorState, ResumeDecisionAction, RunLifecycleState,
+    RunLifecycleStatus, SuspendedCall, SuspendedCallsExt, SuspendedToolCallsState,
+    ToolCallDecision, ToolCallResume, ToolCallState, ToolCallStatesState, ToolCallStatus,
 };
 pub use delta::RunDelta;
 pub use executor::{

@@ -52,8 +52,9 @@ mod tool_exec;
 use crate::contracts::plugin::phase::Phase;
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
-    DecisionReplayPolicy, ResumeDecisionAction, StreamResult, ToolCallResume, ToolCallState,
-    ToolCallStatus, ToolExecutionRequest, ToolExecutionResult,
+    state_paths::RUN_LIFECYCLE_STATE_PATH, DecisionReplayPolicy, ResumeDecisionAction,
+    RunLifecycleStatus, StreamResult, ToolCallResume, ToolCallState, ToolCallStatus,
+    ToolExecutionRequest, ToolExecutionResult,
 };
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
@@ -106,7 +107,7 @@ use run_state::RunState;
 pub use state_commit::ChannelStateCommitter;
 use state_commit::PendingDeltaCommitContext;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tirea_state::TrackedPatch;
+use tirea_state::{Op, Patch, Path, TrackedPatch};
 #[cfg(test)]
 use tokio_util::sync::CancellationToken;
 #[cfg(test)]
@@ -166,6 +167,50 @@ pub(crate) fn current_unix_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64)
+}
+
+pub(super) fn sync_run_lifecycle_for_termination(
+    run_ctx: &mut RunContext,
+    termination: &TerminationReason,
+) -> Result<(), AgentLoopError> {
+    let run_id = run_ctx
+        .run_config
+        .value("run_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+    let Some(run_id) = run_id else {
+        return Ok(());
+    };
+
+    let (status, done_reason) = match termination {
+        TerminationReason::Suspended => (RunLifecycleStatus::Waiting, None),
+        TerminationReason::NaturalEnd => (RunLifecycleStatus::Done, Some("natural".to_string())),
+        TerminationReason::PluginRequested => (
+            RunLifecycleStatus::Done,
+            Some("plugin_requested".to_string()),
+        ),
+        TerminationReason::Cancelled => (RunLifecycleStatus::Done, Some("cancelled".to_string())),
+        TerminationReason::Error => (RunLifecycleStatus::Done, Some("error".to_string())),
+        TerminationReason::Stopped(stopped) => (
+            RunLifecycleStatus::Done,
+            Some(format!("stopped:{}", stopped.code)),
+        ),
+    };
+
+    let patch = TrackedPatch::new(Patch::with_ops(vec![Op::set(
+        Path::root().key(RUN_LIFECYCLE_STATE_PATH),
+        serde_json::json!({
+            "id": run_id,
+            "status": status,
+            "done_reason": done_reason,
+            "updated_at": current_unix_millis(),
+        }),
+    )]))
+    .with_source("agent_loop");
+
+    run_ctx.add_thread_patch(patch);
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1361,6 +1406,16 @@ pub async fn run_loop(
             } else {
                 $response
             };
+            if let Err(error) = sync_run_lifecycle_for_termination(&mut run_ctx, &final_termination)
+            {
+                return build_loop_outcome(
+                    run_ctx,
+                    TerminationReason::Error,
+                    None,
+                    &run_state,
+                    Some(outcome::LoopFailure::State(error.to_string())),
+                );
+            }
             finalize_run_end(&mut run_ctx, &active_tool_descriptors, &config.plugins).await;
             if let Err(error) = pending_delta_commit
                 .commit(&mut run_ctx, CheckpointReason::RunFinished, true)

@@ -5,7 +5,9 @@
 //! error envelope).
 
 use crate::event::suspension::{FrontendToolInvocation, Suspension};
-use crate::runtime::state_paths::{SUSPENDED_TOOL_CALLS_STATE_PATH, TOOL_CALL_STATES_STATE_PATH};
+use crate::runtime::state_paths::{
+    RUN_LIFECYCLE_STATE_PATH, SUSPENDED_TOOL_CALLS_STATE_PATH, TOOL_CALL_STATES_STATE_PATH,
+};
 use crate::thread::Thread;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -20,6 +22,32 @@ pub struct InferenceError {
     pub error_type: String,
     /// Human-readable error message.
     pub message: String,
+}
+
+/// Coarse run lifecycle status persisted in thread state.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunLifecycleStatus {
+    /// Run is actively executing.
+    Running,
+    /// Run is waiting for external decisions.
+    Waiting,
+    /// Run has reached a terminal state.
+    Done,
+}
+
+/// Minimal durable run lifecycle envelope stored at `state["__run"]`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunLifecycleState {
+    /// Current run id associated with this lifecycle record.
+    pub id: String,
+    /// Coarse lifecycle status.
+    pub status: RunLifecycleStatus,
+    /// Optional terminal reason when `status=done`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_reason: Option<String>,
+    /// Last update timestamp (unix millis).
+    pub updated_at: u64,
 }
 
 /// A tool call that has been suspended, awaiting external resolution.
@@ -261,6 +289,14 @@ pub fn tool_call_states_from_state(state: &Value) -> HashMap<String, ToolCallSta
         .unwrap_or_default()
 }
 
+/// Parse persisted run lifecycle from a rebuilt state snapshot.
+pub fn run_lifecycle_from_state(state: &Value) -> Option<RunLifecycleState> {
+    state
+        .get(RUN_LIFECYCLE_STATE_PATH)
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
 fn first_suspended_call(calls: &HashMap<String, SuspendedCall>) -> Option<&SuspendedCall> {
     calls
         .iter()
@@ -369,5 +405,22 @@ mod tests {
         assert!(!ToolCallStatus::Succeeded.can_transition_to(ToolCallStatus::Running));
         assert!(!ToolCallStatus::Failed.can_transition_to(ToolCallStatus::Resuming));
         assert!(!ToolCallStatus::Cancelled.can_transition_to(ToolCallStatus::Suspended));
+    }
+
+    #[test]
+    fn run_lifecycle_roundtrip_from_state() {
+        let state = serde_json::json!({
+            "__run": {
+                "id": "run_1",
+                "status": "running",
+                "updated_at": 42
+            }
+        });
+
+        let lifecycle = run_lifecycle_from_state(&state).expect("run lifecycle");
+        assert_eq!(lifecycle.id, "run_1");
+        assert_eq!(lifecycle.status, RunLifecycleStatus::Running);
+        assert_eq!(lifecycle.done_reason, None);
+        assert_eq!(lifecycle.updated_at, 42);
     }
 }

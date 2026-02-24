@@ -1,6 +1,28 @@
 use super::*;
+use crate::contracts::runtime::state_paths::RUN_LIFECYCLE_STATE_PATH;
+use crate::contracts::runtime::RunLifecycleStatus;
 use crate::contracts::storage::VersionPrecondition;
 use crate::runtime::loop_runner::run_loop_stream;
+use tirea_state::{Op, Patch, Path, TrackedPatch};
+
+fn now_unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64)
+}
+
+fn run_lifecycle_running_patch(run_id: &str) -> TrackedPatch {
+    TrackedPatch::new(Patch::with_ops(vec![Op::set(
+        Path::root().key(RUN_LIFECYCLE_STATE_PATH),
+        serde_json::json!({
+            "id": run_id,
+            "status": RunLifecycleStatus::Running,
+            "done_reason": serde_json::Value::Null,
+            "updated_at": now_unix_millis(),
+        }),
+    )]))
+    .with_source("agentos_prepare_run")
+}
 
 impl AgentOs {
     pub fn agent_state_store(&self) -> Option<&Arc<dyn ThreadStore>> {
@@ -88,23 +110,23 @@ impl AgentOs {
             thread = thread.with_messages(deduped_messages.clone());
         }
 
-        // 4. Persist run-start changes (user messages + frontend state snapshot)
+        // 4. Persist run-start changes (user messages + frontend state snapshot + run state)
         let delta_messages: Vec<Arc<Message>> =
             deduped_messages.into_iter().map(Arc::new).collect();
-        if !delta_messages.is_empty() || state_snapshot_for_delta.is_some() {
-            let changeset = crate::contracts::ThreadChangeSet::from_parts(
-                run_id.clone(),
-                parent_run_id.clone(),
-                CheckpointReason::UserMessage,
-                delta_messages,
-                Vec::new(),
-                state_snapshot_for_delta,
-            );
-            let committed = agent_state_store
-                .append(&thread_id, &changeset, VersionPrecondition::Exact(version))
-                .await?;
-            version = committed.version;
-        }
+        let delta_patches = vec![run_lifecycle_running_patch(&run_id)];
+        let changeset = crate::contracts::ThreadChangeSet::from_parts(
+            run_id.clone(),
+            parent_run_id.clone(),
+            CheckpointReason::UserMessage,
+            delta_messages,
+            delta_patches.clone(),
+            state_snapshot_for_delta,
+        );
+        let committed = agent_state_store
+            .append(&thread_id, &changeset, VersionPrecondition::Exact(version))
+            .await?;
+        version = committed.version;
+        thread = thread.with_patches(delta_patches);
         thread.metadata.version = Some(version);
 
         // 5. Set run identity on the run_config

@@ -211,6 +211,12 @@ pub(super) fn run_stream(
             ($failure:expr, $message:expr) => {{
                 let failure = $failure;
                 let message = $message;
+                if let Err(e) = sync_run_lifecycle_for_termination(&mut run_ctx, &TerminationReason::Error) {
+                    yield emitter.emit_existing(AgentEvent::Error {
+                        message: e.to_string(),
+                    });
+                    return;
+                }
                 finalize_run_end(&mut run_ctx, &active_tool_descriptors, &config.plugins).await;
                 emit_run_finished_delta!();
                 let outcome = build_loop_outcome(
@@ -245,6 +251,12 @@ pub(super) fn run_stream(
                 } else {
                     $response_expr
                 };
+                if let Err(e) = sync_run_lifecycle_for_termination(&mut run_ctx, &final_termination) {
+                    yield emitter.emit_existing(AgentEvent::Error {
+                        message: e.to_string(),
+                    });
+                    return;
+                }
                 finalize_run_end(&mut run_ctx, &active_tool_descriptors, &config.plugins).await;
                 ensure_run_finished_delta_or_error!();
                 let outcome = build_loop_outcome(

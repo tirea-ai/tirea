@@ -38,6 +38,20 @@ fn decision_for(
     }
 }
 
+fn assert_run_lifecycle_state(
+    state: &Value,
+    run_id: &str,
+    status: &str,
+    done_reason: Option<&str>,
+) {
+    assert_eq!(state["__run"]["id"], json!(run_id));
+    assert_eq!(state["__run"]["status"], json!(status));
+    match done_reason {
+        Some(reason) => assert_eq!(state["__run"]["done_reason"], json!(reason)),
+        None => assert!(state["__run"]["done_reason"].is_null()),
+    }
+}
+
 fn make_skills_root() -> (TempDir, PathBuf) {
     let td = TempDir::new().unwrap();
     let root = td.path().join("skills");
@@ -1508,7 +1522,9 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
     // Verify state was replaced in storage
     let head = storage.load("t1").await.unwrap().unwrap();
     let state = head.thread.rebuild_state().unwrap();
-    assert_eq!(state, json!({"counter": 42, "new_field": true}));
+    assert_eq!(state["counter"], json!(42));
+    assert_eq!(state["new_field"], json!(true));
+    assert_run_lifecycle_state(&state, "run-1", "done", Some("plugin_requested"));
 }
 
 #[tokio::test]
@@ -1561,7 +1577,8 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
     // Verify state was set as initial state
     let head = storage.load("t-new").await.unwrap().unwrap();
     let state = head.thread.rebuild_state().unwrap();
-    assert_eq!(state, json!({"initial": true}));
+    assert_eq!(state["initial"], json!(true));
+    assert_run_lifecycle_state(&state, "run-1", "done", Some("plugin_requested"));
 }
 
 #[tokio::test]
@@ -1618,7 +1635,8 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
     // Verify state was not changed
     let head = storage.load("t1").await.unwrap().unwrap();
     let state = head.thread.rebuild_state().unwrap();
-    assert_eq!(state, json!({"counter": 5}));
+    assert_eq!(state["counter"], json!(5));
+    assert_run_lifecycle_state(&state, "run-1", "done", Some("plugin_requested"));
 }
 
 #[tokio::test]
@@ -1688,6 +1706,9 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
         crate::contracts::thread::Role::User
     );
     assert_eq!(head.thread.messages[0].content, "hello");
+    let state = head.thread.rebuild_state().unwrap();
+    assert_eq!(state["__run"]["id"], json!("run-prepare"));
+    assert_eq!(state["__run"]["status"], json!("running"));
 }
 
 #[tokio::test]
@@ -1982,6 +2003,114 @@ async fn run_stream_replays_initial_decisions_without_submit_decision() {
             AgentEvent::ToolCallDone { id, .. } if id == "call_pending"
         )),
         "run stream should replay suspended call from initial decisions: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn run_stream_persists_run_lifecycle_done_status() {
+    use futures::StreamExt;
+    use tirea_store_adapters::MemoryStore;
+
+    let storage = Arc::new(MemoryStore::new());
+    let os = make_decision_test_os(storage.clone());
+    let thread_id = "t-run-lifecycle-done";
+
+    let thread = Thread::new(thread_id).with_message(crate::contracts::thread::Message::user("hi"));
+    storage.create(&thread).await.unwrap();
+
+    let run = os
+        .run_stream(RunRequest {
+            agent_id: "a1".to_string(),
+            thread_id: Some(thread_id.to_string()),
+            run_id: Some("run-lifecycle-done".to_string()),
+            parent_run_id: None,
+            resource_id: None,
+            state: None,
+            messages: vec![],
+            initial_decisions: vec![],
+        })
+        .await
+        .unwrap();
+    let _events: Vec<_> = run.events.collect().await;
+
+    let saved = storage.load(thread_id).await.unwrap().unwrap();
+    let rebuilt = saved.thread.rebuild_state().unwrap();
+    assert_eq!(rebuilt["__run"]["id"], json!("run-lifecycle-done"));
+    assert_eq!(rebuilt["__run"]["status"], json!("done"));
+    assert_eq!(rebuilt["__run"]["done_reason"], json!("plugin_requested"));
+}
+
+#[tokio::test]
+async fn run_stream_persists_run_lifecycle_waiting_status_for_suspension() {
+    use futures::StreamExt;
+    use tirea_store_adapters::MemoryStore;
+
+    let storage = Arc::new(MemoryStore::new());
+    let os = make_decision_test_os(storage.clone());
+    let thread_id = "t-run-lifecycle-waiting";
+
+    let pending_state = json!({
+        "__suspended_tool_calls": {
+            "calls": {
+                "call_pending": {
+                    "call_id": "call_pending",
+                    "tool_name": "echo",
+                    "suspension": {
+                        "id": "call_pending",
+                        "action": "confirm",
+                        "parameters": {
+                            "message": "still waiting"
+                        }
+                    },
+                    "invocation": {
+                        "call_id": "call_pending",
+                        "tool_name": "echo",
+                        "arguments": {
+                            "message": "still waiting"
+                        },
+                        "origin": {
+                            "type": "tool_call_intercepted",
+                            "backend_call_id": "call_pending",
+                            "backend_tool_name": "echo",
+                            "backend_arguments": {
+                                "message": "still waiting"
+                            }
+                        },
+                        "routing": {
+                            "strategy": "replay_original_tool"
+                        }
+                    }
+                }
+            }
+        }
+    });
+    let thread = Thread::with_initial_state(thread_id, pending_state)
+        .with_message(crate::contracts::thread::Message::user("resume"));
+    storage.create(&thread).await.unwrap();
+
+    let run = os
+        .run_stream(RunRequest {
+            agent_id: "a1".to_string(),
+            thread_id: Some(thread_id.to_string()),
+            run_id: Some("run-lifecycle-waiting".to_string()),
+            parent_run_id: None,
+            resource_id: None,
+            state: None,
+            messages: vec![],
+            initial_decisions: vec![],
+        })
+        .await
+        .unwrap();
+    let _events: Vec<_> = run.events.collect().await;
+
+    let saved = storage.load(thread_id).await.unwrap().unwrap();
+    let rebuilt = saved.thread.rebuild_state().unwrap();
+    assert_eq!(rebuilt["__run"]["id"], json!("run-lifecycle-waiting"));
+    assert_eq!(rebuilt["__run"]["status"], json!("waiting"));
+    assert!(
+        rebuilt["__run"]["done_reason"].is_null(),
+        "waiting status should not carry done reason: {}",
+        rebuilt["__run"]
     );
 }
 
@@ -2693,10 +2822,11 @@ async fn run_stream_checkpoint_append_failure_keeps_persisted_prefix_consistent(
 
     let head = storage.load("t-checkpoint-fail").await.unwrap().unwrap();
     let state = head.thread.rebuild_state().unwrap();
-    assert_eq!(
-        state,
-        json!({"base": 1}),
-        "failed checkpoint must not mutate persisted state"
+    assert_eq!(state["base"], json!(1));
+    assert_run_lifecycle_state(&state, "run-checkpoint-fail", "running", None);
+    assert!(
+        state.get("run_end_marker").is_none(),
+        "failed checkpoint must not persist RunEnd patch"
     );
     assert_eq!(
         head.thread.messages.len(),
@@ -2721,10 +2851,10 @@ async fn run_stream_checkpoint_append_failure_keeps_persisted_prefix_consistent(
 }
 
 #[tokio::test]
-async fn run_stream_checkpoint_failure_on_existing_thread_keeps_storage_unchanged() {
+async fn run_stream_checkpoint_failure_on_existing_thread_keeps_pre_checkpoint_state() {
     use futures::StreamExt;
 
-    let storage = Arc::new(FailOnNthAppendStorage::new(1));
+    let storage = Arc::new(FailOnNthAppendStorage::new(2));
     let initial = Thread::with_initial_state("t-existing-fail", json!({"counter": 5}));
     storage.create(&initial).await.unwrap();
 
@@ -2774,17 +2904,17 @@ async fn run_stream_checkpoint_failure_on_existing_thread_keeps_storage_unchange
 
     let head = storage.load("t-existing-fail").await.unwrap().unwrap();
     let state = head.thread.rebuild_state().unwrap();
-    assert_eq!(
-        state,
-        json!({"counter": 5}),
-        "existing state must stay unchanged when first checkpoint append fails"
-    );
+    assert_eq!(state["counter"], json!(5));
+    assert_run_lifecycle_state(&state, "run-existing-fail", "running", None);
     assert!(
         head.thread.state.get("run_end_marker").is_none(),
         "failed checkpoint must not persist RunEnd patch"
     );
-    assert_eq!(head.version, 0, "failed append must not advance version");
-    assert_eq!(storage.append_call_count(), 1);
+    assert_eq!(
+        head.version, 1,
+        "failed checkpoint append must keep prior run-start commit"
+    );
+    assert_eq!(storage.append_call_count(), 2);
 }
 
 #[test]
