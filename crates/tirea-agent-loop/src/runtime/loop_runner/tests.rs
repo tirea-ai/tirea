@@ -6899,7 +6899,11 @@ fn test_sync_run_lifecycle_for_termination_persists_status_and_reason() {
         ),
         (TerminationReason::Cancelled, "done", Some("cancelled")),
         (TerminationReason::Error, "done", Some("error")),
-        (TerminationReason::stopped("limit"), "done", Some("stopped:limit")),
+        (
+            TerminationReason::stopped("limit"),
+            "done",
+            Some("stopped:limit"),
+        ),
     ];
 
     for (termination, expected_status, expected_reason) in cases {

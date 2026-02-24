@@ -1339,19 +1339,18 @@ async fn apply_decisions_and_replay(
     active_tool_descriptors: &mut Vec<crate::contracts::tool::ToolDescriptor>,
     pending_delta_commit: &PendingDeltaCommitContext<'_>,
 ) -> Result<Vec<AgentEvent>, AgentLoopError> {
-    let decision_drain = drain_decision_channel(run_ctx, decision_rx, pending_decisions)?;
-    let mut events = decision_drain.events;
-    let replay_events = replay_after_decisions(
+    Ok(drain_and_replay_decisions(
         run_ctx,
-        !decision_drain.resolved_call_ids.is_empty(),
+        decision_rx,
+        pending_decisions,
+        None,
         step_tool_provider,
         config,
         active_tool_descriptors,
         pending_delta_commit,
     )
-    .await?;
-    events.extend(replay_events);
-    Ok(events)
+    .await?
+    .events)
 }
 
 pub(super) struct DecisionReplayOutcome {
@@ -1359,17 +1358,19 @@ pub(super) struct DecisionReplayOutcome {
     resolved_call_ids: Vec<String>,
 }
 
-async fn apply_decision_and_replay(
+async fn drain_and_replay_decisions(
     run_ctx: &mut RunContext,
-    response: ToolCallDecision,
     decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
     pending_decisions: &mut VecDeque<ToolCallDecision>,
+    decision: Option<ToolCallDecision>,
     step_tool_provider: &Arc<dyn StepToolProvider>,
     config: &AgentConfig,
     active_tool_descriptors: &mut Vec<crate::contracts::tool::ToolDescriptor>,
     pending_delta_commit: &PendingDeltaCommitContext<'_>,
 ) -> Result<DecisionReplayOutcome, AgentLoopError> {
-    pending_decisions.push_back(response);
+    if let Some(decision) = decision {
+        pending_decisions.push_back(decision);
+    }
     let decision_drain = drain_decision_channel(run_ctx, decision_rx, pending_decisions)?;
     let mut events = decision_drain.events;
     let replay_events = replay_after_decisions(
@@ -1387,6 +1388,29 @@ async fn apply_decision_and_replay(
         events,
         resolved_call_ids: decision_drain.resolved_call_ids,
     })
+}
+
+async fn apply_decision_and_replay(
+    run_ctx: &mut RunContext,
+    response: ToolCallDecision,
+    decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
+    pending_decisions: &mut VecDeque<ToolCallDecision>,
+    step_tool_provider: &Arc<dyn StepToolProvider>,
+    config: &AgentConfig,
+    active_tool_descriptors: &mut Vec<crate::contracts::tool::ToolDescriptor>,
+    pending_delta_commit: &PendingDeltaCommitContext<'_>,
+) -> Result<DecisionReplayOutcome, AgentLoopError> {
+    drain_and_replay_decisions(
+        run_ctx,
+        decision_rx,
+        pending_decisions,
+        Some(response),
+        step_tool_provider,
+        config,
+        active_tool_descriptors,
+        pending_delta_commit,
+    )
+    .await
 }
 
 async fn recv_decision(
