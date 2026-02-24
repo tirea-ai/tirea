@@ -11366,6 +11366,149 @@ async fn test_stream_decision_channel_ignores_unknown_target_id() {
 }
 
 #[tokio::test]
+async fn test_stream_decision_channel_rejects_illegal_terminal_to_resuming_transition() {
+    struct TerminatePluginRequestedPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for TerminatePluginRequestedPlugin {
+        fn id(&self) -> &str {
+            "terminate_plugin_requested_illegal_transition_stream"
+        }
+
+        phase_dispatch_methods!(|phase, step| {
+            if phase == Phase::BeforeInference {
+                step.set_run_action(crate::contracts::RunAction::Terminate(
+                    TerminationReason::PluginRequested,
+                ));
+            }
+        });
+    }
+
+    let mut final_thread = Thread::with_initial_state(
+        "test",
+        json!({
+            "__suspended_tool_calls": {
+                "calls": {
+                    "call_pending": {
+                        "call_id": "call_pending",
+                        "tool_name": "echo",
+                        "suspension": {
+                            "id": "call_pending",
+                            "action": "tool:echo"
+                        },
+                        "invocation": {
+                            "call_id": "call_pending",
+                            "tool_name": "echo",
+                            "arguments": { "message": "should-not-replay" },
+                            "origin": {
+                                "type": "tool_call_intercepted",
+                                "backend_call_id": "call_pending",
+                                "backend_tool_name": "echo",
+                                "backend_arguments": { "message": "should-not-replay" }
+                            },
+                            "routing": {
+                                "strategy": "replay_original_tool"
+                            }
+                        }
+                    }
+                }
+            },
+            "__tool_call_states": {
+                "calls": {
+                    "call_pending": {
+                        "call_id": "call_pending",
+                        "tool_name": "echo",
+                        "arguments": { "message": "already-finished" },
+                        "status": "succeeded",
+                        "updated_at": 1
+                    }
+                }
+            }
+        }),
+    )
+    .with_message(Message::assistant_with_tool_calls(
+        "need permission",
+        vec![crate::contracts::thread::ToolCall::new(
+            "call_pending",
+            "echo",
+            json!({"message": "should-not-replay"}),
+        )],
+    ))
+    .with_message(Message::tool(
+        "call_pending",
+        "Tool 'echo' is awaiting approval. Execution paused.",
+    ));
+    let run_ctx = RunContext::from_thread(&final_thread, tirea_contract::RunConfig::default())
+        .expect("run ctx");
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
+    let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
+    let state_committer: Arc<dyn StateCommitter> =
+        Arc::new(ChannelStateCommitter::new(checkpoint_tx));
+    let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
+    decision_tx
+        .send(test_decision(
+            "call_pending",
+            crate::contracts::runtime::ResumeDecisionAction::Resume,
+            json!(true),
+            None,
+        ))
+        .expect("send decision");
+    drop(decision_tx);
+
+    let stream = run_loop_stream(
+        config,
+        tool_map([EchoTool]),
+        run_ctx,
+        None,
+        Some(state_committer),
+        Some(decision_rx),
+    );
+    let events = collect_stream_events(stream).await;
+    while let Some(changeset) = checkpoint_rx.recv().await {
+        changeset.apply_to(&mut final_thread);
+    }
+
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::Suspended)
+    );
+    assert!(
+        !events.iter().any(|event| {
+            matches!(event, AgentEvent::ToolCallResumed { target_id, .. } if target_id == "call_pending")
+        }),
+        "illegal transition should not emit ToolCallResumed"
+    );
+    assert!(
+        !events.iter().any(
+            |event| matches!(event, AgentEvent::ToolCallDone { id, .. } if id == "call_pending")
+        ),
+        "illegal transition should not replay tool execution"
+    );
+
+    let final_state = final_thread.rebuild_state().expect("state should rebuild");
+    assert!(
+        final_state
+            .get("__suspended_tool_calls")
+            .and_then(|lc| lc.get("calls"))
+            .and_then(|calls| calls.get("call_pending"))
+            .is_some(),
+        "illegal transition must keep suspended call pending"
+    );
+    assert_eq!(
+        final_state["__tool_call_states"]["calls"]["call_pending"]["status"],
+        json!("succeeded"),
+        "terminal lifecycle state must remain unchanged"
+    );
+    assert!(
+        final_state["__tool_call_states"]["calls"]["call_pending"]
+            .get("resume")
+            .is_none(),
+        "illegal transition must not inject resume payload into terminal state"
+    );
+}
+
+#[tokio::test]
 async fn test_run_loop_decision_channel_resolves_suspended_call() {
     struct FrontendTool;
 
