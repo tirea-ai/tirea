@@ -29,6 +29,35 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tirea_state::{Patch, PatchExt, TrackedPatch};
 
+/// Outcome of the public `execute_tools*` family of functions.
+///
+/// Tool execution can complete normally or suspend while waiting for
+/// external resolution (e.g. human-in-the-loop approval).
+#[derive(Debug)]
+pub enum ExecuteToolsOutcome {
+    /// All tool calls completed (successfully or with tool-level errors).
+    Completed(Thread),
+    /// Execution suspended on a tool call awaiting external decision.
+    Suspended {
+        thread: Thread,
+        suspended_call: SuspendedCall,
+    },
+}
+
+impl ExecuteToolsOutcome {
+    /// Extract the thread from either variant.
+    pub fn into_thread(self) -> Thread {
+        match self {
+            Self::Completed(t) | Self::Suspended { thread: t, .. } => t,
+        }
+    }
+
+    /// Returns `true` when execution suspended on a tool call.
+    pub fn is_suspended(&self) -> bool {
+        matches!(self, Self::Suspended { .. })
+    }
+}
+
 pub(super) struct AppliedToolResults {
     pub(super) suspended_calls: Vec<SuspendedCall>,
     pub(super) state_snapshot: Option<Value>,
@@ -141,10 +170,10 @@ fn persist_tool_call_status(
         })
 }
 
-fn map_tool_executor_error(err: AgentLoopError) -> ToolExecutorError {
+fn map_tool_executor_error(err: AgentLoopError, thread_id: &str) -> ToolExecutorError {
     match err {
-        AgentLoopError::Cancelled { run_ctx } => ToolExecutorError::Cancelled {
-            thread_id: run_ctx.thread_id().to_string(),
+        AgentLoopError::Cancelled => ToolExecutorError::Cancelled {
+            thread_id: thread_id.to_string(),
         },
         other => ToolExecutorError::Failed {
             message: other.to_string(),
@@ -198,10 +227,11 @@ impl ToolExecutor for ParallelToolExecutor {
         &self,
         request: ToolExecutionRequest<'_>,
     ) -> Result<Vec<ToolExecutionResult>, ToolExecutorError> {
+        let thread_id = request.thread_id;
         let phase_ctx = ToolPhaseContext::from_request(&request);
         execute_tools_parallel_with_phases(request.tools, request.calls, request.state, phase_ctx)
             .await
-            .map_err(map_tool_executor_error)
+            .map_err(|e| map_tool_executor_error(e, thread_id))
     }
 
     fn name(&self) -> &'static str {
@@ -230,10 +260,11 @@ impl ToolExecutor for SequentialToolExecutor {
         &self,
         request: ToolExecutionRequest<'_>,
     ) -> Result<Vec<ToolExecutionResult>, ToolExecutorError> {
+        let thread_id = request.thread_id;
         let phase_ctx = ToolPhaseContext::from_request(&request);
         execute_tools_sequential_with_phases(request.tools, request.calls, request.state, phase_ctx)
             .await
-            .map_err(map_tool_executor_error)
+            .map_err(|e| map_tool_executor_error(e, thread_id))
     }
 
     fn name(&self) -> &'static str {
@@ -485,7 +516,7 @@ pub async fn execute_tools(
     result: &StreamResult,
     tools: &HashMap<String, Arc<dyn Tool>>,
     parallel: bool,
-) -> Result<Thread, AgentLoopError> {
+) -> Result<ExecuteToolsOutcome, AgentLoopError> {
     execute_tools_with_plugins(thread, result, tools, parallel, &[]).await
 }
 
@@ -495,7 +526,7 @@ pub async fn execute_tools_with_config(
     result: &StreamResult,
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
-) -> Result<Thread, AgentLoopError> {
+) -> Result<ExecuteToolsOutcome, AgentLoopError> {
     execute_tools_with_plugins_and_executor(
         thread,
         result,
@@ -537,7 +568,7 @@ pub async fn execute_tools_with_plugins(
     tools: &HashMap<String, Arc<dyn Tool>>,
     parallel: bool,
     plugins: &[Arc<dyn AgentPlugin>],
-) -> Result<Thread, AgentLoopError> {
+) -> Result<ExecuteToolsOutcome, AgentLoopError> {
     let parallel_executor = ParallelToolExecutor::streaming();
     let sequential_executor = SequentialToolExecutor;
     let executor: &dyn ToolExecutor = if parallel {
@@ -554,7 +585,7 @@ pub async fn execute_tools_with_plugins_and_executor(
     tools: &HashMap<String, Arc<dyn Tool>>,
     executor: &dyn ToolExecutor,
     plugins: &[Arc<dyn AgentPlugin>],
-) -> Result<Thread, AgentLoopError> {
+) -> Result<ExecuteToolsOutcome, AgentLoopError> {
     // Build RunContext from thread for internal use
     let rebuilt_state = thread
         .rebuild_state()
@@ -599,19 +630,21 @@ pub async fn execute_tools_with_plugins_and_executor(
     .await?;
 
     if replay.replayed {
-        if let Some(first) = run_ctx.suspended_calls().values().next().cloned() {
-            return Err(AgentLoopError::Suspended {
-                run_ctx: Box::new(run_ctx),
-                suspended_call: Box::new(first),
-            });
-        }
+        let suspended = run_ctx.suspended_calls().values().next().cloned();
         let delta = run_ctx.take_delta();
         let mut out_thread = thread;
         for msg in delta.messages {
             out_thread = out_thread.with_message((*msg).clone());
         }
         out_thread = out_thread.with_patches(delta.patches);
-        return Ok(out_thread);
+        return if let Some(first) = suspended {
+            Ok(ExecuteToolsOutcome::Suspended {
+                thread: out_thread,
+                suspended_call: first,
+            })
+        } else {
+            Ok(ExecuteToolsOutcome::Completed(out_thread))
+        };
     }
 
     if result.tool_calls.is_empty() {
@@ -621,7 +654,7 @@ pub async fn execute_tools_with_plugins_and_executor(
             out_thread = out_thread.with_message((*msg).clone());
         }
         out_thread = out_thread.with_patches(delta.patches);
-        return Ok(out_thread);
+        return Ok(ExecuteToolsOutcome::Completed(out_thread));
     }
 
     let current_state = run_ctx
@@ -651,12 +684,7 @@ pub async fn execute_tools_with_plugins_and_executor(
         metadata,
         executor.requires_parallel_patch_conflict_check(),
     )?;
-    if let Some(first) = applied.suspended_calls.first() {
-        return Err(AgentLoopError::Suspended {
-            run_ctx: Box::new(run_ctx),
-            suspended_call: Box::new(first.clone()),
-        });
-    }
+    let suspended = applied.suspended_calls.into_iter().next();
 
     // Reconstruct thread from RunContext delta
     let delta = run_ctx.take_delta();
@@ -665,7 +693,15 @@ pub async fn execute_tools_with_plugins_and_executor(
         out_thread = out_thread.with_message((*msg).clone());
     }
     out_thread = out_thread.with_patches(delta.patches);
-    Ok(out_thread)
+
+    if let Some(first) = suspended {
+        Ok(ExecuteToolsOutcome::Suspended {
+            thread: out_thread,
+            suspended_call: first,
+        })
+    } else {
+        Ok(ExecuteToolsOutcome::Completed(out_thread))
+    }
 }
 
 /// Execute tools in parallel with phase hooks.
@@ -1014,13 +1050,6 @@ pub(super) async fn execute_single_tool_with_phases(
     })
 }
 
-fn cancelled_error(thread_id: &str) -> AgentLoopError {
-    AgentLoopError::Cancelled {
-        run_ctx: Box::new(RunContext::new(
-            thread_id,
-            serde_json::json!({}),
-            vec![],
-            tirea_contract::RunConfig::default(),
-        )),
-    }
+fn cancelled_error(_thread_id: &str) -> AgentLoopError {
+    AgentLoopError::Cancelled
 }

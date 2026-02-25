@@ -98,6 +98,7 @@ use core::{
     transition_tool_call_state, upsert_tool_call_state, ToolCallStateSeed, ToolCallStateTransition,
 };
 pub use outcome::{tool_map, tool_map_from_arc, AgentLoopError};
+pub use tool_exec::ExecuteToolsOutcome;
 pub use outcome::{LoopOutcome, LoopStats, LoopUsage};
 #[cfg(test)]
 use plugin_runtime::emit_phase_checked;
@@ -1756,7 +1757,7 @@ pub async fn run_loop(
 
         let results = match results {
             Ok(r) => r,
-            Err(AgentLoopError::Cancelled { .. }) => {
+            Err(AgentLoopError::Cancelled) => {
                 append_cancellation_user_message(&mut run_ctx, CancellationStage::ToolExecution);
                 terminate_run!(TerminationReason::Cancelled, None, None);
             }

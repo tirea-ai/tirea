@@ -68,60 +68,15 @@ pub enum AgentLoopError {
     LlmError(String),
     #[error("State error: {0}")]
     StateError(String),
-    /// The agent loop terminated normally due to a stop condition.
-    ///
-    /// This is not an error but a structured stop with a reason. The run context
-    /// is included so callers can inspect final state.
-    #[error("Agent stopped: {reason:?}")]
-    Stopped {
-        run_ctx: Box<crate::contracts::RunContext>,
-        reason: crate::contracts::StoppedReason,
-    },
-    /// Run suspended waiting for external resolution of a tool call.
-    ///
-    /// The returned run context includes any patches applied up to the suspension point
-    /// (including persisted suspended tool calls).
-    #[error(
-        "Run suspended on tool call: {call_id} ({tool_name})",
-        call_id = suspended_call.call_id,
-        tool_name = suspended_call.tool_name
-    )]
-    Suspended {
-        run_ctx: Box<crate::contracts::RunContext>,
-        suspended_call: Box<SuspendedCall>,
-    },
     /// External cancellation signal requested run termination.
     #[error("Run cancelled")]
-    Cancelled {
-        run_ctx: Box<crate::contracts::RunContext>,
-    },
-}
-
-impl AgentLoopError {
-    /// Normalize loop errors into lifecycle termination semantics.
-    pub fn termination_reason(&self) -> TerminationReason {
-        match self {
-            Self::Stopped { reason, .. } => TerminationReason::Stopped(reason.clone()),
-            Self::Cancelled { .. } => TerminationReason::Cancelled,
-            Self::Suspended { .. } => TerminationReason::Suspended,
-            Self::LlmError(_) | Self::StateError(_) => TerminationReason::Error,
-        }
-    }
+    Cancelled,
 }
 
 impl From<crate::contracts::runtime::ToolExecutorError> for AgentLoopError {
     fn from(value: crate::contracts::runtime::ToolExecutorError) -> Self {
         match value {
-            crate::contracts::runtime::ToolExecutorError::Cancelled { thread_id } => {
-                Self::Cancelled {
-                    run_ctx: Box::new(crate::contracts::RunContext::new(
-                        thread_id,
-                        serde_json::json!({}),
-                        vec![],
-                        crate::contracts::RunConfig::default(),
-                    )),
-                }
-            }
+            crate::contracts::runtime::ToolExecutorError::Cancelled { .. } => Self::Cancelled,
             crate::contracts::runtime::ToolExecutorError::Failed { message } => {
                 Self::StateError(message)
             }

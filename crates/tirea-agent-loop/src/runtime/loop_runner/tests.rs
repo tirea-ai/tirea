@@ -16,7 +16,6 @@ use crate::contracts::thread::{Message, Role, Thread, ToolCall};
 use crate::contracts::tool::{ToolDescriptor, ToolError, ToolResult};
 use crate::contracts::TerminationReason;
 use crate::contracts::{RunContext, Suspension, ToolCallContext};
-use crate::contracts::StoppedReason;
 use crate::runtime::activity::ActivityHub;
 use async_trait::async_trait;
 use genai::chat::{
@@ -831,70 +830,8 @@ fn test_tool_map_from_arc() {
 fn test_agent_loop_error_display() {
     let err = AgentLoopError::LlmError("timeout".to_string());
     assert!(err.to_string().contains("timeout"));
-
-    let err = AgentLoopError::Stopped {
-        run_ctx: Box::new(RunContext::new(
-            "test",
-            json!({}),
-            vec![],
-            crate::contracts::RunConfig::default(),
-        )),
-        reason: StoppedReason::new("max_rounds_reached"),
-    };
-    assert!(err.to_string().contains("max_rounds_reached"));
 }
 
-#[test]
-fn test_agent_loop_error_termination_reason_mapping() {
-    let stopped = AgentLoopError::Stopped {
-        run_ctx: Box::new(RunContext::new(
-            "test",
-            json!({}),
-            vec![],
-            crate::contracts::RunConfig::default(),
-        )),
-        reason: StoppedReason::new("max_rounds_reached"),
-    };
-    assert_eq!(
-        stopped.termination_reason(),
-        TerminationReason::Stopped(crate::contracts::StoppedReason::new("max_rounds_reached",))
-    );
-
-    let cancelled = AgentLoopError::Cancelled {
-        run_ctx: Box::new(RunContext::new(
-            "test",
-            json!({}),
-            vec![],
-            crate::contracts::RunConfig::default(),
-        )),
-    };
-    assert_eq!(cancelled.termination_reason(), TerminationReason::Cancelled);
-
-    let pending = AgentLoopError::Suspended {
-        run_ctx: Box::new(RunContext::new(
-            "test",
-            json!({}),
-            vec![],
-            crate::contracts::RunConfig::default(),
-        )),
-        suspended_call: Box::new({
-            let suspension = Suspension::new("int_1", "confirm");
-            SuspendedCall {
-                call_id: "call_1".to_string(),
-                tool_name: "confirm_tool".to_string(),
-                invocation: test_frontend_invocation(&suspension),
-                suspension,
-            }
-        }),
-    };
-    assert_eq!(pending.termination_reason(), TerminationReason::Suspended);
-
-    let llm = AgentLoopError::LlmError("offline".to_string());
-    assert_eq!(llm.termination_reason(), TerminationReason::Error);
-
-    let state = AgentLoopError::StateError("broken".to_string());
-    assert_eq!(state.termination_reason(), TerminationReason::Error);
-}
 
 #[test]
 fn test_llm_retry_error_classification() {
@@ -916,7 +853,7 @@ fn test_execute_tools_empty() {
         };
         let tools = HashMap::new();
 
-        let thread = execute_tools(thread, &result, &tools, true).await.unwrap();
+        let thread = execute_tools(thread, &result, &tools, true).await.unwrap().into_thread();
         assert_eq!(thread.message_count(), 0);
     });
 }
@@ -937,7 +874,7 @@ fn test_execute_tools_with_calls() {
         };
         let tools = tool_map([EchoTool]);
 
-        let thread = execute_tools(thread, &result, &tools, true).await.unwrap();
+        let thread = execute_tools(thread, &result, &tools, true).await.unwrap().into_thread();
 
         assert_eq!(thread.message_count(), 1);
         assert_eq!(
@@ -964,7 +901,7 @@ fn test_execute_tools_injects_caller_scope_context_for_tools() {
         };
         let tools = tool_map([ScopeSnapshotTool]);
 
-        let thread = execute_tools(thread, &result, &tools, true).await.unwrap();
+        let thread = execute_tools(thread, &result, &tools, true).await.unwrap().into_thread();
         assert_eq!(thread.message_count(), 2);
         let tool_msg = thread
             .messages
@@ -1189,7 +1126,7 @@ async fn test_parallel_tool_executor_honors_cancellation_token() {
         .expect("parallel executor should stop shortly after cancellation")
         .expect("task should not panic");
     assert!(
-        matches!(result, Err(AgentLoopError::Cancelled { .. })),
+        matches!(result, Err(AgentLoopError::Cancelled)),
         "expected cancellation error from tool executor"
     );
 }
@@ -1243,7 +1180,7 @@ fn test_execute_tools_with_state_changes() {
         };
         let tools = tool_map([CounterTool]);
 
-        let thread = execute_tools(thread, &result, &tools, true).await.unwrap();
+        let thread = execute_tools(thread, &result, &tools, true).await.unwrap().into_thread();
 
         assert_eq!(thread.message_count(), 1);
         // state patch + merged tool lifecycle patch
@@ -1295,7 +1232,7 @@ fn test_execute_tools_with_failing_tool() {
         };
         let tools = tool_map([FailingTool]);
 
-        let thread = execute_tools(thread, &result, &tools, true).await.unwrap();
+        let thread = execute_tools(thread, &result, &tools, true).await.unwrap().into_thread();
 
         assert_eq!(thread.message_count(), 1);
         let msg = &thread.messages[0];
@@ -1382,7 +1319,8 @@ fn test_execute_tools_with_blocking_phase_plugin() {
 
         let thread = execute_tools_with_plugins(thread, &result, &tools, true, &plugins)
             .await
-            .unwrap();
+            .unwrap()
+            .into_thread();
 
         assert_eq!(thread.message_count(), 1);
         let msg = &thread.messages[0];
@@ -1581,7 +1519,8 @@ fn test_execute_tools_with_reminder_phase_plugin() {
 
         let thread = execute_tools_with_plugins(thread, &result, &tools, true, &plugins)
             .await
-            .unwrap();
+            .unwrap()
+            .into_thread();
 
         // Should have tool response + reminder message
         assert_eq!(thread.message_count(), 2);
@@ -2228,28 +2167,28 @@ fn test_execute_tools_with_pending_phase_plugin() {
         let tools = tool_map([EchoTool]);
         let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(PendingPhasePlugin)];
 
-        let err = execute_tools_with_plugins(thread, &result, &tools, true, &plugins)
+        let outcome = execute_tools_with_plugins(thread, &result, &tools, true, &plugins)
             .await
-            .unwrap_err();
+            .unwrap();
 
-        let (thread, suspended_call) = match err {
-            AgentLoopError::Suspended {
-                run_ctx: thread,
+        let (thread, suspended_call) = match outcome {
+            ExecuteToolsOutcome::Suspended {
+                thread,
                 suspended_call,
             } => (thread, suspended_call),
-            other => panic!("Expected Suspended error, got: {:?}", other),
+            other => panic!("Expected Suspended outcome, got: {:?}", other),
         };
 
         assert_eq!(suspended_call.suspension.id, "confirm_1");
         assert_eq!(suspended_call.suspension.action, "confirm");
 
         // Pending tool gets a placeholder tool result to keep message sequence valid.
-        assert_eq!(thread.messages().len(), 1);
-        let msg = &thread.messages()[0];
+        assert_eq!(thread.messages.len(), 1);
+        let msg = &thread.messages[0];
         assert_eq!(msg.role, crate::contracts::thread::Role::Tool);
         assert!(msg.content.contains("awaiting approval"));
 
-        let state = thread.snapshot().unwrap();
+        let state = thread.rebuild_state().unwrap();
         assert_eq!(
             state["__suspended_tool_calls"]["calls"]["call_1"]["suspension"]["id"],
             "confirm_1"
@@ -2276,7 +2215,8 @@ fn test_invalid_args_are_returned_as_tool_error_before_pending_confirmation() {
 
         let thread = execute_tools_with_plugins(thread, &result, &tools, true, &plugins)
             .await
-            .expect("invalid args should return a tool error instead of suspended interaction");
+            .expect("invalid args should return a tool error instead of suspended interaction")
+            .into_thread();
 
         assert_eq!(thread.messages.len(), 1);
         let msg = &thread.messages[0];
@@ -2558,7 +2498,7 @@ fn test_execute_tools_missing_tool() {
         };
         let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new(); // Empty tools
 
-        let thread = execute_tools(thread, &result, &tools, true).await.unwrap();
+        let thread = execute_tools(thread, &result, &tools, true).await.unwrap().into_thread();
 
         assert_eq!(thread.message_count(), 1);
         let msg = &thread.messages[0];
@@ -2585,7 +2525,8 @@ fn test_execute_tools_with_config_empty_calls() {
 
         let thread = execute_tools_with_config(thread, &result, &tools, &config)
             .await
-            .unwrap();
+            .unwrap()
+            .into_thread();
 
         // No messages should be added when there are no tool calls
         assert_eq!(thread.message_count(), 0);
@@ -2611,7 +2552,8 @@ fn test_execute_tools_with_config_basic() {
 
         let thread = execute_tools_with_config(thread, &result, &tools, &config)
             .await
-            .unwrap();
+            .unwrap()
+            .into_thread();
 
         assert_eq!(thread.message_count(), 1);
         assert_eq!(
@@ -2659,7 +2601,8 @@ fn test_execute_tools_with_config_attaches_scope_run_metadata() {
 
         let thread = execute_tools_with_config(thread, &result, &tools, &config)
             .await
-            .unwrap();
+            .unwrap()
+            .into_thread();
 
         assert_eq!(thread.message_count(), 2);
         let tool_msg = thread.messages.last().expect("tool message should exist");
@@ -2693,7 +2636,8 @@ fn test_execute_tools_with_config_with_blocking_plugin() {
 
         let thread = execute_tools_with_config(thread, &result, &tools, &config)
             .await
-            .unwrap();
+            .unwrap()
+            .into_thread();
 
         assert_eq!(thread.message_count(), 1);
         let msg = &thread.messages[0];
@@ -2758,7 +2702,8 @@ fn test_execute_tools_with_config_denied_response_is_applied_via_tool_call_state
 
         let thread = execute_tools_with_config(thread, &result, &tools, &config)
             .await
-            .expect("tool execution should succeed with denied decision applied");
+            .expect("tool execution should succeed with denied decision applied")
+            .into_thread();
 
         assert_eq!(thread.message_count(), 1);
         let msg = &thread.messages[0];
@@ -2854,29 +2799,29 @@ fn test_execute_tools_with_config_with_pending_plugin() {
         let config = AgentConfig::new("gpt-4")
             .with_plugin(Arc::new(PendingPhasePlugin) as Arc<dyn AgentPlugin>);
 
-        let err = execute_tools_with_config(thread, &result, &tools, &config)
+        let outcome = execute_tools_with_config(thread, &result, &tools, &config)
             .await
-            .unwrap_err();
+            .unwrap();
 
-        let (thread, suspended_call) = match err {
-            AgentLoopError::Suspended {
-                run_ctx: thread,
+        let (thread, suspended_call) = match outcome {
+            ExecuteToolsOutcome::Suspended {
+                thread,
                 suspended_call,
             } => (thread, suspended_call),
-            other => panic!("Expected Suspended error, got: {:?}", other),
+            other => panic!("Expected Suspended outcome, got: {:?}", other),
         };
 
         assert_eq!(suspended_call.suspension.id, "confirm_1");
         assert_eq!(suspended_call.suspension.action, "confirm");
 
         // Pending tool gets a placeholder tool result to keep message sequence valid.
-        assert_eq!(thread.messages().len(), 1);
-        let msg = &thread.messages()[0];
+        assert_eq!(thread.messages.len(), 1);
+        let msg = &thread.messages[0];
         assert_eq!(msg.role, crate::contracts::thread::Role::Tool);
         assert!(msg.content.contains("awaiting approval"));
 
-        // Pending interaction should be persisted via RunContext.
-        let state = thread.snapshot().unwrap();
+        // Pending interaction should be persisted via state.
+        let state = thread.rebuild_state().unwrap();
         assert_eq!(
             state["__suspended_tool_calls"]["calls"]["call_1"]["suspension"]["id"],
             "confirm_1"
@@ -2904,7 +2849,8 @@ fn test_execute_tools_with_config_with_reminder_plugin() {
 
         let thread = execute_tools_with_config(thread, &result, &tools, &config)
             .await
-            .unwrap();
+            .unwrap()
+            .into_thread();
 
         // Should have tool response + reminder message
         assert_eq!(thread.message_count(), 2);
@@ -2940,7 +2886,8 @@ fn test_execute_tools_with_config_preserves_unresolved_suspended_calls_on_succes
 
         let thread = execute_tools_with_config(thread, &result, &tools, &config)
             .await
-            .unwrap();
+            .unwrap()
+            .into_thread();
 
         let state = thread.rebuild_state().unwrap();
         let suspended = state
@@ -8145,7 +8092,7 @@ fn test_parallel_tools_partial_failure() {
             Arc::new(FailingTool) as Arc<dyn Tool>,
         );
 
-        let thread = execute_tools(thread, &result, &tools, true).await.unwrap();
+        let thread = execute_tools(thread, &result, &tools, true).await.unwrap().into_thread();
 
         // Both tools produce messages.
         assert_eq!(
@@ -8220,7 +8167,7 @@ fn test_sequential_tools_partial_failure() {
             Arc::new(FailingTool) as Arc<dyn Tool>,
         );
 
-        let thread = execute_tools(thread, &result, &tools, false).await.unwrap();
+        let thread = execute_tools(thread, &result, &tools, false).await.unwrap().into_thread();
 
         assert_eq!(
             thread.message_count(),
@@ -8286,12 +8233,12 @@ async fn test_sequential_tools_stop_after_first_suspension() {
     };
     let tools = tool_map([EchoTool]);
 
-    let err = execute_tools_with_plugins(thread, &result, &tools, false, &plugins)
+    let outcome = execute_tools_with_plugins(thread, &result, &tools, false, &plugins)
         .await
-        .expect_err("sequential mode should pause on first suspended interaction");
-    let (thread, suspended_call) = match err {
-        AgentLoopError::Suspended {
-            run_ctx: thread,
+        .expect("sequential mode should pause on first suspended interaction");
+    let (thread, suspended_call) = match outcome {
+        ExecuteToolsOutcome::Suspended {
+            thread,
             suspended_call,
         } => (thread, suspended_call),
         other => panic!("expected Suspended, got: {other:?}"),
@@ -8302,8 +8249,8 @@ async fn test_sequential_tools_stop_after_first_suspension() {
         vec!["call_1".to_string()],
         "second tool must not execute after first suspended interaction in sequential mode"
     );
-    assert_eq!(thread.messages().len(), 1);
-    assert_eq!(thread.messages()[0].tool_call_id.as_deref(), Some("call_1"));
+    assert_eq!(thread.messages.len(), 1);
+    assert_eq!(thread.messages[0].tool_call_id.as_deref(), Some("call_1"));
 }
 
 #[tokio::test]
@@ -8351,12 +8298,12 @@ async fn test_parallel_tools_allow_single_suspended_interaction_per_round() {
     };
     let tools = tool_map([EchoTool]);
 
-    let err = execute_tools_with_plugins(thread, &result, &tools, true, &plugins)
+    let outcome = execute_tools_with_plugins(thread, &result, &tools, true, &plugins)
         .await
-        .expect_err("parallel mode should suspend all interactions and pause");
-    let (thread, suspended_call) = match err {
-        AgentLoopError::Suspended {
-            run_ctx: thread,
+        .expect("parallel mode should suspend all interactions and pause");
+    let (thread, suspended_call) = match outcome {
+        ExecuteToolsOutcome::Suspended {
+            thread,
             suspended_call,
         } => (thread, suspended_call),
         other => panic!("expected Suspended, got: {other:?}"),
@@ -8370,17 +8317,17 @@ async fn test_parallel_tools_allow_single_suspended_interaction_per_round() {
         vec!["call_1".to_string(), "call_2".to_string()],
         "parallel mode should still execute both BeforeToolExecute phases"
     );
-    assert_eq!(thread.messages().len(), 2);
+    assert_eq!(thread.messages.len(), 2);
     // Both tools should be suspended (not deferred)
     assert!(
-        thread.messages()[0].content.contains("awaiting approval"),
+        thread.messages[0].content.contains("awaiting approval"),
         "first tool should be suspended: {}",
-        thread.messages()[0].content
+        thread.messages[0].content
     );
     assert!(
-        thread.messages()[1].content.contains("awaiting approval"),
+        thread.messages[1].content.contains("awaiting approval"),
         "second tool should also be suspended: {}",
-        thread.messages()[1].content
+        thread.messages[1].content
     );
 }
 
@@ -8515,7 +8462,7 @@ fn test_plugin_order_affects_outcome() {
             execute_tools_with_plugins(thread.clone(), &result, &tools, false, &plugins_order1)
                 .await;
         // When pending+blocked, the blocked result takes priority.
-        let s1 = r1.unwrap();
+        let s1 = r1.unwrap().into_thread();
         assert_eq!(s1.message_count(), 1);
         assert!(
             s1.messages[0].content.to_lowercase().contains("blocked")
@@ -8531,11 +8478,10 @@ fn test_plugin_order_affects_outcome() {
         ];
         let r2 = execute_tools_with_plugins(thread, &result, &tools, false, &plugins_order2).await;
         // Should be Suspended (not blocked).
-        assert!(r2.is_err(), "Order 2 should result in Suspended");
-        match r2.unwrap_err() {
-            AgentLoopError::Suspended { .. } => {}
-            other => panic!("Expected Suspended, got: {:?}", other),
-        }
+        assert!(
+            matches!(r2, Ok(ExecuteToolsOutcome::Suspended { .. })),
+            "Order 2 should result in Suspended"
+        );
     });
 }
 
@@ -9224,7 +9170,7 @@ fn test_sequential_tools_see_accumulated_state() {
         let tools = tool_map([CounterTool]);
 
         // Sequential execution: false = not parallel
-        let thread = execute_tools(thread, &result, &tools, false).await.unwrap();
+        let thread = execute_tools(thread, &result, &tools, false).await.unwrap().into_thread();
 
         // Tool 1 sees counter=0, sets to 3
         // Tool 2 sees counter=3 (accumulated!), sets to 10
@@ -9321,7 +9267,7 @@ fn test_parallel_tools_disjoint_paths_both_visible() {
         tools.insert("alpha".to_string(), Arc::new(AlphaTool));
         tools.insert("beta".to_string(), Arc::new(BetaTool));
 
-        let thread = execute_tools(thread, &result, &tools, true).await.unwrap();
+        let thread = execute_tools(thread, &result, &tools, true).await.unwrap().into_thread();
 
         let state = thread.rebuild_state().unwrap();
         assert_eq!(state["alpha"]["counter"], 111, "alpha tool patch applied");

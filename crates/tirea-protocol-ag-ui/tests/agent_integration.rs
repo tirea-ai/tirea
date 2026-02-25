@@ -13,7 +13,7 @@ use tirea_agentos::contracts::SuspensionResponse;
 use tirea_agentos::contracts::ToolCallContext;
 use tirea_agentos::extensions::reminder::SystemReminder;
 use tirea_agentos::runtime::activity::ActivityHub;
-use tirea_agentos::runtime::loop_runner::AgentLoopError;
+use tirea_agentos::runtime::loop_runner::{AgentLoopError, ExecuteToolsOutcome};
 use tirea_contract::testing::TestFixture;
 use tirea_protocol_ag_ui::{interaction_to_ag_ui_events, Role, ToolExecutionLocation};
 use tirea_state::State;
@@ -562,7 +562,9 @@ async fn loop_execute_tools(
     tools: &std::collections::HashMap<String, Arc<dyn Tool>>,
     parallel: bool,
 ) -> Result<Thread, AgentLoopError> {
-    execute_tools_with_plugins(thread, result, tools, parallel, &[]).await
+    execute_tools_with_plugins(thread, result, tools, parallel, &[])
+        .await
+        .map(|outcome| outcome.into_thread())
 }
 
 #[tokio::test]
@@ -2948,7 +2950,6 @@ async fn test_sequential_execution_with_mixed_patch_results() {
 
 #[test]
 fn test_agent_loop_error_all_variants() {
-    use tirea_agentos::contracts::Suspension;
     use tirea_agentos::runtime::loop_runner::AgentLoopError;
 
     // LlmError
@@ -2961,48 +2962,6 @@ fn test_agent_loop_error_all_variants() {
     let display = state_err.to_string();
     assert!(display.contains("State") || display.contains("rebuild"));
 
-    // Stopped
-    let stopped_err = AgentLoopError::Stopped {
-        run_ctx: Box::new(tirea_agentos::contracts::RunContext::new(
-            "s",
-            serde_json::json!({}),
-            vec![],
-            Default::default(),
-        )),
-        reason: tirea_agentos::contracts::StoppedReason::new("max_rounds_reached"),
-    };
-    let display = stopped_err.to_string();
-    assert!(
-        display.contains("stopped")
-            || display.contains("Stopped")
-            || display.contains("max_rounds_reached")
-    );
-
-    // Suspended
-    let pending_err = AgentLoopError::Suspended {
-        run_ctx: Box::new(tirea_agentos::contracts::RunContext::new(
-            "s",
-            serde_json::json!({}),
-            vec![],
-            Default::default(),
-        )),
-        suspended_call: Box::new(tirea_agentos::contracts::SuspendedCall {
-            call_id: "call_1".to_string(),
-            tool_name: "confirm_tool".to_string(),
-            suspension: Suspension::new("int_1", "confirm"),
-            invocation: tirea_agentos::contracts::FrontendToolInvocation::new(
-                "int_1".to_string(),
-                "confirm_tool".to_string(),
-                json!({}),
-                tirea_agentos::contracts::InvocationOrigin::PluginInitiated {
-                    plugin_id: "test".to_string(),
-                },
-                tirea_agentos::contracts::ResponseRouting::PassToLLM,
-            ),
-        }),
-    };
-    let display = pending_err.to_string();
-    assert!(display.contains("call_1") || display.contains("suspended"));
 }
 
 // ============================================================================
@@ -6389,12 +6348,12 @@ async fn test_permission_flow_multiple_tools_mixed() {
 
 /// Test: PermissionPlugin "ask" suspends tool execution via execute_tools_with_plugins.
 ///
-/// Verifies: Suspended error returned, no tool messages, interaction details correct,
+/// Verifies: Suspended outcome returned, no tool messages, interaction details correct,
 /// and suspended_interaction persisted in session state.
 #[tokio::test]
 async fn test_e2e_permission_suspend_with_real_tool() {
     use tirea_agentos::runtime::loop_runner::{
-        execute_tools_with_plugins, tool_map, AgentLoopError,
+        execute_tools_with_plugins, tool_map, ExecuteToolsOutcome,
     };
 
     // Thread with permissions.default_behavior = "ask"
@@ -6417,16 +6376,16 @@ async fn test_e2e_permission_suspend_with_real_tool() {
     let plugins: Vec<Arc<dyn tirea_agentos::contracts::plugin::AgentPlugin>> =
         vec![Arc::new(PermissionPlugin)];
 
-    // execute_tools_with_plugins should return Suspended error
-    let err = execute_tools_with_plugins(thread, &result, &tools, false, &plugins)
+    // execute_tools_with_plugins should return Suspended outcome
+    let outcome = execute_tools_with_plugins(thread, &result, &tools, false, &plugins)
         .await
-        .unwrap_err();
+        .unwrap();
 
-    let (suspended_run_ctx, interaction) = match err {
-        AgentLoopError::Suspended {
-            run_ctx,
+    let (suspended_thread, interaction) = match outcome {
+        ExecuteToolsOutcome::Suspended {
+            thread,
             suspended_call,
-        } => (*run_ctx, suspended_call.suspension.clone()),
+        } => (thread, suspended_call.suspension.clone()),
         other => panic!("Expected Suspended, got: {:?}", other),
     };
 
@@ -6440,19 +6399,19 @@ async fn test_e2e_permission_suspend_with_real_tool() {
 
     // Placeholder tool result keeps LLM message sequence valid while awaiting approval.
     assert_eq!(
-        suspended_run_ctx.messages().len(),
+        suspended_thread.messages.len(),
         1,
         "Pending tool should have placeholder result"
     );
     assert!(
-        suspended_run_ctx.messages()[0]
+        suspended_thread.messages[0]
             .content
             .contains("awaiting approval"),
         "Placeholder should mention awaiting approval"
     );
 
     // suspended_interaction persisted in session state
-    let state = suspended_run_ctx.snapshot().unwrap();
+    let state = suspended_thread.rebuild_state().unwrap();
     let pending = state["__suspended_tool_calls"]["calls"]
         .as_object()
         .and_then(|calls| calls.values().next())
@@ -6477,7 +6436,7 @@ async fn test_e2e_permission_suspend_with_real_tool() {
 #[tokio::test]
 async fn test_e2e_permission_deny_blocks_via_execute_tools() {
     use tirea_agentos::runtime::loop_runner::{
-        execute_tools_with_plugins, tool_map, AgentLoopError,
+        execute_tools_with_plugins, tool_map, ExecuteToolsOutcome,
     };
 
     let thread = Thread::with_initial_state(
@@ -6500,27 +6459,16 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
         vec![Arc::new(PermissionPlugin)];
 
     // Phase 1: Suspend
-    let err = execute_tools_with_plugins(thread, &result, &tools, false, &plugins)
+    let outcome = execute_tools_with_plugins(thread, &result, &tools, false, &plugins)
         .await
-        .unwrap_err();
+        .unwrap();
 
-    let (suspended_run_ctx, interaction) = match err {
-        AgentLoopError::Suspended {
-            run_ctx,
+    let (suspended_thread, interaction) = match outcome {
+        ExecuteToolsOutcome::Suspended {
+            thread,
             suspended_call,
-        } => (*run_ctx, suspended_call.suspension.clone()),
+        } => (thread, suspended_call.suspension.clone()),
         other => panic!("Expected Suspended, got: {:?}", other),
-    };
-
-    // Reconstruct Thread from RunContext for resume
-    let suspended_thread = {
-        let state = suspended_run_ctx.snapshot().unwrap();
-        let mut t =
-            ConversationAgentState::with_initial_state(suspended_run_ctx.thread_id(), state);
-        for msg in suspended_run_ctx.messages() {
-            t = t.with_message((**msg).clone());
-        }
-        t
     };
 
     // Phase 2: Client denies
@@ -6555,7 +6503,8 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
         &resume_plugins,
     )
     .await
-    .unwrap();
+    .unwrap()
+    .into_thread();
 
     // 1 placeholder from suspend + 1 blocked result from deny resume
     assert_eq!(
@@ -6586,7 +6535,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
 #[tokio::test]
 async fn test_e2e_permission_approve_executes_via_execute_tools() {
     use tirea_agentos::runtime::loop_runner::{
-        execute_tools_with_plugins, tool_map, AgentLoopError,
+        execute_tools_with_plugins, tool_map, ExecuteToolsOutcome,
     };
 
     let thread = Thread::with_initial_state(
@@ -6609,27 +6558,16 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
         vec![Arc::new(PermissionPlugin)];
 
     // Phase 1: Suspend
-    let err = execute_tools_with_plugins(thread, &result, &tools, false, &plugins)
+    let outcome = execute_tools_with_plugins(thread, &result, &tools, false, &plugins)
         .await
-        .unwrap_err();
+        .unwrap();
 
-    let (suspended_run_ctx, interaction) = match err {
-        AgentLoopError::Suspended {
-            run_ctx,
+    let (suspended_thread, interaction) = match outcome {
+        ExecuteToolsOutcome::Suspended {
+            thread,
             suspended_call,
-        } => (*run_ctx, suspended_call.suspension.clone()),
+        } => (thread, suspended_call.suspension.clone()),
         other => panic!("Expected Suspended, got: {:?}", other),
-    };
-
-    // Reconstruct Thread from RunContext for resume
-    let suspended_thread = {
-        let state = suspended_run_ctx.snapshot().unwrap();
-        let mut t =
-            ConversationAgentState::with_initial_state(suspended_run_ctx.thread_id(), state);
-        for msg in suspended_run_ctx.messages() {
-            t = t.with_message((**msg).clone());
-        }
-        t
     };
 
     // Phase 2: Client approves
@@ -6663,7 +6601,8 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
         &resume_plugins,
     )
     .await
-    .unwrap();
+    .unwrap()
+    .into_thread();
 
     // 1 placeholder from suspend + 1 real result from approved resume
     assert_eq!(

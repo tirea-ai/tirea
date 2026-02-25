@@ -729,7 +729,7 @@ pub(super) fn run_stream(
 
             let mut results = match results {
                 Ok(r) => r,
-                Err(AgentLoopError::Cancelled { .. }) => {
+                Err(AgentLoopError::Cancelled) => {
                     append_cancellation_user_message(&mut run_ctx, CancellationStage::ToolExecution);
                     finish_run!(TerminationReason::Cancelled, None);
                 }
