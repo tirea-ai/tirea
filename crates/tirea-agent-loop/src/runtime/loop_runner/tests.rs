@@ -1,6 +1,6 @@
 use super::outcome::LoopFailure;
 use super::*;
-use crate::contracts::event::suspension::{
+use crate::contracts::interaction::{
     FrontendToolInvocation, InvocationOrigin, ResponseRouting,
 };
 use crate::contracts::plugin::phase::{

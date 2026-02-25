@@ -1,8 +1,8 @@
 use super::*;
-use crate::event::suspension::{
+use crate::interaction::{
     FrontendToolInvocation, InvocationOrigin, ResponseRouting, Suspension,
 };
-use crate::event::termination::TerminationReason;
+use crate::lifecycle::TerminationReason;
 use crate::runtime::result::StreamResult;
 use crate::testing::TestFixture;
 use crate::thread::ToolCall;

@@ -96,7 +96,9 @@ macro_rules! impl_loop_config_builder_methods {
 pub mod testing;
 
 pub mod event;
+pub mod interaction;
 pub mod io;
+pub mod lifecycle;
 pub mod plugin;
 pub mod runtime;
 pub mod storage;
@@ -117,10 +119,13 @@ pub use thread::{
 };
 
 // event
-pub use event::{
-    AgentEvent, FrontendToolInvocation, InvocationOrigin, ResponseRouting, StoppedReason,
-    Suspension, SuspensionResponse, TerminationReason,
+pub use event::AgentEvent;
+
+// interaction/lifecycle
+pub use interaction::{
+    FrontendToolInvocation, InvocationOrigin, ResponseRouting, Suspension, SuspensionResponse,
 };
+pub use lifecycle::{StoppedReason, TerminationReason};
 
 // tool
 pub use tool::{

@@ -4,7 +4,7 @@
 //! flow control (suspended tool calls, tool-call lifecycle state, and inference
 //! error envelope).
 
-use crate::event::suspension::{FrontendToolInvocation, Suspension};
+use crate::interaction::{FrontendToolInvocation, Suspension};
 pub use crate::io::{ResumeDecisionAction, ToolCallDecision};
 use crate::runtime::state_paths::{
     RUN_LIFECYCLE_STATE_PATH, SUSPENDED_TOOL_CALLS_STATE_PATH, TOOL_CALL_STATES_STATE_PATH,
@@ -284,7 +284,7 @@ pub fn run_lifecycle_from_state(state: &Value) -> Option<RunLifecycleState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::suspension::SuspensionResponse;
+    use crate::interaction::SuspensionResponse;
     use serde_json::Value;
 
     #[test]

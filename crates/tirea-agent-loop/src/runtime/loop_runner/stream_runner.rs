@@ -760,7 +760,7 @@ pub(super) fn run_stream(
                     // MUST emit ToolCallStart/Ready here for the frontend to see it.
                     if matches!(
                         suspended_call.invocation.routing,
-                        crate::contracts::event::suspension::ResponseRouting::UseAsToolResult
+                        crate::contracts::interaction::ResponseRouting::UseAsToolResult
                     ) {
                         continue;
                     }

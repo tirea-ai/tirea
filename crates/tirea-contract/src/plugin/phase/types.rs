@@ -1,5 +1,5 @@
-use crate::event::suspension::{FrontendToolInvocation, Suspension};
-use crate::event::termination::TerminationReason;
+use crate::interaction::{FrontendToolInvocation, Suspension};
+use crate::lifecycle::TerminationReason;
 use tirea_state::TrackedPatch;
 
 /// Execution phase in the agent loop.

@@ -1,5 +1,5 @@
 use super::*;
-use tirea_contract::event::suspension::{
+use tirea_contract::interaction::{
     FrontendToolInvocation, InvocationOrigin, ResponseRouting,
 };
 use tirea_contract::plugin::phase::PluginPhaseContext;

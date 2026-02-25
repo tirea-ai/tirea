@@ -1,5 +1,5 @@
 use super::event::AgentEventType;
-use crate::event::termination::TerminationReason;
+use crate::lifecycle::TerminationReason;
 use crate::runtime::ToolCallOutcome;
 use crate::tool::contract::ToolResult;
 use crate::runtime::result::TokenUsage;

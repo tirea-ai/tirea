@@ -1,5 +1,5 @@
 use super::{Phase, RunAction, StepContext, SuspendTicket, ToolAction, ToolGateDecision};
-use crate::event::termination::TerminationReason;
+use crate::lifecycle::TerminationReason;
 use crate::io::ResumeDecisionAction;
 use crate::runtime::result::StreamResult;
 use crate::runtime::ToolCallResume;

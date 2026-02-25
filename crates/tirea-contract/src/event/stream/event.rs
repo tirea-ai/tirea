@@ -1,4 +1,4 @@
-use crate::event::termination::TerminationReason;
+use crate::lifecycle::TerminationReason;
 use crate::tool::contract::ToolResult;
 use crate::runtime::result::TokenUsage;
 use serde::{Deserialize, Serialize};

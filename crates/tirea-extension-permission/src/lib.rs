@@ -28,7 +28,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
-use tirea_contract::event::suspension::{
+use tirea_contract::interaction::{
     FrontendToolInvocation, InvocationOrigin, ResponseRouting,
 };
 use tirea_contract::io::ResumeDecisionAction;
@@ -487,7 +487,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_ask() {
-        use tirea_contract::event::suspension::{InvocationOrigin, ResponseRouting};
+        use tirea_contract::interaction::{InvocationOrigin, ResponseRouting};
 
         let fixture = TestFixture::new_with_state(
             json!({ "permissions": { "default_behavior": "ask", "tools": {} } }),
@@ -555,7 +555,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_skips_when_tool_already_pending() {
-        use tirea_contract::event::suspension::{
+        use tirea_contract::interaction::{
             FrontendToolInvocation, InvocationOrigin, ResponseRouting,
         };
         use tirea_contract::plugin::phase::SuspendTicket;

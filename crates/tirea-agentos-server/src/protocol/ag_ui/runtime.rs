@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tirea_agentos::runtime::loop_runner::{
     ParallelToolExecutor, ResolvedRun, SequentialToolExecutor,
 };
-use tirea_contract::event::suspension::{
+use tirea_contract::interaction::{
     FrontendToolInvocation, InvocationOrigin, ResponseRouting,
 };
 use tirea_contract::plugin::phase::{
@@ -514,7 +514,7 @@ mod tests {
 
     #[tokio::test]
     async fn frontend_pending_plugin_marks_frontend_call_as_pending() {
-        use tirea_contract::event::suspension::{InvocationOrigin, ResponseRouting};
+        use tirea_contract::interaction::{InvocationOrigin, ResponseRouting};
 
         let plugin =
             FrontendToolPendingPlugin::new(["copyToClipboard".to_string()].into_iter().collect());

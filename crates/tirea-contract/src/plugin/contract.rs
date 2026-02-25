@@ -68,8 +68,8 @@ pub trait AgentPlugin: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::suspension::{FrontendToolInvocation, InvocationOrigin, ResponseRouting};
-    use crate::event::Suspension;
+    use crate::interaction::{FrontendToolInvocation, InvocationOrigin, ResponseRouting};
+    use crate::interaction::Suspension;
     use crate::plugin::phase::{StepContext, SuspendTicket, ToolContext};
     use crate::testing::TestFixture;
     use crate::thread::ToolCall;
