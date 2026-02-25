@@ -4,11 +4,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
-use serde_json::Value;
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::sync::{Arc, OnceLock};
-use tirea_agentos::contracts::thread::Thread;
+use std::sync::OnceLock;
 use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError};
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
 use tirea_contract::RuntimeInput;
@@ -104,13 +102,35 @@ async fn run(
                 "messageId cannot be empty for regenerate-message".to_string(),
             ));
         }
-        if !req.contains_message_id(message_id) {
-            return Err(ApiError::BadRequest(
-                "messageId must reference a message in messages for regenerate-message".to_string(),
-            ));
-        }
+        // Truncate stored thread to include messages up to and including messageId.
+        let store = require_agent_state_store(&st.os)?;
+        let mut thread = store
+            .load(&req.thread_id)
+            .await
+            .map_err(|err| ApiError::Internal(err.to_string()))?
+            .ok_or_else(|| {
+                ApiError::BadRequest(
+                    "thread not found for regenerate-message".to_string(),
+                )
+            })?
+            .thread;
+        let position = thread
+            .messages
+            .iter()
+            .position(|m| m.id.as_deref() == Some(message_id))
+            .ok_or_else(|| {
+                ApiError::BadRequest(
+                    "messageId does not reference a stored message".to_string(),
+                )
+            })?;
+        thread.messages.truncate(position + 1);
+        store
+            .save(&thread)
+            .await
+            .map_err(|err| ApiError::Internal(err.to_string()))?;
     }
-    if !req.has_user_input() && !req.has_suspension_decisions() {
+    let is_regenerate = req.trigger == Some(AiSdkTrigger::RegenerateMessage);
+    if !req.has_user_input() && !req.has_suspension_decisions() && !is_regenerate {
         return Err(ApiError::BadRequest(
             "request must include user input or suspension decisions".to_string(),
         ));
@@ -134,23 +154,17 @@ async fn run(
 
     let mut resolved = st.os.resolve(&agent_id).map_err(AgentOsRunError::from)?;
     apply_ai_sdk_extensions(&mut resolved, &req);
+    let run_request = req.into_runtime_run_request(agent_id.clone());
 
-    sync_thread_snapshot(&st, &req).await?;
-
-    let thread_id = req.thread_id.clone();
-    let mut run_request = req.into_runtime_run_request(agent_id.clone());
-    run_request.messages.clear();
-
-    let os = st.os.clone();
+    // Call prepare_run synchronously so storage errors surface as HTTP 500.
     let cancellation_token = RunCancellationToken::new();
+    let prepared = st.os.prepare_run(run_request.clone(), resolved).await?;
+    let thread_id = prepared.thread_id.clone();
+
     let token_for_starter = cancellation_token.clone();
     let token_for_callback = cancellation_token.clone();
-    let starter: RunStarter = Box::new(move |request| {
+    let starter: RunStarter = Box::new(move |_request| {
         Box::pin(async move {
-            let prepared = os
-                .prepare_run(request, resolved)
-                .await
-                .map_err(|e| TransportError::Internal(e.to_string()))?;
             let run = AgentOs::execute_prepared(
                 prepared.with_cancellation_token(token_for_starter.clone()),
             )
@@ -208,51 +222,6 @@ async fn resume_stream(Path((agent_id, chat_id)): Path<(String, String)>) -> Res
     };
 
     ai_sdk_sse_response(stream)
-}
-
-async fn sync_thread_snapshot(st: &AppState, req: &AiSdkV6RunRequest) -> Result<(), ApiError> {
-    let store = require_agent_state_store(&st.os)?;
-
-    let mut thread = match store
-        .load(&req.thread_id)
-        .await
-        .map_err(|err| ApiError::Internal(err.to_string()))?
-    {
-        Some(head) => head.thread,
-        None => Thread::new(req.thread_id.clone()),
-    };
-
-    thread.messages = req
-        .to_thread_message_snapshot()
-        .into_iter()
-        .map(Arc::new)
-        .collect();
-    upsert_protocol_state(&mut thread.state, req.to_protocol_snapshot());
-
-    store
-        .save(&thread)
-        .await
-        .map_err(|err| ApiError::Internal(err.to_string()))
-}
-
-fn upsert_protocol_state(state: &mut Value, snapshot: Value) {
-    if !state.is_object() {
-        *state = Value::Object(serde_json::Map::new());
-    }
-    let Some(root) = state.as_object_mut() else {
-        return;
-    };
-
-    let protocol_entry = root
-        .entry("protocol".to_string())
-        .or_insert_with(|| Value::Object(serde_json::Map::new()));
-    if !protocol_entry.is_object() {
-        *protocol_entry = Value::Object(serde_json::Map::new());
-    }
-    let Some(protocol_map) = protocol_entry.as_object_mut() else {
-        return;
-    };
-    protocol_map.insert("ai_sdk".to_string(), snapshot);
 }
 
 fn ai_sdk_sse_response<S>(stream: S) -> Response

@@ -391,15 +391,14 @@ async fn test_ai_sdk_sse_accepts_messages_request_shape() {
         "missing finish event: {text}"
     );
 
+    // Only the last user text is extracted and stored incrementally via prepare_run.
     let saved = storage
         .load_thread("t-messages-shape")
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(saved.messages.len(), 3);
-    assert_eq!(saved.messages[0].content, "first input");
-    assert_eq!(saved.messages[1].content, "ignored assistant text");
-    assert_eq!(saved.messages[2].content, "latest input");
+    assert_eq!(saved.messages.len(), 1);
+    assert_eq!(saved.messages[0].content, "latest input");
 }
 
 #[tokio::test]
@@ -2162,8 +2161,8 @@ async fn test_ai_sdk_permission_denial_emits_output_denied_without_replay() {
     assert_eq!(status, StatusCode::OK);
     assert!(
         body.contains(r#""type":"tool-output-denied""#)
-            && body.contains(r#""toolCallId":"fc_perm_1""#),
-        "denied resume should emit tool-output-denied: {body}"
+            && body.contains(r#""toolCallId":"call_1""#),
+        "denied resume should emit tool-output-denied for backend call: {body}"
     );
 
     let saved = storage.load_thread("th-ai-deny").await.unwrap().unwrap();
@@ -2704,46 +2703,22 @@ async fn test_ai_sdk_route_sets_protocol_headers() {
     );
 }
 
+/// Verifies that the AI SDK handler stores only the incremental user message
+/// via `prepare_run`, rather than overwriting the entire thread from a client
+/// snapshot. The mock agent terminates before inference, so the thread should
+/// contain exactly the user message appended by `prepare_run`.
 #[tokio::test]
-async fn test_ai_sdk_run_syncs_full_ui_message_snapshot() {
+async fn test_ai_sdk_run_stores_incremental_user_message() {
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os_with_storage(storage.clone()));
     let app = make_app(os, storage.clone());
 
+    // Client sends a single new user message (incremental).
     let payload = json!({
-        "id": "aisdk-sync-thread",
-        "trigger": "submit-message",
-        "messageId": "m_user_2",
+        "id": "aisdk-incremental-thread",
         "messages": [
             {
-                "id": "m_sys",
-                "role": "system",
-                "metadata": { "runId": "frontend_run_1", "stepIndex": 3 },
-                "parts": [{ "type": "text", "text": "be helpful" }]
-            },
-            {
                 "id": "m_user_1",
-                "role": "user",
-                "parts": [
-                    { "type": "text", "text": "hello" },
-                    { "type": "file", "mediaType": "text/plain", "url": "data:text/plain,hello" }
-                ]
-            },
-            {
-                "id": "m_assistant_1",
-                "role": "assistant",
-                "parts": [
-                    { "type": "text", "text": "let me search" },
-                    {
-                        "type": "tool-search",
-                        "toolCallId": "call_1",
-                        "state": "input-available",
-                        "input": { "q": "rust" }
-                    }
-                ]
-            },
-            {
-                "id": "m_user_2",
                 "role": "user",
                 "parts": [{ "type": "text", "text": "latest question" }]
             }
@@ -2755,78 +2730,114 @@ async fn test_ai_sdk_run_syncs_full_ui_message_snapshot() {
     assert!(body.contains(r#""type":"finish""#));
 
     let saved = storage
-        .load_thread("aisdk-sync-thread")
+        .load_thread("aisdk-incremental-thread")
         .await
         .expect("load should not fail")
         .expect("thread should exist");
-    assert_eq!(saved.messages.len(), 4);
-    assert_eq!(saved.messages[0].id.as_deref(), Some("m_sys"));
-    assert_eq!(saved.messages[1].id.as_deref(), Some("m_user_1"));
-    assert_eq!(saved.messages[2].id.as_deref(), Some("m_assistant_1"));
-    assert_eq!(saved.messages[3].id.as_deref(), Some("m_user_2"));
-    assert_eq!(saved.messages[2].content, "let me search");
-    let tool_calls = saved.messages[2]
-        .tool_calls
-        .as_ref()
-        .expect("assistant tool calls should be present");
-    assert_eq!(tool_calls.len(), 1);
-    assert_eq!(tool_calls[0].id, "call_1");
-    assert_eq!(tool_calls[0].name, "search");
-    assert_eq!(tool_calls[0].arguments["q"], "rust");
-
-    assert_eq!(
-        saved.state["protocol"]["ai_sdk"]["trigger"],
-        "submit-message"
-    );
-    assert_eq!(saved.state["protocol"]["ai_sdk"]["messageId"], "m_user_2");
-    assert_eq!(
-        saved.state["protocol"]["ai_sdk"]["messages"]
-            .as_array()
-            .expect("protocol messages snapshot should be array")
-            .len(),
-        4
+    // prepare_run appends exactly the extracted user message.
+    assert_eq!(saved.messages.len(), 1);
+    assert_eq!(saved.messages[0].content, "latest question");
+    // No protocol sidecar should be stored.
+    assert!(
+        saved.state.get("protocol").is_none(),
+        "no protocol sidecar should be stored; got: {:?}",
+        saved.state
     );
 }
 
+/// Second incremental request deduplicates: only the NEW message is appended.
 #[tokio::test]
-async fn test_ai_sdk_regenerate_request_replaces_snapshot() {
+async fn test_ai_sdk_second_request_deduplicates_messages() {
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os_with_storage(storage.clone()));
     let app = make_app(os, storage.clone());
 
+    // First request: creates thread with "hello".
     let first = json!({
-        "id": "aisdk-regenerate-thread",
-        "trigger": "submit-message",
-        "messages": [
-            { "id": "m_user_1", "role": "user", "parts": [{ "type": "text", "text": "question one" }] },
-            { "id": "m_assistant_1", "role": "assistant", "parts": [{ "type": "text", "text": "answer one" }] },
-            { "id": "m_user_2", "role": "user", "parts": [{ "type": "text", "text": "question two" }] }
-        ]
+        "id": "aisdk-dedup-thread",
+        "messages": [{ "role": "user", "content": "hello" }]
     });
     let (status, _) = post_sse_text(app.clone(), "/v1/ai-sdk/agents/test/runs", first).await;
     assert_eq!(status, StatusCode::OK);
 
+    let after_first = storage
+        .load_thread("aisdk-dedup-thread")
+        .await
+        .unwrap()
+        .unwrap();
+    let first_msg_count = after_first.messages.len();
+    assert!(first_msg_count >= 1, "at least the user message should be stored");
+
+    // Second request: sends a new question.
+    let second = json!({
+        "id": "aisdk-dedup-thread",
+        "messages": [{ "role": "user", "content": "follow up" }]
+    });
+    let (status, _) = post_sse_text(app.clone(), "/v1/ai-sdk/agents/test/runs", second).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let after_second = storage
+        .load_thread("aisdk-dedup-thread")
+        .await
+        .unwrap()
+        .unwrap();
+    // Should have gained exactly one new user message.
+    assert_eq!(
+        after_second.messages.len(),
+        first_msg_count + 1,
+        "second request should append exactly one new user message"
+    );
+    assert_eq!(
+        after_second.messages.last().unwrap().content,
+        "follow up"
+    );
+}
+
+/// Regenerate-message truncates the stored thread at the specified messageId
+/// (server-side truncation, no client snapshot needed).
+#[tokio::test]
+async fn test_ai_sdk_regenerate_truncates_stored_thread() {
+    use tirea_contract::Message;
+
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_storage(storage.clone()));
+    let app = make_app(os, storage.clone());
+
+    // Pre-populate thread with 3 known messages via store.save().
+    let thread = Thread::new("aisdk-regenerate-thread").with_messages(vec![
+        Message::user("question one").with_id("m_user_1".to_string()),
+        Message::assistant("answer one").with_id("m_assistant_1".to_string()),
+        Message::user("question two").with_id("m_user_2".to_string()),
+    ]);
+    storage.save(&thread).await.expect("save should succeed");
+
+    // Send regenerate request — no messages needed, just trigger + messageId.
     let regenerate = json!({
         "id": "aisdk-regenerate-thread",
         "trigger": "regenerate-message",
-        "messageId": "m_assistant_1",
-        "messages": [
-            { "id": "m_user_1", "role": "user", "parts": [{ "type": "text", "text": "question one" }] },
-            { "id": "m_assistant_1", "role": "assistant", "parts": [{ "type": "text", "text": "answer one" }] }
-        ]
+        "messageId": "m_assistant_1"
     });
-    let (status, _) = post_sse_text(app.clone(), "/v1/ai-sdk/agents/test/runs", regenerate).await;
+    let (status, body) =
+        post_sse_text(app.clone(), "/v1/ai-sdk/agents/test/runs", regenerate).await;
     assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(r#""type":"finish""#));
 
     let saved = storage
         .load_thread("aisdk-regenerate-thread")
         .await
         .expect("load should not fail")
         .expect("thread should exist");
-    assert_eq!(saved.messages.len(), 2);
+    // Messages after m_assistant_1 should be truncated.
+    assert!(
+        saved.messages.len() >= 2,
+        "thread should have at least the truncated messages; got {}",
+        saved.messages.len()
+    );
+    assert_eq!(saved.messages[0].id.as_deref(), Some("m_user_1"));
+    assert_eq!(saved.messages[1].id.as_deref(), Some("m_assistant_1"));
     assert!(
         saved.messages.iter().all(|m| m.content != "question two"),
-        "regenerate snapshot should replace removed trailing messages"
+        "trailing messages after messageId must be removed"
     );
 }
 
@@ -2836,15 +2847,11 @@ async fn test_ai_sdk_regenerate_requires_message_id() {
     let os = Arc::new(make_os_with_storage(storage.clone()));
     let app = make_app(os, storage);
 
+    // regenerate-message without messageId → 400
     let payload = json!({
         "id": "aisdk-regenerate-missing-id",
-        "trigger": "regenerate-message",
-        "messages": [
-            { "id": "m_user_1", "role": "user", "parts": [{ "type": "text", "text": "question one" }] },
-            { "id": "m_assistant_1", "role": "assistant", "parts": [{ "type": "text", "text": "answer one" }] }
-        ]
+        "trigger": "regenerate-message"
     });
-
     let (status, body) = post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(
@@ -2853,6 +2860,102 @@ async fn test_ai_sdk_regenerate_requires_message_id() {
             .unwrap_or("")
             .contains("messageId is required"),
         "expected regenerate messageId validation error: {body}"
+    );
+}
+
+/// Regenerate with an empty messageId string is rejected.
+#[tokio::test]
+async fn test_ai_sdk_regenerate_rejects_empty_message_id() {
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_storage(storage.clone()));
+    let app = make_app(os, storage);
+
+    let payload = json!({
+        "id": "aisdk-regenerate-empty-id",
+        "trigger": "regenerate-message",
+        "messageId": "  "
+    });
+    let (status, body) = post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("messageId cannot be empty"),
+        "expected empty messageId error: {body}"
+    );
+}
+
+/// Regenerate on a non-existent thread returns 400.
+#[tokio::test]
+async fn test_ai_sdk_regenerate_rejects_missing_thread() {
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_storage(storage.clone()));
+    let app = make_app(os, storage);
+
+    let payload = json!({
+        "id": "no-such-thread",
+        "trigger": "regenerate-message",
+        "messageId": "m_1"
+    });
+    let (status, body) = post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("thread not found"),
+        "expected thread not found error: {body}"
+    );
+}
+
+/// Regenerate with a messageId that doesn't exist in the stored thread returns 400.
+#[tokio::test]
+async fn test_ai_sdk_regenerate_rejects_unknown_message_id() {
+    use tirea_contract::Message;
+
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_storage(storage.clone()));
+    let app = make_app(os, storage.clone());
+
+    // Pre-populate thread.
+    let thread = Thread::new("aisdk-unknown-msgid").with_messages(vec![
+        Message::user("hi").with_id("m_user_1".to_string()),
+    ]);
+    storage.save(&thread).await.expect("save should succeed");
+
+    let payload = json!({
+        "id": "aisdk-unknown-msgid",
+        "trigger": "regenerate-message",
+        "messageId": "nonexistent"
+    });
+    let (status, body) = post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("does not reference a stored message"),
+        "expected unknown messageId error: {body}"
+    );
+}
+
+/// Eager prepare_run surfaces storage errors as HTTP 500 (not buried in SSE).
+#[tokio::test]
+async fn test_ai_sdk_storage_error_returns_http_500() {
+    let fail_store = Arc::new(FailingStorage);
+    let os = Arc::new(make_os_with_storage(fail_store.clone()));
+    let app = make_app(os, fail_store);
+
+    let payload = json!({
+        "id": "aisdk-storage-fail",
+        "messages": [{ "role": "user", "content": "hello" }]
+    });
+    let (status, _) = post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "storage errors should surface as HTTP 500, not inside SSE stream"
     );
 }
 

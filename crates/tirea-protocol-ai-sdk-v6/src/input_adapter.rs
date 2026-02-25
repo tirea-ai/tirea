@@ -1,10 +1,8 @@
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use tirea_contract::runtime::ResumeDecisionAction;
-use tirea_contract::{
-    Message, MessageMetadata, Role, RunRequest, SuspensionResponse, ToolCall, ToolCallDecision,
-};
+use tirea_contract::{Message, RunRequest, SuspensionResponse, ToolCallDecision};
 
 use crate::message::{ToolState, ToolUIPart};
 
@@ -16,7 +14,6 @@ pub struct AiSdkV6RunRequest {
     pub run_id: Option<String>,
     pub trigger: Option<AiSdkTrigger>,
     pub message_id: Option<String>,
-    messages: Vec<Value>,
     interaction_responses: Vec<SuspensionResponse>,
 }
 
@@ -76,7 +73,6 @@ impl TryFrom<AiSdkV6MessagesRunRequest> for AiSdkV6RunRequest {
             run_id: req.run_id,
             trigger: req.trigger,
             message_id: req.message_id,
-            messages: req.messages,
             interaction_responses,
         })
     }
@@ -95,7 +91,6 @@ impl AiSdkV6RunRequest {
             run_id,
             trigger: Some(AiSdkTrigger::SubmitMessage),
             message_id: None,
-            messages: Vec::new(),
             interaction_responses: Vec::new(),
         }
     }
@@ -126,46 +121,6 @@ impl AiSdkV6RunRequest {
             .into_iter()
             .map(interaction_response_to_decision)
             .collect()
-    }
-
-    /// Raw incoming UI messages from the client payload.
-    pub fn messages_snapshot(&self) -> &[Value] {
-        &self.messages
-    }
-
-    /// Build an internal message snapshot from UI messages.
-    pub fn to_thread_message_snapshot(&self) -> Vec<Message> {
-        self.messages
-            .iter()
-            .filter_map(convert_ui_message_to_runtime_message)
-            .collect()
-    }
-
-    /// Build protocol sidecar payload for persisted thread state.
-    pub fn to_protocol_snapshot(&self) -> Value {
-        let mut payload = serde_json::Map::new();
-        payload.insert("messages".to_string(), Value::Array(self.messages.clone()));
-        if let Some(trigger) = &self.trigger {
-            let trigger = match trigger {
-                AiSdkTrigger::SubmitMessage => "submit-message",
-                AiSdkTrigger::RegenerateMessage => "regenerate-message",
-            };
-            payload.insert("trigger".to_string(), Value::String(trigger.to_string()));
-        }
-        if let Some(message_id) = &self.message_id {
-            payload.insert("messageId".to_string(), Value::String(message_id.clone()));
-        }
-        Value::Object(payload)
-    }
-
-    /// Whether a UI message with the given ID exists in the incoming snapshot.
-    pub fn contains_message_id(&self, message_id: &str) -> bool {
-        self.messages.iter().any(|message| {
-            message
-                .get("id")
-                .and_then(Value::as_str)
-                .is_some_and(|id| id == message_id)
-        })
     }
 
     /// Convert this AI SDK request to the internal runtime request.
@@ -249,129 +204,6 @@ fn extract_interaction_responses(messages: &[Value]) -> Vec<SuspensionResponse> 
         .into_iter()
         .map(|(_, response)| response)
         .collect()
-}
-
-fn convert_ui_message_to_runtime_message(raw: &Value) -> Option<Message> {
-    let role = parse_runtime_role(raw.get("role").and_then(Value::as_str)?)?;
-    let parts = message_parts(raw);
-    let text_content = extract_text_from_parts(&parts);
-    let content = if text_content.is_empty() {
-        message_content_string(raw).unwrap_or_default().to_string()
-    } else {
-        text_content
-    };
-
-    let mut message = match role {
-        Role::System => Message::system(content),
-        Role::User => Message::user(content),
-        Role::Assistant => Message::assistant(content),
-        Role::Tool => return None,
-    };
-
-    if let Some(id) = raw.get("id").and_then(Value::as_str) {
-        message = message.with_id(id.to_string());
-    }
-
-    if role == Role::Assistant {
-        let tool_calls = extract_tool_calls_from_parts(&parts);
-        if !tool_calls.is_empty() {
-            message.tool_calls = Some(tool_calls);
-        }
-    }
-
-    if let Some(metadata) = parse_message_metadata(raw.get("metadata")) {
-        message = message.with_metadata(metadata);
-    }
-
-    Some(message)
-}
-
-fn parse_runtime_role(role: &str) -> Option<Role> {
-    if role.eq_ignore_ascii_case("system") {
-        return Some(Role::System);
-    }
-    if role.eq_ignore_ascii_case("user") {
-        return Some(Role::User);
-    }
-    if role.eq_ignore_ascii_case("assistant") {
-        return Some(Role::Assistant);
-    }
-    None
-}
-
-fn parse_message_metadata(metadata: Option<&Value>) -> Option<MessageMetadata> {
-    let metadata = metadata?.as_object()?;
-    let run_id = metadata
-        .get("run_id")
-        .or_else(|| metadata.get("runId"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let step_index = metadata
-        .get("step_index")
-        .or_else(|| metadata.get("stepIndex"))
-        .and_then(Value::as_u64)
-        .and_then(|index| u32::try_from(index).ok());
-
-    let parsed = MessageMetadata { run_id, step_index };
-    if parsed.run_id.is_none() && parsed.step_index.is_none() {
-        None
-    } else {
-        Some(parsed)
-    }
-}
-
-fn extract_tool_calls_from_parts(parts: &[Value]) -> Vec<ToolCall> {
-    let mut calls = Vec::new();
-    let mut seen_call_ids = HashSet::new();
-
-    for part in parts {
-        let part_type = part.get("type").and_then(Value::as_str).unwrap_or_default();
-        let is_tool_part = part_type == "dynamic-tool" || part_type.starts_with("tool-");
-        if !is_tool_part {
-            continue;
-        }
-
-        let state = part
-            .get("state")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let is_input_like_state = matches!(
-            state,
-            "input-streaming"
-                | "input-available"
-                | "approval-requested"
-                | "approval-responded"
-                | "output-available"
-                | "output-denied"
-                | "output-error"
-        );
-        if !is_input_like_state {
-            continue;
-        }
-
-        let Some(tool_call_id) = part.get("toolCallId").and_then(Value::as_str) else {
-            continue;
-        };
-        if !seen_call_ids.insert(tool_call_id.to_string()) {
-            continue;
-        }
-
-        let tool_name = if part_type == "dynamic-tool" {
-            part.get("toolName")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        } else {
-            part_type.strip_prefix("tool-").map(str::to_string)
-        };
-        let Some(tool_name) = tool_name else {
-            continue;
-        };
-
-        let arguments = part.get("input").cloned().unwrap_or(Value::Null);
-        calls.push(ToolCall::new(tool_call_id, tool_name, arguments));
-    }
-
-    calls
 }
 
 fn message_role(message: &Value) -> Option<&str> {
@@ -645,62 +477,6 @@ mod tests {
         assert_eq!(req.run_id.as_deref(), Some("run-2"));
         assert_eq!(req.trigger, Some(AiSdkTrigger::SubmitMessage));
         assert_eq!(req.message_id.as_deref(), Some("msg_user_2"));
-        assert!(req.contains_message_id("msg_user_2"));
-    }
-
-    #[test]
-    fn converts_ui_message_snapshot_to_internal_messages() {
-        let req: AiSdkV6RunRequest = serde_json::from_value(json!({
-            "id": "thread-snapshot",
-            "messages": [
-                {
-                    "id": "m_sys",
-                    "role": "system",
-                    "metadata": { "runId": "run_frontend", "stepIndex": 2 },
-                    "parts": [{ "type": "text", "text": "system prompt" }]
-                },
-                {
-                    "id": "m_user",
-                    "role": "user",
-                    "parts": [{ "type": "text", "text": "hello" }]
-                },
-                {
-                    "id": "m_assistant",
-                    "role": "assistant",
-                    "parts": [
-                        { "type": "text", "text": "let me check" },
-                        {
-                            "type": "tool-search",
-                            "toolCallId": "call_1",
-                            "state": "input-available",
-                            "input": { "q": "rust" }
-                        }
-                    ]
-                }
-            ]
-        }))
-        .expect("messages payload should deserialize");
-
-        let snapshot = req.to_thread_message_snapshot();
-        assert_eq!(snapshot.len(), 3);
-        assert_eq!(snapshot[0].id.as_deref(), Some("m_sys"));
-        assert_eq!(snapshot[0].role, Role::System);
-        assert_eq!(snapshot[0].content, "system prompt");
-        let metadata = snapshot[0].metadata.as_ref().expect("metadata expected");
-        assert_eq!(metadata.run_id.as_deref(), Some("run_frontend"));
-        assert_eq!(metadata.step_index, Some(2));
-
-        assert_eq!(snapshot[2].id.as_deref(), Some("m_assistant"));
-        assert_eq!(snapshot[2].role, Role::Assistant);
-        assert_eq!(snapshot[2].content, "let me check");
-        let calls = snapshot[2]
-            .tool_calls
-            .as_ref()
-            .expect("assistant tool calls should be captured");
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].id, "call_1");
-        assert_eq!(calls[0].name, "search");
-        assert_eq!(calls[0].arguments["q"], "rust");
     }
 
     #[test]
