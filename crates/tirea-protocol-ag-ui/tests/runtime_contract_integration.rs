@@ -1,8 +1,8 @@
 #![allow(missing_docs)]
 
 use serde_json::{json, Value};
-use tirea_contract::{AgentEvent, ProtocolInputAdapter, Role, TerminationReason, ToolResult};
-use tirea_protocol_ag_ui::{AgUiEventContext, AgUiInputAdapter, Event, Message, RunAgentInput};
+use tirea_contract::{AgentEvent, Role, TerminationReason, ToolResult};
+use tirea_protocol_ag_ui::{AgUiEventContext, Event, Message, RunAgentInput};
 
 fn event_type(event: &Event) -> String {
     serde_json::to_value(event)
@@ -126,7 +126,7 @@ fn agui_input_adapter_converts_messages() {
     ]);
     request.parent_run_id = Some("parent_1".to_string());
 
-    let run = AgUiInputAdapter::to_run_request("agent_1".to_string(), request);
+    let run = request.into_runtime_run_request("agent_1".to_string());
 
     assert_eq!(run.agent_id, "agent_1");
     assert_eq!(run.thread_id.as_deref(), Some("thread_1"));

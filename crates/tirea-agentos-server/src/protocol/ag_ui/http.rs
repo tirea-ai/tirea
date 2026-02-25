@@ -6,10 +6,7 @@ use serde_json::json;
 use tirea_agentos::contracts::ToolCallDecision;
 use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError};
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
-use tirea_contract::ProtocolInputAdapter;
-use tirea_protocol_ag_ui::{
-    AgUiHistoryEncoder, AgUiInputAdapter, AgUiProtocolEncoder, RunAgentInput,
-};
+use tirea_protocol_ag_ui::{AgUiHistoryEncoder, AgUiProtocolEncoder, RunAgentInput};
 
 use super::runtime::apply_agui_extensions;
 use tokio::sync::mpsc;
@@ -68,7 +65,7 @@ async fn run(
 
     let mut resolved = st.os.resolve(&agent_id).map_err(AgentOsRunError::from)?;
     apply_agui_extensions(&mut resolved, &req);
-    let run_request = AgUiInputAdapter::to_run_request(agent_id.clone(), req);
+    let run_request = req.into_runtime_run_request(agent_id.clone());
     let cancellation_token = RunCancellationToken::new();
     let prepared = st.os.prepare_run(run_request, resolved).await?;
     let run =

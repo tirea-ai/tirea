@@ -12,10 +12,9 @@ use tirea_agentos::contracts::thread::Thread;
 use tirea_agentos::contracts::ToolCallDecision;
 use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError};
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
-use tirea_contract::ProtocolInputAdapter;
 use tirea_protocol_ai_sdk_v6::{
-    AiSdkTrigger, AiSdkV6HistoryEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder,
-    AiSdkV6RunRequest, AI_SDK_VERSION,
+    AiSdkTrigger, AiSdkV6HistoryEncoder, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest,
+    AI_SDK_VERSION,
 };
 
 use super::runtime::apply_ai_sdk_extensions;
@@ -136,7 +135,7 @@ async fn run(
 
     sync_thread_snapshot(&st, &req).await?;
 
-    let mut run_request = AiSdkV6InputAdapter::to_run_request(agent_id.clone(), req);
+    let mut run_request = req.into_runtime_run_request(agent_id.clone());
     run_request.messages.clear();
     let cancellation_token = RunCancellationToken::new();
     let prepared = st.os.prepare_run(run_request, resolved).await?;

@@ -7,8 +7,7 @@ use tirea_agentos::contracts::storage::ThreadReader;
 use tirea_agentos::contracts::{AgentEvent, RunRequest, ToolCallDecision};
 use tirea_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
 use tirea_agentos_server::transport::{ChannelDownstreamEndpoint, Endpoint, TranscoderEndpoint};
-use tirea_contract::ProtocolInputAdapter;
-use tirea_protocol_ai_sdk_v6::{AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest};
+use tirea_protocol_ai_sdk_v6::{AiSdkV6ProtocolEncoder, AiSdkV6RunRequest};
 use tirea_store_adapters::MemoryStore;
 use tokio::sync::mpsc;
 
@@ -63,7 +62,7 @@ async fn cross_crate_integration_matrix_72() {
                     run_id.map(str::to_string),
                 );
                 let run_request: RunRequest =
-                    AiSdkV6InputAdapter::to_run_request("test".to_string(), req);
+                    req.into_runtime_run_request("test".to_string());
 
                 let run = os
                     .run_stream(run_request)

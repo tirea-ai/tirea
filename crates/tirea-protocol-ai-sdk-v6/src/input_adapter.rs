@@ -3,8 +3,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use tirea_contract::runtime::ResumeDecisionAction;
 use tirea_contract::{
-    Message, MessageMetadata, ProtocolInputAdapter, Role, RunRequest, SuspensionResponse, ToolCall,
-    ToolCallDecision,
+    Message, MessageMetadata, Role, RunRequest, SuspensionResponse, ToolCall, ToolCallDecision,
 };
 
 use crate::message::{ToolState, ToolUIPart};
@@ -606,16 +605,6 @@ fn extract_text_from_parts(parts: &[Value]) -> String {
     text
 }
 
-pub struct AiSdkV6InputAdapter;
-
-impl ProtocolInputAdapter for AiSdkV6InputAdapter {
-    type Request = AiSdkV6RunRequest;
-
-    fn to_run_request(agent_id: String, request: Self::Request) -> RunRequest {
-        request.into_runtime_run_request(agent_id)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1012,7 +1001,7 @@ mod tests {
         }))
         .expect("messages payload should deserialize");
 
-        let run_request = AiSdkV6InputAdapter::to_run_request("agent".to_string(), req);
+        let run_request = req.into_runtime_run_request("agent".to_string());
         let decision_targets: Vec<&str> = run_request
             .initial_decisions
             .iter()
@@ -1049,7 +1038,7 @@ mod tests {
         let decisions = req.suspension_decisions();
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].target_id, "ask_1");
-        let run_request = AiSdkV6InputAdapter::to_run_request("agent".to_string(), req);
+        let run_request = req.into_runtime_run_request("agent".to_string());
         assert!(run_request.messages.is_empty());
         assert_eq!(run_request.initial_decisions.len(), 1);
         assert_eq!(run_request.initial_decisions[0].target_id, "ask_1");

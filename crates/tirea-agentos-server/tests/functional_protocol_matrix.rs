@@ -1,7 +1,6 @@
 use tirea_agentos::contracts::Role as CoreRole;
-use tirea_contract::ProtocolInputAdapter;
 use tirea_protocol_ag_ui::{convert_agui_messages, Message, Role as UiRole, RunAgentInput};
-use tirea_protocol_ai_sdk_v6::{AiSdkV6InputAdapter, AiSdkV6RunRequest};
+use tirea_protocol_ai_sdk_v6::AiSdkV6RunRequest;
 
 #[test]
 fn functional_protocol_scenario_matrix_204() {
@@ -41,7 +40,7 @@ fn functional_protocol_scenario_matrix_204() {
                     input,
                     run_id.map(str::to_string),
                 );
-                let run = AiSdkV6InputAdapter::to_run_request("agent".to_string(), req);
+                let run = req.into_runtime_run_request("agent".to_string());
                 let expected_thread = if thread_id.trim().is_empty() {
                     None
                 } else {

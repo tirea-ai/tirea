@@ -1,10 +1,7 @@
 use serde::Deserialize;
 use std::sync::Arc;
 use tirea_agentos::orchestrator::AgentOs;
-use tirea_contract::ProtocolInputAdapter;
-use tirea_protocol_ai_sdk_v6::{
-    AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest, UIStreamEvent,
-};
+use tirea_protocol_ai_sdk_v6::{AiSdkV6ProtocolEncoder, AiSdkV6RunRequest, UIStreamEvent};
 
 use super::runtime::apply_ai_sdk_extensions;
 
@@ -70,7 +67,7 @@ async fn handle_message(
     let req_for_runtime =
         AiSdkV6RunRequest::from_thread_input(req.thread_id, req.input, req.run_id);
     apply_ai_sdk_extensions(&mut resolved, &req_for_runtime);
-    let run_request = AiSdkV6InputAdapter::to_run_request(req.agent_id, req_for_runtime);
+    let run_request = req_for_runtime.into_runtime_run_request(req.agent_id);
 
     transport
         .run_and_publish(

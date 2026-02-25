@@ -18,7 +18,7 @@ pub use encoder::{
 };
 pub use events::UIStreamEvent;
 pub use history_encoder::AiSdkV6HistoryEncoder;
-pub use input_adapter::{AiSdkTrigger, AiSdkV6InputAdapter, AiSdkV6RunRequest};
+pub use input_adapter::{AiSdkTrigger, AiSdkV6RunRequest};
 pub use message::{
     DataUIPart, FileUIPart, ReasoningUIPart, SourceDocumentUIPart, SourceUrlUIPart,
     StepStartUIPart, StreamState, TextUIPart, ToolApproval, ToolState, ToolUIPart, UIMessage,

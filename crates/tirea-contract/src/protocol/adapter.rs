@@ -1,17 +1,7 @@
 //! Shared protocol adapter traits.
 
-use crate::protocol::request::RunRequest;
 use crate::thread::Message;
 use serde::Serialize;
-
-/// Protocol input boundary: protocol request -> internal runtime `RunRequest`.
-pub trait ProtocolInputAdapter {
-    /// Protocol-specific request payload type.
-    type Request;
-
-    /// Convert protocol request into runtime request.
-    fn to_run_request(agent_id: String, request: Self::Request) -> RunRequest;
-}
 
 /// Protocol history boundary: stored message -> protocol history message.
 pub trait ProtocolHistoryEncoder {

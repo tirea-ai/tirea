@@ -1,8 +1,7 @@
 use serde::Deserialize;
 use std::sync::Arc;
 use tirea_agentos::orchestrator::AgentOs;
-use tirea_contract::ProtocolInputAdapter;
-use tirea_protocol_ag_ui::{AgUiInputAdapter, AgUiProtocolEncoder, Event, RunAgentInput};
+use tirea_protocol_ag_ui::{AgUiProtocolEncoder, Event, RunAgentInput};
 
 use super::runtime::apply_agui_extensions;
 
@@ -61,7 +60,7 @@ async fn handle_message(
 
     let mut resolved = resolved;
     apply_agui_extensions(&mut resolved, &req.request);
-    let run_request = AgUiInputAdapter::to_run_request(req.agent_id, req.request);
+    let run_request = req.request.into_runtime_run_request(req.agent_id);
 
     transport
         .run_and_publish(
