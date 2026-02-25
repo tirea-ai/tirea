@@ -4,7 +4,6 @@ use tirea_agentos::contracts::storage::ThreadReader;
 use tirea_agentos::contracts::RunRequest;
 use tirea_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
 use tirea_agentos_server::transport::{Endpoint, RuntimeEndpoint, TranscoderEndpoint};
-use tirea_contract::RuntimeInput;
 use tirea_protocol_ai_sdk_v6::{AiSdkEncoder, AiSdkV6RunRequest};
 use tirea_store_adapters::MemoryStore;
 
