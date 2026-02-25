@@ -3,5 +3,5 @@
 pub mod request;
 pub mod transcoder;
 
-pub use request::RunRequest;
+pub use request::{RunRequest, RuntimeInput};
 pub use transcoder::{Identity, Transcoder};

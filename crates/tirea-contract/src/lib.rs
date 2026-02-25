@@ -130,14 +130,16 @@ pub use tool::{
 
 // plugin
 pub use plugin::{
-    AgentPlugin, Phase, PhasePolicy, RunAction, StateEffect, StepContext, StepOutcome, ToolAction,
-    ToolContext,
+    AfterInferenceContext, AfterToolExecuteContext, AgentPlugin, BeforeInferenceContext,
+    BeforeToolExecuteContext, Phase, PhasePolicy, PluginPhaseContext, RunAction, RunEndContext,
+    RunStartContext, StateEffect, StepContext, StepEndContext, StepOutcome, StepStartContext,
+    SuspendTicket, ToolAction, ToolContext, ToolGateDecision,
 };
 
 // runtime
 pub use runtime::{
-    ActivityManager, InferenceError, InferenceErrorState, RunContext, RunDelta,
-    RunLifecycleState, RunLifecycleStatus, RuntimeInput, StreamResult, SuspendedCall,
+    ActivityManager, DecisionReplayPolicy, InferenceError, InferenceErrorState, ResumeDecisionAction,
+    RunContext, RunDelta, RunLifecycleState, RunLifecycleStatus, StreamResult, SuspendedCall,
     SuspendedToolCallsState, TokenUsage, ToolCallDecision, ToolCallOutcome, ToolCallResume,
     ToolCallState, ToolCallStatesState, ToolCallStatus, ToolExecution, ToolExecutionRequest,
     ToolExecutionResult, ToolExecutor, ToolExecutorError,
@@ -151,4 +153,4 @@ pub use storage::{
 };
 
 // protocol
-pub use protocol::{Identity, RunRequest, Transcoder};
+pub use protocol::{Identity, RunRequest, RuntimeInput, Transcoder};

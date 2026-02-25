@@ -1,4 +1,9 @@
-//! Execution engine internals: run context, delta, executors, scope filters, and control.
+//! Runtime contracts and durable state schemas.
+//!
+//! - **Contracts**: `RunContext`, `ToolExecutor`, `ActivityManager`, `RunDelta`, `StreamResult`
+//! - **Durable state**: `RunLifecycleState`, `SuspendedToolCallsState`, `ToolCallStatesState`,
+//!   `InferenceErrorState` — persisted under reserved `__*` thread-state paths
+//! - **Utilities**: scope filter helpers (`is_scope_allowed`, `parse_scope_filter`)
 
 pub mod activity;
 pub mod context;
@@ -13,8 +18,8 @@ pub use activity::ActivityManager;
 pub use context::RunContext;
 pub use control::{
     InferenceError, InferenceErrorState, ResumeDecisionAction, RunLifecycleState,
-    RunLifecycleStatus, RuntimeInput, SuspendedCall, SuspendedToolCallsState, ToolCallDecision,
-    ToolCallResume, ToolCallState, ToolCallStatesState, ToolCallStatus,
+    RunLifecycleStatus, SuspendedCall, SuspendedToolCallsState, ToolCallDecision, ToolCallResume,
+    ToolCallState, ToolCallStatesState, ToolCallStatus,
 };
 pub use delta::RunDelta;
 pub use executor::{

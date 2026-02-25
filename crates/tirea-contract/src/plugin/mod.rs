@@ -5,5 +5,8 @@ pub mod phase;
 
 pub use contract::AgentPlugin;
 pub use phase::{
-    Phase, PhasePolicy, RunAction, StateEffect, StepContext, StepOutcome, ToolAction, ToolContext,
+    AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
+    BeforeToolExecuteContext, Phase, PhasePolicy, PluginPhaseContext, RunAction, RunEndContext,
+    RunStartContext, StateEffect, StepContext, StepEndContext, StepOutcome, StepStartContext,
+    SuspendTicket, ToolAction, ToolContext, ToolGateDecision,
 };
