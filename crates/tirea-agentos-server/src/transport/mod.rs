@@ -420,6 +420,48 @@ mod tests {
         assert_eq!(sent, "ok");
     }
 
+    // ── ChannelDownstreamEndpoint ──────────────────────────────────
+
+    #[tokio::test]
+    async fn channel_downstream_recv_called_twice_returns_closed() {
+        let (_tx, rx) = mpsc::channel::<u32>(4);
+        let (send_tx, _send_rx) = mpsc::unbounded_channel::<String>();
+        let ep = ChannelDownstreamEndpoint::new(rx, send_tx);
+
+        let _first = ep.recv().await.unwrap();
+        let second = ep.recv().await;
+        assert!(matches!(second, Err(TransportError::Closed)));
+    }
+
+    #[tokio::test]
+    async fn channel_downstream_send_after_receiver_dropped_returns_closed() {
+        let (_tx, rx) = mpsc::channel::<u32>(4);
+        let (send_tx, send_rx) = mpsc::unbounded_channel::<String>();
+        let ep = ChannelDownstreamEndpoint::new(rx, send_tx);
+
+        drop(send_rx);
+        let result = ep.send("msg".to_string()).await;
+        assert!(matches!(result, Err(TransportError::Closed)));
+    }
+
+    #[tokio::test]
+    async fn channel_downstream_recv_delivers_all_items_in_order() {
+        let (tx, rx) = mpsc::channel::<u32>(8);
+        let (send_tx, _send_rx) = mpsc::unbounded_channel::<String>();
+        let ep = ChannelDownstreamEndpoint::new(rx, send_tx);
+
+        for i in 0..5 {
+            tx.send(i).await.unwrap();
+        }
+        drop(tx);
+
+        let stream = ep.recv().await.unwrap();
+        let items: Vec<u32> = stream.map(|r| r.unwrap()).collect().await;
+        assert_eq!(items, vec![0, 1, 2, 3, 4]);
+    }
+
+    // ── channel_pair / BoundedChannelEndpoint ───────────────────
+
     #[tokio::test]
     async fn channel_pair_bidirectional() {
         let pair = channel_pair::<u32, String>(4);
@@ -450,5 +492,193 @@ mod tests {
 
         // After server side dropped, stream ends
         assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn channel_pair_recv_called_twice_returns_closed() {
+        let pair = channel_pair::<u32, String>(4);
+
+        let _first = pair.server.recv().await.unwrap();
+        let second = pair.server.recv().await;
+        assert!(matches!(second, Err(TransportError::Closed)));
+    }
+
+    #[tokio::test]
+    async fn channel_pair_send_after_peer_dropped_returns_closed() {
+        let pair = channel_pair::<u32, String>(4);
+
+        drop(pair.client);
+        // server sends String → client's recv channel, but client is dropped
+        let result = pair.server.send("orphan".to_string()).await;
+        assert!(matches!(result, Err(TransportError::Closed)));
+    }
+
+    #[tokio::test]
+    async fn channel_pair_multiple_items_preserve_order() {
+        let pair = channel_pair::<u32, String>(8);
+
+        for i in 0..5 {
+            pair.client.send(i).await.unwrap();
+        }
+        drop(pair.client);
+
+        let stream = pair.server.recv().await.unwrap();
+        let items: Vec<u32> = stream.map(|r| r.unwrap()).collect().await;
+        assert_eq!(items, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[tokio::test]
+    async fn channel_pair_concurrent_bidirectional() {
+        let pair = channel_pair::<u32, String>(8);
+
+        // Start consumers that read exactly 3 items each.
+        // (Cannot use .collect() because each endpoint's send_tx keeps
+        // the peer's recv channel open — a known trait of paired endpoints.)
+        let consumer_server = tokio::spawn({
+            let server = pair.server.clone();
+            async move {
+                let mut stream = server.recv().await.unwrap();
+                let mut items = Vec::new();
+                for _ in 0..3 {
+                    items.push(stream.next().await.unwrap().unwrap());
+                }
+                items
+            }
+        });
+        let consumer_client = tokio::spawn({
+            let client = pair.client.clone();
+            async move {
+                let mut stream = client.recv().await.unwrap();
+                let mut items = Vec::new();
+                for _ in 0..3 {
+                    items.push(stream.next().await.unwrap().unwrap());
+                }
+                items
+            }
+        });
+
+        // Concurrently send in both directions
+        for i in 0u32..3 {
+            pair.client.send(i).await.unwrap();
+        }
+        for s in ["a", "b", "c"] {
+            pair.server.send(s.to_string()).await.unwrap();
+        }
+
+        let server_items = consumer_server.await.unwrap();
+        assert_eq!(server_items, vec![0, 1, 2]);
+
+        let client_items = consumer_client.await.unwrap();
+        assert_eq!(client_items, vec!["a", "b", "c"]);
+    }
+
+    // ── relay_binding edge cases ────────────────────────────────
+
+    #[tokio::test]
+    async fn relay_completes_when_downstream_closes() {
+        let (up_in_tx, up_in_rx) = mpsc::unbounded_channel::<u32>();
+        let (up_send_tx, _up_send_rx) = mpsc::unbounded_channel::<String>();
+
+        let (_down_in_tx, down_in_rx) = mpsc::unbounded_channel::<String>();
+        let (down_send_tx, mut down_send_rx) = mpsc::unbounded_channel::<u32>();
+
+        let upstream = Arc::new(ChannelEndpoint::new(up_in_rx, up_send_tx));
+        let downstream = Arc::new(ChannelEndpoint::new(down_in_rx, down_send_tx));
+
+        let binding = TransportBinding {
+            session: SessionId {
+                thread_id: "t".to_string(),
+            },
+            caps: TransportCapabilities::default(),
+            upstream,
+            downstream,
+        };
+
+        let cancel = RelayCancellation::new();
+        let relay = tokio::spawn(relay_binding(binding, cancel));
+
+        // Send one message upstream → downstream, then close upstream ingress
+        up_in_tx.send(42).unwrap();
+        drop(up_in_tx);
+        // Also close downstream egress source so relay's egress loop ends
+        drop(_down_in_tx);
+
+        let received = down_send_rx.recv().await.unwrap();
+        assert_eq!(received, 42);
+
+        let result = relay.await.unwrap();
+        assert!(result.is_ok(), "relay should normalize Closed to Ok");
+    }
+
+    #[tokio::test]
+    async fn relay_with_cancel_before_messages() {
+        let (_up_tx, up_rx) = mpsc::unbounded_channel::<u32>();
+        let (up_send_tx, _up_send_rx) = mpsc::unbounded_channel::<String>();
+        let (_down_tx, down_rx) = mpsc::unbounded_channel::<String>();
+        let (down_send_tx, _down_send_rx) = mpsc::unbounded_channel::<u32>();
+
+        let upstream = Arc::new(ChannelEndpoint::new(up_rx, up_send_tx));
+        let downstream = Arc::new(ChannelEndpoint::new(down_rx, down_send_tx));
+
+        let binding = TransportBinding {
+            session: SessionId {
+                thread_id: "t".to_string(),
+            },
+            caps: TransportCapabilities::default(),
+            upstream,
+            downstream,
+        };
+
+        let cancel = RelayCancellation::new();
+        cancel.cancel();
+        // Close sources so streams end
+        drop(_up_tx);
+        drop(_down_tx);
+
+        let result = relay_binding(binding, cancel).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn relay_multiple_messages_in_sequence() {
+        let (up_tx, up_rx) = mpsc::unbounded_channel::<u32>();
+        let (up_send_tx, mut up_send_rx) = mpsc::unbounded_channel::<String>();
+        let (down_tx, down_rx) = mpsc::unbounded_channel::<String>();
+        let (down_send_tx, mut down_send_rx) = mpsc::unbounded_channel::<u32>();
+
+        let upstream = Arc::new(ChannelEndpoint::new(up_rx, up_send_tx));
+        let downstream = Arc::new(ChannelEndpoint::new(down_rx, down_send_tx));
+
+        let binding = TransportBinding {
+            session: SessionId {
+                thread_id: "seq".to_string(),
+            },
+            caps: TransportCapabilities::default(),
+            upstream,
+            downstream,
+        };
+
+        let cancel = RelayCancellation::new();
+        let relay = tokio::spawn(relay_binding(binding, cancel));
+
+        // ingress: upstream → downstream
+        for i in 0..3 {
+            up_tx.send(i).unwrap();
+        }
+        for expected in 0..3 {
+            assert_eq!(down_send_rx.recv().await.unwrap(), expected);
+        }
+
+        // egress: downstream → upstream
+        for s in ["x", "y", "z"] {
+            down_tx.send(s.to_string()).unwrap();
+        }
+        for expected in ["x", "y", "z"] {
+            assert_eq!(up_send_rx.recv().await.unwrap(), expected);
+        }
+
+        drop(up_tx);
+        drop(down_tx);
+        assert!(relay.await.unwrap().is_ok());
     }
 }

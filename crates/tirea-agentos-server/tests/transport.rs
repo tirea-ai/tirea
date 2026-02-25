@@ -2,10 +2,13 @@ use futures::StreamExt;
 use std::sync::Arc;
 use tirea_agentos::contracts::{AgentEvent, ToolCallDecision};
 use tirea_agentos_server::transport::{
-    ChannelDownstreamEndpoint, Endpoint, TranscoderEndpoint, TransportError,
+    channel_pair, relay_binding, ChannelDownstreamEndpoint, Endpoint, RelayCancellation,
+    SessionId, TranscoderEndpoint, TransportBinding, TransportCapabilities, TransportError,
 };
 use tirea_contract::ProtocolOutputEncoder;
 use tokio::sync::mpsc;
+
+// ── Stub encoder ────────────────────────────────────────────────
 
 #[derive(Default)]
 struct StubEncoder {
@@ -27,6 +30,51 @@ impl ProtocolOutputEncoder for StubEncoder {
 
     fn epilogue(&mut self) -> Vec<Self::Event> {
         vec!["epilogue".to_string()]
+    }
+}
+
+/// Encoder that fans out multiple events per agent event.
+struct FanoutEncoder;
+
+impl ProtocolOutputEncoder for FanoutEncoder {
+    type InputEvent = AgentEvent;
+    type Event = String;
+
+    fn prologue(&mut self) -> Vec<Self::Event> {
+        vec!["start".to_string()]
+    }
+
+    fn on_agent_event(&mut self, ev: &Self::InputEvent) -> Vec<Self::Event> {
+        match ev {
+            AgentEvent::TextDelta { delta } => {
+                vec![format!("text:{delta}"), format!("echo:{delta}")]
+            }
+            _ => vec!["other".to_string()],
+        }
+    }
+
+    fn epilogue(&mut self) -> Vec<Self::Event> {
+        vec!["end".to_string()]
+    }
+}
+
+/// Encoder that emits nothing for prologue/epilogue.
+struct MinimalEncoder;
+
+impl ProtocolOutputEncoder for MinimalEncoder {
+    type InputEvent = AgentEvent;
+    type Event = String;
+
+    fn prologue(&mut self) -> Vec<Self::Event> {
+        vec![]
+    }
+
+    fn on_agent_event(&mut self, _ev: &Self::InputEvent) -> Vec<Self::Event> {
+        vec!["evt".to_string()]
+    }
+
+    fn epilogue(&mut self) -> Vec<Self::Event> {
+        vec![]
     }
 }
 
@@ -114,4 +162,314 @@ async fn transcoder_send_delegates_through_mapper() {
 
     let received = decision_rx.recv().await.unwrap();
     assert_eq!(received, decision);
+}
+
+// ── TranscoderEndpoint: custom send mapper ──────────────────────
+
+#[tokio::test]
+async fn transcoder_send_with_custom_mapper_transforms_input() {
+    let (_event_tx, event_rx) = mpsc::channel::<AgentEvent>(8);
+    let (decision_tx, mut decision_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
+    let inner = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
+
+    // Mapper: receive a String tool_call_id, produce a ToolCallDecision
+    let transcoder = TranscoderEndpoint::new(inner, StubEncoder::default(), |id: String| {
+        Ok(ToolCallDecision::resume(&id, serde_json::Value::Null, 0))
+    });
+
+    transcoder.send("custom-tc".to_string()).await.unwrap();
+    let received = decision_rx.recv().await.unwrap();
+    assert_eq!(
+        received,
+        ToolCallDecision::resume("custom-tc", serde_json::Value::Null, 0)
+    );
+}
+
+#[tokio::test]
+async fn transcoder_send_mapper_error_propagates() {
+    let (_event_tx, event_rx) = mpsc::channel::<AgentEvent>(8);
+    let (decision_tx, _decision_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
+    let inner = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
+
+    let transcoder = TranscoderEndpoint::new(
+        inner,
+        StubEncoder::default(),
+        |_: String| -> Result<ToolCallDecision, TransportError> {
+            Err(TransportError::Internal("mapper rejected".to_string()))
+        },
+    );
+
+    let result = transcoder.send("anything".to_string()).await;
+    assert!(result.is_err());
+    assert!(
+        result.unwrap_err().to_string().contains("mapper rejected"),
+        "error message should contain mapper's reason"
+    );
+}
+
+// ── TranscoderEndpoint: close delegates ─────────────────────────
+
+#[tokio::test]
+async fn transcoder_close_delegates_to_inner() {
+    let (_event_tx, event_rx) = mpsc::channel::<AgentEvent>(8);
+    let (decision_tx, _decision_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
+    let inner = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
+    let transcoder = TranscoderEndpoint::new(
+        inner,
+        StubEncoder::default(),
+        Ok::<ToolCallDecision, TransportError>,
+    );
+
+    let result = transcoder.close().await;
+    assert!(result.is_ok());
+}
+
+// ── TranscoderEndpoint: encoder variations ──────────────────────
+
+#[tokio::test]
+async fn transcoder_fanout_encoder_emits_multiple_events_per_input() {
+    let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(8);
+    let (decision_tx, _decision_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
+    let inner = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
+    let transcoder = TranscoderEndpoint::new(inner, FanoutEncoder, Ok);
+
+    event_tx
+        .send(AgentEvent::TextDelta {
+            delta: "hi".to_string(),
+        })
+        .await
+        .unwrap();
+    event_tx.send(AgentEvent::StepEnd).await.unwrap();
+    drop(event_tx);
+
+    let stream = transcoder.recv().await.unwrap();
+    let events: Vec<String> = stream.map(|r| r.unwrap()).collect().await;
+
+    assert_eq!(
+        events,
+        vec!["start", "text:hi", "echo:hi", "other", "end"]
+    );
+}
+
+#[tokio::test]
+async fn transcoder_minimal_encoder_no_prologue_no_epilogue() {
+    let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(8);
+    let (decision_tx, _decision_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
+    let inner = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
+    let transcoder = TranscoderEndpoint::new(inner, MinimalEncoder, Ok);
+
+    event_tx
+        .send(AgentEvent::TextDelta {
+            delta: "x".to_string(),
+        })
+        .await
+        .unwrap();
+    drop(event_tx);
+
+    let stream = transcoder.recv().await.unwrap();
+    let events: Vec<String> = stream.map(|r| r.unwrap()).collect().await;
+    assert_eq!(events, vec!["evt"]);
+}
+
+#[tokio::test]
+async fn transcoder_recv_many_events_in_order() {
+    let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(32);
+    let (decision_tx, _decision_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
+    let inner = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
+    let transcoder = TranscoderEndpoint::new(inner, StubEncoder::default(), Ok);
+
+    for _ in 0..10 {
+        event_tx
+            .send(AgentEvent::TextDelta {
+                delta: "d".to_string(),
+            })
+            .await
+            .unwrap();
+    }
+    drop(event_tx);
+
+    let stream = transcoder.recv().await.unwrap();
+    let events: Vec<String> = stream.map(|r| r.unwrap()).collect().await;
+
+    // prologue(2) + body(10) + epilogue(1) = 13
+    assert_eq!(events.len(), 13);
+    assert_eq!(&events[0], "prologue-1");
+    assert_eq!(&events[1], "prologue-2");
+    for i in 0..10 {
+        assert_eq!(events[2 + i], format!("body-{}", i + 1));
+    }
+    assert_eq!(&events[12], "epilogue");
+}
+
+// ── Composition: transcoder + relay + channel_pair ──────────────
+
+#[tokio::test]
+async fn transcoder_through_channel_pair_relay_pipeline() {
+    // Simulate the real protocol handler pattern:
+    //   runtime_ep (ChannelDownstream) → TranscoderEndpoint → relay → channel_pair.server
+    //   client reads from channel_pair.client
+
+    // Runtime side: feed AgentEvents
+    let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(8);
+    let (decision_tx, _decision_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
+    let runtime_ep = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
+
+    // Protocol transcoder
+    let transcoder: Arc<TranscoderEndpoint<StubEncoder, _, ToolCallDecision, ToolCallDecision>> =
+        Arc::new(TranscoderEndpoint::new(
+            runtime_ep,
+            StubEncoder::default(),
+            Ok,
+        ));
+
+    // Transport channel pair
+    let pair = channel_pair::<ToolCallDecision, String>(16);
+
+    // Wire: upstream = pair.server, downstream = transcoder
+    let binding = TransportBinding {
+        session: SessionId {
+            thread_id: "pipeline-test".to_string(),
+        },
+        caps: TransportCapabilities {
+            upstream_async: true,
+            downstream_streaming: true,
+            single_channel_bidirectional: false,
+            resumable_downstream: false,
+        },
+        upstream: pair.server,
+        downstream: transcoder,
+    };
+
+    let cancel = RelayCancellation::new();
+    let relay = tokio::spawn(relay_binding(binding, cancel));
+
+    // Produce agent events
+    event_tx
+        .send(AgentEvent::TextDelta {
+            delta: "hello".to_string(),
+        })
+        .await
+        .unwrap();
+    event_tx.send(AgentEvent::StepEnd).await.unwrap();
+    drop(event_tx);
+
+    // Read transcoded events from client side of the pair
+    let stream = pair.client.recv().await.unwrap();
+    let events: Vec<String> = stream.map(|r| r.unwrap()).collect().await;
+
+    assert_eq!(
+        events,
+        vec!["prologue-1", "prologue-2", "body-1", "body-2", "epilogue"]
+    );
+
+    let result = relay.await.unwrap();
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn transcoder_pipeline_send_direction() {
+    // Verify send direction: client → channel_pair → relay → transcoder → runtime decision_tx
+
+    let (_event_tx, event_rx) = mpsc::channel::<AgentEvent>(8);
+    let (decision_tx, mut decision_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
+    let runtime_ep = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
+
+    let transcoder: Arc<TranscoderEndpoint<StubEncoder, _, ToolCallDecision, ToolCallDecision>> =
+        Arc::new(TranscoderEndpoint::new(
+            runtime_ep,
+            StubEncoder::default(),
+            Ok,
+        ));
+
+    let pair = channel_pair::<ToolCallDecision, String>(16);
+
+    let binding = TransportBinding {
+        session: SessionId {
+            thread_id: "send-test".to_string(),
+        },
+        caps: TransportCapabilities::default(),
+        upstream: pair.server,
+        downstream: transcoder,
+    };
+
+    let cancel = RelayCancellation::new();
+    let relay = tokio::spawn(relay_binding(binding, cancel));
+
+    // Client sends a decision through the pair
+    let decision = ToolCallDecision::resume("tc-pipe", serde_json::Value::Null, 0);
+    pair.client.send(decision.clone()).await.unwrap();
+
+    // It should arrive at the runtime's decision_rx
+    let received = decision_rx.recv().await.unwrap();
+    assert_eq!(received, decision);
+
+    // Close everything
+    drop(_event_tx);
+    drop(pair.client);
+    let result = relay.await.unwrap();
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn transcoder_pipeline_bidirectional_concurrent() {
+    let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(8);
+    let (decision_tx, mut decision_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
+    let runtime_ep = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
+
+    let transcoder: Arc<TranscoderEndpoint<StubEncoder, _, ToolCallDecision, ToolCallDecision>> =
+        Arc::new(TranscoderEndpoint::new(
+            runtime_ep,
+            StubEncoder::default(),
+            Ok,
+        ));
+
+    let pair = channel_pair::<ToolCallDecision, String>(16);
+
+    let binding = TransportBinding {
+        session: SessionId {
+            thread_id: "bidir".to_string(),
+        },
+        caps: TransportCapabilities::default(),
+        upstream: pair.server,
+        downstream: transcoder,
+    };
+
+    let cancel = RelayCancellation::new();
+    let relay = tokio::spawn(relay_binding(binding, cancel));
+
+    // Concurrently: push agent events + send decisions
+    let producer = tokio::spawn(async move {
+        event_tx
+            .send(AgentEvent::TextDelta {
+                delta: "a".to_string(),
+            })
+            .await
+            .unwrap();
+        event_tx
+            .send(AgentEvent::TextDelta {
+                delta: "b".to_string(),
+            })
+            .await
+            .unwrap();
+        drop(event_tx);
+    });
+
+    let decision = ToolCallDecision::resume("bidir-tc", serde_json::json!({"ok": true}), 0);
+    pair.client.send(decision.clone()).await.unwrap();
+
+    // Verify decision arrived
+    let received = decision_rx.recv().await.unwrap();
+    assert_eq!(received, decision);
+
+    // Verify transcoded events arrived
+    producer.await.unwrap();
+    let stream = pair.client.recv().await.unwrap();
+    let events: Vec<String> = stream.map(|r| r.unwrap()).collect().await;
+    assert_eq!(
+        events,
+        vec!["prologue-1", "prologue-2", "body-1", "body-2", "epilogue"]
+    );
+
+    let result = relay.await.unwrap();
+    assert!(result.is_ok());
 }
