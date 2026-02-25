@@ -173,6 +173,19 @@ impl ToolCallDecision {
     }
 }
 
+/// Unified upstream message type for the runtime endpoint.
+///
+/// Protocol layers produce [`ToolCallDecision`]; the transport transcoder
+/// wraps them as `RuntimeInput::Decision`. Explicit cancellation is a
+/// separate variant so transport disconnect never implies cancellation.
+#[derive(Debug, Clone)]
+pub enum RuntimeInput {
+    /// A tool-call decision forwarded to the running loop.
+    Decision(ToolCallDecision),
+    /// Explicit application-level cancellation.
+    Cancel,
+}
+
 /// Tool call lifecycle status for suspend/resume capable execution.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

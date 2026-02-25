@@ -43,3 +43,42 @@ impl<T: Clone + Send + 'static> Transcoder for Identity<T> {
         vec![item.clone()]
     }
 }
+
+use crate::runtime::control::{RuntimeInput, ToolCallDecision};
+
+/// Wraps each [`ToolCallDecision`] into [`RuntimeInput::Decision`].
+///
+/// Used as the send-direction transcoder in `TranscoderEndpoint` so that
+/// protocol layers continue to operate on `ToolCallDecision` while the
+/// runtime endpoint receives [`RuntimeInput`].
+pub struct DecisionTranscoder;
+
+impl Transcoder for DecisionTranscoder {
+    type Input = ToolCallDecision;
+    type Output = RuntimeInput;
+
+    fn transcode(&mut self, item: &Self::Input) -> Vec<Self::Output> {
+        vec![RuntimeInput::Decision(item.clone())]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+
+    #[test]
+    fn identity_passthrough() {
+        let mut t = Identity::<u32>::default();
+        assert_eq!(t.transcode(&42), vec![42]);
+    }
+
+    #[test]
+    fn decision_transcoder_wraps_to_runtime_input() {
+        let mut t = DecisionTranscoder;
+        let decision = ToolCallDecision::resume("tc1", Value::Null, 0);
+        let output = t.transcode(&decision);
+        assert_eq!(output.len(), 1);
+        assert!(matches!(&output[0], RuntimeInput::Decision(d) if d.target_id == "tc1"));
+    }
+}

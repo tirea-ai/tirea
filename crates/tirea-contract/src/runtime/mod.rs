@@ -13,8 +13,8 @@ pub use activity::ActivityManager;
 pub use context::RunContext;
 pub use control::{
     InferenceError, InferenceErrorState, ResumeDecisionAction, RunLifecycleState,
-    RunLifecycleStatus, SuspendedCall, SuspendedToolCallsState, ToolCallDecision, ToolCallResume,
-    ToolCallState, ToolCallStatesState, ToolCallStatus,
+    RunLifecycleStatus, RuntimeInput, SuspendedCall, SuspendedToolCallsState, ToolCallDecision,
+    ToolCallResume, ToolCallState, ToolCallStatesState, ToolCallStatus,
 };
 pub use delta::RunDelta;
 pub use executor::{
