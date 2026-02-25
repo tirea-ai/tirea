@@ -17,6 +17,7 @@ uuid = { version = "1", features = ["v4", "v7"] }
 [dev-dependencies]
 tirea-contract = { version = "0.1.1", path = "../tirea-contract", features = ["test-support"] }
 tirea-agentos = { version = "0.1.1", path = "../tirea-agentos" }
+async-trait = "0.1"
 tirea-state = { version = "0.1.1", path = "../tirea-state", features = ["derive"] }
 tirea-store-adapters = { version = "0.1.1", path = "../tirea-store-adapters" }
 futures = "0.3"

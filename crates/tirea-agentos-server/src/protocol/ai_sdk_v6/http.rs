@@ -4,35 +4,30 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
-use futures::StreamExt;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::{Arc, OnceLock};
 use tirea_agentos::contracts::thread::Thread;
-use tirea_agentos::contracts::{AgentEvent, ToolCallDecision};
+use tirea_agentos::contracts::ToolCallDecision;
 use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError};
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
 use tirea_contract::ProtocolInputAdapter;
 use tirea_protocol_ai_sdk_v6::{
     AiSdkTrigger, AiSdkV6HistoryEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder,
-    AiSdkV6RunRequest, UIStreamEvent, AI_SDK_VERSION,
+    AiSdkV6RunRequest, AI_SDK_VERSION,
 };
 
 use super::runtime::apply_ai_sdk_extensions;
 use tokio::sync::{broadcast, mpsc, RwLock};
-use tracing::warn;
 
 use crate::service::{
     active_run_key, encode_message_page, load_message_page, register_active_run, remove_active_run,
     require_agent_state_store, try_forward_decisions_to_active_run, ApiError, AppState,
     MessageQueryParams,
 };
-use crate::transport::http_sse::{sse_body_stream, sse_response, HttpSseServerEndpoint};
-use crate::transport::{
-    relay_binding, ChannelDownstreamEndpoint, RelayCancellation, SessionId, TranscoderEndpoint,
-    TransportBinding, TransportCapabilities,
-};
+use crate::transport::http_run::wire_http_sse_relay;
+use crate::transport::http_sse::{sse_body_stream, sse_response};
 
 const RUN_PATH: &str = "/agents/:agent_id/runs";
 const RESUME_STREAM_PATH: &str = "/agents/:agent_id/runs/:chat_id/stream";
@@ -153,56 +148,26 @@ async fn run(
     let (decision_ingress_tx, decision_ingress_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
     register_active_run(active_key.clone(), decision_ingress_tx).await;
     let fanout = stream_registry().register(stream_key.clone()).await;
-    let thread_id = run.thread_id.clone();
-    let encoder = AiSdkV6ProtocolEncoder::new(run.run_id.clone(), Some(thread_id.clone()));
-    let (sse_tx, sse_rx) = mpsc::channel::<Bytes>(64);
-    let sse_tx_trailer = sse_tx.clone();
-    let upstream: Arc<HttpSseServerEndpoint<UIStreamEvent>> =
-        Arc::new(HttpSseServerEndpoint::with_fanout(
-            decision_ingress_rx,
-            sse_tx,
-            fanout.clone(),
-            cancellation_token.clone(),
-        ));
 
-    let decision_tx = run.decision_tx.clone();
-    let events = run.events;
-    let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(64);
-    let runtime_ep = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
-    tokio::spawn(async move {
-        let mut events = events;
-        while let Some(e) = events.next().await {
-            if event_tx.send(e).await.is_err() {
-                break;
+    let encoder = AiSdkV6ProtocolEncoder::new(run.run_id.clone(), Some(run.thread_id.clone()));
+    let sse_rx = wire_http_sse_relay(
+        run,
+        encoder,
+        decision_ingress_rx,
+        cancellation_token.clone(),
+        Some(fanout.clone()),
+        true,
+        "ai-sdk",
+        move |sse_tx| async move {
+            let trailer = Bytes::from("data: [DONE]\n\n");
+            let _ = fanout.send(trailer.clone());
+            if sse_tx.send(trailer).await.is_err() {
+                cancellation_token.cancel();
             }
-        }
-    });
-    let downstream = Arc::new(TranscoderEndpoint::new(runtime_ep, encoder, Ok));
-
-    let binding = TransportBinding {
-        session: SessionId { thread_id },
-        caps: TransportCapabilities {
-            upstream_async: true,
-            downstream_streaming: true,
-            single_channel_bidirectional: false,
-            resumable_downstream: true,
+            stream_registry().remove(&stream_key).await;
+            remove_active_run(&active_key).await;
         },
-        upstream,
-        downstream,
-    };
-    let relay_cancel = RelayCancellation::new();
-    tokio::spawn(async move {
-        if let Err(err) = relay_binding(binding, relay_cancel.clone()).await {
-            warn!(error = %err, "ai-sdk transport relay failed");
-        }
-        let trailer = Bytes::from("data: [DONE]\n\n");
-        let _ = fanout.send(trailer.clone());
-        if sse_tx_trailer.send(trailer).await.is_err() {
-            cancellation_token.cancel();
-        }
-        stream_registry().remove(&stream_key).await;
-        remove_active_run(&active_key).await;
-    });
+    );
 
     Ok(ai_sdk_sse_response(sse_body_stream(sse_rx)))
 }
