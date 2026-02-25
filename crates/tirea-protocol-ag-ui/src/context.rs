@@ -11,12 +11,11 @@ use uuid::Uuid;
 /// Context for AG-UI event conversion.
 ///
 /// Maintains state needed for converting internal AgentEvents to AG-UI events.
+/// State is initialized from the first `RunStart` event in the stream.
 #[derive(Debug, Clone)]
 pub struct AgUiEventContext {
-    /// Thread identifier (conversation context).
-    pub thread_id: String,
-    /// Current run identifier.
-    pub run_id: String,
+    /// Prefix derived from run_id (first 8 chars), set on RunStart.
+    run_id_prefix: String,
     /// Current message identifier.
     pub message_id: String,
     /// Step counter for generating step names.
@@ -43,13 +42,13 @@ pub struct AgUiEventContext {
 
 impl AgUiEventContext {
     /// Create a new AG-UI context.
-    pub fn new(thread_id: String, run_id: String) -> Self {
-        let run_id_prefix: String = run_id.chars().take(8).collect();
-        let message_id = format!("msg_{run_id_prefix}");
+    ///
+    /// The context is fully initialized when the first `RunStart` event
+    /// arrives, which sets the `message_id` from the run ID.
+    pub fn new() -> Self {
         Self {
-            thread_id,
-            run_id,
-            message_id,
+            run_id_prefix: String::new(),
+            message_id: String::new(),
             step_counter: 0,
             text_started: false,
             reasoning_started: false,
@@ -139,8 +138,7 @@ impl AgUiEventContext {
 
     /// Generate a new message ID.
     pub fn new_message_id(&mut self) -> String {
-        let run_id_prefix: String = self.run_id.chars().take(8).collect();
-        self.message_id = format!("msg_{run_id_prefix}_{}", Uuid::new_v4().simple());
+        self.message_id = format!("msg_{}_{}", self.run_id_prefix, Uuid::new_v4().simple());
         self.message_id.clone()
     }
 
@@ -190,6 +188,8 @@ impl AgUiEventContext {
                 run_id,
                 parent_run_id,
             } => {
+                self.run_id_prefix = run_id.chars().take(8).collect();
+                self.message_id = format!("msg_{}", self.run_id_prefix);
                 vec![Event::run_started(thread_id, run_id, parent_run_id.clone())]
             }
             AgentEvent::RunFinish {
@@ -409,9 +409,20 @@ mod tests {
     use super::*;
     use genai::chat::Usage;
 
+    /// Create a context pre-initialized via a RunStart event.
+    fn make_ctx() -> AgUiEventContext {
+        let mut ctx = AgUiEventContext::new();
+        ctx.on_agent_event(&AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "run_12345678".into(),
+            parent_run_id: None,
+        });
+        ctx
+    }
+
     #[test]
     fn inference_complete_emits_activity_snapshot() {
-        let mut ctx = AgUiEventContext::new("t1".into(), "run_12345678".into());
+        let mut ctx = make_ctx();
         let ev = AgentEvent::InferenceComplete {
             model: "gpt-4o".into(),
             usage: Some(Usage {
@@ -433,7 +444,7 @@ mod tests {
 
     #[test]
     fn inference_complete_without_usage() {
-        let mut ctx = AgUiEventContext::new("t1".into(), "run_12345678".into());
+        let mut ctx = make_ctx();
         let ev = AgentEvent::InferenceComplete {
             model: "gpt-4o-mini".into(),
             usage: None,
@@ -450,7 +461,7 @@ mod tests {
 
     #[test]
     fn reasoning_delta_emits_reasoning_events() {
-        let mut ctx = AgUiEventContext::new("t1".into(), "run_12345678".into());
+        let mut ctx = make_ctx();
         let events = ctx.on_agent_event(&AgentEvent::ReasoningDelta {
             delta: "step-by-step".into(),
         });
@@ -468,7 +479,7 @@ mod tests {
 
     #[test]
     fn reasoning_encrypted_value_maps_to_message_entity() {
-        let mut ctx = AgUiEventContext::new("t1".into(), "run_12345678".into());
+        let mut ctx = make_ctx();
         let events = ctx.on_agent_event(&AgentEvent::ReasoningEncryptedValue {
             encrypted_value: "opaque-token".into(),
         });

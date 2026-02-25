@@ -6,8 +6,14 @@ use tirea_protocol_ai_sdk_v6::AiSdkEncoder;
 #[test]
 fn encoder_adopts_first_step_start_message_id() {
     let step_msg_id = "pre-gen-assistant-uuid".to_string();
-    let mut encoder = AiSdkEncoder::new("run_12345678".to_string());
+    let mut encoder = AiSdkEncoder::new();
 
+    // Initialize via RunStart.
+    let _ = encoder.on_agent_event(&AgentEvent::RunStart {
+        thread_id: "t1".into(),
+        run_id: "run_12345678".into(),
+        parent_run_id: None,
+    });
     assert_eq!(encoder.message_id(), "msg_run_1234");
 
     let _ = encoder.on_agent_event(&AgentEvent::StepStart {

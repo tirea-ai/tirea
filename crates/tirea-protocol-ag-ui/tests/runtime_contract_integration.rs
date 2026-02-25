@@ -4,6 +4,17 @@ use serde_json::{json, Value};
 use tirea_contract::{AgentEvent, Role, TerminationReason, ToolResult};
 use tirea_protocol_ag_ui::{AgUiEventContext, Event, Message, RunAgentInput};
 
+fn make_agui_ctx(thread_id: &str, run_id: &str) -> AgUiEventContext {
+    let mut ctx = AgUiEventContext::new();
+    ctx.on_agent_event(&AgentEvent::RunStart {
+        thread_id: thread_id.to_string(),
+        run_id: run_id.to_string(),
+        parent_run_id: None,
+    });
+    ctx
+}
+
+
 fn event_type(event: &Event) -> String {
     serde_json::to_value(event)
         .ok()
@@ -14,7 +25,7 @@ fn event_type(event: &Event) -> String {
 
 #[test]
 fn agui_context_pending_closes_text_and_emits_interaction_tool_events() {
-    let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
+    let mut ctx = make_agui_ctx("thread_1", "run_1");
 
     let text_events = ctx.on_agent_event(&AgentEvent::TextDelta {
         delta: "hello".to_string(),
@@ -52,7 +63,7 @@ fn agui_context_pending_closes_text_and_emits_interaction_tool_events() {
 
 #[test]
 fn agui_context_tool_call_ready_emits_args_and_end_when_no_deltas() {
-    let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
+    let mut ctx = make_agui_ctx("thread_1", "run_1");
 
     let start_events = ctx.on_agent_event(&AgentEvent::ToolCallStart {
         id: "new_call_1".to_string(),
@@ -73,7 +84,7 @@ fn agui_context_tool_call_ready_emits_args_and_end_when_no_deltas() {
 
 #[test]
 fn agui_context_tool_call_ready_skips_args_when_delta_already_seen() {
-    let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
+    let mut ctx = make_agui_ctx("thread_1", "run_1");
 
     let _ = ctx.on_agent_event(&AgentEvent::ToolCallStart {
         id: "call_copy".to_string(),
@@ -96,7 +107,7 @@ fn agui_context_tool_call_ready_skips_args_when_delta_already_seen() {
 
 #[test]
 fn agui_context_tool_call_start_closes_open_text_stream() {
-    let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
+    let mut ctx = make_agui_ctx("thread_1", "run_1");
 
     // Start text
     let _ = ctx.on_agent_event(&AgentEvent::TextDelta {
@@ -139,7 +150,7 @@ fn agui_input_adapter_converts_messages() {
 
 #[test]
 fn agui_context_cancelled_run_finish_maps_to_run_error() {
-    let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
+    let mut ctx = make_agui_ctx("thread_1", "run_1");
 
     let events = ctx.on_agent_event(&AgentEvent::RunFinish {
         thread_id: "thread_1".to_string(),
@@ -159,7 +170,7 @@ fn agui_context_cancelled_run_finish_maps_to_run_error() {
 
 #[test]
 fn agui_context_non_cancelled_run_finish_maps_to_run_finished() {
-    let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
+    let mut ctx = make_agui_ctx("thread_1", "run_1");
 
     let events = ctx.on_agent_event(&AgentEvent::RunFinish {
         thread_id: "thread_1".to_string(),
@@ -174,7 +185,7 @@ fn agui_context_non_cancelled_run_finish_maps_to_run_finished() {
 
 #[test]
 fn agui_contract_event_order_is_stable_for_text_tool_and_terminal_events() {
-    let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
+    let mut ctx = make_agui_ctx("thread_1", "run_1");
     let mut stream = Vec::new();
 
     stream.extend(ctx.on_agent_event(&AgentEvent::RunStart {
@@ -236,7 +247,7 @@ fn agui_contract_event_order_is_stable_for_text_tool_and_terminal_events() {
 
 #[test]
 fn agui_contract_terminal_event_closes_text_and_suppresses_followup_events() {
-    let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
+    let mut ctx = make_agui_ctx("thread_1", "run_1");
     let _ = ctx.on_agent_event(&AgentEvent::TextDelta {
         delta: "partial".to_string(),
     });
@@ -260,7 +271,7 @@ fn agui_contract_terminal_event_closes_text_and_suppresses_followup_events() {
 
 #[test]
 fn agui_contract_hitl_roundtrip_maps_requested_and_response_ids() {
-    let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
+    let mut ctx = make_agui_ctx("thread_1", "run_1");
     let requested_start_events = ctx.on_agent_event(&AgentEvent::ToolCallStart {
         id: "perm_1".to_string(),
         name: "confirm_write".to_string(),
@@ -302,7 +313,7 @@ fn agui_contract_hitl_roundtrip_maps_requested_and_response_ids() {
 
 #[test]
 fn agui_contract_state_snapshot_delta_is_consistent() {
-    let mut ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
+    let mut ctx = make_agui_ctx("thread_1", "run_1");
     let first = json!({
         "todos": ["a"],
         "meta": { "count": 1 }

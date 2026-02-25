@@ -75,7 +75,7 @@ async fn run(
     let (decision_ingress_tx, decision_ingress_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
     register_active_run(active_key.clone(), decision_ingress_tx).await;
 
-    let enc = AgUiProtocolEncoder::new(run.thread_id.clone(), run.run_id.clone());
+    let enc = AgUiProtocolEncoder::new();
     let sse_rx = wire_http_sse_relay(
         run,
         enc,

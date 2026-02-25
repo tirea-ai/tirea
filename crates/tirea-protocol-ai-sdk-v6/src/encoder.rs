@@ -33,7 +33,8 @@ pub const DATA_EVENT_REASONING_ENCRYPTED: &str = "reasoning-encrypted";
 #[derive(Debug)]
 pub struct AiSdkEncoder {
     message_id: String,
-    run_id: String,
+    /// Prefix derived from run_id (first 8 chars), set on RunStart.
+    run_id_prefix: String,
     text_open: bool,
     text_counter: u32,
     finished: bool,
@@ -44,12 +45,14 @@ pub struct AiSdkEncoder {
 }
 
 impl AiSdkEncoder {
-    /// Create a new encoder for the given run.
-    pub fn new(run_id: String) -> Self {
-        let message_id = format!("msg_{}", &run_id[..8.min(run_id.len())]);
+    /// Create a new encoder.
+    ///
+    /// The encoder is fully initialized when the first `RunStart` event
+    /// arrives, which sets the `message_id` from the run ID.
+    pub fn new() -> Self {
         Self {
-            message_id,
-            run_id,
+            message_id: String::new(),
+            run_id_prefix: String::new(),
             text_open: false,
             text_counter: 0,
             finished: false,
@@ -99,19 +102,6 @@ impl AiSdkEncoder {
     /// Get the message ID.
     pub fn message_id(&self) -> &str {
         &self.message_id
-    }
-
-    /// Get the run ID.
-    pub fn run_id(&self) -> &str {
-        &self.run_id
-    }
-
-    /// Emit the stream prologue: `message-start`.
-    ///
-    /// Unlike the old adapter, this does NOT emit `text-start` here —
-    /// text blocks are opened lazily when the first `TextDelta` arrives.
-    pub fn prologue(&self) -> Vec<UIStreamEvent> {
-        vec![UIStreamEvent::message_start(&self.message_id)]
     }
 
     /// Convert an `AgentEvent` to UI stream events with proper text lifecycle.
@@ -232,7 +222,11 @@ impl AiSdkEncoder {
                 events.push(UIStreamEvent::finish_step());
                 events
             }
-            AgentEvent::RunStart { .. } => vec![],
+            AgentEvent::RunStart { run_id, .. } => {
+                self.run_id_prefix = run_id.chars().take(8).collect();
+                self.message_id = format!("msg_{}", self.run_id_prefix);
+                vec![UIStreamEvent::message_start(&self.message_id)]
+            }
             AgentEvent::InferenceComplete {
                 model,
                 usage,
@@ -412,6 +406,12 @@ impl AiSdkEncoder {
     }
 }
 
+impl Default for AiSdkEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn normalize_activity_type(activity_type: &str) -> String {
     activity_type.trim().to_ascii_lowercase().replace('_', "-")
 }
@@ -517,7 +517,7 @@ mod tests {
 
     #[test]
     fn inference_complete_emits_data_event() {
-        let mut enc = AiSdkEncoder::new("run_12345678".into());
+        let mut enc = AiSdkEncoder::new();
         let ev = AgentEvent::InferenceComplete {
             model: "gpt-4o".into(),
             usage: Some(Usage {
@@ -544,7 +544,7 @@ mod tests {
 
     #[test]
     fn inference_complete_without_usage() {
-        let mut enc = AiSdkEncoder::new("run_12345678".into());
+        let mut enc = AiSdkEncoder::new();
         let ev = AgentEvent::InferenceComplete {
             model: "gpt-4o-mini".into(),
             usage: None,
@@ -566,7 +566,7 @@ mod tests {
 
     #[test]
     fn reasoning_agent_event_emits_reasoning_stream_events() {
-        let mut enc = AiSdkEncoder::new("run_reasoning_event".into());
+        let mut enc = AiSdkEncoder::new();
         let events = enc.on_agent_event(&AgentEvent::ReasoningDelta {
             delta: "thinking".to_string(),
         });
@@ -581,7 +581,7 @@ mod tests {
 
     #[test]
     fn run_finish_closes_reasoning_started_from_reasoning_event() {
-        let mut enc = AiSdkEncoder::new("run_reasoning_finish".into());
+        let mut enc = AiSdkEncoder::new();
         let open_events = enc.on_agent_event(&AgentEvent::ReasoningDelta {
             delta: "step-1".to_string(),
         });
@@ -605,7 +605,7 @@ mod tests {
 
     #[test]
     fn reasoning_encrypted_event_emits_transient_data_event() {
-        let mut enc = AiSdkEncoder::new("run_reasoning_encrypted".into());
+        let mut enc = AiSdkEncoder::new();
         let events = enc.on_agent_event(&AgentEvent::ReasoningEncryptedValue {
             encrypted_value: "opaque-token".to_string(),
         });
@@ -625,7 +625,7 @@ mod tests {
 
     #[test]
     fn tool_call_done_with_error_status_emits_tool_output_error() {
-        let mut enc = AiSdkEncoder::new("run_tool_error".into());
+        let mut enc = AiSdkEncoder::new();
         let events = enc.on_agent_event(&AgentEvent::ToolCallDone {
             id: "call_error_1".to_string(),
             result: tirea_contract::ToolResult::error("search", "tool backend failed"),
@@ -645,7 +645,7 @@ mod tests {
 
     #[test]
     fn tool_call_lifecycle_emits_streaming_input_ready_and_output_events() {
-        let mut enc = AiSdkEncoder::new("run_tools".into());
+        let mut enc = AiSdkEncoder::new();
 
         let start = enc.on_agent_event(&AgentEvent::ToolCallStart {
             id: "call_1".to_string(),
@@ -701,7 +701,7 @@ mod tests {
 
     #[test]
     fn permission_tool_ready_emits_tool_approval_request() {
-        let mut enc = AiSdkEncoder::new("run_perm".into());
+        let mut enc = AiSdkEncoder::new();
         let ready = enc.on_agent_event(&AgentEvent::ToolCallReady {
             id: "fc_perm_1".to_string(),
             name: "PermissionConfirm".to_string(),
@@ -719,7 +719,7 @@ mod tests {
 
     #[test]
     fn interaction_resolved_denied_emits_tool_output_denied() {
-        let mut enc = AiSdkEncoder::new("run_deny".into());
+        let mut enc = AiSdkEncoder::new();
         let events = enc.on_agent_event(&AgentEvent::ToolCallResumed {
             target_id: "fc_perm_1".to_string(),
             result: json!({ "approved": false, "reason": "nope" }),
@@ -736,7 +736,7 @@ mod tests {
 
     #[test]
     fn interaction_resolved_error_emits_tool_output_error() {
-        let mut enc = AiSdkEncoder::new("run_err".into());
+        let mut enc = AiSdkEncoder::new();
         let events = enc.on_agent_event(&AgentEvent::ToolCallResumed {
             target_id: "ask_call_2".to_string(),
             result: json!({ "approved": false, "error": "frontend validation failed" }),
@@ -753,7 +753,7 @@ mod tests {
 
     #[test]
     fn interaction_resolved_output_payload_emits_tool_output_available() {
-        let mut enc = AiSdkEncoder::new("run_ask".into());
+        let mut enc = AiSdkEncoder::new();
         let events = enc.on_agent_event(&AgentEvent::ToolCallResumed {
             target_id: "ask_call_1".to_string(),
             result: json!({ "message": "blue" }),
@@ -770,7 +770,7 @@ mod tests {
 
     #[test]
     fn step_events_emit_start_step_and_finish_step() {
-        let mut enc = AiSdkEncoder::new("run_steps".into());
+        let mut enc = AiSdkEncoder::new();
 
         let step_start = enc.on_agent_event(&AgentEvent::StepStart {
             message_id: "msg_external".to_string(),
@@ -793,7 +793,7 @@ mod tests {
 
     #[test]
     fn cancelled_run_emits_abort_and_closes_open_blocks() {
-        let mut enc = AiSdkEncoder::new("run_cancelled".into());
+        let mut enc = AiSdkEncoder::new();
 
         let text_events = enc.on_agent_event(&AgentEvent::TextDelta {
             delta: "hello".to_string(),
@@ -844,7 +844,7 @@ mod tests {
 
     #[test]
     fn activity_snapshot_reasoning_emits_reasoning_and_data_events() {
-        let mut enc = AiSdkEncoder::new("run_reasoning".into());
+        let mut enc = AiSdkEncoder::new();
         let events = enc.on_agent_event(&AgentEvent::ActivitySnapshot {
             message_id: "m2".to_string(),
             activity_type: "reasoning".to_string(),
@@ -873,7 +873,7 @@ mod tests {
 
     #[test]
     fn activity_snapshot_source_url_document_and_file_emit_native_events() {
-        let mut enc = AiSdkEncoder::new("run_sources".into());
+        let mut enc = AiSdkEncoder::new();
 
         let url_events = enc.on_agent_event(&AgentEvent::ActivitySnapshot {
             message_id: "src_1".to_string(),
@@ -931,7 +931,7 @@ mod tests {
 
     #[test]
     fn activity_delta_reasoning_done_closes_reasoning_block() {
-        let mut enc = AiSdkEncoder::new("run_reasoning_delta".into());
+        let mut enc = AiSdkEncoder::new();
 
         let first = enc.on_agent_event(&AgentEvent::ActivityDelta {
             message_id: "m3".to_string(),

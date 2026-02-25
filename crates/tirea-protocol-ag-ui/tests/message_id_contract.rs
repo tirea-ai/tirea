@@ -4,10 +4,21 @@ use serde_json::json;
 use tirea_contract::{AgentEvent, ToolResult};
 use tirea_protocol_ag_ui::{AgUiEventContext, Event};
 
+fn make_agui_ctx(thread_id: &str, run_id: &str) -> AgUiEventContext {
+    let mut ctx = AgUiEventContext::new();
+    ctx.on_agent_event(&AgentEvent::RunStart {
+        thread_id: thread_id.to_string(),
+        run_id: run_id.to_string(),
+        parent_run_id: None,
+    });
+    ctx
+}
+
+
 #[test]
 fn text_message_start_uses_step_start_message_id() {
     let step_msg_id = "pre-gen-assistant-uuid".to_string();
-    let mut ctx = AgUiEventContext::new("thread1".to_string(), "run1".to_string());
+    let mut ctx = make_agui_ctx("thread1", "run1");
 
     let step_events = ctx.on_agent_event(&AgentEvent::StepStart {
         message_id: step_msg_id.clone(),
@@ -34,7 +45,7 @@ fn text_message_start_uses_step_start_message_id() {
 #[test]
 fn tool_call_result_uses_tool_call_done_message_id() {
     let tool_msg_id = "pre-gen-tool-uuid".to_string();
-    let mut ctx = AgUiEventContext::new("thread1".to_string(), "run1".to_string());
+    let mut ctx = make_agui_ctx("thread1", "run1");
 
     let result_events = ctx.on_agent_event(&AgentEvent::ToolCallDone {
         id: "call_1".to_string(),

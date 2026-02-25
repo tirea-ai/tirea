@@ -72,10 +72,7 @@ async fn cross_crate_integration_matrix_72() {
                 let resolved_thread_id = run.thread_id.clone();
                 let resolved_run_id = run.run_id.clone();
 
-                let encoder = AiSdkV6ProtocolEncoder::new(
-                    resolved_run_id.clone(),
-                    Some(resolved_thread_id.clone()),
-                );
+                let encoder = AiSdkV6ProtocolEncoder::new();
                 let decision_tx = run.decision_tx.clone();
                 let events = run.events;
                 let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(64);

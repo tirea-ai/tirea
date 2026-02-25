@@ -4454,6 +4454,17 @@ use tirea_agentos::contracts::AgentEvent;
 use tirea_agentos::contracts::Suspension;
 use tirea_protocol_ag_ui::{AgUiEventContext, Event};
 
+fn make_agui_ctx(thread_id: &str, run_id: &str) -> AgUiEventContext {
+    let mut ctx = AgUiEventContext::new();
+    ctx.on_agent_event(&AgentEvent::RunStart {
+        thread_id: thread_id.to_string(),
+        run_id: run_id.to_string(),
+        parent_run_id: None,
+    });
+    ctx
+}
+
+
 /// Test complete scenario: Permission confirmation via Suspension → AG-UI
 #[test]
 fn test_scenario_permission_confirmation_to_ag_ui() {
@@ -4469,7 +4480,7 @@ fn test_scenario_permission_confirmation_to_ag_ui() {
         }));
 
     // 2. Pending frontend tool now emits standard ToolCallStart + ToolCallReady
-    let mut ctx = AgUiEventContext::new("thread_123".into(), "run_456".into());
+    let mut ctx = make_agui_ctx("thread_123", "run_456");
     let start_events = ctx.on_agent_event(&AgentEvent::ToolCallStart {
         id: interaction.id.clone(),
         name: "confirm".to_string(),
@@ -4536,7 +4547,7 @@ fn test_scenario_custom_frontend_action_to_ag_ui() {
 /// Test scenario: Text streaming interrupted by suspended interaction
 #[test]
 fn test_scenario_text_interrupted_by_interaction() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     // 1. Start text streaming
     let text_event = AgentEvent::TextDelta {
@@ -5256,7 +5267,7 @@ async fn test_scenario_frontend_tool_full_event_pipeline() {
 
     // 2. Agent loop now emits ToolCallStart + ToolCallReady for pending frontend tools.
     let invocation = suspended_invocation(&step).expect("suspended invocation should exist");
-    let mut agui_ctx = AgUiEventContext::new("thread_123".into(), "run_456".into());
+    let mut agui_ctx = make_agui_ctx("thread_123", "run_456");
     let start_events = agui_ctx.on_agent_event(&AgentEvent::ToolCallStart {
         id: invocation.call_id.clone(),
         name: invocation.tool_name.clone(),
@@ -5908,7 +5919,7 @@ async fn test_scenario_frontend_tool_with_response_plugin() {
 /// Test scenario: AG-UI context state after suspended interaction
 #[test]
 fn test_scenario_agui_context_state_after_pending() {
-    let mut ctx = AgUiEventContext::new("thread_1".into(), "run_1".into());
+    let mut ctx = make_agui_ctx("thread_1", "run_1");
 
     // Start text streaming
     let text_event = AgentEvent::TextDelta {
@@ -5987,7 +5998,7 @@ fn test_agui_stream_event_sequence_run_started_first() {
 /// Test: Text interrupted by tool call - TEXT_MESSAGE_END before TOOL_CALL_START
 #[test]
 fn test_agui_stream_text_interrupted_by_tool_call() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     // Start text streaming
     let text1 = AgentEvent::TextDelta {
@@ -6024,7 +6035,7 @@ fn test_agui_stream_text_interrupted_by_tool_call() {
 /// Test: Tool call complete sequence - START -> ARGS -> READY(END) -> DONE(RESULT)
 #[test]
 fn test_agui_stream_tool_call_sequence() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     // Collect all events for a tool call
     let start = AgentEvent::ToolCallStart {
@@ -6080,7 +6091,7 @@ fn test_agui_stream_tool_call_sequence() {
 /// Test: Error event ends stream without RUN_FINISHED
 #[test]
 fn test_agui_stream_error_no_run_finished() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     // Start with RUN_STARTED (simulated)
     let _started = Event::run_started("t1", "r1", None);
@@ -6105,7 +6116,7 @@ fn test_agui_stream_error_no_run_finished() {
 /// Test: Pending event doesn't emit RUN_FINISHED
 #[test]
 fn test_agui_stream_pending_no_run_finished() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     // Pending frontend tool start
     let pending = AgentEvent::ToolCallStart {
@@ -6826,7 +6837,7 @@ fn test_frontend_tool_flow_complex_result() {
 /// Test: State snapshot event conversion
 #[test]
 fn test_state_event_snapshot_conversion() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     let state = json!({
         "counter": 42,
@@ -6853,7 +6864,7 @@ fn test_state_event_snapshot_conversion() {
 /// Test: State delta event conversion
 #[test]
 fn test_state_event_delta_conversion() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     let delta = vec![
         json!({"op": "replace", "path": "/counter", "value": 43}),
@@ -6880,7 +6891,7 @@ fn test_state_event_delta_conversion() {
 /// Test: Messages snapshot event conversion
 #[test]
 fn test_state_event_messages_snapshot_conversion() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     let messages = vec![
         json!({"role": "user", "content": "Hello"}),
@@ -6911,7 +6922,7 @@ fn test_state_event_messages_snapshot_conversion() {
 /// Test: Tool execution failure produces correct events
 #[test]
 fn test_error_flow_tool_execution_failure() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     let result = ToolResult::error("read_file", "File not found: /nonexistent");
 
@@ -6957,7 +6968,7 @@ fn test_error_flow_invalid_request() {
 /// Test: Cancelled run finish event
 #[test]
 fn test_error_flow_run_finish_cancelled() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     let event = AgentEvent::RunFinish {
         thread_id: "t1".into(),
@@ -7418,7 +7429,7 @@ fn test_activity_streaming_complete_flow() {
 /// Verifies concurrent tools each have complete START → ARGS → END → RESULT sequence
 #[test]
 fn test_concurrent_tool_calls_event_ordering() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     // Simulate 3 concurrent tool calls
     let tool_ids = ["call_1", "call_2", "call_3"];
@@ -7490,7 +7501,7 @@ fn test_concurrent_tool_calls_event_ordering() {
 /// Test: Interleaved tool calls with text
 #[test]
 fn test_interleaved_tools_and_text() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
     let mut all_events: Vec<Event> = Vec::new();
 
     // Text starts
@@ -7585,7 +7596,7 @@ fn test_interleaved_tools_and_text() {
 /// Protocol: STATE_SNAPSHOT event for client state restoration
 #[test]
 fn test_reconnection_state_snapshot() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     // Simulate session state
     let state = json!({
@@ -7615,7 +7626,7 @@ fn test_reconnection_state_snapshot() {
 /// Test: Messages snapshot for reconnection
 #[test]
 fn test_reconnection_messages_snapshot() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     let messages = vec![
         json!({"role": "user", "content": "Hello"}),
@@ -7642,7 +7653,7 @@ fn test_reconnection_messages_snapshot() {
 #[test]
 fn test_full_reconnection_scenario() {
     // Client reconnects - server sends snapshots first
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
     let mut reconnect_events: Vec<Event> = Vec::new();
 
     // 1. RUN_STARTED for new connection
@@ -7777,7 +7788,7 @@ async fn test_multiple_interaction_responses() {
 /// Test: Tool timeout produces correct AG-UI events
 #[test]
 fn test_tool_timeout_ag_ui_flow() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     // Tool starts
     let start = AgentEvent::ToolCallStart {
@@ -7820,7 +7831,7 @@ fn test_tool_timeout_ag_ui_flow() {
 /// Test: Rapid text delta burst handling
 #[test]
 fn test_rapid_text_delta_burst() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
     let mut all_events: Vec<Event> = Vec::new();
 
     // Simulate 100 rapid text deltas
@@ -7859,7 +7870,7 @@ fn test_rapid_text_delta_burst() {
 /// Test: State events ordering with other events
 #[test]
 fn test_state_event_ordering() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
     let mut all_events: Vec<Event> = Vec::new();
 
     // Sequence: text → state snapshot → more text → state delta
@@ -7906,14 +7917,14 @@ fn test_state_event_ordering() {
 #[test]
 fn test_sequential_runs_in_session() {
     // Run 1
-    let mut ctx1 = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx1 = make_agui_ctx("t1", "r1");
     let run1_start = Event::run_started("t1", "r1", None);
     let text1 = AgentEvent::TextDelta {
         delta: "First run response".into(),
     };
     let text1_events = ctx1.on_agent_event(&text1);
     // Run 2 (same thread, different run)
-    let mut ctx2 = AgUiEventContext::new("t1".into(), "r2".into());
+    let mut ctx2 = make_agui_ctx("t1", "r2");
     let run2_start = Event::run_started("t1", "r2", None);
     let text2 = AgentEvent::TextDelta {
         delta: "Second run response".into(),
@@ -8021,7 +8032,7 @@ fn test_custom_event_flow() {
 /// Verifies TOOL_CALL_RESULT can handle ~100KB of JSON data
 #[test]
 fn test_large_tool_result_payload() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     // Create a large result (simulate ~100KB of data)
     let large_data: Vec<Value> = (0..1000)
@@ -8071,7 +8082,7 @@ fn test_large_tool_result_payload() {
 /// Test: Large state snapshot
 #[test]
 fn test_large_state_snapshot() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     // Create large state
     let large_state = json!({
@@ -8281,7 +8292,7 @@ fn test_step_events_matching_names() {
 /// Protocol: Verify correct step name tracking across multiple steps
 #[test]
 fn test_multiple_step_sequences() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     // Step 1
     let step1_start = AgentEvent::StepStart {
@@ -8739,7 +8750,7 @@ fn test_custom_event_structure() {
 /// Protocol: Full TOOL_CALL flow: START → ARGS → END → RESULT
 #[test]
 fn test_complete_tool_call_protocol_flow() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
     let mut events: Vec<Event> = Vec::new();
 
     // Start
@@ -8798,7 +8809,7 @@ fn test_complete_tool_call_protocol_flow() {
 /// Protocol: STATE_SNAPSHOT → STATE_DELTA*
 #[test]
 fn test_state_sync_protocol_flow() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
     let mut events: Vec<Event> = Vec::new();
 
     // Initial snapshot
@@ -8830,7 +8841,7 @@ fn test_state_sync_protocol_flow() {
 /// Protocol: Verify correct event sequencing with interleaved content
 #[test]
 fn test_mixed_content_protocol_flow() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
     let mut events: Vec<Event> = Vec::new();
 
     // Text starts
@@ -9196,7 +9207,7 @@ fn test_agui_tool_def_full_serialization() {
 /// Protocol: Run can be canceled, resulting in RUN_ERROR or no RUN_FINISHED
 #[test]
 fn test_event_sequence_canceled_run() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
     let mut events: Vec<Event> = Vec::new();
 
     // Run starts
@@ -9232,7 +9243,7 @@ fn test_event_sequence_canceled_run() {
 /// Protocol: Error interrupts text stream
 #[test]
 fn test_error_interrupts_text_stream() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
     let mut events: Vec<Event> = Vec::new();
 
     // Text starts
@@ -9257,7 +9268,7 @@ fn test_error_interrupts_text_stream() {
 /// Protocol: Each new message gets its own START/END pair
 #[test]
 fn test_multiple_text_messages() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
     let mut events: Vec<Event> = Vec::new();
 
     // First message
@@ -9276,7 +9287,7 @@ fn test_multiple_text_messages() {
     events.extend(ctx.on_agent_event(&finish1));
 
     // Reset context for new message
-    ctx = AgUiEventContext::new("t1".into(), "r2".into());
+    ctx = make_agui_ctx("t1", "r2");
 
     // Second message
     let text2 = AgentEvent::TextDelta {
@@ -9373,7 +9384,7 @@ fn test_state_delta_array_operations() {
 /// Protocol: Tool can have no arguments
 #[test]
 fn test_tool_call_empty_args() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     let start = AgentEvent::ToolCallStart {
         id: "call_1".into(),
@@ -9390,7 +9401,7 @@ fn test_tool_call_empty_args() {
 /// Protocol: Arguments can be complex JSON
 #[test]
 fn test_tool_call_complex_args() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     let args = AgentEvent::ToolCallDelta {
         id: "call_1".into(),
@@ -9417,7 +9428,7 @@ fn test_tool_call_complex_args() {
 /// Protocol: Tool can return with warning status
 #[test]
 fn test_tool_result_with_warning_status() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     let done = AgentEvent::ToolCallDone {
         id: "call_1".into(),
@@ -9436,7 +9447,7 @@ fn test_tool_result_with_warning_status() {
 /// Protocol: Tool can indicate async/pending execution
 #[test]
 fn test_tool_result_with_pending_status() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     let done = AgentEvent::ToolCallDone {
         id: "call_1".into(),
@@ -9565,7 +9576,7 @@ fn test_interaction_response_with_data() {
 /// Protocol: Unique message IDs across a run
 #[test]
 fn test_context_message_id_uniqueness() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     let id1 = ctx.new_message_id();
     let id2 = ctx.new_message_id();
@@ -9580,7 +9591,7 @@ fn test_context_message_id_uniqueness() {
 /// Protocol: Steps are numbered sequentially
 #[test]
 fn test_context_step_name_sequence() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     let step1 = ctx.next_step_name();
     let step2 = ctx.next_step_name();
@@ -9596,7 +9607,7 @@ fn test_context_step_name_sequence() {
 /// Protocol: Tracks whether text is currently streaming
 #[test]
 fn test_context_text_stream_state() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     // Start streaming returns true (was not started before)
     let was_started = ctx.start_text();
@@ -10193,7 +10204,7 @@ fn test_event_with_raw_event_passthrough() {
 /// Protocol: Lifecycle constraint per AG-UI spec
 #[test]
 fn test_run_started_is_first_event() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
     let mut events: Vec<Event> = Vec::new();
 
     // Simulate a complete run
@@ -10256,7 +10267,7 @@ fn test_text_message_content_empty_delta() {
 /// Protocol: TEXT_MESSAGE events must follow START → CONTENT* → END
 #[test]
 fn test_text_message_sequence_ordering() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
     let mut events: Vec<Event> = Vec::new();
 
     // Generate a complete text message
@@ -10314,7 +10325,7 @@ fn test_text_message_sequence_ordering() {
 /// Protocol: TOOL_CALL events must follow START → ARGS* → END → RESULT
 #[test]
 fn test_tool_call_sequence_ordering() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
     let mut events: Vec<Event> = Vec::new();
 
     let start = AgentEvent::ToolCallStart {
@@ -10382,7 +10393,7 @@ fn test_tool_call_sequence_ordering() {
 #[test]
 fn test_run_finished_or_error_mutually_exclusive() {
     // A run should produce either RUN_FINISHED or RUN_ERROR, not both
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     // Simulate successful run
     let success_events: Vec<Event> = [
@@ -10417,7 +10428,7 @@ fn test_run_finished_or_error_mutually_exclusive() {
     assert!(!has_error, "Successful run should not emit RUN_ERROR");
 
     // Simulate error run
-    let mut ctx2 = AgUiEventContext::new("t1".into(), "r2".into());
+    let mut ctx2 = make_agui_ctx("t1", "r2");
     let error_events: Vec<Event> = [
         AgentEvent::RunStart {
             thread_id: "t1".into(),
@@ -10672,7 +10683,7 @@ fn test_text_end_message_id_matches_start() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_text_message_flow_consistent_message_id() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     let text1 = AgentEvent::TextDelta {
         delta: "Hello ".into(),
@@ -11985,7 +11996,7 @@ fn test_run_agent_request_full_deserialization() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_agent_event_run_finish_ends_text_stream() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     // Start text
     let text = AgentEvent::TextDelta {
@@ -12033,7 +12044,7 @@ fn test_agent_event_run_finish_ends_text_stream() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_agent_event_run_finish_ends_text_and_run() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     // Start text
     let text = AgentEvent::TextDelta {
@@ -12063,7 +12074,7 @@ fn test_agent_event_run_finish_ends_text_and_run() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_agent_event_run_finish_cancelled_produces_run_error() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     let cancelled = AgentEvent::RunFinish {
         thread_id: "t1".into(),
@@ -12087,7 +12098,7 @@ fn test_agent_event_run_finish_cancelled_produces_run_error() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_agent_event_error_produces_run_error() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     let error = AgentEvent::Error {
         message: "API rate limit".into(),
@@ -12108,7 +12119,7 @@ fn test_agent_event_error_produces_run_error() {
 /// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
 #[test]
 fn test_agent_event_pending_ends_text() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     // Start text
     let text = AgentEvent::TextDelta {
@@ -12142,9 +12153,9 @@ fn test_agent_event_pending_ends_text() {
 /// Test: AgentEvent::ActivitySnapshot maps to Event::ActivitySnapshot
 #[test]
 fn test_agent_event_activity_snapshot_to_ag_ui() {
-    use tirea_protocol_ag_ui::{AgUiEventContext, Event};
+    use tirea_protocol_ag_ui::Event;
 
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
     let event = AgentEvent::ActivitySnapshot {
         message_id: "activity_1".to_string(),
         activity_type: "progress".to_string(),
@@ -12174,9 +12185,9 @@ fn test_agent_event_activity_snapshot_to_ag_ui() {
 /// Test: AgentEvent::ActivityDelta maps to Event::ActivityDelta
 #[test]
 fn test_agent_event_activity_delta_to_ag_ui() {
-    use tirea_protocol_ag_ui::{AgUiEventContext, Event};
+    use tirea_protocol_ag_ui::Event;
 
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
     let event = AgentEvent::ActivityDelta {
         message_id: "activity_1".to_string(),
         activity_type: "progress".to_string(),
@@ -12206,7 +12217,7 @@ fn test_agent_event_activity_delta_to_ag_ui() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_agent_event_step_events() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     let step_start = AgentEvent::StepStart {
         message_id: String::new(),
@@ -12226,7 +12237,7 @@ fn test_agent_event_step_events() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_tool_call_start_ends_active_text() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     // Start text
     let text = AgentEvent::TextDelta {
@@ -12258,7 +12269,7 @@ fn test_tool_call_start_ends_active_text() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_tool_call_start_includes_parent_message_id() {
-    let mut ctx = AgUiEventContext::new("t1".into(), "r1".into());
+    let mut ctx = make_agui_ctx("t1", "r1");
 
     let tool_start = AgentEvent::ToolCallStart {
         id: "call_1".into(),

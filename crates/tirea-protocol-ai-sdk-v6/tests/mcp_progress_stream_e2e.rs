@@ -411,11 +411,8 @@ for raw in sys.stdin:
     ))
     .await;
 
-    let mut encoder = AiSdkV6ProtocolEncoder::new(
-        "run_progress_e2e".to_string(),
-        Some("thread-mcp-progress".to_string()),
-    );
-    let mut ui_events = encoder.prologue();
+    let mut encoder = AiSdkV6ProtocolEncoder::new();
+    let mut ui_events = Vec::new();
     for event in &agent_events {
         ui_events.extend(encoder.on_agent_event(event));
     }
@@ -521,11 +518,8 @@ async fn real_http_mcp_progress_notifications_flow_to_ui_data_events() {
     ))
     .await;
 
-    let mut encoder = AiSdkV6ProtocolEncoder::new(
-        "run_http_progress_e2e".to_string(),
-        Some("thread-mcp-http-progress".to_string()),
-    );
-    let mut ui_events = encoder.prologue();
+    let mut encoder = AiSdkV6ProtocolEncoder::new();
+    let mut ui_events = Vec::new();
     for event in &agent_events {
         ui_events.extend(encoder.on_agent_event(event));
     }

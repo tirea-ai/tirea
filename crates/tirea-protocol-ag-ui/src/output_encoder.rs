@@ -6,10 +6,16 @@ pub struct AgUiProtocolEncoder {
 }
 
 impl AgUiProtocolEncoder {
-    pub fn new(thread_id: String, run_id: String) -> Self {
+    pub fn new() -> Self {
         Self {
-            ctx: AgUiEventContext::new(thread_id, run_id),
+            ctx: AgUiEventContext::new(),
         }
+    }
+}
+
+impl Default for AgUiProtocolEncoder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

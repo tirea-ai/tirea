@@ -148,7 +148,7 @@ async fn run(
     register_active_run(active_key.clone(), decision_ingress_tx).await;
     let fanout = stream_registry().register(stream_key.clone()).await;
 
-    let encoder = AiSdkV6ProtocolEncoder::new(run.run_id.clone(), Some(run.thread_id.clone()));
+    let encoder = AiSdkV6ProtocolEncoder::new();
     let sse_rx = wire_http_sse_relay(
         run,
         encoder,

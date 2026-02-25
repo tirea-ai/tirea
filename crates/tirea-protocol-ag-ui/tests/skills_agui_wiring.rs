@@ -14,6 +14,17 @@ use tirea_agentos::extensions::skills::{
 use tirea_contract::testing::TestFixture;
 use tirea_protocol_ag_ui::{AgUiEventContext, Event};
 
+fn make_agui_ctx(thread_id: &str, run_id: &str) -> AgUiEventContext {
+    let mut ctx = AgUiEventContext::new();
+    ctx.on_agent_event(&AgentEvent::RunStart {
+        thread_id: thread_id.to_string(),
+        run_id: run_id.to_string(),
+        parent_run_id: None,
+    });
+    ctx
+}
+
+
 #[tokio::test]
 async fn test_skill_tool_result_is_emitted_as_agui_tool_call_result() {
     let td = TempDir::new().unwrap();
@@ -41,7 +52,7 @@ async fn test_skill_tool_result_is_emitted_as_agui_tool_call_result() {
     assert!(exec.result.is_success());
 
     // Simulate tool call lifecycle events being converted to AG-UI.
-    let mut agui_ctx = AgUiEventContext::new("thread_1".to_string(), "run_1".to_string());
+    let mut agui_ctx = make_agui_ctx("thread_1", "run_1");
     let start = AgentEvent::ToolCallStart {
         id: "call_1".to_string(),
         name: "skill".to_string(),

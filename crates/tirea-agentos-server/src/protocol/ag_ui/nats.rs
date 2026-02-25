@@ -68,7 +68,7 @@ async fn handle_message(
             run_request,
             resolved,
             reply,
-            |run| AgUiProtocolEncoder::new(run.thread_id.clone(), run.run_id.clone()),
+            |_run| AgUiProtocolEncoder::new(),
             |msg| Event::run_error(msg, None),
         )
         .await

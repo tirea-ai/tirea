@@ -75,7 +75,7 @@ async fn handle_message(
             run_request,
             resolved,
             reply,
-            |run| AiSdkV6ProtocolEncoder::new(run.run_id.clone(), Some(run.thread_id.clone())),
+            |_run| AiSdkV6ProtocolEncoder::new(),
             UIStreamEvent::error,
         )
         .await
