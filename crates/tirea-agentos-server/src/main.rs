@@ -13,7 +13,7 @@ use tirea_agentos_server::service::AppState;
 use tirea_agentos_server::{http, protocol};
 use tirea_contract::tool::context::ToolCallContext;
 use tirea_contract::tool::contract::{Tool, ToolDescriptor, ToolError, ToolResult};
-use tirea_extension_permission::PermissionPlugin;
+use tirea_extension_permission::{PermissionPlugin, ToolPolicyPlugin};
 use tirea_store_adapters::FileStore;
 
 #[derive(Debug, Parser)]
@@ -207,6 +207,7 @@ fn build_os(
 ) -> AgentOs {
     let mut builder = AgentOsBuilder::new()
         .with_agent_state_store(write_store)
+        .with_registered_plugin("tool_policy", Arc::new(ToolPolicyPlugin))
         .with_registered_plugin("permission", Arc::new(PermissionPlugin))
         .with_tools({
             let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();

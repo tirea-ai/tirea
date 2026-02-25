@@ -1098,7 +1098,7 @@ fn resolve_sets_runtime_caller_agent_id() {
     assert_eq!(
         resolved
             .run_config
-            .value(tirea_agent_loop::engine::tool_filter::SCOPE_ALLOWED_TOOLS_KEY),
+            .value(tirea_extension_permission::SCOPE_ALLOWED_TOOLS_KEY),
         Some(&json!(["echo"]))
     );
 }

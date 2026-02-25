@@ -1,5 +1,18 @@
-use crate::RunConfig;
 use serde_json::Value;
+use tirea_contract::RunConfig;
+
+/// Scope key: tool allow-list policy.
+pub const SCOPE_ALLOWED_TOOLS_KEY: &str = "__agent_policy_allowed_tools";
+/// Scope key: tool deny-list policy.
+pub const SCOPE_EXCLUDED_TOOLS_KEY: &str = "__agent_policy_excluded_tools";
+/// Scope key: skill allow-list policy.
+pub const SCOPE_ALLOWED_SKILLS_KEY: &str = "__agent_policy_allowed_skills";
+/// Scope key: skill deny-list policy.
+pub const SCOPE_EXCLUDED_SKILLS_KEY: &str = "__agent_policy_excluded_skills";
+/// Scope key: delegate-agent allow-list policy.
+pub const SCOPE_ALLOWED_AGENTS_KEY: &str = "__agent_policy_allowed_agents";
+/// Scope key: delegate-agent deny-list policy.
+pub const SCOPE_EXCLUDED_AGENTS_KEY: &str = "__agent_policy_excluded_agents";
 
 /// Check whether an identifier is allowed by optional allow/deny lists.
 #[must_use]
@@ -65,6 +78,26 @@ mod tests {
     }
 
     #[test]
+    fn is_id_allowed_allows_when_no_filters() {
+        assert!(is_id_allowed("a", None, None));
+    }
+
+    #[test]
+    fn is_id_allowed_allows_when_in_allowed() {
+        let allowed = vec!["a".to_string(), "b".to_string()];
+        assert!(is_id_allowed("a", Some(&allowed), None));
+        assert!(is_id_allowed("b", Some(&allowed), None));
+        assert!(!is_id_allowed("c", Some(&allowed), None));
+    }
+
+    #[test]
+    fn is_id_allowed_denies_when_excluded() {
+        let excluded = vec!["b".to_string()];
+        assert!(is_id_allowed("a", None, Some(&excluded)));
+        assert!(!is_id_allowed("b", None, Some(&excluded)));
+    }
+
+    #[test]
     fn is_scope_allowed_reads_filters_from_scope() {
         let allowed_key = "__test_allowed";
         let excluded_key = "__test_excluded";
@@ -83,6 +116,48 @@ mod tests {
             "b",
             allowed_key,
             excluded_key,
+        ));
+    }
+
+    #[test]
+    fn is_scope_allowed_with_tool_keys() {
+        let mut rt = RunConfig::new();
+        rt.set(SCOPE_ALLOWED_TOOLS_KEY, vec!["a", "b"]).unwrap();
+        rt.set(SCOPE_EXCLUDED_TOOLS_KEY, vec!["b"]).unwrap();
+        assert!(is_scope_allowed(
+            Some(&rt),
+            "a",
+            SCOPE_ALLOWED_TOOLS_KEY,
+            SCOPE_EXCLUDED_TOOLS_KEY
+        ));
+        assert!(!is_scope_allowed(
+            Some(&rt),
+            "b",
+            SCOPE_ALLOWED_TOOLS_KEY,
+            SCOPE_EXCLUDED_TOOLS_KEY
+        ));
+        assert!(!is_scope_allowed(
+            Some(&rt),
+            "c",
+            SCOPE_ALLOWED_TOOLS_KEY,
+            SCOPE_EXCLUDED_TOOLS_KEY
+        ));
+    }
+
+    #[test]
+    fn no_scope_filters_allows_all() {
+        assert!(is_scope_allowed(
+            None,
+            "any_tool",
+            SCOPE_ALLOWED_TOOLS_KEY,
+            SCOPE_EXCLUDED_TOOLS_KEY
+        ));
+        let rt = RunConfig::new();
+        assert!(is_scope_allowed(
+            Some(&rt),
+            "any_tool",
+            SCOPE_ALLOWED_TOOLS_KEY,
+            SCOPE_EXCLUDED_TOOLS_KEY
         ));
     }
 }

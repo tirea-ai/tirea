@@ -21,7 +21,6 @@ use crate::contracts::RunContext;
 use crate::contracts::SuspendedCall;
 use crate::engine::convert::tool_response;
 use crate::engine::tool_execution::collect_patches;
-use crate::engine::tool_filter::{SCOPE_ALLOWED_TOOLS_KEY, SCOPE_EXCLUDED_TOOLS_KEY};
 use crate::runtime::run_context::{await_or_cancel, is_cancelled, CancelAware};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -870,25 +869,7 @@ pub(super) async fn execute_single_tool_with_phases(
     emit_phase_checked(Phase::BeforeToolExecute, &mut step, phase_ctx.plugins).await?;
 
     // Check if blocked or pending
-    let (execution, outcome, suspended_call) = if !crate::engine::tool_filter::is_scope_allowed(
-        Some(phase_ctx.run_config),
-        &call.name,
-        SCOPE_ALLOWED_TOOLS_KEY,
-        SCOPE_EXCLUDED_TOOLS_KEY,
-    ) {
-        (
-            ToolExecution {
-                call: call.clone(),
-                result: ToolResult::error(
-                    &call.name,
-                    format!("Tool '{}' is not allowed by current policy", call.name),
-                ),
-                patch: None,
-            },
-            ToolCallOutcome::Failed,
-            None,
-        )
-    } else if step.tool_blocked() {
+    let (execution, outcome, suspended_call) = if step.tool_blocked() {
         let reason = step
             .tool
             .as_ref()

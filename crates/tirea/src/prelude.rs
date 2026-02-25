@@ -67,6 +67,7 @@ pub use crate::contracts::{Suspension, SuspensionResponse};
 #[cfg(feature = "core")]
 pub use crate::extensions::permission::{
     PermissionContextExt, PermissionPlugin, PermissionState, ToolPermissionBehavior,
+    ToolPolicyPlugin,
 };
 
 #[cfg(feature = "core")]

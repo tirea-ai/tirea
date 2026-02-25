@@ -21,6 +21,9 @@
 //! }
 //! ```
 
+pub mod scope;
+pub use scope::*;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -29,7 +32,8 @@ use tirea_contract::event::suspension::{
     FrontendToolInvocation, InvocationOrigin, ResponseRouting,
 };
 use tirea_contract::plugin::phase::{
-    BeforeToolExecuteContext, PluginPhaseContext, SuspendTicket, ToolGateDecision,
+    BeforeInferenceContext, BeforeToolExecuteContext, PluginPhaseContext, SuspendTicket,
+    ToolGateDecision,
 };
 use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::runtime::control::ResumeDecisionAction;
@@ -197,6 +201,59 @@ impl AgentPlugin for PermissionPlugin {
                 );
                 step.suspend(SuspendTicket::from_invocation(invocation));
             }
+        }
+    }
+}
+
+/// Tool scope policy plugin.
+///
+/// Enforces allow/deny list filtering for tools via `RunConfig` scope keys.
+/// Should be installed before `PermissionPlugin` so that out-of-scope tools
+/// are blocked before per-tool permission checks run.
+pub struct ToolPolicyPlugin;
+
+#[async_trait]
+impl AgentPlugin for ToolPolicyPlugin {
+    fn id(&self) -> &str {
+        "tool_policy"
+    }
+
+    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
+        let run_config = step.run_config();
+        let allowed = scope::parse_scope_filter(run_config.value(SCOPE_ALLOWED_TOOLS_KEY));
+        let excluded = scope::parse_scope_filter(run_config.value(SCOPE_EXCLUDED_TOOLS_KEY));
+
+        if let Some(ref allowed) = allowed {
+            let ids: Vec<&str> = allowed.iter().map(String::as_str).collect();
+            step.include_only(&ids);
+        }
+        if let Some(ref excluded) = excluded {
+            for id in excluded {
+                step.exclude_tool(id);
+            }
+        }
+    }
+
+    async fn before_tool_execute(&self, step: &mut BeforeToolExecuteContext<'_, '_>) {
+        if !matches!(step.decision(), ToolGateDecision::Proceed) {
+            return;
+        }
+
+        let Some(tool_id) = step.tool_name() else {
+            return;
+        };
+
+        let run_config = step.run_config();
+        if !scope::is_scope_allowed(
+            Some(run_config),
+            tool_id,
+            SCOPE_ALLOWED_TOOLS_KEY,
+            SCOPE_EXCLUDED_TOOLS_KEY,
+        ) {
+            step.block(format!(
+                "Tool '{}' is not allowed by current policy",
+                tool_id
+            ));
         }
     }
 }
@@ -798,6 +855,106 @@ mod tests {
         // Array can't .get("tools") -> None -> falls to default check ->
         // Array can't .get("default_behavior") -> None -> unwrap_or(Ask)
         assert!(step.tool_pending());
+    }
+
+    // ========================================================================
+    // ToolPolicyPlugin tests
+    // ========================================================================
+
+    async fn run_tool_policy(
+        plugin: &ToolPolicyPlugin,
+        step: &mut tirea_contract::plugin::phase::StepContext<'_>,
+    ) {
+        let mut ctx = BeforeToolExecuteContext::new(step);
+        plugin.before_tool_execute(&mut ctx).await;
+    }
+
+    #[test]
+    fn test_tool_policy_plugin_id() {
+        assert_eq!(ToolPolicyPlugin.id(), "tool_policy");
+    }
+
+    #[tokio::test]
+    async fn test_tool_policy_blocks_out_of_scope() {
+        let mut fixture = TestFixture::new();
+        fixture
+            .run_config
+            .set(scope::SCOPE_ALLOWED_TOOLS_KEY, vec!["other_tool"])
+            .unwrap();
+        let mut step = fixture.step(vec![]);
+
+        let call = ToolCall::new("call_1", "blocked_tool", json!({}));
+        step.tool = Some(ToolContext::new(&call));
+
+        run_tool_policy(&ToolPolicyPlugin, &mut step).await;
+
+        assert!(step.tool_blocked(), "out-of-scope tool should be blocked");
+    }
+
+    #[tokio::test]
+    async fn test_tool_policy_allows_in_scope() {
+        let mut fixture = TestFixture::new();
+        fixture
+            .run_config
+            .set(scope::SCOPE_ALLOWED_TOOLS_KEY, vec!["my_tool"])
+            .unwrap();
+        let mut step = fixture.step(vec![]);
+
+        let call = ToolCall::new("call_1", "my_tool", json!({}));
+        step.tool = Some(ToolContext::new(&call));
+
+        run_tool_policy(&ToolPolicyPlugin, &mut step).await;
+
+        assert!(!step.tool_blocked());
+    }
+
+    #[tokio::test]
+    async fn test_tool_policy_no_filters_allows_all() {
+        let fixture = TestFixture::new();
+        let mut step = fixture.step(vec![]);
+
+        let call = ToolCall::new("call_1", "any_tool", json!({}));
+        step.tool = Some(ToolContext::new(&call));
+
+        run_tool_policy(&ToolPolicyPlugin, &mut step).await;
+
+        assert!(!step.tool_blocked());
+    }
+
+    #[tokio::test]
+    async fn test_tool_policy_excluded_tool_is_blocked() {
+        let mut fixture = TestFixture::new();
+        fixture
+            .run_config
+            .set(scope::SCOPE_EXCLUDED_TOOLS_KEY, vec!["excluded_tool"])
+            .unwrap();
+        let mut step = fixture.step(vec![]);
+
+        let call = ToolCall::new("call_1", "excluded_tool", json!({}));
+        step.tool = Some(ToolContext::new(&call));
+
+        run_tool_policy(&ToolPolicyPlugin, &mut step).await;
+
+        assert!(step.tool_blocked(), "excluded tool should be blocked");
+    }
+
+    #[tokio::test]
+    async fn test_tool_policy_skips_when_already_blocked() {
+        let mut fixture = TestFixture::new();
+        fixture
+            .run_config
+            .set(scope::SCOPE_ALLOWED_TOOLS_KEY, vec!["my_tool"])
+            .unwrap();
+        let mut step = fixture.step(vec![]);
+
+        let call = ToolCall::new("call_1", "my_tool", json!({}));
+        step.tool = Some(ToolContext::new(&call));
+        step.block("already blocked");
+
+        run_tool_policy(&ToolPolicyPlugin, &mut step).await;
+
+        // Should remain blocked with original reason
+        assert!(step.tool_blocked());
     }
 
     #[tokio::test]
