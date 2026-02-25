@@ -94,3 +94,249 @@ where
 
     sse_rx
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tirea_agentos::contracts::AgentEvent;
+    use tirea_contract::ProtocolOutputEncoder;
+
+    /// Minimal encoder: maps each AgentEvent to a JSON string event.
+    struct TestEncoder;
+
+    impl ProtocolOutputEncoder for TestEncoder {
+        type InputEvent = AgentEvent;
+        type Event = String;
+
+        fn prologue(&mut self) -> Vec<Self::Event> {
+            vec!["[start]".to_string()]
+        }
+
+        fn on_agent_event(&mut self, ev: &Self::InputEvent) -> Vec<Self::Event> {
+            match ev {
+                AgentEvent::TextDelta { delta } => vec![format!("text:{delta}")],
+                _ => vec!["other".to_string()],
+            }
+        }
+
+        fn epilogue(&mut self) -> Vec<Self::Event> {
+            vec!["[end]".to_string()]
+        }
+    }
+
+    fn fake_run_stream(
+        events: Vec<AgentEvent>,
+    ) -> (RunStream, mpsc::UnboundedReceiver<ToolCallDecision>) {
+        let (decision_tx, decision_rx) = mpsc::unbounded_channel();
+        let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(64);
+
+        tokio::spawn(async move {
+            for e in events {
+                let _ = event_tx.send(e).await;
+            }
+        });
+
+        let stream: Pin<Box<dyn futures::Stream<Item = AgentEvent> + Send>> = Box::pin(
+            async_stream::stream! {
+                let mut rx = event_rx;
+                while let Some(item) = rx.recv().await {
+                    yield item;
+                }
+            },
+        );
+
+        let run = RunStream {
+            thread_id: "thread-1".to_string(),
+            run_id: "run-1".to_string(),
+            decision_tx,
+            events: stream,
+        };
+
+        (run, decision_rx)
+    }
+
+    fn collect_sse_strings(chunks: Vec<Bytes>) -> Vec<String> {
+        chunks
+            .into_iter()
+            .filter_map(|b| {
+                let s = String::from_utf8(b.to_vec()).ok()?;
+                // SSE format: "data: <json>\n\n" — extract inner JSON string
+                let trimmed = s.trim();
+                let payload = trimmed.strip_prefix("data: ")?;
+                serde_json::from_str::<String>(payload).ok()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn events_flow_through_to_sse_bytes() {
+        let events = vec![
+            AgentEvent::TextDelta {
+                delta: "hello".to_string(),
+            },
+            AgentEvent::TextDelta {
+                delta: "world".to_string(),
+            },
+        ];
+        let (run, _decision_rx) = fake_run_stream(events);
+        let (_ingress_tx, ingress_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
+        let token = RunCancellationToken::new();
+
+        let mut sse_rx = wire_http_sse_relay(
+            run,
+            TestEncoder,
+            ingress_rx,
+            token,
+            None,
+            false,
+            "test",
+            |_sse_tx| async {},
+        );
+
+        let mut chunks = Vec::new();
+        while let Some(chunk) = sse_rx.recv().await {
+            chunks.push(chunk);
+        }
+
+        let events = collect_sse_strings(chunks);
+        assert_eq!(events[0], "[start]");
+        assert_eq!(events[1], "text:hello");
+        assert_eq!(events[2], "text:world");
+        assert_eq!(events[3], "[end]");
+        assert_eq!(events.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn on_relay_done_callback_is_invoked() {
+        let called = Arc::new(AtomicBool::new(false));
+        let called_clone = called.clone();
+
+        let (run, _decision_rx) = fake_run_stream(vec![]);
+        let (_ingress_tx, ingress_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
+        let token = RunCancellationToken::new();
+
+        let mut sse_rx = wire_http_sse_relay(
+            run,
+            TestEncoder,
+            ingress_rx,
+            token,
+            None,
+            false,
+            "test",
+            move |_sse_tx| async move {
+                called_clone.store(true, Ordering::SeqCst);
+            },
+        );
+
+        // Drain to completion
+        while sse_rx.recv().await.is_some() {}
+
+        assert!(called.load(Ordering::SeqCst), "on_relay_done should be called");
+    }
+
+    #[tokio::test]
+    async fn trailer_via_callback_sse_tx() {
+        let (run, _decision_rx) = fake_run_stream(vec![AgentEvent::TextDelta {
+            delta: "x".to_string(),
+        }]);
+        let (_ingress_tx, ingress_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
+        let token = RunCancellationToken::new();
+
+        let mut sse_rx = wire_http_sse_relay(
+            run,
+            TestEncoder,
+            ingress_rx,
+            token,
+            None,
+            false,
+            "test",
+            |sse_tx| async move {
+                let _ = sse_tx.send(Bytes::from("data: [DONE]\n\n")).await;
+            },
+        );
+
+        let mut chunks = Vec::new();
+        while let Some(chunk) = sse_rx.recv().await {
+            chunks.push(chunk);
+        }
+
+        // Last chunk should be the trailer sent via callback
+        let last = String::from_utf8(chunks.last().unwrap().to_vec()).unwrap();
+        assert_eq!(last.trim(), "data: [DONE]");
+    }
+
+    #[tokio::test]
+    async fn fanout_receives_all_sse_events() {
+        let events = vec![AgentEvent::TextDelta {
+            delta: "hi".to_string(),
+        }];
+        let (run, _decision_rx) = fake_run_stream(events);
+        let (_ingress_tx, ingress_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
+        let token = RunCancellationToken::new();
+        let (fanout_tx, mut fanout_rx) = broadcast::channel::<Bytes>(64);
+
+        let mut sse_rx = wire_http_sse_relay(
+            run,
+            TestEncoder,
+            ingress_rx,
+            token,
+            Some(fanout_tx),
+            true,
+            "test",
+            |_sse_tx| async {},
+        );
+
+        // Collect from SSE
+        let mut sse_chunks = Vec::new();
+        while let Some(chunk) = sse_rx.recv().await {
+            sse_chunks.push(chunk);
+        }
+
+        // Collect from fanout (non-blocking, it already has all items)
+        let mut fanout_chunks = Vec::new();
+        while let Ok(chunk) = fanout_rx.try_recv() {
+            fanout_chunks.push(chunk);
+        }
+
+        let sse_events = collect_sse_strings(sse_chunks);
+        let fanout_events = collect_sse_strings(fanout_chunks);
+
+        assert!(sse_events.contains(&"text:hi".to_string()));
+        assert!(fanout_events.contains(&"text:hi".to_string()));
+    }
+
+    #[tokio::test]
+    async fn decision_ingress_forwarded_to_run_decision_tx() {
+        let (run, mut decision_rx) = fake_run_stream(vec![AgentEvent::TextDelta {
+            delta: "a".to_string(),
+        }]);
+        let (ingress_tx, ingress_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
+        let token = RunCancellationToken::new();
+
+        let mut sse_rx = wire_http_sse_relay(
+            run,
+            TestEncoder,
+            ingress_rx,
+            token,
+            None,
+            false,
+            "test",
+            |_sse_tx| async {},
+        );
+
+        // Send a decision through the ingress channel
+        let decision =
+            ToolCallDecision::resume("d1", serde_json::json!({"approved": true}), 1);
+        ingress_tx.send(decision).unwrap();
+
+        // Drain SSE to let relay process
+        while sse_rx.recv().await.is_some() {}
+
+        // The decision should have been forwarded through the relay to decision_tx
+        let received = decision_rx.try_recv();
+        assert!(received.is_ok(), "decision should be forwarded to run");
+        assert_eq!(received.unwrap().target_id, "d1");
+    }
+}
