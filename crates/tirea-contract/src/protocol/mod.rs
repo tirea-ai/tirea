@@ -3,5 +3,5 @@
 pub mod adapter;
 pub mod request;
 
-pub use adapter::{ProtocolHistoryEncoder, ProtocolOutputEncoder};
+pub use adapter::ProtocolOutputEncoder;
 pub use request::RunRequest;

@@ -1,23 +1,6 @@
 //! Shared protocol adapter traits.
 
-use crate::thread::Message;
 use serde::Serialize;
-
-/// Protocol history boundary: stored message -> protocol history message.
-pub trait ProtocolHistoryEncoder {
-    /// Protocol-specific history message type.
-    type HistoryMessage: Serialize;
-
-    /// Encode one internal message.
-    fn encode_message(msg: &Message) -> Self::HistoryMessage;
-
-    /// Encode multiple internal messages.
-    fn encode_messages<'a>(
-        msgs: impl IntoIterator<Item = &'a Message>,
-    ) -> Vec<Self::HistoryMessage> {
-        msgs.into_iter().map(Self::encode_message).collect()
-    }
-}
 
 /// Protocol output boundary: internal runtime event -> protocol event(s).
 pub trait ProtocolOutputEncoder {

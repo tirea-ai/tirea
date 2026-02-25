@@ -151,4 +151,4 @@ pub use storage::{
 };
 
 // protocol
-pub use protocol::{ProtocolHistoryEncoder, ProtocolOutputEncoder, RunRequest};
+pub use protocol::{ProtocolOutputEncoder, RunRequest};

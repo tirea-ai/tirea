@@ -1,11 +1,7 @@
-use tirea_contract::ProtocolHistoryEncoder;
-
 pub struct AgUiHistoryEncoder;
 
-impl ProtocolHistoryEncoder for AgUiHistoryEncoder {
-    type HistoryMessage = crate::Message;
-
-    fn encode_message(msg: &tirea_contract::Message) -> crate::Message {
+impl AgUiHistoryEncoder {
+    pub fn encode_message(msg: &tirea_contract::Message) -> crate::Message {
         crate::Message {
             id: msg.id.clone(),
             role: match msg.role {

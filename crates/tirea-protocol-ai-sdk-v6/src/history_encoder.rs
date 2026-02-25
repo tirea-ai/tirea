@@ -1,14 +1,12 @@
 use super::{StreamState, TextUIPart, ToolState, ToolUIPart, UIMessage, UIMessagePart, UIRole};
 use serde_json::Value;
-use tirea_contract::{Message, ProtocolHistoryEncoder, Role};
+use tirea_contract::{Message, Role};
 use tracing::warn;
 
 pub struct AiSdkV6HistoryEncoder;
 
-impl ProtocolHistoryEncoder for AiSdkV6HistoryEncoder {
-    type HistoryMessage = UIMessage;
-
-    fn encode_message(msg: &Message) -> UIMessage {
+impl AiSdkV6HistoryEncoder {
+    pub fn encode_message(msg: &Message) -> UIMessage {
         let role = match msg.role {
             Role::System => UIRole::System,
             Role::User => UIRole::User,
@@ -88,7 +86,7 @@ fn parse_tool_output(content: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tirea_contract::{Message, MessageMetadata, ProtocolHistoryEncoder, ToolCall, Visibility};
+    use tirea_contract::{Message, MessageMetadata, ToolCall, Visibility};
 
     #[test]
     fn test_ai_sdk_history_encoder_user_message() {
@@ -271,7 +269,7 @@ mod tests {
     #[test]
     fn test_ai_sdk_encode_messages_batch() {
         let msgs = [Message::user("hello"), Message::assistant("world")];
-        let encoded = AiSdkV6HistoryEncoder::encode_messages(msgs.iter());
+        let encoded: Vec<_> = msgs.iter().map(AiSdkV6HistoryEncoder::encode_message).collect();
         assert_eq!(encoded.len(), 2);
         assert_eq!(encoded[0].role, UIRole::User);
         assert_eq!(encoded[1].role, UIRole::Assistant);

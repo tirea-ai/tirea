@@ -11,7 +11,7 @@ use tirea_agentos::contracts::storage::{
 use tirea_agentos::contracts::thread::Visibility;
 use tirea_agentos::contracts::ToolCallDecision;
 use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError};
-use tirea_contract::ProtocolHistoryEncoder;
+use tirea_agentos::contracts::thread::Message;
 use tokio::sync::RwLock;
 
 #[derive(Clone)]
@@ -195,15 +195,12 @@ pub struct EncodedMessagePage<M: Serialize> {
     pub prev_cursor: Option<i64>,
 }
 
-pub fn encode_message_page<E: ProtocolHistoryEncoder>(
+pub fn encode_message_page<M: Serialize>(
     page: MessagePage,
-) -> EncodedMessagePage<E::HistoryMessage> {
+    encode: impl Fn(&Message) -> M,
+) -> EncodedMessagePage<M> {
     EncodedMessagePage {
-        messages: page
-            .messages
-            .iter()
-            .map(|m| E::encode_message(&m.message))
-            .collect(),
+        messages: page.messages.iter().map(|m| encode(&m.message)).collect(),
         has_more: page.has_more,
         next_cursor: page.next_cursor,
         prev_cursor: page.prev_cursor,

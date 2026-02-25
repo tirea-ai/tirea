@@ -81,7 +81,7 @@ async fn thread_messages(
     Query(params): Query<MessageQueryParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     let page = load_message_page(&st.read_store, &id, &params).await?;
-    let encoded = encode_message_page::<AiSdkV6HistoryEncoder>(page);
+    let encoded = encode_message_page(page, AiSdkV6HistoryEncoder::encode_message);
     Ok(Json(encoded))
 }
 
