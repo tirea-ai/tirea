@@ -151,4 +151,4 @@ pub use storage::{
 };
 
 // protocol
-pub use protocol::{DecisionTranscoder, Identity, RunRequest, Transcoder};
+pub use protocol::{Identity, RunRequest, Transcoder};

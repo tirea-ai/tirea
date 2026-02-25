@@ -18,6 +18,7 @@ use tirea_agentos::contracts::tool::Tool;
 use tirea_agentos::orchestrator::{AgentDefinition, AgentOsBuilder, ModelDefinition};
 use tirea_agentos::runtime::loop_runner::tool_map_from_arc;
 use tirea_agentos_server::http::{self, AppState};
+use tirea_agentos_server::protocol;
 use tirea_store_adapters::FileStore;
 
 #[derive(Debug, Parser)]
@@ -77,10 +78,16 @@ pub async fn serve(
     let os = builder.build().expect("failed to build AgentOs");
     let read_store: Arc<dyn ThreadReader> = file_store;
 
-    let app = http::router(AppState {
+    let state = AppState {
         os: Arc::new(os),
         read_store,
-    });
+    };
+    let app = axum::Router::new()
+        .merge(http::health_routes())
+        .merge(http::thread_routes())
+        .nest("/v1/ag-ui", protocol::ag_ui::http::routes())
+        .nest("/v1/ai-sdk", protocol::ai_sdk_v6::http::routes())
+        .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&args.http_addr)
         .await

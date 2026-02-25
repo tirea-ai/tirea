@@ -6,7 +6,7 @@ pub mod runtime_endpoint;
 pub mod transcoder;
 
 pub use nats_error::NatsProtocolError;
-pub use runtime_endpoint::RuntimeEndpoint;
+pub use runtime_endpoint::{RunStarter, RuntimeEndpoint};
 pub use transcoder::TranscoderEndpoint;
 
 use async_trait::async_trait;

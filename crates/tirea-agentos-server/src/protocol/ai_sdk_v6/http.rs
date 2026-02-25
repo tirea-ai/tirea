@@ -9,9 +9,9 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::{Arc, OnceLock};
 use tirea_agentos::contracts::thread::Thread;
-use tirea_agentos::contracts::ToolCallDecision;
 use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError};
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
+use tirea_contract::RuntimeInput;
 use tirea_protocol_ai_sdk_v6::{
     AiSdkTrigger, AiSdkV6HistoryEncoder, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest,
     AI_SDK_VERSION,
@@ -27,6 +27,8 @@ use crate::service::{
 };
 use crate::transport::http_run::wire_http_sse_relay;
 use crate::transport::http_sse::{sse_body_stream, sse_response};
+use crate::transport::runtime_endpoint::RunStarter;
+use crate::transport::TransportError;
 
 const RUN_PATH: &str = "/agents/:agent_id/runs";
 const RESUME_STREAM_PATH: &str = "/agents/:agent_id/runs/:chat_id/stream";
@@ -135,25 +137,43 @@ async fn run(
 
     sync_thread_snapshot(&st, &req).await?;
 
+    let thread_id = req.thread_id.clone();
     let mut run_request = req.into_runtime_run_request(agent_id.clone());
     run_request.messages.clear();
-    let cancellation_token = RunCancellationToken::new();
-    let prepared = st.os.prepare_run(run_request, resolved).await?;
-    let run =
-        AgentOs::execute_prepared(prepared.with_cancellation_token(cancellation_token.clone()))?;
 
-    let stream_key = stream_key(&agent_id, &run.thread_id);
-    let active_key = active_run_key("ai_sdk", &agent_id, &run.thread_id);
-    let (decision_ingress_tx, decision_ingress_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
-    register_active_run(active_key.clone(), decision_ingress_tx).await;
+    let os = st.os.clone();
+    let cancellation_token = RunCancellationToken::new();
+    let token_for_starter = cancellation_token.clone();
+    let token_for_callback = cancellation_token.clone();
+    let starter: RunStarter = Box::new(move |request| {
+        Box::pin(async move {
+            let prepared = os
+                .prepare_run(request, resolved)
+                .await
+                .map_err(|e| TransportError::Internal(e.to_string()))?;
+            let run = AgentOs::execute_prepared(
+                prepared.with_cancellation_token(token_for_starter.clone()),
+            )
+            .map_err(|e| TransportError::Internal(e.to_string()))?;
+            Ok((run, Some(token_for_starter)))
+        })
+    });
+
+    let stream_key = stream_key(&agent_id, &thread_id);
+    let active_key = active_run_key("ai_sdk", &agent_id, &thread_id);
+    let (ingress_tx, ingress_rx) = mpsc::unbounded_channel::<RuntimeInput>();
+    ingress_tx
+        .send(RuntimeInput::Run(run_request))
+        .expect("ingress channel just created");
+    register_active_run(active_key.clone(), ingress_tx).await;
     let fanout = stream_registry().register(stream_key.clone()).await;
 
     let encoder = AiSdkV6ProtocolEncoder::new();
     let sse_rx = wire_http_sse_relay(
-        run,
+        starter,
         encoder,
-        decision_ingress_rx,
-        cancellation_token.clone(),
+        ingress_rx,
+        thread_id,
         Some(fanout.clone()),
         true,
         "ai-sdk",
@@ -161,7 +181,7 @@ async fn run(
             let trailer = Bytes::from("data: [DONE]\n\n");
             let _ = fanout.send(trailer.clone());
             if sse_tx.send(trailer).await.is_err() {
-                cancellation_token.cancel();
+                token_for_callback.cancel();
             }
             stream_registry().remove(&stream_key).await;
             remove_active_run(&active_key).await;

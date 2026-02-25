@@ -25,7 +25,6 @@ async fn main() {
         )
         .into(),
         max_rounds: 15,
-        parallel_tools: true,
         ..Default::default()
     };
 

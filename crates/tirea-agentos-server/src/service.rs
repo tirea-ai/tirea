@@ -12,6 +12,7 @@ use tirea_agentos::contracts::thread::Visibility;
 use tirea_agentos::contracts::ToolCallDecision;
 use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError};
 use tirea_agentos::contracts::thread::Message;
+use tirea_contract::RuntimeInput;
 use tokio::sync::RwLock;
 
 #[derive(Clone)]
@@ -62,27 +63,27 @@ impl From<AgentOsRunError> for ApiError {
 
 #[derive(Default)]
 struct ActiveRunRegistry {
-    decisions: RwLock<HashMap<String, tokio::sync::mpsc::UnboundedSender<ToolCallDecision>>>,
+    senders: RwLock<HashMap<String, tokio::sync::mpsc::UnboundedSender<RuntimeInput>>>,
 }
 
 impl ActiveRunRegistry {
     async fn register(
         &self,
         key: String,
-        decision_tx: tokio::sync::mpsc::UnboundedSender<ToolCallDecision>,
+        tx: tokio::sync::mpsc::UnboundedSender<RuntimeInput>,
     ) {
-        self.decisions.write().await.insert(key, decision_tx);
+        self.senders.write().await.insert(key, tx);
     }
 
-    async fn decision_tx_for(
+    async fn sender_for(
         &self,
         key: &str,
-    ) -> Option<tokio::sync::mpsc::UnboundedSender<ToolCallDecision>> {
-        self.decisions.read().await.get(key).cloned()
+    ) -> Option<tokio::sync::mpsc::UnboundedSender<RuntimeInput>> {
+        self.senders.read().await.get(key).cloned()
     }
 
     async fn remove(&self, key: &str) {
-        self.decisions.write().await.remove(key);
+        self.senders.write().await.remove(key);
     }
 }
 
@@ -98,9 +99,9 @@ pub fn active_run_key(protocol: &str, agent_id: &str, thread_id: &str) -> String
 
 pub async fn register_active_run(
     key: String,
-    decision_tx: tokio::sync::mpsc::UnboundedSender<ToolCallDecision>,
+    tx: tokio::sync::mpsc::UnboundedSender<RuntimeInput>,
 ) {
-    active_run_registry().register(key, decision_tx).await;
+    active_run_registry().register(key, tx).await;
 }
 
 pub async fn remove_active_run(key: &str) {
@@ -115,12 +116,12 @@ pub async fn try_forward_decisions_to_active_run(
         return false;
     }
 
-    let Some(decision_tx) = active_run_registry().decision_tx_for(active_key).await else {
+    let Some(tx) = active_run_registry().sender_for(active_key).await else {
         return false;
     };
 
     for decision in decisions {
-        if decision_tx.send(decision).is_err() {
+        if tx.send(RuntimeInput::Decision(decision)).is_err() {
             active_run_registry().remove(active_key).await;
             return false;
         }

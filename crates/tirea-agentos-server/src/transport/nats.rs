@@ -1,10 +1,9 @@
-use futures::StreamExt;
 use serde::Serialize;
 use std::future::Future;
 use std::sync::Arc;
-use tirea_agentos::contracts::{AgentEvent, RunRequest, ToolCallDecision};
+use tirea_agentos::contracts::{AgentEvent, RunRequest};
 use tirea_agentos::orchestrator::{AgentOs, ResolvedRun, RunStream};
-use tirea_contract::{DecisionTranscoder, Transcoder};
+use tirea_contract::{Identity, RuntimeInput, Transcoder};
 
 use crate::transport::NatsProtocolError;
 use crate::transport::{
@@ -52,6 +51,7 @@ impl NatsTransport {
         H: Fn(NatsTransport, async_nats::Message) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<(), NatsProtocolError>> + Send + 'static,
     {
+        use futures::StreamExt;
         let handler = Arc::new(handler);
         let mut sub = self.client.subscribe(subject.to_string()).await?;
         while let Some(msg) = sub.next().await {
@@ -101,7 +101,7 @@ impl NatsTransport {
         let session_thread_id = run.thread_id.clone();
         let encoder = build_encoder(&run);
         let upstream = Arc::new(NatsReplyServerEndpoint::new(self.client.clone(), reply));
-        let runtime_ep = Arc::new(RuntimeEndpoint::with_buffer(
+        let runtime_ep = Arc::new(RuntimeEndpoint::from_run_stream_with_buffer(
             run,
             None,
             self.config.outbound_buffer,
@@ -109,7 +109,7 @@ impl NatsTransport {
         let downstream = Arc::new(TranscoderEndpoint::new(
             runtime_ep,
             encoder,
-            DecisionTranscoder,
+            Identity::<RuntimeInput>::default(),
         ));
         let binding = TransportBinding {
             session: SessionId {
@@ -160,12 +160,12 @@ impl NatsReplyServerEndpoint {
 }
 
 #[async_trait::async_trait]
-impl<Evt> Endpoint<ToolCallDecision, Evt> for NatsReplyServerEndpoint
+impl<Evt> Endpoint<RuntimeInput, Evt> for NatsReplyServerEndpoint
 where
     Evt: Serialize + Send + 'static,
 {
-    async fn recv(&self) -> Result<crate::transport::BoxStream<ToolCallDecision>, TransportError> {
-        let stream = futures::stream::empty::<Result<ToolCallDecision, TransportError>>();
+    async fn recv(&self) -> Result<crate::transport::BoxStream<RuntimeInput>, TransportError> {
+        let stream = futures::stream::empty::<Result<RuntimeInput, TransportError>>();
         Ok(Box::pin(stream))
     }
 

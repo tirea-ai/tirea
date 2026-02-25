@@ -5,13 +5,13 @@ use bytes::Bytes;
 use serde::Serialize;
 use std::convert::Infallible;
 use std::marker::PhantomData;
-use tirea_agentos::contracts::ToolCallDecision;
+use tirea_contract::RuntimeInput;
 use tokio::sync::{broadcast, mpsc, Mutex};
 
 use crate::transport::{BoxStream, Endpoint, TransportError};
 
 pub struct HttpSseServerEndpoint<SendMsg> {
-    ingress_rx: Mutex<Option<mpsc::UnboundedReceiver<ToolCallDecision>>>,
+    ingress_rx: Mutex<Option<mpsc::UnboundedReceiver<RuntimeInput>>>,
     sse_tx: mpsc::Sender<Bytes>,
     fanout: Option<broadcast::Sender<Bytes>>,
     _phantom: PhantomData<fn(SendMsg)>,
@@ -19,7 +19,7 @@ pub struct HttpSseServerEndpoint<SendMsg> {
 
 impl<SendMsg> HttpSseServerEndpoint<SendMsg> {
     pub fn new(
-        ingress_rx: mpsc::UnboundedReceiver<ToolCallDecision>,
+        ingress_rx: mpsc::UnboundedReceiver<RuntimeInput>,
         sse_tx: mpsc::Sender<Bytes>,
     ) -> Self {
         Self {
@@ -31,7 +31,7 @@ impl<SendMsg> HttpSseServerEndpoint<SendMsg> {
     }
 
     pub fn with_fanout(
-        ingress_rx: mpsc::UnboundedReceiver<ToolCallDecision>,
+        ingress_rx: mpsc::UnboundedReceiver<RuntimeInput>,
         sse_tx: mpsc::Sender<Bytes>,
         fanout: broadcast::Sender<Bytes>,
     ) -> Self {
@@ -45,11 +45,11 @@ impl<SendMsg> HttpSseServerEndpoint<SendMsg> {
 }
 
 #[async_trait::async_trait]
-impl<SendMsg> Endpoint<ToolCallDecision, SendMsg> for HttpSseServerEndpoint<SendMsg>
+impl<SendMsg> Endpoint<RuntimeInput, SendMsg> for HttpSseServerEndpoint<SendMsg>
 where
     SendMsg: Serialize + Send + 'static,
 {
-    async fn recv(&self) -> Result<BoxStream<ToolCallDecision>, TransportError> {
+    async fn recv(&self) -> Result<BoxStream<RuntimeInput>, TransportError> {
         let mut guard = self.ingress_rx.lock().await;
         let mut rx = guard.take().ok_or(TransportError::Closed)?;
         let stream = async_stream::stream! {
@@ -112,7 +112,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_serializes_and_frames_as_sse() {
-        let (_ingress_tx, ingress_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
+        let (_ingress_tx, ingress_rx) = mpsc::unbounded_channel::<RuntimeInput>();
         let (sse_tx, mut sse_rx) = mpsc::channel::<Bytes>(4);
         let endpoint: HttpSseServerEndpoint<serde_json::Value> =
             HttpSseServerEndpoint::new(ingress_rx, sse_tx);
@@ -125,7 +125,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_with_fanout_broadcasts() {
-        let (_ingress_tx, ingress_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
+        let (_ingress_tx, ingress_rx) = mpsc::unbounded_channel::<RuntimeInput>();
         let (sse_tx, mut sse_rx) = mpsc::channel::<Bytes>(4);
         let (fanout_tx, mut fanout_rx) = broadcast::channel::<Bytes>(4);
         let endpoint: HttpSseServerEndpoint<serde_json::Value> =
@@ -144,7 +144,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_returns_error_on_closed_channel() {
-        let (_ingress_tx, ingress_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
+        let (_ingress_tx, ingress_rx) = mpsc::unbounded_channel::<RuntimeInput>();
         let (sse_tx, sse_rx) = mpsc::channel::<Bytes>(4);
         let endpoint: HttpSseServerEndpoint<serde_json::Value> =
             HttpSseServerEndpoint::new(ingress_rx, sse_tx);

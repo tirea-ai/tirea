@@ -29,10 +29,6 @@ impl<R, S> TranscoderEndpoint<R, S>
 where
     R: Transcoder + 'static,
     S: Transcoder + 'static,
-    R::Input: Send + 'static,
-    R::Output: Send + 'static,
-    S::Input: Send + 'static,
-    S::Output: Send + 'static,
 {
     pub fn new(
         inner: Arc<dyn Endpoint<R::Input, S::Output>>,
@@ -52,10 +48,6 @@ impl<R, S> Endpoint<R::Output, S::Input> for TranscoderEndpoint<R, S>
 where
     R: Transcoder + 'static,
     S: Transcoder + 'static,
-    R::Input: Send + 'static,
-    R::Output: Send + 'static,
-    S::Input: Send + 'static,
-    S::Output: Send + 'static,
 {
     async fn recv(&self) -> Result<BoxStream<R::Output>, TransportError> {
         let recv_transcoder = self

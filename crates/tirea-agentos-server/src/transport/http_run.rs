@@ -2,15 +2,13 @@ use bytes::Bytes;
 use serde::Serialize;
 use std::future::Future;
 use std::sync::Arc;
-use tirea_agentos::contracts::{AgentEvent, ToolCallDecision};
-use tirea_agentos::orchestrator::RunStream;
-use tirea_agentos::runtime::loop_runner::RunCancellationToken;
-use tirea_contract::{DecisionTranscoder, Transcoder};
+use tirea_agentos::contracts::AgentEvent;
+use tirea_contract::{Identity, RuntimeInput, Transcoder};
 use tokio::sync::{broadcast, mpsc};
 use tracing::warn;
 
 use super::http_sse::HttpSseServerEndpoint;
-use super::runtime_endpoint::RuntimeEndpoint;
+use super::runtime_endpoint::{RunStarter, RuntimeEndpoint};
 use super::{
     relay_binding, RelayCancellation, SessionId, TranscoderEndpoint, TransportBinding,
     TransportCapabilities,
@@ -27,10 +25,10 @@ use super::{
 /// `on_relay_done` is called after the relay finishes, receiving
 /// the SSE sender (for trailer support).
 pub fn wire_http_sse_relay<E, F, Fut>(
-    run: RunStream,
+    run_starter: RunStarter,
     encoder: E,
-    decision_ingress_rx: mpsc::UnboundedReceiver<ToolCallDecision>,
-    cancellation_token: RunCancellationToken,
+    ingress_rx: mpsc::UnboundedReceiver<RuntimeInput>,
+    thread_id: String,
     fanout: Option<broadcast::Sender<Bytes>>,
     resumable_downstream: bool,
     protocol_label: &'static str,
@@ -42,26 +40,25 @@ where
     F: FnOnce(mpsc::Sender<Bytes>) -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send,
 {
-    let thread_id = run.thread_id.clone();
     let (sse_tx, sse_rx) = mpsc::channel::<Bytes>(64);
 
     let upstream: Arc<HttpSseServerEndpoint<E::Output>> = match fanout {
         Some(f) => Arc::new(HttpSseServerEndpoint::with_fanout(
-            decision_ingress_rx,
+            ingress_rx,
             sse_tx.clone(),
             f,
         )),
         None => Arc::new(HttpSseServerEndpoint::new(
-            decision_ingress_rx,
+            ingress_rx,
             sse_tx.clone(),
         )),
     };
 
-    let runtime_ep = Arc::new(RuntimeEndpoint::new(run, Some(cancellation_token)));
+    let runtime_ep = Arc::new(RuntimeEndpoint::new(run_starter));
     let downstream = Arc::new(TranscoderEndpoint::new(
         runtime_ep,
         encoder,
-        DecisionTranscoder,
+        Identity::<RuntimeInput>::default(),
     ));
 
     let binding = TransportBinding {
@@ -91,7 +88,8 @@ mod tests {
     use super::*;
     use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use tirea_agentos::contracts::AgentEvent;
+    use tirea_agentos::contracts::{AgentEvent, RunRequest, ToolCallDecision};
+    use tirea_agentos::orchestrator::RunStream;
     use tirea_contract::Transcoder;
 
     /// Minimal encoder: maps each AgentEvent to a JSON string event.
@@ -148,6 +146,32 @@ mod tests {
         (run, decision_rx)
     }
 
+    fn fake_starter(
+        events: Vec<AgentEvent>,
+    ) -> (
+        RunStarter,
+        mpsc::UnboundedReceiver<ToolCallDecision>,
+    ) {
+        let (run, decision_rx) = fake_run_stream(events);
+        let starter: RunStarter = Box::new(move |_request| {
+            Box::pin(async move { Ok((run, None)) })
+        });
+        (starter, decision_rx)
+    }
+
+    fn test_run_request() -> RunRequest {
+        RunRequest {
+            agent_id: "test".into(),
+            thread_id: None,
+            run_id: None,
+            parent_run_id: None,
+            resource_id: None,
+            state: None,
+            messages: vec![],
+            initial_decisions: vec![],
+        }
+    }
+
     fn collect_sse_strings(chunks: Vec<Bytes>) -> Vec<String> {
         chunks
             .into_iter()
@@ -171,15 +195,18 @@ mod tests {
                 delta: "world".to_string(),
             },
         ];
-        let (run, _decision_rx) = fake_run_stream(events);
-        let (_ingress_tx, ingress_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
-        let token = RunCancellationToken::new();
+        let (starter, _decision_rx) = fake_starter(events);
+        let (ingress_tx, ingress_rx) = mpsc::unbounded_channel::<RuntimeInput>();
+
+        // Inject Run as first message
+        ingress_tx.send(RuntimeInput::Run(test_run_request())).unwrap();
+        drop(ingress_tx);
 
         let mut sse_rx = wire_http_sse_relay(
-            run,
+            starter,
             TestEncoder,
             ingress_rx,
-            token,
+            "thread-1".to_string(),
             None,
             false,
             "test",
@@ -204,15 +231,16 @@ mod tests {
         let called = Arc::new(AtomicBool::new(false));
         let called_clone = called.clone();
 
-        let (run, _decision_rx) = fake_run_stream(vec![]);
-        let (_ingress_tx, ingress_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
-        let token = RunCancellationToken::new();
+        let (starter, _decision_rx) = fake_starter(vec![]);
+        let (ingress_tx, ingress_rx) = mpsc::unbounded_channel::<RuntimeInput>();
+        ingress_tx.send(RuntimeInput::Run(test_run_request())).unwrap();
+        drop(ingress_tx);
 
         let mut sse_rx = wire_http_sse_relay(
-            run,
+            starter,
             TestEncoder,
             ingress_rx,
-            token,
+            "thread-1".to_string(),
             None,
             false,
             "test",
@@ -229,17 +257,18 @@ mod tests {
 
     #[tokio::test]
     async fn trailer_via_callback_sse_tx() {
-        let (run, _decision_rx) = fake_run_stream(vec![AgentEvent::TextDelta {
+        let (starter, _decision_rx) = fake_starter(vec![AgentEvent::TextDelta {
             delta: "x".to_string(),
         }]);
-        let (_ingress_tx, ingress_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
-        let token = RunCancellationToken::new();
+        let (ingress_tx, ingress_rx) = mpsc::unbounded_channel::<RuntimeInput>();
+        ingress_tx.send(RuntimeInput::Run(test_run_request())).unwrap();
+        drop(ingress_tx);
 
         let mut sse_rx = wire_http_sse_relay(
-            run,
+            starter,
             TestEncoder,
             ingress_rx,
-            token,
+            "thread-1".to_string(),
             None,
             false,
             "test",
@@ -263,16 +292,18 @@ mod tests {
         let events = vec![AgentEvent::TextDelta {
             delta: "hi".to_string(),
         }];
-        let (run, _decision_rx) = fake_run_stream(events);
-        let (_ingress_tx, ingress_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
-        let token = RunCancellationToken::new();
+        let (starter, _decision_rx) = fake_starter(events);
+        let (ingress_tx, ingress_rx) = mpsc::unbounded_channel::<RuntimeInput>();
         let (fanout_tx, mut fanout_rx) = broadcast::channel::<Bytes>(64);
 
+        ingress_tx.send(RuntimeInput::Run(test_run_request())).unwrap();
+        drop(ingress_tx);
+
         let mut sse_rx = wire_http_sse_relay(
-            run,
+            starter,
             TestEncoder,
             ingress_rx,
-            token,
+            "thread-1".to_string(),
             Some(fanout_tx),
             true,
             "test",
@@ -300,17 +331,19 @@ mod tests {
 
     #[tokio::test]
     async fn decision_ingress_forwarded_to_run_decision_tx() {
-        let (run, mut decision_rx) = fake_run_stream(vec![AgentEvent::TextDelta {
+        let (starter, mut decision_rx) = fake_starter(vec![AgentEvent::TextDelta {
             delta: "a".to_string(),
         }]);
-        let (ingress_tx, ingress_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
-        let token = RunCancellationToken::new();
+        let (ingress_tx, ingress_rx) = mpsc::unbounded_channel::<RuntimeInput>();
+
+        // Inject Run as first message, keep tx alive for decisions
+        ingress_tx.send(RuntimeInput::Run(test_run_request())).unwrap();
 
         let mut sse_rx = wire_http_sse_relay(
-            run,
+            starter,
             TestEncoder,
             ingress_rx,
-            token,
+            "thread-1".to_string(),
             None,
             false,
             "test",
@@ -320,7 +353,8 @@ mod tests {
         // Send a decision through the ingress channel
         let decision =
             ToolCallDecision::resume("d1", serde_json::json!({"approved": true}), 1);
-        ingress_tx.send(decision).unwrap();
+        ingress_tx.send(RuntimeInput::Decision(decision)).unwrap();
+        drop(ingress_tx);
 
         // Drain SSE to let relay process
         while sse_rx.recv().await.is_some() {}

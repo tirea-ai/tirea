@@ -4,4 +4,4 @@ pub mod request;
 pub mod transcoder;
 
 pub use request::RunRequest;
-pub use transcoder::{DecisionTranscoder, Identity, Transcoder};
+pub use transcoder::{Identity, Transcoder};

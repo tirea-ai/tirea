@@ -1,4 +1,4 @@
-//! AG-UI protocol support, adapters, and encoding.
+//! AG-UI protocol support and encoding.
 #![allow(missing_docs)]
 
 mod context;

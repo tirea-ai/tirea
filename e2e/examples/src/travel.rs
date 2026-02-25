@@ -83,7 +83,6 @@ async fn main() {
         )
         .into(),
         max_rounds: 10,
-        parallel_tools: true,
         plugin_ids: vec!["permission".into(), "llmmetry".into()],
         ..Default::default()
     };
