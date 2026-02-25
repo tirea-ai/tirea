@@ -96,12 +96,13 @@ macro_rules! impl_loop_config_builder_methods {
 pub mod testing;
 
 pub mod event;
+pub mod io;
 pub mod plugin;
-pub mod protocol;
 pub mod runtime;
 pub mod storage;
 pub mod thread;
 pub mod tool;
+pub mod transport;
 
 /// Per-run configuration — a business alias for the generic `SealedState` container.
 pub type RunConfig = tirea_state::SealedState;
@@ -131,18 +132,18 @@ pub use tool::{
 // plugin
 pub use plugin::{
     AfterInferenceContext, AfterToolExecuteContext, AgentPlugin, BeforeInferenceContext,
-    BeforeToolExecuteContext, Phase, PhasePolicy, PluginPhaseContext, RunAction, RunEndContext,
-    RunStartContext, StateEffect, StepContext, StepEndContext, StepOutcome, StepStartContext,
-    SuspendTicket, ToolAction, ToolContext, ToolGateDecision,
+    BeforeToolExecuteContext, Phase, PhasePolicy, PluginPhaseContext, ResumeInputView, RunAction,
+    RunEndContext, RunStartContext, StateEffect, StepContext, StepEndContext, StepOutcome,
+    StepStartContext, SuspendTicket, ToolAction, ToolContext, ToolGateDecision,
 };
 
 // runtime
 pub use runtime::{
-    ActivityManager, DecisionReplayPolicy, InferenceError, InferenceErrorState, ResumeDecisionAction,
-    RunContext, RunDelta, RunLifecycleState, RunLifecycleStatus, StreamResult, SuspendedCall,
-    SuspendedToolCallsState, TokenUsage, ToolCallDecision, ToolCallOutcome, ToolCallResume,
-    ToolCallState, ToolCallStatesState, ToolCallStatus, ToolExecution, ToolExecutionRequest,
-    ToolExecutionResult, ToolExecutor, ToolExecutorError,
+    ActivityManager, DecisionReplayPolicy, InferenceError, InferenceErrorState, RunContext,
+    RunDelta, RunLifecycleState, RunLifecycleStatus, StreamResult, SuspendedCall,
+    SuspendedToolCallsState, TokenUsage, ToolCallOutcome, ToolCallResume, ToolCallState,
+    ToolCallStatesState, ToolCallStatus, ToolExecution, ToolExecutionRequest, ToolExecutionResult,
+    ToolExecutor, ToolExecutorError,
 };
 
 // storage
@@ -152,5 +153,8 @@ pub use storage::{
     ThreadSync, ThreadWriter, VersionPrecondition,
 };
 
-// protocol
-pub use protocol::{Identity, RunRequest, RuntimeInput, Transcoder};
+// io
+pub use io::{ResumeDecisionAction, RunRequest, RuntimeInput, RuntimeOutput, ToolCallDecision};
+
+// transport
+pub use transport::{Identity, Transcoder};

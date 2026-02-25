@@ -14,8 +14,8 @@ mod tests;
 
 pub use contexts::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
-    BeforeToolExecuteContext, PluginPhaseContext, RunEndContext, RunStartContext, StepEndContext,
-    StepStartContext,
+    BeforeToolExecuteContext, PluginPhaseContext, ResumeInputView, RunEndContext, RunStartContext,
+    StepEndContext, StepStartContext,
 };
 pub use step::{StepContext, ToolContext};
 pub use types::{

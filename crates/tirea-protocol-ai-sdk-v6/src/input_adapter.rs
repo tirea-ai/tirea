@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
-use tirea_contract::runtime::ResumeDecisionAction;
+use tirea_contract::io::ResumeDecisionAction;
 use tirea_contract::{Message, RunRequest, SuspensionResponse, ToolCallDecision};
 
 use crate::message::{ToolState, ToolUIPart};
@@ -111,9 +111,7 @@ impl AiSdkV6RunRequest {
                     return Err("messageId is required for regenerate-message".into());
                 }
                 Some(id) if id.trim().is_empty() => {
-                    return Err(
-                        "messageId cannot be empty for regenerate-message".into(),
-                    );
+                    return Err("messageId cannot be empty for regenerate-message".into());
                 }
                 _ => {}
             }
@@ -878,17 +876,17 @@ mod tests {
         req.trigger = Some(AiSdkTrigger::RegenerateMessage);
         req.message_id = Some("  ".to_string());
         let err = req.validate().unwrap_err();
-        assert!(err.contains("messageId cannot be empty"), "unexpected: {err}");
+        assert!(
+            err.contains("messageId cannot be empty"),
+            "unexpected: {err}"
+        );
     }
 
     #[test]
     fn validate_rejects_no_input_no_decisions() {
         let req = AiSdkV6RunRequest::from_thread_input("t1", "", None);
         let err = req.validate().unwrap_err();
-        assert!(
-            err.contains("must include user input"),
-            "unexpected: {err}"
-        );
+        assert!(err.contains("must include user input"), "unexpected: {err}");
     }
 
     #[test]

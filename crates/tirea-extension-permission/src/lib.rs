@@ -31,12 +31,12 @@ use std::collections::HashMap;
 use tirea_contract::event::suspension::{
     FrontendToolInvocation, InvocationOrigin, ResponseRouting,
 };
+use tirea_contract::io::ResumeDecisionAction;
 use tirea_contract::plugin::phase::{
     BeforeInferenceContext, BeforeToolExecuteContext, PluginPhaseContext, SuspendTicket,
     ToolGateDecision,
 };
 use tirea_contract::plugin::AgentPlugin;
-use tirea_contract::runtime::control::ResumeDecisionAction;
 use tirea_contract::tool::context::ToolCallContext;
 use tirea_state::State;
 

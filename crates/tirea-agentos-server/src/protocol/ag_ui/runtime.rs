@@ -246,10 +246,10 @@ impl AgentPlugin for FrontendToolPendingPlugin {
 
         if let Some(resume) = ctx.resume_input() {
             let result = match resume.action {
-                tirea_contract::runtime::ResumeDecisionAction::Resume => {
+                tirea_contract::io::ResumeDecisionAction::Resume => {
                     ToolResult::success(tool_name.to_string(), resume.result)
                 }
-                tirea_contract::runtime::ResumeDecisionAction::Cancel => ToolResult::error(
+                tirea_contract::io::ResumeDecisionAction::Cancel => ToolResult::error(
                     tool_name.to_string(),
                     resume
                         .reason
@@ -287,9 +287,9 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use tirea_agentos::runtime::loop_runner::AgentConfig;
+    use tirea_contract::io::ResumeDecisionAction;
     use tirea_contract::plugin::phase::{StepContext, ToolContext};
     use tirea_contract::plugin::AgentPlugin;
-    use tirea_contract::runtime::ResumeDecisionAction;
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::ToolCall;
     use tirea_protocol_ag_ui::{Context, Message, ToolExecutionLocation};

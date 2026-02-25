@@ -1,7 +1,8 @@
 use super::{Phase, RunAction, StepContext, SuspendTicket, ToolAction, ToolGateDecision};
 use crate::event::termination::TerminationReason;
+use crate::io::ResumeDecisionAction;
 use crate::runtime::result::StreamResult;
-use crate::runtime::{ToolCallResume, ToolCallState};
+use crate::runtime::ToolCallResume;
 use crate::thread::Message;
 use crate::tool::contract::ToolResult;
 use crate::RunConfig;
@@ -139,6 +140,15 @@ pub struct BeforeToolExecuteContext<'s, 'a> {
 }
 impl_plugin_phase_context!(BeforeToolExecuteContext, Phase::BeforeToolExecute);
 
+/// Read-only resume payload view exposed to plugins.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResumeInputView {
+    pub action: ResumeDecisionAction,
+    pub result: Value,
+    pub reason: Option<String>,
+    pub updated_at: u64,
+}
+
 impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
     pub fn tool_name(&self) -> Option<&str> {
         self.step.tool_name()
@@ -152,16 +162,28 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
         self.step.tool_args()
     }
 
-    /// Runtime state for current tool call, if present.
-    pub fn tool_call_state(&self) -> Option<ToolCallState> {
-        let call_id = self.tool_call_id()?;
-        self.step.ctx().tool_call_state_for(call_id).ok().flatten()
-    }
-
     /// Resume payload attached to current tool call, if present.
-    pub fn resume_input(&self) -> Option<ToolCallResume> {
+    pub fn resume_input(&self) -> Option<ResumeInputView> {
         let call_id = self.tool_call_id()?;
-        self.step.ctx().resume_input_for(call_id).ok().flatten()
+        self.step
+            .ctx()
+            .resume_input_for(call_id)
+            .ok()
+            .flatten()
+            .map(
+                |ToolCallResume {
+                     action,
+                     result,
+                     reason,
+                     updated_at,
+                     ..
+                 }| ResumeInputView {
+                    action,
+                    result,
+                    reason,
+                    updated_at,
+                },
+            )
     }
 
     pub fn decision(&self) -> ToolGateDecision {
