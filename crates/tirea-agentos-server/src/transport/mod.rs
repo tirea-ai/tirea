@@ -2,9 +2,11 @@ mod nats_error;
 pub mod http_run;
 pub mod http_sse;
 pub mod nats;
+pub mod runtime_endpoint;
 pub mod transcoder;
 
 pub use nats_error::NatsProtocolError;
+pub use runtime_endpoint::RuntimeEndpoint;
 pub use transcoder::TranscoderEndpoint;
 
 use async_trait::async_trait;
