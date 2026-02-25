@@ -219,8 +219,9 @@ async fn wire_skills_inserts_tools_and_plugin() {
     assert!(tools.contains_key("load_skill_resource"));
     assert!(tools.contains_key("skill_script"));
 
-    assert_eq!(cfg.plugins.len(), 1);
+    assert_eq!(cfg.plugins.len(), 2);
     assert_eq!(cfg.plugins[0].id(), "skills");
+    assert_eq!(cfg.plugins[1].id(), "stop_policy");
 
     // Verify injection does not panic and includes catalog.
     let state = json!({
@@ -261,8 +262,9 @@ async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
     let cfg = AgentDefinition::new("gpt-4o-mini");
     let cfg = os.wire_skills_into(cfg, &mut tools).unwrap();
 
-    assert_eq!(cfg.plugins.len(), 1);
+    assert_eq!(cfg.plugins.len(), 2);
     assert_eq!(cfg.plugins[0].id(), "skills_runtime");
+    assert_eq!(cfg.plugins[1].id(), "stop_policy");
 
     let state = json!({
         "skills": {
@@ -303,7 +305,9 @@ fn wire_skills_disabled_is_noop() {
     let cfg2 = os.wire_skills_into(cfg, &mut tools).unwrap();
 
     assert!(tools.is_empty());
-    assert!(cfg2.plugins.is_empty());
+    // Only the synthesized stop-policy plugin (from default max_rounds=10).
+    assert_eq!(cfg2.plugins.len(), 1);
+    assert_eq!(cfg2.plugins[0].id(), "stop_policy");
 }
 
 #[test]
@@ -507,10 +511,11 @@ async fn resolve_wires_skills_and_preserves_base_tools() {
     assert!(resolved.tools.contains_key("skill_script"));
     assert!(resolved.tools.contains_key("agent_run"));
     assert!(resolved.tools.contains_key("agent_stop"));
-    assert_eq!(resolved.config.plugins.len(), 3);
+    assert_eq!(resolved.config.plugins.len(), 4);
     assert_eq!(resolved.config.plugins[0].id(), "skills");
     assert_eq!(resolved.config.plugins[1].id(), "agent_tools");
     assert_eq!(resolved.config.plugins[2].id(), "agent_recovery");
+    assert_eq!(resolved.config.plugins[3].id(), "stop_policy");
 }
 
 #[test]

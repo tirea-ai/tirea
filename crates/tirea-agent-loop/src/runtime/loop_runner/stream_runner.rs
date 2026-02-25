@@ -607,13 +607,18 @@ pub(super) fn run_stream(
 
             mark_step_completed(&mut run_state);
 
-            if let Some(reason) = post_inference_termination {
-                if matches!(reason, TerminationReason::Suspended) {
-                    for event in suspended_call_pending_events(&run_ctx) {
-                        yield emitter.emit_existing(event);
+            // Only `Stopped` termination is deferred past tool execution so
+            // the current round's tools complete (e.g. MaxRounds lets tools
+            // finish).  All other reasons terminate immediately.
+            if let Some(reason) = &post_inference_termination {
+                if !matches!(reason, TerminationReason::Stopped(_)) {
+                    if matches!(reason, TerminationReason::Suspended) {
+                        for event in suspended_call_pending_events(&run_ctx) {
+                            yield emitter.emit_existing(event);
+                        }
                     }
+                    finish_run!(reason.clone(), Some(last_text.clone()));
                 }
-                finish_run!(reason, Some(last_text.clone()));
             }
 
             // Check if we need to execute tools
@@ -622,7 +627,8 @@ pub(super) fn run_stream(
                 if is_run_cancelled(run_cancellation_token.as_ref()) {
                     finish_run!(TerminationReason::Cancelled, None);
                 }
-                finish_run!(TerminationReason::NaturalEnd, Some(last_text.clone()));
+                let reason = post_inference_termination.unwrap_or(TerminationReason::NaturalEnd);
+                finish_run!(reason, Some(last_text.clone()));
             }
 
             // Emit ToolCallReady for each finalized tool call
@@ -838,6 +844,12 @@ pub(super) fn run_stream(
                 if !has_completed {
                     finish_run!(TerminationReason::Suspended, None);
                 }
+            }
+
+            // Deferred post-inference termination: tools from the current round
+            // have completed; stop the loop before the next inference.
+            if let Some(reason) = post_inference_termination {
+                finish_run!(reason, Some(last_text.clone()));
             }
 
             // Track tool step metrics for stop condition evaluation.

@@ -1709,13 +1709,19 @@ pub async fn run_loop(
 
         mark_step_completed(&mut run_state);
 
-        if let Some(reason) = post_inference_termination {
-            terminate_run!(reason, Some(last_text.clone()), None);
+        // Only `Stopped` termination is deferred past tool execution so the
+        // current round's tools complete (e.g. MaxRounds lets tools finish).
+        // All other reasons terminate immediately before tool execution.
+        if let Some(reason) = &post_inference_termination {
+            if !matches!(reason, TerminationReason::Stopped(_)) {
+                terminate_run!(reason.clone(), Some(last_text.clone()), None);
+            }
         }
 
         if !result.needs_tools() {
             run_state.record_step_without_tools();
-            terminate_run!(TerminationReason::NaturalEnd, Some(last_text.clone()), None);
+            let reason = post_inference_termination.unwrap_or(TerminationReason::NaturalEnd);
+            terminate_run!(reason, Some(last_text.clone()), None);
         }
 
         // Execute tools with phase hooks using configured execution strategy.
@@ -1814,6 +1820,12 @@ pub async fn run_loop(
             if !has_completed {
                 terminate_run!(TerminationReason::Suspended, None, None);
             }
+        }
+
+        // Deferred post-inference termination: tools from the current round
+        // have completed; stop the loop before the next inference.
+        if let Some(reason) = post_inference_termination {
+            terminate_run!(reason, Some(last_text.clone()), None);
         }
 
         // Track tool-step metrics for loop stats and plugin consumers.

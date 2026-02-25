@@ -2,7 +2,7 @@ use super::agent_tools::{
     AGENT_RECOVERY_PLUGIN_ID, AGENT_TOOLS_PLUGIN_ID, SCOPE_CALLER_AGENT_ID_KEY,
 };
 use super::policy::{filter_tools_in_place, set_scope_filters_from_definition_if_absent};
-use super::stop_policy_plugin::{StopPolicyPlugin, STOP_POLICY_PLUGIN_ID};
+use super::stop_policy_plugin::{StopConditionSpec, StopPolicyPlugin, STOP_POLICY_PLUGIN_ID};
 use super::*;
 use crate::extensions::skills::{
     InMemorySkillRegistry, Skill, SkillRegistry, SKILLS_BUNDLE_ID, SKILLS_DISCOVERY_PLUGIN_ID,
@@ -453,8 +453,8 @@ impl AgentOs {
         // Resolve stop conditions from stop_condition_ids
         let stop_conditions =
             self.resolve_stop_condition_id_list(&definition.stop_condition_ids)?;
-        let stop_plugin =
-            StopPolicyPlugin::new(stop_conditions, definition.stop_condition_specs.clone());
+        let specs = synthesize_stop_specs(&definition);
+        let stop_plugin = StopPolicyPlugin::new(stop_conditions, specs);
         if !stop_plugin.is_empty() {
             all_plugins.push(Arc::new(stop_plugin));
             AgentOs::ensure_unique_plugin_ids(&all_plugins)?;
@@ -505,8 +505,8 @@ impl AgentOs {
 
         let stop_conditions =
             self.resolve_stop_condition_id_list(&definition.stop_condition_ids)?;
-        let stop_plugin =
-            StopPolicyPlugin::new(stop_conditions, definition.stop_condition_specs.clone());
+        let specs = synthesize_stop_specs(&definition);
+        let stop_plugin = StopPolicyPlugin::new(stop_conditions, specs);
         if !stop_plugin.is_empty() {
             all_plugins.push(Arc::new(stop_plugin));
             AgentOs::ensure_unique_plugin_ids(&all_plugins)?;
@@ -555,4 +555,20 @@ impl AgentOs {
             run_config,
         })
     }
+}
+
+/// Merge explicit `stop_condition_specs` with implicit `max_rounds` from the
+/// definition. If the user already declared a `MaxRounds` spec, `max_rounds`
+/// is NOT added a second time.
+fn synthesize_stop_specs(definition: &AgentDefinition) -> Vec<StopConditionSpec> {
+    let mut specs = definition.stop_condition_specs.clone();
+    let has_explicit_max_rounds = specs
+        .iter()
+        .any(|s| matches!(s, StopConditionSpec::MaxRounds { .. }));
+    if !has_explicit_max_rounds && definition.max_rounds > 0 {
+        specs.push(StopConditionSpec::MaxRounds {
+            rounds: definition.max_rounds,
+        });
+    }
+    specs
 }
