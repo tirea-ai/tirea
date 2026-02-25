@@ -20,7 +20,7 @@ use tokio::sync::{broadcast, mpsc, RwLock};
 
 use crate::service::{
     active_run_key, encode_message_page, load_message_page, register_active_run, remove_active_run,
-    require_agent_state_store, try_forward_decisions_to_active_run, ApiError, AppState,
+    truncate_thread_at_message, try_forward_decisions_to_active_run, ApiError, AppState,
     MessageQueryParams,
 };
 use crate::transport::http_run::wire_http_sse_relay;
@@ -90,50 +90,14 @@ async fn run(
     Path(agent_id): Path<String>,
     Json(req): Json<AiSdkV6RunRequest>,
 ) -> Result<Response, ApiError> {
-    if req.thread_id.trim().is_empty() {
-        return Err(ApiError::BadRequest("id cannot be empty".to_string()));
-    }
+    req.validate().map_err(ApiError::BadRequest)?;
     if req.trigger == Some(AiSdkTrigger::RegenerateMessage) {
-        let message_id = req.message_id.as_deref().ok_or_else(|| {
-            ApiError::BadRequest("messageId is required for regenerate-message".to_string())
-        })?;
-        if message_id.trim().is_empty() {
-            return Err(ApiError::BadRequest(
-                "messageId cannot be empty for regenerate-message".to_string(),
-            ));
-        }
-        // Truncate stored thread to include messages up to and including messageId.
-        let store = require_agent_state_store(&st.os)?;
-        let mut thread = store
-            .load(&req.thread_id)
-            .await
-            .map_err(|err| ApiError::Internal(err.to_string()))?
-            .ok_or_else(|| {
-                ApiError::BadRequest(
-                    "thread not found for regenerate-message".to_string(),
-                )
-            })?
-            .thread;
-        let position = thread
-            .messages
-            .iter()
-            .position(|m| m.id.as_deref() == Some(message_id))
-            .ok_or_else(|| {
-                ApiError::BadRequest(
-                    "messageId does not reference a stored message".to_string(),
-                )
-            })?;
-        thread.messages.truncate(position + 1);
-        store
-            .save(&thread)
-            .await
-            .map_err(|err| ApiError::Internal(err.to_string()))?;
-    }
-    let is_regenerate = req.trigger == Some(AiSdkTrigger::RegenerateMessage);
-    if !req.has_user_input() && !req.has_suspension_decisions() && !is_regenerate {
-        return Err(ApiError::BadRequest(
-            "request must include user input or suspension decisions".to_string(),
-        ));
+        truncate_thread_at_message(
+            &st.os,
+            &req.thread_id,
+            req.message_id.as_deref().unwrap(),
+        )
+        .await?;
     }
 
     let suspension_decisions = req.suspension_decisions();

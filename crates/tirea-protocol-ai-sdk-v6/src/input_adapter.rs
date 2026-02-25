@@ -95,6 +95,36 @@ impl AiSdkV6RunRequest {
         }
     }
 
+    /// Validate the request before processing.
+    ///
+    /// Checks that:
+    /// - `thread_id` is non-empty
+    /// - `messageId` is present and non-empty for `regenerate-message`
+    /// - At least one of user input, suspension decisions, or regenerate trigger is present
+    pub fn validate(&self) -> Result<(), String> {
+        if self.thread_id.trim().is_empty() {
+            return Err("id cannot be empty".into());
+        }
+        if self.trigger == Some(AiSdkTrigger::RegenerateMessage) {
+            match self.message_id.as_deref() {
+                None => {
+                    return Err("messageId is required for regenerate-message".into());
+                }
+                Some(id) if id.trim().is_empty() => {
+                    return Err(
+                        "messageId cannot be empty for regenerate-message".into(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        let is_regenerate = self.trigger == Some(AiSdkTrigger::RegenerateMessage);
+        if !self.has_user_input() && !self.has_suspension_decisions() && !is_regenerate {
+            return Err("request must include user input or suspension decisions".into());
+        }
+        Ok(())
+    }
+
     /// Whether the incoming request includes a non-empty user input message.
     pub fn has_user_input(&self) -> bool {
         !self.input.trim().is_empty()
@@ -136,6 +166,10 @@ impl AiSdkV6RunRequest {
         if self.has_user_input() {
             messages.push(Message::user(self.input));
         }
+        debug_assert!(
+            !self.thread_id.trim().is_empty(),
+            "call validate() before into_runtime_run_request()"
+        );
         RunRequest {
             agent_id,
             thread_id: if self.thread_id.trim().is_empty() {
@@ -375,7 +409,7 @@ fn decision_action_from_result(result: &Value) -> ResumeDecisionAction {
             }
             ResumeDecisionAction::Resume
         }
-        _ => ResumeDecisionAction::Resume,
+        Value::Null | Value::Array(_) | Value::Number(_) => ResumeDecisionAction::Cancel,
     }
 }
 
@@ -818,5 +852,84 @@ mod tests {
         assert!(run_request.messages.is_empty());
         assert_eq!(run_request.initial_decisions.len(), 1);
         assert_eq!(run_request.initial_decisions[0].target_id, "ask_1");
+    }
+
+    #[test]
+    fn validate_rejects_empty_thread_id() {
+        let req = AiSdkV6RunRequest::from_thread_input("", "hello", None);
+        let err = req.validate().unwrap_err();
+        assert!(err.contains("id cannot be empty"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_whitespace_thread_id() {
+        let req = AiSdkV6RunRequest::from_thread_input("  ", "hello", None);
+        assert!(req.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_regenerate_without_message_id() {
+        let mut req = AiSdkV6RunRequest::from_thread_input("t1", "", None);
+        req.trigger = Some(AiSdkTrigger::RegenerateMessage);
+        req.message_id = None;
+        let err = req.validate().unwrap_err();
+        assert!(err.contains("messageId is required"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_regenerate_with_empty_message_id() {
+        let mut req = AiSdkV6RunRequest::from_thread_input("t1", "", None);
+        req.trigger = Some(AiSdkTrigger::RegenerateMessage);
+        req.message_id = Some("  ".to_string());
+        let err = req.validate().unwrap_err();
+        assert!(err.contains("messageId cannot be empty"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_no_input_no_decisions() {
+        let req = AiSdkV6RunRequest::from_thread_input("t1", "", None);
+        let err = req.validate().unwrap_err();
+        assert!(
+            err.contains("must include user input"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_regenerate_without_user_input() {
+        let mut req = AiSdkV6RunRequest::from_thread_input("t1", "", None);
+        req.trigger = Some(AiSdkTrigger::RegenerateMessage);
+        req.message_id = Some("msg_1".to_string());
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_valid_request() {
+        let req = AiSdkV6RunRequest::from_thread_input("t1", "hello", None);
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn decision_action_null_defaults_to_cancel() {
+        assert_eq!(
+            decision_action_from_result(&Value::Null),
+            ResumeDecisionAction::Cancel
+        );
+    }
+
+    #[test]
+    fn decision_action_array_defaults_to_cancel() {
+        assert_eq!(
+            decision_action_from_result(&json!([])),
+            ResumeDecisionAction::Cancel
+        );
+    }
+
+    #[test]
+    fn decision_action_number_defaults_to_cancel() {
+        assert_eq!(
+            decision_action_from_result(&json!(42)),
+            ResumeDecisionAction::Cancel
+        );
     }
 }

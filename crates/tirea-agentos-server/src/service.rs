@@ -214,6 +214,35 @@ pub fn require_agent_state_store(os: &Arc<AgentOs>) -> Result<Arc<dyn ThreadStor
         .ok_or_else(|| ApiError::Internal("agent state store not configured".to_string()))
 }
 
+/// Truncate a stored thread so it includes messages up to and including `message_id`.
+pub async fn truncate_thread_at_message(
+    os: &Arc<AgentOs>,
+    thread_id: &str,
+    message_id: &str,
+) -> Result<(), ApiError> {
+    let store = require_agent_state_store(os)?;
+    let mut thread = store
+        .load(thread_id)
+        .await
+        .map_err(|err| ApiError::Internal(err.to_string()))?
+        .ok_or_else(|| {
+            ApiError::BadRequest("thread not found for regenerate-message".to_string())
+        })?
+        .thread;
+    let position = thread
+        .messages
+        .iter()
+        .position(|m| m.id.as_deref() == Some(message_id))
+        .ok_or_else(|| {
+            ApiError::BadRequest("messageId does not reference a stored message".to_string())
+        })?;
+    thread.messages.truncate(position + 1);
+    store
+        .save(&thread)
+        .await
+        .map_err(|err| ApiError::Internal(err.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
