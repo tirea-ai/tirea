@@ -14,7 +14,7 @@ pub enum ResumeDecisionAction {
 /// `target_id` may refer to:
 /// - suspended `call_id`
 /// - suspension id
-/// - frontend invocation call id
+/// - pending external tool-call id
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolCallDecision {
     /// External target identifier used to resolve suspended call.

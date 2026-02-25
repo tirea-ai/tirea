@@ -1865,24 +1865,17 @@ async fn run_stream_exposes_decision_sender_and_replays_suspended_calls() {
                             "message": "approved-from-channel"
                         }
                     },
-                    "invocation": {
-                        "call_id": "call_pending",
-                        "tool_name": "echo",
-                        "arguments": {
+                    "arguments": {
                             "message": "approved-from-channel"
                         },
-                        "origin": {
-                            "type": "tool_call_intercepted",
-                            "backend_call_id": "call_pending",
-                            "backend_tool_name": "echo",
-                            "backend_arguments": {
-                                "message": "approved-from-channel"
-                            }
-                        },
-                        "routing": {
-                            "strategy": "replay_original_tool"
+                    "pending": {
+                        "id": "call_pending",
+                        "name": "echo",
+                        "arguments": {
+                            "message": "approved-from-channel"
                         }
-                    }
+                    },
+                    "resume_mode": "replay_tool_call"
                 }
             }
         }
@@ -1950,24 +1943,17 @@ async fn run_stream_replays_initial_decisions_without_submit_decision() {
                             "message": "approved-from-request"
                         }
                     },
-                    "invocation": {
-                        "call_id": "call_pending",
-                        "tool_name": "echo",
-                        "arguments": {
+                    "arguments": {
                             "message": "approved-from-request"
                         },
-                        "origin": {
-                            "type": "tool_call_intercepted",
-                            "backend_call_id": "call_pending",
-                            "backend_tool_name": "echo",
-                            "backend_arguments": {
-                                "message": "approved-from-request"
-                            }
-                        },
-                        "routing": {
-                            "strategy": "replay_original_tool"
+                    "pending": {
+                        "id": "call_pending",
+                        "name": "echo",
+                        "arguments": {
+                            "message": "approved-from-request"
                         }
-                    }
+                    },
+                    "resume_mode": "replay_tool_call"
                 }
             }
         }
@@ -2067,24 +2053,17 @@ async fn run_stream_persists_run_lifecycle_waiting_status_for_suspension() {
                             "message": "still waiting"
                         }
                     },
-                    "invocation": {
-                        "call_id": "call_pending",
-                        "tool_name": "echo",
-                        "arguments": {
+                    "arguments": {
                             "message": "still waiting"
                         },
-                        "origin": {
-                            "type": "tool_call_intercepted",
-                            "backend_call_id": "call_pending",
-                            "backend_tool_name": "echo",
-                            "backend_arguments": {
-                                "message": "still waiting"
-                            }
-                        },
-                        "routing": {
-                            "strategy": "replay_original_tool"
+                    "pending": {
+                        "id": "call_pending",
+                        "name": "echo",
+                        "arguments": {
+                            "message": "still waiting"
                         }
-                    }
+                    },
+                    "resume_mode": "replay_tool_call"
                 }
             }
         }
@@ -2140,20 +2119,13 @@ async fn run_stream_initial_decisions_denied_returns_tool_error_and_clears_suspe
                         "action": "confirm",
                         "parameters": { "message": "denied" }
                     },
-                    "invocation": {
-                        "call_id": "call_pending",
-                        "tool_name": "echo",
-                        "arguments": { "message": "denied" },
-                        "origin": {
-                            "type": "tool_call_intercepted",
-                            "backend_call_id": "call_pending",
-                            "backend_tool_name": "echo",
-                            "backend_arguments": { "message": "denied" }
-                        },
-                        "routing": {
-                            "strategy": "replay_original_tool"
-                        }
-                    }
+                    "arguments": { "message": "denied" },
+                    "pending": {
+                        "id": "call_pending",
+                        "name": "echo",
+                        "arguments": { "message": "denied" }
+                    },
+                    "resume_mode": "replay_tool_call"
                 }
             }
         }
@@ -2230,20 +2202,13 @@ async fn run_stream_initial_decisions_cancelled_returns_tool_error_and_clears_su
                         "action": "confirm",
                         "parameters": { "message": "cancelled" }
                     },
-                    "invocation": {
-                        "call_id": "call_pending",
-                        "tool_name": "echo",
-                        "arguments": { "message": "cancelled" },
-                        "origin": {
-                            "type": "tool_call_intercepted",
-                            "backend_call_id": "call_pending",
-                            "backend_tool_name": "echo",
-                            "backend_arguments": { "message": "cancelled" }
-                        },
-                        "routing": {
-                            "strategy": "replay_original_tool"
-                        }
-                    }
+                    "arguments": { "message": "cancelled" },
+                    "pending": {
+                        "id": "call_pending",
+                        "name": "echo",
+                        "arguments": { "message": "cancelled" }
+                    },
+                    "resume_mode": "replay_tool_call"
                 }
             }
         }
@@ -2324,20 +2289,13 @@ async fn run_stream_initial_decisions_partial_match_keeps_unresolved_suspended_c
                         "action": "confirm",
                         "parameters": { "message": "approve me" }
                     },
-                    "invocation": {
-                        "call_id": "call_approved",
-                        "tool_name": "echo",
-                        "arguments": { "message": "approve me" },
-                        "origin": {
-                            "type": "tool_call_intercepted",
-                            "backend_call_id": "call_approved",
-                            "backend_tool_name": "echo",
-                            "backend_arguments": { "message": "approve me" }
-                        },
-                        "routing": {
-                            "strategy": "replay_original_tool"
-                        }
-                    }
+                    "arguments": { "message": "approve me" },
+                    "pending": {
+                        "id": "call_approved",
+                        "name": "echo",
+                        "arguments": { "message": "approve me" }
+                    },
+                    "resume_mode": "replay_tool_call"
                 },
                 "call_waiting": {
                     "call_id": "call_waiting",
@@ -2347,20 +2305,13 @@ async fn run_stream_initial_decisions_partial_match_keeps_unresolved_suspended_c
                         "action": "confirm",
                         "parameters": { "message": "still waiting" }
                     },
-                    "invocation": {
-                        "call_id": "call_waiting",
-                        "tool_name": "echo",
-                        "arguments": { "message": "still waiting" },
-                        "origin": {
-                            "type": "tool_call_intercepted",
-                            "backend_call_id": "call_waiting",
-                            "backend_tool_name": "echo",
-                            "backend_arguments": { "message": "still waiting" }
-                        },
-                        "routing": {
-                            "strategy": "replay_original_tool"
-                        }
-                    }
+                    "arguments": { "message": "still waiting" },
+                    "pending": {
+                        "id": "call_waiting",
+                        "name": "echo",
+                        "arguments": { "message": "still waiting" }
+                    },
+                    "resume_mode": "replay_tool_call"
                 }
             }
         }
@@ -2447,20 +2398,13 @@ async fn run_stream_batch_approval_mode_waits_for_all_suspended_decisions_before
                         "action": "confirm",
                         "parameters": { "message": "approve me" }
                     },
-                    "invocation": {
-                        "call_id": "call_approved",
-                        "tool_name": "echo",
-                        "arguments": { "message": "approve me" },
-                        "origin": {
-                            "type": "tool_call_intercepted",
-                            "backend_call_id": "call_approved",
-                            "backend_tool_name": "echo",
-                            "backend_arguments": { "message": "approve me" }
-                        },
-                        "routing": {
-                            "strategy": "replay_original_tool"
-                        }
-                    }
+                    "arguments": { "message": "approve me" },
+                    "pending": {
+                        "id": "call_approved",
+                        "name": "echo",
+                        "arguments": { "message": "approve me" }
+                    },
+                    "resume_mode": "replay_tool_call"
                 },
                 "call_waiting": {
                     "call_id": "call_waiting",
@@ -2470,20 +2414,13 @@ async fn run_stream_batch_approval_mode_waits_for_all_suspended_decisions_before
                         "action": "confirm",
                         "parameters": { "message": "still waiting" }
                     },
-                    "invocation": {
-                        "call_id": "call_waiting",
-                        "tool_name": "echo",
-                        "arguments": { "message": "still waiting" },
-                        "origin": {
-                            "type": "tool_call_intercepted",
-                            "backend_call_id": "call_waiting",
-                            "backend_tool_name": "echo",
-                            "backend_arguments": { "message": "still waiting" }
-                        },
-                        "routing": {
-                            "strategy": "replay_original_tool"
-                        }
-                    }
+                    "arguments": { "message": "still waiting" },
+                    "pending": {
+                        "id": "call_waiting",
+                        "name": "echo",
+                        "arguments": { "message": "still waiting" }
+                    },
+                    "resume_mode": "replay_tool_call"
                 }
             }
         }
@@ -2616,20 +2553,13 @@ async fn run_stream_initial_decisions_ignore_unknown_target() {
                         "action": "confirm",
                         "parameters": { "message": "still waiting" }
                     },
-                    "invocation": {
-                        "call_id": "call_pending",
-                        "tool_name": "echo",
-                        "arguments": { "message": "still waiting" },
-                        "origin": {
-                            "type": "tool_call_intercepted",
-                            "backend_call_id": "call_pending",
-                            "backend_tool_name": "echo",
-                            "backend_arguments": { "message": "still waiting" }
-                        },
-                        "routing": {
-                            "strategy": "replay_original_tool"
-                        }
-                    }
+                    "arguments": { "message": "still waiting" },
+                    "pending": {
+                        "id": "call_pending",
+                        "name": "echo",
+                        "arguments": { "message": "still waiting" }
+                    },
+                    "resume_mode": "replay_tool_call"
                 }
             }
         }
@@ -2706,20 +2636,13 @@ async fn run_stream_duplicate_initial_decisions_are_idempotent() {
                         "action": "confirm",
                         "parameters": { "message": "idempotent" }
                     },
-                    "invocation": {
-                        "call_id": "call_pending",
-                        "tool_name": "echo",
-                        "arguments": { "message": "idempotent" },
-                        "origin": {
-                            "type": "tool_call_intercepted",
-                            "backend_call_id": "call_pending",
-                            "backend_tool_name": "echo",
-                            "backend_arguments": { "message": "idempotent" }
-                        },
-                        "routing": {
-                            "strategy": "replay_original_tool"
-                        }
-                    }
+                    "arguments": { "message": "idempotent" },
+                    "pending": {
+                        "id": "call_pending",
+                        "name": "echo",
+                        "arguments": { "message": "idempotent" }
+                    },
+                    "resume_mode": "replay_tool_call"
                 }
             }
         }

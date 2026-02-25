@@ -153,7 +153,13 @@ fn interaction_responses_filter_to_pending_ids_when_state_exists() {
                         "call_id": "call_pending",
                         "tool_name": "confirm",
                         "suspension": { "id": "call_pending", "action": "confirm" },
-                        "invocation": { "call_id": "call_pending" }
+                        "arguments": {},
+                        "pending": {
+                            "id": "call_pending",
+                            "name": "confirm",
+                            "arguments": {}
+                        },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             }

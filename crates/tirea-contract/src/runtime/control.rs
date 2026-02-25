@@ -111,7 +111,6 @@ impl Default for ToolCallResumeMode {
 pub struct PendingToolCall {
     pub id: String,
     pub name: String,
-    #[serde(default, skip_serializing_if = "Value::is_null")]
     pub arguments: Value,
 }
 
@@ -123,143 +122,22 @@ impl PendingToolCall {
             arguments,
         }
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.id.trim().is_empty() || self.name.trim().is_empty()
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(from = "SuspendedCallWire", into = "SuspendedCallWire")]
 pub struct SuspendedCall {
     /// Original backend call identity.
     pub call_id: String,
     /// Original backend tool name.
     pub tool_name: String,
     /// Original backend tool arguments.
-    #[serde(default, skip_serializing_if = "Value::is_null")]
     pub arguments: Value,
     /// External interaction payload.
     pub suspension: Suspension,
     /// Pending tool-call projection shown to external event consumers.
-    #[serde(default)]
     pub pending: PendingToolCall,
     /// How to map resume decisions to backend behavior.
-    #[serde(default)]
     pub resume_mode: ToolCallResumeMode,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-struct SuspendedCallWire {
-    pub call_id: String,
-    pub tool_name: String,
-    #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub arguments: Value,
-    pub suspension: Suspension,
-    #[serde(default)]
-    pub pending: PendingToolCall,
-    #[serde(default)]
-    pub resume_mode: ToolCallResumeMode,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub invocation: Option<LegacyFrontendToolInvocation>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-struct LegacyFrontendToolInvocation {
-    pub call_id: String,
-    pub tool_name: String,
-    #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub arguments: Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub origin: Option<LegacyInvocationOrigin>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub routing: Option<LegacyResponseRouting>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum LegacyInvocationOrigin {
-    ToolCallIntercepted {
-        backend_call_id: String,
-        backend_tool_name: String,
-        backend_arguments: Value,
-    },
-    PluginInitiated {
-        plugin_id: String,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "strategy", rename_all = "snake_case")]
-enum LegacyResponseRouting {
-    ReplayOriginalTool,
-    UseAsToolResult,
-    PassToLLM,
-}
-
-impl From<SuspendedCall> for SuspendedCallWire {
-    fn from(value: SuspendedCall) -> Self {
-        Self {
-            call_id: value.call_id,
-            tool_name: value.tool_name,
-            arguments: value.arguments,
-            suspension: value.suspension,
-            pending: value.pending,
-            resume_mode: value.resume_mode,
-            invocation: None,
-        }
-    }
-}
-
-impl From<SuspendedCallWire> for SuspendedCall {
-    fn from(mut wire: SuspendedCallWire) -> Self {
-        if let Some(legacy) = wire.invocation.take() {
-            if wire.pending.is_empty() {
-                wire.pending = PendingToolCall::new(
-                    legacy.call_id.clone(),
-                    legacy.tool_name.clone(),
-                    legacy.arguments.clone(),
-                );
-            }
-
-            if wire.arguments.is_null() {
-                wire.arguments = match legacy.origin {
-                    Some(LegacyInvocationOrigin::ToolCallIntercepted {
-                        backend_arguments, ..
-                    }) => backend_arguments,
-                    _ => legacy.arguments.clone(),
-                };
-            }
-
-            wire.resume_mode = match legacy.routing {
-                Some(LegacyResponseRouting::ReplayOriginalTool) => {
-                    ToolCallResumeMode::ReplayToolCall
-                }
-                Some(LegacyResponseRouting::UseAsToolResult) => {
-                    ToolCallResumeMode::UseDecisionAsToolResult
-                }
-                Some(LegacyResponseRouting::PassToLLM) => ToolCallResumeMode::PassDecisionToTool,
-                None => wire.resume_mode,
-            };
-        }
-
-        if wire.pending.is_empty() {
-            wire.pending = PendingToolCall::new(
-                wire.call_id.clone(),
-                wire.tool_name.clone(),
-                wire.arguments.clone(),
-            );
-        }
-
-        SuspendedCall {
-            call_id: wire.call_id,
-            tool_name: wire.tool_name,
-            arguments: wire.arguments,
-            suspension: wire.suspension,
-            pending: wire.pending,
-            resume_mode: wire.resume_mode,
-        }
-    }
 }
 
 /// Durable suspended tool-call map persisted at `state["__suspended_tool_calls"]`.

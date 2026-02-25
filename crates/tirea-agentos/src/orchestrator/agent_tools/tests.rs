@@ -1170,18 +1170,13 @@ async fn recovery_plugin_does_not_override_existing_suspended_interaction() {
                             "id": "existing_1",
                             "action": "confirm",
                         },
-                        "invocation": {
-                            "call_id": "existing_1",
-                            "tool_name": "confirm",
-                            "arguments": {},
-                            "origin": {
-                                "type": "plugin_initiated",
-                                "plugin_id": "agent_recovery"
-                            },
-                            "routing": {
-                                "strategy": "pass_to_llm"
-                            }
-                        }
+                        "arguments": {},
+                        "pending": {
+                            "id": "existing_1",
+                            "name": "confirm",
+                            "arguments": {}
+                        },
+                        "resume_mode": "pass_decision_to_tool"
                     }
                 }
             },

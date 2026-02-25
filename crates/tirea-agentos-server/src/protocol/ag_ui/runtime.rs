@@ -406,15 +406,13 @@ mod tests {
                                 "id": "call_copy_1",
                                 "action": "tool:copyToClipboard"
                             },
-                            "invocation": {
-                                "call_id": "call_copy_1",
-                                "tool_name": "copyToClipboard",
-                                "routing": { "strategy": "use_as_tool_result" },
-                                "origin": {
-                                    "type": "plugin_initiated",
-                                    "plugin_id": "agui_frontend_tools"
-                                }
-                            }
+                            "arguments": {},
+                            "pending": {
+                                "id": "call_copy_1",
+                                "name": "copyToClipboard",
+                                "arguments": {}
+                            },
+                            "resume_mode": "use_decision_as_tool_result"
                         }
                     }
                 }

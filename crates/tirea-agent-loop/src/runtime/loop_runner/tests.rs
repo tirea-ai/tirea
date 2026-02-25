@@ -2773,20 +2773,13 @@ fn test_execute_tools_with_config_denied_response_is_applied_via_tool_call_state
                                 "action": "tool:echo",
                                 "parameters": { "source": "permission" }
                             },
-                            "invocation": {
-                                "call_id": "call_1",
-                                "tool_name": "echo",
-                                "arguments": { "source": "permission" },
-                                "origin": {
-                                    "type": "tool_call_intercepted",
-                                    "backend_call_id": "call_1",
-                                    "backend_tool_name": "echo",
-                                    "backend_arguments": { "source": "permission" }
-                                },
-                                "routing": {
-                                    "strategy": "replay_original_tool"
-                                }
-                            }
+                            "arguments": { "source": "permission" },
+                            "pending": {
+                                "id": "call_1",
+                                "name": "echo",
+                                "arguments": { "source": "permission" }
+                            },
+                            "resume_mode": "replay_tool_call"
                         }
                     }
                 }
@@ -3241,20 +3234,13 @@ async fn test_stream_run_start_resume_replay_emits_after_run_start() {
                             "action": "confirm",
                             "parameters": {}
                         },
-                        "invocation": {
-                            "call_id": "call_1",
-                            "tool_name": "echo",
-                            "arguments": {},
-                            "origin": {
-                                "type": "tool_call_intercepted",
-                                "backend_call_id": "call_1",
-                                "backend_tool_name": "echo",
-                                "backend_arguments": {}
-                            },
-                            "routing": {
-                                "strategy": "replay_original_tool"
-                            }
-                        }
+                        "arguments": {},
+                        "pending": {
+                            "id": "call_1",
+                            "name": "echo",
+                            "arguments": {}
+                        },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             },
@@ -3390,20 +3376,13 @@ async fn test_stream_run_action_with_suspended_only_state_emits_pending_events()
                             "message": "resume?",
                             "parameters": {}
                         },
-                        "invocation": {
-                            "call_id": "recover_1",
-                            "tool_name": "recover_agent_run",
-                            "arguments": {},
-                            "origin": {
-                                "type": "tool_call_intercepted",
-                                "backend_call_id": "recover_1",
-                                "backend_tool_name": "recover_agent_run",
-                                "backend_arguments": {}
-                            },
-                            "routing": {
-                                "strategy": "replay_original_tool"
-                            }
-                        }
+                        "arguments": {},
+                        "pending": {
+                            "id": "recover_1",
+                            "name": "recover_agent_run",
+                            "arguments": {}
+                        },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             }
@@ -3473,23 +3452,16 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
                             "action": "tool:write_file",
                             "parameters": { "source": "permission" }
                         },
-                        "invocation": {
-                            "call_id": "call_write",
-                            "tool_name": "PermissionConfirm",
+                        "arguments": { "path": "a.txt" },
+                        "pending": {
+                            "id": "call_write",
+                            "name": "PermissionConfirm",
                             "arguments": {
                                 "tool_name": "write_file",
                                 "tool_args": { "path": "a.txt" }
-                            },
-                            "origin": {
-                                "type": "tool_call_intercepted",
-                                "backend_call_id": "call_write",
-                                "backend_tool_name": "write_file",
-                                "backend_arguments": { "path": "a.txt" }
-                            },
-                            "routing": {
-                                "strategy": "replay_original_tool"
                             }
-                        }
+                        },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             }
@@ -3558,23 +3530,16 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
                                 }
                             }
                         },
-                        "invocation": {
-                            "call_id": "call_1",
-                            "tool_name": "PermissionConfirm",
+                        "arguments": { "message": "approved-run" },
+                        "pending": {
+                            "id": "call_1",
+                            "name": "PermissionConfirm",
                             "arguments": {
                                 "tool_name": "echo",
                                 "tool_args": { "message": "approved-run" }
-                            },
-                            "origin": {
-                                "type": "tool_call_intercepted",
-                                "backend_call_id": "call_1",
-                                "backend_tool_name": "echo",
-                                "backend_arguments": { "message": "approved-run" }
-                            },
-                            "routing": {
-                                "strategy": "replay_original_tool"
                             }
-                        }
+                        },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             }
@@ -3698,23 +3663,16 @@ async fn test_run_loop_permission_approval_replays_tool_and_updates_lifecycle_st
                                 }
                             }
                         },
-                        "invocation": {
-                            "call_id": "call_1",
-                            "tool_name": "PermissionConfirm",
+                        "arguments": { "message": "approved-run" },
+                        "pending": {
+                            "id": "call_1",
+                            "name": "PermissionConfirm",
                             "arguments": {
                                 "tool_name": "echo",
                                 "tool_args": { "message": "approved-run" }
-                            },
-                            "origin": {
-                                "type": "tool_call_intercepted",
-                                "backend_call_id": "call_1",
-                                "backend_tool_name": "echo",
-                                "backend_arguments": { "message": "approved-run" }
-                            },
-                            "routing": {
-                                "strategy": "replay_original_tool"
                             }
-                        }
+                        },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             }
@@ -3817,21 +3775,16 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
                             "action": "tool:echo",
                             "parameters": { "source": "permission" }
                         },
-                        "invocation": {
-                            "call_id": "call_1",
-                            "tool_name": "PermissionConfirm",
+                        "arguments": { "message": "approved-run" },
+                        "pending": {
+                            "id": "call_1",
+                            "name": "PermissionConfirm",
                             "arguments": {
                                 "tool_name": "echo",
                                 "tool_args": { "message": "approved-run" }
-                            },
-                            "origin": {
-                                "type": "tool_call_intercepted",
-                                "backend_call_id": "call_1",
-                                "backend_tool_name": "echo",
-                                "backend_arguments": { "message": "approved-run" }
-                            },
-                            "routing": { "strategy": "replay_original_tool" }
-                        }
+                            }
+                        },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             }
@@ -3924,23 +3877,16 @@ async fn test_run_loop_run_start_replay_uses_tool_call_resume_state_without_mail
                             "id": "call_1",
                             "action": "tool:echo"
                         },
-                        "invocation": {
-                            "call_id": "call_1",
-                            "tool_name": "PermissionConfirm",
+                        "arguments": { "message": "approved-run" },
+                        "pending": {
+                            "id": "call_1",
+                            "name": "PermissionConfirm",
                             "arguments": {
                                 "tool_name": "echo",
                                 "tool_args": { "message": "approved-run" }
-                            },
-                            "origin": {
-                                "type": "tool_call_intercepted",
-                                "backend_call_id": "call_1",
-                                "backend_tool_name": "echo",
-                                "backend_arguments": { "message": "approved-run" }
-                            },
-                            "routing": {
-                                "strategy": "replay_original_tool"
                             }
-                        }
+                        },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             },
@@ -4116,23 +4062,16 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
                                 }
                             }
                         },
-                        "invocation": {
-                            "call_id": "call_1",
-                            "tool_name": "PermissionConfirm",
+                        "arguments": { "message": "denied-run" },
+                        "pending": {
+                            "id": "call_1",
+                            "name": "PermissionConfirm",
                             "arguments": {
                                 "tool_name": "echo",
                                 "tool_args": { "message": "denied-run" }
-                            },
-                            "origin": {
-                                "type": "tool_call_intercepted",
-                                "backend_call_id": "call_1",
-                                "backend_tool_name": "echo",
-                                "backend_arguments": { "message": "denied-run" }
-                            },
-                            "routing": {
-                                "strategy": "replay_original_tool"
                             }
-                        }
+                        },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             }
@@ -4242,23 +4181,16 @@ async fn test_run_loop_permission_denied_appends_tool_result_for_model_context()
                             "id": "call_1",
                             "action": "tool:echo"
                         },
-                        "invocation": {
-                            "call_id": "call_1",
-                            "tool_name": "PermissionConfirm",
+                        "arguments": { "message": "denied-run" },
+                        "pending": {
+                            "id": "call_1",
+                            "name": "PermissionConfirm",
                             "arguments": {
                                 "tool_name": "echo",
                                 "tool_args": { "message": "denied-run" }
-                            },
-                            "origin": {
-                                "type": "tool_call_intercepted",
-                                "backend_call_id": "call_1",
-                                "backend_tool_name": "echo",
-                                "backend_arguments": { "message": "denied-run" }
-                            },
-                            "routing": {
-                                "strategy": "replay_original_tool"
                             }
-                        }
+                        },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             }
@@ -4340,23 +4272,16 @@ async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_contex
                             "id": "call_1",
                             "action": "tool:echo"
                         },
-                        "invocation": {
-                            "call_id": "call_1",
-                            "tool_name": "PermissionConfirm",
+                        "arguments": { "message": "cancel-run" },
+                        "pending": {
+                            "id": "call_1",
+                            "name": "PermissionConfirm",
                             "arguments": {
                                 "tool_name": "echo",
                                 "tool_args": { "message": "cancel-run" }
-                            },
-                            "origin": {
-                                "type": "tool_call_intercepted",
-                                "backend_call_id": "call_1",
-                                "backend_tool_name": "echo",
-                                "backend_arguments": { "message": "cancel-run" }
-                            },
-                            "routing": {
-                                "strategy": "replay_original_tool"
                             }
-                        }
+                        },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             }
@@ -4686,20 +4611,13 @@ async fn test_run_loop_terminate_plugin_requested_with_suspended_only_state_retu
                             "message": "resume?",
                             "parameters": {}
                         },
-                        "invocation": {
-                            "call_id": "recover_1",
-                            "tool_name": "recover_agent_run",
-                            "arguments": {},
-                            "origin": {
-                                "type": "tool_call_intercepted",
-                                "backend_call_id": "recover_1",
-                                "backend_tool_name": "recover_agent_run",
-                                "backend_arguments": {}
-                            },
-                            "routing": {
-                                "strategy": "replay_original_tool"
-                            }
-                        }
+                        "arguments": {},
+                        "pending": {
+                            "id": "recover_1",
+                            "name": "recover_agent_run",
+                            "arguments": {}
+                        },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             }
@@ -6267,23 +6185,16 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
                                 }
                             }
                         },
-                        "invocation": {
-                            "call_id": "call_1",
-                            "tool_name": "PermissionConfirm",
+                        "arguments": { "message": "approved-run" },
+                        "pending": {
+                            "id": "call_1",
+                            "name": "PermissionConfirm",
                             "arguments": {
                                 "tool_name": "counting_echo",
                                 "tool_args": { "message": "approved-run" }
-                            },
-                            "origin": {
-                                "type": "tool_call_intercepted",
-                                "backend_call_id": "call_1",
-                                "backend_tool_name": "counting_echo",
-                                "backend_arguments": { "message": "approved-run" }
-                            },
-                            "routing": {
-                                "strategy": "replay_original_tool"
                             }
-                        }
+                        },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             }
@@ -6405,23 +6316,16 @@ async fn test_nonstream_replay_is_idempotent_across_reruns() {
                                 }
                             }
                         },
-                        "invocation": {
-                            "call_id": "call_1",
-                            "tool_name": "PermissionConfirm",
+                        "arguments": { "message": "approved-run" },
+                        "pending": {
+                            "id": "call_1",
+                            "name": "PermissionConfirm",
                             "arguments": {
                                 "tool_name": "counting_echo",
                                 "tool_args": { "message": "approved-run" }
-                            },
-                            "origin": {
-                                "type": "tool_call_intercepted",
-                                "backend_call_id": "call_1",
-                                "backend_tool_name": "counting_echo",
-                                "backend_arguments": { "message": "approved-run" }
-                            },
-                            "routing": {
-                                "strategy": "replay_original_tool"
                             }
-                        }
+                        },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             }
@@ -10770,20 +10674,13 @@ async fn test_nonstream_completed_tool_round_does_not_clear_existing_suspended_c
                             "message": "still waiting",
                             "parameters": {}
                         },
-                        "invocation": {
-                            "call_id": "leftover_confirm",
-                            "tool_name": "echo",
-                            "arguments": {},
-                            "origin": {
-                                "type": "tool_call_intercepted",
-                                "backend_call_id": "leftover_confirm",
-                                "backend_tool_name": "echo",
-                                "backend_arguments": {}
-                            },
-                            "routing": {
-                                "strategy": "replay_original_tool"
-                            }
-                        }
+                        "arguments": {},
+                        "pending": {
+                            "id": "leftover_confirm",
+                            "name": "echo",
+                            "arguments": {}
+                        },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             }
@@ -10830,20 +10727,13 @@ async fn test_stream_completed_tool_round_does_not_clear_existing_suspended_call
                             "message": "still waiting",
                             "parameters": {}
                         },
-                        "invocation": {
-                            "call_id": "leftover_confirm",
-                            "tool_name": "echo",
-                            "arguments": {},
-                            "origin": {
-                                "type": "tool_call_intercepted",
-                                "backend_call_id": "leftover_confirm",
-                                "backend_tool_name": "echo",
-                                "backend_arguments": {}
-                            },
-                            "routing": {
-                                "strategy": "replay_original_tool"
-                            }
-                        }
+                        "arguments": {},
+                        "pending": {
+                            "id": "leftover_confirm",
+                            "name": "echo",
+                            "arguments": {}
+                        },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             }
@@ -11321,20 +11211,13 @@ async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
                             "message": "still waiting",
                             "parameters": {}
                         },
-                        "invocation": {
-                            "call_id": "call_keep",
-                            "tool_name": "echo",
-                            "arguments": {},
-                            "origin": {
-                                "type": "tool_call_intercepted",
-                                "backend_call_id": "call_keep",
-                                "backend_tool_name": "echo",
-                                "backend_arguments": {}
-                            },
-                            "routing": {
-                                "strategy": "replay_original_tool"
-                            }
-                        }
+                        "arguments": {},
+                        "pending": {
+                            "id": "call_keep",
+                            "name": "echo",
+                            "arguments": {}
+                        },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             }
@@ -11420,20 +11303,13 @@ async fn test_run_loop_decision_channel_rejects_illegal_terminal_to_resuming_tra
                             "id": "call_pending",
                             "action": "tool:echo"
                         },
-                        "invocation": {
-                            "call_id": "call_pending",
-                            "tool_name": "echo",
-                            "arguments": { "message": "should-not-replay" },
-                            "origin": {
-                                "type": "tool_call_intercepted",
-                                "backend_call_id": "call_pending",
-                                "backend_tool_name": "echo",
-                                "backend_arguments": { "message": "should-not-replay" }
-                            },
-                            "routing": {
-                                "strategy": "replay_original_tool"
-                            }
-                        }
+                        "arguments": { "message": "should-not-replay" },
+                        "pending": {
+                            "id": "call_pending",
+                            "name": "echo",
+                            "arguments": { "message": "should-not-replay" }
+                        },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             },
@@ -11541,20 +11417,13 @@ async fn test_stream_decision_channel_ignores_unknown_target_id() {
                             "message": "still waiting",
                             "parameters": {}
                         },
-                        "invocation": {
-                            "call_id": "call_keep",
-                            "tool_name": "echo",
-                            "arguments": {},
-                            "origin": {
-                                "type": "tool_call_intercepted",
-                                "backend_call_id": "call_keep",
-                                "backend_tool_name": "echo",
-                                "backend_arguments": {}
-                            },
-                            "routing": {
-                                "strategy": "replay_original_tool"
-                            }
-                        }
+                        "arguments": {},
+                        "pending": {
+                            "id": "call_keep",
+                            "name": "echo",
+                            "arguments": {}
+                        },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             }
@@ -11644,20 +11513,13 @@ async fn test_stream_decision_channel_rejects_illegal_terminal_to_resuming_trans
                             "id": "call_pending",
                             "action": "tool:echo"
                         },
-                        "invocation": {
-                            "call_id": "call_pending",
-                            "tool_name": "echo",
-                            "arguments": { "message": "should-not-replay" },
-                            "origin": {
-                                "type": "tool_call_intercepted",
-                                "backend_call_id": "call_pending",
-                                "backend_tool_name": "echo",
-                                "backend_arguments": { "message": "should-not-replay" }
-                            },
-                            "routing": {
-                                "strategy": "replay_original_tool"
-                            }
-                        }
+                        "arguments": { "message": "should-not-replay" },
+                        "pending": {
+                            "id": "call_pending",
+                            "name": "echo",
+                            "arguments": { "message": "should-not-replay" }
+                        },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             },
@@ -11941,20 +11803,13 @@ async fn test_run_loop_decision_channel_cancel_emits_single_tool_result_message(
                             "id": "call_pending",
                             "action": "tool:echo"
                         },
-                        "invocation": {
-                            "call_id": "call_pending",
-                            "tool_name": "echo",
-                            "arguments": { "message": "cancel-run" },
-                            "origin": {
-                                "type": "tool_call_intercepted",
-                                "backend_call_id": "call_pending",
-                                "backend_tool_name": "echo",
-                                "backend_arguments": { "message": "cancel-run" }
-                            },
-                            "routing": {
-                                "strategy": "replay_original_tool"
-                            }
-                        }
+                        "arguments": { "message": "cancel-run" },
+                        "pending": {
+                            "id": "call_pending",
+                            "name": "echo",
+                            "arguments": { "message": "cancel-run" }
+                        },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             }
@@ -12486,18 +12341,13 @@ async fn test_stream_decision_channel_drains_while_inference_stream_is_running()
                     "call_id": "call_pending",
                     "tool_name": "echo",
                     "suspension": suspended_interaction.clone(),
-                    "invocation": {
-                        "call_id": "call_pending",
-                        "tool_name": "echo",
-                        "arguments": { "message": "approved during stream" },
-                        "origin": {
-                            "type": "tool_call_intercepted",
-                            "backend_call_id": "call_pending",
-                            "backend_tool_name": "echo",
-                            "backend_arguments": { "message": "approved during stream" }
-                        },
-                        "routing": { "strategy": "replay_original_tool" }
-                    }
+                    "arguments": { "message": "approved during stream" },
+                    "pending": {
+                        "id": "call_pending",
+                        "name": "echo",
+                        "arguments": { "message": "approved during stream" }
+                    },
+                    "resume_mode": "replay_tool_call"
                 }
             }
         }
@@ -12596,18 +12446,6 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_tool_call_resu
         "action": "tool:PermissionConfirm",
         "parameters": { "source": "permission" }
     });
-    let suspended_invocation = json!({
-        "call_id": "fc_perm_1",
-        "tool_name": "PermissionConfirm",
-        "arguments": { "tool_name": "echo", "tool_args": { "message": "hello" } },
-        "origin": {
-            "type": "tool_call_intercepted",
-            "backend_call_id": "call_write",
-            "backend_tool_name": "echo",
-            "backend_arguments": { "message": "hello" }
-        },
-        "routing": { "strategy": "replay_original_tool" }
-    });
     let state = json!({
         "__suspended_tool_calls": {
             "calls": {
@@ -12615,7 +12453,13 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_tool_call_resu
                     "call_id": "call_write",
                     "tool_name": "echo",
                     "suspension": suspended_interaction.clone(),
-                    "invocation": suspended_invocation.clone()
+                    "arguments": { "message": "hello" },
+                    "pending": {
+                        "id": "fc_perm_1",
+                        "name": "PermissionConfirm",
+                        "arguments": { "tool_name": "echo", "tool_args": { "message": "hello" } }
+                    },
+                    "resume_mode": "replay_tool_call"
                 }
             }
         }

@@ -1709,13 +1709,13 @@ async fn test_messages_run_id_cursor_order_combination_boundaries() {
 struct SuspendedCallFixture {
     call_id: String,
     tool_name: String,
+    arguments: Value,
     suspension_id: String,
     suspension_action: String,
     suspension_params: Value,
-    invocation_tool_name: String,
-    invocation_args: Value,
-    origin: Value,
-    routing_strategy: String,
+    pending_name: String,
+    pending_args: Value,
+    resume_mode: String,
 }
 
 impl SuspendedCallFixture {
@@ -1724,18 +1724,13 @@ impl SuspendedCallFixture {
         Self {
             call_id: call_id.to_string(),
             tool_name: tool.to_string(),
+            arguments: args.clone(),
             suspension_id: suspension_id.clone(),
             suspension_action: "tool:PermissionConfirm".to_string(),
             suspension_params: json!({ "tool_name": tool, "tool_args": args }),
-            invocation_tool_name: "PermissionConfirm".to_string(),
-            invocation_args: json!({ "tool_name": tool, "tool_args": args }),
-            origin: json!({
-                "type": "tool_call_intercepted",
-                "backend_call_id": call_id,
-                "backend_tool_name": tool,
-                "backend_arguments": args,
-            }),
-            routing_strategy: "replay_original_tool".to_string(),
+            pending_name: "PermissionConfirm".to_string(),
+            pending_args: json!({ "tool_name": tool, "tool_args": args }),
+            resume_mode: "replay_tool_call".to_string(),
         }
     }
 
@@ -1743,13 +1738,13 @@ impl SuspendedCallFixture {
         Self {
             call_id: call_id.to_string(),
             tool_name: "askUserQuestion".to_string(),
+            arguments: json!({ "question": question }),
             suspension_id: call_id.to_string(),
             suspension_action: "tool:askUserQuestion".to_string(),
             suspension_params: json!({ "question": question }),
-            invocation_tool_name: "askUserQuestion".to_string(),
-            invocation_args: json!({ "question": question }),
-            origin: json!({ "type": "plugin_initiated", "plugin_id": "agui_frontend_tools" }),
-            routing_strategy: "use_as_tool_result".to_string(),
+            pending_name: "askUserQuestion".to_string(),
+            pending_args: json!({ "question": question }),
+            resume_mode: "use_decision_as_tool_result".to_string(),
         }
     }
 
@@ -1764,22 +1759,21 @@ impl SuspendedCallFixture {
             json!({
                 "call_id": self.call_id,
                 "tool_name": self.tool_name,
+                "arguments": self.arguments,
                 "suspension": {
                     "id": self.suspension_id,
                     "action": self.suspension_action,
                     "parameters": self.suspension_params,
                 },
-                "invocation": {
-                    "call_id": self.suspension_id,
-                    "tool_name": self.invocation_tool_name,
-                    "arguments": self.invocation_args,
-                    "origin": self.origin,
-                    "routing": { "strategy": self.routing_strategy },
+                "pending": {
+                    "id": self.suspension_id,
+                    "name": self.pending_name,
+                    "arguments": self.pending_args,
                 },
+                "resume_mode": self.resume_mode,
             }),
         )
     }
-
 }
 
 fn suspended_thread(id: &str, calls: Vec<SuspendedCallFixture>) -> Thread {
@@ -1798,7 +1792,7 @@ fn suspended_thread(id: &str, calls: Vec<SuspendedCallFixture>) -> Thread {
     }
     // Single assistant message with all tool calls.
     let assistant_text = if calls.len() == 1 {
-        format!("need {}", calls[0].invocation_tool_name)
+        format!("need {}", calls[0].pending_name)
     } else {
         "need permissions".to_string()
     };
