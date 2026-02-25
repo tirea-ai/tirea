@@ -67,18 +67,16 @@ async fn run(
 
     let mut resolved = st.os.resolve(&agent_id).map_err(AgentOsRunError::from)?;
     apply_agui_extensions(&mut resolved, &req);
-    let thread_id = req.thread_id.clone();
     let run_request = req.into_runtime_run_request(agent_id.clone());
 
-    let os = st.os.clone();
+    // Call prepare_run synchronously so storage errors surface as HTTP 500.
     let cancellation_token = RunCancellationToken::new();
+    let prepared = st.os.prepare_run(run_request.clone(), resolved).await?;
+    let thread_id = prepared.thread_id.clone();
+
     let token_for_starter = cancellation_token.clone();
-    let starter: RunStarter = Box::new(move |request| {
+    let starter: RunStarter = Box::new(move |_request| {
         Box::pin(async move {
-            let prepared = os
-                .prepare_run(request, resolved)
-                .await
-                .map_err(|e| TransportError::Internal(e.to_string()))?;
             let run = AgentOs::execute_prepared(
                 prepared.with_cancellation_token(token_for_starter.clone()),
             )
