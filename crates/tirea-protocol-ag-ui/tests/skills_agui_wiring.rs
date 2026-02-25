@@ -24,7 +24,6 @@ fn make_agui_ctx(thread_id: &str, run_id: &str) -> AgUiEventContext {
     ctx
 }
 
-
 #[tokio::test]
 async fn test_skill_tool_result_is_emitted_as_agui_tool_call_result() {
     let td = TempDir::new().unwrap();

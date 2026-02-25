@@ -30,7 +30,9 @@ fn make_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::orchestrator::Ag
     AgentOsBuilder::new()
         .with_registered_plugin(
             "terminate_plugin_requested_e2e_nats_postgres",
-            Arc::new(TerminatePlugin::new("terminate_plugin_requested_e2e_nats_postgres")),
+            Arc::new(TerminatePlugin::new(
+                "terminate_plugin_requested_e2e_nats_postgres",
+            )),
         )
         .with_agent("test", def)
         .with_agent_state_store(write_store)

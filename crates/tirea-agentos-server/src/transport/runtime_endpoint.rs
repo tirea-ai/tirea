@@ -191,9 +191,7 @@ mod tests {
         }
     }
 
-    fn fake_run(
-        events: Vec<AgentEvent>,
-    ) -> (RunStream, mpsc::UnboundedReceiver<ToolCallDecision>) {
+    fn fake_run(events: Vec<AgentEvent>) -> (RunStream, mpsc::UnboundedReceiver<ToolCallDecision>) {
         let (decision_tx, decision_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(64);
 
@@ -224,9 +222,8 @@ mod tests {
         events: Vec<AgentEvent>,
     ) -> (RunStarter, mpsc::UnboundedReceiver<ToolCallDecision>) {
         let (run, drx) = fake_run(events);
-        let starter: RunStarter = Box::new(move |_request| {
-            Box::pin(async move { Ok((run, None)) })
-        });
+        let starter: RunStarter =
+            Box::new(move |_request| Box::pin(async move { Ok((run, None)) }));
         (starter, drx)
     }
 
@@ -267,14 +264,14 @@ mod tests {
 
     #[tokio::test]
     async fn run_message_starts_execution() {
-        let (starter, _drx) = fake_starter(vec![
-            AgentEvent::TextDelta { delta: "x".into() },
-        ]);
+        let (starter, _drx) = fake_starter(vec![AgentEvent::TextDelta { delta: "x".into() }]);
         let ep = RuntimeEndpoint::new(starter);
         let stream = ep.recv().await.unwrap();
 
         // Send Run to trigger the factory
-        ep.send(RuntimeInput::Run(test_run_request())).await.unwrap();
+        ep.send(RuntimeInput::Run(test_run_request()))
+            .await
+            .unwrap();
 
         let items: Vec<AgentEvent> = stream.map(|r| r.unwrap()).collect().await;
         assert_eq!(items.len(), 1);
@@ -285,7 +282,9 @@ mod tests {
         let (starter, mut drx) = fake_starter(vec![]);
         let ep = RuntimeEndpoint::new(starter);
 
-        ep.send(RuntimeInput::Run(test_run_request())).await.unwrap();
+        ep.send(RuntimeInput::Run(test_run_request()))
+            .await
+            .unwrap();
 
         let d = ToolCallDecision::resume("tc1", serde_json::Value::Null, 0);
         ep.send(RuntimeInput::Decision(d.clone())).await.unwrap();
@@ -306,7 +305,9 @@ mod tests {
     async fn double_run_returns_error() {
         let (starter, _drx) = fake_starter(vec![]);
         let ep = RuntimeEndpoint::new(starter);
-        ep.send(RuntimeInput::Run(test_run_request())).await.unwrap();
+        ep.send(RuntimeInput::Run(test_run_request()))
+            .await
+            .unwrap();
         let result = ep.send(RuntimeInput::Run(test_run_request())).await;
         assert!(result.is_err());
     }
@@ -316,12 +317,13 @@ mod tests {
         let token = RunCancellationToken::new();
         let token_clone = token.clone();
         let (run, _drx) = fake_run(vec![]);
-        let starter: RunStarter = Box::new(move |_request| {
-            Box::pin(async move { Ok((run, Some(token_clone))) })
-        });
+        let starter: RunStarter =
+            Box::new(move |_request| Box::pin(async move { Ok((run, Some(token_clone))) }));
         let ep = RuntimeEndpoint::new(starter);
 
-        ep.send(RuntimeInput::Run(test_run_request())).await.unwrap();
+        ep.send(RuntimeInput::Run(test_run_request()))
+            .await
+            .unwrap();
         assert!(!token.is_cancelled());
 
         ep.send(RuntimeInput::Cancel).await.unwrap();

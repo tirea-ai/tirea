@@ -9,8 +9,9 @@ use super::{
 };
 use crate::contracts::plugin::phase::{Phase, StateEffect, StepContext, ToolContext};
 use crate::contracts::plugin::AgentPlugin;
-use crate::contracts::runtime::ActivityManager;
-use crate::contracts::runtime::SuspendedCall;
+use crate::contracts::runtime::{
+    ActivityManager, PendingToolCall, SuspendedCall, ToolCallResumeMode,
+};
 use crate::contracts::runtime::{
     DecisionReplayPolicy, StreamResult, ToolCallOutcome, ToolCallStatus, ToolExecution,
     ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
@@ -18,7 +19,7 @@ use crate::contracts::runtime::{
 use crate::contracts::thread::Thread;
 use crate::contracts::thread::{Message, MessageMetadata, ToolCall};
 use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult};
-use crate::contracts::RunContext;
+use crate::contracts::{RunContext, Suspension};
 use crate::engine::convert::tool_response;
 use crate::engine::tool_execution::collect_patches;
 use crate::runtime::run_context::{await_or_cancel, is_cancelled, CancelAware};
@@ -91,6 +92,40 @@ fn now_unix_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64)
+}
+
+fn suspended_call_from_tool_result(call: &ToolCall, result: &ToolResult) -> SuspendedCall {
+    if let Some(explicit) = result.suspension() {
+        let pending =
+            if explicit.pending.id.trim().is_empty() || explicit.pending.name.trim().is_empty() {
+                PendingToolCall::new(call.id.clone(), call.name.clone(), call.arguments.clone())
+            } else {
+                explicit.pending
+            };
+        return SuspendedCall {
+            call_id: call.id.clone(),
+            tool_name: call.name.clone(),
+            arguments: call.arguments.clone(),
+            suspension: explicit.suspension,
+            pending,
+            resume_mode: explicit.resume_mode,
+        };
+    }
+
+    let mut suspension = Suspension::new(&call.id, format!("tool:{}", call.name))
+        .with_parameters(call.arguments.clone());
+    if let Some(message) = result.message.as_ref() {
+        suspension = suspension.with_message(message.clone());
+    }
+
+    SuspendedCall {
+        call_id: call.id.clone(),
+        tool_name: call.name.clone(),
+        arguments: call.arguments.clone(),
+        suspension,
+        pending: PendingToolCall::new(call.id.clone(), call.name.clone(), call.arguments.clone()),
+        resume_mode: ToolCallResumeMode::ReplayToolCall,
+    }
 }
 
 fn persist_tool_call_status(
@@ -977,6 +1012,12 @@ pub(super) async fn execute_single_tool_with_phases(
         };
         let outcome = ToolCallOutcome::from_tool_result(&result);
 
+        let suspended_call = if matches!(outcome, ToolCallOutcome::Suspended) {
+            Some(suspended_call_from_tool_result(call, &result))
+        } else {
+            None
+        };
+
         (
             ToolExecution {
                 call: call.clone(),
@@ -984,7 +1025,7 @@ pub(super) async fn execute_single_tool_with_phases(
                 patch,
             },
             outcome,
-            None,
+            suspended_call,
         )
     };
 

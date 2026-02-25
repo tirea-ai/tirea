@@ -1,6 +1,6 @@
 use crate::lifecycle::TerminationReason;
-use crate::tool::contract::ToolResult;
 use crate::runtime::result::TokenUsage;
+use crate::tool::contract::ToolResult;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tirea_state::TrackedPatch;

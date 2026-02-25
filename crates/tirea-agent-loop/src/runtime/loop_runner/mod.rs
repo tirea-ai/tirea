@@ -60,7 +60,7 @@ use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
 use crate::contracts::tool::{Tool, ToolResult};
 use crate::contracts::RunContext;
-use crate::contracts::{AgentEvent, RunAction, TerminationReason, ToolCallDecision};
+use crate::contracts::{AgentEvent, RunLifecycleAction, TerminationReason, ToolCallDecision};
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
 use crate::runtime::activity::ActivityHub;
 
@@ -444,7 +444,15 @@ pub(super) async fn run_step_prepare_phases(
     run_ctx: &RunContext,
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
     config: &AgentConfig,
-) -> Result<(Vec<Message>, Vec<String>, RunAction, Vec<TrackedPatch>), AgentLoopError> {
+) -> Result<
+    (
+        Vec<Message>,
+        Vec<String>,
+        RunLifecycleAction,
+        Vec<TrackedPatch>,
+    ),
+    AgentLoopError,
+> {
     let ((messages, filtered_tools, run_action), pending) = run_phase_block(
         run_ctx,
         tool_descriptors,
@@ -460,7 +468,7 @@ pub(super) async fn run_step_prepare_phases(
 pub(super) struct PreparedStep {
     pub(super) messages: Vec<Message>,
     pub(super) filtered_tools: Vec<String>,
-    pub(super) run_action: RunAction,
+    pub(super) run_action: RunLifecycleAction,
     pub(super) pending_patches: Vec<TrackedPatch>,
 }
 
@@ -517,8 +525,8 @@ pub(super) async fn complete_step_after_inference(
         emit_phase_block(Phase::StepEnd, run_ctx, tool_descriptors, plugins, |_| {}).await?;
     run_ctx.add_thread_patches(pending);
     Ok(match run_action {
-        RunAction::Terminate(reason) => Some(reason),
-        RunAction::Continue => None,
+        RunLifecycleAction::Terminate(reason) => Some(reason),
+        RunLifecycleAction::Continue => None,
     })
 }
 
@@ -1577,8 +1585,8 @@ pub async fn run_loop(
         run_ctx.add_thread_patches(prepared.pending_patches);
 
         match prepared.run_action {
-            RunAction::Continue => {}
-            RunAction::Terminate(reason) => {
+            RunLifecycleAction::Continue => {}
+            RunLifecycleAction::Terminate(reason) => {
                 let response = if matches!(reason, TerminationReason::PluginRequested) {
                     Some(last_text.clone())
                 } else {

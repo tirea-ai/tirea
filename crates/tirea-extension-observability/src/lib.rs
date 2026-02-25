@@ -5,7 +5,6 @@
 
 use async_trait::async_trait;
 use genai::chat::ChatOptions;
-use tirea_contract::TokenUsage;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -16,6 +15,7 @@ use tirea_contract::plugin::phase::{
 };
 use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::runtime::control::{InferenceError, InferenceErrorState};
+use tirea_contract::TokenUsage;
 
 fn lock_unpoison<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     match m.lock() {

@@ -14,7 +14,6 @@ fn make_agui_ctx(thread_id: &str, run_id: &str) -> AgUiEventContext {
     ctx
 }
 
-
 #[test]
 fn text_message_start_uses_step_start_message_id() {
     let step_msg_id = "pre-gen-assistant-uuid".to_string();

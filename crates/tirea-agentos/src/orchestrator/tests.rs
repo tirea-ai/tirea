@@ -978,8 +978,13 @@ async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_condition
             "always_stop"
         }
 
-        fn evaluate(&self, _input: &StopPolicyInput<'_>) -> Option<crate::contracts::StoppedReason> {
-            Some(crate::contracts::StoppedReason::with_detail("custom", "always"))
+        fn evaluate(
+            &self,
+            _input: &StopPolicyInput<'_>,
+        ) -> Option<crate::contracts::StoppedReason> {
+            Some(crate::contracts::StoppedReason::with_detail(
+                "custom", "always",
+            ))
         }
     }
 
@@ -1040,9 +1045,9 @@ async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_condition
         }
     }
 
-    let config = resolved
-        .config
-        .with_llm_executor(Arc::new(OneShotLlm) as Arc<dyn crate::runtime::loop_runner::LlmExecutor>);
+    let config = resolved.config.with_llm_executor(
+        Arc::new(OneShotLlm) as Arc<dyn crate::runtime::loop_runner::LlmExecutor>
+    );
     let thread = crate::contracts::thread::Thread::new("stop-plugin-thread")
         .with_message(crate::contracts::thread::Message::user("go"));
     let run_ctx = crate::contracts::RunContext::from_thread(&thread, resolved.run_config)

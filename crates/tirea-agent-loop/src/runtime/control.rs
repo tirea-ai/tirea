@@ -2,5 +2,5 @@
 
 pub use crate::contracts::runtime::control::{
     InferenceError, InferenceErrorState, ResumeDecisionAction, SuspendedToolCallsState,
-    ToolCallResume, ToolCallState, ToolCallStatesState, ToolCallStatus,
+    ToolCallLifecycleState, ToolCallLifecycleStatesState, ToolCallResume, ToolCallStatus,
 };

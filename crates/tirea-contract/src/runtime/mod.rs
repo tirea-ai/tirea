@@ -1,7 +1,7 @@
 //! Runtime contracts and durable state schemas.
 //!
 //! - **Contracts**: `RunContext`, `ToolExecutor`, `ActivityManager`, `RunDelta`, `StreamResult`
-//! - **Durable state**: `RunLifecycleState`, `SuspendedToolCallsState`, `ToolCallStatesState`,
+//! - **Durable state**: `RunLifecycleState`, `SuspendedToolCallsState`, `ToolCallLifecycleStatesState`,
 //!   `InferenceErrorState` — persisted under reserved `__*` thread-state paths
 
 pub mod activity;
@@ -16,8 +16,9 @@ pub use activity::ActivityManager;
 pub use context::RunContext;
 pub use control::{
     InferenceError, InferenceErrorState, PendingToolCall, ResumeDecisionAction, RunLifecycleState,
-    RunLifecycleStatus, SuspendedCall, SuspendedToolCallsState, ToolCallDecision, ToolCallResume,
-    ToolCallResumeMode, ToolCallState, ToolCallStatesState, ToolCallStatus,
+    RunLifecycleStatus, SuspendedCall, SuspendedToolCallsState, ToolCallDecision,
+    ToolCallLifecycleState, ToolCallLifecycleStatesState, ToolCallResume, ToolCallResumeMode,
+    ToolCallStatus,
 };
 pub use delta::RunDelta;
 pub use executor::{

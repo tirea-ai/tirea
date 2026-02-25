@@ -6,7 +6,7 @@
 
 use crate::runtime::activity::ActivityManager;
 use crate::runtime::state_paths::TOOL_CALL_STATES_STATE_PATH;
-use crate::runtime::{ToolCallResume, ToolCallState, ToolCallStatesState};
+use crate::runtime::{ToolCallLifecycleState, ToolCallLifecycleStatesState, ToolCallResume};
 use crate::thread::Message;
 use crate::RunConfig;
 use futures::future::pending;
@@ -240,22 +240,29 @@ impl<'a> ToolCallContext<'a> {
     }
 
     /// Read persisted runtime state for a specific tool call.
-    pub fn tool_call_state_for(&self, call_id: &str) -> TireaResult<Option<ToolCallState>> {
+    pub fn tool_call_state_for(
+        &self,
+        call_id: &str,
+    ) -> TireaResult<Option<ToolCallLifecycleState>> {
         if call_id.trim().is_empty() {
             return Ok(None);
         }
-        let runtime = self.state_of::<ToolCallStatesState>();
+        let runtime = self.state_of::<ToolCallLifecycleStatesState>();
         let calls = runtime.calls()?;
         Ok(calls.get(call_id).cloned())
     }
 
     /// Read persisted runtime state for current `call_id`.
-    pub fn tool_call_state(&self) -> TireaResult<Option<ToolCallState>> {
+    pub fn tool_call_state(&self) -> TireaResult<Option<ToolCallLifecycleState>> {
         self.tool_call_state_for(self.call_id())
     }
 
     /// Upsert persisted runtime state for a specific tool call.
-    pub fn set_tool_call_state_for(&self, call_id: &str, state: ToolCallState) -> TireaResult<()> {
+    pub fn set_tool_call_state_for(
+        &self,
+        call_id: &str,
+        state: ToolCallLifecycleState,
+    ) -> TireaResult<()> {
         if call_id.trim().is_empty() {
             return Err(TireaError::invalid_operation(
                 "tool_call_state requires non-empty call_id",
@@ -266,7 +273,7 @@ impl<'a> ToolCallContext<'a> {
     }
 
     /// Upsert persisted runtime state for current `call_id`.
-    pub fn set_tool_call_state(&self, state: ToolCallState) -> TireaResult<()> {
+    pub fn set_tool_call_state(&self, state: ToolCallLifecycleState) -> TireaResult<()> {
         self.set_tool_call_state_for(self.call_id(), state)
     }
 
@@ -660,7 +667,7 @@ mod tests {
         let pending = Mutex::new(Vec::new());
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
-        let state = ToolCallState {
+        let state = ToolCallLifecycleState {
             call_id: "call.1".to_string(),
             tool_name: "confirm".to_string(),
             arguments: json!({"value": 1}),
@@ -701,7 +708,7 @@ mod tests {
 
         ctx.set_tool_call_state_for(
             "call-1",
-            ToolCallState {
+            ToolCallLifecycleState {
                 call_id: "call-1".to_string(),
                 tool_name: "echo".to_string(),
                 arguments: json!({"x": 1}),

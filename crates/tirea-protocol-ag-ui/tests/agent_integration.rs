@@ -4584,7 +4584,7 @@ use tirea_agentos::contracts::plugin::phase::{
 };
 use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::runtime::control::{
-    ResumeDecisionAction, ToolCallResume, ToolCallState, ToolCallStatus,
+    ResumeDecisionAction, ToolCallLifecycleState, ToolCallResume, ToolCallStatus,
 };
 use tirea_agentos::contracts::runtime::SuspendedCall;
 use tirea_agentos::contracts::thread::ToolCall;
@@ -4814,7 +4814,8 @@ impl AgentPlugin for InteractionPlugin {
             return;
         }
 
-        let tool_states = step.state_of::<tirea_agentos::contracts::runtime::ToolCallStatesState>();
+        let tool_states =
+            step.state_of::<tirea_agentos::contracts::runtime::ToolCallLifecycleStatesState>();
         let mut states = tool_states.calls().ok().unwrap_or_default();
         for (call_id, suspended_call) in suspended_calls {
             if states
@@ -4828,16 +4829,18 @@ impl AgentPlugin for InteractionPlugin {
             };
             let resume = Self::to_tool_call_resume(&call_id, result);
             let updated_at = resume.updated_at;
-            let mut state = states.remove(&call_id).unwrap_or_else(|| ToolCallState {
-                call_id: call_id.clone(),
-                tool_name: suspended_call.tool_name.clone(),
-                arguments: suspended_call.arguments.clone(),
-                status: ToolCallStatus::Suspended,
-                resume_token: Some(suspended_call.pending.id.clone()),
-                resume: None,
-                scratch: Value::Null,
-                updated_at,
-            });
+            let mut state = states
+                .remove(&call_id)
+                .unwrap_or_else(|| ToolCallLifecycleState {
+                    call_id: call_id.clone(),
+                    tool_name: suspended_call.tool_name.clone(),
+                    arguments: suspended_call.arguments.clone(),
+                    status: ToolCallStatus::Suspended,
+                    resume_token: Some(suspended_call.pending.id.clone()),
+                    resume: None,
+                    scratch: Value::Null,
+                    updated_at,
+                });
             state.call_id = call_id.clone();
             state.tool_name = suspended_call.tool_name.clone();
             state.arguments = suspended_call.arguments.clone();
@@ -4878,7 +4881,7 @@ impl AgentPlugin for TestFrontendToolPlugin {
     async fn before_tool_execute(&self, step: &mut BeforeToolExecuteContext<'_, '_>) {
         if !matches!(
             step.decision(),
-            tirea_agentos::contracts::plugin::phase::ToolGateDecision::Proceed
+            tirea_agentos::contracts::plugin::phase::ToolCallLifecycleAction::Proceed
         ) {
             return;
         }
@@ -12655,7 +12658,7 @@ fn resume_inputs_from_state(state: &Value) -> HashMap<String, ToolCallResume> {
         .get("__tool_call_states")
         .and_then(|agent| agent.get("calls"))
         .cloned()
-        .and_then(|v| serde_json::from_value::<HashMap<String, ToolCallState>>(v).ok())
+        .and_then(|v| serde_json::from_value::<HashMap<String, ToolCallLifecycleState>>(v).ok())
         .unwrap_or_default()
         .into_iter()
         .filter_map(|(call_id, tool_state)| {

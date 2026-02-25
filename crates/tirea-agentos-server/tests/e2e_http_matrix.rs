@@ -22,7 +22,9 @@ fn make_os(store: Arc<MemoryStore>) -> tirea_agentos::orchestrator::AgentOs {
     AgentOsBuilder::new()
         .with_registered_plugin(
             "terminate_plugin_requested_e2e_http_matrix",
-            Arc::new(TerminatePlugin::new("terminate_plugin_requested_e2e_http_matrix")),
+            Arc::new(TerminatePlugin::new(
+                "terminate_plugin_requested_e2e_http_matrix",
+            )),
         )
         .with_agent("test", def)
         .with_agent_state_store(store)

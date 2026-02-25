@@ -47,7 +47,7 @@ pub use tirea_state::StateContext;
 
 // Tool trait and types
 pub use crate::contracts::tool::{
-    Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus, TypedTool,
+    Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus, ToolSuspension, TypedTool,
 };
 
 // Message types
@@ -58,7 +58,8 @@ pub use crate::contracts::plugin::AgentPlugin;
 
 // Phase types for plugins
 pub use crate::contracts::plugin::phase::{
-    Phase, RunAction, StateEffect, StepContext, StepOutcome, ToolCallAction, ToolContext,
+    Phase, RunLifecycleAction, StateEffect, StepContext, StepOutcome, ToolCallLifecycleAction,
+    ToolContext,
 };
 pub use crate::contracts::{Suspension, SuspensionResponse};
 

@@ -550,8 +550,12 @@ mod tests {
     #[test]
     fn stopped_reason_payload() {
         let stopped = StopOnTool("finish".to_string());
-        let run_ctx =
-            RunContext::new("test", json!({}), vec![], crate::contracts::RunConfig::default());
+        let run_ctx = RunContext::new(
+            "test",
+            json!({}),
+            vec![],
+            crate::contracts::RunConfig::default(),
+        );
         let input = StopPolicyInput {
             run_ctx: &run_ctx,
             stats: StopPolicyStats {

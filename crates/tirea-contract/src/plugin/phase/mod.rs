@@ -19,6 +19,6 @@ pub use contexts::{
 };
 pub use step::{StepContext, ToolContext};
 pub use types::{
-    Phase, PhasePolicy, RunAction, StateEffect, StepOutcome, SuspendTicket, ToolCallAction,
-    ToolGateDecision,
+    Phase, PhasePolicy, RunLifecycleAction, StateEffect, StepOutcome, SuspendTicket,
+    ToolCallLifecycleAction,
 };

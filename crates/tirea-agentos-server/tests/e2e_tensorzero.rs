@@ -34,8 +34,8 @@ use tower::ServiceExt;
 mod common;
 
 use common::{
-    compose_http_app, ai_sdk_messages_payload, extract_agui_text, extract_ai_sdk_text, get_json_text as get_json,
-    post_sse, CalculatorTool,
+    ai_sdk_messages_payload, compose_http_app, extract_agui_text, extract_ai_sdk_text,
+    get_json_text as get_json, post_sse, CalculatorTool,
 };
 
 /// Trailing slash is required: genai's OpenAI adapter uses Url::join("chat/completions"),

@@ -91,12 +91,8 @@ async fn run(
 ) -> Result<Response, ApiError> {
     req.validate().map_err(ApiError::BadRequest)?;
     if req.trigger == Some(AiSdkTrigger::RegenerateMessage) {
-        truncate_thread_at_message(
-            &st.os,
-            &req.thread_id,
-            req.message_id.as_deref().unwrap(),
-        )
-        .await?;
+        truncate_thread_at_message(&st.os, &req.thread_id, req.message_id.as_deref().unwrap())
+            .await?;
     }
 
     let suspension_decisions = req.suspension_decisions();

@@ -14,7 +14,6 @@ fn make_agui_ctx(thread_id: &str, run_id: &str) -> AgUiEventContext {
     ctx
 }
 
-
 fn event_type(event: &Event) -> String {
     serde_json::to_value(event)
         .ok()

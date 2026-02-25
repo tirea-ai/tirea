@@ -128,16 +128,16 @@ pub use lifecycle::{StoppedReason, TerminationReason};
 // tool
 pub use tool::{
     ActivityContext, Tool, ToolCallContext, ToolCallContextInit, ToolDescriptor, ToolError,
-    ToolProgressState, ToolRegistry, ToolRegistryError, ToolResult, ToolStatus,
+    ToolProgressState, ToolRegistry, ToolRegistryError, ToolResult, ToolStatus, ToolSuspension,
     TOOL_PROGRESS_ACTIVITY_TYPE,
 };
 
 // plugin
 pub use plugin::{
     AfterInferenceContext, AfterToolExecuteContext, AgentPlugin, BeforeInferenceContext,
-    BeforeToolExecuteContext, Phase, PhasePolicy, PluginPhaseContext, ResumeInputView, RunAction,
-    RunEndContext, RunStartContext, StateEffect, StepContext, StepEndContext, StepOutcome,
-    StepStartContext, SuspendTicket, ToolCallAction, ToolContext, ToolGateDecision,
+    BeforeToolExecuteContext, Phase, PhasePolicy, PluginPhaseContext, ResumeInputView,
+    RunEndContext, RunLifecycleAction, RunStartContext, StateEffect, StepContext, StepEndContext,
+    StepOutcome, StepStartContext, SuspendTicket, ToolCallLifecycleAction, ToolContext,
 };
 
 // runtime

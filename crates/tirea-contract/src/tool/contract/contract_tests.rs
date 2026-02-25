@@ -1,4 +1,6 @@
 use super::*;
+use crate::interaction::Suspension;
+use crate::runtime::{PendingToolCall, ToolCallResumeMode};
 use serde_json::json;
 
 // =============================================================================
@@ -169,6 +171,21 @@ fn test_tool_result_pending() {
     assert!(!result.is_success());
     assert!(!result.is_error());
     assert!(result.is_pending());
+}
+
+#[test]
+fn test_tool_result_with_suspension_roundtrip() {
+    let suspension = ToolSuspension::new(
+        Suspension::new("call_1", "tool:confirm")
+            .with_message("Need confirmation")
+            .with_parameters(json!({"message":"hi"})),
+        PendingToolCall::new("call_1", "confirm", json!({"message":"hi"})),
+        ToolCallResumeMode::ReplayToolCall,
+    );
+    let result = ToolResult::suspended_with("confirm", "waiting", suspension.clone());
+
+    assert!(result.is_pending());
+    assert_eq!(result.suspension(), Some(suspension));
 }
 
 #[test]

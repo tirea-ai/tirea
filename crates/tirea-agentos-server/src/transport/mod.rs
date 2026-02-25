@@ -1,7 +1,7 @@
-mod nats_error;
 pub mod http_run;
 pub mod http_sse;
 pub mod nats;
+mod nats_error;
 pub mod runtime_endpoint;
 pub mod transcoder;
 

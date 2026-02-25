@@ -22,7 +22,8 @@ use tower::ServiceExt;
 mod common;
 
 use common::{
-    compose_http_app, ai_sdk_messages_payload, extract_agui_text, extract_ai_sdk_text, post_sse, CalculatorTool,
+    ai_sdk_messages_payload, compose_http_app, extract_agui_text, extract_ai_sdk_text, post_sse,
+    CalculatorTool,
 };
 
 fn has_deepseek_key() -> bool {

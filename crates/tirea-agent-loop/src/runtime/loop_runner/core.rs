@@ -4,14 +4,14 @@ use crate::contracts::runtime::state_paths::{
     INFERENCE_ERROR_STATE_PATH, SKILLS_STATE_PATH, SUSPENDED_TOOL_CALLS_STATE_PATH,
     TOOL_CALL_STATES_STATE_PATH,
 };
+use crate::contracts::runtime::SuspendedCall;
 use crate::contracts::thread::{Message, MessageMetadata, Role};
 use crate::contracts::tool::Tool;
-use crate::contracts::RunAction;
 use crate::contracts::RunContext;
-use crate::contracts::runtime::SuspendedCall;
+use crate::contracts::RunLifecycleAction;
 use crate::runtime::control::{
-    InferenceError, InferenceErrorState, SuspendedToolCallsState, ToolCallResume, ToolCallState,
-    ToolCallStatus,
+    InferenceError, InferenceErrorState, SuspendedToolCallsState, ToolCallLifecycleState,
+    ToolCallResume, ToolCallStatus,
 };
 use tirea_state::{DocCell, Op, Path, StateContext, TireaError, TrackedPatch};
 
@@ -96,7 +96,7 @@ pub(super) fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec
     messages
 }
 
-pub(super) type InferenceInputs = (Vec<Message>, Vec<String>, RunAction);
+pub(super) type InferenceInputs = (Vec<Message>, Vec<String>, RunLifecycleAction);
 
 pub(super) fn inference_inputs_from_step(
     step: &mut StepContext<'_>,
@@ -192,7 +192,9 @@ pub(super) fn set_agent_inference_error(
     Ok(ctx.take_tracked_patch("agent_loop"))
 }
 
-pub(super) fn tool_call_states_from_ctx(run_ctx: &RunContext) -> HashMap<String, ToolCallState> {
+pub(super) fn tool_call_states_from_ctx(
+    run_ctx: &RunContext,
+) -> HashMap<String, ToolCallLifecycleState> {
     run_ctx
         .snapshot()
         .ok()
@@ -201,7 +203,9 @@ pub(super) fn tool_call_states_from_ctx(run_ctx: &RunContext) -> HashMap<String,
                 .get(TOOL_CALL_STATES_STATE_PATH)
                 .and_then(|v| v.get("calls"))
                 .cloned()
-                .and_then(|raw| serde_json::from_value::<HashMap<String, ToolCallState>>(raw).ok())
+                .and_then(|raw| {
+                    serde_json::from_value::<HashMap<String, ToolCallLifecycleState>>(raw).ok()
+                })
         })
         .unwrap_or_default()
 }
@@ -222,11 +226,11 @@ pub(super) struct ToolCallStateTransition {
 }
 
 pub(super) fn transition_tool_call_state(
-    current: Option<ToolCallState>,
+    current: Option<ToolCallLifecycleState>,
     seed: ToolCallStateSeed<'_>,
     transition: ToolCallStateTransition,
-) -> Option<ToolCallState> {
-    let mut tool_state = current.unwrap_or_else(|| ToolCallState {
+) -> Option<ToolCallLifecycleState> {
+    let mut tool_state = current.unwrap_or_else(|| ToolCallLifecycleState {
         call_id: seed.call_id.to_string(),
         tool_name: seed.tool_name.to_string(),
         arguments: seed.arguments.clone(),
@@ -253,7 +257,7 @@ pub(super) fn transition_tool_call_state(
 
 pub(super) fn upsert_tool_call_state(
     call_id: &str,
-    tool_state: ToolCallState,
+    tool_state: ToolCallLifecycleState,
 ) -> Result<TrackedPatch, AgentLoopError> {
     if call_id.trim().is_empty() {
         return Err(AgentLoopError::StateError(
@@ -386,8 +390,8 @@ mod tests {
     use serde_json::json;
     use tirea_state::apply_patch;
 
-    fn sample_state(call_id: &str, status: ToolCallStatus) -> ToolCallState {
-        ToolCallState {
+    fn sample_state(call_id: &str, status: ToolCallStatus) -> ToolCallLifecycleState {
+        ToolCallLifecycleState {
             call_id: call_id.to_string(),
             tool_name: "echo".to_string(),
             arguments: json!({"msg": call_id}),
@@ -483,7 +487,7 @@ mod tests {
 
     #[test]
     fn transition_tool_call_state_rejects_invalid_lifecycle_transition() {
-        let current = ToolCallState {
+        let current = ToolCallLifecycleState {
             call_id: "call_1".to_string(),
             tool_name: "echo".to_string(),
             arguments: json!({"message":"done"}),

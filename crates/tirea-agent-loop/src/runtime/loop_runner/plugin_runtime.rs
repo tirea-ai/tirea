@@ -2,8 +2,8 @@ use super::core::{clear_agent_inference_error, set_agent_inference_error};
 use super::AgentLoopError;
 use crate::contracts::plugin::phase::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
-    BeforeToolExecuteContext, Phase, RunAction, RunEndContext, RunStartContext, StateEffect,
-    StepContext, StepEndContext, StepStartContext,
+    BeforeToolExecuteContext, Phase, RunEndContext, RunLifecycleAction, RunStartContext,
+    StateEffect, StepContext, StepEndContext, StepStartContext,
 };
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::tool::ToolDescriptor;
@@ -15,7 +15,7 @@ use tirea_state::{DocCell, TrackedPatch};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PhaseMutationSnapshot {
-    run_action: Option<RunAction>,
+    run_action: Option<RunLifecycleAction>,
     system_context: Vec<String>,
     session_context: Vec<String>,
     system_reminders: Vec<String>,

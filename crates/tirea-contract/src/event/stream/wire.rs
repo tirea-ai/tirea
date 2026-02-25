@@ -1,8 +1,8 @@
 use super::event::AgentEventType;
 use crate::lifecycle::TerminationReason;
+use crate::runtime::result::TokenUsage;
 use crate::runtime::ToolCallOutcome;
 use crate::tool::contract::ToolResult;
-use crate::runtime::result::TokenUsage;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

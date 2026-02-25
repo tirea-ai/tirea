@@ -29,10 +29,7 @@ where
     R: Transcoder + 'static,
     SendMsg: Send + 'static,
 {
-    pub fn new(
-        inner: Arc<dyn Endpoint<R::Input, SendMsg>>,
-        recv_transcoder: R,
-    ) -> Self {
+    pub fn new(inner: Arc<dyn Endpoint<R::Input, SendMsg>>, recv_transcoder: R) -> Self {
         Self {
             inner,
             recv_transcoder: Mutex::new(Some(recv_transcoder)),

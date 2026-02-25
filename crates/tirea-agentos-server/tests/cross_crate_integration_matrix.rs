@@ -21,7 +21,9 @@ fn make_os(store: Arc<MemoryStore>) -> AgentOs {
     AgentOsBuilder::new()
         .with_registered_plugin(
             "terminate_plugin_requested_cross_crate_matrix",
-            Arc::new(TerminatePlugin::new("terminate_plugin_requested_cross_crate_matrix")),
+            Arc::new(TerminatePlugin::new(
+                "terminate_plugin_requested_cross_crate_matrix",
+            )),
         )
         .with_agent("test", def)
         .with_agent_state_store(store)
@@ -48,8 +50,7 @@ async fn cross_crate_integration_matrix_72() {
                     input,
                     run_id.map(str::to_string),
                 );
-                let run_request: RunRequest =
-                    req.into_runtime_run_request("test".to_string());
+                let run_request: RunRequest = req.into_runtime_run_request("test".to_string());
 
                 let run = os
                     .run_stream(run_request)

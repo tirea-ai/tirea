@@ -250,7 +250,7 @@ pub struct ToolCallResume {
 /// This is run-time state persisted in thread state so tool execution can be
 /// resumed as a re-entrant flow (`before_tool_execute -> execute -> after_tool_execute`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, State)]
-pub struct ToolCallState {
+pub struct ToolCallLifecycleState {
     /// Stable tool call id.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub call_id: String,
@@ -280,11 +280,11 @@ pub struct ToolCallState {
 /// Durable per-call runtime map persisted at `state["__tool_call_states"]`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 #[tirea(path = "__tool_call_states")]
-pub struct ToolCallStatesState {
+pub struct ToolCallLifecycleStatesState {
     /// Runtime state keyed by `tool_call_id`.
     #[serde(default)]
     #[tirea(default = "HashMap::new()")]
-    pub calls: HashMap<String, ToolCallState>,
+    pub calls: HashMap<String, ToolCallLifecycleState>,
 }
 
 /// Durable inference-error envelope persisted at `state["__inference_error"]`.
@@ -306,7 +306,7 @@ pub fn suspended_calls_from_state(state: &Value) -> HashMap<String, SuspendedCal
 }
 
 /// Parse persisted tool call runtime states from a rebuilt state snapshot.
-pub fn tool_call_states_from_state(state: &Value) -> HashMap<String, ToolCallState> {
+pub fn tool_call_states_from_state(state: &Value) -> HashMap<String, ToolCallLifecycleState> {
     state
         .get(TOOL_CALL_STATES_STATE_PATH)
         .and_then(|value| value.get("calls"))

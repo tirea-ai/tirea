@@ -48,10 +48,7 @@ where
             sse_tx.clone(),
             f,
         )),
-        None => Arc::new(HttpSseServerEndpoint::new(
-            ingress_rx,
-            sse_tx.clone(),
-        )),
+        None => Arc::new(HttpSseServerEndpoint::new(ingress_rx, sse_tx.clone())),
     };
 
     let runtime_ep = Arc::new(RuntimeEndpoint::new(run_starter));
@@ -123,14 +120,13 @@ mod tests {
             }
         });
 
-        let stream: Pin<Box<dyn futures::Stream<Item = AgentEvent> + Send>> = Box::pin(
-            async_stream::stream! {
+        let stream: Pin<Box<dyn futures::Stream<Item = AgentEvent> + Send>> =
+            Box::pin(async_stream::stream! {
                 let mut rx = event_rx;
                 while let Some(item) = rx.recv().await {
                     yield item;
                 }
-            },
-        );
+            });
 
         let run = RunStream {
             thread_id: "thread-1".to_string(),
@@ -144,14 +140,10 @@ mod tests {
 
     fn fake_starter(
         events: Vec<AgentEvent>,
-    ) -> (
-        RunStarter,
-        mpsc::UnboundedReceiver<ToolCallDecision>,
-    ) {
+    ) -> (RunStarter, mpsc::UnboundedReceiver<ToolCallDecision>) {
         let (run, decision_rx) = fake_run_stream(events);
-        let starter: RunStarter = Box::new(move |_request| {
-            Box::pin(async move { Ok((run, None)) })
-        });
+        let starter: RunStarter =
+            Box::new(move |_request| Box::pin(async move { Ok((run, None)) }));
         (starter, decision_rx)
     }
 
@@ -195,7 +187,9 @@ mod tests {
         let (ingress_tx, ingress_rx) = mpsc::unbounded_channel::<RuntimeInput>();
 
         // Inject Run as first message
-        ingress_tx.send(RuntimeInput::Run(test_run_request())).unwrap();
+        ingress_tx
+            .send(RuntimeInput::Run(test_run_request()))
+            .unwrap();
         drop(ingress_tx);
 
         let mut sse_rx = wire_http_sse_relay(
@@ -229,7 +223,9 @@ mod tests {
 
         let (starter, _decision_rx) = fake_starter(vec![]);
         let (ingress_tx, ingress_rx) = mpsc::unbounded_channel::<RuntimeInput>();
-        ingress_tx.send(RuntimeInput::Run(test_run_request())).unwrap();
+        ingress_tx
+            .send(RuntimeInput::Run(test_run_request()))
+            .unwrap();
         drop(ingress_tx);
 
         let mut sse_rx = wire_http_sse_relay(
@@ -248,7 +244,10 @@ mod tests {
         // Drain to completion
         while sse_rx.recv().await.is_some() {}
 
-        assert!(called.load(Ordering::SeqCst), "on_relay_done should be called");
+        assert!(
+            called.load(Ordering::SeqCst),
+            "on_relay_done should be called"
+        );
     }
 
     #[tokio::test]
@@ -257,7 +256,9 @@ mod tests {
             delta: "x".to_string(),
         }]);
         let (ingress_tx, ingress_rx) = mpsc::unbounded_channel::<RuntimeInput>();
-        ingress_tx.send(RuntimeInput::Run(test_run_request())).unwrap();
+        ingress_tx
+            .send(RuntimeInput::Run(test_run_request()))
+            .unwrap();
         drop(ingress_tx);
 
         let mut sse_rx = wire_http_sse_relay(
@@ -292,7 +293,9 @@ mod tests {
         let (ingress_tx, ingress_rx) = mpsc::unbounded_channel::<RuntimeInput>();
         let (fanout_tx, mut fanout_rx) = broadcast::channel::<Bytes>(64);
 
-        ingress_tx.send(RuntimeInput::Run(test_run_request())).unwrap();
+        ingress_tx
+            .send(RuntimeInput::Run(test_run_request()))
+            .unwrap();
         drop(ingress_tx);
 
         let mut sse_rx = wire_http_sse_relay(
@@ -333,7 +336,9 @@ mod tests {
         let (ingress_tx, ingress_rx) = mpsc::unbounded_channel::<RuntimeInput>();
 
         // Inject Run as first message, keep tx alive for decisions
-        ingress_tx.send(RuntimeInput::Run(test_run_request())).unwrap();
+        ingress_tx
+            .send(RuntimeInput::Run(test_run_request()))
+            .unwrap();
 
         let mut sse_rx = wire_http_sse_relay(
             starter,
@@ -347,8 +352,7 @@ mod tests {
         );
 
         // Send a decision through the ingress channel
-        let decision =
-            ToolCallDecision::resume("d1", serde_json::json!({"approved": true}), 1);
+        let decision = ToolCallDecision::resume("d1", serde_json::json!({"approved": true}), 1);
         ingress_tx.send(RuntimeInput::Decision(decision)).unwrap();
         drop(ingress_tx);
 

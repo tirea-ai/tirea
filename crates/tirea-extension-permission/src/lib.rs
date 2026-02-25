@@ -31,7 +31,7 @@ use std::collections::HashMap;
 use tirea_contract::io::ResumeDecisionAction;
 use tirea_contract::plugin::phase::{
     BeforeInferenceContext, BeforeToolExecuteContext, PluginPhaseContext, SuspendTicket,
-    ToolGateDecision,
+    ToolCallLifecycleAction,
 };
 use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::runtime::{PendingToolCall, ToolCallResumeMode};
@@ -137,7 +137,7 @@ impl AgentPlugin for PermissionPlugin {
     }
 
     async fn before_tool_execute(&self, step: &mut BeforeToolExecuteContext<'_, '_>) {
-        if !matches!(step.decision(), ToolGateDecision::Proceed) {
+        if !matches!(step.decision(), ToolCallLifecycleAction::Proceed) {
             return;
         }
 
@@ -230,7 +230,7 @@ impl AgentPlugin for ToolPolicyPlugin {
     }
 
     async fn before_tool_execute(&self, step: &mut BeforeToolExecuteContext<'_, '_>) {
-        if !matches!(step.decision(), ToolGateDecision::Proceed) {
+        if !matches!(step.decision(), ToolCallLifecycleAction::Proceed) {
             return;
         }
 

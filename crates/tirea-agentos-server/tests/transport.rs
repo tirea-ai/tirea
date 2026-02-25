@@ -2,8 +2,8 @@ use futures::StreamExt;
 use std::sync::Arc;
 use tirea_agentos::contracts::{AgentEvent, ToolCallDecision};
 use tirea_agentos_server::transport::{
-    channel_pair, relay_binding, ChannelDownstreamEndpoint, Endpoint, RelayCancellation,
-    SessionId, TranscoderEndpoint, TransportBinding, TransportCapabilities,
+    channel_pair, relay_binding, ChannelDownstreamEndpoint, Endpoint, RelayCancellation, SessionId,
+    TranscoderEndpoint, TransportBinding, TransportCapabilities,
 };
 use tirea_contract::Transcoder;
 use tokio::sync::mpsc;
@@ -185,10 +185,7 @@ async fn transcoder_fanout_encoder_emits_multiple_events_per_input() {
     let stream = transcoder.recv().await.unwrap();
     let events: Vec<String> = stream.map(|r| r.unwrap()).collect().await;
 
-    assert_eq!(
-        events,
-        vec!["start", "text:hi", "echo:hi", "other", "end"]
-    );
+    assert_eq!(events, vec!["start", "text:hi", "echo:hi", "other", "end"]);
 }
 
 #[tokio::test]
@@ -255,12 +252,8 @@ async fn transcoder_through_channel_pair_relay_pipeline() {
     let runtime_ep = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
 
     // Protocol transcoder
-    let transcoder: Arc<
-        TranscoderEndpoint<StubEncoder, ToolCallDecision>,
-    > = Arc::new(TranscoderEndpoint::new(
-        runtime_ep,
-        StubEncoder::default(),
-    ));
+    let transcoder: Arc<TranscoderEndpoint<StubEncoder, ToolCallDecision>> =
+        Arc::new(TranscoderEndpoint::new(runtime_ep, StubEncoder::default()));
 
     // Transport channel pair
     let pair = channel_pair::<ToolCallDecision, String>(16);
@@ -314,12 +307,8 @@ async fn transcoder_pipeline_send_direction() {
     let (decision_tx, mut decision_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
     let runtime_ep = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
 
-    let transcoder: Arc<
-        TranscoderEndpoint<StubEncoder, ToolCallDecision>,
-    > = Arc::new(TranscoderEndpoint::new(
-        runtime_ep,
-        StubEncoder::default(),
-    ));
+    let transcoder: Arc<TranscoderEndpoint<StubEncoder, ToolCallDecision>> =
+        Arc::new(TranscoderEndpoint::new(runtime_ep, StubEncoder::default()));
 
     let pair = channel_pair::<ToolCallDecision, String>(16);
 
@@ -356,12 +345,8 @@ async fn transcoder_pipeline_bidirectional_concurrent() {
     let (decision_tx, mut decision_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
     let runtime_ep = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
 
-    let transcoder: Arc<
-        TranscoderEndpoint<StubEncoder, ToolCallDecision>,
-    > = Arc::new(TranscoderEndpoint::new(
-        runtime_ep,
-        StubEncoder::default(),
-    ));
+    let transcoder: Arc<TranscoderEndpoint<StubEncoder, ToolCallDecision>> =
+        Arc::new(TranscoderEndpoint::new(runtime_ep, StubEncoder::default()));
 
     let pair = channel_pair::<ToolCallDecision, String>(16);
 

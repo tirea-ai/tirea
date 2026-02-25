@@ -65,7 +65,10 @@ fn make_os_with_slow_terminate_plugin_requested_plugin(
     AgentOsBuilder::new()
         .with_registered_plugin(
             "slow_terminate_plugin_requested_test",
-            Arc::new(SlowTerminatePlugin::new("slow_terminate_plugin_requested_test", std::time::Duration::from_millis(250))),
+            Arc::new(SlowTerminatePlugin::new(
+                "slow_terminate_plugin_requested_test",
+                std::time::Duration::from_millis(250),
+            )),
         )
         .with_agent("test", def)
         .with_agent_state_store(write_store)
@@ -1796,10 +1799,12 @@ fn suspended_thread(id: &str, calls: Vec<SuspendedCallFixture>) -> Thread {
     } else {
         "need permissions".to_string()
     };
-    messages.push(tirea_agentos::contracts::thread::Message::assistant_with_tool_calls(
-        assistant_text,
-        tool_calls,
-    ));
+    messages.push(
+        tirea_agentos::contracts::thread::Message::assistant_with_tool_calls(
+            assistant_text,
+            tool_calls,
+        ),
+    );
     // One tool message per call.
     for call in &calls {
         messages.push(tirea_agentos::contracts::thread::Message::tool(
@@ -1830,10 +1835,7 @@ fn pending_permission_frontend_thread(id: &str, payload: &str) -> Thread {
 }
 
 fn pending_ask_frontend_thread(id: &str, question: &str) -> Thread {
-    suspended_thread(
-        id,
-        vec![SuspendedCallFixture::ask("ask_call_1", question)],
-    )
+    suspended_thread(id, vec![SuspendedCallFixture::ask("ask_call_1", question)])
 }
 
 fn pending_permission_frontend_thread_pair(
@@ -2675,7 +2677,10 @@ async fn test_ai_sdk_second_request_deduplicates_messages() {
         .unwrap()
         .unwrap();
     let first_msg_count = after_first.messages.len();
-    assert!(first_msg_count >= 1, "at least the user message should be stored");
+    assert!(
+        first_msg_count >= 1,
+        "at least the user message should be stored"
+    );
 
     // Second request: sends a new question.
     let second = json!({
@@ -2696,10 +2701,7 @@ async fn test_ai_sdk_second_request_deduplicates_messages() {
         first_msg_count + 1,
         "second request should append exactly one new user message"
     );
-    assert_eq!(
-        after_second.messages.last().unwrap().content,
-        "follow up"
-    );
+    assert_eq!(after_second.messages.last().unwrap().content, "follow up");
 }
 
 /// Regenerate-message truncates the stored thread at the specified messageId
@@ -2828,9 +2830,8 @@ async fn test_ai_sdk_regenerate_rejects_unknown_message_id() {
     let app = make_app(os, storage.clone());
 
     // Pre-populate thread.
-    let thread = Thread::new("aisdk-unknown-msgid").with_messages(vec![
-        Message::user("hi").with_id("m_user_1".to_string()),
-    ]);
+    let thread = Thread::new("aisdk-unknown-msgid")
+        .with_messages(vec![Message::user("hi").with_id("m_user_1".to_string())]);
     storage.save(&thread).await.expect("save should succeed");
 
     let payload = json!({

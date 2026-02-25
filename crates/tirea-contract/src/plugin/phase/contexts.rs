@@ -1,4 +1,4 @@
-use super::{Phase, RunAction, StepContext, SuspendTicket, ToolCallAction, ToolGateDecision};
+use super::{Phase, RunLifecycleAction, StepContext, SuspendTicket, ToolCallLifecycleAction};
 use crate::io::ResumeDecisionAction;
 use crate::lifecycle::TerminationReason;
 use crate::runtime::result::StreamResult;
@@ -102,13 +102,15 @@ impl<'s, 'a> BeforeInferenceContext<'s, 'a> {
 
     /// Terminate current run as plugin-requested before inference.
     pub fn terminate_plugin_requested(&mut self) {
-        self.step
-            .set_run_action(RunAction::Terminate(TerminationReason::PluginRequested));
+        self.step.set_run_action(RunLifecycleAction::Terminate(
+            TerminationReason::PluginRequested,
+        ));
     }
 
     /// Request run termination with a specific reason.
     pub fn request_termination(&mut self, reason: TerminationReason) {
-        self.step.set_run_action(RunAction::Terminate(reason));
+        self.step
+            .set_run_action(RunLifecycleAction::Terminate(reason));
     }
 }
 
@@ -131,7 +133,8 @@ impl<'s, 'a> AfterInferenceContext<'s, 'a> {
 
     /// Request run termination with a specific reason after inference has completed.
     pub fn request_termination(&mut self, reason: TerminationReason) {
-        self.step.set_run_action(RunAction::Terminate(reason));
+        self.step
+            .set_run_action(RunLifecycleAction::Terminate(reason));
     }
 }
 
@@ -186,19 +189,15 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
             )
     }
 
-    pub fn decision(&self) -> ToolGateDecision {
-        match self.step.tool_action() {
-            ToolCallAction::Proceed => ToolGateDecision::Proceed,
-            ToolCallAction::Suspend(ticket) => ToolGateDecision::Suspend(ticket),
-            ToolCallAction::Block { reason } => ToolGateDecision::Block { reason },
-        }
+    pub fn decision(&self) -> ToolCallLifecycleAction {
+        self.step.tool_action()
     }
 
-    pub fn set_decision(&mut self, decision: ToolGateDecision) {
+    pub fn set_decision(&mut self, decision: ToolCallLifecycleAction) {
         match decision {
-            ToolGateDecision::Proceed => self.step.allow(),
-            ToolGateDecision::Suspend(ticket) => self.step.suspend(*ticket),
-            ToolGateDecision::Block { reason } => self.step.block(reason),
+            ToolCallLifecycleAction::Proceed => self.step.allow(),
+            ToolCallLifecycleAction::Suspend(ticket) => self.step.suspend(*ticket),
+            ToolCallLifecycleAction::Block { reason } => self.step.block(reason),
         }
     }
 

@@ -8,11 +8,11 @@ use std::sync::{Arc, OnceLock};
 use tirea_agentos::contracts::storage::{
     MessagePage, MessageQuery, SortOrder, ThreadReader, ThreadStore, ThreadStoreError,
 };
-use tirea_agentos::contracts::thread::Visibility;
-use tirea_agentos::contracts::ToolCallDecision;
-use tirea_agentos::contracts::RunRequest;
-use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError, ResolvedRun};
 use tirea_agentos::contracts::thread::Message;
+use tirea_agentos::contracts::thread::Visibility;
+use tirea_agentos::contracts::RunRequest;
+use tirea_agentos::contracts::ToolCallDecision;
+use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError, ResolvedRun};
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
 use tirea_contract::RuntimeInput;
 use tokio::sync::{mpsc, RwLock};
@@ -72,11 +72,7 @@ struct ActiveRunRegistry {
 }
 
 impl ActiveRunRegistry {
-    async fn register(
-        &self,
-        key: String,
-        tx: tokio::sync::mpsc::UnboundedSender<RuntimeInput>,
-    ) {
+    async fn register(&self, key: String, tx: tokio::sync::mpsc::UnboundedSender<RuntimeInput>) {
         self.senders.write().await.insert(key, tx);
     }
 
@@ -278,9 +274,7 @@ pub async fn truncate_thread_at_message(
         .load(thread_id)
         .await
         .map_err(|err| ApiError::Internal(err.to_string()))?
-        .ok_or_else(|| {
-            ApiError::BadRequest("thread not found for regenerate-message".to_string())
-        })?
+        .ok_or_else(|| ApiError::BadRequest("thread not found for regenerate-message".to_string()))?
         .thread;
     let position = thread
         .messages

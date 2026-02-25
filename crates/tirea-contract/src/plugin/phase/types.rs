@@ -101,14 +101,14 @@ pub enum StepOutcome {
 
 /// Run-level control action emitted by plugins.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RunAction {
+pub enum RunLifecycleAction {
     /// Continue normal execution.
     Continue,
     /// Terminate run with specific reason.
     Terminate(TerminationReason),
 }
 
-/// Suspension payload for `ToolGateDecision::Suspend`.
+/// Suspension payload for `ToolCallLifecycleAction::Suspend`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SuspendTicket {
     /// External suspension payload.
@@ -156,29 +156,15 @@ impl SuspendTicket {
     }
 }
 
-/// Tool gate decision for `BeforeToolExecute`.
-#[derive(Debug, Clone, PartialEq)]
-pub enum ToolGateDecision {
-    Proceed,
-    Suspend(Box<SuspendTicket>),
-    Block { reason: String },
-}
-
-impl ToolGateDecision {
-    pub fn suspend(ticket: SuspendTicket) -> Self {
-        Self::Suspend(Box::new(ticket))
-    }
-}
-
 /// Tool-call level control action emitted by plugins.
 #[derive(Debug, Clone, PartialEq)]
-pub enum ToolCallAction {
+pub enum ToolCallLifecycleAction {
     Proceed,
     Suspend(Box<SuspendTicket>),
     Block { reason: String },
 }
 
-impl ToolCallAction {
+impl ToolCallLifecycleAction {
     pub fn suspend(ticket: SuspendTicket) -> Self {
         Self::Suspend(Box::new(ticket))
     }

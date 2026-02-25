@@ -11,14 +11,14 @@
 use futures::StreamExt;
 use serde_json::json;
 use std::sync::Arc;
+use testcontainers::runners::AsyncRunner;
+use testcontainers_modules::nats::Nats;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
 use tirea_agentos::orchestrator::AgentDefinition;
 use tirea_agentos::orchestrator::AgentOsBuilder;
 use tirea_agentos_server::nats::NatsConfig;
 use tirea_agentos_server::protocol;
 use tirea_store_adapters::MemoryStore;
-use testcontainers::runners::AsyncRunner;
-use testcontainers_modules::nats::Nats;
 
 mod common;
 

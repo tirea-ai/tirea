@@ -1,4 +1,4 @@
-use super::{RunAction, StateEffect, StepOutcome, SuspendTicket, ToolCallAction};
+use super::{RunLifecycleAction, StateEffect, StepOutcome, SuspendTicket, ToolCallLifecycleAction};
 use crate::runtime::result::StreamResult;
 use crate::thread::{Message, ToolCall};
 use crate::tool::context::ToolCallContext;
@@ -100,7 +100,7 @@ pub struct StepContext<'a> {
 
     // === Flow Control ===
     /// Unified run-level action emitted by plugins.
-    pub run_action: Option<RunAction>,
+    pub run_action: Option<RunLifecycleAction>,
 
     // === Pending State Changes ===
     /// Patches to apply to session state after this phase completes.
@@ -317,7 +317,7 @@ impl<'a> StepContext<'a> {
     }
 
     /// Set run-level action.
-    pub fn set_run_action(&mut self, action: RunAction) {
+    pub fn set_run_action(&mut self, action: RunLifecycleAction) {
         self.run_action = Some(action);
     }
 
@@ -332,28 +332,30 @@ impl<'a> StepContext<'a> {
     }
 
     /// Effective run-level action for current step.
-    pub fn run_action(&self) -> RunAction {
-        self.run_action.clone().unwrap_or(RunAction::Continue)
+    pub fn run_action(&self) -> RunLifecycleAction {
+        self.run_action
+            .clone()
+            .unwrap_or(RunLifecycleAction::Continue)
     }
 
     /// Current tool action derived from tool gate state.
-    pub fn tool_action(&self) -> ToolCallAction {
+    pub fn tool_action(&self) -> ToolCallLifecycleAction {
         if let Some(tool) = self.tool.as_ref() {
             if tool.blocked {
-                return ToolCallAction::Block {
+                return ToolCallLifecycleAction::Block {
                     reason: tool.block_reason.clone().unwrap_or_default(),
                 };
             }
             if tool.pending {
                 if let Some(ticket) = tool.suspend_ticket.as_ref() {
-                    return ToolCallAction::suspend(ticket.clone());
+                    return ToolCallLifecycleAction::suspend(ticket.clone());
                 }
-                return ToolCallAction::Block {
+                return ToolCallLifecycleAction::Block {
                     reason: "invalid pending tool state: missing suspend ticket".to_string(),
                 };
             }
         }
-        ToolCallAction::Proceed
+        ToolCallLifecycleAction::Proceed
     }
 
     // =========================================================================

@@ -2,6 +2,8 @@
 //!
 //! Tools execute actions and can modify state through `Thread`.
 
+use crate::interaction::Suspension;
+use crate::runtime::{PendingToolCall, ToolCallResumeMode};
 use crate::tool::context::ToolCallContext;
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -22,6 +24,33 @@ pub enum ToolStatus {
     Pending,
     /// Execution failed.
     Error,
+}
+
+const TOOL_SUSPENSION_METADATA_KEY: &str = "__tool_suspension";
+
+/// Structured suspension payload that lets tools proactively pause execution.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolSuspension {
+    /// External suspension payload to emit and persist.
+    pub suspension: Suspension,
+    /// Pending projection used by stream events.
+    pub pending: PendingToolCall,
+    /// Resume strategy used by loop replay.
+    pub resume_mode: ToolCallResumeMode,
+}
+
+impl ToolSuspension {
+    pub fn new(
+        suspension: Suspension,
+        pending: PendingToolCall,
+        resume_mode: ToolCallResumeMode,
+    ) -> Self {
+        Self {
+            suspension,
+            pending,
+            resume_mode,
+        }
+    }
 }
 
 /// Result of tool execution.
@@ -111,6 +140,15 @@ impl ToolResult {
         }
     }
 
+    /// Create a suspended result carrying an explicit suspension envelope.
+    pub fn suspended_with(
+        tool_name: impl Into<String>,
+        message: impl Into<String>,
+        suspension: ToolSuspension,
+    ) -> Self {
+        Self::suspended(tool_name, message).with_suspension(suspension)
+    }
+
     /// Create a warning result.
     pub fn warning(
         tool_name: impl Into<String>,
@@ -132,6 +170,15 @@ impl ToolResult {
         self
     }
 
+    /// Attach structured suspension payload for loop-level suspension handling.
+    pub fn with_suspension(mut self, suspension: ToolSuspension) -> Self {
+        if let Ok(value) = serde_json::to_value(suspension) {
+            self.metadata
+                .insert(TOOL_SUSPENSION_METADATA_KEY.to_string(), value);
+        }
+        self
+    }
+
     /// Check if execution succeeded.
     pub fn is_success(&self) -> bool {
         matches!(self.status, ToolStatus::Success | ToolStatus::Warning)
@@ -145,6 +192,14 @@ impl ToolResult {
     /// Check if execution failed.
     pub fn is_error(&self) -> bool {
         matches!(self.status, ToolStatus::Error)
+    }
+
+    /// Structured suspension payload attached by `with_suspension`.
+    pub fn suspension(&self) -> Option<ToolSuspension> {
+        self.metadata
+            .get(TOOL_SUSPENSION_METADATA_KEY)
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
     }
 
     /// Convert to JSON value for serialization.
