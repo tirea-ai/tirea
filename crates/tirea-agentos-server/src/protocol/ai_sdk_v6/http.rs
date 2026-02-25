@@ -11,8 +11,7 @@ use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError};
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
 use tirea_contract::RuntimeInput;
 use tirea_protocol_ai_sdk_v6::{
-    AiSdkTrigger, AiSdkV6HistoryEncoder, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest,
-    AI_SDK_VERSION,
+    AiSdkEncoder, AiSdkTrigger, AiSdkV6HistoryEncoder, AiSdkV6RunRequest, AI_SDK_VERSION,
 };
 
 use super::runtime::apply_ai_sdk_extensions;
@@ -146,7 +145,7 @@ async fn run(
     register_active_run(active_key.clone(), ingress_tx).await;
     let fanout = stream_registry().register(stream_key.clone()).await;
 
-    let encoder = AiSdkV6ProtocolEncoder::new();
+    let encoder = AiSdkEncoder::new();
     let sse_rx = wire_http_sse_relay(
         starter,
         encoder,

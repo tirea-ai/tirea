@@ -16,7 +16,7 @@ use tirea_agent_loop::contracts::{AgentEvent, RunConfig, RunContext, ToolRegistr
 use tirea_agent_loop::runtime::loop_runner::{run_loop_stream, AgentConfig, LlmExecutor};
 use tirea_contract::Transcoder;
 use tirea_extension_mcp::McpToolRegistryManager;
-use tirea_protocol_ai_sdk_v6::{AiSdkV6ProtocolEncoder, UIStreamEvent};
+use tirea_protocol_ai_sdk_v6::{AiSdkEncoder, UIStreamEvent};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -411,7 +411,7 @@ for raw in sys.stdin:
     ))
     .await;
 
-    let mut encoder = AiSdkV6ProtocolEncoder::new();
+    let mut encoder = AiSdkEncoder::new();
     let mut ui_events = Vec::new();
     for event in &agent_events {
         ui_events.extend(encoder.transcode(event));
@@ -518,7 +518,7 @@ async fn real_http_mcp_progress_notifications_flow_to_ui_data_events() {
     ))
     .await;
 
-    let mut encoder = AiSdkV6ProtocolEncoder::new();
+    let mut encoder = AiSdkEncoder::new();
     let mut ui_events = Vec::new();
     for event in &agent_events {
         ui_events.extend(encoder.transcode(event));

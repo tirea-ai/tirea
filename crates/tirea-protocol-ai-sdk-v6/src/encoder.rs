@@ -1,22 +1,16 @@
 use super::UIStreamEvent;
 use serde_json::Value;
 use std::collections::HashSet;
-use tirea_contract::{AgentEvent, TerminationReason, ToolStatus};
+use tirea_contract::{AgentEvent, TerminationReason, ToolStatus, Transcoder};
 
-/// Data event name for a full state snapshot payload.
-pub const DATA_EVENT_STATE_SNAPSHOT: &str = "state-snapshot";
-/// Data event name for RFC6902 state patch payload.
-pub const DATA_EVENT_STATE_DELTA: &str = "state-delta";
-/// Data event name for messages snapshot payload.
-pub const DATA_EVENT_MESSAGES_SNAPSHOT: &str = "messages-snapshot";
-/// Data event name for activity snapshot payload.
-pub const DATA_EVENT_ACTIVITY_SNAPSHOT: &str = "activity-snapshot";
-/// Data event name for activity patch payload.
-pub const DATA_EVENT_ACTIVITY_DELTA: &str = "activity-delta";
-/// Data event name for inference-complete payload (token usage).
-pub const DATA_EVENT_INFERENCE_COMPLETE: &str = "inference-complete";
-/// Data event name for encrypted reasoning payload.
-pub const DATA_EVENT_REASONING_ENCRYPTED: &str = "reasoning-encrypted";
+pub(crate) const DATA_EVENT_STATE_SNAPSHOT: &str = "state-snapshot";
+pub(crate) const DATA_EVENT_STATE_DELTA: &str = "state-delta";
+pub(crate) const DATA_EVENT_MESSAGES_SNAPSHOT: &str = "messages-snapshot";
+pub(crate) const DATA_EVENT_ACTIVITY_SNAPSHOT: &str = "activity-snapshot";
+pub(crate) const DATA_EVENT_ACTIVITY_DELTA: &str = "activity-delta";
+pub(crate) const DATA_EVENT_INFERENCE_COMPLETE: &str = "inference-complete";
+pub(crate) const DATA_EVENT_REASONING_ENCRYPTED: &str = "reasoning-encrypted";
+const RUN_INFO_EVENT_NAME: &str = "run-info";
 
 /// Stateful encoder for AI SDK v6 UI Message Stream protocol.
 ///
@@ -222,10 +216,24 @@ impl AiSdkEncoder {
                 events.push(UIStreamEvent::finish_step());
                 events
             }
-            AgentEvent::RunStart { run_id, .. } => {
+            AgentEvent::RunStart {
+                run_id, thread_id, ..
+            } => {
                 self.run_id_prefix = run_id.chars().take(8).collect();
                 self.message_id = format!("msg_{}", self.run_id_prefix);
-                vec![UIStreamEvent::message_start(&self.message_id)]
+                vec![
+                    UIStreamEvent::message_start(&self.message_id),
+                    UIStreamEvent::data(
+                        RUN_INFO_EVENT_NAME,
+                        serde_json::json!({
+                            "protocol": "ai-sdk-ui-message-stream",
+                            "protocolVersion": "v1",
+                            "aiSdkVersion": super::AI_SDK_VERSION,
+                            "threadId": thread_id,
+                            "runId": run_id,
+                        }),
+                    ),
+                ]
             }
             AgentEvent::InferenceComplete {
                 model,
@@ -409,6 +417,15 @@ impl AiSdkEncoder {
 impl Default for AiSdkEncoder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Transcoder for AiSdkEncoder {
+    type Input = AgentEvent;
+    type Output = UIStreamEvent;
+
+    fn transcode(&mut self, item: &AgentEvent) -> Vec<UIStreamEvent> {
+        self.on_agent_event(item)
     }
 }
 

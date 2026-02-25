@@ -5,7 +5,7 @@ use tirea_agentos::contracts::RunRequest;
 use tirea_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
 use tirea_agentos_server::transport::{Endpoint, RuntimeEndpoint, TranscoderEndpoint};
 use tirea_contract::{Identity, RuntimeInput};
-use tirea_protocol_ai_sdk_v6::{AiSdkV6ProtocolEncoder, AiSdkV6RunRequest};
+use tirea_protocol_ai_sdk_v6::{AiSdkEncoder, AiSdkV6RunRequest};
 use tirea_store_adapters::MemoryStore;
 
 mod common;
@@ -60,7 +60,7 @@ async fn cross_crate_integration_matrix_72() {
                 let resolved_thread_id = run.thread_id.clone();
                 let resolved_run_id = run.run_id.clone();
 
-                let encoder = AiSdkV6ProtocolEncoder::new();
+                let encoder = AiSdkEncoder::new();
                 let runtime_ep = Arc::new(RuntimeEndpoint::from_run_stream(run, None));
                 let transcoder = TranscoderEndpoint::new(
                     runtime_ep,

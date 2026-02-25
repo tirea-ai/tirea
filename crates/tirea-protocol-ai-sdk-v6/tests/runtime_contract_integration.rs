@@ -1,11 +1,11 @@
 #![allow(missing_docs)]
 
 use tirea_contract::{AgentEvent, StoppedReason, TerminationReason, Transcoder};
-use tirea_protocol_ai_sdk_v6::{AiSdkV6ProtocolEncoder, UIStreamEvent};
+use tirea_protocol_ai_sdk_v6::{AiSdkEncoder, UIStreamEvent};
 
 #[test]
 fn run_start_emits_message_start_and_run_info() {
-    let mut encoder = AiSdkV6ProtocolEncoder::new();
+    let mut encoder = AiSdkEncoder::new();
 
     let events = encoder.transcode(&AgentEvent::RunStart {
         thread_id: "thread_1".into(),
@@ -22,7 +22,7 @@ fn run_start_emits_message_start_and_run_info() {
 
 #[test]
 fn protocol_encoder_closes_text_before_tool_and_maps_finish_reason() {
-    let mut encoder = AiSdkV6ProtocolEncoder::new();
+    let mut encoder = AiSdkEncoder::new();
 
     let text_events = encoder.transcode(&AgentEvent::TextDelta {
         delta: "hello".to_string(),
@@ -63,7 +63,7 @@ fn protocol_encoder_closes_text_before_tool_and_maps_finish_reason() {
 
 #[test]
 fn protocol_encoder_maps_cancelled_run_to_abort() {
-    let mut encoder = AiSdkV6ProtocolEncoder::new();
+    let mut encoder = AiSdkEncoder::new();
 
     let events = encoder.transcode(&AgentEvent::RunFinish {
         thread_id: "thread_1".to_string(),

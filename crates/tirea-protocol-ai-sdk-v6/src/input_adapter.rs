@@ -166,10 +166,6 @@ impl AiSdkV6RunRequest {
         if self.has_user_input() {
             messages.push(Message::user(self.input));
         }
-        debug_assert!(
-            !self.thread_id.trim().is_empty(),
-            "call validate() before into_runtime_run_request()"
-        );
         RunRequest {
             agent_id,
             thread_id: if self.thread_id.trim().is_empty() {
