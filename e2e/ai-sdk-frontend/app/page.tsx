@@ -86,7 +86,19 @@ function ChatUI({
     () =>
       new DefaultChatTransport({
         headers: { "x-session-id": sessionId },
-        ...(agentId ? { body: { agentId } } : {}),
+        // Server manages message history — only send the latest user message.
+        prepareSendMessagesRequest: ({ messages, trigger, messageId }) => {
+          const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
+          return {
+            body: {
+              messages:
+                trigger === "regenerate-message" ? [] : lastUserMsg ? [lastUserMsg] : [],
+              ...(trigger ? { trigger } : {}),
+              ...(messageId ? { messageId } : {}),
+              ...(agentId ? { agentId } : {}),
+            },
+          };
+        },
       }),
     [sessionId, agentId],
   );

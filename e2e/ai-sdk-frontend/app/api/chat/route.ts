@@ -4,7 +4,7 @@ const AGENT_ID = process.env.AGENT_ID ?? "default";
 
 export async function POST(req: Request) {
   const body = await req.json();
-  const { messages, agentId } = body;
+  const { messages, agentId, trigger, messageId } = body;
   const agent = agentId || AGENT_ID;
 
   // Session ID from client header (stable across reloads via localStorage).
@@ -20,6 +20,8 @@ export async function POST(req: Request) {
         id: sessionId,
         messages,
         runId: crypto.randomUUID(),
+        ...(trigger ? { trigger } : {}),
+        ...(messageId ? { messageId } : {}),
       }),
     }
   );
