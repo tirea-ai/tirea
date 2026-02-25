@@ -1007,7 +1007,7 @@ async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_condition
     struct OneShotLlm;
 
     #[async_trait]
-    impl crate::contracts::runtime::LlmExecutor for OneShotLlm {
+    impl crate::runtime::loop_runner::LlmExecutor for OneShotLlm {
         async fn exec_chat_response(
             &self,
             _model: &str,
@@ -1031,7 +1031,7 @@ async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_condition
             _model: &str,
             _chat_req: genai::chat::ChatRequest,
             _options: Option<&genai::chat::ChatOptions>,
-        ) -> genai::Result<crate::contracts::runtime::LlmEventStream> {
+        ) -> genai::Result<crate::runtime::loop_runner::LlmEventStream> {
             Ok(Box::pin(futures::stream::empty()))
         }
 
@@ -1042,7 +1042,7 @@ async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_condition
 
     let config = resolved
         .config
-        .with_llm_executor(Arc::new(OneShotLlm) as Arc<dyn crate::contracts::runtime::LlmExecutor>);
+        .with_llm_executor(Arc::new(OneShotLlm) as Arc<dyn crate::runtime::loop_runner::LlmExecutor>);
     let thread = crate::contracts::thread::Thread::new("stop-plugin-thread")
         .with_message(crate::contracts::thread::Message::user("go"));
     let run_ctx = crate::contracts::RunContext::from_thread(&thread, resolved.run_config)

@@ -75,7 +75,7 @@ impl LlmExecutor for MockStreamProvider {
         _model: &str,
         _chat_req: ChatRequest,
         _options: Option<&ChatOptions>,
-    ) -> genai::Result<tirea_agent_loop::contracts::runtime::LlmEventStream> {
+    ) -> genai::Result<tirea_agent_loop::runtime::loop_runner::LlmEventStream> {
         let response = {
             let mut guard = self.responses.lock().expect("responses lock");
             if guard.is_empty() {

@@ -1,6 +1,6 @@
 use crate::event::termination::TerminationReason;
 use crate::tool::contract::ToolResult;
-use genai::chat::Usage;
+use crate::runtime::result::TokenUsage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tirea_state::TrackedPatch;
@@ -62,7 +62,7 @@ pub enum AgentEvent {
         /// Model used for this inference.
         model: String,
         /// Token usage.
-        usage: Option<Usage>,
+        usage: Option<TokenUsage>,
         /// Duration of the LLM call in milliseconds.
         duration_ms: u64,
     },

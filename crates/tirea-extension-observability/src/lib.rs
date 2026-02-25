@@ -4,7 +4,8 @@
 //! forwarding them to a pluggable [`MetricsSink`].
 
 use async_trait::async_trait;
-use genai::chat::{ChatOptions, Usage};
+use genai::chat::ChatOptions;
+use tirea_contract::TokenUsage;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -609,16 +610,16 @@ impl AgentPlugin for LLMMetryPlugin {
     }
 }
 
-fn extract_token_counts(usage: Option<&Usage>) -> (Option<i32>, Option<i32>, Option<i32>) {
+fn extract_token_counts(usage: Option<&TokenUsage>) -> (Option<i32>, Option<i32>, Option<i32>) {
     match usage {
         Some(u) => (u.prompt_tokens, u.completion_tokens, u.total_tokens),
         None => (None, None, None),
     }
 }
 
-fn extract_cache_tokens(usage: Option<&Usage>) -> (Option<i32>, Option<i32>) {
-    match usage.and_then(|u| u.prompt_tokens_details.as_ref()) {
-        Some(d) => (d.cached_tokens, d.cache_creation_tokens),
+fn extract_cache_tokens(usage: Option<&TokenUsage>) -> (Option<i32>, Option<i32>) {
+    match usage {
+        Some(u) => (u.cache_read_tokens, u.cache_creation_tokens),
         None => (None, None),
     }
 }
@@ -636,7 +637,6 @@ fn inference_error_from_state(ctx: &impl PluginPhaseContext) -> Option<Inference
 mod tests {
     use super::*;
     use futures::future::join_all;
-    use genai::chat::PromptTokensDetails;
     use serde_json::json;
     use std::sync::Arc;
     use tirea_contract::plugin::phase::{
@@ -698,27 +698,23 @@ mod tests {
         }
     }
 
-    fn usage(prompt: i32, completion: i32, total: i32) -> Usage {
-        Usage {
+    fn usage(prompt: i32, completion: i32, total: i32) -> TokenUsage {
+        TokenUsage {
             prompt_tokens: Some(prompt),
-            prompt_tokens_details: None,
             completion_tokens: Some(completion),
-            completion_tokens_details: None,
             total_tokens: Some(total),
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
         }
     }
 
-    fn usage_with_cache(prompt: i32, completion: i32, total: i32, cached: i32) -> Usage {
-        Usage {
+    fn usage_with_cache(prompt: i32, completion: i32, total: i32, cached: i32) -> TokenUsage {
+        TokenUsage {
             prompt_tokens: Some(prompt),
-            prompt_tokens_details: Some(PromptTokensDetails {
-                cached_tokens: Some(cached),
-                cache_creation_tokens: None,
-                audio_tokens: None,
-            }),
             completion_tokens: Some(completion),
-            completion_tokens_details: None,
             total_tokens: Some(total),
+            cache_read_tokens: Some(cached),
+            cache_creation_tokens: None,
         }
     }
 

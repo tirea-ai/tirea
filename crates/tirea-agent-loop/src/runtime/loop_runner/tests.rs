@@ -9,7 +9,7 @@ use crate::contracts::plugin::phase::{
     StepEndContext, StepStartContext, SuspendTicket,
 };
 use crate::contracts::runtime::ActivityManager;
-use crate::contracts::runtime::LlmExecutor;
+use super::LlmExecutor;
 use crate::contracts::storage::VersionPrecondition;
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{Message, Role, Thread, ToolCall};
@@ -5193,7 +5193,7 @@ impl LlmExecutor for MockChatProvider {
         _model: &str,
         _chat_req: genai::chat::ChatRequest,
         _options: Option<&ChatOptions>,
-    ) -> genai::Result<crate::contracts::runtime::LlmEventStream> {
+    ) -> genai::Result<super::LlmEventStream> {
         unimplemented!("MockChatProvider doesn't support streaming")
     }
 
@@ -5226,7 +5226,7 @@ impl LlmExecutor for HangingChatProvider {
         _model: &str,
         _chat_req: genai::chat::ChatRequest,
         _options: Option<&ChatOptions>,
-    ) -> genai::Result<crate::contracts::runtime::LlmEventStream> {
+    ) -> genai::Result<super::LlmEventStream> {
         unimplemented!("HangingChatProvider doesn't support streaming")
     }
 
@@ -6541,7 +6541,7 @@ impl LlmExecutor for FailingStartProvider {
         model: &str,
         _chat_req: genai::chat::ChatRequest,
         _options: Option<&ChatOptions>,
-    ) -> genai::Result<crate::contracts::runtime::LlmEventStream> {
+    ) -> genai::Result<super::LlmEventStream> {
         self.models_seen
             .lock()
             .expect("lock poisoned")
@@ -6591,7 +6591,7 @@ impl LlmExecutor for MockStreamProvider {
         _model: &str,
         _chat_req: genai::chat::ChatRequest,
         _options: Option<&ChatOptions>,
-    ) -> genai::Result<crate::contracts::runtime::LlmEventStream> {
+    ) -> genai::Result<super::LlmEventStream> {
         let resp = {
             let mut responses = self.responses.lock().unwrap();
             if responses.is_empty() {
@@ -7855,7 +7855,7 @@ async fn test_stop_cancellation_token_during_inference_stream() {
             _model: &str,
             _chat_req: genai::chat::ChatRequest,
             _options: Option<&ChatOptions>,
-        ) -> genai::Result<crate::contracts::runtime::LlmEventStream> {
+        ) -> genai::Result<super::LlmEventStream> {
             let stream = async_stream::stream! {
                 yield Ok(ChatStreamEvent::Start);
                 yield Ok(ChatStreamEvent::Chunk(StreamChunk {
@@ -8084,12 +8084,11 @@ async fn test_run_state_tracks_token_usage() {
     let result = StreamResult {
         text: "hello".to_string(),
         tool_calls: vec![],
-        usage: Some(Usage {
+        usage: Some(crate::contracts::TokenUsage {
             prompt_tokens: Some(100),
-            prompt_tokens_details: None,
             completion_tokens: Some(50),
-            completion_tokens_details: None,
             total_tokens: Some(150),
+            ..Default::default()
         }),
     };
     state.update_from_response(&result);
@@ -12394,7 +12393,7 @@ async fn test_stream_decision_channel_drains_while_inference_stream_is_running()
             _model: &str,
             _chat_req: genai::chat::ChatRequest,
             _options: Option<&ChatOptions>,
-        ) -> genai::Result<crate::contracts::runtime::LlmEventStream> {
+        ) -> genai::Result<super::LlmEventStream> {
             let stream = async_stream::stream! {
                 yield Ok(ChatStreamEvent::Start);
                 yield Ok(ChatStreamEvent::Chunk(StreamChunk {

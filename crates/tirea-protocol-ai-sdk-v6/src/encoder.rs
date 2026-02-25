@@ -529,15 +529,15 @@ fn map_file_snapshot(content: &Value) -> Option<UIStreamEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use genai::chat::Usage;
     use serde_json::json;
+    use tirea_contract::TokenUsage;
 
     #[test]
     fn inference_complete_emits_data_event() {
         let mut enc = AiSdkEncoder::new();
         let ev = AgentEvent::InferenceComplete {
             model: "gpt-4o".into(),
-            usage: Some(Usage {
+            usage: Some(TokenUsage {
                 prompt_tokens: Some(100),
                 completion_tokens: Some(50),
                 ..Default::default()

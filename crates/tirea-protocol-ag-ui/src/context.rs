@@ -407,7 +407,7 @@ pub(super) fn value_to_map(value: &Value) -> HashMap<String, Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use genai::chat::Usage;
+    use tirea_contract::TokenUsage;
 
     /// Create a context pre-initialized via a RunStart event.
     fn make_ctx() -> AgUiEventContext {
@@ -425,7 +425,7 @@ mod tests {
         let mut ctx = make_ctx();
         let ev = AgentEvent::InferenceComplete {
             model: "gpt-4o".into(),
-            usage: Some(Usage {
+            usage: Some(TokenUsage {
                 prompt_tokens: Some(100),
                 completion_tokens: Some(50),
                 ..Default::default()

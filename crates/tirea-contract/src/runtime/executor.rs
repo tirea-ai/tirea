@@ -5,43 +5,12 @@ use crate::thread::{Message, ToolCall};
 use crate::tool::contract::{Tool, ToolDescriptor, ToolResult};
 use crate::RunConfig;
 use async_trait::async_trait;
-use futures::Stream;
-use genai::chat::{ChatOptions, ChatRequest, ChatResponse, ChatStreamEvent};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::pin::Pin;
 use std::sync::Arc;
 use thiserror::Error;
 use tirea_state::TrackedPatch;
 use tokio_util::sync::CancellationToken;
-
-/// Stream item type returned by LLM streaming executors.
-pub type LlmEventStream = Pin<Box<dyn Stream<Item = genai::Result<ChatStreamEvent>> + Send>>;
-
-/// Provider-neutral LLM execution contract consumed by the loop runtime.
-#[async_trait]
-pub trait LlmExecutor: Send + Sync {
-    /// Execute one non-streaming chat call.
-    async fn exec_chat_response(
-        &self,
-        model: &str,
-        chat_req: ChatRequest,
-        options: Option<&ChatOptions>,
-    ) -> genai::Result<ChatResponse>;
-
-    /// Execute one streaming chat call.
-    async fn exec_chat_stream_events(
-        &self,
-        model: &str,
-        chat_req: ChatRequest,
-        options: Option<&ChatOptions>,
-    ) -> genai::Result<LlmEventStream>;
-
-    /// Stable executor label for debug/telemetry output.
-    fn name(&self) -> &'static str {
-        "llm_executor"
-    }
-}
 
 /// Result of one tool call execution.
 #[derive(Debug, Clone)]

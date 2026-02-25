@@ -13,7 +13,21 @@ use genai::chat::{ChatStreamEvent, Usage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use tirea_contract::StreamResult;
+use tirea_contract::{StreamResult, TokenUsage};
+
+pub(crate) fn token_usage_from_genai(u: &Usage) -> TokenUsage {
+    let (cache_read, cache_creation) = u
+        .prompt_tokens_details
+        .as_ref()
+        .map_or((None, None), |d| (d.cached_tokens, d.cache_creation_tokens));
+    TokenUsage {
+        prompt_tokens: u.prompt_tokens,
+        completion_tokens: u.completion_tokens,
+        total_tokens: u.total_tokens,
+        cache_read_tokens: cache_read,
+        cache_creation_tokens: cache_creation,
+    }
+}
 
 /// Partial tool call being collected during streaming.
 #[derive(Debug, Clone)]
@@ -187,7 +201,7 @@ impl StreamCollector {
         StreamResult {
             text: self.text,
             tool_calls,
-            usage: self.usage,
+            usage: self.usage.as_ref().map(token_usage_from_genai),
         }
     }
 

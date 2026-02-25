@@ -136,11 +136,11 @@ pub use plugin::{
 
 // runtime
 pub use runtime::{
-    ActivityManager, InferenceError, InferenceErrorState, LlmExecutor, RunContext, RunDelta,
+    ActivityManager, InferenceError, InferenceErrorState, RunContext, RunDelta,
     RunLifecycleState, RunLifecycleStatus, RuntimeInput, StreamResult, SuspendedCall,
-    SuspendedToolCallsState, ToolCallDecision, ToolCallOutcome, ToolCallResume, ToolCallState,
-    ToolCallStatesState, ToolCallStatus, ToolExecution, ToolExecutionRequest, ToolExecutionResult,
-    ToolExecutor, ToolExecutorError,
+    SuspendedToolCallsState, TokenUsage, ToolCallDecision, ToolCallOutcome, ToolCallResume,
+    ToolCallState, ToolCallStatesState, ToolCallStatus, ToolExecution, ToolExecutionRequest,
+    ToolExecutionResult, ToolExecutor, ToolExecutorError,
 };
 
 // storage

@@ -2,7 +2,7 @@ use super::event::AgentEventType;
 use crate::event::termination::TerminationReason;
 use crate::runtime::ToolCallOutcome;
 use crate::tool::contract::ToolResult;
-use genai::chat::Usage;
+use crate::runtime::result::TokenUsage;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -99,7 +99,7 @@ pub(crate) struct StepStartData {
 pub(crate) struct InferenceCompleteData {
     pub model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub usage: Option<Usage>,
+    pub usage: Option<TokenUsage>,
     pub duration_ms: u64,
 }
 

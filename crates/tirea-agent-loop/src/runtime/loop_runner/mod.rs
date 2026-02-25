@@ -80,7 +80,8 @@ use uuid::Uuid;
 
 #[cfg(test)]
 use crate::contracts::plugin::AgentPlugin;
-pub use crate::contracts::runtime::{LlmExecutor, ToolExecutor};
+pub use config::{LlmEventStream, LlmExecutor};
+pub use crate::contracts::runtime::ToolExecutor;
 pub use crate::runtime::run_context::{
     await_or_cancel, is_cancelled, CancelAware, RunCancellationToken, StateCommitError,
     StateCommitter, TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY,
@@ -682,7 +683,7 @@ fn stream_result_from_chat_response(response: &genai::chat::ChatResponse) -> Str
     StreamResult {
         text,
         tool_calls,
-        usage: Some(response.usage.clone()),
+        usage: Some(crate::runtime::streaming::token_usage_from_genai(&response.usage)),
     }
 }
 

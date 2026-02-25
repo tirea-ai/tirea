@@ -1,7 +1,7 @@
 use super::tool_exec::ParallelToolExecutor;
 use super::AgentLoopError;
 use crate::contracts::plugin::AgentPlugin;
-use crate::contracts::runtime::{LlmExecutor, ToolExecutor};
+use crate::contracts::runtime::ToolExecutor;
 use crate::contracts::tool::{Tool, ToolDescriptor};
 use crate::contracts::RunContext;
 use async_trait::async_trait;
@@ -67,6 +67,38 @@ pub trait StepToolProvider: Send + Sync {
     async fn provide(&self, input: StepToolInput<'_>) -> Result<StepToolSnapshot, AgentLoopError>;
 }
 
+/// Boxed stream of LLM chat events.
+pub type LlmEventStream = std::pin::Pin<
+    Box<dyn futures::Stream<Item = Result<genai::chat::ChatStreamEvent, genai::Error>> + Send>,
+>;
+
+/// Abstraction over LLM inference backends.
+///
+/// The agent loop calls this trait for both non-streaming (`exec_chat_response`)
+/// and streaming (`exec_chat_stream_events`) inference.  The default
+/// implementation ([`GenaiLlmExecutor`]) delegates to `genai::Client`.
+#[async_trait]
+pub trait LlmExecutor: Send + Sync {
+    /// Run a non-streaming chat completion.
+    async fn exec_chat_response(
+        &self,
+        model: &str,
+        chat_req: genai::chat::ChatRequest,
+        options: Option<&genai::chat::ChatOptions>,
+    ) -> genai::Result<genai::chat::ChatResponse>;
+
+    /// Run a streaming chat completion, returning a boxed event stream.
+    async fn exec_chat_stream_events(
+        &self,
+        model: &str,
+        chat_req: genai::chat::ChatRequest,
+        options: Option<&genai::chat::ChatOptions>,
+    ) -> genai::Result<LlmEventStream>;
+
+    /// Stable label for logging / debug output.
+    fn name(&self) -> &'static str;
+}
+
 /// Default LLM executor backed by `genai::Client`.
 #[derive(Clone)]
 pub struct GenaiLlmExecutor {
@@ -101,7 +133,7 @@ impl LlmExecutor for GenaiLlmExecutor {
         model: &str,
         chat_req: genai::chat::ChatRequest,
         options: Option<&ChatOptions>,
-    ) -> genai::Result<crate::contracts::runtime::LlmEventStream> {
+    ) -> genai::Result<LlmEventStream> {
         let resp = self
             .client
             .exec_chat_stream(model, chat_req, options)

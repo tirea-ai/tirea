@@ -12391,13 +12391,12 @@ mod llmmetry_tracing {
         (guard, captured)
     }
 
-    fn usage(prompt: i32, completion: i32, total: i32) -> genai::chat::Usage {
-        genai::chat::Usage {
+    fn usage(prompt: i32, completion: i32, total: i32) -> tirea_contract::TokenUsage {
+        tirea_contract::TokenUsage {
             prompt_tokens: Some(prompt),
-            prompt_tokens_details: None,
             completion_tokens: Some(completion),
-            completion_tokens_details: None,
             total_tokens: Some(total),
+            ..Default::default()
         }
     }
 

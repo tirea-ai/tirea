@@ -18,8 +18,8 @@ pub use control::{
 };
 pub use delta::RunDelta;
 pub use executor::{
-    DecisionReplayPolicy, LlmEventStream, LlmExecutor, ToolCallOutcome, ToolExecution,
-    ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
+    DecisionReplayPolicy, ToolCallOutcome, ToolExecution, ToolExecutionRequest,
+    ToolExecutionResult, ToolExecutor, ToolExecutorError,
 };
 pub use policy_scope::{is_id_allowed, is_scope_allowed, parse_scope_filter};
-pub use result::StreamResult;
+pub use result::{StreamResult, TokenUsage};
