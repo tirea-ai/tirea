@@ -1,8 +1,5 @@
-use async_trait::async_trait;
 use futures::StreamExt;
 use std::sync::Arc;
-use tirea_agentos::contracts::plugin::phase::BeforeInferenceContext;
-use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::{AgentEvent, RunRequest};
 use tirea_agentos::orchestrator::AgentDefinition;
 use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder};
@@ -11,18 +8,9 @@ use tirea_protocol_ag_ui::{Message, RunAgentInput};
 use tirea_protocol_ai_sdk_v6::AiSdkV6RunRequest;
 use tirea_store_adapters::MemoryStore;
 
-struct TerminatePluginRequestedPlugin;
+mod common;
 
-#[async_trait]
-impl AgentPlugin for TerminatePluginRequestedPlugin {
-    fn id(&self) -> &str {
-        "terminate_plugin_requested_parity"
-    }
-
-    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-        step.terminate_plugin_requested();
-    }
-}
+use common::TerminatePlugin;
 
 fn make_os() -> AgentOs {
     let def = AgentDefinition {
@@ -34,7 +22,7 @@ fn make_os() -> AgentOs {
     AgentOsBuilder::new()
         .with_registered_plugin(
             "terminate_plugin_requested_parity",
-            Arc::new(TerminatePluginRequestedPlugin),
+            Arc::new(TerminatePlugin::new("terminate_plugin_requested_parity")),
         )
         .with_agent("test", def)
         .with_agent_state_store(Arc::new(MemoryStore::new()))

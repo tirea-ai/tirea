@@ -1,10 +1,7 @@
-use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use serde_json::json;
 use std::sync::Arc;
-use tirea_agentos::contracts::plugin::phase::BeforeInferenceContext;
-use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
 use tirea_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
 use tirea_agentos_server::service::AppState;
@@ -12,18 +9,9 @@ use tirea_agentos_server::{http, protocol};
 use tirea_store_adapters::MemoryStore;
 use tower::ServiceExt;
 
-struct TerminatePluginRequestedPlugin;
+mod common;
 
-#[async_trait]
-impl AgentPlugin for TerminatePluginRequestedPlugin {
-    fn id(&self) -> &str {
-        "terminate_plugin_requested_explicit"
-    }
-
-    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-        step.terminate_plugin_requested();
-    }
-}
+use common::TerminatePlugin;
 
 fn make_os(write_store: Arc<dyn ThreadStore>) -> AgentOs {
     let def = AgentDefinition {
@@ -35,7 +23,7 @@ fn make_os(write_store: Arc<dyn ThreadStore>) -> AgentOs {
     AgentOsBuilder::new()
         .with_registered_plugin(
             "terminate_plugin_requested_explicit",
-            Arc::new(TerminatePluginRequestedPlugin),
+            Arc::new(TerminatePlugin::new("terminate_plugin_requested_explicit")),
         )
         .with_agent("test", def)
         .with_agent_state_store(write_store)

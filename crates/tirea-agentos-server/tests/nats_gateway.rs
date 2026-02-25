@@ -8,33 +8,21 @@
 //! cargo test --package tirea-agentos-server --test nats_gateway -- --nocapture
 //! ```
 
-use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::json;
 use std::sync::Arc;
-use testcontainers::runners::AsyncRunner;
-use testcontainers_modules::nats::Nats;
-use tirea_agentos::contracts::plugin::phase::BeforeInferenceContext;
-use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
 use tirea_agentos::orchestrator::AgentDefinition;
 use tirea_agentos::orchestrator::AgentOsBuilder;
 use tirea_agentos_server::nats::NatsConfig;
 use tirea_agentos_server::protocol;
 use tirea_store_adapters::MemoryStore;
+use testcontainers::runners::AsyncRunner;
+use testcontainers_modules::nats::Nats;
 
-struct TerminatePluginRequestedPlugin;
+mod common;
 
-#[async_trait]
-impl AgentPlugin for TerminatePluginRequestedPlugin {
-    fn id(&self) -> &str {
-        "terminate_plugin_requested_test"
-    }
-
-    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-        step.terminate_plugin_requested();
-    }
-}
+use common::TerminatePlugin;
 
 fn make_os(storage: Arc<dyn ThreadStore>) -> tirea_agentos::orchestrator::AgentOs {
     let def = AgentDefinition {
@@ -46,7 +34,7 @@ fn make_os(storage: Arc<dyn ThreadStore>) -> tirea_agentos::orchestrator::AgentO
     AgentOsBuilder::new()
         .with_registered_plugin(
             "terminate_plugin_requested_test",
-            Arc::new(TerminatePluginRequestedPlugin),
+            Arc::new(TerminatePlugin::new("terminate_plugin_requested_test")),
         )
         .with_agent("test", def)
         .with_agent_state_store(storage)

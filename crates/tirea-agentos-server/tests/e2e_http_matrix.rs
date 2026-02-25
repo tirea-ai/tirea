@@ -1,40 +1,18 @@
-use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use serde_json::json;
 use std::sync::Arc;
-use tirea_agentos::contracts::plugin::phase::BeforeInferenceContext;
-use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::storage::ThreadReader;
-use tirea_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
+use tirea_agentos::orchestrator::{AgentDefinition, AgentOsBuilder};
 use tirea_agentos_server::service::AppState;
-use tirea_agentos_server::{http, protocol};
 use tirea_store_adapters::MemoryStore;
 use tower::ServiceExt;
 
-fn compose_http_app(state: AppState) -> axum::Router {
-    axum::Router::new()
-        .merge(http::health_routes())
-        .merge(http::thread_routes())
-        .nest("/v1/ag-ui", protocol::ag_ui::http::routes())
-        .nest("/v1/ai-sdk", protocol::ai_sdk_v6::http::routes())
-        .with_state(state)
-}
+mod common;
 
-struct TerminatePluginRequestedPlugin;
+use common::{compose_http_app, TerminatePlugin};
 
-#[async_trait]
-impl AgentPlugin for TerminatePluginRequestedPlugin {
-    fn id(&self) -> &str {
-        "terminate_plugin_requested_e2e_http_matrix"
-    }
-
-    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-        step.terminate_plugin_requested();
-    }
-}
-
-fn make_os(store: Arc<MemoryStore>) -> AgentOs {
+fn make_os(store: Arc<MemoryStore>) -> tirea_agentos::orchestrator::AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
         plugin_ids: vec!["terminate_plugin_requested_e2e_http_matrix".into()],
@@ -44,7 +22,7 @@ fn make_os(store: Arc<MemoryStore>) -> AgentOs {
     AgentOsBuilder::new()
         .with_registered_plugin(
             "terminate_plugin_requested_e2e_http_matrix",
-            Arc::new(TerminatePluginRequestedPlugin),
+            Arc::new(TerminatePlugin::new("terminate_plugin_requested_e2e_http_matrix")),
         )
         .with_agent("test", def)
         .with_agent_state_store(store)

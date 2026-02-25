@@ -1,12 +1,13 @@
+mod common;
+
 use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
+use common::{compose_http_app, SlowTerminatePlugin, TerminatePlugin};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tirea_agentos::contracts::plugin::phase::BeforeInferenceContext;
-use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::storage::{
     Committed, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore,
     ThreadStoreError, ThreadWriter,
@@ -18,46 +19,9 @@ use tirea_agentos::contracts::ToolCallContext;
 use tirea_agentos::orchestrator::AgentDefinition;
 use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder};
 use tirea_agentos_server::service::AppState;
-use tirea_agentos_server::{http, protocol};
 use tirea_store_adapters::MemoryStore;
 use tokio::sync::{Notify, RwLock};
 use tower::ServiceExt;
-
-fn compose_http_app(state: AppState) -> axum::Router {
-    axum::Router::new()
-        .merge(http::health_routes())
-        .merge(http::thread_routes())
-        .nest("/v1/ag-ui", protocol::ag_ui::http::routes())
-        .nest("/v1/ai-sdk", protocol::ai_sdk_v6::http::routes())
-        .with_state(state)
-}
-
-struct TerminatePluginRequestedPlugin;
-
-#[async_trait]
-impl AgentPlugin for TerminatePluginRequestedPlugin {
-    fn id(&self) -> &str {
-        "terminate_plugin_requested_test"
-    }
-
-    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-        step.terminate_plugin_requested();
-    }
-}
-
-struct SlowTerminatePluginRequestedPlugin;
-
-#[async_trait]
-impl AgentPlugin for SlowTerminatePluginRequestedPlugin {
-    fn id(&self) -> &str {
-        "slow_terminate_plugin_requested_test"
-    }
-
-    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        step.terminate_plugin_requested();
-    }
-}
 
 fn make_os() -> AgentOs {
     make_os_with_storage(Arc::new(MemoryStore::new()))
@@ -80,7 +44,7 @@ fn make_os_with_storage_and_tools(
     AgentOsBuilder::new()
         .with_registered_plugin(
             "terminate_plugin_requested_test",
-            Arc::new(TerminatePluginRequestedPlugin),
+            Arc::new(TerminatePlugin::new("terminate_plugin_requested_test")),
         )
         .with_tools(tools)
         .with_agent("test", def)
@@ -101,7 +65,7 @@ fn make_os_with_slow_terminate_plugin_requested_plugin(
     AgentOsBuilder::new()
         .with_registered_plugin(
             "slow_terminate_plugin_requested_test",
-            Arc::new(SlowTerminatePluginRequestedPlugin),
+            Arc::new(SlowTerminatePlugin::new("slow_terminate_plugin_requested_test", std::time::Duration::from_millis(250))),
         )
         .with_agent("test", def)
         .with_agent_state_store(write_store)
@@ -1738,110 +1702,144 @@ async fn test_messages_run_id_cursor_order_combination_boundaries() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Suspended-call fixture builder
+// ---------------------------------------------------------------------------
+
+struct SuspendedCallFixture {
+    call_id: String,
+    tool_name: String,
+    suspension_id: String,
+    suspension_action: String,
+    suspension_params: Value,
+    invocation_tool_name: String,
+    invocation_args: Value,
+    origin: Value,
+    routing_strategy: String,
+}
+
+impl SuspendedCallFixture {
+    fn permission(call_id: &str, tool: &str, args: Value) -> Self {
+        let suspension_id = format!("fc_perm_{}", &call_id[call_id.len().saturating_sub(1)..]);
+        Self {
+            call_id: call_id.to_string(),
+            tool_name: tool.to_string(),
+            suspension_id: suspension_id.clone(),
+            suspension_action: "tool:PermissionConfirm".to_string(),
+            suspension_params: json!({ "tool_name": tool, "tool_args": args }),
+            invocation_tool_name: "PermissionConfirm".to_string(),
+            invocation_args: json!({ "tool_name": tool, "tool_args": args }),
+            origin: json!({
+                "type": "tool_call_intercepted",
+                "backend_call_id": call_id,
+                "backend_tool_name": tool,
+                "backend_arguments": args,
+            }),
+            routing_strategy: "replay_original_tool".to_string(),
+        }
+    }
+
+    fn ask(call_id: &str, question: &str) -> Self {
+        Self {
+            call_id: call_id.to_string(),
+            tool_name: "askUserQuestion".to_string(),
+            suspension_id: call_id.to_string(),
+            suspension_action: "tool:askUserQuestion".to_string(),
+            suspension_params: json!({ "question": question }),
+            invocation_tool_name: "askUserQuestion".to_string(),
+            invocation_args: json!({ "question": question }),
+            origin: json!({ "type": "plugin_initiated", "plugin_id": "agui_frontend_tools" }),
+            routing_strategy: "use_as_tool_result".to_string(),
+        }
+    }
+
+    fn with_suspension_id(mut self, id: &str) -> Self {
+        self.suspension_id = id.to_string();
+        self
+    }
+
+    fn to_state_entry(&self) -> (String, Value) {
+        (
+            self.call_id.clone(),
+            json!({
+                "call_id": self.call_id,
+                "tool_name": self.tool_name,
+                "suspension": {
+                    "id": self.suspension_id,
+                    "action": self.suspension_action,
+                    "parameters": self.suspension_params,
+                },
+                "invocation": {
+                    "call_id": self.suspension_id,
+                    "tool_name": self.invocation_tool_name,
+                    "arguments": self.invocation_args,
+                    "origin": self.origin,
+                    "routing": { "strategy": self.routing_strategy },
+                },
+            }),
+        )
+    }
+
+}
+
+fn suspended_thread(id: &str, calls: Vec<SuspendedCallFixture>) -> Thread {
+    let mut calls_map = serde_json::Map::new();
+    let mut messages = Vec::new();
+    // Collect all tool calls for a single assistant message.
+    let mut tool_calls = Vec::new();
+    for call in &calls {
+        let (key, value) = call.to_state_entry();
+        calls_map.insert(key, value);
+        tool_calls.push(tirea_agentos::contracts::thread::ToolCall::new(
+            &call.call_id,
+            &call.tool_name,
+            call.suspension_params.clone(),
+        ));
+    }
+    // Single assistant message with all tool calls.
+    let assistant_text = if calls.len() == 1 {
+        format!("need {}", calls[0].invocation_tool_name)
+    } else {
+        "need permissions".to_string()
+    };
+    messages.push(tirea_agentos::contracts::thread::Message::assistant_with_tool_calls(
+        assistant_text,
+        tool_calls,
+    ));
+    // One tool message per call.
+    for call in &calls {
+        messages.push(tirea_agentos::contracts::thread::Message::tool(
+            &call.call_id,
+            format!(
+                "Tool '{}' is awaiting approval. Execution paused.",
+                call.tool_name
+            ),
+        ));
+    }
+
+    let state = json!({ "__suspended_tool_calls": { "calls": Value::Object(calls_map) } });
+    let mut thread = Thread::with_initial_state(id, state);
+    for msg in messages {
+        thread = thread.with_message(msg);
+    }
+    thread
+}
+
 fn pending_permission_frontend_thread(id: &str, payload: &str) -> Thread {
-    Thread::with_initial_state(
+    suspended_thread(
         id,
-        json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "call_1": {
-                        "call_id": "call_1",
-                        "tool_name": "echo",
-                        "suspension": {
-                            "id": "fc_perm_1",
-                            "action": "tool:PermissionConfirm",
-                            "parameters": {
-                                "tool_name": "echo",
-                                "tool_args": { "message": payload }
-                            }
-                        },
-                        "invocation": {
-                            "call_id": "fc_perm_1",
-                            "tool_name": "PermissionConfirm",
-                            "arguments": {
-                                "tool_name": "echo",
-                                "tool_args": { "message": payload }
-                            },
-                            "origin": {
-                                "type": "tool_call_intercepted",
-                                "backend_call_id": "call_1",
-                                "backend_tool_name": "echo",
-                                "backend_arguments": { "message": payload }
-                            },
-                            "routing": {
-                                "strategy": "replay_original_tool"
-                            }
-                        }
-                    }
-                }
-            }
-        }),
+        vec![
+            SuspendedCallFixture::permission("call_1", "echo", json!({"message": payload}))
+                .with_suspension_id("fc_perm_1"),
+        ],
     )
-    .with_message(
-        tirea_agentos::contracts::thread::Message::assistant_with_tool_calls(
-            "need permission",
-            vec![tirea_agentos::contracts::thread::ToolCall::new(
-                "call_1",
-                "echo",
-                json!({"message": payload}),
-            )],
-        ),
-    )
-    .with_message(tirea_agentos::contracts::thread::Message::tool(
-        "call_1",
-        "Tool 'echo' is awaiting approval. Execution paused.",
-    ))
 }
 
 fn pending_ask_frontend_thread(id: &str, question: &str) -> Thread {
-    Thread::with_initial_state(
+    suspended_thread(
         id,
-        json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "ask_call_1": {
-                        "call_id": "ask_call_1",
-                        "tool_name": "askUserQuestion",
-                        "suspension": {
-                            "id": "ask_call_1",
-                            "action": "tool:askUserQuestion",
-                            "parameters": {
-                                "question": question
-                            }
-                        },
-                        "invocation": {
-                            "call_id": "ask_call_1",
-                            "tool_name": "askUserQuestion",
-                            "arguments": {
-                                "question": question
-                            },
-                            "origin": {
-                                "type": "plugin_initiated",
-                                "plugin_id": "agui_frontend_tools"
-                            },
-                            "routing": {
-                                "strategy": "use_as_tool_result"
-                            }
-                        }
-                    }
-                }
-            }
-        }),
+        vec![SuspendedCallFixture::ask("ask_call_1", question)],
     )
-    .with_message(
-        tirea_agentos::contracts::thread::Message::assistant_with_tool_calls(
-            "ask user",
-            vec![tirea_agentos::contracts::thread::ToolCall::new(
-                "ask_call_1",
-                "askUserQuestion",
-                json!({"question": question}),
-            )],
-        ),
-    )
-    .with_message(tirea_agentos::contracts::thread::Message::tool(
-        "ask_call_1",
-        "Tool 'askUserQuestion' is awaiting approval. Execution paused.",
-    ))
 }
 
 fn pending_permission_frontend_thread_pair(
@@ -1849,98 +1847,15 @@ fn pending_permission_frontend_thread_pair(
     first_payload: &str,
     second_payload: &str,
 ) -> Thread {
-    Thread::with_initial_state(
+    suspended_thread(
         id,
-        json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "call_1": {
-                        "call_id": "call_1",
-                        "tool_name": "echo",
-                        "suspension": {
-                            "id": "fc_perm_1",
-                            "action": "tool:PermissionConfirm",
-                            "parameters": {
-                                "tool_name": "echo",
-                                "tool_args": { "message": first_payload }
-                            }
-                        },
-                        "invocation": {
-                            "call_id": "fc_perm_1",
-                            "tool_name": "PermissionConfirm",
-                            "arguments": {
-                                "tool_name": "echo",
-                                "tool_args": { "message": first_payload }
-                            },
-                            "origin": {
-                                "type": "tool_call_intercepted",
-                                "backend_call_id": "call_1",
-                                "backend_tool_name": "echo",
-                                "backend_arguments": { "message": first_payload }
-                            },
-                            "routing": {
-                                "strategy": "replay_original_tool"
-                            }
-                        }
-                    },
-                    "call_2": {
-                        "call_id": "call_2",
-                        "tool_name": "echo",
-                        "suspension": {
-                            "id": "fc_perm_2",
-                            "action": "tool:PermissionConfirm",
-                            "parameters": {
-                                "tool_name": "echo",
-                                "tool_args": { "message": second_payload }
-                            }
-                        },
-                        "invocation": {
-                            "call_id": "fc_perm_2",
-                            "tool_name": "PermissionConfirm",
-                            "arguments": {
-                                "tool_name": "echo",
-                                "tool_args": { "message": second_payload }
-                            },
-                            "origin": {
-                                "type": "tool_call_intercepted",
-                                "backend_call_id": "call_2",
-                                "backend_tool_name": "echo",
-                                "backend_arguments": { "message": second_payload }
-                            },
-                            "routing": {
-                                "strategy": "replay_original_tool"
-                            }
-                        }
-                    }
-                }
-            }
-        }),
+        vec![
+            SuspendedCallFixture::permission("call_1", "echo", json!({"message": first_payload}))
+                .with_suspension_id("fc_perm_1"),
+            SuspendedCallFixture::permission("call_2", "echo", json!({"message": second_payload}))
+                .with_suspension_id("fc_perm_2"),
+        ],
     )
-    .with_message(
-        tirea_agentos::contracts::thread::Message::assistant_with_tool_calls(
-            "need permissions",
-            vec![
-                tirea_agentos::contracts::thread::ToolCall::new(
-                    "call_1",
-                    "echo",
-                    json!({"message": first_payload}),
-                ),
-                tirea_agentos::contracts::thread::ToolCall::new(
-                    "call_2",
-                    "echo",
-                    json!({"message": second_payload}),
-                ),
-            ],
-        ),
-    )
-    .with_message(tirea_agentos::contracts::thread::Message::tool(
-        "call_1",
-        "Tool 'echo' is awaiting approval. Execution paused.",
-    ))
-    .with_message(tirea_agentos::contracts::thread::Message::tool(
-        "call_2",
-        "Tool 'echo' is awaiting approval. Execution paused.",
-    ))
 }
 
 #[tokio::test]

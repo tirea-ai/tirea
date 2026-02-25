@@ -16,23 +16,13 @@ use tirea_agentos::contracts::tool::Tool;
 use tirea_agentos::orchestrator::AgentDefinition;
 use tirea_agentos::orchestrator::AgentOsBuilder;
 use tirea_agentos_server::service::AppState;
-use tirea_agentos_server::{http, protocol};
 use tirea_store_adapters::MemoryStore;
 use tower::ServiceExt;
-
-fn compose_http_app(state: AppState) -> axum::Router {
-    axum::Router::new()
-        .merge(http::health_routes())
-        .merge(http::thread_routes())
-        .nest("/v1/ag-ui", protocol::ag_ui::http::routes())
-        .nest("/v1/ai-sdk", protocol::ai_sdk_v6::http::routes())
-        .with_state(state)
-}
 
 mod common;
 
 use common::{
-    ai_sdk_messages_payload, extract_agui_text, extract_ai_sdk_text, post_sse, CalculatorTool,
+    compose_http_app, ai_sdk_messages_payload, extract_agui_text, extract_ai_sdk_text, post_sse, CalculatorTool,
 };
 
 fn has_deepseek_key() -> bool {

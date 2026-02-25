@@ -2,9 +2,75 @@ use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use serde_json::{json, Value};
+use std::time::Duration;
+use tirea_agentos::contracts::plugin::phase::BeforeInferenceContext;
+use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_agentos::contracts::ToolCallContext;
+use tirea_agentos_server::service::AppState;
+use tirea_agentos_server::{http, protocol};
 use tower::ServiceExt;
+
+/// Parameterized terminate plugin for tests.
+///
+/// Each test file passes a unique ID to avoid collisions when tests share a process.
+pub struct TerminatePlugin {
+    id: String,
+}
+
+impl TerminatePlugin {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self { id: id.into() }
+    }
+}
+
+#[async_trait]
+impl AgentPlugin for TerminatePlugin {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
+        step.terminate_plugin_requested();
+    }
+}
+
+/// Slow variant that sleeps before terminating. Used for timing-sensitive tests.
+pub struct SlowTerminatePlugin {
+    id: String,
+    delay: Duration,
+}
+
+impl SlowTerminatePlugin {
+    pub fn new(id: impl Into<String>, delay: Duration) -> Self {
+        Self {
+            id: id.into(),
+            delay,
+        }
+    }
+}
+
+#[async_trait]
+impl AgentPlugin for SlowTerminatePlugin {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
+        tokio::time::sleep(self.delay).await;
+        step.terminate_plugin_requested();
+    }
+}
+
+/// Compose the standard HTTP test app with all protocol routes.
+pub fn compose_http_app(state: AppState) -> axum::Router {
+    axum::Router::new()
+        .merge(http::health_routes())
+        .merge(http::thread_routes())
+        .nest("/v1/ag-ui", protocol::ag_ui::http::routes())
+        .nest("/v1/ai-sdk", protocol::ai_sdk_v6::http::routes())
+        .with_state(state)
+}
 
 /// A deterministic calculator tool for E2E tests.
 pub struct CalculatorTool;
