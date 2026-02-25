@@ -1,4 +1,4 @@
-use crate::transport::nats::NatsTransportConfig;
+use crate::transport::nats::{NatsTransport, NatsTransportConfig};
 use crate::transport::NatsProtocolError;
 
 #[derive(Clone, Debug)]
@@ -19,8 +19,9 @@ impl NatsConfig {
         }
     }
 
-    pub async fn connect(&self) -> Result<async_nats::Client, NatsProtocolError> {
-        async_nats::connect(&self.url).await.map_err(Into::into)
+    pub async fn connect(&self) -> Result<NatsTransport, NatsProtocolError> {
+        let client = async_nats::connect(&self.url).await?;
+        Ok(NatsTransport::new(client, self.transport_config()))
     }
 
     pub(crate) fn transport_config(&self) -> NatsTransportConfig {

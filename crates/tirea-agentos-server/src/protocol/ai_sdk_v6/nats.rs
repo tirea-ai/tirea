@@ -7,34 +7,27 @@ use tirea_protocol_ai_sdk_v6::{
     UIStreamEvent,
 };
 
-use crate::nats::NatsConfig;
-use crate::transport::nats::{run_and_publish, serve_nats, NatsTransportConfig};
+use crate::transport::nats::NatsTransport;
 use crate::transport::NatsProtocolError;
 
-/// Serve AI SDK v6 protocol over NATS using config.
+/// Serve AI SDK v6 protocol over NATS.
 pub async fn serve(
-    client: async_nats::Client,
+    transport: NatsTransport,
     os: Arc<AgentOs>,
-    config: &NatsConfig,
+    subject: String,
 ) -> Result<(), NatsProtocolError> {
-    serve_nats(
-        client,
-        &config.ai_sdk_subject,
-        config.transport_config(),
-        "aisdk",
-        move |client, msg, transport_config| {
+    transport
+        .serve(&subject, "aisdk", move |transport, msg| {
             let os = os.clone();
-            async move { handle_message(client, os, msg, transport_config).await }
-        },
-    )
-    .await
+            async move { handle_message(transport, os, msg).await }
+        })
+        .await
 }
 
 async fn handle_message(
-    client: async_nats::Client,
+    transport: NatsTransport,
     os: Arc<AgentOs>,
     msg: async_nats::Message,
-    transport_config: NatsTransportConfig,
 ) -> Result<(), NatsProtocolError> {
     #[derive(Debug, Deserialize)]
     struct Req {
@@ -71,7 +64,7 @@ async fn handle_message(
             let payload = serde_json::to_vec(&event)
                 .map_err(|e| NatsProtocolError::Run(format!("serialize error event failed: {e}")))?
                 .into();
-            if let Err(publish_err) = client.publish(reply, payload).await {
+            if let Err(publish_err) = transport.client().publish(reply, payload).await {
                 return Err(NatsProtocolError::Run(format!(
                     "publish error event failed: {publish_err}"
                 )));
@@ -85,15 +78,14 @@ async fn handle_message(
     apply_ai_sdk_extensions(&mut resolved, &req_for_runtime);
     let run_request = AiSdkV6InputAdapter::to_run_request(req.agent_id, req_for_runtime);
 
-    run_and_publish(
-        os.as_ref(),
-        run_request,
-        resolved,
-        reply,
-        client,
-        transport_config,
-        |run| AiSdkV6ProtocolEncoder::new(run.run_id.clone(), Some(run.thread_id.clone())),
-        UIStreamEvent::error,
-    )
-    .await
+    transport
+        .run_and_publish(
+            os.as_ref(),
+            run_request,
+            resolved,
+            reply,
+            |run| AiSdkV6ProtocolEncoder::new(run.run_id.clone(), Some(run.thread_id.clone())),
+            UIStreamEvent::error,
+        )
+        .await
 }

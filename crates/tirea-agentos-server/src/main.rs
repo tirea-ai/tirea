@@ -330,15 +330,15 @@ async fn main() {
     if let Some(nats_url) = args.nats_url.clone() {
         let nats_config = NatsConfig::new(nats_url);
         match nats_config.connect().await {
-            Ok(client) => {
+            Ok(transport) => {
                 let os_for_agui = os.clone();
                 let os_for_aisdk = os.clone();
-                let client_for_agui = client.clone();
-                let config_for_agui = nats_config.clone();
-                let config_for_aisdk = nats_config;
+                let agui_transport = transport.clone();
+                let agui_subject = nats_config.ag_ui_subject.clone();
+                let aisdk_subject = nats_config.ai_sdk_subject;
                 tokio::spawn(async move {
                     if let Err(e) =
-                        protocol::ag_ui::nats::serve(client_for_agui, os_for_agui, &config_for_agui)
+                        protocol::ag_ui::nats::serve(agui_transport, os_for_agui, agui_subject)
                             .await
                     {
                         eprintln!("nats ag-ui gateway stopped: {}", e);
@@ -346,7 +346,7 @@ async fn main() {
                 });
                 tokio::spawn(async move {
                     if let Err(e) =
-                        protocol::ai_sdk_v6::nats::serve(client, os_for_aisdk, &config_for_aisdk)
+                        protocol::ai_sdk_v6::nats::serve(transport, os_for_aisdk, aisdk_subject)
                             .await
                     {
                         eprintln!("nats ai-sdk gateway stopped: {}", e);

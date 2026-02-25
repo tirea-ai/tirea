@@ -100,22 +100,21 @@ async fn spawn_gateway_with_storage(
 
 async fn spawn_protocol_services(nats_url: &str, os: Arc<tirea_agentos::orchestrator::AgentOs>) {
     let nats_config = NatsConfig::new(nats_url.to_string());
-    let client = nats_config
+    let transport = nats_config
         .connect()
         .await
         .expect("failed to connect protocol service to NATS");
-    let agui_client = client.clone();
-    let aisdk_client = client.clone();
     let os_for_agui = os.clone();
     let os_for_aisdk = os.clone();
-    let config_for_agui = nats_config.clone();
-    let config_for_aisdk = nats_config;
+    let agui_transport = transport.clone();
+    let agui_subject = nats_config.ag_ui_subject.clone();
+    let aisdk_subject = nats_config.ai_sdk_subject;
 
     tokio::spawn(async move {
-        let _ = protocol::ag_ui::nats::serve(agui_client, os_for_agui, &config_for_agui).await;
+        let _ = protocol::ag_ui::nats::serve(agui_transport, os_for_agui, agui_subject).await;
     });
     tokio::spawn(async move {
-        let _ = protocol::ai_sdk_v6::nats::serve(aisdk_client, os_for_aisdk, &config_for_aisdk).await;
+        let _ = protocol::ai_sdk_v6::nats::serve(transport, os_for_aisdk, aisdk_subject).await;
     });
 }
 
