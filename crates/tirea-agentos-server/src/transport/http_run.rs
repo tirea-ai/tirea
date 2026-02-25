@@ -3,7 +3,7 @@ use serde::Serialize;
 use std::future::Future;
 use std::sync::Arc;
 use tirea_agentos::contracts::AgentEvent;
-use tirea_contract::{Identity, RuntimeInput, Transcoder};
+use tirea_contract::{RuntimeInput, Transcoder};
 use tokio::sync::{broadcast, mpsc};
 use tracing::warn;
 
@@ -55,11 +55,7 @@ where
     };
 
     let runtime_ep = Arc::new(RuntimeEndpoint::new(run_starter));
-    let downstream = Arc::new(TranscoderEndpoint::new(
-        runtime_ep,
-        encoder,
-        Identity::<RuntimeInput>::default(),
-    ));
+    let downstream = Arc::new(TranscoderEndpoint::new(runtime_ep, encoder));
 
     let binding = TransportBinding {
         session: SessionId { thread_id },

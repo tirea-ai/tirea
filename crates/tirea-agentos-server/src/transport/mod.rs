@@ -29,9 +29,13 @@ pub struct SessionId {
 /// Transport-level capability declaration used for composition checks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TransportCapabilities {
+    /// Upstream (caller→runtime) supports asynchronous delivery.
     pub upstream_async: bool,
+    /// Downstream (runtime→caller) delivers events as a stream.
     pub downstream_streaming: bool,
+    /// Both directions share a single bidirectional channel.
     pub single_channel_bidirectional: bool,
+    /// Downstream stream can be resumed after reconnection.
     pub resumable_downstream: bool,
 }
 
@@ -82,7 +86,11 @@ where
     async fn close(&self) -> Result<(), TransportError>;
 }
 
-/// Generic downstream endpoint backed by one receiver + one sender.
+/// Generic downstream endpoint backed by a bounded `mpsc::Receiver` for recv
+/// and an unbounded `mpsc::UnboundedSender` for send.
+///
+/// Test-only: used in integration tests to simulate a runtime endpoint.
+#[doc(hidden)]
 pub struct ChannelDownstreamEndpoint<RecvMsg, SendMsg>
 where
     RecvMsg: Send + 'static,

@@ -3,7 +3,7 @@ use std::future::Future;
 use std::sync::Arc;
 use tirea_agentos::contracts::{AgentEvent, RunRequest};
 use tirea_agentos::orchestrator::{AgentOs, ResolvedRun, RunStream};
-use tirea_contract::{Identity, RuntimeInput, Transcoder};
+use tirea_contract::{RuntimeInput, Transcoder};
 
 use crate::transport::NatsProtocolError;
 use crate::transport::{
@@ -106,11 +106,7 @@ impl NatsTransport {
             None,
             self.config.outbound_buffer,
         ));
-        let downstream = Arc::new(TranscoderEndpoint::new(
-            runtime_ep,
-            encoder,
-            Identity::<RuntimeInput>::default(),
-        ));
+        let downstream = Arc::new(TranscoderEndpoint::new(runtime_ep, encoder));
         let binding = TransportBinding {
             session: SessionId {
                 thread_id: session_thread_id,

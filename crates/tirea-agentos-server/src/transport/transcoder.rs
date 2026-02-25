@@ -7,47 +7,44 @@ use tokio::sync::Mutex;
 
 use crate::transport::{BoxStream, Endpoint, TransportError};
 
-/// Bidirectional protocol transcoder endpoint.
+/// Recv-only protocol transcoder endpoint.
 ///
-/// Wraps an inner `Endpoint<R::Input, S::Output>` and presents
-/// `Endpoint<R::Output, S::Input>`:
+/// Wraps an inner `Endpoint<R::Input, SendMsg>` and presents
+/// `Endpoint<R::Output, SendMsg>`:
 ///
 /// - **recv** (output direction): stateful stream transformation via
 ///   `R: Transcoder` — emits prologue, transcodes each item, then emits epilogue.
-/// - **send** (input direction): per-item mapping via `S: Transcoder`.
-pub struct TranscoderEndpoint<R, S>
+/// - **send** (input direction): passes through to the inner endpoint unchanged.
+pub struct TranscoderEndpoint<R, SendMsg>
 where
     R: Transcoder,
-    S: Transcoder,
+    SendMsg: Send + 'static,
 {
-    inner: Arc<dyn Endpoint<R::Input, S::Output>>,
+    inner: Arc<dyn Endpoint<R::Input, SendMsg>>,
     recv_transcoder: Mutex<Option<R>>,
-    send_transcoder: Mutex<S>,
 }
 
-impl<R, S> TranscoderEndpoint<R, S>
+impl<R, SendMsg> TranscoderEndpoint<R, SendMsg>
 where
     R: Transcoder + 'static,
-    S: Transcoder + 'static,
+    SendMsg: Send + 'static,
 {
     pub fn new(
-        inner: Arc<dyn Endpoint<R::Input, S::Output>>,
+        inner: Arc<dyn Endpoint<R::Input, SendMsg>>,
         recv_transcoder: R,
-        send_transcoder: S,
     ) -> Self {
         Self {
             inner,
             recv_transcoder: Mutex::new(Some(recv_transcoder)),
-            send_transcoder: Mutex::new(send_transcoder),
         }
     }
 }
 
 #[async_trait]
-impl<R, S> Endpoint<R::Output, S::Input> for TranscoderEndpoint<R, S>
+impl<R, SendMsg> Endpoint<R::Output, SendMsg> for TranscoderEndpoint<R, SendMsg>
 where
     R: Transcoder + 'static,
-    S: Transcoder + 'static,
+    SendMsg: Send + 'static,
 {
     async fn recv(&self) -> Result<BoxStream<R::Output>, TransportError> {
         let recv_transcoder = self
@@ -88,15 +85,8 @@ where
         Ok(Box::pin(stream))
     }
 
-    async fn send(&self, item: S::Input) -> Result<(), TransportError> {
-        let mapped = {
-            let mut transcoder = self.send_transcoder.lock().await;
-            transcoder.transcode(&item)
-        };
-        for m in mapped {
-            self.inner.send(m).await?;
-        }
-        Ok(())
+    async fn send(&self, item: SendMsg) -> Result<(), TransportError> {
+        self.inner.send(item).await
     }
 
     async fn close(&self) -> Result<(), TransportError> {
