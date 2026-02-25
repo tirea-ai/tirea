@@ -9,8 +9,8 @@ use tokio::sync::mpsc;
 
 use crate::transport::NatsProtocolError;
 use crate::transport::{
-    pump_encoded_stream, relay_binding, ChannelDownstreamEndpoint, Endpoint, RelayCancellation,
-    SessionId, TransportBinding, TransportCapabilities, TransportError,
+    relay_binding, ChannelDownstreamEndpoint, Endpoint, RelayCancellation, SessionId,
+    TranscoderEndpoint, TransportBinding, TransportCapabilities, TransportError,
 };
 
 #[derive(Clone, Debug)]
@@ -119,18 +119,22 @@ impl NatsTransport {
 
         let session_thread_id = run.thread_id.clone();
         let encoder = build_encoder(&run);
-        let upstream = Arc::new(NatsReplyServerEndpoint::new(self.client.clone(), reply));
         let decision_tx = run.decision_tx.clone();
-        let (tx, rx) = mpsc::channel::<E::Event>(self.config.outbound_buffer.max(1));
+        let events = run.events;
+
+        let upstream = Arc::new(NatsReplyServerEndpoint::new(self.client.clone(), reply));
+        let (event_tx, event_rx) =
+            mpsc::channel::<AgentEvent>(self.config.outbound_buffer.max(1));
+        let runtime_ep = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
         tokio::spawn(async move {
-            let tx_events = tx.clone();
-            pump_encoded_stream(run.events, encoder, move |event| {
-                let tx = tx_events.clone();
-                async move { tx.send(event).await.map_err(|_| ()) }
-            })
-            .await;
+            let mut events = events;
+            while let Some(e) = events.next().await {
+                if event_tx.send(e).await.is_err() {
+                    break;
+                }
+            }
         });
-        let downstream = Arc::new(ChannelDownstreamEndpoint::new(rx, decision_tx));
+        let downstream = Arc::new(TranscoderEndpoint::new(runtime_ep, encoder, Ok));
         let binding = TransportBinding {
             session: SessionId {
                 thread_id: session_thread_id,

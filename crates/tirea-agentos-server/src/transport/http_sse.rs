@@ -2,21 +2,24 @@ use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
+use serde::Serialize;
 use std::convert::Infallible;
+use std::marker::PhantomData;
 use tirea_agentos::contracts::ToolCallDecision;
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
 use tokio::sync::{broadcast, mpsc, Mutex};
 
 use crate::transport::{BoxStream, Endpoint, TransportError};
 
-pub struct HttpSseUpstreamEndpoint {
+pub struct HttpSseServerEndpoint<SendMsg> {
     ingress_rx: Mutex<Option<mpsc::UnboundedReceiver<ToolCallDecision>>>,
     sse_tx: mpsc::Sender<Bytes>,
     fanout: Option<broadcast::Sender<Bytes>>,
     cancellation_token: RunCancellationToken,
+    _phantom: PhantomData<fn(SendMsg)>,
 }
 
-impl HttpSseUpstreamEndpoint {
+impl<SendMsg> HttpSseServerEndpoint<SendMsg> {
     pub fn new(
         ingress_rx: mpsc::UnboundedReceiver<ToolCallDecision>,
         sse_tx: mpsc::Sender<Bytes>,
@@ -27,6 +30,7 @@ impl HttpSseUpstreamEndpoint {
             sse_tx,
             fanout: None,
             cancellation_token,
+            _phantom: PhantomData,
         }
     }
 
@@ -41,12 +45,16 @@ impl HttpSseUpstreamEndpoint {
             sse_tx,
             fanout: Some(fanout),
             cancellation_token,
+            _phantom: PhantomData,
         }
     }
 }
 
 #[async_trait::async_trait]
-impl Endpoint<ToolCallDecision, Bytes> for HttpSseUpstreamEndpoint {
+impl<SendMsg> Endpoint<ToolCallDecision, SendMsg> for HttpSseServerEndpoint<SendMsg>
+where
+    SendMsg: Serialize + Send + 'static,
+{
     async fn recv(&self) -> Result<BoxStream<ToolCallDecision>, TransportError> {
         let mut guard = self.ingress_rx.lock().await;
         let mut rx = guard.take().ok_or(TransportError::Closed)?;
@@ -58,11 +66,17 @@ impl Endpoint<ToolCallDecision, Bytes> for HttpSseUpstreamEndpoint {
         Ok(Box::pin(stream))
     }
 
-    async fn send(&self, item: Bytes) -> Result<(), TransportError> {
+    async fn send(&self, item: SendMsg) -> Result<(), TransportError> {
+        let json = serde_json::to_string(&item).map_err(|e| {
+            tracing::warn!(error = %e, "failed to serialize SSE protocol event");
+            self.cancellation_token.cancel();
+            TransportError::Io(format!("serialize event failed: {e}"))
+        })?;
+        let chunk = Bytes::from(format!("data: {json}\n\n"));
         if let Some(f) = &self.fanout {
-            let _ = f.send(item.clone());
+            let _ = f.send(chunk.clone());
         }
-        self.sse_tx.send(item).await.map_err(|_| {
+        self.sse_tx.send(chunk).await.map_err(|_| {
             self.cancellation_token.cancel();
             TransportError::Closed
         })
@@ -102,38 +116,41 @@ where
 mod tests {
     use super::*;
     use futures::StreamExt;
+    use serde_json::json;
 
     #[tokio::test]
-    async fn send_without_fanout() {
+    async fn send_serializes_and_frames_as_sse() {
         let (_ingress_tx, ingress_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
         let (sse_tx, mut sse_rx) = mpsc::channel::<Bytes>(4);
         let token = RunCancellationToken::new();
-        let endpoint = HttpSseUpstreamEndpoint::new(ingress_rx, sse_tx, token.clone());
+        let endpoint: HttpSseServerEndpoint<serde_json::Value> =
+            HttpSseServerEndpoint::new(ingress_rx, sse_tx, token.clone());
 
-        let data = Bytes::from("data: test\n\n");
-        endpoint.send(data.clone()).await.unwrap();
+        let event = json!({"type": "test"});
+        endpoint.send(event).await.unwrap();
         let received = sse_rx.recv().await.unwrap();
-        assert_eq!(received, data);
+        assert_eq!(received, Bytes::from("data: {\"type\":\"test\"}\n\n"));
         assert!(!token.is_cancelled());
     }
 
     #[tokio::test]
-    async fn send_with_fanout() {
+    async fn send_with_fanout_broadcasts() {
         let (_ingress_tx, ingress_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
         let (sse_tx, mut sse_rx) = mpsc::channel::<Bytes>(4);
         let (fanout_tx, mut fanout_rx) = broadcast::channel::<Bytes>(4);
         let token = RunCancellationToken::new();
-        let endpoint =
-            HttpSseUpstreamEndpoint::with_fanout(ingress_rx, sse_tx, fanout_tx, token.clone());
+        let endpoint: HttpSseServerEndpoint<serde_json::Value> =
+            HttpSseServerEndpoint::with_fanout(ingress_rx, sse_tx, fanout_tx, token.clone());
 
-        let data = Bytes::from("data: test\n\n");
-        endpoint.send(data.clone()).await.unwrap();
+        let event = json!({"type": "test"});
+        endpoint.send(event).await.unwrap();
 
         let received = sse_rx.recv().await.unwrap();
-        assert_eq!(received, data);
+        let expected = Bytes::from("data: {\"type\":\"test\"}\n\n");
+        assert_eq!(received, expected);
 
         let fanout_received = fanout_rx.recv().await.unwrap();
-        assert_eq!(fanout_received, data);
+        assert_eq!(fanout_received, expected);
     }
 
     #[tokio::test]
@@ -141,10 +158,11 @@ mod tests {
         let (_ingress_tx, ingress_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
         let (sse_tx, sse_rx) = mpsc::channel::<Bytes>(4);
         let token = RunCancellationToken::new();
-        let endpoint = HttpSseUpstreamEndpoint::new(ingress_rx, sse_tx, token.clone());
+        let endpoint: HttpSseServerEndpoint<serde_json::Value> =
+            HttpSseServerEndpoint::new(ingress_rx, sse_tx, token.clone());
         drop(sse_rx);
 
-        let result = endpoint.send(Bytes::from("data: test\n\n")).await;
+        let result = endpoint.send(json!({"type": "test"})).await;
         assert!(result.is_err());
         assert!(token.is_cancelled());
     }

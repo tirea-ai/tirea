@@ -3,14 +3,16 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
+use futures::StreamExt;
 use serde_json::json;
 use std::sync::Arc;
-use tirea_agentos::contracts::ToolCallDecision;
+use tirea_agentos::contracts::{AgentEvent, ToolCallDecision};
 use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError};
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
 use tirea_contract::ProtocolInputAdapter;
 use tirea_protocol_ag_ui::{
-    apply_agui_extensions, AgUiHistoryEncoder, AgUiInputAdapter, AgUiProtocolEncoder, RunAgentInput,
+    apply_agui_extensions, AgUiHistoryEncoder, AgUiInputAdapter, AgUiProtocolEncoder, Event,
+    RunAgentInput,
 };
 use tokio::sync::mpsc;
 use tracing::warn;
@@ -19,9 +21,9 @@ use crate::service::{
     active_run_key, encode_message_page, load_message_page, register_active_run, remove_active_run,
     try_forward_decisions_to_active_run, ApiError, AppState, MessageQueryParams,
 };
-use crate::transport::http_sse::{sse_body_stream, sse_response, HttpSseUpstreamEndpoint};
+use crate::transport::http_sse::{sse_body_stream, sse_response, HttpSseServerEndpoint};
 use crate::transport::{
-    pump_encoded_stream, relay_binding, ChannelDownstreamEndpoint, RelayCancellation, SessionId,
+    relay_binding, ChannelDownstreamEndpoint, RelayCancellation, SessionId, TranscoderEndpoint,
     TransportBinding, TransportCapabilities,
 };
 
@@ -85,37 +87,26 @@ async fn run(
     let thread_id = run.thread_id.clone();
     let enc = AgUiProtocolEncoder::new(run.thread_id.clone(), run.run_id.clone());
     let (sse_tx, sse_rx) = mpsc::channel::<Bytes>(64);
-    let upstream = Arc::new(HttpSseUpstreamEndpoint::new(
+    let upstream: Arc<HttpSseServerEndpoint<Event>> = Arc::new(HttpSseServerEndpoint::new(
         decision_ingress_rx,
         sse_tx,
         cancellation_token.clone(),
     ));
+
     let decision_tx = run.decision_tx.clone();
-    let (tx, rx) = mpsc::channel::<Bytes>(64);
+    let events = run.events;
+    let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(64);
+    let runtime_ep = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
     tokio::spawn(async move {
-        let tx_events = tx.clone();
-        let event_cancel_token = cancellation_token.clone();
-        pump_encoded_stream(run.events, enc, move |event| {
-            let tx = tx_events.clone();
-            let token = event_cancel_token.clone();
-            async move {
-                let json = match serde_json::to_string(&event) {
-                    Ok(json) => json,
-                    Err(err) => {
-                        warn!(error = %err, "failed to serialize SSE protocol event");
-                        token.cancel();
-                        return Ok(());
-                    }
-                };
-                let chunk = Bytes::from(format!("data: {json}\n\n"));
-                tx.send(chunk).await.map_err(|_| {
-                    token.cancel();
-                })
+        let mut events = events;
+        while let Some(e) = events.next().await {
+            if event_tx.send(e).await.is_err() {
+                break;
             }
-        })
-        .await;
+        }
     });
-    let downstream = Arc::new(ChannelDownstreamEndpoint::new(rx, decision_tx));
+    let downstream = Arc::new(TranscoderEndpoint::new(runtime_ep, enc, Ok));
+
     let binding = TransportBinding {
         session: SessionId { thread_id },
         caps: TransportCapabilities {

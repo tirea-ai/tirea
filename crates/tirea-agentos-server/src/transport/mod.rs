@@ -1,18 +1,17 @@
 mod nats_error;
 pub mod http_sse;
 pub mod nats;
+pub mod transcoder;
 
 pub use nats_error::NatsProtocolError;
+pub use transcoder::TranscoderEndpoint;
 
 use async_trait::async_trait;
 use futures::Stream;
 use futures::StreamExt;
-use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tirea_agentos::contracts::AgentEvent;
-use tirea_contract::ProtocolOutputEncoder;
 use tokio::sync::{mpsc, Mutex};
 
 /// Common boxed stream for transport endpoints.
@@ -203,38 +202,6 @@ where
     cancel.cancel();
     ingress.abort();
     normalize_relay_result(egress_res)
-}
-
-/// Pump an internal agent event stream through a protocol output encoder and
-/// forward each encoded event to the provided async sink callback.
-pub async fn pump_encoded_stream<E, SendFn, SendFut>(
-    mut events: Pin<Box<dyn Stream<Item = AgentEvent> + Send>>,
-    mut encoder: E,
-    mut send: SendFn,
-) where
-    E: ProtocolOutputEncoder<InputEvent = AgentEvent>,
-    SendFn: FnMut(E::Event) -> SendFut,
-    SendFut: Future<Output = Result<(), ()>>,
-{
-    for event in encoder.prologue() {
-        if send(event).await.is_err() {
-            return;
-        }
-    }
-
-    while let Some(agent_event) = events.next().await {
-        for event in encoder.on_agent_event(&agent_event) {
-            if send(event).await.is_err() {
-                return;
-            }
-        }
-    }
-
-    for event in encoder.epilogue() {
-        if send(event).await.is_err() {
-            return;
-        }
-    }
 }
 
 #[cfg(test)]
