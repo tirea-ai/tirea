@@ -4,13 +4,12 @@ use std::sync::Arc;
 use tirea_agentos::contracts::plugin::phase::BeforeInferenceContext;
 use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::storage::ThreadReader;
-use tirea_agentos::contracts::{AgentEvent, RunRequest, ToolCallDecision};
+use tirea_agentos::contracts::RunRequest;
 use tirea_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
-use tirea_agentos_server::transport::{ChannelDownstreamEndpoint, Endpoint, TranscoderEndpoint};
-use tirea_contract::Identity;
+use tirea_agentos_server::transport::{Endpoint, RuntimeEndpoint, TranscoderEndpoint};
+use tirea_contract::DecisionTranscoder;
 use tirea_protocol_ai_sdk_v6::{AiSdkV6ProtocolEncoder, AiSdkV6RunRequest};
 use tirea_store_adapters::MemoryStore;
-use tokio::sync::mpsc;
 
 struct TerminatePluginRequestedPlugin;
 
@@ -74,25 +73,11 @@ async fn cross_crate_integration_matrix_72() {
                 let resolved_run_id = run.run_id.clone();
 
                 let encoder = AiSdkV6ProtocolEncoder::new();
-                let decision_tx = run.decision_tx.clone();
-                let events = run.events;
-                let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(64);
-                let runtime_ep = Arc::new(ChannelDownstreamEndpoint::new(
-                    event_rx,
-                    decision_tx,
-                ));
-                tokio::spawn(async move {
-                    let mut events = events;
-                    while let Some(e) = events.next().await {
-                        if event_tx.send(e).await.is_err() {
-                            break;
-                        }
-                    }
-                });
+                let runtime_ep = Arc::new(RuntimeEndpoint::new(run, None));
                 let transcoder = TranscoderEndpoint::new(
                     runtime_ep,
                     encoder,
-                    Identity::<ToolCallDecision>::default(),
+                    DecisionTranscoder,
                 );
 
                 let stream = transcoder.recv().await.expect("transcoder recv");

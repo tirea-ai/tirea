@@ -1,19 +1,19 @@
 use bytes::Bytes;
-use futures::StreamExt;
 use serde::Serialize;
 use std::future::Future;
 use std::sync::Arc;
 use tirea_agentos::contracts::{AgentEvent, ToolCallDecision};
 use tirea_agentos::orchestrator::RunStream;
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
-use tirea_contract::{Identity, Transcoder};
+use tirea_contract::{DecisionTranscoder, Transcoder};
 use tokio::sync::{broadcast, mpsc};
 use tracing::warn;
 
 use super::http_sse::HttpSseServerEndpoint;
+use super::runtime_endpoint::RuntimeEndpoint;
 use super::{
-    relay_binding, ChannelDownstreamEndpoint, RelayCancellation, SessionId, TranscoderEndpoint,
-    TransportBinding, TransportCapabilities,
+    relay_binding, RelayCancellation, SessionId, TranscoderEndpoint, TransportBinding,
+    TransportCapabilities,
 };
 
 /// Wire an HTTP SSE relay for a single agent run.
@@ -50,31 +50,18 @@ where
             decision_ingress_rx,
             sse_tx.clone(),
             f,
-            cancellation_token,
         )),
         None => Arc::new(HttpSseServerEndpoint::new(
             decision_ingress_rx,
             sse_tx.clone(),
-            cancellation_token,
         )),
     };
 
-    let decision_tx = run.decision_tx.clone();
-    let events = run.events;
-    let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(64);
-    let runtime_ep = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
-    tokio::spawn(async move {
-        let mut events = events;
-        while let Some(e) = events.next().await {
-            if event_tx.send(e).await.is_err() {
-                break;
-            }
-        }
-    });
+    let runtime_ep = Arc::new(RuntimeEndpoint::new(run, Some(cancellation_token)));
     let downstream = Arc::new(TranscoderEndpoint::new(
         runtime_ep,
         encoder,
-        Identity::default(),
+        DecisionTranscoder,
     ));
 
     let binding = TransportBinding {

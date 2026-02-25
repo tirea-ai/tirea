@@ -6,7 +6,6 @@ use serde::Serialize;
 use std::convert::Infallible;
 use std::marker::PhantomData;
 use tirea_agentos::contracts::ToolCallDecision;
-use tirea_agentos::runtime::loop_runner::RunCancellationToken;
 use tokio::sync::{broadcast, mpsc, Mutex};
 
 use crate::transport::{BoxStream, Endpoint, TransportError};
@@ -15,7 +14,6 @@ pub struct HttpSseServerEndpoint<SendMsg> {
     ingress_rx: Mutex<Option<mpsc::UnboundedReceiver<ToolCallDecision>>>,
     sse_tx: mpsc::Sender<Bytes>,
     fanout: Option<broadcast::Sender<Bytes>>,
-    cancellation_token: RunCancellationToken,
     _phantom: PhantomData<fn(SendMsg)>,
 }
 
@@ -23,13 +21,11 @@ impl<SendMsg> HttpSseServerEndpoint<SendMsg> {
     pub fn new(
         ingress_rx: mpsc::UnboundedReceiver<ToolCallDecision>,
         sse_tx: mpsc::Sender<Bytes>,
-        cancellation_token: RunCancellationToken,
     ) -> Self {
         Self {
             ingress_rx: Mutex::new(Some(ingress_rx)),
             sse_tx,
             fanout: None,
-            cancellation_token,
             _phantom: PhantomData,
         }
     }
@@ -38,13 +34,11 @@ impl<SendMsg> HttpSseServerEndpoint<SendMsg> {
         ingress_rx: mpsc::UnboundedReceiver<ToolCallDecision>,
         sse_tx: mpsc::Sender<Bytes>,
         fanout: broadcast::Sender<Bytes>,
-        cancellation_token: RunCancellationToken,
     ) -> Self {
         Self {
             ingress_rx: Mutex::new(Some(ingress_rx)),
             sse_tx,
             fanout: Some(fanout),
-            cancellation_token,
             _phantom: PhantomData,
         }
     }
@@ -69,21 +63,19 @@ where
     async fn send(&self, item: SendMsg) -> Result<(), TransportError> {
         let json = serde_json::to_string(&item).map_err(|e| {
             tracing::warn!(error = %e, "failed to serialize SSE protocol event");
-            self.cancellation_token.cancel();
             TransportError::Io(format!("serialize event failed: {e}"))
         })?;
         let chunk = Bytes::from(format!("data: {json}\n\n"));
         if let Some(f) = &self.fanout {
             let _ = f.send(chunk.clone());
         }
-        self.sse_tx.send(chunk).await.map_err(|_| {
-            self.cancellation_token.cancel();
-            TransportError::Closed
-        })
+        self.sse_tx
+            .send(chunk)
+            .await
+            .map_err(|_| TransportError::Closed)
     }
 
     async fn close(&self) -> Result<(), TransportError> {
-        self.cancellation_token.cancel();
         Ok(())
     }
 }
@@ -122,15 +114,13 @@ mod tests {
     async fn send_serializes_and_frames_as_sse() {
         let (_ingress_tx, ingress_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
         let (sse_tx, mut sse_rx) = mpsc::channel::<Bytes>(4);
-        let token = RunCancellationToken::new();
         let endpoint: HttpSseServerEndpoint<serde_json::Value> =
-            HttpSseServerEndpoint::new(ingress_rx, sse_tx, token.clone());
+            HttpSseServerEndpoint::new(ingress_rx, sse_tx);
 
         let event = json!({"type": "test"});
         endpoint.send(event).await.unwrap();
         let received = sse_rx.recv().await.unwrap();
         assert_eq!(received, Bytes::from("data: {\"type\":\"test\"}\n\n"));
-        assert!(!token.is_cancelled());
     }
 
     #[tokio::test]
@@ -138,9 +128,8 @@ mod tests {
         let (_ingress_tx, ingress_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
         let (sse_tx, mut sse_rx) = mpsc::channel::<Bytes>(4);
         let (fanout_tx, mut fanout_rx) = broadcast::channel::<Bytes>(4);
-        let token = RunCancellationToken::new();
         let endpoint: HttpSseServerEndpoint<serde_json::Value> =
-            HttpSseServerEndpoint::with_fanout(ingress_rx, sse_tx, fanout_tx, token.clone());
+            HttpSseServerEndpoint::with_fanout(ingress_rx, sse_tx, fanout_tx);
 
         let event = json!({"type": "test"});
         endpoint.send(event).await.unwrap();
@@ -154,17 +143,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_cancels_token_on_closed_channel() {
+    async fn send_returns_error_on_closed_channel() {
         let (_ingress_tx, ingress_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
         let (sse_tx, sse_rx) = mpsc::channel::<Bytes>(4);
-        let token = RunCancellationToken::new();
         let endpoint: HttpSseServerEndpoint<serde_json::Value> =
-            HttpSseServerEndpoint::new(ingress_rx, sse_tx, token.clone());
+            HttpSseServerEndpoint::new(ingress_rx, sse_tx);
         drop(sse_rx);
 
         let result = endpoint.send(json!({"type": "test"})).await;
         assert!(result.is_err());
-        assert!(token.is_cancelled());
     }
 
     #[tokio::test]
