@@ -1,15 +1,13 @@
 use super::outcome::LoopFailure;
+use super::LlmExecutor;
 use super::*;
-use crate::contracts::interaction::{
-    FrontendToolInvocation, InvocationOrigin, ResponseRouting,
-};
 use crate::contracts::plugin::phase::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
     BeforeToolExecuteContext, Phase, PluginPhaseContext, RunEndContext, RunStartContext,
     StepEndContext, StepStartContext, SuspendTicket,
 };
 use crate::contracts::runtime::ActivityManager;
-use super::LlmExecutor;
+use crate::contracts::runtime::{PendingToolCall, ToolCallResumeMode};
 use crate::contracts::storage::VersionPrecondition;
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{Message, Role, Thread, ToolCall};
@@ -342,6 +340,75 @@ struct ActivityProgressState {
     progress: f64,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq)]
+enum ResponseRouting {
+    ReplayOriginalTool,
+    UseAsToolResult,
+    PassToLLM,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum InvocationOrigin {
+    ToolCallIntercepted {
+        backend_call_id: String,
+        backend_tool_name: String,
+        backend_arguments: Value,
+    },
+    PluginInitiated {
+        plugin_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct FrontendToolInvocation {
+    call_id: String,
+    tool_name: String,
+    arguments: Value,
+    origin: InvocationOrigin,
+    routing: ResponseRouting,
+}
+
+impl FrontendToolInvocation {
+    fn new(
+        call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        arguments: Value,
+        origin: InvocationOrigin,
+        routing: ResponseRouting,
+    ) -> Self {
+        Self {
+            call_id: call_id.into(),
+            tool_name: tool_name.into(),
+            arguments,
+            origin,
+            routing,
+        }
+    }
+}
+
+fn suspend_ticket_from_invocation(invocation: FrontendToolInvocation) -> SuspendTicket {
+    let suspension = Suspension::new(
+        &invocation.call_id,
+        format!("tool:{}", invocation.tool_name),
+    )
+    .with_parameters(invocation.arguments.clone());
+    let resume_mode = match invocation.routing {
+        ResponseRouting::ReplayOriginalTool => ToolCallResumeMode::ReplayToolCall,
+        ResponseRouting::UseAsToolResult => ToolCallResumeMode::UseDecisionAsToolResult,
+        ResponseRouting::PassToLLM => ToolCallResumeMode::PassDecisionToTool,
+    };
+    SuspendTicket::new(
+        suspension,
+        PendingToolCall::new(
+            invocation.call_id,
+            invocation.tool_name,
+            invocation.arguments,
+        ),
+        resume_mode,
+    )
+}
+
 fn suspend_frontend_tool(
     step: &mut crate::contracts::plugin::phase::StepContext<'_>,
     tool_name: impl Into<String>,
@@ -365,7 +432,7 @@ fn suspend_frontend_tool(
         },
     };
     let invocation = FrontendToolInvocation::new(&call_id, &tool_name, arguments, origin, routing);
-    step.suspend(SuspendTicket::from_invocation(invocation));
+    step.suspend(suspend_ticket_from_invocation(invocation));
     Some(call_id)
 }
 
@@ -387,27 +454,49 @@ fn test_frontend_invocation(interaction: &Suspension) -> FrontendToolInvocation 
 }
 
 fn test_suspend_ticket(interaction: Suspension) -> SuspendTicket {
-    let invocation = test_frontend_invocation(&interaction);
-    SuspendTicket::from_invocation(invocation)
+    SuspendTicket::new(
+        interaction.clone(),
+        PendingToolCall::new(interaction.id, interaction.action, interaction.parameters),
+        ToolCallResumeMode::ReplayToolCall,
+    )
 }
 
 fn set_single_suspended_call(
     state: &Value,
     suspension: Suspension,
-    invocation: Option<crate::contracts::FrontendToolInvocation>,
+    invocation: Option<FrontendToolInvocation>,
 ) -> Result<tirea_state::TrackedPatch, AgentLoopError> {
     let invocation = invocation.unwrap_or_else(|| test_frontend_invocation(&suspension));
     let call_id = invocation.call_id.clone();
     let tool_name = invocation.tool_name.clone();
     set_agent_suspended_calls(
         state,
-        vec![crate::contracts::runtime::SuspendedCall {
-            call_id,
-            tool_name,
-            suspension,
-            invocation,
-        }],
+        vec![build_suspended_call(
+            call_id, tool_name, suspension, invocation,
+        )],
     )
+}
+
+fn build_suspended_call(
+    call_id: impl Into<String>,
+    tool_name: impl Into<String>,
+    suspension: Suspension,
+    invocation: FrontendToolInvocation,
+) -> crate::contracts::runtime::SuspendedCall {
+    let resume_mode = match invocation.routing {
+        ResponseRouting::ReplayOriginalTool => ToolCallResumeMode::ReplayToolCall,
+        ResponseRouting::UseAsToolResult => ToolCallResumeMode::UseDecisionAsToolResult,
+        ResponseRouting::PassToLLM => ToolCallResumeMode::PassDecisionToTool,
+    };
+    let arguments = invocation.arguments.clone();
+    crate::contracts::runtime::SuspendedCall {
+        call_id: call_id.into(),
+        tool_name: tool_name.into(),
+        arguments: arguments.clone(),
+        suspension,
+        pending: PendingToolCall::new(invocation.call_id, invocation.tool_name, arguments),
+        resume_mode,
+    }
 }
 
 fn test_decision(
@@ -452,12 +541,15 @@ impl TestInteractionPlugin {
         }
     }
 
-    fn resolve_response_for_call(&self, call: &crate::contracts::runtime::SuspendedCall) -> Option<Value> {
+    fn resolve_response_for_call(
+        &self,
+        call: &crate::contracts::runtime::SuspendedCall,
+    ) -> Option<Value> {
         self.responses
             .get(&call.call_id)
             .cloned()
             .or_else(|| self.responses.get(&call.suspension.id).cloned())
-            .or_else(|| self.responses.get(&call.invocation.call_id).cloned())
+            .or_else(|| self.responses.get(&call.pending.id).cloned())
     }
 
     fn cancel_reason(result: &Value) -> Option<String> {
@@ -538,9 +630,9 @@ impl AgentPlugin for TestInteractionPlugin {
                 crate::contracts::runtime::ToolCallState {
                     call_id: call_id.clone(),
                     tool_name: suspended_call.tool_name.clone(),
-                    arguments: suspended_call.invocation.arguments.clone(),
+                    arguments: suspended_call.arguments.clone(),
                     status: crate::contracts::runtime::ToolCallStatus::Suspended,
-                    resume_token: Some(suspended_call.invocation.call_id.clone()),
+                    resume_token: Some(suspended_call.pending.id.clone()),
                     resume: None,
                     scratch: Value::Null,
                     updated_at,
@@ -548,9 +640,9 @@ impl AgentPlugin for TestInteractionPlugin {
             });
             state.call_id = call_id.clone();
             state.tool_name = suspended_call.tool_name.clone();
-            state.arguments = suspended_call.invocation.arguments.clone();
+            state.arguments = suspended_call.arguments.clone();
             state.status = crate::contracts::runtime::ToolCallStatus::Resuming;
-            state.resume_token = Some(suspended_call.invocation.call_id.clone());
+            state.resume_token = Some(suspended_call.pending.id.clone());
             state.resume = Some(resume);
             state.updated_at = updated_at;
             states.insert(call_id.clone(), state);
@@ -830,7 +922,6 @@ fn test_agent_loop_error_display() {
     assert!(err.to_string().contains("timeout"));
 }
 
-
 #[test]
 fn test_llm_retry_error_classification() {
     assert!(is_retryable_llm_error("429 too many requests"));
@@ -851,7 +942,10 @@ fn test_execute_tools_empty() {
         };
         let tools = HashMap::new();
 
-        let thread = execute_tools(thread, &result, &tools, true).await.unwrap().into_thread();
+        let thread = execute_tools(thread, &result, &tools, true)
+            .await
+            .unwrap()
+            .into_thread();
         assert_eq!(thread.message_count(), 0);
     });
 }
@@ -872,7 +966,10 @@ fn test_execute_tools_with_calls() {
         };
         let tools = tool_map([EchoTool]);
 
-        let thread = execute_tools(thread, &result, &tools, true).await.unwrap().into_thread();
+        let thread = execute_tools(thread, &result, &tools, true)
+            .await
+            .unwrap()
+            .into_thread();
 
         assert_eq!(thread.message_count(), 1);
         assert_eq!(
@@ -899,7 +996,10 @@ fn test_execute_tools_injects_caller_scope_context_for_tools() {
         };
         let tools = tool_map([ScopeSnapshotTool]);
 
-        let thread = execute_tools(thread, &result, &tools, true).await.unwrap().into_thread();
+        let thread = execute_tools(thread, &result, &tools, true)
+            .await
+            .unwrap()
+            .into_thread();
         assert_eq!(thread.message_count(), 2);
         let tool_msg = thread
             .messages
@@ -1178,7 +1278,10 @@ fn test_execute_tools_with_state_changes() {
         };
         let tools = tool_map([CounterTool]);
 
-        let thread = execute_tools(thread, &result, &tools, true).await.unwrap().into_thread();
+        let thread = execute_tools(thread, &result, &tools, true)
+            .await
+            .unwrap()
+            .into_thread();
 
         assert_eq!(thread.message_count(), 1);
         // state patch + merged tool lifecycle patch
@@ -1230,7 +1333,10 @@ fn test_execute_tools_with_failing_tool() {
         };
         let tools = tool_map([FailingTool]);
 
-        let thread = execute_tools(thread, &result, &tools, true).await.unwrap().into_thread();
+        let thread = execute_tools(thread, &result, &tools, true)
+            .await
+            .unwrap()
+            .into_thread();
 
         assert_eq!(thread.message_count(), 1);
         let msg = &thread.messages[0];
@@ -2258,12 +2364,12 @@ fn test_apply_tool_results_suspends_all_interactions() {
     first.outcome = crate::contracts::ToolCallOutcome::Suspended;
     first.suspended_call = Some({
         let suspension = Suspension::new("confirm_1", "confirm").with_message("approve first tool");
-        crate::contracts::runtime::SuspendedCall {
-            call_id: "call_1".to_string(),
-            tool_name: "test_tool".to_string(),
-            invocation: test_frontend_invocation(&suspension),
-            suspension,
-        }
+        build_suspended_call(
+            "call_1",
+            "test_tool",
+            suspension.clone(),
+            test_frontend_invocation(&suspension),
+        )
     });
 
     let mut second = tool_execution_result("call_2", None);
@@ -2271,12 +2377,12 @@ fn test_apply_tool_results_suspends_all_interactions() {
     second.suspended_call = Some({
         let suspension =
             Suspension::new("confirm_2", "confirm").with_message("approve second tool");
-        crate::contracts::runtime::SuspendedCall {
-            call_id: "call_2".to_string(),
-            tool_name: "test_tool".to_string(),
-            invocation: test_frontend_invocation(&suspension),
-            suspension,
-        }
+        build_suspended_call(
+            "call_2",
+            "test_tool",
+            suspension.clone(),
+            test_frontend_invocation(&suspension),
+        )
     });
 
     let applied = apply_tool_results_to_session(&mut run_ctx, &[first, second], None, false)
@@ -2496,7 +2602,10 @@ fn test_execute_tools_missing_tool() {
         };
         let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new(); // Empty tools
 
-        let thread = execute_tools(thread, &result, &tools, true).await.unwrap().into_thread();
+        let thread = execute_tools(thread, &result, &tools, true)
+            .await
+            .unwrap()
+            .into_thread();
 
         assert_eq!(thread.message_count(), 1);
         let msg = &thread.messages[0];
@@ -2907,21 +3016,21 @@ fn test_set_agent_suspended_calls_persists_all_entries() {
         vec![
             {
                 let suspension = Suspension::new("int_b", "confirm").with_message("b");
-                SuspendedCall {
-                    call_id: "call_b".to_string(),
-                    tool_name: "echo".to_string(),
-                    invocation: test_frontend_invocation(&suspension),
-                    suspension,
-                }
+                build_suspended_call(
+                    "call_b",
+                    "echo",
+                    suspension.clone(),
+                    test_frontend_invocation(&suspension),
+                )
             },
             {
                 let suspension = Suspension::new("int_a", "confirm").with_message("a");
-                SuspendedCall {
-                    call_id: "call_a".to_string(),
-                    tool_name: "echo".to_string(),
-                    invocation: test_frontend_invocation(&suspension),
-                    suspension,
-                }
+                build_suspended_call(
+                    "call_a",
+                    "echo",
+                    suspension.clone(),
+                    test_frontend_invocation(&suspension),
+                )
             },
         ],
     )
@@ -8090,7 +8199,10 @@ fn test_parallel_tools_partial_failure() {
             Arc::new(FailingTool) as Arc<dyn Tool>,
         );
 
-        let thread = execute_tools(thread, &result, &tools, true).await.unwrap().into_thread();
+        let thread = execute_tools(thread, &result, &tools, true)
+            .await
+            .unwrap()
+            .into_thread();
 
         // Both tools produce messages.
         assert_eq!(
@@ -8165,7 +8277,10 @@ fn test_sequential_tools_partial_failure() {
             Arc::new(FailingTool) as Arc<dyn Tool>,
         );
 
-        let thread = execute_tools(thread, &result, &tools, false).await.unwrap().into_thread();
+        let thread = execute_tools(thread, &result, &tools, false)
+            .await
+            .unwrap()
+            .into_thread();
 
         assert_eq!(
             thread.message_count(),
@@ -9168,7 +9283,10 @@ fn test_sequential_tools_see_accumulated_state() {
         let tools = tool_map([CounterTool]);
 
         // Sequential execution: false = not parallel
-        let thread = execute_tools(thread, &result, &tools, false).await.unwrap().into_thread();
+        let thread = execute_tools(thread, &result, &tools, false)
+            .await
+            .unwrap()
+            .into_thread();
 
         // Tool 1 sees counter=0, sets to 3
         // Tool 2 sees counter=3 (accumulated!), sets to 10
@@ -9265,7 +9383,10 @@ fn test_parallel_tools_disjoint_paths_both_visible() {
         tools.insert("alpha".to_string(), Arc::new(AlphaTool));
         tools.insert("beta".to_string(), Arc::new(BetaTool));
 
-        let thread = execute_tools(thread, &result, &tools, true).await.unwrap().into_thread();
+        let thread = execute_tools(thread, &result, &tools, true)
+            .await
+            .unwrap()
+            .into_thread();
 
         let state = thread.rebuild_state().unwrap();
         assert_eq!(state["alpha"]["counter"], 111, "alpha tool patch applied");

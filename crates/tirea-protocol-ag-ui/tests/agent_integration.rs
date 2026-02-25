@@ -13,7 +13,7 @@ use tirea_agentos::contracts::SuspensionResponse;
 use tirea_agentos::contracts::ToolCallContext;
 use tirea_agentos::extensions::reminder::SystemReminder;
 use tirea_agentos::runtime::activity::ActivityHub;
-use tirea_agentos::runtime::loop_runner::{AgentLoopError, ExecuteToolsOutcome};
+use tirea_agentos::runtime::loop_runner::AgentLoopError;
 use tirea_contract::testing::TestFixture;
 use tirea_protocol_ag_ui::{interaction_to_ag_ui_events, Role, ToolExecutionLocation};
 use tirea_state::State;
@@ -2961,7 +2961,6 @@ fn test_agent_loop_error_all_variants() {
     let state_err = AgentLoopError::StateError("Failed to rebuild state".to_string());
     let display = state_err.to_string();
     assert!(display.contains("State") || display.contains("rebuild"));
-
 }
 
 // ============================================================================
@@ -4423,7 +4422,6 @@ fn make_agui_ctx(thread_id: &str, run_id: &str) -> AgUiEventContext {
     ctx
 }
 
-
 /// Test complete scenario: Permission confirmation via Suspension → AG-UI
 #[test]
 fn test_scenario_permission_confirmation_to_ag_ui() {
@@ -4590,8 +4588,86 @@ use tirea_agentos::contracts::runtime::control::{
 };
 use tirea_agentos::contracts::runtime::SuspendedCall;
 use tirea_agentos::contracts::thread::ToolCall;
-use tirea_agentos::contracts::{InvocationOrigin, ResponseRouting};
 use tirea_protocol_ag_ui::RunAgentInput;
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ResponseRouting {
+    ReplayOriginalTool,
+    UseAsToolResult,
+    PassToLLM,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum InvocationOrigin {
+    ToolCallIntercepted {
+        backend_call_id: String,
+        backend_tool_name: String,
+        backend_arguments: Value,
+    },
+    PluginInitiated {
+        plugin_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+struct FrontendToolInvocation {
+    call_id: String,
+    tool_name: String,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    arguments: Value,
+    origin: InvocationOrigin,
+    routing: ResponseRouting,
+}
+
+impl FrontendToolInvocation {
+    fn new(
+        call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        arguments: Value,
+        origin: InvocationOrigin,
+        routing: ResponseRouting,
+    ) -> Self {
+        Self {
+            call_id: call_id.into(),
+            tool_name: tool_name.into(),
+            arguments,
+            origin,
+            routing,
+        }
+    }
+}
+
+fn suspend_ticket_from_invocation(
+    invocation: FrontendToolInvocation,
+) -> tirea_agentos::contracts::plugin::phase::SuspendTicket {
+    let suspension = tirea_agentos::contracts::Suspension::new(
+        &invocation.call_id,
+        format!("tool:{}", invocation.tool_name),
+    )
+    .with_parameters(invocation.arguments.clone());
+    let resume_mode = match invocation.routing {
+        ResponseRouting::ReplayOriginalTool => {
+            tirea_agentos::contracts::runtime::ToolCallResumeMode::ReplayToolCall
+        }
+        ResponseRouting::UseAsToolResult => {
+            tirea_agentos::contracts::runtime::ToolCallResumeMode::UseDecisionAsToolResult
+        }
+        ResponseRouting::PassToLLM => {
+            tirea_agentos::contracts::runtime::ToolCallResumeMode::PassDecisionToTool
+        }
+    };
+    tirea_agentos::contracts::plugin::phase::SuspendTicket::new(
+        suspension,
+        tirea_agentos::contracts::runtime::PendingToolCall::new(
+            invocation.call_id,
+            invocation.tool_name,
+            invocation.arguments,
+        ),
+        resume_mode,
+    )
+}
 
 #[async_trait::async_trait]
 trait AgentPluginTestDispatch {
@@ -4681,7 +4757,7 @@ impl InteractionPlugin {
             .get(&call.call_id)
             .cloned()
             .or_else(|| self.responses.get(&call.suspension.id).cloned())
-            .or_else(|| self.responses.get(&call.invocation.call_id).cloned())
+            .or_else(|| self.responses.get(&call.pending.id).cloned())
     }
 
     fn cancel_reason(result: &Value) -> Option<String> {
@@ -4755,18 +4831,18 @@ impl AgentPlugin for InteractionPlugin {
             let mut state = states.remove(&call_id).unwrap_or_else(|| ToolCallState {
                 call_id: call_id.clone(),
                 tool_name: suspended_call.tool_name.clone(),
-                arguments: suspended_call.invocation.arguments.clone(),
+                arguments: suspended_call.arguments.clone(),
                 status: ToolCallStatus::Suspended,
-                resume_token: Some(suspended_call.invocation.call_id.clone()),
+                resume_token: Some(suspended_call.pending.id.clone()),
                 resume: None,
                 scratch: Value::Null,
                 updated_at,
             });
             state.call_id = call_id.clone();
             state.tool_name = suspended_call.tool_name.clone();
-            state.arguments = suspended_call.invocation.arguments.clone();
+            state.arguments = suspended_call.arguments.clone();
             state.status = ToolCallStatus::Resuming;
-            state.resume_token = Some(suspended_call.invocation.call_id.clone());
+            state.resume_token = Some(suspended_call.pending.id.clone());
             state.resume = Some(resume);
             state.updated_at = updated_at;
             states.insert(call_id.clone(), state);
@@ -4820,7 +4896,7 @@ impl AgentPlugin for TestFrontendToolPlugin {
         };
 
         let args = step.tool_args().cloned().unwrap_or_default();
-        let invocation = tirea_agentos::contracts::FrontendToolInvocation::new(
+        let invocation = FrontendToolInvocation::new(
             tool_call_id.to_string(),
             tool_name.to_string(),
             args.clone(),
@@ -4831,9 +4907,7 @@ impl AgentPlugin for TestFrontendToolPlugin {
             },
             ResponseRouting::ReplayOriginalTool,
         );
-        step.suspend(
-            tirea_agentos::contracts::plugin::phase::SuspendTicket::from_invocation(invocation),
-        );
+        step.suspend(suspend_ticket_from_invocation(invocation));
     }
 }
 
@@ -4854,13 +4928,52 @@ fn suspended_interaction(step: &StepContext<'_>) -> Option<Suspension> {
         .map(|ticket| ticket.suspension())
 }
 
-fn suspended_invocation(
-    step: &StepContext<'_>,
-) -> Option<tirea_agentos::contracts::FrontendToolInvocation> {
+fn suspended_invocation(step: &StepContext<'_>) -> Option<FrontendToolInvocation> {
+    let backend = step
+        .tool
+        .as_ref()
+        .map(|tool| (tool.id.clone(), tool.name.clone(), tool.args.clone()));
     step.tool
         .as_ref()
         .and_then(|tool| tool.suspend_ticket.as_ref())
-        .map(|ticket| ticket.invocation.clone())
+        .map(|ticket| FrontendToolInvocation {
+            call_id: ticket.pending.id.clone(),
+            tool_name: ticket.pending.name.clone(),
+            arguments: ticket.pending.arguments.clone(),
+            origin: if matches!(
+                ticket.resume_mode,
+                tirea_agentos::contracts::runtime::ToolCallResumeMode::ReplayToolCall
+            ) {
+                let (backend_call_id, backend_tool_name, backend_arguments) =
+                    backend.clone().unwrap_or_else(|| {
+                        (
+                            ticket.pending.id.clone(),
+                            ticket.pending.name.clone(),
+                            ticket.pending.arguments.clone(),
+                        )
+                    });
+                InvocationOrigin::ToolCallIntercepted {
+                    backend_call_id,
+                    backend_tool_name,
+                    backend_arguments,
+                }
+            } else {
+                InvocationOrigin::PluginInitiated {
+                    plugin_id: "test_frontend_tools".to_string(),
+                }
+            },
+            routing: match ticket.resume_mode {
+                tirea_agentos::contracts::runtime::ToolCallResumeMode::ReplayToolCall => {
+                    ResponseRouting::ReplayOriginalTool
+                }
+                tirea_agentos::contracts::runtime::ToolCallResumeMode::UseDecisionAsToolResult => {
+                    ResponseRouting::UseAsToolResult
+                }
+                tirea_agentos::contracts::runtime::ToolCallResumeMode::PassDecisionToTool => {
+                    ResponseRouting::PassToLLM
+                }
+            },
+        })
 }
 
 /// Test scenario: Complete frontend tool flow from request to AG-UI events
@@ -12516,27 +12629,22 @@ fn replay_calls_from_state(state: &Value) -> Vec<ToolCall> {
                 return None;
             }
             let call = suspended.get(&call_id)?;
-            let invocation = &call.invocation;
-            Some(match (&invocation.origin, &invocation.routing) {
-                (
-                    InvocationOrigin::ToolCallIntercepted {
-                        backend_call_id,
-                        backend_tool_name,
-                        backend_arguments,
-                    },
-                    ResponseRouting::ReplayOriginalTool,
-                ) => ToolCall::new(
-                    backend_call_id.clone(),
-                    backend_tool_name.clone(),
-                    backend_arguments.clone(),
-                ),
-                (InvocationOrigin::PluginInitiated { .. }, ResponseRouting::ReplayOriginalTool)
-                | (_, ResponseRouting::UseAsToolResult)
-                | (_, ResponseRouting::PassToLLM) => ToolCall::new(
-                    invocation.call_id.clone(),
-                    invocation.tool_name.clone(),
-                    invocation.arguments.clone(),
-                ),
+            Some(match call.resume_mode {
+                tirea_agentos::contracts::runtime::ToolCallResumeMode::ReplayToolCall => {
+                    ToolCall::new(
+                        call.call_id.clone(),
+                        call.tool_name.clone(),
+                        call.arguments.clone(),
+                    )
+                }
+                tirea_agentos::contracts::runtime::ToolCallResumeMode::UseDecisionAsToolResult
+                | tirea_agentos::contracts::runtime::ToolCallResumeMode::PassDecisionToTool => {
+                    ToolCall::new(
+                        call.call_id.clone(),
+                        call.tool_name.clone(),
+                        call.arguments.clone(),
+                    )
+                }
             })
         })
         .collect()
@@ -12585,11 +12693,36 @@ fn state_with_suspended_call(
             }
         })
     });
+    let invocation_arguments = invocation
+        .get("arguments")
+        .cloned()
+        .unwrap_or(Value::Object(Default::default()));
+    let backend_arguments = invocation
+        .get("origin")
+        .and_then(|origin| origin.get("backend_arguments"))
+        .cloned()
+        .unwrap_or_else(|| invocation_arguments.clone());
+    let pending = json!({
+        "id": invocation.get("call_id").and_then(Value::as_str).unwrap_or(call_id),
+        "name": invocation.get("tool_name").and_then(Value::as_str).unwrap_or(tool_name),
+        "arguments": invocation_arguments,
+    });
+    let resume_mode = match invocation
+        .get("routing")
+        .and_then(|routing| routing.get("strategy"))
+        .and_then(Value::as_str)
+    {
+        Some("use_as_tool_result") => "use_decision_as_tool_result",
+        Some("pass_to_llm") => "pass_decision_to_tool",
+        _ => "replay_tool_call",
+    };
     let entry = json!({
         "call_id": call_id,
         "tool_name": tool_name,
+        "arguments": backend_arguments,
         "suspension": suspension,
-        "invocation": invocation,
+        "pending": pending,
+        "resume_mode": resume_mode,
     });
     json!({
         "__suspended_tool_calls": {

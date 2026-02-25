@@ -122,9 +122,7 @@ pub use thread::{
 pub use event::AgentEvent;
 
 // interaction/lifecycle
-pub use interaction::{
-    FrontendToolInvocation, InvocationOrigin, ResponseRouting, Suspension, SuspensionResponse,
-};
+pub use interaction::{Suspension, SuspensionResponse};
 pub use lifecycle::{StoppedReason, TerminationReason};
 
 // tool
@@ -139,7 +137,7 @@ pub use plugin::{
     AfterInferenceContext, AfterToolExecuteContext, AgentPlugin, BeforeInferenceContext,
     BeforeToolExecuteContext, Phase, PhasePolicy, PluginPhaseContext, ResumeInputView, RunAction,
     RunEndContext, RunStartContext, StateEffect, StepContext, StepEndContext, StepOutcome,
-    StepStartContext, SuspendTicket, ToolAction, ToolContext, ToolGateDecision,
+    StepStartContext, SuspendTicket, ToolCallAction, ToolContext, ToolGateDecision,
 };
 
 // runtime

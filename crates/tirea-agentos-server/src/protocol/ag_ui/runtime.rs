@@ -11,13 +11,11 @@ use std::sync::Arc;
 use tirea_agentos::runtime::loop_runner::{
     ParallelToolExecutor, ResolvedRun, SequentialToolExecutor,
 };
-use tirea_contract::interaction::{
-    FrontendToolInvocation, InvocationOrigin, ResponseRouting,
-};
 use tirea_contract::plugin::phase::{
     BeforeInferenceContext, BeforeToolExecuteContext, SuspendTicket, ToolGateDecision,
 };
 use tirea_contract::plugin::AgentPlugin;
+use tirea_contract::runtime::{PendingToolCall, ToolCallResumeMode};
 use tirea_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_contract::ToolCallContext;
 
@@ -266,16 +264,13 @@ impl AgentPlugin for FrontendToolPendingPlugin {
         };
 
         let args = ctx.tool_args().cloned().unwrap_or_default();
-        let invocation = FrontendToolInvocation::new(
-            call_id,
-            tool_name.to_string(),
-            args,
-            InvocationOrigin::PluginInitiated {
-                plugin_id: self.id().to_string(),
-            },
-            ResponseRouting::UseAsToolResult,
-        );
-        ctx.suspend(SuspendTicket::from_invocation(invocation));
+        let suspension = tirea_contract::Suspension::new(&call_id, format!("tool:{tool_name}"))
+            .with_parameters(args.clone());
+        ctx.suspend(SuspendTicket::new(
+            suspension,
+            PendingToolCall::new(call_id, tool_name.to_string(), args),
+            ToolCallResumeMode::UseDecisionAsToolResult,
+        ));
     }
 }
 
@@ -514,8 +509,6 @@ mod tests {
 
     #[tokio::test]
     async fn frontend_pending_plugin_marks_frontend_call_as_pending() {
-        use tirea_contract::interaction::{InvocationOrigin, ResponseRouting};
-
         let plugin =
             FrontendToolPendingPlugin::new(["copyToClipboard".to_string()].into_iter().collect());
         let fixture = TestFixture::new();
@@ -536,21 +529,18 @@ mod tests {
             .expect("suspended interaction should exist");
         assert_eq!(pending.action, "tool:copyToClipboard");
 
-        // First-class FrontendToolInvocation should be set
-        let inv = step
+        let ticket = step
             .tool
             .as_ref()
             .and_then(|t| t.suspend_ticket.as_ref())
-            .map(|ticket| &ticket.invocation)
-            .expect("pending frontend invocation should exist");
-        assert_eq!(inv.call_id, "call_1");
-        assert_eq!(inv.tool_name, "copyToClipboard");
-        assert_eq!(inv.arguments["text"], "hello");
-        assert!(matches!(inv.routing, ResponseRouting::UseAsToolResult));
-        assert!(matches!(
-            inv.origin,
-            InvocationOrigin::PluginInitiated { .. }
-        ));
+            .expect("pending ticket should exist");
+        assert_eq!(ticket.pending.id, "call_1");
+        assert_eq!(ticket.pending.name, "copyToClipboard");
+        assert_eq!(ticket.pending.arguments["text"], "hello");
+        assert_eq!(
+            ticket.resume_mode,
+            tirea_contract::runtime::ToolCallResumeMode::UseDecisionAsToolResult
+        );
     }
 
     #[tokio::test]

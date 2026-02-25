@@ -1,9 +1,8 @@
 use super::*;
-use crate::interaction::{
-    FrontendToolInvocation, InvocationOrigin, ResponseRouting, Suspension,
-};
+use crate::interaction::Suspension;
 use crate::lifecycle::TerminationReason;
 use crate::runtime::result::StreamResult;
+use crate::runtime::{PendingToolCall, ToolCallResumeMode};
 use crate::testing::TestFixture;
 use crate::thread::ToolCall;
 use crate::tool::contract::{ToolDescriptor, ToolResult};
@@ -23,16 +22,11 @@ fn test_suspend_ticket(interaction: Suspension) -> SuspendTicket {
         .strip_prefix("tool:")
         .unwrap_or("TestSuspend")
         .to_string();
-    let invocation = FrontendToolInvocation::new(
-        interaction.id.clone(),
-        tool_name,
-        interaction.parameters.clone(),
-        InvocationOrigin::PluginInitiated {
-            plugin_id: "phase_tests".to_string(),
-        },
-        ResponseRouting::PassToLLM,
-    );
-    SuspendTicket::from_invocation(invocation)
+    SuspendTicket::new(
+        interaction.clone(),
+        PendingToolCall::new(interaction.id, tool_name, interaction.parameters),
+        ToolCallResumeMode::PassDecisionToTool,
+    )
 }
 
 // =========================================================================
@@ -346,14 +340,6 @@ fn test_allow_deny_ask_transitions_are_mutually_exclusive() {
     assert!(!ctx.tool_blocked());
     assert!(!ctx.tool_pending());
     assert!(ctx.tool.as_ref().unwrap().suspend_ticket.is_none());
-    assert!(ctx
-        .tool
-        .as_ref()
-        .unwrap()
-        .suspend_ticket
-        .as_ref()
-        .map(|ticket| &ticket.invocation)
-        .is_none());
 }
 
 #[test]
@@ -741,7 +727,7 @@ fn test_tool_context_suspend_ticket() {
 }
 
 #[test]
-fn test_suspend_with_invocation_direct() {
+fn test_suspend_with_pending_direct() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
@@ -749,55 +735,36 @@ fn test_suspend_with_invocation_direct() {
     ctx.tool = Some(ToolContext::new(&call));
     ctx.block("old deny state");
 
-    let invocation = FrontendToolInvocation::new(
-        "call_copy",
-        "copyToClipboard",
-        json!({"text": "hello"}),
-        InvocationOrigin::PluginInitiated {
-            plugin_id: "agui_frontend_tools".to_string(),
-        },
-        ResponseRouting::UseAsToolResult,
-    );
-    ctx.suspend(SuspendTicket::from_invocation(invocation));
+    let interaction = Suspension::new("call_copy", "tool:copyToClipboard")
+        .with_parameters(json!({"text":"hello"}));
+    ctx.suspend(SuspendTicket::new(
+        interaction.clone(),
+        PendingToolCall::new("call_copy", "copyToClipboard", json!({"text":"hello"})),
+        ToolCallResumeMode::UseDecisionAsToolResult,
+    ));
 
     assert!(ctx.tool_pending());
     assert!(!ctx.tool_blocked());
     assert!(ctx.tool.as_ref().unwrap().block_reason.is_none());
 
-    let invocation = ctx
+    let pending = ctx
         .tool
         .as_ref()
         .unwrap()
         .suspend_ticket
         .as_ref()
-        .map(|ticket| &ticket.invocation)
-        .expect("pending frontend invocation should exist");
-    assert_eq!(invocation.call_id, "call_copy");
-    assert_eq!(invocation.tool_name, "copyToClipboard");
-    assert!(matches!(
-        invocation.routing,
-        ResponseRouting::UseAsToolResult
-    ));
-    assert!(matches!(
-        invocation.origin,
-        InvocationOrigin::PluginInitiated { .. }
-    ));
-
-    // Backward-compat Suspension should also be set
-    let interaction = ctx
-        .tool
-        .as_ref()
-        .unwrap()
-        .suspend_ticket
-        .as_ref()
-        .map(|ticket| ticket.suspension())
-        .unwrap();
-    assert_eq!(interaction.id, "call_copy");
-    assert_eq!(interaction.action, "tool:copyToClipboard");
+        .map(|ticket| (&ticket.pending, ticket.resume_mode, ticket.suspension()))
+        .expect("pending ticket should exist");
+    assert_eq!(pending.0.id, "call_copy");
+    assert_eq!(pending.0.name, "copyToClipboard");
+    assert_eq!(pending.0.arguments, json!({"text":"hello"}));
+    assert_eq!(pending.1, ToolCallResumeMode::UseDecisionAsToolResult);
+    assert_eq!(pending.2.id, "call_copy");
+    assert_eq!(pending.2.action, "tool:copyToClipboard");
 }
 
 #[test]
-fn test_suspend_with_invocation_replay_original_tool() {
+fn test_suspend_with_pending_replay_tool_call() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
@@ -805,18 +772,17 @@ fn test_suspend_with_invocation_replay_original_tool() {
     ctx.tool = Some(ToolContext::new(&call));
 
     let call_id = "fc_generated";
-    let invocation = FrontendToolInvocation::new(
-        call_id,
-        "PermissionConfirm",
-        json!({"tool_name": "write_file", "tool_args": {"path": "a.txt"}}),
-        InvocationOrigin::ToolCallIntercepted {
-            backend_call_id: "call_write".to_string(),
-            backend_tool_name: "write_file".to_string(),
-            backend_arguments: json!({"path": "a.txt"}),
-        },
-        ResponseRouting::ReplayOriginalTool,
-    );
-    ctx.suspend(SuspendTicket::from_invocation(invocation));
+    let interaction = Suspension::new(call_id, "tool:PermissionConfirm")
+        .with_parameters(json!({"tool_name": "write_file", "tool_args": {"path": "a.txt"}}));
+    ctx.suspend(SuspendTicket::new(
+        interaction,
+        PendingToolCall::new(
+            call_id,
+            "PermissionConfirm",
+            json!({"tool_name": "write_file", "tool_args": {"path": "a.txt"}}),
+        ),
+        ToolCallResumeMode::ReplayToolCall,
+    ));
 
     assert!(ctx.tool_pending());
     // ReplayOriginalTool should use a dedicated frontend call id.
@@ -826,48 +792,31 @@ fn test_suspend_with_invocation_replay_original_tool() {
     );
     assert_ne!(call_id, "call_write");
 
-    let invocation = ctx
+    let pending = ctx
         .tool
         .as_ref()
         .unwrap()
         .suspend_ticket
         .as_ref()
-        .map(|ticket| &ticket.invocation)
-        .expect("pending frontend invocation should exist");
-    assert_eq!(invocation.call_id, call_id);
-    assert_eq!(invocation.tool_name, "PermissionConfirm");
-    assert!(matches!(
-        invocation.routing,
-        ResponseRouting::ReplayOriginalTool
-    ));
-    match &invocation.origin {
-        InvocationOrigin::ToolCallIntercepted {
-            backend_call_id,
-            backend_tool_name,
-            ..
-        } => {
-            assert_eq!(backend_call_id, "call_write");
-            assert_eq!(backend_tool_name, "write_file");
-        }
-        other => panic!("expected ToolCallIntercepted, got: {other:?}"),
-    }
+        .map(|ticket| (&ticket.pending, ticket.resume_mode))
+        .expect("pending ticket should exist");
+    assert_eq!(pending.0.id, call_id);
+    assert_eq!(pending.0.name, "PermissionConfirm");
+    assert_eq!(pending.1, ToolCallResumeMode::ReplayToolCall);
 }
 
 #[test]
-fn test_suspend_invocation_without_tool_context_noop() {
+fn test_suspend_pending_without_tool_context_noop() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    let invocation = FrontendToolInvocation::new(
-        "fc_noop",
-        "PermissionConfirm",
-        json!({}),
-        InvocationOrigin::PluginInitiated {
-            plugin_id: "agui_frontend_tools".to_string(),
-        },
-        ResponseRouting::UseAsToolResult,
-    );
-    ctx.suspend(SuspendTicket::from_invocation(invocation));
+    let interaction =
+        Suspension::new("fc_noop", "tool:PermissionConfirm").with_parameters(json!({}));
+    ctx.suspend(SuspendTicket::new(
+        interaction,
+        PendingToolCall::new("fc_noop", "PermissionConfirm", json!({})),
+        ToolCallResumeMode::UseDecisionAsToolResult,
+    ));
     assert!(!ctx.tool_pending());
 }
 

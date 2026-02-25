@@ -53,16 +53,14 @@ use crate::contracts::plugin::phase::Phase;
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
     state_paths::RUN_LIFECYCLE_STATE_PATH, DecisionReplayPolicy, ResumeDecisionAction,
-    RunLifecycleStatus, StreamResult, SuspendedCall, ToolCallResume, ToolCallStatus,
-    ToolExecutionRequest, ToolExecutionResult,
+    RunLifecycleStatus, StreamResult, SuspendedCall, ToolCallResume, ToolCallResumeMode,
+    ToolCallStatus, ToolExecutionRequest, ToolExecutionResult,
 };
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
 use crate::contracts::tool::{Tool, ToolResult};
 use crate::contracts::RunContext;
-use crate::contracts::{
-    AgentEvent, FrontendToolInvocation, RunAction, TerminationReason, ToolCallDecision,
-};
+use crate::contracts::{AgentEvent, RunAction, TerminationReason, ToolCallDecision};
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
 use crate::runtime::activity::ActivityHub;
 
@@ -79,7 +77,6 @@ use uuid::Uuid;
 
 #[cfg(test)]
 use crate::contracts::plugin::AgentPlugin;
-pub use config::{LlmEventStream, LlmExecutor};
 pub use crate::contracts::runtime::ToolExecutor;
 pub use crate::runtime::run_context::{
     await_or_cancel, is_cancelled, CancelAware, RunCancellationToken, StateCommitError,
@@ -88,6 +85,7 @@ pub use crate::runtime::run_context::{
 };
 use config::StaticStepToolProvider;
 pub use config::{AgentConfig, GenaiLlmExecutor, LlmRetryPolicy};
+pub use config::{LlmEventStream, LlmExecutor};
 pub use config::{StepToolInput, StepToolProvider, StepToolSnapshot};
 #[cfg(test)]
 use core::build_messages;
@@ -97,7 +95,6 @@ use core::{
     transition_tool_call_state, upsert_tool_call_state, ToolCallStateSeed, ToolCallStateTransition,
 };
 pub use outcome::{tool_map, tool_map_from_arc, AgentLoopError};
-pub use tool_exec::ExecuteToolsOutcome;
 pub use outcome::{LoopOutcome, LoopStats, LoopUsage};
 #[cfg(test)]
 use plugin_runtime::emit_phase_checked;
@@ -113,6 +110,7 @@ use tirea_state::{Op, Patch, Path, TrackedPatch};
 use tokio_util::sync::CancellationToken;
 #[cfg(test)]
 use tool_exec::execute_tools_parallel_with_phases;
+pub use tool_exec::ExecuteToolsOutcome;
 use tool_exec::{
     apply_tool_results_impl, apply_tool_results_to_session, execute_single_tool_with_phases,
     scope_with_tool_caller_context, step_metadata, ToolPhaseContext,
@@ -524,20 +522,17 @@ pub(super) async fn complete_step_after_inference(
     })
 }
 
-/// Emit events for a pending frontend tool invocation.
-///
-/// Emits standard `ToolCallStart` + `ToolCallReady` events using the frontend
-/// invocation's identity, so frontend tools appear as regular tool calls.
-pub(super) fn pending_tool_events(invocation: &FrontendToolInvocation) -> Vec<AgentEvent> {
+/// Emit events for a pending tool-call projection.
+pub(super) fn pending_tool_events(call: &SuspendedCall) -> Vec<AgentEvent> {
     vec![
         AgentEvent::ToolCallStart {
-            id: invocation.call_id.clone(),
-            name: invocation.tool_name.clone(),
+            id: call.pending.id.clone(),
+            name: call.pending.name.clone(),
         },
         AgentEvent::ToolCallReady {
-            id: invocation.call_id.clone(),
-            name: invocation.tool_name.clone(),
-            arguments: invocation.arguments.clone(),
+            id: call.pending.id.clone(),
+            name: call.pending.name.clone(),
+            arguments: call.pending.arguments.clone(),
         },
     ]
 }
@@ -565,7 +560,7 @@ pub(super) fn suspended_call_pending_events(run_ctx: &RunContext) -> Vec<AgentEv
     calls.sort_by(|left, right| left.call_id.cmp(&right.call_id));
     calls
         .into_iter()
-        .flat_map(|call| pending_tool_events(&call.invocation))
+        .flat_map(|call| pending_tool_events(&call))
         .collect()
 }
 
@@ -583,7 +578,7 @@ pub(super) fn suspended_call_pending_events_for_ids(
     calls.sort_by(|left, right| left.call_id.cmp(&right.call_id));
     calls
         .into_iter()
-        .flat_map(|call| pending_tool_events(&call.invocation))
+        .flat_map(|call| pending_tool_events(&call))
         .collect()
 }
 
@@ -683,7 +678,9 @@ fn stream_result_from_chat_response(response: &genai::chat::ChatResponse) -> Str
     StreamResult {
         text,
         tool_calls,
-        usage: Some(crate::runtime::streaming::token_usage_from_genai(&response.usage)),
+        usage: Some(crate::runtime::streaming::token_usage_from_genai(
+            &response.usage,
+        )),
     }
 }
 
@@ -995,7 +992,7 @@ async fn drain_resuming_tool_calls_and_replay(
                         state_changed = true;
                         run_ctx.add_thread_patch(patch);
                     }
-                    for event in pending_tool_events(&next_suspended_call.invocation) {
+                    for event in pending_tool_events(&next_suspended_call) {
                         events.push(event);
                     }
                     if next_suspended_call.call_id != call_id {
@@ -1066,7 +1063,7 @@ async fn commit_run_start_and_drain_replay(
     Ok(run_start_drain)
 }
 
-fn normalize_frontend_tool_result(
+fn normalize_decision_tool_result(
     response: &serde_json::Value,
     fallback_arguments: &serde_json::Value,
 ) -> serde_json::Value {
@@ -1131,35 +1128,18 @@ fn replay_tool_call_for_resolution(
         return None;
     }
 
-    let invocation = &suspended_call.invocation;
-    match invocation.routing {
-        crate::contracts::ResponseRouting::ReplayOriginalTool => match &invocation.origin {
-            crate::contracts::InvocationOrigin::ToolCallIntercepted {
-                backend_call_id,
-                backend_tool_name,
-                backend_arguments,
-            } => {
-                return Some(ToolCall::new(
-                    backend_call_id.clone(),
-                    backend_tool_name.clone(),
-                    backend_arguments.clone(),
-                ));
-            }
-            crate::contracts::InvocationOrigin::PluginInitiated { .. } => {
-                return Some(ToolCall::new(
-                    invocation.call_id.clone(),
-                    invocation.tool_name.clone(),
-                    invocation.arguments.clone(),
-                ));
-            }
-        },
-        crate::contracts::ResponseRouting::UseAsToolResult
-        | crate::contracts::ResponseRouting::PassToLLM => {
-            return Some(ToolCall::new(
-                invocation.call_id.clone(),
-                invocation.tool_name.clone(),
-                normalize_frontend_tool_result(&decision.result, &invocation.arguments),
-            ));
+    match suspended_call.resume_mode {
+        ToolCallResumeMode::ReplayToolCall => Some(ToolCall::new(
+            suspended_call.call_id.clone(),
+            suspended_call.tool_name.clone(),
+            suspended_call.arguments.clone(),
+        )),
+        ToolCallResumeMode::UseDecisionAsToolResult | ToolCallResumeMode::PassDecisionToTool => {
+            Some(ToolCall::new(
+                suspended_call.call_id.clone(),
+                suspended_call.tool_name.clone(),
+                normalize_decision_tool_result(&decision.result, &suspended_call.arguments),
+            ))
         }
     }
 }
@@ -1192,13 +1172,13 @@ fn upsert_tool_call_lifecycle_state(
         ToolCallStateSeed {
             call_id: &suspended_call.call_id,
             tool_name: &suspended_call.tool_name,
-            arguments: &suspended_call.invocation.arguments,
+            arguments: &suspended_call.arguments,
             status: ToolCallStatus::Suspended,
-            resume_token: Some(suspended_call.invocation.call_id.clone()),
+            resume_token: Some(suspended_call.pending.id.clone()),
         },
         ToolCallStateTransition {
             status,
-            resume_token: Some(suspended_call.invocation.call_id.clone()),
+            resume_token: Some(suspended_call.pending.id.clone()),
             resume,
             updated_at: current_unix_millis(),
         },
@@ -1231,7 +1211,8 @@ pub(super) fn resolve_suspended_call(
                 .values()
                 .find(|call| {
                     call.suspension.id == response.target_id
-                        || call.invocation.call_id == response.target_id
+                        || call.pending.id == response.target_id
+                        || call.call_id == response.target_id
                 })
                 .cloned()
         });

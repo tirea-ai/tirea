@@ -751,20 +751,12 @@ pub(super) fn run_stream(
             // Emit suspended-call events first.
             for exec_result in &results {
                 if let Some(ref suspended_call) = exec_result.suspended_call {
-                    // UseAsToolResult frontend tools (e.g. deleteTask) reuse the
-                    // LLM's original call_id, so ToolCallStart was already emitted
-                    // during the LLM stream. Re-emitting here would duplicate it.
-                    //
-                    // Other routings (e.g. ReplayOriginalTool for PermissionConfirm)
-                    // use a new fc_xxx call_id that the LLM never streamed, so we
-                    // MUST emit ToolCallStart/Ready here for the frontend to see it.
-                    if matches!(
-                        suspended_call.invocation.routing,
-                        crate::contracts::interaction::ResponseRouting::UseAsToolResult
-                    ) {
+                    // If pending projection reuses the original call id, start/ready
+                    // was already streamed from model output.
+                    if suspended_call.pending.id == suspended_call.call_id {
                         continue;
                     }
-                    for event in pending_tool_events(&suspended_call.invocation) {
+                    for event in pending_tool_events(suspended_call) {
                         yield emitter.emit_existing(event);
                     }
                 }

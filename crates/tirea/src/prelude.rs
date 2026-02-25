@@ -58,7 +58,7 @@ pub use crate::contracts::plugin::AgentPlugin;
 
 // Phase types for plugins
 pub use crate::contracts::plugin::phase::{
-    Phase, RunAction, StateEffect, StepContext, StepOutcome, ToolAction, ToolContext,
+    Phase, RunAction, StateEffect, StepContext, StepOutcome, ToolCallAction, ToolContext,
 };
 pub use crate::contracts::{Suspension, SuspensionResponse};
 

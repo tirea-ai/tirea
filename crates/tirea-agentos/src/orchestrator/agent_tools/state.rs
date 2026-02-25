@@ -1,11 +1,8 @@
 use super::*;
-use tirea_contract::interaction::{
-    FrontendToolInvocation, InvocationOrigin, ResponseRouting,
-};
 use tirea_contract::plugin::phase::PluginPhaseContext;
 use tirea_contract::runtime::control::{
-    ResumeDecisionAction, SuspendedCall, SuspendedToolCallsState, ToolCallResume, ToolCallState,
-    ToolCallStatesState, ToolCallStatus,
+    PendingToolCall, ResumeDecisionAction, SuspendedCall, SuspendedToolCallsState, ToolCallResume,
+    ToolCallResumeMode, ToolCallState, ToolCallStatesState, ToolCallStatus,
 };
 use tirea_contract::runtime::state_paths::SUSPENDED_TOOL_CALLS_STATE_PATH;
 use tirea_state::State;
@@ -105,20 +102,6 @@ pub(super) fn has_suspended_recovery_interaction(state: &Value) -> bool {
         .any(|call| call.suspension.action == AGENT_RECOVERY_INTERACTION_ACTION)
 }
 
-fn recovery_invocation(interaction: &Suspension) -> FrontendToolInvocation {
-    FrontendToolInvocation::new(
-        interaction.id.clone(),
-        AGENT_RECOVERY_INTERACTION_ACTION,
-        interaction.parameters.clone(),
-        InvocationOrigin::ToolCallIntercepted {
-            backend_call_id: interaction.id.clone(),
-            backend_tool_name: AGENT_RUN_TOOL_ID.to_string(),
-            backend_arguments: interaction.parameters.clone(),
-        },
-        ResponseRouting::ReplayOriginalTool,
-    )
-}
-
 pub(super) fn set_suspended_recovery_interaction(
     step: &impl PluginPhaseContext,
     interaction: Suspension,
@@ -128,13 +111,21 @@ pub(super) fn set_suspended_recovery_interaction(
         return;
     };
     let call_id = interaction.id.clone();
+    let call_arguments = interaction.parameters.clone();
+    let pending = PendingToolCall::new(
+        interaction.id.clone(),
+        AGENT_RECOVERY_INTERACTION_ACTION,
+        call_arguments.clone(),
+    );
     calls.insert(
         call_id.clone(),
         SuspendedCall {
             call_id,
             tool_name: AGENT_RUN_TOOL_ID.to_string(),
-            invocation: recovery_invocation(&interaction),
+            arguments: call_arguments,
             suspension: interaction,
+            pending,
+            resume_mode: ToolCallResumeMode::ReplayToolCall,
         },
     );
     let _ = state.set_calls(calls);
@@ -153,13 +144,21 @@ pub(super) fn schedule_recovery_replay(
 
     if !suspended_calls.contains_key(&call_id) {
         let interaction = build_recovery_interaction(run_id, run);
+        let interaction_arguments = interaction.parameters.clone();
+        let pending = PendingToolCall::new(
+            call_id.clone(),
+            AGENT_RECOVERY_INTERACTION_ACTION,
+            interaction_arguments.clone(),
+        );
         suspended_calls.insert(
             call_id.clone(),
             SuspendedCall {
                 call_id: call_id.clone(),
                 tool_name: AGENT_RUN_TOOL_ID.to_string(),
-                invocation: recovery_invocation(&interaction),
+                arguments: interaction_arguments,
                 suspension: interaction,
+                pending,
+                resume_mode: ToolCallResumeMode::ReplayToolCall,
             },
         );
     } else if suspended_calls
@@ -170,9 +169,7 @@ pub(super) fn schedule_recovery_replay(
             call.tool_name = AGENT_RUN_TOOL_ID.to_string();
         }
     }
-    let invocation = suspended_calls
-        .get(&call_id)
-        .map(|call| call.invocation.clone());
+    let suspended_call = suspended_calls.get(&call_id).cloned();
     let _ = suspended_state.set_calls(suspended_calls);
 
     let updated_at = current_unix_millis();
@@ -184,7 +181,7 @@ pub(super) fn schedule_recovery_replay(
         updated_at,
     };
 
-    if let Some(invocation) = invocation {
+    if let Some(suspended_call) = suspended_call {
         let tool_states = step.state_of::<ToolCallStatesState>();
         if let Ok(mut calls) = tool_states.calls() {
             calls.insert(
@@ -192,9 +189,9 @@ pub(super) fn schedule_recovery_replay(
                 ToolCallState {
                     call_id: call_id.clone(),
                     tool_name: AGENT_RUN_TOOL_ID.to_string(),
-                    arguments: invocation.arguments.clone(),
+                    arguments: suspended_call.arguments.clone(),
                     status: ToolCallStatus::Resuming,
-                    resume_token: Some(invocation.call_id),
+                    resume_token: Some(suspended_call.pending.id),
                     resume: Some(resume.clone()),
                     scratch: serde_json::Value::Null,
                     updated_at,

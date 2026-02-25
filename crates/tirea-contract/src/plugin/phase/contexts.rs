@@ -1,6 +1,6 @@
-use super::{Phase, RunAction, StepContext, SuspendTicket, ToolAction, ToolGateDecision};
-use crate::lifecycle::TerminationReason;
+use super::{Phase, RunAction, StepContext, SuspendTicket, ToolCallAction, ToolGateDecision};
 use crate::io::ResumeDecisionAction;
+use crate::lifecycle::TerminationReason;
 use crate::runtime::result::StreamResult;
 use crate::runtime::ToolCallResume;
 use crate::thread::Message;
@@ -188,9 +188,9 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
 
     pub fn decision(&self) -> ToolGateDecision {
         match self.step.tool_action() {
-            ToolAction::Proceed => ToolGateDecision::Proceed,
-            ToolAction::Suspend(ticket) => ToolGateDecision::Suspend(ticket),
-            ToolAction::Block { reason } => ToolGateDecision::Block { reason },
+            ToolCallAction::Proceed => ToolGateDecision::Proceed,
+            ToolCallAction::Suspend(ticket) => ToolGateDecision::Suspend(ticket),
+            ToolCallAction::Block { reason } => ToolGateDecision::Block { reason },
         }
     }
 

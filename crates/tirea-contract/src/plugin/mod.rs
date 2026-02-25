@@ -8,5 +8,5 @@ pub use phase::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
     BeforeToolExecuteContext, Phase, PhasePolicy, PluginPhaseContext, ResumeInputView, RunAction,
     RunEndContext, RunStartContext, StateEffect, StepContext, StepEndContext, StepOutcome,
-    StepStartContext, SuspendTicket, ToolAction, ToolContext, ToolGateDecision,
+    StepStartContext, SuspendTicket, ToolCallAction, ToolContext, ToolGateDecision,
 };

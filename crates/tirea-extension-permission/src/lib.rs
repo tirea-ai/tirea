@@ -28,15 +28,13 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
-use tirea_contract::interaction::{
-    FrontendToolInvocation, InvocationOrigin, ResponseRouting,
-};
 use tirea_contract::io::ResumeDecisionAction;
 use tirea_contract::plugin::phase::{
     BeforeInferenceContext, BeforeToolExecuteContext, PluginPhaseContext, SuspendTicket,
     ToolGateDecision,
 };
 use tirea_contract::plugin::AgentPlugin;
+use tirea_contract::runtime::{PendingToolCall, ToolCallResumeMode};
 use tirea_contract::tool::context::ToolCallContext;
 use tirea_state::State;
 
@@ -188,18 +186,15 @@ impl AgentPlugin for PermissionPlugin {
                     "tool_name": tool_id,
                     "tool_args": tool_args.clone(),
                 });
-                let invocation = FrontendToolInvocation::new(
-                    format!("fc_{call_id}"),
-                    PERMISSION_CONFIRM_TOOL_NAME,
-                    arguments,
-                    InvocationOrigin::ToolCallIntercepted {
-                        backend_call_id: call_id,
-                        backend_tool_name: tool_id.to_string(),
-                        backend_arguments: tool_args,
-                    },
-                    ResponseRouting::ReplayOriginalTool,
-                );
-                step.suspend(SuspendTicket::from_invocation(invocation));
+                let pending_call_id = format!("fc_{call_id}");
+                let suspension =
+                    tirea_contract::Suspension::new(&pending_call_id, "tool:PermissionConfirm")
+                        .with_parameters(arguments.clone());
+                step.suspend(SuspendTicket::new(
+                    suspension,
+                    PendingToolCall::new(pending_call_id, PERMISSION_CONFIRM_TOOL_NAME, arguments),
+                    ToolCallResumeMode::ReplayToolCall,
+                ));
             }
         }
     }
@@ -487,8 +482,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_ask() {
-        use tirea_contract::interaction::{InvocationOrigin, ResponseRouting};
-
         let fixture = TestFixture::new_with_state(
             json!({ "permissions": { "default_behavior": "ask", "tools": {} } }),
         );
@@ -515,49 +508,20 @@ mod tests {
             format!("tool:{}", PERMISSION_CONFIRM_TOOL_NAME)
         );
 
-        // Should have first-class FrontendToolInvocation
-        let inv = step
+        let ticket = step
             .tool
             .as_ref()
             .and_then(|t| t.suspend_ticket.as_ref())
-            .map(|ticket| &ticket.invocation)
-            .expect("pending frontend invocation should exist");
-        assert_eq!(inv.tool_name, PERMISSION_CONFIRM_TOOL_NAME);
-        assert_eq!(inv.arguments["tool_name"], "test_tool");
-        assert_eq!(inv.arguments["tool_args"]["path"], "a.txt");
-
-        // Origin should be ToolCallIntercepted with original backend tool info
-        match &inv.origin {
-            InvocationOrigin::ToolCallIntercepted {
-                backend_call_id,
-                backend_tool_name,
-                backend_arguments,
-            } => {
-                assert_eq!(backend_call_id, "call_1");
-                assert_eq!(backend_tool_name, "test_tool");
-                assert_eq!(backend_arguments["path"], "a.txt");
-            }
-            _ => panic!("Expected ToolCallIntercepted origin"),
-        }
-
-        // Routing should be ReplayOriginalTool without embedded state patches.
-        match &inv.routing {
-            ResponseRouting::ReplayOriginalTool => {}
-            _ => panic!("Expected ReplayOriginalTool routing"),
-        }
-
-        let routing_json = serde_json::to_value(&inv.routing).expect("routing should serialize");
-        assert!(
-            routing_json.get("state_patches").is_none(),
-            "routing must not serialize legacy state_patches field: {routing_json:?}"
-        );
+            .expect("pending suspend ticket should exist");
+        assert_eq!(ticket.pending.id, "fc_call_1");
+        assert_eq!(ticket.pending.name, PERMISSION_CONFIRM_TOOL_NAME);
+        assert_eq!(ticket.pending.arguments["tool_name"], "test_tool");
+        assert_eq!(ticket.pending.arguments["tool_args"]["path"], "a.txt");
+        assert_eq!(ticket.resume_mode, ToolCallResumeMode::ReplayToolCall);
     }
 
     #[tokio::test]
     async fn test_permission_plugin_skips_when_tool_already_pending() {
-        use tirea_contract::interaction::{
-            FrontendToolInvocation, InvocationOrigin, ResponseRouting,
-        };
         use tirea_contract::plugin::phase::SuspendTicket;
 
         let fixture = TestFixture::new_with_state(
@@ -567,16 +531,13 @@ mod tests {
         let call = ToolCall::new("call_1", "copyToClipboard", json!({"text": "hello"}));
         step.tool = Some(ToolContext::new(&call));
 
-        let invocation = FrontendToolInvocation::new(
-            "call_1",
-            "copyToClipboard",
-            json!({"text": "hello"}),
-            InvocationOrigin::PluginInitiated {
-                plugin_id: "agui_frontend_tools".to_string(),
-            },
-            ResponseRouting::UseAsToolResult,
-        );
-        step.suspend(SuspendTicket::from_invocation(invocation));
+        let interaction = tirea_contract::Suspension::new("call_1", "tool:copyToClipboard")
+            .with_parameters(json!({"text": "hello"}));
+        step.suspend(SuspendTicket::new(
+            interaction,
+            PendingToolCall::new("call_1", "copyToClipboard", json!({"text": "hello"})),
+            ToolCallResumeMode::UseDecisionAsToolResult,
+        ));
 
         let plugin = PermissionPlugin;
         run_before_tool_execute(&plugin, &mut step).await;
@@ -584,13 +545,13 @@ mod tests {
 
         assert!(step.tool_pending());
         assert!(!step.tool_blocked());
-        let inv = step
+        let pending = step
             .tool
             .as_ref()
             .and_then(|t| t.suspend_ticket.as_ref())
-            .map(|ticket| &ticket.invocation)
-            .expect("pending frontend invocation should exist");
-        assert_eq!(inv.tool_name, "copyToClipboard");
+            .map(|ticket| &ticket.pending)
+            .expect("pending tool call should exist");
+        assert_eq!(pending.name, "copyToClipboard");
     }
 
     #[tokio::test]

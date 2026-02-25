@@ -1,5 +1,6 @@
-use crate::interaction::{FrontendToolInvocation, Suspension};
+use crate::interaction::Suspension;
 use crate::lifecycle::TerminationReason;
+use crate::runtime::{PendingToolCall, ToolCallResumeMode};
 use tirea_state::TrackedPatch;
 
 /// Execution phase in the agent loop.
@@ -110,17 +111,48 @@ pub enum RunAction {
 /// Suspension payload for `ToolGateDecision::Suspend`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SuspendTicket {
-    pub invocation: FrontendToolInvocation,
+    /// External suspension payload.
+    pub suspension: Suspension,
+    /// Pending call projection emitted to event stream.
+    pub pending: PendingToolCall,
+    /// Resume mapping strategy.
+    pub resume_mode: ToolCallResumeMode,
 }
 
 impl SuspendTicket {
-    pub fn from_invocation(invocation: FrontendToolInvocation) -> Self {
-        Self { invocation }
+    pub fn new(
+        suspension: Suspension,
+        pending: PendingToolCall,
+        resume_mode: ToolCallResumeMode,
+    ) -> Self {
+        Self {
+            suspension,
+            pending,
+            resume_mode,
+        }
+    }
+
+    pub fn use_decision_as_tool_result(suspension: Suspension, pending: PendingToolCall) -> Self {
+        Self::new(
+            suspension,
+            pending,
+            ToolCallResumeMode::UseDecisionAsToolResult,
+        )
+    }
+
+    pub fn with_resume_mode(mut self, resume_mode: ToolCallResumeMode) -> Self {
+        self.resume_mode = resume_mode;
+        self
+    }
+
+    pub fn with_pending(mut self, pending: PendingToolCall) -> Self {
+        self.pending = pending;
+        self
     }
 
     /// Derived generic suspension payload for runtime pending outcomes.
     pub fn suspension(&self) -> Suspension {
-        self.invocation.to_suspension()
+        self.suspension.clone()
     }
 }
 
@@ -138,15 +170,15 @@ impl ToolGateDecision {
     }
 }
 
-/// Tool-level control action emitted by plugins.
+/// Tool-call level control action emitted by plugins.
 #[derive(Debug, Clone, PartialEq)]
-pub enum ToolAction {
+pub enum ToolCallAction {
     Proceed,
     Suspend(Box<SuspendTicket>),
     Block { reason: String },
 }
 
-impl ToolAction {
+impl ToolCallAction {
     pub fn suspend(ticket: SuspendTicket) -> Self {
         Self::Suspend(Box::new(ticket))
     }

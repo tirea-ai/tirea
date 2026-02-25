@@ -10,6 +10,7 @@ use super::{
 use crate::contracts::plugin::phase::{Phase, StateEffect, StepContext, ToolContext};
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::ActivityManager;
+use crate::contracts::runtime::SuspendedCall;
 use crate::contracts::runtime::{
     DecisionReplayPolicy, StreamResult, ToolCallOutcome, ToolCallStatus, ToolExecution,
     ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
@@ -18,7 +19,6 @@ use crate::contracts::thread::Thread;
 use crate::contracts::thread::{Message, MessageMetadata, ToolCall};
 use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::contracts::RunContext;
-use crate::contracts::runtime::SuspendedCall;
 use crate::engine::convert::tool_response;
 use crate::engine::tool_execution::collect_patches;
 use crate::runtime::run_context::{await_or_cancel, is_cancelled, CancelAware};
@@ -126,7 +126,7 @@ fn persist_tool_call_status(
         }
         ToolCallStatus::Suspended => (
             suspended_call
-                .map(|entry| entry.invocation.call_id.clone())
+                .map(|entry| entry.pending.id.clone())
                 .or(current_resume_token.clone()),
             None,
         ),
@@ -935,8 +935,10 @@ pub(super) async fn execute_single_tool_with_phases(
             Some(SuspendedCall {
                 call_id: call.id.clone(),
                 tool_name: call.name.clone(),
+                arguments: call.arguments.clone(),
                 suspension: suspend_ticket.suspension(),
-                invocation: suspend_ticket.invocation.clone(),
+                pending: suspend_ticket.pending.clone(),
+                resume_mode: suspend_ticket.resume_mode,
             }),
         )
     } else {

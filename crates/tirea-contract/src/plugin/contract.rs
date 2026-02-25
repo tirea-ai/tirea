@@ -68,9 +68,9 @@ pub trait AgentPlugin: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interaction::{FrontendToolInvocation, InvocationOrigin, ResponseRouting};
     use crate::interaction::Suspension;
     use crate::plugin::phase::{StepContext, SuspendTicket, ToolContext};
+    use crate::runtime::{PendingToolCall, ToolCallResumeMode};
     use crate::testing::TestFixture;
     use crate::thread::ToolCall;
     use crate::tool::contract::ToolDescriptor;
@@ -97,16 +97,11 @@ mod tests {
             .strip_prefix("tool:")
             .unwrap_or("TestSuspend")
             .to_string();
-        let invocation = FrontendToolInvocation::new(
-            interaction.id.clone(),
-            tool_name,
-            interaction.parameters.clone(),
-            InvocationOrigin::PluginInitiated {
-                plugin_id: "contract_tests".to_string(),
-            },
-            ResponseRouting::PassToLLM,
-        );
-        SuspendTicket::from_invocation(invocation)
+        SuspendTicket::new(
+            interaction.clone(),
+            PendingToolCall::new(interaction.id, tool_name, interaction.parameters),
+            ToolCallResumeMode::PassDecisionToTool,
+        )
     }
 
     async fn run_before_tool_execute(plugin: &dyn AgentPlugin, step: &mut StepContext<'_>) {
