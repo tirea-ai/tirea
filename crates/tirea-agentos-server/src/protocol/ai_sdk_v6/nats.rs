@@ -3,9 +3,10 @@ use std::sync::Arc;
 use tirea_agentos::orchestrator::AgentOs;
 use tirea_contract::ProtocolInputAdapter;
 use tirea_protocol_ai_sdk_v6::{
-    apply_ai_sdk_extensions, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest,
-    UIStreamEvent,
+    AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest, UIStreamEvent,
 };
+
+use super::runtime::apply_ai_sdk_extensions;
 
 use crate::transport::nats::NatsTransport;
 use crate::transport::NatsProtocolError;

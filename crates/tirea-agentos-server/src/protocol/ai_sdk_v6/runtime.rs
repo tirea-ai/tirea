@@ -4,9 +4,9 @@
 //! no additional plugins.
 
 use std::sync::Arc;
-use tirea_agent_loop::runtime::loop_runner::{ParallelToolExecutor, ResolvedRun};
+use tirea_agentos::runtime::loop_runner::{ParallelToolExecutor, ResolvedRun};
 
-use crate::AiSdkV6RunRequest;
+use tirea_protocol_ai_sdk_v6::AiSdkV6RunRequest;
 
 /// Apply AI SDK-specific extensions to a [`ResolvedRun`].
 pub fn apply_ai_sdk_extensions(resolved: &mut ResolvedRun, _request: &AiSdkV6RunRequest) {
@@ -18,10 +18,9 @@ pub fn apply_ai_sdk_extensions(resolved: &mut ResolvedRun, _request: &AiSdkV6Run
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::AiSdkV6RunRequest;
     use serde_json::json;
     use std::collections::HashMap;
-    use tirea_agent_loop::runtime::loop_runner::AgentConfig;
+    use tirea_agentos::runtime::loop_runner::AgentConfig;
     use tirea_contract::RunConfig;
 
     fn empty_resolved() -> ResolvedRun {

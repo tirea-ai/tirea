@@ -7,7 +7,6 @@ mod history_encoder;
 mod input_adapter;
 mod message;
 mod output_encoder;
-mod runtime;
 
 /// Target AI SDK major version for this module.
 pub const AI_SDK_VERSION: &str = "v6";
@@ -26,4 +25,3 @@ pub use message::{
     UIMessagePart, UIRole,
 };
 pub use output_encoder::AiSdkV6ProtocolEncoder;
-pub use runtime::apply_ai_sdk_extensions;

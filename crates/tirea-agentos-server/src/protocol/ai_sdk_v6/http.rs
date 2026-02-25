@@ -15,9 +15,11 @@ use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError};
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
 use tirea_contract::ProtocolInputAdapter;
 use tirea_protocol_ai_sdk_v6::{
-    apply_ai_sdk_extensions, AiSdkTrigger, AiSdkV6HistoryEncoder, AiSdkV6InputAdapter,
-    AiSdkV6ProtocolEncoder, AiSdkV6RunRequest, UIStreamEvent, AI_SDK_VERSION,
+    AiSdkTrigger, AiSdkV6HistoryEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder,
+    AiSdkV6RunRequest, UIStreamEvent, AI_SDK_VERSION,
 };
+
+use super::runtime::apply_ai_sdk_extensions;
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::warn;
 
