@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
-use tirea_agent_loop::runtime::loop_runner::{
+use tirea_agentos::runtime::loop_runner::{
     ParallelToolExecutor, ResolvedRun, SequentialToolExecutor,
 };
 use tirea_contract::event::suspension::{
@@ -21,7 +21,7 @@ use tirea_contract::plugin::AgentPlugin;
 use tirea_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_contract::ToolCallContext;
 
-use crate::{build_context_addendum, RunAgentInput};
+use tirea_protocol_ag_ui::{build_context_addendum, RunAgentInput};
 
 /// Run-config key carrying AG-UI request `config`.
 pub const AGUI_CONFIG_KEY: &str = "agui_config";
@@ -282,17 +282,17 @@ impl AgentPlugin for FrontendToolPendingPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Context, Message, ToolExecutionLocation};
     use async_trait::async_trait;
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use tirea_agent_loop::runtime::loop_runner::AgentConfig;
+    use tirea_agentos::runtime::loop_runner::AgentConfig;
     use tirea_contract::plugin::phase::{StepContext, ToolContext};
     use tirea_contract::plugin::AgentPlugin;
     use tirea_contract::runtime::ResumeDecisionAction;
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::ToolCall;
+    use tirea_protocol_ag_ui::{Context, Message, ToolExecutionLocation};
 
     async fn run_before_tool_execute(plugin: &dyn AgentPlugin, step: &mut StepContext<'_>) {
         let mut ctx = tirea_contract::plugin::phase::BeforeToolExecuteContext::new(step);
@@ -328,7 +328,7 @@ mod tests {
             run_id: "r1".to_string(),
             messages: vec![Message::user("hello")],
             tools: vec![
-                crate::Tool {
+                tirea_protocol_ag_ui::Tool {
                     name: "copyToClipboard".to_string(),
                     description: "copy".to_string(),
                     parameters: Some(json!({
@@ -340,7 +340,7 @@ mod tests {
                     })),
                     execute: ToolExecutionLocation::Frontend,
                 },
-                crate::Tool::backend("search", "backend search"),
+                tirea_protocol_ag_ui::Tool::backend("search", "backend search"),
             ],
             context: vec![],
             state: None,
@@ -443,7 +443,7 @@ mod tests {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
             messages: vec![Message::user("hello"), Message::tool("true", "call_1")],
-            tools: vec![crate::Tool {
+            tools: vec![tirea_protocol_ag_ui::Tool {
                 name: "copyToClipboard".to_string(),
                 description: "copy".to_string(),
                 parameters: None,
@@ -472,7 +472,7 @@ mod tests {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
             messages: vec![Message::user("hello")],
-            tools: vec![crate::Tool {
+            tools: vec![tirea_protocol_ag_ui::Tool {
                 name: "copyToClipboard".to_string(),
                 description: "copy".to_string(),
                 parameters: None,

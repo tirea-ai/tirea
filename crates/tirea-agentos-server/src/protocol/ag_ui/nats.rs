@@ -2,9 +2,9 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tirea_agentos::orchestrator::AgentOs;
 use tirea_contract::ProtocolInputAdapter;
-use tirea_protocol_ag_ui::{
-    apply_agui_extensions, AgUiInputAdapter, AgUiProtocolEncoder, Event, RunAgentInput,
-};
+use tirea_protocol_ag_ui::{AgUiInputAdapter, AgUiProtocolEncoder, Event, RunAgentInput};
+
+use super::runtime::apply_agui_extensions;
 
 use crate::transport::nats::NatsTransport;
 use crate::transport::NatsProtocolError;

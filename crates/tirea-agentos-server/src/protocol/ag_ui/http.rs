@@ -11,9 +11,10 @@ use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError};
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
 use tirea_contract::ProtocolInputAdapter;
 use tirea_protocol_ag_ui::{
-    apply_agui_extensions, AgUiHistoryEncoder, AgUiInputAdapter, AgUiProtocolEncoder, Event,
-    RunAgentInput,
+    AgUiHistoryEncoder, AgUiInputAdapter, AgUiProtocolEncoder, Event, RunAgentInput,
 };
+
+use super::runtime::apply_agui_extensions;
 use tokio::sync::mpsc;
 use tracing::warn;
 

@@ -7,7 +7,8 @@ use tirea_agentos::contracts::{AgentEvent, RunRequest};
 use tirea_agentos::orchestrator::AgentDefinition;
 use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder};
 use tirea_contract::ProtocolInputAdapter;
-use tirea_protocol_ag_ui::{apply_agui_extensions, AgUiInputAdapter, Message, RunAgentInput};
+use tirea_agentos_server::protocol::ag_ui::apply_agui_extensions;
+use tirea_protocol_ag_ui::{AgUiInputAdapter, Message, RunAgentInput};
 use tirea_protocol_ai_sdk_v6::{AiSdkV6InputAdapter, AiSdkV6RunRequest};
 use tirea_store_adapters::MemoryStore;
 
