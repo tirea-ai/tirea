@@ -3,9 +3,9 @@ use std::sync::Arc;
 use tirea_agentos::contracts::{AgentEvent, ToolCallDecision};
 use tirea_agentos_server::transport::{
     channel_pair, relay_binding, ChannelDownstreamEndpoint, Endpoint, RelayCancellation,
-    SessionId, TranscoderEndpoint, TransportBinding, TransportCapabilities, TransportError,
+    SessionId, TranscoderEndpoint, TransportBinding, TransportCapabilities,
 };
-use tirea_contract::ProtocolOutputEncoder;
+use tirea_contract::{Identity, Transcoder};
 use tokio::sync::mpsc;
 
 // ── Stub encoder ────────────────────────────────────────────────
@@ -15,20 +15,20 @@ struct StubEncoder {
     body_events: usize,
 }
 
-impl ProtocolOutputEncoder for StubEncoder {
-    type InputEvent = AgentEvent;
-    type Event = String;
+impl Transcoder for StubEncoder {
+    type Input = AgentEvent;
+    type Output = String;
 
-    fn prologue(&mut self) -> Vec<Self::Event> {
+    fn prologue(&mut self) -> Vec<String> {
         vec!["prologue-1".to_string(), "prologue-2".to_string()]
     }
 
-    fn on_agent_event(&mut self, _ev: &Self::InputEvent) -> Vec<Self::Event> {
+    fn transcode(&mut self, _item: &AgentEvent) -> Vec<String> {
         self.body_events += 1;
         vec![format!("body-{}", self.body_events)]
     }
 
-    fn epilogue(&mut self) -> Vec<Self::Event> {
+    fn epilogue(&mut self) -> Vec<String> {
         vec!["epilogue".to_string()]
     }
 }
@@ -36,16 +36,16 @@ impl ProtocolOutputEncoder for StubEncoder {
 /// Encoder that fans out multiple events per agent event.
 struct FanoutEncoder;
 
-impl ProtocolOutputEncoder for FanoutEncoder {
-    type InputEvent = AgentEvent;
-    type Event = String;
+impl Transcoder for FanoutEncoder {
+    type Input = AgentEvent;
+    type Output = String;
 
-    fn prologue(&mut self) -> Vec<Self::Event> {
+    fn prologue(&mut self) -> Vec<String> {
         vec!["start".to_string()]
     }
 
-    fn on_agent_event(&mut self, ev: &Self::InputEvent) -> Vec<Self::Event> {
-        match ev {
+    fn transcode(&mut self, item: &AgentEvent) -> Vec<String> {
+        match item {
             AgentEvent::TextDelta { delta } => {
                 vec![format!("text:{delta}"), format!("echo:{delta}")]
             }
@@ -53,7 +53,7 @@ impl ProtocolOutputEncoder for FanoutEncoder {
         }
     }
 
-    fn epilogue(&mut self) -> Vec<Self::Event> {
+    fn epilogue(&mut self) -> Vec<String> {
         vec!["end".to_string()]
     }
 }
@@ -61,20 +61,12 @@ impl ProtocolOutputEncoder for FanoutEncoder {
 /// Encoder that emits nothing for prologue/epilogue.
 struct MinimalEncoder;
 
-impl ProtocolOutputEncoder for MinimalEncoder {
-    type InputEvent = AgentEvent;
-    type Event = String;
+impl Transcoder for MinimalEncoder {
+    type Input = AgentEvent;
+    type Output = String;
 
-    fn prologue(&mut self) -> Vec<Self::Event> {
-        vec![]
-    }
-
-    fn on_agent_event(&mut self, _ev: &Self::InputEvent) -> Vec<Self::Event> {
+    fn transcode(&mut self, _item: &AgentEvent) -> Vec<String> {
         vec!["evt".to_string()]
-    }
-
-    fn epilogue(&mut self) -> Vec<Self::Event> {
-        vec![]
     }
 }
 
@@ -83,7 +75,7 @@ async fn transcoder_recv_emits_prologue_body_and_epilogue_in_order() {
     let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(8);
     let (decision_tx, _decision_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
     let inner = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
-    let transcoder = TranscoderEndpoint::new(inner, StubEncoder::default(), Ok);
+    let transcoder = TranscoderEndpoint::new(inner, StubEncoder::default(), Identity::default());
 
     event_tx
         .send(AgentEvent::TextDelta {
@@ -114,7 +106,7 @@ async fn transcoder_recv_with_empty_stream_emits_prologue_and_epilogue() {
     let (_event_tx, event_rx) = mpsc::channel::<AgentEvent>(8);
     let (decision_tx, _decision_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
     let inner = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
-    let transcoder = TranscoderEndpoint::new(inner, StubEncoder::default(), Ok);
+    let transcoder = TranscoderEndpoint::new(inner, StubEncoder::default(), Identity::default());
 
     drop(_event_tx);
 
@@ -135,11 +127,8 @@ async fn transcoder_recv_can_only_be_called_once() {
     let (_event_tx, event_rx) = mpsc::channel::<AgentEvent>(8);
     let (decision_tx, _decision_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
     let inner = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
-    let transcoder = TranscoderEndpoint::new(
-        inner,
-        StubEncoder::default(),
-        Ok::<ToolCallDecision, TransportError>,
-    );
+    let transcoder: TranscoderEndpoint<StubEncoder, Identity<ToolCallDecision>> =
+        TranscoderEndpoint::new(inner, StubEncoder::default(), Identity::default());
 
     let _first = transcoder.recv().await.unwrap();
     let second = transcoder.recv().await;
@@ -147,15 +136,12 @@ async fn transcoder_recv_can_only_be_called_once() {
 }
 
 #[tokio::test]
-async fn transcoder_send_delegates_through_mapper() {
+async fn transcoder_send_delegates_through_identity() {
     let (_event_tx, event_rx) = mpsc::channel::<AgentEvent>(8);
     let (decision_tx, mut decision_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
     let inner = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
-    let transcoder = TranscoderEndpoint::new(
-        inner,
-        StubEncoder::default(),
-        Ok::<ToolCallDecision, TransportError>,
-    );
+    let transcoder: TranscoderEndpoint<StubEncoder, Identity<ToolCallDecision>> =
+        TranscoderEndpoint::new(inner, StubEncoder::default(), Identity::default());
 
     let decision = ToolCallDecision::resume("tc1", serde_json::Value::Null, 0);
     transcoder.send(decision.clone()).await.unwrap();
@@ -164,46 +150,38 @@ async fn transcoder_send_delegates_through_mapper() {
     assert_eq!(received, decision);
 }
 
-// ── TranscoderEndpoint: custom send mapper ──────────────────────
+// ── TranscoderEndpoint: custom send transcoder ──────────────────
+
+/// Custom send transcoder: receives a String, produces a ToolCallDecision.
+struct StringToDecisionTranscoder;
+
+impl Transcoder for StringToDecisionTranscoder {
+    type Input = String;
+    type Output = ToolCallDecision;
+
+    fn transcode(&mut self, item: &String) -> Vec<ToolCallDecision> {
+        vec![ToolCallDecision::resume(
+            item,
+            serde_json::Value::Null,
+            0,
+        )]
+    }
+}
 
 #[tokio::test]
-async fn transcoder_send_with_custom_mapper_transforms_input() {
+async fn transcoder_send_with_custom_transcoder_transforms_input() {
     let (_event_tx, event_rx) = mpsc::channel::<AgentEvent>(8);
     let (decision_tx, mut decision_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
     let inner = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
 
-    // Mapper: receive a String tool_call_id, produce a ToolCallDecision
-    let transcoder = TranscoderEndpoint::new(inner, StubEncoder::default(), |id: String| {
-        Ok(ToolCallDecision::resume(&id, serde_json::Value::Null, 0))
-    });
+    let transcoder =
+        TranscoderEndpoint::new(inner, StubEncoder::default(), StringToDecisionTranscoder);
 
     transcoder.send("custom-tc".to_string()).await.unwrap();
     let received = decision_rx.recv().await.unwrap();
     assert_eq!(
         received,
         ToolCallDecision::resume("custom-tc", serde_json::Value::Null, 0)
-    );
-}
-
-#[tokio::test]
-async fn transcoder_send_mapper_error_propagates() {
-    let (_event_tx, event_rx) = mpsc::channel::<AgentEvent>(8);
-    let (decision_tx, _decision_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
-    let inner = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
-
-    let transcoder = TranscoderEndpoint::new(
-        inner,
-        StubEncoder::default(),
-        |_: String| -> Result<ToolCallDecision, TransportError> {
-            Err(TransportError::Internal("mapper rejected".to_string()))
-        },
-    );
-
-    let result = transcoder.send("anything".to_string()).await;
-    assert!(result.is_err());
-    assert!(
-        result.unwrap_err().to_string().contains("mapper rejected"),
-        "error message should contain mapper's reason"
     );
 }
 
@@ -214,11 +192,8 @@ async fn transcoder_close_delegates_to_inner() {
     let (_event_tx, event_rx) = mpsc::channel::<AgentEvent>(8);
     let (decision_tx, _decision_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
     let inner = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
-    let transcoder = TranscoderEndpoint::new(
-        inner,
-        StubEncoder::default(),
-        Ok::<ToolCallDecision, TransportError>,
-    );
+    let transcoder: TranscoderEndpoint<StubEncoder, Identity<ToolCallDecision>> =
+        TranscoderEndpoint::new(inner, StubEncoder::default(), Identity::default());
 
     let result = transcoder.close().await;
     assert!(result.is_ok());
@@ -231,7 +206,7 @@ async fn transcoder_fanout_encoder_emits_multiple_events_per_input() {
     let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(8);
     let (decision_tx, _decision_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
     let inner = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
-    let transcoder = TranscoderEndpoint::new(inner, FanoutEncoder, Ok);
+    let transcoder = TranscoderEndpoint::new(inner, FanoutEncoder, Identity::default());
 
     event_tx
         .send(AgentEvent::TextDelta {
@@ -256,7 +231,7 @@ async fn transcoder_minimal_encoder_no_prologue_no_epilogue() {
     let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(8);
     let (decision_tx, _decision_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
     let inner = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
-    let transcoder = TranscoderEndpoint::new(inner, MinimalEncoder, Ok);
+    let transcoder = TranscoderEndpoint::new(inner, MinimalEncoder, Identity::default());
 
     event_tx
         .send(AgentEvent::TextDelta {
@@ -276,7 +251,7 @@ async fn transcoder_recv_many_events_in_order() {
     let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(32);
     let (decision_tx, _decision_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
     let inner = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
-    let transcoder = TranscoderEndpoint::new(inner, StubEncoder::default(), Ok);
+    let transcoder = TranscoderEndpoint::new(inner, StubEncoder::default(), Identity::default());
 
     for _ in 0..10 {
         event_tx
@@ -315,12 +290,13 @@ async fn transcoder_through_channel_pair_relay_pipeline() {
     let runtime_ep = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
 
     // Protocol transcoder
-    let transcoder: Arc<TranscoderEndpoint<StubEncoder, _, ToolCallDecision, ToolCallDecision>> =
-        Arc::new(TranscoderEndpoint::new(
-            runtime_ep,
-            StubEncoder::default(),
-            Ok,
-        ));
+    let transcoder: Arc<
+        TranscoderEndpoint<StubEncoder, Identity<ToolCallDecision>>,
+    > = Arc::new(TranscoderEndpoint::new(
+        runtime_ep,
+        StubEncoder::default(),
+        Identity::default(),
+    ));
 
     // Transport channel pair
     let pair = channel_pair::<ToolCallDecision, String>(16);
@@ -374,12 +350,13 @@ async fn transcoder_pipeline_send_direction() {
     let (decision_tx, mut decision_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
     let runtime_ep = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
 
-    let transcoder: Arc<TranscoderEndpoint<StubEncoder, _, ToolCallDecision, ToolCallDecision>> =
-        Arc::new(TranscoderEndpoint::new(
-            runtime_ep,
-            StubEncoder::default(),
-            Ok,
-        ));
+    let transcoder: Arc<
+        TranscoderEndpoint<StubEncoder, Identity<ToolCallDecision>>,
+    > = Arc::new(TranscoderEndpoint::new(
+        runtime_ep,
+        StubEncoder::default(),
+        Identity::default(),
+    ));
 
     let pair = channel_pair::<ToolCallDecision, String>(16);
 
@@ -416,12 +393,13 @@ async fn transcoder_pipeline_bidirectional_concurrent() {
     let (decision_tx, mut decision_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
     let runtime_ep = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
 
-    let transcoder: Arc<TranscoderEndpoint<StubEncoder, _, ToolCallDecision, ToolCallDecision>> =
-        Arc::new(TranscoderEndpoint::new(
-            runtime_ep,
-            StubEncoder::default(),
-            Ok,
-        ));
+    let transcoder: Arc<
+        TranscoderEndpoint<StubEncoder, Identity<ToolCallDecision>>,
+    > = Arc::new(TranscoderEndpoint::new(
+        runtime_ep,
+        StubEncoder::default(),
+        Identity::default(),
+    ));
 
     let pair = channel_pair::<ToolCallDecision, String>(16);
 

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tirea_agentos::contracts::{AgentEvent, ToolCallDecision};
 use tirea_agentos::orchestrator::RunStream;
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
-use tirea_contract::ProtocolOutputEncoder;
+use tirea_contract::{Identity, Transcoder};
 use tokio::sync::{broadcast, mpsc};
 use tracing::warn;
 
@@ -37,15 +37,15 @@ pub fn wire_http_sse_relay<E, F, Fut>(
     on_relay_done: F,
 ) -> mpsc::Receiver<Bytes>
 where
-    E: ProtocolOutputEncoder<InputEvent = AgentEvent> + Send + 'static,
-    E::Event: Serialize + Send + 'static,
+    E: Transcoder<Input = AgentEvent> + 'static,
+    E::Output: Serialize + Send + 'static,
     F: FnOnce(mpsc::Sender<Bytes>) -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send,
 {
     let thread_id = run.thread_id.clone();
     let (sse_tx, sse_rx) = mpsc::channel::<Bytes>(64);
 
-    let upstream: Arc<HttpSseServerEndpoint<E::Event>> = match fanout {
+    let upstream: Arc<HttpSseServerEndpoint<E::Output>> = match fanout {
         Some(f) => Arc::new(HttpSseServerEndpoint::with_fanout(
             decision_ingress_rx,
             sse_tx.clone(),
@@ -71,7 +71,11 @@ where
             }
         }
     });
-    let downstream = Arc::new(TranscoderEndpoint::new(runtime_ep, encoder, Ok));
+    let downstream = Arc::new(TranscoderEndpoint::new(
+        runtime_ep,
+        encoder,
+        Identity::default(),
+    ));
 
     let binding = TransportBinding {
         session: SessionId { thread_id },
@@ -101,27 +105,27 @@ mod tests {
     use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tirea_agentos::contracts::AgentEvent;
-    use tirea_contract::ProtocolOutputEncoder;
+    use tirea_contract::Transcoder;
 
     /// Minimal encoder: maps each AgentEvent to a JSON string event.
     struct TestEncoder;
 
-    impl ProtocolOutputEncoder for TestEncoder {
-        type InputEvent = AgentEvent;
-        type Event = String;
+    impl Transcoder for TestEncoder {
+        type Input = AgentEvent;
+        type Output = String;
 
-        fn prologue(&mut self) -> Vec<Self::Event> {
+        fn prologue(&mut self) -> Vec<String> {
             vec!["[start]".to_string()]
         }
 
-        fn on_agent_event(&mut self, ev: &Self::InputEvent) -> Vec<Self::Event> {
-            match ev {
+        fn transcode(&mut self, item: &AgentEvent) -> Vec<String> {
+            match item {
                 AgentEvent::TextDelta { delta } => vec![format!("text:{delta}")],
                 _ => vec!["other".to_string()],
             }
         }
 
-        fn epilogue(&mut self) -> Vec<Self::Event> {
+        fn epilogue(&mut self) -> Vec<String> {
             vec!["[end]".to_string()]
         }
     }

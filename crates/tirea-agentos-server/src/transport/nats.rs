@@ -4,7 +4,7 @@ use std::future::Future;
 use std::sync::Arc;
 use tirea_agentos::contracts::{AgentEvent, RunRequest, ToolCallDecision};
 use tirea_agentos::orchestrator::{AgentOs, ResolvedRun, RunStream};
-use tirea_contract::ProtocolOutputEncoder;
+use tirea_contract::{Identity, Transcoder};
 use tokio::sync::mpsc;
 
 use crate::transport::NatsProtocolError;
@@ -77,8 +77,8 @@ impl NatsTransport {
         build_error_event: BuildErrorEvent,
     ) -> Result<(), NatsProtocolError>
     where
-        E: ProtocolOutputEncoder<InputEvent = AgentEvent> + Send + 'static,
-        E::Event: Serialize + Send + 'static,
+        E: Transcoder<Input = AgentEvent> + 'static,
+        E::Output: Serialize + Send + 'static,
         ErrEvent: Serialize,
         BuildEncoder: FnOnce(&RunStream) -> E,
         BuildErrorEvent: FnOnce(String) -> ErrEvent,
@@ -115,7 +115,11 @@ impl NatsTransport {
                 }
             }
         });
-        let downstream = Arc::new(TranscoderEndpoint::new(runtime_ep, encoder, Ok));
+        let downstream = Arc::new(TranscoderEndpoint::new(
+            runtime_ep,
+            encoder,
+            Identity::default(),
+        ));
         let binding = TransportBinding {
             session: SessionId {
                 thread_id: session_thread_id,

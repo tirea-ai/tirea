@@ -1,69 +1,65 @@
-use std::marker::PhantomData;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use tirea_agentos::contracts::AgentEvent;
-use tirea_contract::ProtocolOutputEncoder;
+use tirea_contract::Transcoder;
 use tokio::sync::Mutex;
 
 use crate::transport::{BoxStream, Endpoint, TransportError};
 
 /// Bidirectional protocol transcoder endpoint.
 ///
-/// Wraps an inner `Endpoint<AgentEvent, InnerSend>` and presents
-/// `Endpoint<E::Event, SendInput>`:
+/// Wraps an inner `Endpoint<R::Input, S::Output>` and presents
+/// `Endpoint<R::Output, S::Input>`:
 ///
 /// - **recv** (output direction): stateful stream transformation via
-///   `ProtocolOutputEncoder` — emits prologue, transcodes each agent event,
-///   then emits epilogue.
-/// - **send** (input direction): stateless per-item mapping via
-///   `Fn(SendInput) -> Result<InnerSend, TransportError>`.
-pub struct TranscoderEndpoint<E, F, SendInput, InnerSend>
+///   `R: Transcoder` — emits prologue, transcodes each item, then emits epilogue.
+/// - **send** (input direction): per-item mapping via `S: Transcoder`.
+pub struct TranscoderEndpoint<R, S>
 where
-    E: ProtocolOutputEncoder<InputEvent = AgentEvent>,
+    R: Transcoder,
+    S: Transcoder,
 {
-    inner: Arc<dyn Endpoint<AgentEvent, InnerSend>>,
-    encoder: Mutex<Option<E>>,
-    send_mapper: F,
-    _phantom: PhantomData<fn(SendInput)>,
+    inner: Arc<dyn Endpoint<R::Input, S::Output>>,
+    recv_transcoder: Mutex<Option<R>>,
+    send_transcoder: Mutex<S>,
 }
 
-impl<E, F, SendInput, InnerSend> TranscoderEndpoint<E, F, SendInput, InnerSend>
+impl<R, S> TranscoderEndpoint<R, S>
 where
-    E: ProtocolOutputEncoder<InputEvent = AgentEvent> + Send + 'static,
-    E::Event: Send + 'static,
-    F: Fn(SendInput) -> Result<InnerSend, TransportError> + Send + Sync + 'static,
-    SendInput: Send + 'static,
-    InnerSend: Send + 'static,
+    R: Transcoder + 'static,
+    S: Transcoder + 'static,
+    R::Input: Send + 'static,
+    R::Output: Send + 'static,
+    S::Input: Send + 'static,
+    S::Output: Send + 'static,
 {
     pub fn new(
-        inner: Arc<dyn Endpoint<AgentEvent, InnerSend>>,
-        encoder: E,
-        send_mapper: F,
+        inner: Arc<dyn Endpoint<R::Input, S::Output>>,
+        recv_transcoder: R,
+        send_transcoder: S,
     ) -> Self {
         Self {
             inner,
-            encoder: Mutex::new(Some(encoder)),
-            send_mapper,
-            _phantom: PhantomData,
+            recv_transcoder: Mutex::new(Some(recv_transcoder)),
+            send_transcoder: Mutex::new(send_transcoder),
         }
     }
 }
 
 #[async_trait]
-impl<E, F, SendInput, InnerSend> Endpoint<E::Event, SendInput>
-    for TranscoderEndpoint<E, F, SendInput, InnerSend>
+impl<R, S> Endpoint<R::Output, S::Input> for TranscoderEndpoint<R, S>
 where
-    E: ProtocolOutputEncoder<InputEvent = AgentEvent> + Send + 'static,
-    E::Event: Send + 'static,
-    F: Fn(SendInput) -> Result<InnerSend, TransportError> + Send + Sync + 'static,
-    SendInput: Send + 'static,
-    InnerSend: Send + 'static,
+    R: Transcoder + 'static,
+    S: Transcoder + 'static,
+    R::Input: Send + 'static,
+    R::Output: Send + 'static,
+    S::Input: Send + 'static,
+    S::Output: Send + 'static,
 {
-    async fn recv(&self) -> Result<BoxStream<E::Event>, TransportError> {
-        let encoder = self
-            .encoder
+    async fn recv(&self) -> Result<BoxStream<R::Output>, TransportError> {
+        let recv_transcoder = self
+            .recv_transcoder
             .lock()
             .await
             .take()
@@ -71,17 +67,17 @@ where
         let inner_stream = self.inner.recv().await?;
 
         let stream = async_stream::stream! {
-            let mut encoder = encoder;
+            let mut transcoder = recv_transcoder;
             let mut inner = inner_stream;
 
-            for event in encoder.prologue() {
+            for event in transcoder.prologue() {
                 yield Ok(event);
             }
 
             while let Some(item) = inner.next().await {
                 match item {
-                    Ok(agent_event) => {
-                        for event in encoder.on_agent_event(&agent_event) {
+                    Ok(input) => {
+                        for event in transcoder.transcode(&input) {
                             yield Ok(event);
                         }
                     }
@@ -92,7 +88,7 @@ where
                 }
             }
 
-            for event in encoder.epilogue() {
+            for event in transcoder.epilogue() {
                 yield Ok(event);
             }
         };
@@ -100,9 +96,15 @@ where
         Ok(Box::pin(stream))
     }
 
-    async fn send(&self, item: SendInput) -> Result<(), TransportError> {
-        let mapped = (self.send_mapper)(item)?;
-        self.inner.send(mapped).await
+    async fn send(&self, item: S::Input) -> Result<(), TransportError> {
+        let mapped = {
+            let mut transcoder = self.send_transcoder.lock().await;
+            transcoder.transcode(&item)
+        };
+        for m in mapped {
+            self.inner.send(m).await?;
+        }
+        Ok(())
     }
 
     async fn close(&self) -> Result<(), TransportError> {

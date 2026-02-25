@@ -1,5 +1,5 @@
 use super::{AgUiEventContext, Event};
-use tirea_contract::{AgentEvent, ProtocolOutputEncoder};
+use tirea_contract::{AgentEvent, Transcoder};
 
 pub struct AgUiProtocolEncoder {
     ctx: AgUiEventContext,
@@ -19,11 +19,11 @@ impl Default for AgUiProtocolEncoder {
     }
 }
 
-impl ProtocolOutputEncoder for AgUiProtocolEncoder {
-    type InputEvent = AgentEvent;
-    type Event = Event;
+impl Transcoder for AgUiProtocolEncoder {
+    type Input = AgentEvent;
+    type Output = Event;
 
-    fn on_agent_event(&mut self, ev: &AgentEvent) -> Vec<Self::Event> {
-        self.ctx.on_agent_event(ev)
+    fn transcode(&mut self, item: &AgentEvent) -> Vec<Event> {
+        self.ctx.on_agent_event(item)
     }
 }

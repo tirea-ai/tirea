@@ -1,7 +1,7 @@
-//! Protocol adapter traits and request types.
+//! Protocol transcoder traits and request types.
 
-pub mod adapter;
 pub mod request;
+pub mod transcoder;
 
-pub use adapter::ProtocolOutputEncoder;
 pub use request::RunRequest;
+pub use transcoder::{Identity, Transcoder};

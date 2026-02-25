@@ -1,13 +1,13 @@
 #![allow(missing_docs)]
 
-use tirea_contract::{AgentEvent, ProtocolOutputEncoder, StoppedReason, TerminationReason};
+use tirea_contract::{AgentEvent, StoppedReason, TerminationReason, Transcoder};
 use tirea_protocol_ai_sdk_v6::{AiSdkV6ProtocolEncoder, UIStreamEvent};
 
 #[test]
 fn run_start_emits_message_start_and_run_info() {
     let mut encoder = AiSdkV6ProtocolEncoder::new();
 
-    let events = encoder.on_agent_event(&AgentEvent::RunStart {
+    let events = encoder.transcode(&AgentEvent::RunStart {
         thread_id: "thread_1".into(),
         run_id: "run_12345678".into(),
         parent_run_id: None,
@@ -24,14 +24,14 @@ fn run_start_emits_message_start_and_run_info() {
 fn protocol_encoder_closes_text_before_tool_and_maps_finish_reason() {
     let mut encoder = AiSdkV6ProtocolEncoder::new();
 
-    let text_events = encoder.on_agent_event(&AgentEvent::TextDelta {
+    let text_events = encoder.transcode(&AgentEvent::TextDelta {
         delta: "hello".to_string(),
     });
     assert_eq!(text_events.len(), 2);
     assert!(matches!(text_events[0], UIStreamEvent::TextStart { .. }));
     assert!(matches!(text_events[1], UIStreamEvent::TextDelta { .. }));
 
-    let tool_start_events = encoder.on_agent_event(&AgentEvent::ToolCallStart {
+    let tool_start_events = encoder.transcode(&AgentEvent::ToolCallStart {
         id: "call_1".to_string(),
         name: "search".to_string(),
     });
@@ -45,7 +45,7 @@ fn protocol_encoder_closes_text_before_tool_and_maps_finish_reason() {
         UIStreamEvent::ToolInputStart { .. }
     ));
 
-    let finish_events = encoder.on_agent_event(&AgentEvent::RunFinish {
+    let finish_events = encoder.transcode(&AgentEvent::RunFinish {
         thread_id: "thread_1".to_string(),
         run_id: "run_1".to_string(),
         result: None,
@@ -65,7 +65,7 @@ fn protocol_encoder_closes_text_before_tool_and_maps_finish_reason() {
 fn protocol_encoder_maps_cancelled_run_to_abort() {
     let mut encoder = AiSdkV6ProtocolEncoder::new();
 
-    let events = encoder.on_agent_event(&AgentEvent::RunFinish {
+    let events = encoder.transcode(&AgentEvent::RunFinish {
         thread_id: "thread_1".to_string(),
         run_id: "run_cancel".to_string(),
         result: None,

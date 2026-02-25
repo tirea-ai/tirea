@@ -7,6 +7,7 @@ use tirea_agentos::contracts::storage::ThreadReader;
 use tirea_agentos::contracts::{AgentEvent, RunRequest, ToolCallDecision};
 use tirea_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
 use tirea_agentos_server::transport::{ChannelDownstreamEndpoint, Endpoint, TranscoderEndpoint};
+use tirea_contract::Identity;
 use tirea_protocol_ai_sdk_v6::{AiSdkV6ProtocolEncoder, AiSdkV6RunRequest};
 use tirea_store_adapters::MemoryStore;
 use tokio::sync::mpsc;
@@ -91,7 +92,7 @@ async fn cross_crate_integration_matrix_72() {
                 let transcoder = TranscoderEndpoint::new(
                     runtime_ep,
                     encoder,
-                    Ok::<ToolCallDecision, tirea_agentos_server::transport::TransportError>,
+                    Identity::<ToolCallDecision>::default(),
                 );
 
                 let stream = transcoder.recv().await.expect("transcoder recv");
