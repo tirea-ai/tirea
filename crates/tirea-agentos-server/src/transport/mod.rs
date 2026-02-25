@@ -128,6 +128,87 @@ where
     }
 }
 
+/// A matched pair of endpoints representing both sides of a transport channel.
+///
+/// - `server`: the runtime/handler side — receives `Ingress`, sends `Egress`
+/// - `client`: the caller/consumer side — receives `Egress`, sends `Ingress`
+pub struct EndpointPair<Ingress, Egress>
+where
+    Ingress: Send + 'static,
+    Egress: Send + 'static,
+{
+    pub server: Arc<dyn Endpoint<Ingress, Egress>>,
+    pub client: Arc<dyn Endpoint<Egress, Ingress>>,
+}
+
+/// Create an in-memory `EndpointPair` backed by bounded channels.
+pub fn channel_pair<A, B>(buffer: usize) -> EndpointPair<A, B>
+where
+    A: Send + 'static,
+    B: Send + 'static,
+{
+    let buffer = buffer.max(1);
+    let (a_tx, a_rx) = mpsc::channel::<A>(buffer);
+    let (b_tx, b_rx) = mpsc::channel::<B>(buffer);
+
+    let server = Arc::new(BoundedChannelEndpoint::new(a_rx, b_tx));
+    let client = Arc::new(BoundedChannelEndpoint::new(b_rx, a_tx));
+
+    EndpointPair { server, client }
+}
+
+/// Channel endpoint backed by bounded `mpsc` channels. Used internally by [`channel_pair`].
+struct BoundedChannelEndpoint<RecvMsg, SendMsg>
+where
+    RecvMsg: Send + 'static,
+    SendMsg: Send + 'static,
+{
+    recv_rx: Mutex<Option<mpsc::Receiver<RecvMsg>>>,
+    send_tx: mpsc::Sender<SendMsg>,
+}
+
+impl<RecvMsg, SendMsg> BoundedChannelEndpoint<RecvMsg, SendMsg>
+where
+    RecvMsg: Send + 'static,
+    SendMsg: Send + 'static,
+{
+    fn new(recv_rx: mpsc::Receiver<RecvMsg>, send_tx: mpsc::Sender<SendMsg>) -> Self {
+        Self {
+            recv_rx: Mutex::new(Some(recv_rx)),
+            send_tx,
+        }
+    }
+}
+
+#[async_trait]
+impl<RecvMsg, SendMsg> Endpoint<RecvMsg, SendMsg> for BoundedChannelEndpoint<RecvMsg, SendMsg>
+where
+    RecvMsg: Send + 'static,
+    SendMsg: Send + 'static,
+{
+    async fn recv(&self) -> Result<BoxStream<RecvMsg>, TransportError> {
+        let mut guard = self.recv_rx.lock().await;
+        let mut rx = guard.take().ok_or(TransportError::Closed)?;
+        let stream = async_stream::stream! {
+            while let Some(item) = rx.recv().await {
+                yield Ok(item);
+            }
+        };
+        Ok(Box::pin(stream))
+    }
+
+    async fn send(&self, item: SendMsg) -> Result<(), TransportError> {
+        self.send_tx
+            .send(item)
+            .await
+            .map_err(|_| TransportError::Closed)
+    }
+
+    async fn close(&self) -> Result<(), TransportError> {
+        Ok(())
+    }
+}
+
 /// Bound transport session with both sides.
 ///
 /// - `upstream`: caller-facing side: recv `UpMsg`, send `DownMsg`
@@ -337,5 +418,37 @@ mod tests {
             .expect("send should work");
         let sent = send_rx.recv().await.expect("sent item");
         assert_eq!(sent, "ok");
+    }
+
+    #[tokio::test]
+    async fn channel_pair_bidirectional() {
+        let pair = channel_pair::<u32, String>(4);
+
+        // server sends String, client receives String
+        pair.server.send("hello".to_string()).await.unwrap();
+        let mut client_stream = pair.client.recv().await.unwrap();
+        let received = client_stream.next().await.unwrap().unwrap();
+        assert_eq!(received, "hello");
+
+        // client sends u32, server receives u32
+        pair.client.send(42).await.unwrap();
+        let mut server_stream = pair.server.recv().await.unwrap();
+        let received = server_stream.next().await.unwrap().unwrap();
+        assert_eq!(received, 42);
+    }
+
+    #[tokio::test]
+    async fn channel_pair_close_propagates() {
+        let pair = channel_pair::<u32, String>(4);
+
+        pair.server.send("a".to_string()).await.unwrap();
+        drop(pair.server);
+
+        let mut stream = pair.client.recv().await.unwrap();
+        let first = stream.next().await.unwrap().unwrap();
+        assert_eq!(first, "a");
+
+        // After server side dropped, stream ends
+        assert!(stream.next().await.is_none());
     }
 }

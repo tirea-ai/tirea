@@ -26,7 +26,7 @@ impl Default for NatsTransportConfig {
     }
 }
 
-/// NATS transport handle owning a client and its configuration.
+/// Owns a NATS connection and transport configuration.
 #[derive(Clone)]
 pub struct NatsTransport {
     client: async_nats::Client,
@@ -87,42 +87,23 @@ impl NatsTransport {
             Ok(prepared) => match AgentOs::execute_prepared(prepared) {
                 Ok(run) => run,
                 Err(err) => {
-                    let event = build_error_event(err.to_string());
-                    let payload = serde_json::to_vec(&event)
-                        .map_err(|e| {
-                            NatsProtocolError::Run(format!("serialize error event failed: {e}"))
-                        })?
-                        .into();
-                    if let Err(publish_err) = self.client.publish(reply, payload).await {
-                        return Err(NatsProtocolError::Run(format!(
-                            "publish error event failed: {publish_err}"
-                        )));
-                    }
-                    return Ok(());
+                    return self
+                        .publish_error_event(reply, build_error_event(err.to_string()))
+                        .await;
                 }
             },
             Err(err) => {
-                let event = build_error_event(err.to_string());
-                let payload = serde_json::to_vec(&event)
-                    .map_err(|e| {
-                        NatsProtocolError::Run(format!("serialize error event failed: {e}"))
-                    })?
-                    .into();
-                if let Err(publish_err) = self.client.publish(reply, payload).await {
-                    return Err(NatsProtocolError::Run(format!(
-                        "publish error event failed: {publish_err}"
-                    )));
-                }
-                return Ok(());
+                return self
+                    .publish_error_event(reply, build_error_event(err.to_string()))
+                    .await;
             }
         };
 
         let session_thread_id = run.thread_id.clone();
         let encoder = build_encoder(&run);
+        let upstream = Arc::new(NatsReplyServerEndpoint::new(self.client.clone(), reply));
         let decision_tx = run.decision_tx.clone();
         let events = run.events;
-
-        let upstream = Arc::new(NatsReplyServerEndpoint::new(self.client.clone(), reply));
         let (event_tx, event_rx) =
             mpsc::channel::<AgentEvent>(self.config.outbound_buffer.max(1));
         let runtime_ep = Arc::new(ChannelDownstreamEndpoint::new(event_rx, decision_tx));
@@ -154,15 +135,31 @@ impl NatsTransport {
 
         Ok(())
     }
+
+    pub(crate) async fn publish_error_event<ErrEvent: Serialize>(
+        &self,
+        reply: async_nats::Subject,
+        event: ErrEvent,
+    ) -> Result<(), NatsProtocolError> {
+        let payload = serde_json::to_vec(&event)
+            .map_err(|e| NatsProtocolError::Run(format!("serialize error event failed: {e}")))?
+            .into();
+        if let Err(publish_err) = self.client.publish(reply, payload).await {
+            return Err(NatsProtocolError::Run(format!(
+                "publish error event failed: {publish_err}"
+            )));
+        }
+        Ok(())
+    }
 }
 
-struct NatsReplyServerEndpoint {
+pub(crate) struct NatsReplyServerEndpoint {
     client: async_nats::Client,
     reply: async_nats::Subject,
 }
 
 impl NatsReplyServerEndpoint {
-    fn new(client: async_nats::Client, reply: async_nats::Subject) -> Self {
+    pub(crate) fn new(client: async_nats::Client, reply: async_nats::Subject) -> Self {
         Self { client, reply }
     }
 }

@@ -60,16 +60,9 @@ async fn handle_message(
     let mut resolved = match os.resolve(&req.agent_id) {
         Ok(r) => r,
         Err(err) => {
-            let event = UIStreamEvent::error(err.to_string());
-            let payload = serde_json::to_vec(&event)
-                .map_err(|e| NatsProtocolError::Run(format!("serialize error event failed: {e}")))?
-                .into();
-            if let Err(publish_err) = transport.client().publish(reply, payload).await {
-                return Err(NatsProtocolError::Run(format!(
-                    "publish error event failed: {publish_err}"
-                )));
-            }
-            return Ok(());
+            return transport
+                .publish_error_event(reply, UIStreamEvent::error(err.to_string()))
+                .await;
         }
     };
 

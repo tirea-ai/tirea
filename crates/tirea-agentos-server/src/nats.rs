@@ -24,7 +24,7 @@ impl NatsConfig {
         Ok(NatsTransport::new(client, self.transport_config()))
     }
 
-    pub(crate) fn transport_config(&self) -> NatsTransportConfig {
+    fn transport_config(&self) -> NatsTransportConfig {
         NatsTransportConfig {
             outbound_buffer: self.outbound_buffer,
         }
