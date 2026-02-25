@@ -10,10 +10,15 @@ use tirea_agentos::contracts::storage::{
 };
 use tirea_agentos::contracts::thread::Visibility;
 use tirea_agentos::contracts::ToolCallDecision;
-use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError};
+use tirea_agentos::contracts::RunRequest;
+use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError, ResolvedRun};
 use tirea_agentos::contracts::thread::Message;
+use tirea_agentos::runtime::loop_runner::RunCancellationToken;
 use tirea_contract::RuntimeInput;
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
+
+use crate::transport::runtime_endpoint::RunStarter;
+use crate::transport::TransportError;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -212,6 +217,54 @@ pub fn require_agent_state_store(os: &Arc<AgentOs>) -> Result<Arc<dyn ThreadStor
     os.agent_state_store()
         .cloned()
         .ok_or_else(|| ApiError::Internal("agent state store not configured".to_string()))
+}
+
+/// Shared HTTP run preparation: creates a cancellation token, calls `prepare_run`,
+/// builds a `RunStarter`, sets up the ingress channel, and registers the active run.
+pub struct PreparedHttpRun {
+    pub starter: RunStarter,
+    pub thread_id: String,
+    pub cancellation_token: RunCancellationToken,
+    pub ingress_rx: mpsc::UnboundedReceiver<RuntimeInput>,
+    pub active_key: String,
+}
+
+pub async fn prepare_http_run(
+    os: &Arc<AgentOs>,
+    resolved: ResolvedRun,
+    run_request: RunRequest,
+    protocol_label: &str,
+    agent_id: &str,
+) -> Result<PreparedHttpRun, ApiError> {
+    let cancellation_token = RunCancellationToken::new();
+    let prepared = os.prepare_run(run_request.clone(), resolved).await?;
+    let thread_id = prepared.thread_id.clone();
+
+    let token_for_starter = cancellation_token.clone();
+    let starter: RunStarter = Box::new(move |_request| {
+        Box::pin(async move {
+            let run = AgentOs::execute_prepared(
+                prepared.with_cancellation_token(token_for_starter.clone()),
+            )
+            .map_err(|e| TransportError::Internal(e.to_string()))?;
+            Ok((run, Some(token_for_starter)))
+        })
+    });
+
+    let active_key = active_run_key(protocol_label, agent_id, &thread_id);
+    let (ingress_tx, ingress_rx) = mpsc::unbounded_channel::<RuntimeInput>();
+    ingress_tx
+        .send(RuntimeInput::Run(run_request))
+        .expect("ingress channel just created");
+    register_active_run(active_key.clone(), ingress_tx).await;
+
+    Ok(PreparedHttpRun {
+        starter,
+        thread_id,
+        cancellation_token,
+        ingress_rx,
+        active_key,
+    })
 }
 
 /// Truncate a stored thread so it includes messages up to and including `message_id`.

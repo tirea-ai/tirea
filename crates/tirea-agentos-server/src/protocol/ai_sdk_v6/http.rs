@@ -7,25 +7,21 @@ use bytes::Bytes;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::OnceLock;
-use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError};
-use tirea_agentos::runtime::loop_runner::RunCancellationToken;
-use tirea_contract::RuntimeInput;
+use tirea_agentos::orchestrator::AgentOsRunError;
 use tirea_protocol_ai_sdk_v6::{
     AiSdkEncoder, AiSdkTrigger, AiSdkV6HistoryEncoder, AiSdkV6RunRequest, AI_SDK_VERSION,
 };
 
 use super::runtime::apply_ai_sdk_extensions;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, RwLock};
 
 use crate::service::{
-    active_run_key, encode_message_page, load_message_page, register_active_run, remove_active_run,
+    active_run_key, encode_message_page, load_message_page, prepare_http_run, remove_active_run,
     truncate_thread_at_message, try_forward_decisions_to_active_run, ApiError, AppState,
     MessageQueryParams,
 };
 use crate::transport::http_run::wire_http_sse_relay;
 use crate::transport::http_sse::{sse_body_stream, sse_response};
-use crate::transport::runtime_endpoint::RunStarter;
-use crate::transport::TransportError;
 
 const RUN_PATH: &str = "/agents/:agent_id/runs";
 const RESUME_STREAM_PATH: &str = "/agents/:agent_id/runs/:chat_id/stream";
@@ -64,6 +60,10 @@ impl StreamRegistry {
     }
 }
 
+/// Process-wide registry for SSE stream fanout (resume_stream endpoint).
+///
+/// Lifecycle: entries are registered in `run()` and unconditionally removed
+/// in the `on_relay_done` callback, which runs even on cancellation.
 static STREAM_REGISTRY: OnceLock<StreamRegistry> = OnceLock::new();
 
 fn stream_registry() -> &'static StreamRegistry {
@@ -119,38 +119,18 @@ async fn run(
     apply_ai_sdk_extensions(&mut resolved, &req);
     let run_request = req.into_runtime_run_request(agent_id.clone());
 
-    // Call prepare_run synchronously so storage errors surface as HTTP 500.
-    let cancellation_token = RunCancellationToken::new();
-    let prepared = st.os.prepare_run(run_request.clone(), resolved).await?;
-    let thread_id = prepared.thread_id.clone();
-
-    let token_for_starter = cancellation_token.clone();
-    let token_for_callback = cancellation_token.clone();
-    let starter: RunStarter = Box::new(move |_request| {
-        Box::pin(async move {
-            let run = AgentOs::execute_prepared(
-                prepared.with_cancellation_token(token_for_starter.clone()),
-            )
-            .map_err(|e| TransportError::Internal(e.to_string()))?;
-            Ok((run, Some(token_for_starter)))
-        })
-    });
-
-    let stream_key = stream_key(&agent_id, &thread_id);
-    let active_key = active_run_key("ai_sdk", &agent_id, &thread_id);
-    let (ingress_tx, ingress_rx) = mpsc::unbounded_channel::<RuntimeInput>();
-    ingress_tx
-        .send(RuntimeInput::Run(run_request))
-        .expect("ingress channel just created");
-    register_active_run(active_key.clone(), ingress_tx).await;
+    let prepared = prepare_http_run(&st.os, resolved, run_request, "ai_sdk", &agent_id).await?;
+    let token_for_callback = prepared.cancellation_token.clone();
+    let stream_key = stream_key(&agent_id, &prepared.thread_id);
+    let active_key = prepared.active_key.clone();
     let fanout = stream_registry().register(stream_key.clone()).await;
 
     let encoder = AiSdkEncoder::new();
     let sse_rx = wire_http_sse_relay(
-        starter,
+        prepared.starter,
         encoder,
-        ingress_rx,
-        thread_id,
+        prepared.ingress_rx,
+        prepared.thread_id,
         Some(fanout.clone()),
         true,
         "ai-sdk",
