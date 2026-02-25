@@ -53,16 +53,15 @@ use crate::contracts::plugin::phase::Phase;
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
     state_paths::RUN_LIFECYCLE_STATE_PATH, DecisionReplayPolicy, ResumeDecisionAction,
-    RunLifecycleStatus, StreamResult, ToolCallResume, ToolCallStatus, ToolExecutionRequest,
-    ToolExecutionResult,
+    RunLifecycleStatus, StreamResult, SuspendedCall, ToolCallResume, ToolCallStatus,
+    ToolExecutionRequest, ToolExecutionResult,
 };
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
 use crate::contracts::tool::{Tool, ToolResult};
 use crate::contracts::RunContext;
 use crate::contracts::{
-    AgentEvent, FrontendToolInvocation, RunAction, SuspendedCall, TerminationReason,
-    ToolCallDecision,
+    AgentEvent, FrontendToolInvocation, RunAction, TerminationReason, ToolCallDecision,
 };
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
 use crate::runtime::activity::ActivityHub;

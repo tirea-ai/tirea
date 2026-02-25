@@ -8,7 +8,7 @@ use crate::contracts::thread::{Message, MessageMetadata, Role};
 use crate::contracts::tool::Tool;
 use crate::contracts::RunAction;
 use crate::contracts::RunContext;
-use crate::contracts::SuspendedCall;
+use crate::contracts::runtime::SuspendedCall;
 use crate::runtime::control::{
     InferenceError, InferenceErrorState, SuspendedToolCallsState, ToolCallResume, ToolCallState,
     ToolCallStatus,

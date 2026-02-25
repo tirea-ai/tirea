@@ -4588,8 +4588,9 @@ use tirea_agentos::contracts::plugin::AgentPlugin;
 use tirea_agentos::contracts::runtime::control::{
     ResumeDecisionAction, ToolCallResume, ToolCallState, ToolCallStatus,
 };
+use tirea_agentos::contracts::runtime::SuspendedCall;
 use tirea_agentos::contracts::thread::ToolCall;
-use tirea_agentos::contracts::{InvocationOrigin, ResponseRouting, SuspendedCall};
+use tirea_agentos::contracts::{InvocationOrigin, ResponseRouting};
 use tirea_protocol_ag_ui::RunAgentInput;
 
 #[async_trait::async_trait]
@@ -4850,7 +4851,7 @@ fn suspended_interaction(step: &StepContext<'_>) -> Option<Suspension> {
     step.tool
         .as_ref()
         .and_then(|tool| tool.suspend_ticket.as_ref())
-        .map(|ticket| ticket.suspension.clone())
+        .map(|ticket| ticket.suspension())
 }
 
 fn suspended_invocation(

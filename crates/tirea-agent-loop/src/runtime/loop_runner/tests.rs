@@ -387,10 +387,8 @@ fn test_frontend_invocation(interaction: &Suspension) -> FrontendToolInvocation 
 }
 
 fn test_suspend_ticket(interaction: Suspension) -> SuspendTicket {
-    SuspendTicket {
-        invocation: test_frontend_invocation(&interaction),
-        suspension: interaction,
-    }
+    let invocation = test_frontend_invocation(&interaction);
+    SuspendTicket::from_invocation(invocation)
 }
 
 fn set_single_suspended_call(
@@ -403,7 +401,7 @@ fn set_single_suspended_call(
     let tool_name = invocation.tool_name.clone();
     set_agent_suspended_calls(
         state,
-        vec![crate::contracts::SuspendedCall {
+        vec![crate::contracts::runtime::SuspendedCall {
             call_id,
             tool_name,
             suspension,
@@ -454,7 +452,7 @@ impl TestInteractionPlugin {
         }
     }
 
-    fn resolve_response_for_call(&self, call: &crate::contracts::SuspendedCall) -> Option<Value> {
+    fn resolve_response_for_call(&self, call: &crate::contracts::runtime::SuspendedCall) -> Option<Value> {
         self.responses
             .get(&call.call_id)
             .cloned()
@@ -2260,7 +2258,7 @@ fn test_apply_tool_results_suspends_all_interactions() {
     first.outcome = crate::contracts::ToolCallOutcome::Suspended;
     first.suspended_call = Some({
         let suspension = Suspension::new("confirm_1", "confirm").with_message("approve first tool");
-        crate::contracts::SuspendedCall {
+        crate::contracts::runtime::SuspendedCall {
             call_id: "call_1".to_string(),
             tool_name: "test_tool".to_string(),
             invocation: test_frontend_invocation(&suspension),
@@ -2273,7 +2271,7 @@ fn test_apply_tool_results_suspends_all_interactions() {
     second.suspended_call = Some({
         let suspension =
             Suspension::new("confirm_2", "confirm").with_message("approve second tool");
-        crate::contracts::SuspendedCall {
+        crate::contracts::runtime::SuspendedCall {
             call_id: "call_2".to_string(),
             tool_name: "test_tool".to_string(),
             invocation: test_frontend_invocation(&suspension),

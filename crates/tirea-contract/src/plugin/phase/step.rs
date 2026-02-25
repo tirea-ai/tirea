@@ -366,7 +366,7 @@ impl<'a> StepContext<'a> {
         if let Some(ref tool) = self.tool {
             if tool.pending {
                 if let Some(ticket) = tool.suspend_ticket.as_ref() {
-                    return StepOutcome::Pending(ticket.suspension.clone());
+                    return StepOutcome::Pending(ticket.suspension());
                 }
                 return StepOutcome::Continue;
             }

@@ -110,17 +110,17 @@ pub enum RunAction {
 /// Suspension payload for `ToolGateDecision::Suspend`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SuspendTicket {
-    pub suspension: Suspension,
     pub invocation: FrontendToolInvocation,
 }
 
 impl SuspendTicket {
     pub fn from_invocation(invocation: FrontendToolInvocation) -> Self {
-        let suspension = invocation.to_suspension();
-        Self {
-            suspension,
-            invocation,
-        }
+        Self { invocation }
+    }
+
+    /// Derived generic suspension payload for runtime pending outcomes.
+    pub fn suspension(&self) -> Suspension {
+        self.invocation.to_suspension()
     }
 }
 

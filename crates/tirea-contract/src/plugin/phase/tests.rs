@@ -443,7 +443,7 @@ fn test_before_tool_execute_decision_prefers_suspend_ticket() {
     let ctx = BeforeToolExecuteContext::new(&mut step);
     match ctx.decision() {
         ToolGateDecision::Suspend(ticket) => {
-            assert_eq!(ticket.suspension.id, ticket_interaction.id);
+            assert_eq!(ticket.suspension().id, ticket_interaction.id);
         }
         other => panic!("Expected Suspend decision, got: {other:?}"),
     }
@@ -735,7 +735,7 @@ fn test_tool_context_suspend_ticket() {
     tool_ctx.suspend_ticket = Some(test_suspend_ticket(interaction.clone()));
 
     assert_eq!(
-        tool_ctx.suspend_ticket.as_ref().unwrap().suspension.id,
+        tool_ctx.suspend_ticket.as_ref().unwrap().suspension().id,
         "confirm_1"
     );
 }
@@ -790,7 +790,7 @@ fn test_suspend_with_invocation_direct() {
         .unwrap()
         .suspend_ticket
         .as_ref()
-        .map(|ticket| &ticket.suspension)
+        .map(|ticket| ticket.suspension())
         .unwrap();
     assert_eq!(interaction.id, "call_copy");
     assert_eq!(interaction.action, "tool:copyToClipboard");

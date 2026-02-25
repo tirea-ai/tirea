@@ -18,7 +18,7 @@ use crate::contracts::thread::Thread;
 use crate::contracts::thread::{Message, MessageMetadata, ToolCall};
 use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::contracts::RunContext;
-use crate::contracts::SuspendedCall;
+use crate::contracts::runtime::SuspendedCall;
 use crate::engine::convert::tool_response;
 use crate::engine::tool_execution::collect_patches;
 use crate::runtime::run_context::{await_or_cancel, is_cancelled, CancelAware};
@@ -935,7 +935,7 @@ pub(super) async fn execute_single_tool_with_phases(
             Some(SuspendedCall {
                 call_id: call.id.clone(),
                 tool_name: call.name.clone(),
-                suspension: suspend_ticket.suspension.clone(),
+                suspension: suspend_ticket.suspension(),
                 invocation: suspend_ticket.invocation.clone(),
             }),
         )

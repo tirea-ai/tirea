@@ -42,7 +42,7 @@ fn phase_mutation_snapshot(step: &StepContext<'_>) -> PhaseMutationSnapshot {
         tool_suspended_target_id: step.tool.as_ref().and_then(|t| {
             t.suspend_ticket
                 .as_ref()
-                .map(|ticket| ticket.suspension.id.clone())
+                .map(|ticket| ticket.suspension().id)
         }),
         tool_has_result: step.tool.as_ref().and_then(|t| t.result.as_ref()).is_some(),
     }
