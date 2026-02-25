@@ -2969,13 +2969,13 @@ fn test_agent_loop_error_all_variants() {
             vec![],
             Default::default(),
         )),
-        reason: tirea_agentos::engine::stop_conditions::StopReason::MaxRoundsReached,
+        reason: tirea_agentos::contracts::StoppedReason::new("max_rounds_reached"),
     };
     let display = stopped_err.to_string();
     assert!(
         display.contains("stopped")
             || display.contains("Stopped")
-            || display.contains("MaxRoundsReached")
+            || display.contains("max_rounds_reached")
     );
 
     // Suspended

@@ -967,7 +967,7 @@ async fn run_and_run_stream_work_without_llm_when_terminate_plugin_requested() {
 
 #[tokio::test]
 async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_conditions_to_loop() {
-    use crate::orchestrator::{StopPolicyInput, StopReason};
+    use crate::orchestrator::StopPolicyInput;
     use crate::runtime::loop_runner::run_loop;
 
     #[derive(Debug)]
@@ -978,8 +978,8 @@ async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_condition
             "always_stop"
         }
 
-        fn evaluate(&self, _input: &StopPolicyInput<'_>) -> Option<StopReason> {
-            Some(StopReason::Custom("always".to_string()))
+        fn evaluate(&self, _input: &StopPolicyInput<'_>) -> Option<crate::contracts::StoppedReason> {
+            Some(crate::contracts::StoppedReason::with_detail("custom", "always"))
         }
     }
 
@@ -3243,7 +3243,8 @@ fn build_errors_if_agent_references_missing_stop_condition() {
 
 #[test]
 fn build_errors_on_duplicate_stop_condition_ref_in_builder_agent() {
-    use crate::orchestrator::{StopPolicyInput, StopReason};
+    use crate::contracts::StoppedReason;
+    use crate::orchestrator::StopPolicyInput;
 
     #[derive(Debug)]
     struct MockStop;
@@ -3252,7 +3253,7 @@ fn build_errors_on_duplicate_stop_condition_ref_in_builder_agent() {
         fn id(&self) -> &str {
             "mock_stop"
         }
-        fn evaluate(&self, _input: &StopPolicyInput<'_>) -> Option<StopReason> {
+        fn evaluate(&self, _input: &StopPolicyInput<'_>) -> Option<StoppedReason> {
             None
         }
     }
@@ -3292,7 +3293,8 @@ fn build_errors_on_empty_stop_condition_ref_in_builder_agent() {
 
 #[tokio::test]
 async fn resolve_wires_stop_conditions_from_registry() {
-    use crate::orchestrator::{StopPolicyInput, StopReason};
+    use crate::contracts::StoppedReason;
+    use crate::orchestrator::StopPolicyInput;
 
     #[derive(Debug)]
     struct TestStopPolicy;
@@ -3301,7 +3303,7 @@ async fn resolve_wires_stop_conditions_from_registry() {
         fn id(&self) -> &str {
             "test_stop"
         }
-        fn evaluate(&self, _input: &StopPolicyInput<'_>) -> Option<StopReason> {
+        fn evaluate(&self, _input: &StopPolicyInput<'_>) -> Option<StoppedReason> {
             None
         }
     }

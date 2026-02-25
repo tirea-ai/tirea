@@ -16,7 +16,7 @@ use crate::contracts::thread::{Message, Role, Thread, ToolCall};
 use crate::contracts::tool::{ToolDescriptor, ToolError, ToolResult};
 use crate::contracts::TerminationReason;
 use crate::contracts::{RunContext, Suspension, ToolCallContext};
-use crate::engine::stop_conditions::StopReason;
+use crate::contracts::StoppedReason;
 use crate::runtime::activity::ActivityHub;
 use async_trait::async_trait;
 use genai::chat::{
@@ -839,9 +839,9 @@ fn test_agent_loop_error_display() {
             vec![],
             crate::contracts::RunConfig::default(),
         )),
-        reason: StopReason::MaxRoundsReached,
+        reason: StoppedReason::new("max_rounds_reached"),
     };
-    assert!(err.to_string().contains("MaxRoundsReached"));
+    assert!(err.to_string().contains("max_rounds_reached"));
 }
 
 #[test]
@@ -853,7 +853,7 @@ fn test_agent_loop_error_termination_reason_mapping() {
             vec![],
             crate::contracts::RunConfig::default(),
         )),
-        reason: StopReason::MaxRoundsReached,
+        reason: StoppedReason::new("max_rounds_reached"),
     };
     assert_eq!(
         stopped.termination_reason(),

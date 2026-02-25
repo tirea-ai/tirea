@@ -50,7 +50,8 @@ pub use composition::{
     StopPolicyRegistryError, ToolPluginBundle, ToolRegistry, ToolRegistryError,
 };
 pub use stop_policy_plugin::{
-    StopConditionSpec, StopPolicy, StopPolicyInput, StopPolicyStats, StopReason,
+    ConsecutiveErrors, ContentMatch, LoopDetection, MaxRounds, StopConditionSpec, StopOnTool,
+    StopPolicy, StopPolicyInput, StopPolicyStats, Timeout, TokenBudget,
 };
 
 pub use crate::runtime::loop_runner::ResolvedRun;

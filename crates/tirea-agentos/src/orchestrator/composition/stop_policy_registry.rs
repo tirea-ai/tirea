@@ -144,7 +144,8 @@ impl StopPolicyRegistry for CompositeStopPolicyRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orchestrator::{StopPolicyInput, StopReason};
+    use crate::contracts::StoppedReason;
+    use crate::orchestrator::StopPolicyInput;
 
     #[derive(Debug)]
     struct MockStopPolicy {
@@ -164,7 +165,7 @@ mod tests {
             &self.name
         }
 
-        fn evaluate(&self, _input: &StopPolicyInput<'_>) -> Option<StopReason> {
+        fn evaluate(&self, _input: &StopPolicyInput<'_>) -> Option<StoppedReason> {
             None
         }
     }

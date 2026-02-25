@@ -12,66 +12,6 @@ use tirea_state::State;
 
 pub const STOP_POLICY_PLUGIN_ID: &str = "stop_policy";
 
-/// Why stop-policy evaluation requested loop termination.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", content = "value", rename_all = "snake_case")]
-pub enum StopReason {
-    /// Maximum tool-call rounds reached.
-    MaxRoundsReached,
-    /// Total elapsed time exceeded the configured limit.
-    TimeoutReached,
-    /// Cumulative token usage exceeded the configured budget.
-    TokenBudgetExceeded,
-    /// A specific tool was called that triggers termination.
-    ToolCalled(String),
-    /// LLM output matched a stop pattern.
-    ContentMatched(String),
-    /// Too many consecutive tool execution failures.
-    ConsecutiveErrorsExceeded,
-    /// Identical tool call patterns detected across rounds.
-    LoopDetected,
-    /// Custom stop reason from a user-defined condition.
-    Custom(String),
-}
-
-impl StopReason {
-    fn into_stopped_reason(self) -> StoppedReason {
-        match self {
-            Self::MaxRoundsReached => StoppedReason::new("max_rounds_reached"),
-            Self::TimeoutReached => StoppedReason::new("timeout_reached"),
-            Self::TokenBudgetExceeded => StoppedReason::new("token_budget_exceeded"),
-            Self::ToolCalled(tool_name) => StoppedReason::with_detail("tool_called", tool_name),
-            Self::ContentMatched(pattern) => StoppedReason::with_detail("content_matched", pattern),
-            Self::ConsecutiveErrorsExceeded => StoppedReason::new("consecutive_errors_exceeded"),
-            Self::LoopDetected => StoppedReason::new("loop_detected"),
-            Self::Custom(reason) => StoppedReason::with_detail("custom", reason),
-        }
-    }
-}
-
-impl From<crate::engine::stop_conditions::StopReason> for StopReason {
-    fn from(value: crate::engine::stop_conditions::StopReason) -> Self {
-        match value {
-            crate::engine::stop_conditions::StopReason::MaxRoundsReached => Self::MaxRoundsReached,
-            crate::engine::stop_conditions::StopReason::TimeoutReached => Self::TimeoutReached,
-            crate::engine::stop_conditions::StopReason::TokenBudgetExceeded => {
-                Self::TokenBudgetExceeded
-            }
-            crate::engine::stop_conditions::StopReason::ToolCalled(tool_name) => {
-                Self::ToolCalled(tool_name)
-            }
-            crate::engine::stop_conditions::StopReason::ContentMatched(pattern) => {
-                Self::ContentMatched(pattern)
-            }
-            crate::engine::stop_conditions::StopReason::ConsecutiveErrorsExceeded => {
-                Self::ConsecutiveErrorsExceeded
-            }
-            crate::engine::stop_conditions::StopReason::LoopDetected => Self::LoopDetected,
-            crate::engine::stop_conditions::StopReason::Custom(reason) => Self::Custom(reason),
-        }
-    }
-}
-
 /// Declarative stop-condition configuration consumed by [`StopPolicyPlugin`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -151,57 +91,156 @@ pub trait StopPolicy: Send + Sync {
     /// Stable policy id.
     fn id(&self) -> &str;
 
-    /// Evaluate stop decision.
-    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason>;
+    /// Evaluate stop decision. Return `Some(StoppedReason)` to terminate.
+    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StoppedReason>;
 }
 
-fn stop_check_ctx_from_input<'a>(
-    input: &'a StopPolicyInput<'a>,
-) -> crate::engine::stop_conditions::StopCheckContext<'a> {
-    crate::engine::stop_conditions::StopCheckContext {
-        rounds: input.stats.step,
-        total_input_tokens: input.stats.total_input_tokens,
-        total_output_tokens: input.stats.total_output_tokens,
-        consecutive_errors: input.stats.consecutive_errors,
-        elapsed: input.stats.elapsed,
-        last_tool_calls: input.stats.last_tool_calls,
-        last_text: input.stats.last_text,
-        tool_call_history: input.stats.tool_call_history,
-        run_ctx: input.run_ctx,
+// ---------------------------------------------------------------------------
+// Built-in stop conditions
+// ---------------------------------------------------------------------------
+
+/// Stop after a fixed number of tool-call rounds.
+pub struct MaxRounds(pub usize);
+
+impl StopPolicy for MaxRounds {
+    fn id(&self) -> &str {
+        "max_rounds"
+    }
+
+    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StoppedReason> {
+        if input.stats.step >= self.0 {
+            Some(StoppedReason::new("max_rounds_reached"))
+        } else {
+            None
+        }
     }
 }
 
-macro_rules! impl_builtin_stop_policy {
-    ($ty:path, $id:literal) => {
-        impl StopPolicy for $ty {
-            fn id(&self) -> &str {
-                $id
-            }
+/// Stop after a wall-clock duration elapses.
+pub struct Timeout(pub std::time::Duration);
 
-            fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason> {
-                let ctx = stop_check_ctx_from_input(input);
-                self.evaluate(&ctx).map(StopReason::from)
-            }
+impl StopPolicy for Timeout {
+    fn id(&self) -> &str {
+        "timeout"
+    }
+
+    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StoppedReason> {
+        if input.stats.elapsed >= self.0 {
+            Some(StoppedReason::new("timeout_reached"))
+        } else {
+            None
         }
-    };
+    }
 }
 
-impl_builtin_stop_policy!(crate::engine::stop_conditions::MaxRounds, "max_rounds");
-impl_builtin_stop_policy!(crate::engine::stop_conditions::Timeout, "timeout");
-impl_builtin_stop_policy!(crate::engine::stop_conditions::TokenBudget, "token_budget");
-impl_builtin_stop_policy!(
-    crate::engine::stop_conditions::ConsecutiveErrors,
-    "consecutive_errors"
-);
-impl_builtin_stop_policy!(crate::engine::stop_conditions::StopOnTool, "stop_on_tool");
-impl_builtin_stop_policy!(
-    crate::engine::stop_conditions::ContentMatch,
-    "content_match"
-);
-impl_builtin_stop_policy!(
-    crate::engine::stop_conditions::LoopDetection,
-    "loop_detection"
-);
+/// Stop when cumulative token usage exceeds a budget.
+pub struct TokenBudget {
+    /// Maximum total tokens (input + output). 0 = unlimited.
+    pub max_total: usize,
+}
+
+impl StopPolicy for TokenBudget {
+    fn id(&self) -> &str {
+        "token_budget"
+    }
+
+    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StoppedReason> {
+        if self.max_total > 0
+            && (input.stats.total_input_tokens + input.stats.total_output_tokens) >= self.max_total
+        {
+            Some(StoppedReason::new("token_budget_exceeded"))
+        } else {
+            None
+        }
+    }
+}
+
+/// Stop after N consecutive rounds where all tool executions failed.
+pub struct ConsecutiveErrors(pub usize);
+
+impl StopPolicy for ConsecutiveErrors {
+    fn id(&self) -> &str {
+        "consecutive_errors"
+    }
+
+    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StoppedReason> {
+        if self.0 > 0 && input.stats.consecutive_errors >= self.0 {
+            Some(StoppedReason::new("consecutive_errors_exceeded"))
+        } else {
+            None
+        }
+    }
+}
+
+/// Stop when a specific tool is called by the LLM.
+pub struct StopOnTool(pub String);
+
+impl StopPolicy for StopOnTool {
+    fn id(&self) -> &str {
+        "stop_on_tool"
+    }
+
+    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StoppedReason> {
+        for call in input.stats.last_tool_calls {
+            if call.name == self.0 {
+                return Some(StoppedReason::with_detail("tool_called", self.0.clone()));
+            }
+        }
+        None
+    }
+}
+
+/// Stop when LLM output text contains a literal pattern.
+pub struct ContentMatch(pub String);
+
+impl StopPolicy for ContentMatch {
+    fn id(&self) -> &str {
+        "content_match"
+    }
+
+    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StoppedReason> {
+        if !self.0.is_empty() && input.stats.last_text.contains(&self.0) {
+            Some(StoppedReason::with_detail(
+                "content_matched",
+                self.0.clone(),
+            ))
+        } else {
+            None
+        }
+    }
+}
+
+/// Stop when the same tool call pattern repeats within a sliding window.
+///
+/// Compares the sorted tool names of the most recent round against previous
+/// rounds within `window` size. If the same set appears twice consecutively,
+/// the loop is considered stuck.
+pub struct LoopDetection {
+    /// Number of recent rounds to compare. Minimum 2.
+    pub window: usize,
+}
+
+impl StopPolicy for LoopDetection {
+    fn id(&self) -> &str {
+        "loop_detection"
+    }
+
+    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StoppedReason> {
+        let window = self.window.max(2);
+        let history = input.stats.tool_call_history;
+        if history.len() < 2 {
+            return None;
+        }
+
+        let recent: Vec<_> = history.iter().rev().take(window).collect();
+        for pair in recent.windows(2) {
+            if pair[0] == pair[1] {
+                return Some(StoppedReason::new("loop_detected"));
+            }
+        }
+        None
+    }
+}
 
 /// Plugin adapter that evaluates configured stop policies at `AfterInference`.
 ///
@@ -305,10 +344,8 @@ impl AgentPlugin for StopPolicyPlugin {
             },
         };
         for condition in &self.conditions {
-            if let Some(reason) = condition.evaluate(&input) {
-                step.request_termination(crate::contracts::TerminationReason::Stopped(
-                    reason.into_stopped_reason(),
-                ));
+            if let Some(stopped) = condition.evaluate(&input) {
+                step.request_termination(crate::contracts::TerminationReason::Stopped(stopped));
                 break;
             }
         }
@@ -418,27 +455,15 @@ fn collect_round_tool_results(
 
 fn condition_from_spec(spec: StopConditionSpec) -> Arc<dyn StopPolicy> {
     match spec {
-        StopConditionSpec::MaxRounds { rounds } => {
-            Arc::new(crate::engine::stop_conditions::MaxRounds(rounds))
+        StopConditionSpec::MaxRounds { rounds } => Arc::new(MaxRounds(rounds)),
+        StopConditionSpec::Timeout { seconds } => {
+            Arc::new(Timeout(std::time::Duration::from_secs(seconds)))
         }
-        StopConditionSpec::Timeout { seconds } => Arc::new(
-            crate::engine::stop_conditions::Timeout(std::time::Duration::from_secs(seconds)),
-        ),
-        StopConditionSpec::TokenBudget { max_total } => {
-            Arc::new(crate::engine::stop_conditions::TokenBudget { max_total })
-        }
-        StopConditionSpec::ConsecutiveErrors { max } => {
-            Arc::new(crate::engine::stop_conditions::ConsecutiveErrors(max))
-        }
-        StopConditionSpec::StopOnTool { tool_name } => {
-            Arc::new(crate::engine::stop_conditions::StopOnTool(tool_name))
-        }
-        StopConditionSpec::ContentMatch { pattern } => {
-            Arc::new(crate::engine::stop_conditions::ContentMatch(pattern))
-        }
-        StopConditionSpec::LoopDetection { window } => {
-            Arc::new(crate::engine::stop_conditions::LoopDetection { window })
-        }
+        StopConditionSpec::TokenBudget { max_total } => Arc::new(TokenBudget { max_total }),
+        StopConditionSpec::ConsecutiveErrors { max } => Arc::new(ConsecutiveErrors(max)),
+        StopConditionSpec::StopOnTool { tool_name } => Arc::new(StopOnTool(tool_name)),
+        StopConditionSpec::ContentMatch { pattern } => Arc::new(ContentMatch(pattern)),
+        StopConditionSpec::LoopDetection { window } => Arc::new(LoopDetection { window }),
     }
 }
 
@@ -523,9 +548,27 @@ mod tests {
     }
 
     #[test]
-    fn stop_reason_maps_to_stopped_reason_payload() {
-        let mapped = StopReason::ToolCalled("finish".to_string()).into_stopped_reason();
-        assert_eq!(mapped.code, "tool_called");
-        assert_eq!(mapped.detail.as_deref(), Some("finish"));
+    fn stopped_reason_payload() {
+        let stopped = StopOnTool("finish".to_string());
+        let run_ctx =
+            RunContext::new("test", json!({}), vec![], crate::contracts::RunConfig::default());
+        let input = StopPolicyInput {
+            run_ctx: &run_ctx,
+            stats: StopPolicyStats {
+                step: 1,
+                step_tool_call_count: 1,
+                total_tool_call_count: 1,
+                total_input_tokens: 0,
+                total_output_tokens: 0,
+                consecutive_errors: 0,
+                elapsed: std::time::Duration::ZERO,
+                last_tool_calls: &[ToolCall::new("c1", "finish", json!({}))],
+                last_text: "",
+                tool_call_history: &VecDeque::new(),
+            },
+        };
+        let result = stopped.evaluate(&input).unwrap();
+        assert_eq!(result.code, "tool_called");
+        assert_eq!(result.detail.as_deref(), Some("finish"));
     }
 }
