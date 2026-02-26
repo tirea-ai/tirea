@@ -1,0 +1,1266 @@
+/*!**********************************************************************************************************************************************************************************************************************************************************************************************!*\
+  !*** css ./node_modules/next/dist/build/webpack/loaders/css-loader/src/index.js??ruleSet[1].rules[14].oneOf[10].use[2]!./node_modules/next/dist/build/webpack/loaders/postcss-loader/src/index.js??ruleSet[1].rules[14].oneOf[10].use[3]!./node_modules/@copilotkit/react-ui/dist/index.css ***!
+  \**********************************************************************************************************************************************************************************************************************************************************************************************/
+/* src/css/colors.css */
+:root {
+  --copilot-kit-primary-color: rgb(28, 28, 28);
+  --copilot-kit-contrast-color: rgb(255, 255, 255);
+  --copilot-kit-background-color: rgb(255 255 255);
+  --copilot-kit-input-background-color: #fbfbfb;
+  --copilot-kit-secondary-color: rgb(255 255 255);
+  --copilot-kit-secondary-contrast-color: rgb(28, 28, 28);
+  --copilot-kit-separator-color: rgb(200 200 200);
+  --copilot-kit-muted-color: rgb(200 200 200);
+  --copilot-kit-error-background: #fef2f2;
+  --copilot-kit-error-border: #fecaca;
+  --copilot-kit-error-text: #dc2626;
+  --copilot-kit-shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --copilot-kit-shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  --copilot-kit-shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  --copilot-kit-dev-console-bg: #f8f8fa;
+  --copilot-kit-dev-console-text: black;
+}
+.dark,
+html.dark,
+body.dark,
+[data-theme=dark],
+html[style*="color-scheme: dark"],
+body[style*="color-scheme: dark"] :root {
+  --copilot-kit-primary-color: rgb(255, 255, 255);
+  --copilot-kit-contrast-color: rgb(28, 28, 28);
+  --copilot-kit-background-color: rgb(17, 17, 17);
+  --copilot-kit-input-background-color: #2c2c2c;
+  --copilot-kit-secondary-color: rgb(28, 28, 28);
+  --copilot-kit-secondary-contrast-color: rgb(255, 255, 255);
+  --copilot-kit-separator-color: rgb(45, 45, 45);
+  --copilot-kit-muted-color: rgb(45, 45, 45);
+  --copilot-kit-error-background: #7f1d1d;
+  --copilot-kit-error-border: #dc2626;
+  --copilot-kit-error-text: #fca5a5;
+  --copilot-kit-shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
+  --copilot-kit-shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -1px rgba(0, 0, 0, 0.3);
+  --copilot-kit-shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.4), 0 4px 6px -2px rgba(0, 0, 0, 0.3);
+}
+
+/* src/css/popup.css */
+.copilotKitPopup {
+  position: fixed;
+  bottom: 1rem;
+  right: 1rem;
+  z-index: 30;
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+  -moz-tab-size: 4;
+  tab-size: 4;
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    Arial,
+    "Noto Sans",
+    sans-serif,
+    "Apple Color Emoji",
+    "Segoe UI Emoji",
+    "Segoe UI Symbol",
+    "Noto Color Emoji";
+  font-feature-settings: normal;
+  font-variation-settings: normal;
+  touch-action: manipulation;
+}
+.copilotKitPopup svg {
+  display: inline-block;
+  vertical-align: middle;
+}
+
+/* src/css/sidebar.css */
+.copilotKitSidebar {
+  position: fixed;
+  bottom: 1rem;
+  right: 1rem;
+  z-index: 30;
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+  -moz-tab-size: 4;
+  tab-size: 4;
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    Arial,
+    "Noto Sans",
+    sans-serif,
+    "Apple Color Emoji",
+    "Segoe UI Emoji",
+    "Segoe UI Symbol",
+    "Noto Color Emoji";
+  font-feature-settings: normal;
+  font-variation-settings: normal;
+  touch-action: manipulation;
+}
+.copilotKitSidebar svg {
+  display: inline-block;
+  vertical-align: middle;
+}
+.copilotKitSidebarContentWrapper {
+  overflow: visible;
+  margin-right: 0px;
+  transition: margin-right 0.3s ease;
+}
+@media (min-width: 640px) {
+  .copilotKitSidebarContentWrapper.sidebarExpanded {
+    margin-right: 28rem;
+  }
+}
+
+/* src/css/button.css */
+.copilotKitButton {
+  width: 3.5rem;
+  height: 3.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--copilot-kit-primary-color);
+  outline: none;
+  position: relative;
+  transform: scale(1);
+  transition: all 0.2s ease;
+  background-color: var(--copilot-kit-primary-color);
+  color: var(--copilot-kit-contrast-color);
+  cursor: pointer;
+  box-shadow: var(--copilot-kit-shadow-sm);
+}
+.copilotKitButton:hover {
+  transform: scale(1.05);
+  box-shadow: var(--copilot-kit-shadow-md);
+}
+.copilotKitButton:active {
+  transform: scale(0.95);
+  box-shadow: var(--copilot-kit-shadow-sm);
+}
+.copilotKitButtonIcon {
+  transition: opacity 100ms, transform 300ms;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.copilotKitButtonIcon svg {
+  width: 1.5rem;
+  height: 1.5rem;
+}
+.copilotKitButton.open .copilotKitButtonIconOpen {
+  transform: translate(-50%, -50%) scale(0) rotate(90deg);
+  opacity: 0;
+}
+.copilotKitButton.open .copilotKitButtonIconClose {
+  transform: translate(-50%, -50%) scale(1) rotate(0deg);
+  opacity: 1;
+}
+.copilotKitButton:not(.open) .copilotKitButtonIconOpen {
+  transform: translate(-50%, -50%) scale(1) rotate(0deg);
+  opacity: 1;
+}
+.copilotKitButton:not(.open) .copilotKitButtonIconClose {
+  transform: translate(-50%, -50%) scale(0) rotate(-90deg);
+  opacity: 0;
+}
+
+/* src/css/header.css */
+.copilotKitHeader {
+  height: 56px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  position: relative;
+  color: var(--copilot-kit-primary-color);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+  border-bottom: 1px solid var(--copilot-kit-separator-color);
+  padding-left: 1.5rem;
+  background-color: var(--copilot-kit-contrast-color);
+  justify-content: space-between;
+  z-index: 2;
+}
+.copilotKitSidebar .copilotKitHeader {
+  border-radius: 0;
+}
+.copilotKitHeaderControls {
+  display: flex;
+}
+.copilotKitHeaderCloseButton {
+  background: none;
+  border: none;
+}
+@media (min-width: 640px) {
+  .copilotKitHeader {
+    padding-left: 1.5rem;
+    padding-right: 24px;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+  }
+}
+.copilotKitHeader > button {
+  border: 0;
+  padding: 8px;
+  position: absolute;
+  top: 50%;
+  right: 16px;
+  transform: translateY(-50%);
+  outline: none;
+  color: var(--copilot-kit-muted-color);
+  background-color: transparent;
+  cursor: pointer;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.2s ease;
+  width: 35px;
+  height: 35px;
+}
+.copilotKitHeader > button:hover {
+  color: color-mix(in srgb, var(--copilot-kit-muted-color) 80%, black);
+}
+.copilotKitHeader > button:focus {
+  outline: none;
+}
+
+/* src/css/input.css */
+.copilotKitInput {
+  cursor: text;
+  position: relative;
+  background-color: var(--copilot-kit-input-background-color);
+  border-radius: 20px;
+  border: 1px solid var(--copilot-kit-separator-color);
+  padding: 12px 14px;
+  min-height: 75px;
+  margin: 0 auto;
+  width: 95%;
+}
+.copilotKitInputContainer {
+  width: 100%;
+  padding: 0;
+  padding-bottom: 15px;
+  background: var(--copilot-kit-background-color);
+  border-bottom-left-radius: 0.75rem;
+  border-bottom-right-radius: 0.75rem;
+}
+.copilotKitSidebar .copilotKitInputContainer {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.copilotKitInputControlButton {
+  padding: 0;
+  cursor: pointer;
+  transition-property: transform;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 200ms;
+  transform: scale(1);
+  color: rgba(0, 0, 0, 0.25);
+  -webkit-appearance: button;
+  -moz-appearance: button;
+       appearance: button;
+  background-color: transparent;
+  background-image: none;
+  text-transform: none;
+  font-family: inherit;
+  font-size: 100%;
+  font-weight: inherit;
+  line-height: inherit;
+  border: 0;
+  margin: 0;
+  text-indent: 0px;
+  text-shadow: none;
+  display: inline-block;
+  text-align: center;
+  width: 24px;
+  height: 24px;
+}
+.copilotKitInputControlButton:not([disabled]) {
+  color: var(--copilot-kit-primary-color);
+}
+.copilotKitInputControlButton:not([disabled]):hover {
+  color: color-mix(in srgb, var(--copilot-kit-primary-color) 80%, black);
+  transform: scale(1.05);
+}
+.copilotKitInputControlButton[disabled] {
+  color: var(--copilot-kit-muted-color);
+  cursor: default;
+}
+.copilotKitInputControls {
+  display: flex;
+  gap: 3px;
+}
+.copilotKitInput > textarea {
+  flex: 1 1;
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  resize: none;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  cursor: text;
+  font-size: 0.875rem;
+  line-height: 1.5rem;
+  margin: 0;
+  padding: 0;
+  font-family: inherit;
+  font-weight: inherit;
+  color: var(--copilot-kit-secondary-contrast-color);
+  border: 0px;
+  background-color: transparent;
+  width: 100%;
+}
+.copilotKitInput > textarea::placeholder {
+  color: #808080;
+  opacity: 1;
+}
+.copilotKitInputControlButton.copilotKitPushToTalkRecording {
+  background-color: #ec0000;
+  color: white;
+  border-radius: 50%;
+  animation: copilotKitPulseAnimation 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+.copilotKitInput textarea::-webkit-scrollbar {
+  width: 9px;
+}
+.copilotKitInput textarea::-webkit-scrollbar-track {
+  background: transparent;
+}
+.copilotKitInput textarea::-webkit-scrollbar-thumb {
+  background-color: rgb(200 200 200);
+  border-radius: 10px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+  cursor: pointer;
+}
+.copilotKitInput textarea::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, rgb(200 200 200) 80%, black);
+}
+.poweredByContainer {
+  padding: 0;
+}
+.poweredBy {
+  background: var(--copilot-kit-background-color) !important;
+  visibility: visible !important;
+  display: block !important;
+  position: static !important;
+  text-align: center !important;
+  font-size: 12px !important;
+  padding: 3px 0 !important;
+  color: rgb(214, 214, 214) !important;
+  margin: 0 !important;
+}
+.dark,
+html.dark,
+body.dark,
+[data-theme=dark],
+html[style*="color-scheme: dark"],
+body[style*="color-scheme: dark"] .poweredBy {
+  color: rgb(69, 69, 69) !important;
+}
+
+/* src/css/messages.css */
+.copilotKitMessages {
+  overflow-y: scroll;
+  flex: 1 1;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--copilot-kit-background-color);
+  color: var(--copilot-kit-secondary-contrast-color);
+  justify-content: space-between;
+  z-index: 1;
+}
+.copilotKitMessagesContainer {
+  padding: 1rem 24px;
+  display: flex;
+  flex-direction: column;
+}
+.copilotKitMessagesFooter {
+  display: flex;
+  padding: 0.5rem 0.75rem;
+  margin: 8px auto 0 auto;
+  justify-content: flex-start;
+  flex-direction: column;
+  width: 97%;
+}
+.copilotKitMessages::-webkit-scrollbar {
+  width: 6px;
+}
+.copilotKitMessages::-webkit-scrollbar-thumb {
+  background-color: var(--copilot-kit-separator-color);
+  border-radius: 10rem;
+  border: 2px solid var(--copilot-kit-background-color);
+}
+.copilotKitMessages::-webkit-scrollbar-track-piece:start {
+  background: transparent;
+}
+.copilotKitMessages::-webkit-scrollbar-track-piece:end {
+  background: transparent;
+}
+.copilotKitMessage {
+  border-radius: 15px;
+  padding: 8px 12px;
+  font-size: 1rem;
+  line-height: 1.5;
+  overflow-wrap: break-word;
+  max-width: 80%;
+  margin-bottom: 0.5rem;
+}
+.copilotKitMessage.copilotKitUserMessage {
+  background: var(--copilot-kit-primary-color);
+  color: var(--copilot-kit-contrast-color);
+  margin-left: auto;
+  white-space: pre-wrap;
+  line-height: 1.75;
+  font-size: 1rem;
+}
+.copilotKitMessage.copilotKitAssistantMessage {
+  background: transparent;
+  margin-right: auto;
+  padding-left: 0;
+  position: relative;
+  max-width: 100%;
+  color: var(--copilot-kit-secondary-contrast-color);
+}
+.copilotKitMessage.copilotKitAssistantMessage .copilotKitMessageControls {
+  position: absolute;
+  left: 0;
+  display: flex;
+  gap: 1rem;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  padding: 5px 0 0 0;
+}
+.copilotKitMessageControls.currentMessage {
+  opacity: 1 !important;
+}
+.copilotKitMessage.copilotKitAssistantMessage:hover .copilotKitMessageControls {
+  opacity: 1;
+}
+@media (max-width: 768px) {
+  .copilotKitMessage.copilotKitAssistantMessage .copilotKitMessageControls {
+    opacity: 1;
+  }
+}
+.copilotKitMessageControlButton {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  border-radius: 0.5rem;
+  justify-content: center;
+  color: var(--copilot-kit-primary-color);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  padding: 0;
+  z-index: 10;
+  margin: 0;
+  background: transparent;
+  border: none;
+}
+.copilotKitMessageControlButton:hover {
+  color: color-mix(in srgb, var(--copilot-kit-primary-color) 80%, black);
+  transform: scale(1.05);
+}
+.copilotKitMessageControlButton:active {
+  color: color-mix(in srgb, var(--copilot-kit-primary-color) 80%, black);
+  transform: scale(1.05);
+}
+.copilotKitMessageControlButton.active {
+  background-color: var(--copilot-kit-primary-color);
+  color: var(--copilot-kit-contrast-color);
+}
+.copilotKitMessageControlButton.active:hover {
+  background-color: color-mix(in srgb, var(--copilot-kit-primary-color) 90%, black);
+  color: var(--copilot-kit-contrast-color);
+}
+.copilotKitMessageControlButton svg {
+  width: 1rem;
+  height: 1rem;
+  display: block;
+  pointer-events: none;
+}
+.copilotKitMessage.copilotKitAssistantMessage + .copilotKitMessage.copilotKitUserMessage {
+  margin-top: 1.5rem;
+}
+.copilotKitCustomAssistantMessage {
+  margin-top: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+.copilotKitMessage .inProgressLabel {
+  margin-left: 10px;
+  opacity: 0.7;
+}
+@keyframes copilotKitSpinAnimation {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+.copilotKitSpinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--copilot-kit-contrast-color);
+  border-radius: 50%;
+  border-top-color: var(--copilot-kit-primary-color);
+  animation: copilotKitSpinAnimation 1s linear infinite;
+}
+@keyframes copilotKitActivityDotAnimation {
+  0%, 80%, 100% {
+    transform: scale(0.5);
+    opacity: 0.5;
+  }
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+.copilotKitActivityDot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--copilot-kit-primary-color);
+  animation: copilotKitActivityDotAnimation 1.4s infinite ease-in-out both;
+}
+.copilotKitImageRendering {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.copilotKitImageRenderingImage {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  box-shadow: var(--copilot-kit-shadow-sm);
+}
+.copilotKitImageRenderingContent {
+  margin-top: 8px;
+  padding: 0 16px;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--copilot-kit-secondary-contrast-color);
+}
+.copilotKitImageRenderingError {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--copilot-kit-separator-color);
+  border-radius: 8px;
+  background-color: var(--copilot-kit-input-background-color);
+}
+.copilotKitImageRenderingErrorMessage {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background-color: var(--copilot-kit-error-background);
+  border: 1px solid var(--copilot-kit-error-border);
+  border-radius: 6px;
+  color: var(--copilot-kit-error-text);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+.copilotKitImageRenderingErrorMessage::before {
+  content: "\26a0\fe0f";
+  font-size: 1rem;
+}
+
+/* src/css/window.css */
+.copilotKitWindow {
+  position: fixed;
+  inset: 0px;
+  transform-origin: bottom;
+  border-color: rgb(229 231 235);
+  background-color: var(--copilot-kit-background-color);
+  border-radius: 0.75rem;
+  box-shadow: rgba(0, 0, 0, 0.16) 0px 5px 40px;
+  flex-direction: column;
+  transition: opacity 100ms ease-out, transform 200ms ease-out;
+  opacity: 0;
+  transform: scale(0.95) translateY(20px);
+  display: flex;
+  pointer-events: none;
+}
+.copilotKitSidebar .copilotKitWindow {
+  border-radius: 0;
+  opacity: 1;
+  transform: translateX(100%);
+}
+.copilotKitWindow.open {
+  opacity: 1;
+  transform: scale(1) translateY(0);
+  pointer-events: auto;
+}
+.copilotKitSidebar .copilotKitWindow.open {
+  transform: translateX(0);
+}
+@media (min-width: 640px) {
+  .copilotKitWindow {
+    transform-origin: bottom right;
+    bottom: 5rem;
+    right: 1rem;
+    top: auto;
+    left: auto;
+    border-width: 0px;
+    margin-bottom: 1rem;
+    width: 24rem;
+    height: 600px;
+    min-height: 200px;
+    max-height: calc(100% - 6rem);
+  }
+  .copilotKitSidebar .copilotKitWindow {
+    bottom: 0;
+    right: 0;
+    top: auto;
+    left: auto;
+    width: 28rem;
+    min-height: 100%;
+    margin-bottom: 0;
+    max-height: none;
+  }
+}
+
+/* src/css/animations.css */
+.copilotKitActivityDot1 {
+  animation: copilotKitActivityDotsAnimation 1.05s infinite;
+}
+.copilotKitActivityDot2 {
+  animation-delay: 0.1s;
+}
+.copilotKitActivityDot3 {
+  animation-delay: 0.2s;
+}
+@keyframes copilotKitActivityDotsAnimation {
+  0%, 57.14% {
+    animation-timing-function: cubic-bezier(0.33, 0.66, 0.66, 1);
+    transform: translate(0);
+  }
+  28.57% {
+    animation-timing-function: cubic-bezier(0.33, 0, 0.66, 0.33);
+    transform: translateY(-6px);
+  }
+  100% {
+    transform: translate(0);
+  }
+}
+@keyframes copilotKitSpinAnimation {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes copilotKitPulseAnimation {
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* src/css/markdown.css */
+h1.copilotKitMarkdownElement,
+h2.copilotKitMarkdownElement,
+h3.copilotKitMarkdownElement,
+h4.copilotKitMarkdownElement,
+h5.copilotKitMarkdownElement,
+h6.copilotKitMarkdownElement {
+  font-weight: bold;
+  line-height: 1.2;
+}
+h1.copilotKitMarkdownElement:not(:last-child),
+h2.copilotKitMarkdownElement:not(:last-child),
+h3.copilotKitMarkdownElement:not(:last-child),
+h4.copilotKitMarkdownElement:not(:last-child),
+h5.copilotKitMarkdownElement:not(:last-child),
+h6.copilotKitMarkdownElement:not(:last-child) {
+  margin-bottom: 1rem;
+}
+h1.copilotKitMarkdownElement {
+  font-size: 1.5em;
+}
+h2.copilotKitMarkdownElement {
+  font-size: 1.25em;
+  font-weight: 600;
+}
+h3.copilotKitMarkdownElement {
+  font-size: 1.1em;
+}
+h4.copilotKitMarkdownElement {
+  font-size: 1em;
+}
+h5.copilotKitMarkdownElement {
+  font-size: 0.9em;
+}
+h6.copilotKitMarkdownElement {
+  font-size: 0.8em;
+}
+a.copilotKitMarkdownElement {
+  color: blue;
+  text-decoration: underline;
+}
+p.copilotKitMarkdownElement {
+  padding: 0px;
+  margin: 0px;
+  line-height: 1.75;
+  font-size: 1rem;
+}
+p.copilotKitMarkdownElement:not(:last-child),
+pre.copilotKitMarkdownElement:not(:last-child),
+ol.copilotKitMarkdownElement:not(:last-child),
+ul.copilotKitMarkdownElement:not(:last-child),
+blockquote.copilotKitMarkdownElement:not(:last-child) {
+  margin-bottom: 1.25em;
+}
+blockquote.copilotKitMarkdownElement {
+  border-color: rgb(142, 142, 160);
+  border-left-width: 2px;
+  border-left-style: solid;
+  line-height: 1.2;
+  padding-left: 10px;
+}
+blockquote.copilotKitMarkdownElement p {
+  padding: 0.7em 0;
+}
+ul.copilotKitMarkdownElement {
+  list-style-type: disc;
+  padding-left: 20px;
+  overflow: visible;
+}
+li.copilotKitMarkdownElement {
+  list-style-type: inherit;
+  list-style-position: outside;
+  margin-left: 0;
+  padding-left: 0;
+  position: relative;
+  overflow: visible;
+}
+.copilotKitCodeBlock {
+  position: relative;
+  width: 100%;
+  background-color: rgb(9 9 11);
+  border-radius: 0.375rem;
+}
+.copilotKitCodeBlockToolbar {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  background-color: rgb(39 39 42);
+  padding-left: 1rem;
+  padding-top: 0.09rem;
+  padding-bottom: 0.09rem;
+  color: rgb(228, 228, 228);
+  border-top-left-radius: 0.375rem;
+  border-top-right-radius: 0.375rem;
+  font-family: sans-serif;
+}
+.copilotKitCodeBlockToolbarLanguage {
+  font-size: 0.75rem;
+  line-height: 1rem;
+  text-transform: lowercase;
+}
+.copilotKitCodeBlockToolbarButtons {
+  display: flex;
+  align-items: center;
+  margin-right: 0.25rem;
+  margin-left: 0.25rem;
+}
+.copilotKitCodeBlockToolbarButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.375rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  font-weight: 500;
+  height: 2.5rem;
+  padding: 3px;
+  margin: 2px;
+}
+.copilotKitCodeBlockToolbarButton:hover {
+  background-color: rgb(55, 55, 58);
+}
+.copilotKitInlineCode {
+  background-color: var(--copilot-kit-input-background-color);
+  border: 1px solid var(--copilot-kit-separator-color);
+  border-radius: 0.375rem;
+  padding: 0.05rem 0.4rem;
+  font-size: 15px;
+}
+
+/* src/css/suggestions.css */
+.copilotKitMessages footer .suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.copilotKitMessages footer h6 {
+  font-weight: 500;
+  font-size: 0.7rem;
+  margin-bottom: 8px;
+}
+.copilotKitMessages footer .suggestions .suggestion {
+  padding: 6px 10px;
+  font-size: 0.7rem;
+  border-radius: 15px;
+  border: 1px solid var(--copilot-kit-muted-color);
+  color: var(--copilot-kit-secondary-contrast-color);
+  box-shadow: 0 5px 5px 0px rgba(0, 0, 0, .01), 0 2px 3px 0px rgba(0, 0, 0, .02);
+}
+.copilotKitMessages footer .suggestions .suggestion.loading {
+  padding: 0;
+  font-size: 0.7rem;
+  border: none;
+  color: var(--copilot-kit-secondary-contrast-color);
+}
+.copilotKitMessages footer .suggestions button {
+  transition: transform 0.3s ease;
+}
+.copilotKitMessages footer .suggestions button:not(:disabled):hover {
+  transform: scale(1.03);
+}
+.copilotKitMessages footer .suggestions button:disabled {
+  cursor: wait;
+}
+.copilotKitMessages footer .suggestions button svg {
+  margin-right: 6px;
+}
+
+/* src/css/panel.css */
+.copilotKitChat {
+  z-index: 30;
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+  -moz-tab-size: 4;
+  tab-size: 4;
+  background: var(--copilot-kit-background-color);
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    Arial,
+    "Noto Sans",
+    sans-serif,
+    "Apple Color Emoji",
+    "Segoe UI Emoji",
+    "Segoe UI Symbol",
+    "Noto Color Emoji";
+  font-feature-settings: normal;
+  font-variation-settings: normal;
+  touch-action: manipulation;
+  display: flex;
+  flex-direction: column;
+}
+.copilotKitChat svg {
+  display: inline-block;
+  vertical-align: middle;
+}
+.copilotKitChat .copilotKitMessages {
+  flex-grow: 1;
+}
+
+/* src/css/console.css */
+.copilotKitDevConsole {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 15px;
+}
+.copilotKitDevConsole.copilotKitDevConsoleWarnOutdated {
+  background-color: var(--copilot-kit-dev-console-bg);
+}
+.copilotKitDevConsole .copilotKitVersionInfo {
+  display: flex;
+  position: absolute;
+  bottom: -25px;
+  padding: 3px 5px;
+  left: 0;
+  width: 100%;
+  justify-content: center;
+  gap: 10px;
+  font-size: 0.8rem;
+  align-items: center;
+  background: #ebb305;
+}
+.copilotKitDevConsole .copilotKitVersionInfo button {
+  font-size: 11px;
+  font-weight: normal;
+  font-family: monospace;
+  background-color: var(--copilot-kit-dev-console-bg);
+  border: 1px solid #979797;
+  padding: 1px 12px;
+  padding-left: 5px;
+  border-radius: 4px;
+  display: inline-block;
+  text-align: left;
+  overflow: hidden;
+  white-space: nowrap;
+  width: 260px;
+  text-overflow: ellipsis;
+}
+.copilotKitDevConsole .copilotKitVersionInfo aside {
+  display: inline;
+  font-weight: normal;
+  color: #7f7a7a;
+  margin-left: 5px;
+}
+.copilotKitDevConsole .copilotKitVersionInfo svg {
+  margin-left: 3px;
+  margin-top: -3px;
+}
+.copilotKitDevConsole .copilotKitDebugMenuTriggerButton {
+  font-size: 11px;
+  font-weight: bold;
+  display: flex;
+  padding: 0 10px;
+  height: 30px;
+  background-color: transparent;
+  border: 1px solid var(--copilot-kit-muted-color);
+  border-radius: 20px;
+  align-items: center;
+  justify-content: center;
+  outline: none;
+}
+.copilotKitDebugMenuTriggerButton.compact {
+  width: 35px;
+  color: var(--copilot-kit-dev-console-bg);
+  justify-content: center;
+  outline: none;
+  font-size: 8px;
+}
+.copilotKitDevConsole .copilotKitDebugMenuTriggerButton:hover {
+  background-color: color-mix(in srgb, var(--copilot-kit-dev-console-bg) 85%, black);
+  color: var(--copilot-kit-dev-console-text);
+}
+.dark,
+html.dark,
+body.dark,
+[data-theme=dark],
+html[style*="color-scheme: dark"],
+body[style*="color-scheme: dark"] .copilotKitDevConsole .copilotKitDebugMenuTriggerButton {
+  color: white;
+}
+.dark,
+html.dark,
+body.dark,
+[data-theme=dark],
+html[style*="color-scheme: dark"],
+body[style*="color-scheme: dark"] .copilotKitDevConsole .copilotKitDebugMenuTriggerButton:hover {
+  background-color: color-mix(in srgb, var(--copilot-kit-dev-console-bg) 20%, black);
+}
+.copilotKitDevConsole .copilotKitDebugMenuTriggerButton > svg {
+  margin-left: 10px;
+}
+.copilotKitDebugMenu {
+  --copilot-kit-dev-console-border: color-mix(in srgb, var(--copilot-kit-dev-console-bg) 80%, black);
+  margin-top: 2px;
+  border-radius: 6px;
+  background-color: var(--copilot-kit-dev-console-bg);
+  border: 1px solid var(--copilot-kit-dev-console-border);
+  padding: 0.25rem;
+  outline: none;
+  font-size: 13px;
+}
+.copilotKitDebugMenuItem {
+  padding-top: 3px;
+  padding-bottom: 3px;
+  padding-left: 10px;
+  padding-right: 10px;
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--copilot-kit-dev-console-text);
+}
+.copilotKitDebugMenuItem:hover {
+  background-color: color-mix(in srgb, var(--copilot-kit-dev-console-bg) 95%, black);
+  border-radius: 4px;
+}
+.copilotKitDebugMenu[data-closed] {
+  transform: scale(0.95);
+  opacity: 0;
+}
+.copilotKitDebugMenu hr {
+  height: 1px;
+  border: none;
+  background-color: var(--copilot-kit-dev-console-border);
+  margin: 0.25rem;
+}
+.copilotKitHelpModal {
+  background-color: var(--copilot-kit-dev-console-bg);
+  color: var(--copilot-kit-dev-console-text);
+}
+.copilotKitHelpItemButton {
+  display: block;
+  text-align: center;
+  width: 100%;
+  padding: 4px 6px;
+  border-radius: 15px;
+  font-size: 0.8rem;
+  border: 1px solid var(--copilot-kit-muted-color);
+  color: var(--copilot-kit-dev-console-text);
+  box-shadow: 0 5px 5px 0px rgba(0, 0, 0, .01), 0 2px 3px 0px rgba(0, 0, 0, .02);
+  background-color: var(--copilot-kit-dev-console-bg);
+}
+.copilotKitHelpItemButton:hover {
+  background-color: color-mix(in srgb, var(--copilot-kit-dev-console-bg) 95%, black);
+}
+
+/* src/css/crew.css */
+.copilotkit-response {
+  text-align: right;
+}
+.copilotkit-response-content {
+  margin-bottom: 0.5rem;
+  font-size: 0.875rem;
+  color: #4b5563;
+  background-color: #f9fafb;
+  padding: 0.5rem;
+  border-radius: 0.25rem;
+  text-align: left;
+}
+.copilotkit-response-actions {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.copilotkit-response-label {
+  font-size: 0.75rem;
+  color: #6b7280;
+  margin-bottom: 0.25rem;
+  display: flex;
+  align-items: center;
+}
+.copilotkit-toggle-button {
+  margin-right: 0.25rem;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.copilotkit-icon {
+  height: 0.75rem;
+  width: 0.75rem;
+  color: #6b7280;
+}
+.copilotkit-response-buttons {
+  display: flex;
+  gap: 0.5rem;
+}
+.copilotkit-response-button {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  background-color: #f3f4f6;
+  color: #4b5563;
+  border-radius: 0.25rem;
+  border: none;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+.copilotkit-response-button:hover {
+  background-color: #e5e7eb;
+}
+.copilotkit-response-button:focus {
+  outline: none;
+}
+.copilotkit-response-completed-feedback {
+  background-color: #f9fafb;
+  padding: 0.5rem;
+  border-radius: 0.375rem;
+  display: inline-flex;
+  align-items: center;
+}
+.copilotkit-response-completed-feedback span {
+  color: #4b5563;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+.copilotkit-state {
+  font-size: 0.875rem;
+  margin-bottom: 1rem;
+}
+.copilotkit-state-header {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  cursor: pointer;
+  -webkit-user-select: none;
+     -moz-user-select: none;
+          user-select: none;
+  margin-bottom: 0.25rem;
+}
+.copilotkit-state-label {
+  color: #4b5563;
+  font-size: 0.875rem;
+}
+.copilotkit-state-label-loading {
+  display: inline-flex;
+  align-items: center;
+  animation: pulse 1.5s infinite;
+}
+.copilotkit-state-content {
+  padding-left: 1rem;
+  max-height: 250px;
+  overflow: auto;
+  padding-top: 0.375rem;
+  border-left: 1px solid #e5e7eb;
+  margin-left: 0.375rem;
+}
+.copilotkit-state-item {
+  padding: 0.25rem 0;
+  margin-bottom: 0.25rem;
+  transition: all 0.3s ease;
+}
+.copilotkit-state-item-newest {
+  animation: appear 0.5s ease-out;
+}
+.copilotkit-state-item-header {
+  font-size: 0.75rem;
+  opacity: 0.7;
+}
+.copilotkit-state-item-thought {
+  margin-top: 0.125rem;
+  font-size: 0.75rem;
+  opacity: 0.8;
+}
+.copilotkit-state-item-result {
+  margin-top: 0.125rem;
+  font-size: 0.75rem;
+}
+.copilotkit-state-item-description {
+  margin-top: 0.125rem;
+  font-size: 0.75rem;
+  opacity: 0.8;
+}
+.copilotkit-state-empty {
+  padding: 0.25rem 0;
+  font-size: 0.75rem;
+  opacity: 0.7;
+}
+.copilotkit-skeleton {
+  padding: 0.125rem 0;
+  animation: pulse 1.5s infinite;
+}
+.copilotkit-skeleton-header {
+  display: flex;
+  justify-content: space-between;
+}
+.copilotkit-skeleton-title {
+  height: 0.625rem;
+  width: 4rem;
+  background-color: #e5e7eb;
+  border-radius: 0.25rem;
+}
+.copilotkit-skeleton-subtitle {
+  height: 0.5rem;
+  width: 2rem;
+  background-color: #e5e7eb;
+  border-radius: 0.25rem;
+}
+.copilotkit-skeleton-content {
+  margin-top: 0.125rem;
+  height: 1.5rem;
+  background-color: #e5e7eb;
+  border-radius: 0.25rem;
+}
+.copilotkit-loader {
+  animation: spin 1.5s linear infinite;
+}
+.copilotkit-spinner {
+  animation: spin 1.5s linear infinite;
+}
+@keyframes appear {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes pulse {
+  0%, 100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-color-scheme: dark) {
+  .copilotkit-response-content {
+    color: #9ca3af;
+    background-color: #1f2937;
+  }
+  .copilotkit-response-label {
+    color: #9ca3af;
+  }
+  .copilotkit-icon {
+    color: #9ca3af;
+  }
+  .copilotkit-response-button {
+    background-color: #1f2937;
+    color: #d1d5db;
+  }
+  .copilotkit-response-button:hover {
+    background-color: #374151;
+  }
+  .copilotkit-response-completed-feedback {
+    background-color: #1f2937;
+  }
+  .copilotkit-response-completed-feedback span {
+    color: #e5e7eb;
+  }
+  .copilotkit-state-label {
+    color: #d1d5db;
+  }
+  .copilotkit-state-content {
+    border-left-color: #374151;
+  }
+  .copilotkit-skeleton-title,
+  .copilotkit-skeleton-subtitle,
+  .copilotkit-skeleton-content {
+    background-color: #374151;
+  }
+}
+
+/* src/styles.css */
+/*# sourceMappingURL=index.css.map */
+/*!***********************************************************************************************************************************************************************************************************************************************************************************!*\
+  !*** css ./node_modules/next/dist/build/webpack/loaders/css-loader/src/index.js??ruleSet[1].rules[14].oneOf[10].use[2]!./node_modules/next/dist/build/webpack/loaders/postcss-loader/src/index.js??ruleSet[1].rules[14].oneOf[10].use[3]!./node_modules/katex/dist/katex.min.css ***!
+  \***********************************************************************************************************************************************************************************************************************************************************************************/
+@font-face{font-display:block;font-family:KaTeX_AMS;font-style:normal;font-weight:400;src:url(/_next/static/media/KaTeX_AMS-Regular.a79f1c31.woff2) format("woff2"),url(/_next/static/media/KaTeX_AMS-Regular.1608a09b.woff) format("woff"),url(/_next/static/media/KaTeX_AMS-Regular.4aafdb68.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Caligraphic;font-style:normal;font-weight:700;src:url(/_next/static/media/KaTeX_Caligraphic-Bold.ec17d132.woff2) format("woff2"),url(/_next/static/media/KaTeX_Caligraphic-Bold.b6770918.woff) format("woff"),url(/_next/static/media/KaTeX_Caligraphic-Bold.cce5b8ec.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Caligraphic;font-style:normal;font-weight:400;src:url(/_next/static/media/KaTeX_Caligraphic-Regular.55fac258.woff2) format("woff2"),url(/_next/static/media/KaTeX_Caligraphic-Regular.dad44a7f.woff) format("woff"),url(/_next/static/media/KaTeX_Caligraphic-Regular.07ef19e7.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Fraktur;font-style:normal;font-weight:700;src:url(/_next/static/media/KaTeX_Fraktur-Bold.d42a5579.woff2) format("woff2"),url(/_next/static/media/KaTeX_Fraktur-Bold.9f256b85.woff) format("woff"),url(/_next/static/media/KaTeX_Fraktur-Bold.b18f59e1.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Fraktur;font-style:normal;font-weight:400;src:url(/_next/static/media/KaTeX_Fraktur-Regular.d3c882a6.woff2) format("woff2"),url(/_next/static/media/KaTeX_Fraktur-Regular.7c187121.woff) format("woff"),url(/_next/static/media/KaTeX_Fraktur-Regular.ed38e79f.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Main;font-style:normal;font-weight:700;src:url(/_next/static/media/KaTeX_Main-Bold.c3fb5ac2.woff2) format("woff2"),url(/_next/static/media/KaTeX_Main-Bold.d181c465.woff) format("woff"),url(/_next/static/media/KaTeX_Main-Bold.b74a1a8b.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Main;font-style:italic;font-weight:700;src:url(/_next/static/media/KaTeX_Main-BoldItalic.6f2bb1df.woff2) format("woff2"),url(/_next/static/media/KaTeX_Main-BoldItalic.e3f82f9d.woff) format("woff"),url(/_next/static/media/KaTeX_Main-BoldItalic.70d8b0a5.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Main;font-style:italic;font-weight:400;src:url(/_next/static/media/KaTeX_Main-Italic.8916142b.woff2) format("woff2"),url(/_next/static/media/KaTeX_Main-Italic.9024d815.woff) format("woff"),url(/_next/static/media/KaTeX_Main-Italic.47373d1e.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Main;font-style:normal;font-weight:400;src:url(/_next/static/media/KaTeX_Main-Regular.0462f03b.woff2) format("woff2"),url(/_next/static/media/KaTeX_Main-Regular.7f51fe03.woff) format("woff"),url(/_next/static/media/KaTeX_Main-Regular.b7f8fe9b.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Math;font-style:italic;font-weight:700;src:url(/_next/static/media/KaTeX_Math-BoldItalic.572d331f.woff2) format("woff2"),url(/_next/static/media/KaTeX_Math-BoldItalic.f1035d8d.woff) format("woff"),url(/_next/static/media/KaTeX_Math-BoldItalic.a879cf83.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Math;font-style:italic;font-weight:400;src:url(/_next/static/media/KaTeX_Math-Italic.f28c23ac.woff2) format("woff2"),url(/_next/static/media/KaTeX_Math-Italic.5295ba48.woff) format("woff"),url(/_next/static/media/KaTeX_Math-Italic.939bc644.ttf) format("truetype")}@font-face{font-display:block;font-family:"KaTeX_SansSerif";font-style:normal;font-weight:700;src:url(/_next/static/media/KaTeX_SansSerif-Bold.8c5b5494.woff2) format("woff2"),url(/_next/static/media/KaTeX_SansSerif-Bold.bf59d231.woff) format("woff"),url(/_next/static/media/KaTeX_SansSerif-Bold.94e1e8dc.ttf) format("truetype")}@font-face{font-display:block;font-family:"KaTeX_SansSerif";font-style:italic;font-weight:400;src:url(/_next/static/media/KaTeX_SansSerif-Italic.3b1e59b3.woff2) format("woff2"),url(/_next/static/media/KaTeX_SansSerif-Italic.7c9bc82b.woff) format("woff"),url(/_next/static/media/KaTeX_SansSerif-Italic.b4c20c84.ttf) format("truetype")}@font-face{font-display:block;font-family:"KaTeX_SansSerif";font-style:normal;font-weight:400;src:url(/_next/static/media/KaTeX_SansSerif-Regular.ba21ed5f.woff2) format("woff2"),url(/_next/static/media/KaTeX_SansSerif-Regular.74048478.woff) format("woff"),url(/_next/static/media/KaTeX_SansSerif-Regular.d4d7ba48.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Script;font-style:normal;font-weight:400;src:url(/_next/static/media/KaTeX_Script-Regular.03e9641d.woff2) format("woff2"),url(/_next/static/media/KaTeX_Script-Regular.07505710.woff) format("woff"),url(/_next/static/media/KaTeX_Script-Regular.fe9cbbe1.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Size1;font-style:normal;font-weight:400;src:url(/_next/static/media/KaTeX_Size1-Regular.eae34984.woff2) format("woff2"),url(/_next/static/media/KaTeX_Size1-Regular.e1e279cb.woff) format("woff"),url(/_next/static/media/KaTeX_Size1-Regular.fabc004a.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Size2;font-style:normal;font-weight:400;src:url(/_next/static/media/KaTeX_Size2-Regular.5916a24f.woff2) format("woff2"),url(/_next/static/media/KaTeX_Size2-Regular.57727022.woff) format("woff"),url(/_next/static/media/KaTeX_Size2-Regular.d6b476ec.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Size3;font-style:normal;font-weight:400;src:url(/_next/static/media/KaTeX_Size3-Regular.b4230e7e.woff2) format("woff2"),url(/_next/static/media/KaTeX_Size3-Regular.9acaf01c.woff) format("woff"),url(/_next/static/media/KaTeX_Size3-Regular.a144ef58.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Size4;font-style:normal;font-weight:400;src:url(/_next/static/media/KaTeX_Size4-Regular.10d95fd3.woff2) format("woff2"),url(/_next/static/media/KaTeX_Size4-Regular.7a996c9d.woff) format("woff"),url(/_next/static/media/KaTeX_Size4-Regular.fbccdabe.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Typewriter;font-style:normal;font-weight:400;src:url(/_next/static/media/KaTeX_Typewriter-Regular.a8709e36.woff2) format("woff2"),url(/_next/static/media/KaTeX_Typewriter-Regular.6258592b.woff) format("woff"),url(/_next/static/media/KaTeX_Typewriter-Regular.d97aaf4a.ttf) format("truetype")}.katex{font:normal 1.21em KaTeX_Main,Times New Roman,serif;line-height:1.2;text-indent:0;text-rendering:auto}.katex *{-ms-high-contrast-adjust:none!important;border-color:currentColor}.katex .katex-version:after{content:"0.16.28"}.katex .katex-mathml{clip:rect(1px,1px,1px,1px);border:0;height:1px;overflow:hidden;padding:0;position:absolute;width:1px}.katex .katex-html>.newline{display:block}.katex .base{position:relative;white-space:nowrap;width:min-content}.katex .base,.katex .strut{display:inline-block}.katex .textbf{font-weight:700}.katex .textit{font-style:italic}.katex .textrm{font-family:KaTeX_Main}.katex .textsf{font-family:KaTeX_SansSerif}.katex .texttt{font-family:KaTeX_Typewriter}.katex .mathnormal{font-family:KaTeX_Math;font-style:italic}.katex .mathit{font-family:KaTeX_Main;font-style:italic}.katex .mathrm{font-style:normal}.katex .mathbf{font-family:KaTeX_Main;font-weight:700}.katex .boldsymbol{font-family:KaTeX_Math;font-style:italic;font-weight:700}.katex .amsrm,.katex .mathbb,.katex .textbb{font-family:KaTeX_AMS}.katex .mathcal{font-family:KaTeX_Caligraphic}.katex .mathfrak,.katex .textfrak{font-family:KaTeX_Fraktur}.katex .mathboldfrak,.katex .textboldfrak{font-family:KaTeX_Fraktur;font-weight:700}.katex .mathtt{font-family:KaTeX_Typewriter}.katex .mathscr,.katex .textscr{font-family:KaTeX_Script}.katex .mathsf,.katex .textsf{font-family:KaTeX_SansSerif}.katex .mathboldsf,.katex .textboldsf{font-family:KaTeX_SansSerif;font-weight:700}.katex .mathitsf,.katex .mathsfit,.katex .textitsf{font-family:KaTeX_SansSerif;font-style:italic}.katex .mainrm{font-family:KaTeX_Main;font-style:normal}.katex .vlist-t{border-collapse:collapse;display:inline-table;table-layout:fixed}.katex .vlist-r{display:table-row}.katex .vlist{display:table-cell;position:relative;vertical-align:bottom}.katex .vlist>span{display:block;height:0;position:relative}.katex .vlist>span>span{display:inline-block}.katex .vlist>span>.pstrut{overflow:hidden;width:0}.katex .vlist-t2{margin-right:-2px}.katex .vlist-s{display:table-cell;font-size:1px;min-width:2px;vertical-align:bottom;width:2px}.katex .vbox{align-items:baseline;display:inline-flex;flex-direction:column}.katex .hbox{width:100%}.katex .hbox,.katex .thinbox{display:inline-flex;flex-direction:row}.katex .thinbox{max-width:0;width:0}.katex .msupsub{text-align:left}.katex .mfrac>span>span{text-align:center}.katex .mfrac .frac-line{border-bottom-style:solid;display:inline-block;width:100%}.katex .hdashline,.katex .hline,.katex .mfrac .frac-line,.katex .overline .overline-line,.katex .rule,.katex .underline .underline-line{min-height:1px}.katex .mspace{display:inline-block}.katex .clap,.katex .llap,.katex .rlap{position:relative;width:0}.katex .clap>.inner,.katex .llap>.inner,.katex .rlap>.inner{position:absolute}.katex .clap>.fix,.katex .llap>.fix,.katex .rlap>.fix{display:inline-block}.katex .llap>.inner{right:0}.katex .clap>.inner,.katex .rlap>.inner{left:0}.katex .clap>.inner>span{margin-left:-50%;margin-right:50%}.katex .rule{border:0 solid;display:inline-block;position:relative}.katex .hline,.katex .overline .overline-line,.katex .underline .underline-line{border-bottom-style:solid;display:inline-block;width:100%}.katex .hdashline{border-bottom-style:dashed;display:inline-block;width:100%}.katex .sqrt>.root{margin-left:.2777777778em;margin-right:-.5555555556em}.katex .fontsize-ensurer.reset-size1.size1,.katex .sizing.reset-size1.size1{font-size:1em}.katex .fontsize-ensurer.reset-size1.size2,.katex .sizing.reset-size1.size2{font-size:1.2em}.katex .fontsize-ensurer.reset-size1.size3,.katex .sizing.reset-size1.size3{font-size:1.4em}.katex .fontsize-ensurer.reset-size1.size4,.katex .sizing.reset-size1.size4{font-size:1.6em}.katex .fontsize-ensurer.reset-size1.size5,.katex .sizing.reset-size1.size5{font-size:1.8em}.katex .fontsize-ensurer.reset-size1.size6,.katex .sizing.reset-size1.size6{font-size:2em}.katex .fontsize-ensurer.reset-size1.size7,.katex .sizing.reset-size1.size7{font-size:2.4em}.katex .fontsize-ensurer.reset-size1.size8,.katex .sizing.reset-size1.size8{font-size:2.88em}.katex .fontsize-ensurer.reset-size1.size9,.katex .sizing.reset-size1.size9{font-size:3.456em}.katex .fontsize-ensurer.reset-size1.size10,.katex .sizing.reset-size1.size10{font-size:4.148em}.katex .fontsize-ensurer.reset-size1.size11,.katex .sizing.reset-size1.size11{font-size:4.976em}.katex .fontsize-ensurer.reset-size2.size1,.katex .sizing.reset-size2.size1{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size2.size2,.katex .sizing.reset-size2.size2{font-size:1em}.katex .fontsize-ensurer.reset-size2.size3,.katex .sizing.reset-size2.size3{font-size:1.1666666667em}.katex .fontsize-ensurer.reset-size2.size4,.katex .sizing.reset-size2.size4{font-size:1.3333333333em}.katex .fontsize-ensurer.reset-size2.size5,.katex .sizing.reset-size2.size5{font-size:1.5em}.katex .fontsize-ensurer.reset-size2.size6,.katex .sizing.reset-size2.size6{font-size:1.6666666667em}.katex .fontsize-ensurer.reset-size2.size7,.katex .sizing.reset-size2.size7{font-size:2em}.katex .fontsize-ensurer.reset-size2.size8,.katex .sizing.reset-size2.size8{font-size:2.4em}.katex .fontsize-ensurer.reset-size2.size9,.katex .sizing.reset-size2.size9{font-size:2.88em}.katex .fontsize-ensurer.reset-size2.size10,.katex .sizing.reset-size2.size10{font-size:3.4566666667em}.katex .fontsize-ensurer.reset-size2.size11,.katex .sizing.reset-size2.size11{font-size:4.1466666667em}.katex .fontsize-ensurer.reset-size3.size1,.katex .sizing.reset-size3.size1{font-size:.7142857143em}.katex .fontsize-ensurer.reset-size3.size2,.katex .sizing.reset-size3.size2{font-size:.8571428571em}.katex .fontsize-ensurer.reset-size3.size3,.katex .sizing.reset-size3.size3{font-size:1em}.katex .fontsize-ensurer.reset-size3.size4,.katex .sizing.reset-size3.size4{font-size:1.1428571429em}.katex .fontsize-ensurer.reset-size3.size5,.katex .sizing.reset-size3.size5{font-size:1.2857142857em}.katex .fontsize-ensurer.reset-size3.size6,.katex .sizing.reset-size3.size6{font-size:1.4285714286em}.katex .fontsize-ensurer.reset-size3.size7,.katex .sizing.reset-size3.size7{font-size:1.7142857143em}.katex .fontsize-ensurer.reset-size3.size8,.katex .sizing.reset-size3.size8{font-size:2.0571428571em}.katex .fontsize-ensurer.reset-size3.size9,.katex .sizing.reset-size3.size9{font-size:2.4685714286em}.katex .fontsize-ensurer.reset-size3.size10,.katex .sizing.reset-size3.size10{font-size:2.9628571429em}.katex .fontsize-ensurer.reset-size3.size11,.katex .sizing.reset-size3.size11{font-size:3.5542857143em}.katex .fontsize-ensurer.reset-size4.size1,.katex .sizing.reset-size4.size1{font-size:.625em}.katex .fontsize-ensurer.reset-size4.size2,.katex .sizing.reset-size4.size2{font-size:.75em}.katex .fontsize-ensurer.reset-size4.size3,.katex .sizing.reset-size4.size3{font-size:.875em}.katex .fontsize-ensurer.reset-size4.size4,.katex .sizing.reset-size4.size4{font-size:1em}.katex .fontsize-ensurer.reset-size4.size5,.katex .sizing.reset-size4.size5{font-size:1.125em}.katex .fontsize-ensurer.reset-size4.size6,.katex .sizing.reset-size4.size6{font-size:1.25em}.katex .fontsize-ensurer.reset-size4.size7,.katex .sizing.reset-size4.size7{font-size:1.5em}.katex .fontsize-ensurer.reset-size4.size8,.katex .sizing.reset-size4.size8{font-size:1.8em}.katex .fontsize-ensurer.reset-size4.size9,.katex .sizing.reset-size4.size9{font-size:2.16em}.katex .fontsize-ensurer.reset-size4.size10,.katex .sizing.reset-size4.size10{font-size:2.5925em}.katex .fontsize-ensurer.reset-size4.size11,.katex .sizing.reset-size4.size11{font-size:3.11em}.katex .fontsize-ensurer.reset-size5.size1,.katex .sizing.reset-size5.size1{font-size:.5555555556em}.katex .fontsize-ensurer.reset-size5.size2,.katex .sizing.reset-size5.size2{font-size:.6666666667em}.katex .fontsize-ensurer.reset-size5.size3,.katex .sizing.reset-size5.size3{font-size:.7777777778em}.katex .fontsize-ensurer.reset-size5.size4,.katex .sizing.reset-size5.size4{font-size:.8888888889em}.katex .fontsize-ensurer.reset-size5.size5,.katex .sizing.reset-size5.size5{font-size:1em}.katex .fontsize-ensurer.reset-size5.size6,.katex .sizing.reset-size5.size6{font-size:1.1111111111em}.katex .fontsize-ensurer.reset-size5.size7,.katex .sizing.reset-size5.size7{font-size:1.3333333333em}.katex .fontsize-ensurer.reset-size5.size8,.katex .sizing.reset-size5.size8{font-size:1.6em}.katex .fontsize-ensurer.reset-size5.size9,.katex .sizing.reset-size5.size9{font-size:1.92em}.katex .fontsize-ensurer.reset-size5.size10,.katex .sizing.reset-size5.size10{font-size:2.3044444444em}.katex .fontsize-ensurer.reset-size5.size11,.katex .sizing.reset-size5.size11{font-size:2.7644444444em}.katex .fontsize-ensurer.reset-size6.size1,.katex .sizing.reset-size6.size1{font-size:.5em}.katex .fontsize-ensurer.reset-size6.size2,.katex .sizing.reset-size6.size2{font-size:.6em}.katex .fontsize-ensurer.reset-size6.size3,.katex .sizing.reset-size6.size3{font-size:.7em}.katex .fontsize-ensurer.reset-size6.size4,.katex .sizing.reset-size6.size4{font-size:.8em}.katex .fontsize-ensurer.reset-size6.size5,.katex .sizing.reset-size6.size5{font-size:.9em}.katex .fontsize-ensurer.reset-size6.size6,.katex .sizing.reset-size6.size6{font-size:1em}.katex .fontsize-ensurer.reset-size6.size7,.katex .sizing.reset-size6.size7{font-size:1.2em}.katex .fontsize-ensurer.reset-size6.size8,.katex .sizing.reset-size6.size8{font-size:1.44em}.katex .fontsize-ensurer.reset-size6.size9,.katex .sizing.reset-size6.size9{font-size:1.728em}.katex .fontsize-ensurer.reset-size6.size10,.katex .sizing.reset-size6.size10{font-size:2.074em}.katex .fontsize-ensurer.reset-size6.size11,.katex .sizing.reset-size6.size11{font-size:2.488em}.katex .fontsize-ensurer.reset-size7.size1,.katex .sizing.reset-size7.size1{font-size:.4166666667em}.katex .fontsize-ensurer.reset-size7.size2,.katex .sizing.reset-size7.size2{font-size:.5em}.katex .fontsize-ensurer.reset-size7.size3,.katex .sizing.reset-size7.size3{font-size:.5833333333em}.katex .fontsize-ensurer.reset-size7.size4,.katex .sizing.reset-size7.size4{font-size:.6666666667em}.katex .fontsize-ensurer.reset-size7.size5,.katex .sizing.reset-size7.size5{font-size:.75em}.katex .fontsize-ensurer.reset-size7.size6,.katex .sizing.reset-size7.size6{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size7.size7,.katex .sizing.reset-size7.size7{font-size:1em}.katex .fontsize-ensurer.reset-size7.size8,.katex .sizing.reset-size7.size8{font-size:1.2em}.katex .fontsize-ensurer.reset-size7.size9,.katex .sizing.reset-size7.size9{font-size:1.44em}.katex .fontsize-ensurer.reset-size7.size10,.katex .sizing.reset-size7.size10{font-size:1.7283333333em}.katex .fontsize-ensurer.reset-size7.size11,.katex .sizing.reset-size7.size11{font-size:2.0733333333em}.katex .fontsize-ensurer.reset-size8.size1,.katex .sizing.reset-size8.size1{font-size:.3472222222em}.katex .fontsize-ensurer.reset-size8.size2,.katex .sizing.reset-size8.size2{font-size:.4166666667em}.katex .fontsize-ensurer.reset-size8.size3,.katex .sizing.reset-size8.size3{font-size:.4861111111em}.katex .fontsize-ensurer.reset-size8.size4,.katex .sizing.reset-size8.size4{font-size:.5555555556em}.katex .fontsize-ensurer.reset-size8.size5,.katex .sizing.reset-size8.size5{font-size:.625em}.katex .fontsize-ensurer.reset-size8.size6,.katex .sizing.reset-size8.size6{font-size:.6944444444em}.katex .fontsize-ensurer.reset-size8.size7,.katex .sizing.reset-size8.size7{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size8.size8,.katex .sizing.reset-size8.size8{font-size:1em}.katex .fontsize-ensurer.reset-size8.size9,.katex .sizing.reset-size8.size9{font-size:1.2em}.katex .fontsize-ensurer.reset-size8.size10,.katex .sizing.reset-size8.size10{font-size:1.4402777778em}.katex .fontsize-ensurer.reset-size8.size11,.katex .sizing.reset-size8.size11{font-size:1.7277777778em}.katex .fontsize-ensurer.reset-size9.size1,.katex .sizing.reset-size9.size1{font-size:.2893518519em}.katex .fontsize-ensurer.reset-size9.size2,.katex .sizing.reset-size9.size2{font-size:.3472222222em}.katex .fontsize-ensurer.reset-size9.size3,.katex .sizing.reset-size9.size3{font-size:.4050925926em}.katex .fontsize-ensurer.reset-size9.size4,.katex .sizing.reset-size9.size4{font-size:.462962963em}.katex .fontsize-ensurer.reset-size9.size5,.katex .sizing.reset-size9.size5{font-size:.5208333333em}.katex .fontsize-ensurer.reset-size9.size6,.katex .sizing.reset-size9.size6{font-size:.5787037037em}.katex .fontsize-ensurer.reset-size9.size7,.katex .sizing.reset-size9.size7{font-size:.6944444444em}.katex .fontsize-ensurer.reset-size9.size8,.katex .sizing.reset-size9.size8{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size9.size9,.katex .sizing.reset-size9.size9{font-size:1em}.katex .fontsize-ensurer.reset-size9.size10,.katex .sizing.reset-size9.size10{font-size:1.2002314815em}.katex .fontsize-ensurer.reset-size9.size11,.katex .sizing.reset-size9.size11{font-size:1.4398148148em}.katex .fontsize-ensurer.reset-size10.size1,.katex .sizing.reset-size10.size1{font-size:.2410800386em}.katex .fontsize-ensurer.reset-size10.size2,.katex .sizing.reset-size10.size2{font-size:.2892960463em}.katex .fontsize-ensurer.reset-size10.size3,.katex .sizing.reset-size10.size3{font-size:.337512054em}.katex .fontsize-ensurer.reset-size10.size4,.katex .sizing.reset-size10.size4{font-size:.3857280617em}.katex .fontsize-ensurer.reset-size10.size5,.katex .sizing.reset-size10.size5{font-size:.4339440694em}.katex .fontsize-ensurer.reset-size10.size6,.katex .sizing.reset-size10.size6{font-size:.4821600771em}.katex .fontsize-ensurer.reset-size10.size7,.katex .sizing.reset-size10.size7{font-size:.5785920926em}.katex .fontsize-ensurer.reset-size10.size8,.katex .sizing.reset-size10.size8{font-size:.6943105111em}.katex .fontsize-ensurer.reset-size10.size9,.katex .sizing.reset-size10.size9{font-size:.8331726133em}.katex .fontsize-ensurer.reset-size10.size10,.katex .sizing.reset-size10.size10{font-size:1em}.katex .fontsize-ensurer.reset-size10.size11,.katex .sizing.reset-size10.size11{font-size:1.1996142719em}.katex .fontsize-ensurer.reset-size11.size1,.katex .sizing.reset-size11.size1{font-size:.2009646302em}.katex .fontsize-ensurer.reset-size11.size2,.katex .sizing.reset-size11.size2{font-size:.2411575563em}.katex .fontsize-ensurer.reset-size11.size3,.katex .sizing.reset-size11.size3{font-size:.2813504823em}.katex .fontsize-ensurer.reset-size11.size4,.katex .sizing.reset-size11.size4{font-size:.3215434084em}.katex .fontsize-ensurer.reset-size11.size5,.katex .sizing.reset-size11.size5{font-size:.3617363344em}.katex .fontsize-ensurer.reset-size11.size6,.katex .sizing.reset-size11.size6{font-size:.4019292605em}.katex .fontsize-ensurer.reset-size11.size7,.katex .sizing.reset-size11.size7{font-size:.4823151125em}.katex .fontsize-ensurer.reset-size11.size8,.katex .sizing.reset-size11.size8{font-size:.578778135em}.katex .fontsize-ensurer.reset-size11.size9,.katex .sizing.reset-size11.size9{font-size:.6945337621em}.katex .fontsize-ensurer.reset-size11.size10,.katex .sizing.reset-size11.size10{font-size:.8336012862em}.katex .fontsize-ensurer.reset-size11.size11,.katex .sizing.reset-size11.size11{font-size:1em}.katex .delimsizing.size1{font-family:KaTeX_Size1}.katex .delimsizing.size2{font-family:KaTeX_Size2}.katex .delimsizing.size3{font-family:KaTeX_Size3}.katex .delimsizing.size4{font-family:KaTeX_Size4}.katex .delimsizing.mult .delim-size1>span{font-family:KaTeX_Size1}.katex .delimsizing.mult .delim-size4>span{font-family:KaTeX_Size4}.katex .nulldelimiter{display:inline-block;width:.12em}.katex .delimcenter,.katex .op-symbol{position:relative}.katex .op-symbol.small-op{font-family:KaTeX_Size1}.katex .op-symbol.large-op{font-family:KaTeX_Size2}.katex .accent>.vlist-t,.katex .op-limits>.vlist-t{text-align:center}.katex .accent .accent-body{position:relative}.katex .accent .accent-body:not(.accent-full){width:0}.katex .overlay{display:block}.katex .mtable .vertical-separator{display:inline-block;min-width:1px}.katex .mtable .arraycolsep{display:inline-block}.katex .mtable .col-align-c>.vlist-t{text-align:center}.katex .mtable .col-align-l>.vlist-t{text-align:left}.katex .mtable .col-align-r>.vlist-t{text-align:right}.katex .svg-align{text-align:left}.katex svg{fill:currentColor;stroke:currentColor;fill-rule:nonzero;fill-opacity:1;stroke-width:1;stroke-linecap:butt;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;display:block;height:inherit;position:absolute;width:100%}.katex svg path{stroke:none}.katex img{border-style:none;max-height:none;max-width:none;min-height:0;min-width:0}.katex .stretchy{display:block;overflow:hidden;position:relative;width:100%}.katex .stretchy:after,.katex .stretchy:before{content:""}.katex .hide-tail{overflow:hidden;position:relative;width:100%}.katex .halfarrow-left{left:0;overflow:hidden;position:absolute;width:50.2%}.katex .halfarrow-right{overflow:hidden;position:absolute;right:0;width:50.2%}.katex .brace-left{left:0;overflow:hidden;position:absolute;width:25.1%}.katex .brace-center{left:25%;overflow:hidden;position:absolute;width:50%}.katex .brace-right{overflow:hidden;position:absolute;right:0;width:25.1%}.katex .x-arrow-pad{padding:0 .5em}.katex .cd-arrow-pad{padding:0 .55556em 0 .27778em}.katex .mover,.katex .munder,.katex .x-arrow{text-align:center}.katex .boxpad{padding:0 .3em}.katex .fbox,.katex .fcolorbox{border:.04em solid;box-sizing:border-box}.katex .cancel-pad{padding:0 .2em}.katex .cancel-lap{margin-left:-.2em;margin-right:-.2em}.katex .sout{border-bottom-style:solid;border-bottom-width:.08em}.katex .angl{border-right:.049em solid;border-top:.049em solid;box-sizing:border-box;margin-right:.03889em}.katex .anglpad{padding:0 .03889em}.katex .eqn-num:before{content:"(" counter(katexEqnNo) ")";counter-increment:katexEqnNo}.katex .mml-eqn-num:before{content:"(" counter(mmlEqnNo) ")";counter-increment:mmlEqnNo}.katex .mtr-glue{width:50%}.katex .cd-vert-arrow{display:inline-block;position:relative}.katex .cd-label-left{display:inline-block;position:absolute;right:calc(50% + .3em);text-align:left}.katex .cd-label-right{display:inline-block;left:calc(50% + .3em);position:absolute;text-align:right}.katex-display{display:block;margin:1em 0;text-align:center}.katex-display>.katex{display:block;text-align:center;white-space:nowrap}.katex-display>.katex>.katex-html{display:block;position:relative}.katex-display>.katex>.katex-html>.tag{position:absolute;right:0}.katex-display.leqno>.katex>.katex-html>.tag{left:0;right:auto}.katex-display.fleqn>.katex{padding-left:2em;text-align:left}body{counter-reset:katexEqnNo mmlEqnNo}
+

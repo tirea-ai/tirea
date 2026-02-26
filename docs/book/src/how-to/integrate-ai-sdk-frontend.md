@@ -109,5 +109,5 @@ export default function ChatPage() {
 
 - [AI SDK v6 Protocol](../reference/protocols/ai-sdk-v6.md)
 - [HTTP API](../reference/http-api.md)
-- `e2e/ai-sdk-frontend/README.md`
-- `e2e/ai-sdk-frontend/app/api/chat/route.ts`
+- `examples/ai-sdk-starter/README.md`
+- `examples/ai-sdk-starter/app/api/chat/route.ts`

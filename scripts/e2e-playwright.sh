@@ -46,7 +46,7 @@ cargo build --package tirea-agentos-server --package tirea-examples
 echo "Starting backend on :$BACKEND_PORT..."
 cargo run --package tirea-agentos-server -- \
     --http-addr "127.0.0.1:$BACKEND_PORT" \
-    --config e2e/ai-sdk-frontend/agent-config.json &
+    --config examples/ai-sdk-starter/agent-config.json &
 PIDS+=($!)
 
 # Start travel backend (separate binary with custom tools/state).
@@ -72,23 +72,23 @@ done
 
 # Install frontend dependencies.
 echo "Installing frontend dependencies..."
-(cd e2e/ai-sdk-frontend && npm install --silent)
-(cd e2e/copilotkit-frontend && npm install --silent)
-(cd e2e/examples/travel-ui && npm install --silent)
+(cd examples/ai-sdk-starter && npm install --silent)
+(cd examples/copilotkit-starter && npm install --silent)
+(cd examples/travel-ui && npm install --silent)
 
 # Start AI SDK frontend.
 echo "Starting AI SDK frontend on :$AI_SDK_PORT..."
-(cd e2e/ai-sdk-frontend && BACKEND_URL="http://localhost:$BACKEND_PORT" npx next dev -p "$AI_SDK_PORT") &
+(cd examples/ai-sdk-starter && BACKEND_URL="http://localhost:$BACKEND_PORT" npx next dev -p "$AI_SDK_PORT") &
 PIDS+=($!)
 
 # Start CopilotKit frontend.
 echo "Starting CopilotKit frontend on :$COPILOTKIT_PORT..."
-(cd e2e/copilotkit-frontend && BACKEND_URL="http://localhost:$BACKEND_PORT" npx next dev -p "$COPILOTKIT_PORT") &
+(cd examples/copilotkit-starter && BACKEND_URL="http://localhost:$BACKEND_PORT" npx next dev -p "$COPILOTKIT_PORT") &
 PIDS+=($!)
 
 # Start Travel frontend (points to travel backend).
 echo "Starting Travel frontend on :$TRAVEL_PORT..."
-(cd e2e/examples/travel-ui && BACKEND_URL="http://localhost:$TRAVEL_BACKEND_PORT" npx next dev -p "$TRAVEL_PORT") &
+(cd examples/travel-ui && BACKEND_URL="http://localhost:$TRAVEL_BACKEND_PORT" npx next dev -p "$TRAVEL_PORT") &
 PIDS+=($!)
 
 # Wait for frontends.

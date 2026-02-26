@@ -16,7 +16,7 @@ members = [
     "crates/tirea",
     "crates/tirea-store-adapters",
     "crates/tirea-agentos-server",
-    "e2e/examples",
+    "examples",
     "e2e/phoenix/test-helpers",
 ]
 

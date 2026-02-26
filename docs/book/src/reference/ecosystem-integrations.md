@@ -124,10 +124,10 @@ History:
 
 CopilotKit:
 
-- `e2e/copilotkit-frontend/`
-- `e2e/examples/travel-ui/`
-- `e2e/examples/research-ui/`
+- `examples/copilotkit-starter/`
+- `examples/travel-ui/`
+- `examples/research-ui/`
 
 AI SDK:
 
-- `e2e/ai-sdk-frontend/`
+- `examples/ai-sdk-starter/`

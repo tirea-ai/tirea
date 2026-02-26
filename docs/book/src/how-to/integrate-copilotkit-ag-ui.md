@@ -92,5 +92,5 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
 - [AG-UI Protocol](../reference/protocols/ag-ui.md)
 - [HTTP API](../reference/http-api.md)
-- `e2e/copilotkit-frontend/README.md`
-- `e2e/copilotkit-frontend/lib/copilotkit-app.ts`
+- `examples/copilotkit-starter/README.md`
+- `examples/copilotkit-starter/lib/copilotkit-app.ts`

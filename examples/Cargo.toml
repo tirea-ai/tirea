@@ -1,0 +1,29 @@
+[package]
+name = "tirea-examples"
+version.workspace = true
+edition = "2021"
+publish = false
+
+[dependencies]
+tirea-agentos = { version = "0.1.1", path = "../crates/tirea-agentos" }
+tirea-agentos-server = { version = "0.1.1", path = "../crates/tirea-agentos-server" }
+tirea-store-adapters = { version = "0.1.1", path = "../crates/tirea-store-adapters" }
+tirea-state = { version = "0.1.1", path = "../crates/tirea-state" }
+tirea-state-derive = { version = "0.1.1", path = "../crates/tirea-state-derive" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = { workspace = true }
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+clap = { version = "4", features = ["derive", "env"] }
+genai = "0.5"
+axum = { version = "0.7", default-features = false, features = ["http1", "json", "query", "tokio"] }
+uuid = { version = "1", features = ["v4"] }
+
+[[bin]]
+name = "travel"
+path = "src/travel.rs"
+
+[[bin]]
+name = "research"
+path = "src/research.rs"
