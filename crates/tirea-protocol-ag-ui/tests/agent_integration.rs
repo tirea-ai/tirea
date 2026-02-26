@@ -2202,7 +2202,7 @@ async fn test_activity_context_emits_snapshot_on_update() {
         "tool:test",
         &fix.run_config,
         &fix.pending_messages,
-        Some(hub),
+        hub,
     );
     let activity = ctx.activity("stream_1", "progress");
 
@@ -2258,7 +2258,7 @@ async fn test_activity_context_snapshot_reused_across_contexts() {
         "tool:test",
         &fix.run_config,
         &fix.pending_messages,
-        Some(hub.clone()),
+        hub.clone(),
     );
     let activity = ctx.activity("stream_2", "progress");
     let progress = activity.state::<ProgressState>("");
@@ -2273,7 +2273,7 @@ async fn test_activity_context_snapshot_reused_across_contexts() {
         "tool:test",
         &fix.run_config,
         &fix.pending_messages,
-        Some(hub),
+        hub,
     );
     let activity2 = ctx2.activity("stream_2", "progress");
     let progress2 = activity2.state::<ProgressState>("");
@@ -2297,7 +2297,7 @@ async fn test_activity_context_multiple_streams_emit_separately() {
         "tool:test",
         &fix.run_config,
         &fix.pending_messages,
-        Some(hub),
+        hub,
     );
     let activity_a = ctx.activity("stream_a", "progress");
     let activity_b = ctx.activity("stream_b", "progress");
