@@ -3,11 +3,11 @@
 //! Gated behind the `test-support` cargo feature so production builds are
 //! unaffected.  Enable via `[dev-dependencies] tirea-contract = { ..., features = ["test-support"] }`.
 
-use crate::runtime::StepContext;
-use crate::thread::Message;
-use crate::runtime::ToolCallContext;
+use crate::runtime::tool_call::suspension::Suspension;
 use crate::runtime::tool_call::ToolDescriptor;
+use crate::runtime::{PendingToolCall, StepContext, SuspendTicket, ToolCallContext, ToolCallResumeMode};
 use crate::RunConfig;
+use crate::thread::Message;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use tirea_state::{DocCell, Op};
@@ -83,4 +83,32 @@ impl Default for TestFixture {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Standard mock tool set with configurable third tool.
+pub fn mock_tools() -> Vec<ToolDescriptor> {
+    mock_tools_with("delete_file", "Delete File", "Delete a file")
+}
+
+/// Mock tool set with a custom third tool.
+pub fn mock_tools_with(id: &str, display: &str, desc: &str) -> Vec<ToolDescriptor> {
+    vec![
+        ToolDescriptor::new("read_file", "Read File", "Read a file"),
+        ToolDescriptor::new("write_file", "Write File", "Write a file"),
+        ToolDescriptor::new(id, display, desc),
+    ]
+}
+
+/// Build a `SuspendTicket` from a `Suspension` interaction for tests.
+pub fn test_suspend_ticket(interaction: Suspension) -> SuspendTicket {
+    let tool_name = interaction
+        .action
+        .strip_prefix("tool:")
+        .unwrap_or("TestSuspend")
+        .to_string();
+    SuspendTicket::new(
+        interaction.clone(),
+        PendingToolCall::new(interaction.id, tool_name, interaction.parameters),
+        ToolCallResumeMode::PassDecisionToTool,
+    )
 }

@@ -20,54 +20,7 @@ mod tests {
     use crate::testing::TestFixture;
     use serde_json::json;
 
-    // ================================================================
-    // Write-through-read tests
-    // ================================================================
-
-    #[test]
-    fn test_write_through_read_same_ref() {
-        let doc = json!({"__inference_error": {"error": null}});
-        let fix = TestFixture::new_with_state(doc);
-        let ctx = fix.ctx_with("call-1", "test");
-
-        let ctrl = ctx.state_of::<InferenceErrorState>();
-        // Initially null
-        assert!(ctrl.error().unwrap().is_none());
-
-        // Write
-        ctrl.set_error(Some(crate::runtime::run::InferenceError {
-            error_type: "rate_limit".into(),
-            message: "too many requests".into(),
-        }))
-        .expect("failed to set inference_error");
-
-        // Read back from the same ref — must see the written value
-        let err = ctrl.error().unwrap();
-        assert!(err.is_some(), "same-ref read must see the write");
-        assert_eq!(err.unwrap().error_type, "rate_limit");
-    }
-
-    #[test]
-    fn test_write_through_read_cross_ref() {
-        let doc = json!({"__inference_error": {"error": null}});
-        let fix = TestFixture::new_with_state(doc);
-        let ctx = fix.ctx_with("call-1", "test");
-
-        // Write via first state_of call
-        let ctrl1 = ctx.state_of::<InferenceErrorState>();
-        ctrl1
-            .set_error(Some(crate::runtime::run::InferenceError {
-                error_type: "timeout".into(),
-                message: "timed out".into(),
-            }))
-            .expect("failed to set inference_error");
-
-        // Read via second state_of call — must see the write
-        let ctrl2 = ctx.state_of::<InferenceErrorState>();
-        let err = ctrl2.error().unwrap();
-        assert!(err.is_some(), "cross-ref read must see the write");
-        assert_eq!(err.unwrap().error_type, "timeout");
-    }
+    // Write-through same-ref and cross-ref covered by tool_call::context::tests.
 
     #[test]
     fn test_rebuild_state_reflects_write_through() {

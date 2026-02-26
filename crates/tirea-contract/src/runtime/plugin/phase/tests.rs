@@ -1,33 +1,11 @@
 use super::*;
-use crate::runtime::run::TerminationReason;
-use crate::runtime::tool_call::Suspension;
 use crate::runtime::llm::StreamResult;
+use crate::runtime::run::TerminationReason;
+use crate::runtime::tool_call::{Suspension, ToolResult};
 use crate::runtime::{PendingToolCall, ToolCallResumeMode};
-use crate::testing::TestFixture;
+use crate::testing::{mock_tools, test_suspend_ticket, TestFixture};
 use crate::thread::ToolCall;
-use crate::runtime::tool_call::{ToolDescriptor, ToolResult};
 use serde_json::json;
-
-fn mock_tools() -> Vec<ToolDescriptor> {
-    vec![
-        ToolDescriptor::new("read_file", "Read File", "Read a file"),
-        ToolDescriptor::new("write_file", "Write File", "Write a file"),
-        ToolDescriptor::new("delete_file", "Delete File", "Delete a file"),
-    ]
-}
-
-fn test_suspend_ticket(interaction: Suspension) -> SuspendTicket {
-    let tool_name = interaction
-        .action
-        .strip_prefix("tool:")
-        .unwrap_or("TestSuspend")
-        .to_string();
-    SuspendTicket::new(
-        interaction.clone(),
-        PendingToolCall::new(interaction.id, tool_name, interaction.parameters),
-        ToolCallResumeMode::PassDecisionToTool,
-    )
-}
 
 // =========================================================================
 // Phase tests

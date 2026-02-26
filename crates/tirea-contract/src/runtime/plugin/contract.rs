@@ -68,12 +68,10 @@ pub trait AgentPlugin: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::plugin::phase::{StepContext, SuspendTicket, ToolContext};
+    use crate::runtime::plugin::phase::{StepContext, ToolContext};
     use crate::runtime::tool_call::Suspension;
-    use crate::runtime::{PendingToolCall, ToolCallResumeMode};
-    use crate::testing::TestFixture;
+    use crate::testing::{mock_tools_with, test_suspend_ticket, TestFixture};
     use crate::thread::ToolCall;
-    use crate::runtime::tool_call::ToolDescriptor;
     use serde_json::json;
 
     async fn run_step_start(plugin: &dyn AgentPlugin, step: &mut StepContext<'_>) {
@@ -89,19 +87,6 @@ mod tests {
     async fn run_after_inference(plugin: &dyn AgentPlugin, step: &mut StepContext<'_>) {
         let mut ctx = AfterInferenceContext::new(step);
         plugin.after_inference(&mut ctx).await;
-    }
-
-    fn test_suspend_ticket(interaction: Suspension) -> SuspendTicket {
-        let tool_name = interaction
-            .action
-            .strip_prefix("tool:")
-            .unwrap_or("TestSuspend")
-            .to_string();
-        SuspendTicket::new(
-            interaction.clone(),
-            PendingToolCall::new(interaction.id, tool_name, interaction.parameters),
-            ToolCallResumeMode::PassDecisionToTool,
-        )
     }
 
     async fn run_before_tool_execute(plugin: &dyn AgentPlugin, step: &mut StepContext<'_>) {
@@ -237,12 +222,8 @@ mod tests {
         }
     }
 
-    fn mock_tools() -> Vec<ToolDescriptor> {
-        vec![
-            ToolDescriptor::new("read_file", "Read File", "Read a file"),
-            ToolDescriptor::new("write_file", "Write File", "Write a file"),
-            ToolDescriptor::new("dangerous_tool", "Dangerous", "Dangerous operation"),
-        ]
+    fn mock_tools() -> Vec<crate::runtime::tool_call::ToolDescriptor> {
+        mock_tools_with("dangerous_tool", "Dangerous", "Dangerous operation")
     }
 
     // =========================================================================
