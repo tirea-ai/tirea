@@ -11,7 +11,7 @@ use crate::contracts::runtime::{PendingToolCall, ToolCallResumeMode};
 use crate::contracts::storage::VersionPrecondition;
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{Message, Role, Thread, ToolCall};
-use crate::contracts::runtime::tool_call::{ToolDescriptor, ToolError, ToolResult, ToolSuspension};
+use crate::contracts::runtime::tool_call::{ToolDescriptor, ToolError, ToolResult};
 use crate::contracts::TerminationReason;
 use crate::contracts::{RunContext, Suspension, ToolCallContext};
 use crate::runtime::activity::ActivityHub;
@@ -611,7 +611,7 @@ impl AgentPlugin for TestInteractionPlugin {
         }
 
         let tool_states =
-            step.state_of::<crate::contracts::runtime::ToolCallLifecycleStatesState>();
+            step.state_of::<crate::contracts::runtime::ToolCallStatesMap>();
         let mut states = tool_states.calls().ok().unwrap_or_default();
         for (call_id, suspended_call) in suspended_calls {
             if states.get(&call_id).is_some_and(|state| {
@@ -628,7 +628,7 @@ impl AgentPlugin for TestInteractionPlugin {
             let resume = Self::to_tool_call_resume(&call_id, result);
             let updated_at = resume.updated_at;
             let mut state = states.remove(&call_id).unwrap_or_else(|| {
-                crate::contracts::runtime::ToolCallLifecycleState {
+                crate::contracts::runtime::ToolCallState {
                     call_id: call_id.clone(),
                     tool_name: suspended_call.tool_name.clone(),
                     arguments: suspended_call.arguments.clone(),
@@ -733,7 +733,7 @@ impl Tool for SelfSuspendTool {
         Ok(ToolResult::suspended_with(
             "self_suspend",
             "Execution suspended; awaiting external decision",
-            ToolSuspension::new(suspension, pending, ToolCallResumeMode::ReplayToolCall),
+            SuspendTicket::new(suspension, pending, ToolCallResumeMode::ReplayToolCall),
         ))
     }
 }
@@ -2053,7 +2053,7 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
             this.phases.lock().unwrap().push(phase);
             if phase == Phase::BeforeInference {
                 step.system("from_before_inference");
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
                 let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
@@ -2084,7 +2084,7 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
                 step.system_context.clone(),
                 matches!(
                     step.run_action(),
-                    crate::contracts::RunLifecycleAction::Terminate(
+                    crate::contracts::RunAction::Terminate(
                         TerminationReason::PluginRequested
                     )
                 ),
@@ -3207,7 +3207,7 @@ impl AgentPlugin for RecordAndTerminatePlugin {
     phase_dispatch_methods!(|this, phase, step| {
         this.phases.lock().unwrap().push(phase);
         if phase == Phase::BeforeInference {
-            step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+            step.set_run_action(crate::contracts::RunAction::Terminate(
                 TerminationReason::PluginRequested,
             ));
         }
@@ -3387,7 +3387,7 @@ async fn test_stream_terminate_plugin_requested_with_pending_state_emits_pending
             )
             .expect("failed to set suspended interaction");
             step.pending_patches.push(patch);
-            step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+            step.set_run_action(crate::contracts::RunAction::Terminate(
                 TerminationReason::Suspended,
             ));
         });
@@ -3435,7 +3435,7 @@ async fn test_stream_run_action_with_suspended_only_state_emits_pending_events()
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::Suspended,
                 ));
             }
@@ -3509,7 +3509,7 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -3581,7 +3581,7 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -3710,7 +3710,7 @@ async fn test_run_loop_permission_approval_replays_tool_and_updates_lifecycle_st
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -3828,7 +3828,7 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -3934,7 +3934,7 @@ async fn test_run_loop_run_start_replay_uses_tool_call_resume_state_without_mail
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -4046,7 +4046,7 @@ async fn test_run_loop_run_start_settles_orphan_resuming_state_without_suspended
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -4113,7 +4113,7 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -4239,7 +4239,7 @@ async fn test_run_loop_permission_denied_appends_tool_result_for_model_context()
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -4325,7 +4325,7 @@ async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_contex
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -4466,7 +4466,7 @@ async fn test_legacy_resume_replay_nonstream_resolution_state_is_ignored() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -4552,7 +4552,7 @@ async fn test_legacy_resume_replay_nonstream_queue_is_ignored() {
                     ));
                 }
                 Phase::BeforeInference => {
-                    step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                    step.set_run_action(crate::contracts::RunAction::Terminate(
                         TerminationReason::PluginRequested,
                     ));
                 }
@@ -4615,7 +4615,7 @@ async fn test_run_loop_terminate_plugin_requested_with_suspended_state_returns_s
             )
             .expect("failed to set suspended interaction");
             step.pending_patches.push(patch);
-            step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+            step.set_run_action(crate::contracts::RunAction::Terminate(
                 TerminationReason::PluginRequested,
             ));
         });
@@ -4670,7 +4670,7 @@ async fn test_run_loop_terminate_plugin_requested_with_suspended_only_state_retu
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -4794,7 +4794,7 @@ async fn test_run_loop_rejects_run_action_mutation_outside_inference_phases() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::StepStart {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -4834,7 +4834,7 @@ async fn test_stream_rejects_run_action_mutation_outside_inference_phases() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::StepStart {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -6088,7 +6088,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
             )
             .expect("failed to set suspended interaction");
             step.pending_patches.push(patch);
-            step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+            step.set_run_action(crate::contracts::RunAction::Terminate(
                 TerminationReason::Suspended,
             ));
         });
@@ -6226,7 +6226,7 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -6356,7 +6356,7 @@ async fn test_nonstream_replay_is_idempotent_across_reruns() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -7467,7 +7467,7 @@ async fn test_legacy_resume_replay_stream_queue_is_ignored() {
                     ));
                 }
                 Phase::BeforeInference => {
-                    step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                    step.set_run_action(crate::contracts::RunAction::Terminate(
                         TerminationReason::PluginRequested,
                     ));
                 }
@@ -8822,7 +8822,7 @@ async fn test_run_step_terminate_plugin_requested_with_suspended_state_returns_s
             )
             .expect("failed to set suspended interaction");
             step.pending_patches.push(patch);
-            step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+            step.set_run_action(crate::contracts::RunAction::Terminate(
                 TerminationReason::PluginRequested,
             ));
         });
@@ -10862,7 +10862,7 @@ async fn test_plugin_run_action_stops_loop() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -10910,7 +10910,7 @@ async fn test_run_loop_rejects_run_action_mutation_outside_inference_phases_v2()
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::StepStart {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -10953,7 +10953,7 @@ async fn test_stream_rejects_run_action_mutation_outside_inference_phases_v2() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::StepStart {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -10995,7 +10995,7 @@ async fn test_run_loop_plugin_run_action_stops_loop() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -11043,7 +11043,7 @@ async fn test_run_loop_applies_plugin_state_effect_patch_before_inference() {
             )))
             .with_source("test:state_effect_before_inference");
             step.emit_patch(patch);
-            step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+            step.set_run_action(crate::contracts::RunAction::Terminate(
                 TerminationReason::PluginRequested,
             ));
         });
@@ -11115,7 +11115,7 @@ async fn test_run_loop_after_inference_run_action_stops_before_tool_execution() 
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::AfterInference {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -11167,7 +11167,7 @@ async fn test_stream_after_inference_run_action_stops_before_tool_events() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::AfterInference {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -11272,7 +11272,7 @@ async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -11366,7 +11366,7 @@ async fn test_run_loop_decision_channel_rejects_illegal_terminal_to_resuming_tra
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -11478,7 +11478,7 @@ async fn test_stream_decision_channel_ignores_unknown_target_id() {
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -11576,7 +11576,7 @@ async fn test_stream_decision_channel_rejects_illegal_terminal_to_resuming_trans
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }
@@ -11863,7 +11863,7 @@ async fn test_run_loop_decision_channel_cancel_emits_single_tool_result_message(
 
         phase_dispatch_methods!(|phase, step| {
             if phase == Phase::BeforeInference {
-                step.set_run_action(crate::contracts::RunLifecycleAction::Terminate(
+                step.set_run_action(crate::contracts::RunAction::Terminate(
                     TerminationReason::PluginRequested,
                 ));
             }

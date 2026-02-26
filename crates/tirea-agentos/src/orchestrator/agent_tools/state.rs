@@ -2,8 +2,8 @@ use super::*;
 use tirea_contract::runtime::plugin::phase::PluginPhaseContext;
 use tirea_contract::io::ResumeDecisionAction;
 use tirea_contract::runtime::{
-    PendingToolCall, SuspendedCall, SuspendedToolCallsState, ToolCallLifecycleState,
-    ToolCallLifecycleStatesState, ToolCallResume, ToolCallResumeMode, ToolCallStatus,
+    PendingToolCall, SuspendedCall, SuspendedToolCallsState, ToolCallResume, ToolCallResumeMode,
+    ToolCallState, ToolCallStatesMap, ToolCallStatus,
 };
 use tirea_contract::runtime::state_paths::SUSPENDED_TOOL_CALLS_STATE_PATH;
 use tirea_state::State;
@@ -183,11 +183,11 @@ pub(super) fn schedule_recovery_replay(
     };
 
     if let Some(suspended_call) = suspended_call {
-        let tool_states = step.state_of::<ToolCallLifecycleStatesState>();
+        let tool_states = step.state_of::<ToolCallStatesMap>();
         if let Ok(mut calls) = tool_states.calls() {
             calls.insert(
                 call_id.clone(),
-                ToolCallLifecycleState {
+                ToolCallState {
                     call_id: call_id.clone(),
                     tool_name: AGENT_RUN_TOOL_ID.to_string(),
                     arguments: suspended_call.arguments.clone(),

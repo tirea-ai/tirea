@@ -12,7 +12,7 @@ use tirea_agentos::runtime::loop_runner::{
     ParallelToolExecutor, ResolvedRun, SequentialToolExecutor,
 };
 use tirea_contract::runtime::plugin::phase::{
-    BeforeInferenceContext, BeforeToolExecuteContext, SuspendTicket, ToolCallLifecycleAction,
+    BeforeInferenceContext, BeforeToolExecuteContext, SuspendTicket, ToolCallAction,
 };
 use tirea_contract::runtime::plugin::AgentPlugin;
 use tirea_contract::runtime::{PendingToolCall, ToolCallResumeMode};
@@ -231,7 +231,7 @@ impl AgentPlugin for FrontendToolPendingPlugin {
     }
 
     async fn before_tool_execute(&self, ctx: &mut BeforeToolExecuteContext<'_, '_>) {
-        if !matches!(ctx.decision(), ToolCallLifecycleAction::Proceed) {
+        if !matches!(ctx.decision(), ToolCallAction::Proceed) {
             return;
         }
 

@@ -1,6 +1,7 @@
 use crate::runtime::run::TerminationReason;
 use crate::runtime::tool_call::Suspension;
 use crate::runtime::{PendingToolCall, ToolCallResumeMode};
+use serde::{Deserialize, Serialize};
 use tirea_state::TrackedPatch;
 
 /// Execution phase in the agent loop.
@@ -101,15 +102,19 @@ pub enum StepOutcome {
 
 /// Run-level control action emitted by plugins.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RunLifecycleAction {
+pub enum RunAction {
     /// Continue normal execution.
     Continue,
     /// Terminate run with specific reason.
     Terminate(TerminationReason),
 }
 
-/// Suspension payload for `ToolCallLifecycleAction::Suspend`.
-#[derive(Debug, Clone, PartialEq)]
+/// Deprecated alias for [`RunAction`].
+#[deprecated(note = "use RunAction directly")]
+pub type RunLifecycleAction = RunAction;
+
+/// Suspension payload for `ToolCallAction::Suspend`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SuspendTicket {
     /// External suspension payload.
     pub suspension: Suspension,
@@ -158,17 +163,21 @@ impl SuspendTicket {
 
 /// Tool-call level control action emitted by plugins.
 #[derive(Debug, Clone, PartialEq)]
-pub enum ToolCallLifecycleAction {
+pub enum ToolCallAction {
     Proceed,
     Suspend(Box<SuspendTicket>),
     Block { reason: String },
 }
 
-impl ToolCallLifecycleAction {
+impl ToolCallAction {
     pub fn suspend(ticket: SuspendTicket) -> Self {
         Self::Suspend(Box::new(ticket))
     }
 }
+
+/// Deprecated alias for [`ToolCallAction`].
+#[deprecated(note = "use ToolCallAction directly")]
+pub type ToolCallLifecycleAction = ToolCallAction;
 
 /// State side effect emitted by plugins.
 #[derive(Debug, Clone)]

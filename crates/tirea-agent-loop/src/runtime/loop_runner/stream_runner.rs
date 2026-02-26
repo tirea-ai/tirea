@@ -360,8 +360,8 @@ pub(super) fn run_stream(
             let filtered_tools = prepared.filtered_tools;
 
             match prepared.run_action {
-                RunLifecycleAction::Continue => {}
-                RunLifecycleAction::Terminate(reason) => {
+                RunAction::Continue => {}
+                RunAction::Terminate(reason) => {
                     if matches!(reason, TerminationReason::Suspended) {
                         for event in suspended_call_pending_events(&run_ctx) {
                             yield emitter.emit_existing(event);

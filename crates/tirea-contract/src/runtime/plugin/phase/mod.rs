@@ -18,7 +18,8 @@ pub use contexts::{
     StepEndContext, StepStartContext,
 };
 pub use step::{StepContext, ToolContext};
+#[allow(deprecated)]
 pub use types::{
-    Phase, PhasePolicy, RunLifecycleAction, StateEffect, StepOutcome, SuspendTicket,
-    ToolCallLifecycleAction,
+    Phase, PhasePolicy, RunAction, RunLifecycleAction, StateEffect, StepOutcome, SuspendTicket,
+    ToolCallAction, ToolCallLifecycleAction,
 };

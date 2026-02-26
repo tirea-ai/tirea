@@ -4584,7 +4584,7 @@ use tirea_agentos::contracts::runtime::plugin::phase::{
 };
 use tirea_agentos::contracts::runtime::plugin::AgentPlugin;
 use tirea_agentos::contracts::io::ResumeDecisionAction;
-use tirea_agentos::contracts::runtime::{ToolCallLifecycleState, ToolCallResume, ToolCallStatus};
+use tirea_agentos::contracts::runtime::{ToolCallState, ToolCallResume, ToolCallStatus};
 use tirea_agentos::contracts::runtime::SuspendedCall;
 use tirea_agentos::contracts::thread::ToolCall;
 use tirea_protocol_ag_ui::RunAgentInput;
@@ -4814,7 +4814,7 @@ impl AgentPlugin for InteractionPlugin {
         }
 
         let tool_states =
-            step.state_of::<tirea_agentos::contracts::runtime::ToolCallLifecycleStatesState>();
+            step.state_of::<tirea_agentos::contracts::runtime::ToolCallStatesMap>();
         let mut states = tool_states.calls().ok().unwrap_or_default();
         for (call_id, suspended_call) in suspended_calls {
             if states
@@ -4830,7 +4830,7 @@ impl AgentPlugin for InteractionPlugin {
             let updated_at = resume.updated_at;
             let mut state = states
                 .remove(&call_id)
-                .unwrap_or_else(|| ToolCallLifecycleState {
+                .unwrap_or_else(|| ToolCallState {
                     call_id: call_id.clone(),
                     tool_name: suspended_call.tool_name.clone(),
                     arguments: suspended_call.arguments.clone(),
@@ -4880,7 +4880,7 @@ impl AgentPlugin for TestFrontendToolPlugin {
     async fn before_tool_execute(&self, step: &mut BeforeToolExecuteContext<'_, '_>) {
         if !matches!(
             step.decision(),
-            tirea_agentos::contracts::runtime::plugin::phase::ToolCallLifecycleAction::Proceed
+            tirea_agentos::contracts::runtime::plugin::phase::ToolCallAction::Proceed
         ) {
             return;
         }
@@ -12657,7 +12657,7 @@ fn resume_inputs_from_state(state: &Value) -> HashMap<String, ToolCallResume> {
         .get("__tool_call_states")
         .and_then(|agent| agent.get("calls"))
         .cloned()
-        .and_then(|v| serde_json::from_value::<HashMap<String, ToolCallLifecycleState>>(v).ok())
+        .and_then(|v| serde_json::from_value::<HashMap<String, ToolCallState>>(v).ok())
         .unwrap_or_default()
         .into_iter()
         .filter_map(|(call_id, tool_state)| {

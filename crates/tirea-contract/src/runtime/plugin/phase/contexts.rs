@@ -1,4 +1,4 @@
-use super::{Phase, RunLifecycleAction, StepContext, SuspendTicket, ToolCallLifecycleAction};
+use super::{Phase, RunAction, StepContext, SuspendTicket, ToolCallAction};
 use crate::io::ResumeDecisionAction;
 use crate::runtime::run::TerminationReason;
 use crate::runtime::llm::StreamResult;
@@ -102,7 +102,7 @@ impl<'s, 'a> BeforeInferenceContext<'s, 'a> {
 
     /// Terminate current run as plugin-requested before inference.
     pub fn terminate_plugin_requested(&mut self) {
-        self.step.set_run_action(RunLifecycleAction::Terminate(
+        self.step.set_run_action(RunAction::Terminate(
             TerminationReason::PluginRequested,
         ));
     }
@@ -110,7 +110,7 @@ impl<'s, 'a> BeforeInferenceContext<'s, 'a> {
     /// Request run termination with a specific reason.
     pub fn request_termination(&mut self, reason: TerminationReason) {
         self.step
-            .set_run_action(RunLifecycleAction::Terminate(reason));
+            .set_run_action(RunAction::Terminate(reason));
     }
 }
 
@@ -134,7 +134,7 @@ impl<'s, 'a> AfterInferenceContext<'s, 'a> {
     /// Request run termination with a specific reason after inference has completed.
     pub fn request_termination(&mut self, reason: TerminationReason) {
         self.step
-            .set_run_action(RunLifecycleAction::Terminate(reason));
+            .set_run_action(RunAction::Terminate(reason));
     }
 }
 
@@ -189,15 +189,15 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
             )
     }
 
-    pub fn decision(&self) -> ToolCallLifecycleAction {
+    pub fn decision(&self) -> ToolCallAction {
         self.step.tool_action()
     }
 
-    pub fn set_decision(&mut self, decision: ToolCallLifecycleAction) {
+    pub fn set_decision(&mut self, decision: ToolCallAction) {
         match decision {
-            ToolCallLifecycleAction::Proceed => self.step.allow(),
-            ToolCallLifecycleAction::Suspend(ticket) => self.step.suspend(*ticket),
-            ToolCallLifecycleAction::Block { reason } => self.step.block(reason),
+            ToolCallAction::Proceed => self.step.allow(),
+            ToolCallAction::Suspend(ticket) => self.step.suspend(*ticket),
+            ToolCallAction::Block { reason } => self.step.block(reason),
         }
     }
 

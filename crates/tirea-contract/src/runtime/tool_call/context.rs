@@ -6,7 +6,7 @@
 
 use crate::runtime::activity::ActivityManager;
 use crate::runtime::state_paths::TOOL_CALL_STATES_STATE_PATH;
-use crate::runtime::{ToolCallLifecycleState, ToolCallLifecycleStatesState, ToolCallResume};
+use crate::runtime::{ToolCallState, ToolCallStatesMap, ToolCallResume};
 use crate::thread::Message;
 use crate::RunConfig;
 use futures::future::pending;
@@ -243,17 +243,17 @@ impl<'a> ToolCallContext<'a> {
     pub fn tool_call_state_for(
         &self,
         call_id: &str,
-    ) -> TireaResult<Option<ToolCallLifecycleState>> {
+    ) -> TireaResult<Option<ToolCallState>> {
         if call_id.trim().is_empty() {
             return Ok(None);
         }
-        let runtime = self.state_of::<ToolCallLifecycleStatesState>();
+        let runtime = self.state_of::<ToolCallStatesMap>();
         let calls = runtime.calls()?;
         Ok(calls.get(call_id).cloned())
     }
 
     /// Read persisted runtime state for current `call_id`.
-    pub fn tool_call_state(&self) -> TireaResult<Option<ToolCallLifecycleState>> {
+    pub fn tool_call_state(&self) -> TireaResult<Option<ToolCallState>> {
         self.tool_call_state_for(self.call_id())
     }
 
@@ -261,7 +261,7 @@ impl<'a> ToolCallContext<'a> {
     pub fn set_tool_call_state_for(
         &self,
         call_id: &str,
-        state: ToolCallLifecycleState,
+        state: ToolCallState,
     ) -> TireaResult<()> {
         if call_id.trim().is_empty() {
             return Err(TireaError::invalid_operation(
@@ -273,7 +273,7 @@ impl<'a> ToolCallContext<'a> {
     }
 
     /// Upsert persisted runtime state for current `call_id`.
-    pub fn set_tool_call_state(&self, state: ToolCallLifecycleState) -> TireaResult<()> {
+    pub fn set_tool_call_state(&self, state: ToolCallState) -> TireaResult<()> {
         self.set_tool_call_state_for(self.call_id(), state)
     }
 
@@ -668,7 +668,7 @@ mod tests {
         let pending = Mutex::new(Vec::new());
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
-        let state = ToolCallLifecycleState {
+        let state = ToolCallState {
             call_id: "call.1".to_string(),
             tool_name: "confirm".to_string(),
             arguments: json!({"value": 1}),
@@ -709,7 +709,7 @@ mod tests {
 
         ctx.set_tool_call_state_for(
             "call-1",
-            ToolCallLifecycleState {
+            ToolCallState {
                 call_id: "call-1".to_string(),
                 tool_name: "echo".to_string(),
                 arguments: json!({"x": 1}),

@@ -2,7 +2,8 @@
 //!
 //! Tools execute actions and can modify state through `Thread`.
 
-use super::{PendingToolCall, Suspension, ToolCallContext, ToolCallResumeMode};
+use super::ToolCallContext;
+use crate::runtime::plugin::phase::SuspendTicket;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -27,29 +28,11 @@ pub enum ToolStatus {
 const TOOL_SUSPENSION_METADATA_KEY: &str = "__tool_suspension";
 
 /// Structured suspension payload that lets tools proactively pause execution.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ToolSuspension {
-    /// External suspension payload to emit and persist.
-    pub suspension: Suspension,
-    /// Pending projection used by stream events.
-    pub pending: PendingToolCall,
-    /// Resume strategy used by loop replay.
-    pub resume_mode: ToolCallResumeMode,
-}
-
-impl ToolSuspension {
-    pub fn new(
-        suspension: Suspension,
-        pending: PendingToolCall,
-        resume_mode: ToolCallResumeMode,
-    ) -> Self {
-        Self {
-            suspension,
-            pending,
-            resume_mode,
-        }
-    }
-}
+///
+/// This is now a type alias for [`SuspendTicket`]. Use `SuspendTicket` directly
+/// for new code.
+#[deprecated(note = "use SuspendTicket directly")]
+pub type ToolSuspension = SuspendTicket;
 
 /// Result of tool execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,7 +125,7 @@ impl ToolResult {
     pub fn suspended_with(
         tool_name: impl Into<String>,
         message: impl Into<String>,
-        suspension: ToolSuspension,
+        suspension: SuspendTicket,
     ) -> Self {
         Self::suspended(tool_name, message).with_suspension(suspension)
     }
@@ -169,7 +152,7 @@ impl ToolResult {
     }
 
     /// Attach structured suspension payload for loop-level suspension handling.
-    pub fn with_suspension(mut self, suspension: ToolSuspension) -> Self {
+    pub fn with_suspension(mut self, suspension: SuspendTicket) -> Self {
         if let Ok(value) = serde_json::to_value(suspension) {
             self.metadata
                 .insert(TOOL_SUSPENSION_METADATA_KEY.to_string(), value);
@@ -193,7 +176,7 @@ impl ToolResult {
     }
 
     /// Structured suspension payload attached by `with_suspension`.
-    pub fn suspension(&self) -> Option<ToolSuspension> {
+    pub fn suspension(&self) -> Option<SuspendTicket> {
         self.metadata
             .get(TOOL_SUSPENSION_METADATA_KEY)
             .cloned()

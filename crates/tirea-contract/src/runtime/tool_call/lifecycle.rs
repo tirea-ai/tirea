@@ -165,7 +165,7 @@ pub struct ToolCallResume {
 
 /// Durable per-tool-call runtime state.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, State)]
-pub struct ToolCallLifecycleState {
+pub struct ToolCallState {
     /// Stable tool call id.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub call_id: String,
@@ -192,15 +192,23 @@ pub struct ToolCallLifecycleState {
     pub updated_at: u64,
 }
 
+/// Deprecated alias for [`ToolCallState`].
+#[deprecated(note = "use ToolCallState directly")]
+pub type ToolCallLifecycleState = ToolCallState;
+
 /// Durable per-call runtime map persisted at `state["__tool_call_states"]`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 #[tirea(path = "__tool_call_states")]
-pub struct ToolCallLifecycleStatesState {
+pub struct ToolCallStatesMap {
     /// Runtime state keyed by `tool_call_id`.
     #[serde(default)]
     #[tirea(default = "HashMap::new()")]
-    pub calls: HashMap<String, ToolCallLifecycleState>,
+    pub calls: HashMap<String, ToolCallState>,
 }
+
+/// Deprecated alias for [`ToolCallStatesMap`].
+#[deprecated(note = "use ToolCallStatesMap directly")]
+pub type ToolCallLifecycleStatesState = ToolCallStatesMap;
 
 /// Parse suspended tool calls from a rebuilt state snapshot.
 pub fn suspended_calls_from_state(state: &Value) -> HashMap<String, SuspendedCall> {
@@ -213,7 +221,7 @@ pub fn suspended_calls_from_state(state: &Value) -> HashMap<String, SuspendedCal
 }
 
 /// Parse persisted tool call runtime states from a rebuilt state snapshot.
-pub fn tool_call_states_from_state(state: &Value) -> HashMap<String, ToolCallLifecycleState> {
+pub fn tool_call_states_from_state(state: &Value) -> HashMap<String, ToolCallState> {
     state
         .get(TOOL_CALL_STATES_STATE_PATH)
         .and_then(|value| value.get("calls"))

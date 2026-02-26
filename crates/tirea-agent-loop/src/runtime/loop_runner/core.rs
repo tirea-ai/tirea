@@ -8,9 +8,9 @@ use crate::contracts::runtime::SuspendedCall;
 use crate::contracts::thread::{Message, MessageMetadata, Role};
 use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::RunContext;
-use crate::contracts::RunLifecycleAction;
+use crate::contracts::RunAction;
 use crate::runtime::control::{
-    InferenceError, InferenceErrorState, SuspendedToolCallsState, ToolCallLifecycleState,
+    InferenceError, InferenceErrorState, SuspendedToolCallsState, ToolCallState,
     ToolCallResume, ToolCallStatus,
 };
 use tirea_state::{DocCell, Op, Path, StateContext, TireaError, TrackedPatch};
@@ -96,7 +96,7 @@ pub(super) fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec
     messages
 }
 
-pub(super) type InferenceInputs = (Vec<Message>, Vec<String>, RunLifecycleAction);
+pub(super) type InferenceInputs = (Vec<Message>, Vec<String>, RunAction);
 
 pub(super) fn inference_inputs_from_step(
     step: &mut StepContext<'_>,
@@ -194,7 +194,7 @@ pub(super) fn set_agent_inference_error(
 
 pub(super) fn tool_call_states_from_ctx(
     run_ctx: &RunContext,
-) -> HashMap<String, ToolCallLifecycleState> {
+) -> HashMap<String, ToolCallState> {
     run_ctx
         .snapshot()
         .ok()
@@ -204,7 +204,7 @@ pub(super) fn tool_call_states_from_ctx(
                 .and_then(|v| v.get("calls"))
                 .cloned()
                 .and_then(|raw| {
-                    serde_json::from_value::<HashMap<String, ToolCallLifecycleState>>(raw).ok()
+                    serde_json::from_value::<HashMap<String, ToolCallState>>(raw).ok()
                 })
         })
         .unwrap_or_default()
@@ -226,11 +226,11 @@ pub(super) struct ToolCallStateTransition {
 }
 
 pub(super) fn transition_tool_call_state(
-    current: Option<ToolCallLifecycleState>,
+    current: Option<ToolCallState>,
     seed: ToolCallStateSeed<'_>,
     transition: ToolCallStateTransition,
-) -> Option<ToolCallLifecycleState> {
-    let mut tool_state = current.unwrap_or_else(|| ToolCallLifecycleState {
+) -> Option<ToolCallState> {
+    let mut tool_state = current.unwrap_or_else(|| ToolCallState {
         call_id: seed.call_id.to_string(),
         tool_name: seed.tool_name.to_string(),
         arguments: seed.arguments.clone(),
@@ -257,7 +257,7 @@ pub(super) fn transition_tool_call_state(
 
 pub(super) fn upsert_tool_call_state(
     call_id: &str,
-    tool_state: ToolCallLifecycleState,
+    tool_state: ToolCallState,
 ) -> Result<TrackedPatch, AgentLoopError> {
     if call_id.trim().is_empty() {
         return Err(AgentLoopError::StateError(
@@ -390,8 +390,8 @@ mod tests {
     use serde_json::json;
     use tirea_state::apply_patch;
 
-    fn sample_state(call_id: &str, status: ToolCallStatus) -> ToolCallLifecycleState {
-        ToolCallLifecycleState {
+    fn sample_state(call_id: &str, status: ToolCallStatus) -> ToolCallState {
+        ToolCallState {
             call_id: call_id.to_string(),
             tool_name: "echo".to_string(),
             arguments: json!({"msg": call_id}),
@@ -487,7 +487,7 @@ mod tests {
 
     #[test]
     fn transition_tool_call_state_rejects_invalid_lifecycle_transition() {
-        let current = ToolCallLifecycleState {
+        let current = ToolCallState {
             call_id: "call_1".to_string(),
             tool_name: "echo".to_string(),
             arguments: json!({"message":"done"}),

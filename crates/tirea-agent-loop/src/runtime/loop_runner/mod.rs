@@ -53,7 +53,7 @@ use crate::contracts::runtime::plugin::phase::Phase;
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::io::ResumeDecisionAction;
 use crate::contracts::runtime::{
-    state_paths::RUN_LIFECYCLE_STATE_PATH, DecisionReplayPolicy, RunLifecycleStatus, StreamResult,
+    state_paths::RUN_LIFECYCLE_STATE_PATH, DecisionReplayPolicy, RunStatus, StreamResult,
     SuspendedCall, ToolCallResume, ToolCallResumeMode, ToolCallStatus, ToolExecutionRequest,
     ToolExecutionResult,
 };
@@ -61,7 +61,7 @@ use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
 use crate::contracts::runtime::tool_call::{Tool, ToolResult};
 use crate::contracts::RunContext;
-use crate::contracts::{AgentEvent, RunLifecycleAction, TerminationReason, ToolCallDecision};
+use crate::contracts::{AgentEvent, RunAction, TerminationReason, ToolCallDecision};
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
 use crate::runtime::activity::ActivityHub;
 
@@ -187,16 +187,16 @@ pub(super) fn sync_run_lifecycle_for_termination(
     };
 
     let (status, done_reason) = match termination {
-        TerminationReason::Suspended => (RunLifecycleStatus::Waiting, None),
-        TerminationReason::NaturalEnd => (RunLifecycleStatus::Done, Some("natural".to_string())),
+        TerminationReason::Suspended => (RunStatus::Waiting, None),
+        TerminationReason::NaturalEnd => (RunStatus::Done, Some("natural".to_string())),
         TerminationReason::PluginRequested => (
-            RunLifecycleStatus::Done,
+            RunStatus::Done,
             Some("plugin_requested".to_string()),
         ),
-        TerminationReason::Cancelled => (RunLifecycleStatus::Done, Some("cancelled".to_string())),
-        TerminationReason::Error => (RunLifecycleStatus::Done, Some("error".to_string())),
+        TerminationReason::Cancelled => (RunStatus::Done, Some("cancelled".to_string())),
+        TerminationReason::Error => (RunStatus::Done, Some("error".to_string())),
         TerminationReason::Stopped(stopped) => (
-            RunLifecycleStatus::Done,
+            RunStatus::Done,
             Some(format!("stopped:{}", stopped.code)),
         ),
     };
@@ -452,7 +452,7 @@ pub(super) async fn run_step_prepare_phases(
     (
         Vec<Message>,
         Vec<String>,
-        RunLifecycleAction,
+        RunAction,
         Vec<TrackedPatch>,
     ),
     AgentLoopError,
@@ -472,7 +472,7 @@ pub(super) async fn run_step_prepare_phases(
 pub(super) struct PreparedStep {
     pub(super) messages: Vec<Message>,
     pub(super) filtered_tools: Vec<String>,
-    pub(super) run_action: RunLifecycleAction,
+    pub(super) run_action: RunAction,
     pub(super) pending_patches: Vec<TrackedPatch>,
 }
 
@@ -529,8 +529,8 @@ pub(super) async fn complete_step_after_inference(
         emit_phase_block(Phase::StepEnd, run_ctx, tool_descriptors, plugins, |_| {}).await?;
     run_ctx.add_thread_patches(pending);
     Ok(match run_action {
-        RunLifecycleAction::Terminate(reason) => Some(reason),
-        RunLifecycleAction::Continue => None,
+        RunAction::Terminate(reason) => Some(reason),
+        RunAction::Continue => None,
     })
 }
 
@@ -1589,8 +1589,8 @@ pub async fn run_loop(
         run_ctx.add_thread_patches(prepared.pending_patches);
 
         match prepared.run_action {
-            RunLifecycleAction::Continue => {}
-            RunLifecycleAction::Terminate(reason) => {
+            RunAction::Continue => {}
+            RunAction::Terminate(reason) => {
                 let response = if matches!(reason, TerminationReason::PluginRequested) {
                     Some(last_text.clone())
                 } else {

@@ -106,7 +106,7 @@ fn test_step_context_reset() {
     ctx.system("test");
     ctx.thread("test");
     ctx.reminder("test");
-    ctx.set_run_action(RunLifecycleAction::Terminate(
+    ctx.set_run_action(RunAction::Terminate(
         TerminationReason::PluginRequested,
     ));
 
@@ -129,7 +129,7 @@ fn test_after_inference_request_termination_sets_run_action() {
     }
     assert_eq!(
         step.run_action,
-        Some(RunLifecycleAction::Terminate(
+        Some(RunAction::Terminate(
             TerminationReason::PluginRequested
         ))
     );
@@ -432,7 +432,7 @@ fn test_before_tool_execute_decision_prefers_suspend_ticket() {
 
     let ctx = BeforeToolExecuteContext::new(&mut step);
     match ctx.decision() {
-        ToolCallLifecycleAction::Suspend(ticket) => {
+        ToolCallAction::Suspend(ticket) => {
             assert_eq!(ticket.suspension().id, ticket_interaction.id);
         }
         other => panic!("Expected Suspend decision, got: {other:?}"),

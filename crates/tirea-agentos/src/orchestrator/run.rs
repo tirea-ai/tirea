@@ -1,6 +1,6 @@
 use super::*;
 use crate::contracts::runtime::state_paths::RUN_LIFECYCLE_STATE_PATH;
-use crate::contracts::runtime::RunLifecycleStatus;
+use crate::contracts::runtime::RunStatus;
 use crate::contracts::storage::VersionPrecondition;
 use crate::runtime::loop_runner::run_loop_stream;
 use tirea_state::{Op, Patch, Path, TrackedPatch};
@@ -16,7 +16,7 @@ fn run_lifecycle_running_patch(run_id: &str) -> TrackedPatch {
         Path::root().key(RUN_LIFECYCLE_STATE_PATH),
         serde_json::json!({
             "id": run_id,
-            "status": RunLifecycleStatus::Running,
+            "status": RunStatus::Running,
             "done_reason": serde_json::Value::Null,
             "updated_at": now_unix_millis(),
         }),

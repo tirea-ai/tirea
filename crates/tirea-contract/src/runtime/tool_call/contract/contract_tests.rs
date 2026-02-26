@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::plugin::phase::SuspendTicket;
 use crate::runtime::Suspension;
 use crate::runtime::{PendingToolCall, ToolCallResumeMode};
 use serde_json::json;
@@ -175,7 +176,7 @@ fn test_tool_result_pending() {
 
 #[test]
 fn test_tool_result_with_suspension_roundtrip() {
-    let suspension = ToolSuspension::new(
+    let suspension = SuspendTicket::new(
         Suspension::new("call_1", "tool:confirm")
             .with_message("Need confirmation")
             .with_parameters(json!({"message":"hi"})),
