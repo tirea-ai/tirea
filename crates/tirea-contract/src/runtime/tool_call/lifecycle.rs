@@ -202,10 +202,6 @@ pub struct ToolCallState {
     pub updated_at: u64,
 }
 
-/// Deprecated alias for [`ToolCallState`].
-#[deprecated(note = "use ToolCallState directly")]
-pub type ToolCallLifecycleState = ToolCallState;
-
 /// Durable per-call runtime map persisted at `state["__tool_call_states"]`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 #[tirea(path = "__tool_call_states")]
@@ -215,10 +211,6 @@ pub struct ToolCallStatesMap {
     #[tirea(default = "HashMap::new()")]
     pub calls: HashMap<String, ToolCallState>,
 }
-
-/// Deprecated alias for [`ToolCallStatesMap`].
-#[deprecated(note = "use ToolCallStatesMap directly")]
-pub type ToolCallLifecycleStatesState = ToolCallStatesMap;
 
 /// Parse suspended tool calls from a rebuilt state snapshot.
 pub fn suspended_calls_from_state(state: &Value) -> HashMap<String, SuspendedCall> {

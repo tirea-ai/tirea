@@ -119,10 +119,6 @@ waiting -------> done
     }
 }
 
-/// Deprecated alias for [`RunStatus`].
-#[deprecated(note = "use RunStatus directly")]
-pub type RunLifecycleStatus = RunStatus;
-
 /// Minimal durable run lifecycle envelope stored at `state["__run"]`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RunState {
@@ -136,10 +132,6 @@ pub struct RunState {
     /// Last update timestamp (unix millis).
     pub updated_at: u64,
 }
-
-/// Deprecated alias for [`RunState`].
-#[deprecated(note = "use RunState directly")]
-pub type RunLifecycleState = RunState;
 
 /// Parse persisted run lifecycle from a rebuilt state snapshot.
 pub fn run_lifecycle_from_state(state: &Value) -> Option<RunState> {

@@ -109,10 +109,6 @@ pub enum RunAction {
     Terminate(TerminationReason),
 }
 
-/// Deprecated alias for [`RunAction`].
-#[deprecated(note = "use RunAction directly")]
-pub type RunLifecycleAction = RunAction;
-
 /// Suspension payload for `ToolCallAction::Suspend`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SuspendTicket {
@@ -174,10 +170,6 @@ impl ToolCallAction {
         Self::Suspend(Box::new(ticket))
     }
 }
-
-/// Deprecated alias for [`ToolCallAction`].
-#[deprecated(note = "use ToolCallAction directly")]
-pub type ToolCallLifecycleAction = ToolCallAction;
 
 /// State side effect emitted by plugins.
 #[derive(Debug, Clone)]

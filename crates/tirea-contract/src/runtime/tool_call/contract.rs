@@ -27,13 +27,6 @@ pub enum ToolStatus {
 
 const TOOL_SUSPENSION_METADATA_KEY: &str = "__tool_suspension";
 
-/// Structured suspension payload that lets tools proactively pause execution.
-///
-/// This is now a type alias for [`SuspendTicket`]. Use `SuspendTicket` directly
-/// for new code.
-#[deprecated(note = "use SuspendTicket directly")]
-pub type ToolSuspension = SuspendTicket;
-
 /// Result of tool execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
