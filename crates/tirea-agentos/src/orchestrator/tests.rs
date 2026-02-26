@@ -2921,7 +2921,7 @@ async fn prepare_run_scope_tool_registry_adds_new_tool() {
     let mut registry = InMemoryToolRegistry::new();
     registry.register(Arc::new(FrontendTool)).unwrap();
     let mut resolved = os.resolve("a1").unwrap();
-    resolved.overlay_tool_registry(&registry);
+    resolved.overlay_tools(registry.snapshot());
 
     let prepared = os
         .prepare_run(
@@ -2973,7 +2973,7 @@ async fn prepare_run_scope_tool_registry_omits_shadowed() {
     let mut registry = InMemoryToolRegistry::new();
     registry.register(Arc::new(ShadowTool)).unwrap();
     let mut resolved = os.resolve("a1").unwrap();
-    resolved.overlay_tool_registry(&registry);
+    resolved.overlay_tools(registry.snapshot());
 
     let prepared = os
         .prepare_run(

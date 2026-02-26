@@ -12,7 +12,6 @@ use serde_json::{json, Value};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use tirea_agent_loop::contracts::thread::{Message, Thread};
-use tirea_agent_loop::contracts::runtime::tool_call::ToolRegistry;
 use tirea_agent_loop::contracts::{AgentEvent, RunConfig, RunContext};
 use tirea_agent_loop::runtime::loop_runner::{run_loop_stream, AgentConfig, LlmExecutor};
 use tirea_contract::Transcoder;
