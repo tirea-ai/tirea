@@ -1,11 +1,11 @@
-pub mod contract;
+pub mod tool;
 pub mod context;
 pub mod executor;
 pub mod lifecycle;
 pub mod registry;
 pub mod suspension;
 
-pub use contract::{
+pub use tool::{
     validate_against_schema, Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus, TypedTool,
 };
 pub use context::{

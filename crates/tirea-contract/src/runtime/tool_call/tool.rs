@@ -445,4 +445,4 @@ fn typed_tool_schema<T: JsonSchema>() -> Value {
 }
 
 #[cfg(test)]
-mod contract_tests;
+mod tests;
