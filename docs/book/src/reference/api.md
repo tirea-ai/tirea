@@ -46,7 +46,7 @@ When using `scripts/build-docs.sh`, the API docs are available at `target/book/d
 - [`RunContext`](../doc/tirea_contract/struct.RunContext.html) — Run-scoped execution context
 - [`RunRequest`](../doc/tirea_contract/struct.RunRequest.html) — Unified protocol request
 - [`Tool`](../doc/tirea_contract/trait.Tool.html) — Tool trait
-- [`AgentStateStore`](../doc/tirea_contract/trait.AgentStateStore.html) — Persistence abstraction
+- [`ThreadStore`](../doc/tirea_contract/trait.ThreadStore.html) — Persistence abstraction
 
 ### tirea_agent_loop
 

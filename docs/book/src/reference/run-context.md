@@ -16,4 +16,4 @@
 - `add_thread_patch(...)`
 - `take_delta()`
 - `has_delta()`
-- `pending_interaction()` / `pending_frontend_invocation()`
+- `suspended_calls()`

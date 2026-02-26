@@ -5,7 +5,7 @@ Use this when your client consumes run events over HTTP streaming.
 ## Prerequisites
 
 - `AgentOs` is already wired with tools and agents.
-- You have an `AgentStateReader` for thread query APIs.
+- You have a `ThreadReader` for thread query APIs.
 - Network path allows long-lived HTTP responses.
 
 ## Endpoints

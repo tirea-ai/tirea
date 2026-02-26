@@ -3,7 +3,7 @@
 ## Terminology Updates
 
 - `Session` -> `Thread`
-- `ThreadReader/ThreadWriter/ThreadStore` -> `AgentStateReader/AgentStateWriter/AgentStateStore`
+- Storage traits remain `ThreadReader` / `ThreadWriter` / `ThreadStore`
 - Session routes -> `/v1/threads` routes
 
 ## Runtime Surface Updates

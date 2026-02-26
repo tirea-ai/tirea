@@ -18,7 +18,7 @@ Use this for cross-cutting behavior such as policy checks, approval gates, and o
 
 ```rust,ignore
 use async_trait::async_trait;
-use tirea::contracts::{AgentPlugin, Phase, StepContext};
+use tirea::contracts::{AgentPlugin, BeforeInferenceContext};
 
 struct AuditPlugin;
 
@@ -28,10 +28,8 @@ impl AgentPlugin for AuditPlugin {
         "audit"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        if phase == Phase::BeforeInference {
-            step.thread("Audit: request entering inference");
-        }
+    async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
+        ctx.add_system_context("Audit: request entering inference".to_string());
     }
 }
 ```

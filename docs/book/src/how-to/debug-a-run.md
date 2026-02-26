@@ -14,9 +14,10 @@ Use this when a run stops unexpectedly or tool behavior is incorrect.
 `termination` is authoritative and usually one of:
 
 - `NaturalEnd`
+- `PluginRequested`
 - `Stopped(...)`
-- `PendingInteraction`
 - `Cancelled`
+- `Suspended`
 - `Error`
 
 2. Inspect event timeline ordering:

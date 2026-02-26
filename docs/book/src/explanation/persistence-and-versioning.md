@@ -52,7 +52,7 @@ During `run_loop` / `run_loop_stream` execution:
    - Purpose: persist replayed tool outputs/patches
 3. After assistant turn is finalized (`AfterInference` + assistant message + `StepEnd`):
    - Reason: `AssistantTurnCommitted`
-4. After tool results are applied (including pending/clear interaction state updates):
+4. After tool results are applied (including suspension state updates):
    - Reason: `ToolResultsCommitted`
 5. On termination:
    - Reason: `RunFinished`

@@ -45,6 +45,7 @@ let run = os.run_stream(RunRequest {
     resource_id: None,
     state: None,
     messages: vec![Message::user("hello")],
+    initial_decisions: vec![],
 }).await?;
 ```
 

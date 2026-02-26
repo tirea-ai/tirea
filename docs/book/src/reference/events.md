@@ -14,10 +14,11 @@
 ## State and UI Events
 
 - `TextDelta`
+- `ReasoningDelta` / `ReasoningEncryptedValue`
 - `StateSnapshot` / `StateDelta`
 - `MessagesSnapshot`
 - `ActivitySnapshot` / `ActivityDelta`
-- `InteractionRequested` / `InteractionResolved` / `Pending`
+- `ToolCallResumed`
 - `Error`
 
 ## Terminal Semantics

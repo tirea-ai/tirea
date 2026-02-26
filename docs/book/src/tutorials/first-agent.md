@@ -79,6 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             resource_id: None,
             state: None,
             messages: vec![Message::user("Say hello using the echo tool")],
+            initial_decisions: vec![],
         })
         .await?;
 

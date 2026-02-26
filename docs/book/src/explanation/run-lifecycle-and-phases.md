@@ -1,6 +1,86 @@
 # Run Lifecycle and Phases
 
-The runtime executes one run as a phase-driven loop.
+The runtime uses a two-layer state machine: a **run-level** state machine tracks
+coarse execution status, while a **tool-call-level** state machine tracks each
+tool call independently. Suspension bridges the two layers — when all active tool
+calls are suspended, the run transitions to `Waiting`; when a resume decision
+arrives, the run transitions back to `Running`.
+
+## Two-Layer State Machine
+
+### Layer 1: Run Lifecycle (`RunStatus`)
+
+Persisted at `state["__run"]`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Running
+    Running --> Waiting: all tool calls suspended
+    Running --> Done: NaturalEnd / PluginRequested / Stopped / Cancelled / Error
+    Waiting --> Running: resume decision received
+    Waiting --> Done: Cancelled / Error
+```
+
+| Status | Meaning |
+|--------|---------|
+| `Running` | Run is actively executing (inference or tools) |
+| `Waiting` | Run is paused waiting for external resume decisions |
+| `Done` | Terminal — run finished with a `TerminationReason` |
+
+Terminal reasons: `NaturalEnd`, `PluginRequested`, `Stopped(code)`, `Cancelled`,
+`Suspended`, `Error`.
+
+### Layer 2: Tool Call Lifecycle (`ToolCallStatus`)
+
+Persisted per call at `state["__tool_call_states"]`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> New
+    New --> Running
+    New --> Suspended: pre-execution suspend
+    Running --> Suspended: tool returned Pending
+    Running --> Succeeded: tool returned Success/Warning
+    Running --> Failed: tool returned Error
+    Running --> Cancelled: run cancelled
+    Suspended --> Resuming: resume decision received
+    Suspended --> Cancelled: cancel decision or run cancelled
+    Resuming --> Running: replay tool call
+    Resuming --> Suspended: re-suspended after replay
+    Resuming --> Succeeded
+    Resuming --> Failed
+    Resuming --> Cancelled
+```
+
+| Status | Meaning |
+|--------|---------|
+| `New` | Call observed but not yet started |
+| `Running` | Call is executing |
+| `Suspended` | Call paused waiting for external decision |
+| `Resuming` | External decision received, replay in progress |
+| `Succeeded` | Terminal — execution succeeded |
+| `Failed` | Terminal — execution failed |
+| `Cancelled` | Terminal — call cancelled |
+
+### How the Layers Connect
+
+1. During a tool round, each tool call transitions through its own lifecycle.
+2. After the round commits, the run evaluates all outcomes:
+   - If **all** outcomes are `Suspended` → run transitions to `Waiting` and
+     terminates with `TerminationReason::Suspended`.
+   - If **any** outcome is non-suspended → run stays `Running` and loops back
+     to inference.
+3. An inbound `ToolCallDecision` triggers:
+   - Tool call: `Suspended` → `Resuming` → replay → terminal state.
+   - Run: `Waiting` → `Running` (if the run was suspended).
+
+### Durable State Paths
+
+| Path | Content |
+|------|---------|
+| `__run` | `RunState` (id, status, done_reason, updated_at) |
+| `__tool_call_states` | `ToolCallStatesMap` (per-call status map) |
+| `__suspended_tool_calls` | `SuspendedToolCallsState` (suspended call payloads) |
 
 ## Canonical Top-Level Flow
 
@@ -24,7 +104,7 @@ The runtime executes one run as a phase-driven loop.
 This loop applies to both `run_loop` and `run_loop_stream`; stream mode adds
 extra decision handling windows while inference/tool execution is in-flight.
 
-## State Machine (non-stream canonical)
+## Run Execution Flow (non-stream canonical)
 
 ```mermaid
 stateDiagram-v2
@@ -131,6 +211,10 @@ Notes:
 
 ## TOOL_CALL Sub-State Machine (Per ToolCall)
 
+This diagram shows how plugin phases drive `ToolCallStatus` transitions
+within a single tool-call round. The outcome (`ToolCallOutcome`) maps directly
+to the terminal `ToolCallStatus` values described in Layer 2 above.
+
 ```mermaid
 stateDiagram-v2
     [*] --> BeforeToolExecute
@@ -147,6 +231,14 @@ stateDiagram-v2
     Suspended --> AfterToolExecute
     AfterToolExecute --> [*]
 ```
+
+Outcome-to-status mapping:
+
+| `ToolCallOutcome` | `ToolCallStatus` |
+|--------------------|------------------|
+| `Succeeded` | `Succeeded` |
+| `Failed` | `Failed` |
+| `Suspended` | `Suspended` |
 
 Important:
 
@@ -223,4 +315,4 @@ terminate. Control returns to loop top:
 
 - Phases isolate extension logic in plugins.
 - Run termination is explicit via `TerminationReason`.
-- Step-local control (tool filtering, pending interactions) is deterministic.
+- Step-local control (tool filtering, tool suspension) is deterministic.
