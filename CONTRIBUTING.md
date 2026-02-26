@@ -26,9 +26,25 @@ Before opening a PR, make sure:
 - new behavior is covered by tests
 - relevant docs are updated when API/schema/config changes
 
+## Git hooks
+
+This repository uses [lefthook](https://github.com/evilmartians/lefthook) for pre-commit and commit-msg validation. After cloning:
+
+```bash
+lefthook install
+```
+
 ## Commit messages
 
 This repository uses conventional commit style with emoji:
 
 `<emoji> <type>(<scope>): <subject>`
+
+Rules (enforced by lefthook):
+
+- Subject line max 100 characters
+- Entire message max 4 lines (subject + blank line + body)
+- Body must be separated from subject by a blank line
+- No `Co-Authored-By:` or AI generation markers
+- No project management terms (Phase, Sprint, Milestone, Owner, Assignee, etc.)
 

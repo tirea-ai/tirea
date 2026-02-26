@@ -8,7 +8,7 @@ Run one agent end-to-end and confirm you receive a complete event stream.
 
 ```toml
 [dependencies]
-tirea = "0.1"
+tirea = "0.2"
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 futures = "0.3"

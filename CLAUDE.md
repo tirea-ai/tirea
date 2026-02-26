@@ -1,6 +1,6 @@
 ## Core Rules
 
-- Production-ready only; no temporary solutions. Blocked? Document in `docs/TECHNICAL_DEBT.md`
+- Production-ready only; no temporary solutions. Blocked? Open a GitHub issue
 - Honor `docs/` specifications; reconcile inconsistencies
 - Before destructive ops (`rm`, `git reset`), inspect repo state first
 - No process/status documents; only architecture docs

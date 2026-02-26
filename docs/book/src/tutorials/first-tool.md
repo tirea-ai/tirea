@@ -12,7 +12,7 @@ Implement one tool that reads and updates typed state.
 ```toml
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-tirea-state-derive = "0.1"
+tirea-state-derive = "0.2"
 ```
 
 ## 1. Define Typed State
