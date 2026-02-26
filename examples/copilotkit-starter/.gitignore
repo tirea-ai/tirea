@@ -1,0 +1,17 @@
+node_modules
+.next
+out
+dist
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.env.local
+.env*.local
+.DS_Store
+coverage
+playwright-report
+test-results
+.tirea-src
+sessions
+agent/target
