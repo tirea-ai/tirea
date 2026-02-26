@@ -1,7 +1,7 @@
 use super::{
     AgentRegistry, AgentRegistryError, ModelDefinition, ModelRegistry, ModelRegistryError,
-    PluginRegistry, PluginRegistryError, ProviderRegistry, ProviderRegistryError, ToolRegistry,
-    ToolRegistryError,
+    PluginRegistry, PluginRegistryError, ProviderRegistry, ProviderRegistryError,
+    ToolRegistry, ToolRegistryError,
 };
 use crate::contracts::runtime::plugin::AgentPlugin;
 use crate::contracts::runtime::tool_call::Tool;
