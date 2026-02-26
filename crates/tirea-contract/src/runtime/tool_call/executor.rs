@@ -1,5 +1,5 @@
 use crate::runtime::activity::ActivityManager;
-use crate::runtime::plugin::contract::AgentPlugin;
+use crate::runtime::plugin::agent_plugin::AgentPlugin;
 use crate::runtime::tool_call::lifecycle::SuspendedCall;
 use crate::thread::{Message, ToolCall};
 use crate::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
