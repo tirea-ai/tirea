@@ -2,7 +2,6 @@ pub mod tool;
 pub mod context;
 pub mod executor;
 pub mod lifecycle;
-pub mod registry;
 pub mod suspension;
 
 pub use tool::{
@@ -20,5 +19,4 @@ pub use lifecycle::{
     SuspendedCall, SuspendedToolCallsState, ToolCallResume, ToolCallResumeMode, ToolCallState,
     ToolCallStatesMap, ToolCallStatus,
 };
-pub use registry::{ToolRegistry, ToolRegistryError};
 pub use suspension::{Suspension, SuspensionResponse};

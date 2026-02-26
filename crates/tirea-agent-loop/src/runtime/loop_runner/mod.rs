@@ -151,12 +151,9 @@ impl ResolvedRun {
         self
     }
 
-    /// Overlay tools from a tool registry (insert-if-absent semantics).
-    pub fn overlay_tool_registry(
-        &mut self,
-        registry: &dyn crate::contracts::runtime::tool_call::ToolRegistry,
-    ) {
-        for (id, tool) in registry.snapshot() {
+    /// Overlay tools from a map (insert-if-absent semantics).
+    pub fn overlay_tools(&mut self, tools: HashMap<String, Arc<dyn Tool>>) {
+        for (id, tool) in tools {
             self.tools.entry(id).or_insert(tool);
         }
     }
