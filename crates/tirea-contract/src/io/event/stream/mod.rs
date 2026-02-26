@@ -1,11 +1,10 @@
+mod definition;
 mod envelope_meta;
-mod event;
-mod serde_impl;
 #[cfg(test)]
 mod tests;
 mod wire;
 
-pub use event::AgentEvent;
+pub use definition::AgentEvent;
 
 #[doc(hidden)]
 pub mod internal {

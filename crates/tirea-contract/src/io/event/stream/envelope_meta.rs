@@ -1,4 +1,4 @@
-use super::event::{AgentEvent, AgentEventType};
+use super::definition::{AgentEvent, AgentEventType};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
