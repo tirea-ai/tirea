@@ -158,7 +158,7 @@ running/suspended/resuming ---> cancelled"#;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolCallResume {
     /// Idempotency key for the decision submission.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(default)]
     pub decision_id: String,
     /// Resume or cancel action.
     pub action: ResumeDecisionAction,

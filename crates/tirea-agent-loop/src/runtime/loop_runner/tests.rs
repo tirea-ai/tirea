@@ -509,11 +509,13 @@ fn test_decision(
 ) -> crate::contracts::ToolCallDecision {
     crate::contracts::ToolCallDecision {
         target_id: target_id.to_string(),
-        decision_id: format!("decision_{target_id}"),
-        action,
-        result,
-        reason: reason.map(str::to_string),
-        updated_at: 0,
+        resume: crate::contracts::runtime::ToolCallResume {
+            decision_id: format!("decision_{target_id}"),
+            action,
+            result,
+            reason: reason.map(str::to_string),
+            updated_at: 0,
+        },
     }
 }
 

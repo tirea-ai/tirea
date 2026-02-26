@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use tirea_contract::io::ResumeDecisionAction;
 use tirea_contract::{gen_message_id, RunRequest, Visibility};
 use tirea_contract::{SuspensionResponse, ToolCallDecision};
+use tirea_contract::runtime::ToolCallResume;
 use tracing::warn;
 
 /// Role for AG-UI input/output messages.
@@ -364,7 +365,7 @@ impl RunAgentInput {
     pub fn approved_target_ids(&self) -> Vec<String> {
         self.suspension_decisions()
             .into_iter()
-            .filter(|d| matches!(d.action, ResumeDecisionAction::Resume))
+            .filter(|d| matches!(d.resume.action, ResumeDecisionAction::Resume))
             .map(|d| d.target_id)
             .collect()
     }
@@ -373,7 +374,7 @@ impl RunAgentInput {
     pub fn denied_target_ids(&self) -> Vec<String> {
         self.suspension_decisions()
             .into_iter()
-            .filter(|d| matches!(d.action, ResumeDecisionAction::Cancel))
+            .filter(|d| matches!(d.resume.action, ResumeDecisionAction::Cancel))
             .map(|d| d.target_id)
             .collect()
     }
@@ -427,11 +428,13 @@ fn interaction_response_to_decision(response: SuspensionResponse) -> ToolCallDec
     };
     ToolCallDecision {
         target_id: response.target_id.clone(),
-        decision_id: format!("decision_{}", response.target_id),
-        action,
-        result: response.result,
-        reason,
-        updated_at: current_unix_millis(),
+        resume: ToolCallResume {
+            decision_id: format!("decision_{}", response.target_id),
+            action,
+            result: response.result,
+            reason,
+            updated_at: current_unix_millis(),
+        },
     }
 }
 

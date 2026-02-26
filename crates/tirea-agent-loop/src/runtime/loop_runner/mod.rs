@@ -863,13 +863,10 @@ async fn drain_resuming_tool_calls_and_replay(
         };
         replayed = true;
         let decision_result = decision_result_value(&decision.action, &decision.result);
-        let resume_payload = to_tool_call_resume(
-            decision.decision_id.clone(),
-            decision.action.clone(),
-            decision_result.clone(),
-            decision.reason.clone(),
-            decision.updated_at,
-        );
+        let resume_payload = ToolCallResume {
+            result: decision_result.clone(),
+            ..decision.clone()
+        };
         events.push(AgentEvent::ToolCallResumed {
             target_id: suspended_call.call_id.clone(),
             result: decision_result.clone(),
@@ -908,11 +905,7 @@ async fn drain_resuming_tool_calls_and_replay(
                     &suspended_call,
                     &ToolCallDecision {
                         target_id: suspended_call.call_id.clone(),
-                        decision_id: resume_payload.decision_id.clone(),
-                        action: resume_payload.action.clone(),
-                        result: resume_payload.result.clone(),
-                        reason: resume_payload.reason.clone(),
-                        updated_at: resume_payload.updated_at,
+                        resume: resume_payload.clone(),
                     },
                 ) else {
                     continue;
@@ -1123,7 +1116,7 @@ fn replay_tool_call_for_resolution(
     suspended_call: &SuspendedCall,
     decision: &ToolCallDecision,
 ) -> Option<ToolCall> {
-    if matches!(decision.action, ResumeDecisionAction::Cancel) {
+    if matches!(decision.resume.action, ResumeDecisionAction::Cancel) {
         return None;
     }
 
@@ -1137,25 +1130,9 @@ fn replay_tool_call_for_resolution(
             Some(ToolCall::new(
                 suspended_call.call_id.clone(),
                 suspended_call.tool_name.clone(),
-                normalize_decision_tool_result(&decision.result, &suspended_call.arguments),
+                normalize_decision_tool_result(&decision.resume.result, &suspended_call.arguments),
             ))
         }
-    }
-}
-
-fn to_tool_call_resume(
-    decision_id: String,
-    action: ResumeDecisionAction,
-    result: Value,
-    reason: Option<String>,
-    updated_at: u64,
-) -> ToolCallResume {
-    ToolCallResume {
-        decision_id,
-        action,
-        result,
-        reason,
-        updated_at,
     }
 }
 
@@ -1223,13 +1200,7 @@ pub(super) fn resolve_suspended_call(
         run_ctx,
         &suspended_call,
         ToolCallStatus::Resuming,
-        Some(to_tool_call_resume(
-            response.decision_id.clone(),
-            response.action.clone(),
-            response.result.clone(),
-            response.reason.clone(),
-            response.updated_at,
-        )),
+        Some(response.resume.clone()),
     )?;
 
     Ok(Some(DecisionReplayOutcome {

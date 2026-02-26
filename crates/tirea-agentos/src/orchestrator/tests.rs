@@ -30,11 +30,13 @@ fn decision_for(
 ) -> crate::contracts::ToolCallDecision {
     crate::contracts::ToolCallDecision {
         target_id: target_id.to_string(),
-        decision_id: format!("decision_{target_id}"),
-        action,
-        reason: None,
-        result,
-        updated_at: 0,
+        resume: crate::contracts::runtime::ToolCallResume {
+            decision_id: format!("decision_{target_id}"),
+            action,
+            result,
+            reason: None,
+            updated_at: 0,
+        },
     }
 }
 

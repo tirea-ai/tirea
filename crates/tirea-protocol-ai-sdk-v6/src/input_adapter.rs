@@ -2,6 +2,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use tirea_contract::io::ResumeDecisionAction;
+use tirea_contract::runtime::ToolCallResume;
 use tirea_contract::{Message, RunRequest, SuspensionResponse, ToolCallDecision};
 
 use crate::message::{ToolState, ToolUIPart};
@@ -345,11 +346,13 @@ fn interaction_response_to_decision(response: SuspensionResponse) -> ToolCallDec
     };
     ToolCallDecision {
         target_id: response.target_id.clone(),
-        decision_id: format!("decision_{}", response.target_id),
-        action,
-        result: response.result,
-        reason,
-        updated_at: current_unix_millis(),
+        resume: ToolCallResume {
+            decision_id: format!("decision_{}", response.target_id),
+            action,
+            result: response.result,
+            reason,
+            updated_at: current_unix_millis(),
+        },
     }
 }
 
