@@ -53,7 +53,7 @@ use crate::contracts::runtime::plugin::phase::Phase;
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::io::ResumeDecisionAction;
 use crate::contracts::runtime::{
-    state_paths::RUN_LIFECYCLE_STATE_PATH, DecisionReplayPolicy, RunStatus, StreamResult,
+    state_paths::RUN_LIFECYCLE_STATE_PATH, DecisionReplayPolicy, StreamResult,
     SuspendedCall, ToolCallResume, ToolCallResumeMode, ToolCallStatus, ToolExecutionRequest,
     ToolExecutionResult,
 };
@@ -186,20 +186,7 @@ pub(super) fn sync_run_lifecycle_for_termination(
         return Ok(());
     };
 
-    let (status, done_reason) = match termination {
-        TerminationReason::Suspended => (RunStatus::Waiting, None),
-        TerminationReason::NaturalEnd => (RunStatus::Done, Some("natural".to_string())),
-        TerminationReason::PluginRequested => (
-            RunStatus::Done,
-            Some("plugin_requested".to_string()),
-        ),
-        TerminationReason::Cancelled => (RunStatus::Done, Some("cancelled".to_string())),
-        TerminationReason::Error => (RunStatus::Done, Some("error".to_string())),
-        TerminationReason::Stopped(stopped) => (
-            RunStatus::Done,
-            Some(format!("stopped:{}", stopped.code)),
-        ),
-    };
+    let (status, done_reason) = termination.to_run_status();
 
     let patch = TrackedPatch::new(Patch::with_ops(vec![Op::set(
         Path::root().key(RUN_LIFECYCLE_STATE_PATH),
@@ -538,13 +525,13 @@ pub(super) async fn complete_step_after_inference(
 pub(super) fn pending_tool_events(call: &SuspendedCall) -> Vec<AgentEvent> {
     vec![
         AgentEvent::ToolCallStart {
-            id: call.pending.id.clone(),
-            name: call.pending.name.clone(),
+            id: call.ticket.pending.id.clone(),
+            name: call.ticket.pending.name.clone(),
         },
         AgentEvent::ToolCallReady {
-            id: call.pending.id.clone(),
-            name: call.pending.name.clone(),
-            arguments: call.pending.arguments.clone(),
+            id: call.ticket.pending.id.clone(),
+            name: call.ticket.pending.name.clone(),
+            arguments: call.ticket.pending.arguments.clone(),
         },
     ]
 }
@@ -1140,7 +1127,7 @@ fn replay_tool_call_for_resolution(
         return None;
     }
 
-    match suspended_call.resume_mode {
+    match suspended_call.ticket.resume_mode {
         ToolCallResumeMode::ReplayToolCall => Some(ToolCall::new(
             suspended_call.call_id.clone(),
             suspended_call.tool_name.clone(),
@@ -1186,11 +1173,11 @@ fn upsert_tool_call_lifecycle_state(
             tool_name: &suspended_call.tool_name,
             arguments: &suspended_call.arguments,
             status: ToolCallStatus::Suspended,
-            resume_token: Some(suspended_call.pending.id.clone()),
+            resume_token: Some(suspended_call.ticket.pending.id.clone()),
         },
         ToolCallStateTransition {
             status,
-            resume_token: Some(suspended_call.pending.id.clone()),
+            resume_token: Some(suspended_call.ticket.pending.id.clone()),
             resume,
             updated_at: current_unix_millis(),
         },
@@ -1222,8 +1209,8 @@ pub(super) fn resolve_suspended_call(
             suspended_calls
                 .values()
                 .find(|call| {
-                    call.suspension.id == response.target_id
-                        || call.pending.id == response.target_id
+                    call.ticket.suspension.id == response.target_id
+                        || call.ticket.pending.id == response.target_id
                         || call.call_id == response.target_id
                 })
                 .cloned()

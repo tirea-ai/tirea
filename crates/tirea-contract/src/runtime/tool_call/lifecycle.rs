@@ -1,6 +1,7 @@
 use crate::io::ResumeDecisionAction;
+use crate::runtime::plugin::phase::SuspendTicket;
 use crate::runtime::state_paths::{SUSPENDED_TOOL_CALLS_STATE_PATH, TOOL_CALL_STATES_STATE_PATH};
-use crate::runtime::tool_call::suspension::Suspension;
+use crate::thread::ToolCall;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -53,12 +54,21 @@ pub struct SuspendedCall {
     pub tool_name: String,
     /// Original backend tool arguments.
     pub arguments: Value,
-    /// External interaction payload.
-    pub suspension: Suspension,
-    /// Pending tool-call projection shown to external event consumers.
-    pub pending: PendingToolCall,
-    /// How to map resume decisions to backend behavior.
-    pub resume_mode: ToolCallResumeMode,
+    /// Suspension ticket carrying interaction payload, pending projection, and resume strategy.
+    #[serde(flatten)]
+    pub ticket: SuspendTicket,
+}
+
+impl SuspendedCall {
+    /// Create a suspended call from a tool call and a suspend ticket.
+    pub fn new(call: &ToolCall, ticket: SuspendTicket) -> Self {
+        Self {
+            call_id: call.id.clone(),
+            tool_name: call.name.clone(),
+            arguments: call.arguments.clone(),
+            ticket,
+        }
+    }
 }
 
 /// Durable suspended tool-call map persisted at `state["__suspended_tool_calls"]`.
@@ -257,6 +267,37 @@ mod tests {
         assert!(!ToolCallStatus::Succeeded.can_transition_to(ToolCallStatus::Running));
         assert!(!ToolCallStatus::Failed.can_transition_to(ToolCallStatus::Resuming));
         assert!(!ToolCallStatus::Cancelled.can_transition_to(ToolCallStatus::Suspended));
+    }
+
+    #[test]
+    fn suspended_call_serde_flatten_roundtrip() {
+        use crate::runtime::tool_call::Suspension;
+
+        let call = SuspendedCall {
+            call_id: "call_1".into(),
+            tool_name: "my_tool".into(),
+            arguments: serde_json::json!({"key": "val"}),
+            ticket: SuspendTicket::new(
+                Suspension::new("susp_1", "confirm"),
+                PendingToolCall::new("pending_1", "my_tool", serde_json::json!({"key": "val"})),
+                ToolCallResumeMode::UseDecisionAsToolResult,
+            ),
+        };
+
+        let json = serde_json::to_value(&call).unwrap();
+
+        // Flattened fields should appear at top level, not nested under "ticket"
+        assert!(json.get("ticket").is_none(), "ticket should be flattened");
+        assert!(json.get("suspension").is_some(), "suspension should be at top level");
+        assert!(json.get("pending").is_some(), "pending should be at top level");
+        assert!(json.get("resume_mode").is_some(), "resume_mode should be at top level");
+        assert_eq!(json["call_id"], "call_1");
+        assert_eq!(json["suspension"]["id"], "susp_1");
+        assert_eq!(json["pending"]["id"], "pending_1");
+
+        // Roundtrip: deserialize back
+        let deserialized: SuspendedCall = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized, call);
     }
 
     #[test]

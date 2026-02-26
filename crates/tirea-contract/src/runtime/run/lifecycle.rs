@@ -56,6 +56,20 @@ impl TerminationReason {
     pub fn stopped_with_detail(code: impl Into<String>, detail: impl Into<String>) -> Self {
         Self::Stopped(StoppedReason::with_detail(code, detail))
     }
+
+    /// Map termination reason to durable run status and optional done_reason string.
+    pub fn to_run_status(&self) -> (RunStatus, Option<String>) {
+        match self {
+            Self::Suspended => (RunStatus::Waiting, None),
+            Self::NaturalEnd => (RunStatus::Done, Some("natural".to_string())),
+            Self::PluginRequested => (RunStatus::Done, Some("plugin_requested".to_string())),
+            Self::Cancelled => (RunStatus::Done, Some("cancelled".to_string())),
+            Self::Error => (RunStatus::Done, Some("error".to_string())),
+            Self::Stopped(stopped) => {
+                (RunStatus::Done, Some(format!("stopped:{}", stopped.code)))
+            }
+        }
+    }
 }
 
 /// Coarse run lifecycle status persisted in thread state.
@@ -169,6 +183,43 @@ mod tests {
     fn run_lifecycle_status_rejects_done_reopen_transitions() {
         assert!(!RunStatus::Done.can_transition_to(RunStatus::Running));
         assert!(!RunStatus::Done.can_transition_to(RunStatus::Waiting));
+    }
+
+    #[test]
+    fn termination_reason_to_run_status_mapping() {
+        let cases = vec![
+            (TerminationReason::Suspended, RunStatus::Waiting, None),
+            (
+                TerminationReason::NaturalEnd,
+                RunStatus::Done,
+                Some("natural"),
+            ),
+            (
+                TerminationReason::PluginRequested,
+                RunStatus::Done,
+                Some("plugin_requested"),
+            ),
+            (
+                TerminationReason::Cancelled,
+                RunStatus::Done,
+                Some("cancelled"),
+            ),
+            (TerminationReason::Error, RunStatus::Done, Some("error")),
+            (
+                TerminationReason::stopped("max_turns"),
+                RunStatus::Done,
+                Some("stopped:max_turns"),
+            ),
+        ];
+        for (reason, expected_status, expected_done) in cases {
+            let (status, done) = reason.to_run_status();
+            assert_eq!(status, expected_status, "status mismatch for {reason:?}");
+            assert_eq!(
+                done.as_deref(),
+                expected_done,
+                "done_reason mismatch for {reason:?}"
+            );
+        }
     }
 
     #[test]

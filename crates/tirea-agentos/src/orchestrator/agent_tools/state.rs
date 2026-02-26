@@ -2,8 +2,8 @@ use super::*;
 use tirea_contract::runtime::plugin::phase::PluginPhaseContext;
 use tirea_contract::io::ResumeDecisionAction;
 use tirea_contract::runtime::{
-    PendingToolCall, SuspendedCall, SuspendedToolCallsState, ToolCallResume, ToolCallResumeMode,
-    ToolCallState, ToolCallStatesMap, ToolCallStatus,
+    PendingToolCall, SuspendTicket, SuspendedCall, SuspendedToolCallsState, ToolCallResume,
+    ToolCallResumeMode, ToolCallState, ToolCallStatesMap, ToolCallStatus,
 };
 use tirea_contract::runtime::state_paths::SUSPENDED_TOOL_CALLS_STATE_PATH;
 use tirea_state::State;
@@ -100,7 +100,7 @@ pub(super) fn has_suspended_recovery_interaction(state: &Value) -> bool {
         .and_then(|v| serde_json::from_value::<HashMap<String, SuspendedCall>>(v).ok())
         .unwrap_or_default()
         .values()
-        .any(|call| call.suspension.action == AGENT_RECOVERY_INTERACTION_ACTION)
+        .any(|call| call.ticket.suspension.action == AGENT_RECOVERY_INTERACTION_ACTION)
 }
 
 pub(super) fn set_suspended_recovery_interaction(
@@ -124,9 +124,7 @@ pub(super) fn set_suspended_recovery_interaction(
             call_id,
             tool_name: AGENT_RUN_TOOL_ID.to_string(),
             arguments: call_arguments,
-            suspension: interaction,
-            pending,
-            resume_mode: ToolCallResumeMode::ReplayToolCall,
+            ticket: SuspendTicket::new(interaction, pending, ToolCallResumeMode::ReplayToolCall),
         },
     );
     let _ = state.set_calls(calls);
@@ -157,9 +155,7 @@ pub(super) fn schedule_recovery_replay(
                 call_id: call_id.clone(),
                 tool_name: AGENT_RUN_TOOL_ID.to_string(),
                 arguments: interaction_arguments,
-                suspension: interaction,
-                pending,
-                resume_mode: ToolCallResumeMode::ReplayToolCall,
+                ticket: SuspendTicket::new(interaction, pending, ToolCallResumeMode::ReplayToolCall),
             },
         );
     } else if suspended_calls
@@ -192,7 +188,7 @@ pub(super) fn schedule_recovery_replay(
                     tool_name: AGENT_RUN_TOOL_ID.to_string(),
                     arguments: suspended_call.arguments.clone(),
                     status: ToolCallStatus::Resuming,
-                    resume_token: Some(suspended_call.pending.id),
+                    resume_token: Some(suspended_call.ticket.pending.id),
                     resume: Some(resume.clone()),
                     scratch: serde_json::Value::Null,
                     updated_at,

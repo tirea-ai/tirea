@@ -121,7 +121,7 @@ pub use io::{AgentEvent, ResumeDecisionAction, RunRequest, RuntimeInput, Runtime
 pub use runtime::{
     ActivityContext, ActivityManager, AfterInferenceContext, AfterToolExecuteContext, AgentPlugin,
     BeforeInferenceContext, BeforeToolExecuteContext, DecisionReplayPolicy, Phase, PhasePolicy,
-    PluginPhaseContext, ResumeInputView, RunAction, RunContext, RunDelta, RunEndContext,
+    PluginPhaseContext, RunAction, RunContext, RunDelta, RunEndContext,
     RunLifecycleAction, RunStartContext, StateEffect, StepContext, StepEndContext, StepOutcome,
     StepStartContext, StoppedReason, StreamResult, SuspendTicket, Suspension, SuspensionResponse,
     TerminationReason, TokenUsage, ToolCallAction, ToolCallContext, ToolCallContextInit,

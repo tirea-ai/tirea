@@ -753,7 +753,7 @@ pub(super) fn run_stream(
                 if let Some(ref suspended_call) = exec_result.suspended_call {
                     // If pending projection reuses the original call id, start/ready
                     // was already streamed from model output.
-                    if suspended_call.pending.id == suspended_call.call_id {
+                    if suspended_call.ticket.pending.id == suspended_call.call_id {
                         continue;
                     }
                     for event in pending_tool_events(suspended_call) {

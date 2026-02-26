@@ -493,9 +493,11 @@ fn build_suspended_call(
         call_id: call_id.into(),
         tool_name: tool_name.into(),
         arguments: arguments.clone(),
-        suspension,
-        pending: PendingToolCall::new(invocation.call_id, invocation.tool_name, arguments),
-        resume_mode,
+        ticket: crate::contracts::runtime::SuspendTicket::new(
+            suspension,
+            PendingToolCall::new(invocation.call_id, invocation.tool_name, arguments),
+            resume_mode,
+        ),
     }
 }
 
@@ -548,8 +550,8 @@ impl TestInteractionPlugin {
         self.responses
             .get(&call.call_id)
             .cloned()
-            .or_else(|| self.responses.get(&call.suspension.id).cloned())
-            .or_else(|| self.responses.get(&call.pending.id).cloned())
+            .or_else(|| self.responses.get(&call.ticket.suspension.id).cloned())
+            .or_else(|| self.responses.get(&call.ticket.pending.id).cloned())
     }
 
     fn cancel_reason(result: &Value) -> Option<String> {
@@ -633,7 +635,7 @@ impl AgentPlugin for TestInteractionPlugin {
                     tool_name: suspended_call.tool_name.clone(),
                     arguments: suspended_call.arguments.clone(),
                     status: crate::contracts::runtime::ToolCallStatus::Suspended,
-                    resume_token: Some(suspended_call.pending.id.clone()),
+                    resume_token: Some(suspended_call.ticket.pending.id.clone()),
                     resume: None,
                     scratch: Value::Null,
                     updated_at,
@@ -643,7 +645,7 @@ impl AgentPlugin for TestInteractionPlugin {
             state.tool_name = suspended_call.tool_name.clone();
             state.arguments = suspended_call.arguments.clone();
             state.status = crate::contracts::runtime::ToolCallStatus::Resuming;
-            state.resume_token = Some(suspended_call.pending.id.clone());
+            state.resume_token = Some(suspended_call.ticket.pending.id.clone());
             state.resume = Some(resume);
             state.updated_at = updated_at;
             states.insert(call_id.clone(), state);
@@ -1044,10 +1046,10 @@ fn test_execute_tools_tool_can_suspend_itself() {
         };
 
         assert_eq!(suspended_call.call_id, "call_1");
-        assert_eq!(suspended_call.pending.id, "call_1");
-        assert_eq!(suspended_call.pending.name, "self_suspend");
+        assert_eq!(suspended_call.ticket.pending.id, "call_1");
+        assert_eq!(suspended_call.ticket.pending.name, "self_suspend");
         assert_eq!(
-            suspended_call.resume_mode,
+            suspended_call.ticket.resume_mode,
             ToolCallResumeMode::ReplayToolCall
         );
 
@@ -2365,8 +2367,8 @@ fn test_execute_tools_with_pending_phase_plugin() {
             other => panic!("Expected Suspended outcome, got: {:?}", other),
         };
 
-        assert_eq!(suspended_call.suspension.id, "confirm_1");
-        assert_eq!(suspended_call.suspension.action, "confirm");
+        assert_eq!(suspended_call.ticket.suspension.id, "confirm_1");
+        assert_eq!(suspended_call.ticket.suspension.action, "confirm");
 
         // Pending tool gets a placeholder tool result to keep message sequence valid.
         assert_eq!(thread.messages.len(), 1);
@@ -2993,8 +2995,8 @@ fn test_execute_tools_with_config_with_pending_plugin() {
             other => panic!("Expected Suspended outcome, got: {:?}", other),
         };
 
-        assert_eq!(suspended_call.suspension.id, "confirm_1");
-        assert_eq!(suspended_call.suspension.action, "confirm");
+        assert_eq!(suspended_call.ticket.suspension.id, "confirm_1");
+        assert_eq!(suspended_call.ticket.suspension.action, "confirm");
 
         // Pending tool gets a placeholder tool result to keep message sequence valid.
         assert_eq!(thread.messages.len(), 1);
@@ -3120,8 +3122,8 @@ fn test_set_agent_suspended_calls_persists_all_entries() {
     run_ctx.add_thread_patch(patch);
     let suspended = run_ctx.suspended_calls();
     assert_eq!(suspended.len(), 2);
-    assert_eq!(suspended["call_a"].suspension.id, "int_a");
-    assert_eq!(suspended["call_b"].suspension.id, "int_b");
+    assert_eq!(suspended["call_a"].ticket.suspension.id, "int_a");
+    assert_eq!(suspended["call_b"].ticket.suspension.id, "int_b");
 }
 
 #[test]
@@ -4636,7 +4638,7 @@ async fn test_run_loop_terminate_plugin_requested_with_suspended_state_returns_s
     let interaction = &suspended_calls
         .get("agent_recovery_run-1")
         .expect("should have suspended interaction")
-        .suspension;
+        .ticket.suspension;
     assert_eq!(interaction.action, "recover_agent_run");
     assert_eq!(interaction.message, "resume?");
 
@@ -6114,7 +6116,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
     let nonstream_interaction = &nonstream_suspended
         .get("golden_resume_1")
         .expect("non-stream outcome should have suspended interaction")
-        .suspension;
+        .ticket.suspension;
 
     let (events, stream_thread) = run_mock_stream_with_final_thread(
         MockStreamProvider::new(vec![MockResponse::text("unused")]),
@@ -8342,7 +8344,7 @@ async fn test_sequential_tools_stop_after_first_suspension() {
         } => (thread, suspended_call),
         other => panic!("expected Suspended, got: {other:?}"),
     };
-    assert_eq!(suspended_call.suspension.id, "confirm_call_1");
+    assert_eq!(suspended_call.ticket.suspension.id, "confirm_call_1");
     assert_eq!(
         seen_calls.lock().expect("lock poisoned").clone(),
         vec!["call_1".to_string()],
@@ -8408,7 +8410,7 @@ async fn test_parallel_tools_allow_single_suspended_interaction_per_round() {
         other => panic!("expected Suspended, got: {other:?}"),
     };
     // First suspended call's interaction is returned
-    assert_eq!(suspended_call.suspension.id, "confirm_call_1");
+    assert_eq!(suspended_call.ticket.suspension.id, "confirm_call_1");
     let mut seen = seen_calls.lock().expect("lock poisoned").clone();
     seen.sort();
     assert_eq!(
@@ -8842,7 +8844,7 @@ async fn test_run_step_terminate_plugin_requested_with_suspended_state_returns_s
     let interaction = &suspended_calls
         .get("agent_recovery_step-1")
         .expect("should have suspended interaction")
-        .suspension;
+        .ticket.suspension;
     assert_eq!(interaction.action, "recover_agent_run");
     assert_eq!(interaction.message, "resume step?");
 
@@ -10675,7 +10677,7 @@ async fn test_nonstream_run_start_added_pending_pauses_before_inference() {
         suspended_calls
             .get("recover_1")
             .expect("suspension expected")
-            .suspension
+            .ticket.suspension
             .action,
         "recover_agent_run"
     );

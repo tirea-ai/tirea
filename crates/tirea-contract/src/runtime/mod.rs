@@ -12,7 +12,7 @@ pub use llm::{StreamResult, TokenUsage};
 #[allow(deprecated)]
 pub use plugin::{
     AfterInferenceContext, AfterToolExecuteContext, AgentPlugin, BeforeInferenceContext,
-    BeforeToolExecuteContext, Phase, PhasePolicy, PluginPhaseContext, ResumeInputView, RunAction,
+    BeforeToolExecuteContext, Phase, PhasePolicy, PluginPhaseContext, RunAction,
     RunEndContext, RunLifecycleAction, RunStartContext, StateEffect, StepContext, StepEndContext,
     StepOutcome, StepStartContext, SuspendTicket, ToolCallAction, ToolCallLifecycleAction,
     ToolContext,

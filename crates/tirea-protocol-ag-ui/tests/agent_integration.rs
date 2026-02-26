@@ -4755,8 +4755,8 @@ impl InteractionPlugin {
         self.responses
             .get(&call.call_id)
             .cloned()
-            .or_else(|| self.responses.get(&call.suspension.id).cloned())
-            .or_else(|| self.responses.get(&call.pending.id).cloned())
+            .or_else(|| self.responses.get(&call.ticket.suspension.id).cloned())
+            .or_else(|| self.responses.get(&call.ticket.pending.id).cloned())
     }
 
     fn cancel_reason(result: &Value) -> Option<String> {
@@ -4835,7 +4835,7 @@ impl AgentPlugin for InteractionPlugin {
                     tool_name: suspended_call.tool_name.clone(),
                     arguments: suspended_call.arguments.clone(),
                     status: ToolCallStatus::Suspended,
-                    resume_token: Some(suspended_call.pending.id.clone()),
+                    resume_token: Some(suspended_call.ticket.pending.id.clone()),
                     resume: None,
                     scratch: Value::Null,
                     updated_at,
@@ -4844,7 +4844,7 @@ impl AgentPlugin for InteractionPlugin {
             state.tool_name = suspended_call.tool_name.clone();
             state.arguments = suspended_call.arguments.clone();
             state.status = ToolCallStatus::Resuming;
-            state.resume_token = Some(suspended_call.pending.id.clone());
+            state.resume_token = Some(suspended_call.ticket.pending.id.clone());
             state.resume = Some(resume);
             state.updated_at = updated_at;
             states.insert(call_id.clone(), state);
@@ -6501,7 +6501,7 @@ async fn test_e2e_permission_suspend_with_real_tool() {
         ExecuteToolsOutcome::Suspended {
             thread,
             suspended_call,
-        } => (thread, suspended_call.suspension.clone()),
+        } => (thread, suspended_call.ticket.suspension.clone()),
         other => panic!("Expected Suspended, got: {:?}", other),
     };
 
@@ -6583,7 +6583,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
         ExecuteToolsOutcome::Suspended {
             thread,
             suspended_call,
-        } => (thread, suspended_call.suspension.clone()),
+        } => (thread, suspended_call.ticket.suspension.clone()),
         other => panic!("Expected Suspended, got: {:?}", other),
     };
 
@@ -6682,7 +6682,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
         ExecuteToolsOutcome::Suspended {
             thread,
             suspended_call,
-        } => (thread, suspended_call.suspension.clone()),
+        } => (thread, suspended_call.ticket.suspension.clone()),
         other => panic!("Expected Suspended, got: {:?}", other),
     };
 
@@ -12631,7 +12631,7 @@ fn replay_calls_from_state(state: &Value) -> Vec<ToolCall> {
                 return None;
             }
             let call = suspended.get(&call_id)?;
-            Some(match call.resume_mode {
+            Some(match call.ticket.resume_mode {
                 tirea_agentos::contracts::runtime::ToolCallResumeMode::ReplayToolCall => {
                     ToolCall::new(
                         call.call_id.clone(),

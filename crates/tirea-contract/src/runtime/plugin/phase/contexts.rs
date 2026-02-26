@@ -1,5 +1,4 @@
 use super::{Phase, RunAction, StepContext, SuspendTicket, ToolCallAction};
-use crate::io::ResumeDecisionAction;
 use crate::runtime::run::TerminationReason;
 use crate::runtime::llm::StreamResult;
 use crate::runtime::ToolCallResume;
@@ -143,15 +142,6 @@ pub struct BeforeToolExecuteContext<'s, 'a> {
 }
 impl_plugin_phase_context!(BeforeToolExecuteContext, Phase::BeforeToolExecute);
 
-/// Read-only resume payload view exposed to plugins.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ResumeInputView {
-    pub action: ResumeDecisionAction,
-    pub result: Value,
-    pub reason: Option<String>,
-    pub updated_at: u64,
-}
-
 impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
     pub fn tool_name(&self) -> Option<&str> {
         self.step.tool_name()
@@ -166,27 +156,9 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
     }
 
     /// Resume payload attached to current tool call, if present.
-    pub fn resume_input(&self) -> Option<ResumeInputView> {
+    pub fn resume_input(&self) -> Option<ToolCallResume> {
         let call_id = self.tool_call_id()?;
-        self.step
-            .ctx()
-            .resume_input_for(call_id)
-            .ok()
-            .flatten()
-            .map(
-                |ToolCallResume {
-                     action,
-                     result,
-                     reason,
-                     updated_at,
-                     ..
-                 }| ResumeInputView {
-                    action,
-                    result,
-                    reason,
-                    updated_at,
-                },
-            )
+        self.step.ctx().resume_input_for(call_id).ok().flatten()
     }
 
     pub fn decision(&self) -> ToolCallAction {
