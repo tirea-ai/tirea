@@ -1,89 +1,10 @@
-//! Runtime control-state schema stored under internal `__*` top-level paths.
-//!
-//! These types define durable runtime control state for cross-step and cross-run
-//! flow control (suspended tool calls, tool-call lifecycle state, and inference
-//! error envelope).
-
-use crate::interaction::Suspension;
-pub use crate::io::{ResumeDecisionAction, ToolCallDecision};
-use crate::runtime::state_paths::{
-    RUN_LIFECYCLE_STATE_PATH, SUSPENDED_TOOL_CALLS_STATE_PATH, TOOL_CALL_STATES_STATE_PATH,
-};
+use crate::io::ResumeDecisionAction;
+use crate::runtime::state_paths::{SUSPENDED_TOOL_CALLS_STATE_PATH, TOOL_CALL_STATES_STATE_PATH};
+use crate::runtime::tool_call::suspension::Suspension;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use tirea_state::State;
-
-/// Inference error emitted by the loop and consumed by telemetry plugins.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct InferenceError {
-    /// Stable error class used for metrics/telemetry dimensions.
-    #[serde(rename = "type")]
-    pub error_type: String,
-    /// Human-readable error message.
-    pub message: String,
-}
-
-/// Coarse run lifecycle status persisted in thread state.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum RunLifecycleStatus {
-    /// Run is actively executing.
-    Running,
-    /// Run is waiting for external decisions.
-    Waiting,
-    /// Run has reached a terminal state.
-    Done,
-}
-
-impl RunLifecycleStatus {
-    /// Canonical run-lifecycle state machine used by runtime tests.
-    pub const ASCII_STATE_MACHINE: &str = r#"start
-  |
-  v
-running -------> done
-  |
-  v
-waiting -------> done
-  |
-  +-----------> running"#;
-
-    /// Whether this lifecycle status is terminal.
-    pub fn is_terminal(self) -> bool {
-        matches!(self, RunLifecycleStatus::Done)
-    }
-
-    /// Validate lifecycle transition from `self` to `next`.
-    pub fn can_transition_to(self, next: Self) -> bool {
-        if self == next {
-            return true;
-        }
-
-        match self {
-            RunLifecycleStatus::Running => {
-                matches!(next, RunLifecycleStatus::Waiting | RunLifecycleStatus::Done)
-            }
-            RunLifecycleStatus::Waiting => {
-                matches!(next, RunLifecycleStatus::Running | RunLifecycleStatus::Done)
-            }
-            RunLifecycleStatus::Done => false,
-        }
-    }
-}
-
-/// Minimal durable run lifecycle envelope stored at `state["__run"]`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RunLifecycleState {
-    /// Current run id associated with this lifecycle record.
-    pub id: String,
-    /// Coarse lifecycle status.
-    pub status: RunLifecycleStatus,
-    /// Optional terminal reason when `status=done`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub done_reason: Option<String>,
-    /// Last update timestamp (unix millis).
-    pub updated_at: u64,
-}
 
 /// A tool call that has been suspended, awaiting external resolution.
 ///
@@ -141,9 +62,6 @@ pub struct SuspendedCall {
 }
 
 /// Durable suspended tool-call map persisted at `state["__suspended_tool_calls"]`.
-///
-/// This is the only long-lived control state required to recover pending tool
-/// calls across runs.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 #[tirea(path = "__suspended_tool_calls")]
 pub struct SuspendedToolCallsState {
@@ -246,9 +164,6 @@ pub struct ToolCallResume {
 }
 
 /// Durable per-tool-call runtime state.
-///
-/// This is run-time state persisted in thread state so tool execution can be
-/// resumed as a re-entrant flow (`before_tool_execute -> execute -> after_tool_execute`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, State)]
 pub struct ToolCallLifecycleState {
     /// Stable tool call id.
@@ -287,14 +202,6 @@ pub struct ToolCallLifecycleStatesState {
     pub calls: HashMap<String, ToolCallLifecycleState>,
 }
 
-/// Durable inference-error envelope persisted at `state["__inference_error"]`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-#[tirea(path = "__inference_error")]
-pub struct InferenceErrorState {
-    #[tirea(default = "None")]
-    pub error: Option<InferenceError>,
-}
-
 /// Parse suspended tool calls from a rebuilt state snapshot.
 pub fn suspended_calls_from_state(state: &Value) -> HashMap<String, SuspendedCall> {
     state
@@ -315,70 +222,14 @@ pub fn tool_call_states_from_state(state: &Value) -> HashMap<String, ToolCallLif
         .unwrap_or_default()
 }
 
-/// Parse persisted run lifecycle from a rebuilt state snapshot.
-pub fn run_lifecycle_from_state(state: &Value) -> Option<RunLifecycleState> {
-    state
-        .get(RUN_LIFECYCLE_STATE_PATH)
-        .cloned()
-        .and_then(|value| serde_json::from_value(value).ok())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interaction::SuspensionResponse;
-    use serde_json::Value;
 
     #[test]
-    fn test_suspension_new() {
-        let suspension = Suspension::new("int_1", "confirm");
-        assert_eq!(suspension.id, "int_1");
-        assert_eq!(suspension.action, "confirm");
-        assert!(suspension.message.is_empty());
-        assert_eq!(suspension.parameters, Value::Null);
-        assert!(suspension.response_schema.is_none());
-    }
-
-    #[test]
-    fn test_loop_control_state_defaults() {
+    fn suspended_tool_calls_state_defaults_to_empty() {
         let suspended = SuspendedToolCallsState::default();
         assert!(suspended.calls.is_empty());
-
-        let err = InferenceErrorState::default();
-        assert!(err.error.is_none());
-    }
-
-    #[test]
-    fn tool_call_decision_resume_constructor_sets_resume_action() {
-        let mut decision = ToolCallDecision::resume("fc_1", Value::Bool(true), 123);
-        decision.decision_id = "decision_fc_1".to_string();
-        assert_eq!(decision.target_id, "fc_1");
-        assert_eq!(decision.decision_id, "decision_fc_1");
-        assert!(matches!(decision.action, ResumeDecisionAction::Resume));
-        assert_eq!(decision.result, Value::Bool(true));
-        assert!(decision.reason.is_none());
-        assert_eq!(decision.updated_at, 123);
-    }
-
-    #[test]
-    fn tool_call_decision_cancel_constructor_sets_cancel_action() {
-        let mut decision = ToolCallDecision::cancel(
-            "fc_2",
-            SuspensionResponse::new(
-                "fc_2",
-                serde_json::json!({
-                    "approved": false,
-                    "reason": "denied by user"
-                }),
-            )
-            .result,
-            Some("denied by user".to_string()),
-            456,
-        );
-        decision.decision_id = "decision_fc_2".to_string();
-        assert!(matches!(decision.action, ResumeDecisionAction::Cancel));
-        assert_eq!(decision.reason.as_deref(), Some("denied by user"));
-        assert_eq!(decision.updated_at, 456);
     }
 
     #[test]
@@ -398,47 +249,6 @@ mod tests {
         assert!(!ToolCallStatus::Succeeded.can_transition_to(ToolCallStatus::Running));
         assert!(!ToolCallStatus::Failed.can_transition_to(ToolCallStatus::Resuming));
         assert!(!ToolCallStatus::Cancelled.can_transition_to(ToolCallStatus::Suspended));
-    }
-
-    #[test]
-    fn run_lifecycle_roundtrip_from_state() {
-        let state = serde_json::json!({
-            "__run": {
-                "id": "run_1",
-                "status": "running",
-                "updated_at": 42
-            }
-        });
-
-        let lifecycle = run_lifecycle_from_state(&state).expect("run lifecycle");
-        assert_eq!(lifecycle.id, "run_1");
-        assert_eq!(lifecycle.status, RunLifecycleStatus::Running);
-        assert_eq!(lifecycle.done_reason, None);
-        assert_eq!(lifecycle.updated_at, 42);
-    }
-
-    #[test]
-    fn run_lifecycle_status_transitions_match_state_machine() {
-        assert!(RunLifecycleStatus::Running.can_transition_to(RunLifecycleStatus::Waiting));
-        assert!(RunLifecycleStatus::Running.can_transition_to(RunLifecycleStatus::Done));
-        assert!(RunLifecycleStatus::Waiting.can_transition_to(RunLifecycleStatus::Running));
-        assert!(RunLifecycleStatus::Waiting.can_transition_to(RunLifecycleStatus::Done));
-        assert!(RunLifecycleStatus::Running.can_transition_to(RunLifecycleStatus::Running));
-    }
-
-    #[test]
-    fn run_lifecycle_status_rejects_done_reopen_transitions() {
-        assert!(!RunLifecycleStatus::Done.can_transition_to(RunLifecycleStatus::Running));
-        assert!(!RunLifecycleStatus::Done.can_transition_to(RunLifecycleStatus::Waiting));
-    }
-
-    #[test]
-    fn run_lifecycle_ascii_state_machine_contains_all_states() {
-        let diagram = RunLifecycleStatus::ASCII_STATE_MACHINE;
-        assert!(diagram.contains("running"));
-        assert!(diagram.contains("waiting"));
-        assert!(diagram.contains("done"));
-        assert!(diagram.contains("start"));
     }
 
     #[test]

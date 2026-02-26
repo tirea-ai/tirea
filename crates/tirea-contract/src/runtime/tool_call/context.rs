@@ -509,8 +509,9 @@ impl ActivityContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::ResumeDecisionAction;
     use crate::runtime::activity::ActivityManager;
-    use crate::runtime::control::{InferenceErrorState, ResumeDecisionAction};
+    use crate::runtime::run::InferenceErrorState;
     use serde_json::json;
     use std::sync::Arc;
     use tokio::time::{timeout, Duration};
@@ -562,7 +563,7 @@ mod tests {
 
         // Write
         let ctrl = ctx.state_of::<InferenceErrorState>();
-        ctrl.set_error(Some(crate::runtime::control::InferenceError {
+        ctrl.set_error(Some(crate::runtime::run::InferenceError {
             error_type: "rate_limit".into(),
             message: "too many requests".into(),
         }))
@@ -588,7 +589,7 @@ mod tests {
 
         // Write via first ref
         ctx.state_of::<InferenceErrorState>()
-            .set_error(Some(crate::runtime::control::InferenceError {
+            .set_error(Some(crate::runtime::run::InferenceError {
                 error_type: "timeout".into(),
                 message: "timed out".into(),
             }))
@@ -609,7 +610,7 @@ mod tests {
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
         ctx.state_of::<InferenceErrorState>()
-            .set_error(Some(crate::runtime::control::InferenceError {
+            .set_error(Some(crate::runtime::run::InferenceError {
                 error_type: "test".into(),
                 message: "test".into(),
             }))
@@ -650,7 +651,7 @@ mod tests {
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
         let ctrl = ctx.call_state::<InferenceErrorState>();
-        ctrl.set_error(Some(crate::runtime::control::InferenceError {
+        ctrl.set_error(Some(crate::runtime::run::InferenceError {
             error_type: "call_scoped".into(),
             message: "test".into(),
         }))

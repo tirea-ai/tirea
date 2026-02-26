@@ -63,3 +63,37 @@ impl ToolCallDecision {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_call_decision_resume_constructor_sets_resume_action() {
+        let mut decision = ToolCallDecision::resume("fc_1", Value::Bool(true), 123);
+        decision.decision_id = "decision_fc_1".to_string();
+        assert_eq!(decision.target_id, "fc_1");
+        assert_eq!(decision.decision_id, "decision_fc_1");
+        assert!(matches!(decision.action, ResumeDecisionAction::Resume));
+        assert_eq!(decision.result, Value::Bool(true));
+        assert!(decision.reason.is_none());
+        assert_eq!(decision.updated_at, 123);
+    }
+
+    #[test]
+    fn tool_call_decision_cancel_constructor_sets_cancel_action() {
+        let mut decision = ToolCallDecision::cancel(
+            "fc_2",
+            serde_json::json!({
+                "approved": false,
+                "reason": "denied by user"
+            }),
+            Some("denied by user".to_string()),
+            456,
+        );
+        decision.decision_id = "decision_fc_2".to_string();
+        assert!(matches!(decision.action, ResumeDecisionAction::Cancel));
+        assert_eq!(decision.reason.as_deref(), Some("denied by user"));
+        assert_eq!(decision.updated_at, 456);
+    }
+}

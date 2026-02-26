@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tirea_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult, TypedTool};
+use tirea_agentos::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult, TypedTool};
 use tirea_agentos::contracts::ToolCallContext;
 
 use super::state::{Place, SearchProgress, TravelState, Trip};

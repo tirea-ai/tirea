@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use tirea_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use tirea_agentos::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_agentos::contracts::ToolCallContext;
 
 use super::state::{LogEntry, ResearchState, Resource};

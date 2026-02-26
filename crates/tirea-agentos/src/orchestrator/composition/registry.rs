@@ -3,8 +3,8 @@ use super::{
     PluginRegistry, PluginRegistryError, ProviderRegistry, ProviderRegistryError, ToolRegistry,
     ToolRegistryError,
 };
-use crate::contracts::plugin::AgentPlugin;
-use crate::contracts::tool::Tool;
+use crate::contracts::runtime::plugin::AgentPlugin;
+use crate::contracts::runtime::tool_call::Tool;
 use crate::orchestrator::AgentDefinition;
 use genai::Client;
 use std::collections::HashMap;
@@ -729,7 +729,7 @@ impl ModelRegistry for CompositeModelRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::tool::{ToolDescriptor, ToolError, ToolResult};
+    use crate::contracts::runtime::tool_call::{ToolDescriptor, ToolError, ToolResult};
     use crate::contracts::ToolCallContext;
     use serde_json::json;
 

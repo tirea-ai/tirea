@@ -1,5 +1,5 @@
-use crate::interaction::Suspension;
-use crate::lifecycle::TerminationReason;
+use crate::runtime::run::TerminationReason;
+use crate::runtime::tool_call::Suspension;
 use crate::runtime::{PendingToolCall, ToolCallResumeMode};
 use tirea_state::TrackedPatch;
 

@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
-use tirea_agentos::contracts::tool::Tool;
+use tirea_agentos::contracts::runtime::tool_call::Tool;
 use tirea_agentos::orchestrator::AgentDefinition;
 use tirea_agentos::orchestrator::AgentOsBuilder;
 use tirea_agentos_server::service::AppState;

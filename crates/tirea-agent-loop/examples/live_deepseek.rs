@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tirea_agent_loop::contracts::storage::{ThreadReader, ThreadWriter};
 use tirea_agent_loop::contracts::thread::Message;
 use tirea_agent_loop::contracts::thread::Thread as ConversationAgentState;
-use tirea_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use tirea_agent_loop::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_agent_loop::contracts::AgentEvent;
 use tirea_agent_loop::contracts::RunContext;
 use tirea_agent_loop::contracts::ToolCallContext;

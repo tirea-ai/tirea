@@ -32,7 +32,7 @@
 //! }
 //! ```
 
-use crate::plugin::phase::{
+use crate::runtime::plugin::phase::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
     BeforeToolExecuteContext, RunEndContext, RunStartContext, StepEndContext, StepStartContext,
 };
@@ -68,12 +68,12 @@ pub trait AgentPlugin: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interaction::Suspension;
-    use crate::plugin::phase::{StepContext, SuspendTicket, ToolContext};
+    use crate::runtime::plugin::phase::{StepContext, SuspendTicket, ToolContext};
+    use crate::runtime::tool_call::Suspension;
     use crate::runtime::{PendingToolCall, ToolCallResumeMode};
     use crate::testing::TestFixture;
     use crate::thread::ToolCall;
-    use crate::tool::contract::ToolDescriptor;
+    use crate::runtime::tool_call::ToolDescriptor;
     use serde_json::json;
 
     async fn run_step_start(plugin: &dyn AgentPlugin, step: &mut StepContext<'_>) {
@@ -296,7 +296,7 @@ mod tests {
         // AfterToolExecute - adds reminder for read_file
         let call = ToolCall::new("call_1", "read_file", json!({}));
         step.tool = Some(ToolContext::new(&call));
-        step.set_tool_result(crate::tool::contract::ToolResult::success(
+        step.set_tool_result(crate::runtime::tool_call::ToolResult::success(
             "read_file",
             json!({"ok": true}),
         ));

@@ -1,7 +1,8 @@
 #![allow(missing_docs)]
 
 use serde_json::{json, Value};
-use tirea_contract::{AgentEvent, Role, TerminationReason, ToolResult};
+use tirea_contract::runtime::tool_call::ToolResult;
+use tirea_contract::{AgentEvent, Role, TerminationReason};
 use tirea_protocol_ag_ui::{AgUiEventContext, Event, Message, RunAgentInput};
 
 fn make_agui_ctx(thread_id: &str, run_id: &str) -> AgUiEventContext {

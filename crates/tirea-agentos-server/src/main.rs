@@ -11,8 +11,8 @@ use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder, ModelDefinition};
 use tirea_agentos_server::nats::NatsConfig;
 use tirea_agentos_server::service::AppState;
 use tirea_agentos_server::{http, protocol};
-use tirea_contract::tool::context::ToolCallContext;
-use tirea_contract::tool::contract::{Tool, ToolDescriptor, ToolError, ToolResult};
+use tirea_contract::runtime::tool_call::ToolCallContext;
+use tirea_contract::runtime::tool_call::contract::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_extension_permission::{PermissionPlugin, ToolPolicyPlugin};
 use tirea_store_adapters::FileStore;
 

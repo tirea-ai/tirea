@@ -5,7 +5,7 @@ use std::fs;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tirea_agentos::contracts::thread::{Thread as ConversationAgentState, ToolCall};
-use tirea_agentos::contracts::tool::ToolDescriptor;
+use tirea_agentos::contracts::runtime::tool_call::ToolDescriptor;
 use tirea_agentos::contracts::AgentEvent;
 use tirea_agentos::engine::tool_execution::execute_single_tool;
 use tirea_agentos::extensions::skills::{
@@ -153,7 +153,7 @@ async fn test_skills_plugin_injection_is_in_system_context_before_inference() {
     let fixture = TestFixture::new();
     let mut step = fixture.step(vec![ToolDescriptor::new("t", "t", "t")]);
     let mut before =
-        tirea_agentos::contracts::plugin::phase::BeforeInferenceContext::new(&mut step);
+        tirea_agentos::contracts::runtime::plugin::phase::BeforeInferenceContext::new(&mut step);
     plugin.before_inference(&mut before).await;
     assert_eq!(step.system_context.len(), 1);
     assert!(step.system_context[0].contains("<available_skills>"));

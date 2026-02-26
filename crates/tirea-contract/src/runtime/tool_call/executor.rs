@@ -1,8 +1,8 @@
-use crate::plugin::contract::AgentPlugin;
 use crate::runtime::activity::ActivityManager;
-use crate::runtime::control::SuspendedCall;
+use crate::runtime::plugin::contract::AgentPlugin;
+use crate::runtime::tool_call::lifecycle::SuspendedCall;
 use crate::thread::{Message, ToolCall};
-use crate::tool::contract::{Tool, ToolDescriptor, ToolResult};
+use crate::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
 use crate::RunConfig;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -36,10 +36,10 @@ impl ToolCallOutcome {
     /// Derive outcome from a concrete `ToolResult`.
     pub fn from_tool_result(result: &ToolResult) -> Self {
         match result.status {
-            crate::tool::contract::ToolStatus::Pending => Self::Suspended,
-            crate::tool::contract::ToolStatus::Error => Self::Failed,
-            crate::tool::contract::ToolStatus::Success
-            | crate::tool::contract::ToolStatus::Warning => Self::Succeeded,
+            crate::runtime::tool_call::ToolStatus::Pending => Self::Suspended,
+            crate::runtime::tool_call::ToolStatus::Error => Self::Failed,
+            crate::runtime::tool_call::ToolStatus::Success
+            | crate::runtime::tool_call::ToolStatus::Warning => Self::Succeeded,
         }
     }
 }

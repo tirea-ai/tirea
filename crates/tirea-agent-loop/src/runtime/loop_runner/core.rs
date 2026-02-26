@@ -1,12 +1,12 @@
 use super::AgentLoopError;
-use crate::contracts::plugin::phase::StepContext;
+use crate::contracts::runtime::plugin::phase::StepContext;
 use crate::contracts::runtime::state_paths::{
     INFERENCE_ERROR_STATE_PATH, SKILLS_STATE_PATH, SUSPENDED_TOOL_CALLS_STATE_PATH,
     TOOL_CALL_STATES_STATE_PATH,
 };
 use crate::contracts::runtime::SuspendedCall;
 use crate::contracts::thread::{Message, MessageMetadata, Role};
-use crate::contracts::tool::Tool;
+use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::RunContext;
 use crate::contracts::RunLifecycleAction;
 use crate::runtime::control::{

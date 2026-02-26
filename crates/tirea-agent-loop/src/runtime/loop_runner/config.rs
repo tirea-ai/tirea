@@ -1,8 +1,8 @@
 use super::tool_exec::ParallelToolExecutor;
 use super::AgentLoopError;
-use crate::contracts::plugin::AgentPlugin;
+use crate::contracts::runtime::plugin::AgentPlugin;
 use crate::contracts::runtime::ToolExecutor;
-use crate::contracts::tool::{Tool, ToolDescriptor};
+use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor};
 use crate::contracts::RunContext;
 use async_trait::async_trait;
 use genai::chat::ChatOptions;

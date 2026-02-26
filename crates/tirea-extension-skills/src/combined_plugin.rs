@@ -1,11 +1,11 @@
 use crate::{SkillDiscoveryPlugin, SkillRuntimePlugin, SKILLS_PLUGIN_ID};
 use async_trait::async_trait;
 use std::sync::Arc;
-use tirea_contract::plugin::phase::{
+use tirea_contract::runtime::plugin::phase::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
     BeforeToolExecuteContext, RunEndContext, RunStartContext, StepEndContext, StepStartContext,
 };
-use tirea_contract::plugin::AgentPlugin;
+use tirea_contract::runtime::plugin::AgentPlugin;
 
 /// Single plugin wrapper that injects both:
 /// - the skills catalog (discovery)
@@ -92,7 +92,7 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
     use tirea_contract::testing::TestFixture;
-    use tirea_contract::tool::ToolDescriptor;
+    use tirea_contract::runtime::tool_call::ToolDescriptor;
 
     #[tokio::test]
     async fn combined_plugin_injects_catalog_only() {
@@ -129,7 +129,7 @@ mod tests {
             }
         }));
         let mut step = fixture.step(vec![ToolDescriptor::new("t", "t", "t")]);
-        let mut before = tirea_contract::plugin::phase::BeforeInferenceContext::new(&mut step);
+        let mut before = tirea_contract::runtime::plugin::phase::BeforeInferenceContext::new(&mut step);
         plugin.before_inference(&mut before).await;
 
         // Only discovery catalog is injected; runtime plugin no longer injects system context.

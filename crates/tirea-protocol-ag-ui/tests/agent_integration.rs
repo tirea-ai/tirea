@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tirea_agentos::contracts::thread::Role as ThreadRole;
 use tirea_agentos::contracts::thread::Thread as ConversationAgentState;
-use tirea_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use tirea_agentos::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_agentos::contracts::SuspensionResponse;
 use tirea_agentos::contracts::ToolCallContext;
 use tirea_agentos::extensions::reminder::SystemReminder;
@@ -165,7 +165,7 @@ impl SystemReminder for TaskReminder {
 
     async fn remind(
         &self,
-        ctx: &tirea_contract::tool::context::ToolCallContext<'_>,
+        ctx: &tirea_contract::runtime::tool_call::ToolCallContext<'_>,
     ) -> Option<String> {
         let tasks = ctx.state::<TaskState>("tasks");
 
@@ -1986,7 +1986,7 @@ async fn test_file_storage_corrupted_json() {
 
 #[test]
 fn test_tool_error_variants_display() {
-    use tirea_agentos::contracts::tool::ToolError;
+    use tirea_agentos::contracts::runtime::tool_call::ToolError;
 
     let invalid_args = ToolError::InvalidArguments("Missing required field 'name'".to_string());
     assert!(invalid_args.to_string().contains("Invalid arguments"));
@@ -4577,15 +4577,14 @@ fn test_scenario_various_interaction_types() {
 // ============================================================================
 
 use std::collections::{HashMap, HashSet};
-use tirea_agentos::contracts::plugin::phase::{
+use tirea_agentos::contracts::runtime::plugin::phase::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
     BeforeToolExecuteContext, Phase, PluginPhaseContext, RunEndContext, RunStartContext,
     StepContext, StepEndContext, StepStartContext, ToolContext,
 };
-use tirea_agentos::contracts::plugin::AgentPlugin;
-use tirea_agentos::contracts::runtime::control::{
-    ResumeDecisionAction, ToolCallLifecycleState, ToolCallResume, ToolCallStatus,
-};
+use tirea_agentos::contracts::runtime::plugin::AgentPlugin;
+use tirea_agentos::contracts::io::ResumeDecisionAction;
+use tirea_agentos::contracts::runtime::{ToolCallLifecycleState, ToolCallResume, ToolCallStatus};
 use tirea_agentos::contracts::runtime::SuspendedCall;
 use tirea_agentos::contracts::thread::ToolCall;
 use tirea_protocol_ag_ui::RunAgentInput;
@@ -4641,7 +4640,7 @@ impl FrontendToolInvocation {
 
 fn suspend_ticket_from_invocation(
     invocation: FrontendToolInvocation,
-) -> tirea_agentos::contracts::plugin::phase::SuspendTicket {
+) -> tirea_agentos::contracts::runtime::plugin::phase::SuspendTicket {
     let suspension = tirea_agentos::contracts::Suspension::new(
         &invocation.call_id,
         format!("tool:{}", invocation.tool_name),
@@ -4658,7 +4657,7 @@ fn suspend_ticket_from_invocation(
             tirea_agentos::contracts::runtime::ToolCallResumeMode::PassDecisionToTool
         }
     };
-    tirea_agentos::contracts::plugin::phase::SuspendTicket::new(
+    tirea_agentos::contracts::runtime::plugin::phase::SuspendTicket::new(
         suspension,
         tirea_agentos::contracts::runtime::PendingToolCall::new(
             invocation.call_id,
@@ -4881,7 +4880,7 @@ impl AgentPlugin for TestFrontendToolPlugin {
     async fn before_tool_execute(&self, step: &mut BeforeToolExecuteContext<'_, '_>) {
         if !matches!(
             step.decision(),
-            tirea_agentos::contracts::plugin::phase::ToolCallLifecycleAction::Proceed
+            tirea_agentos::contracts::runtime::plugin::phase::ToolCallLifecycleAction::Proceed
         ) {
             return;
         }
@@ -6490,7 +6489,7 @@ async fn test_e2e_permission_suspend_with_real_tool() {
     };
 
     let tools = tool_map([IncrementTool]);
-    let plugins: Vec<Arc<dyn tirea_agentos::contracts::plugin::AgentPlugin>> =
+    let plugins: Vec<Arc<dyn tirea_agentos::contracts::runtime::plugin::AgentPlugin>> =
         vec![Arc::new(PermissionPlugin)];
 
     // execute_tools_with_plugins should return Suspended outcome
@@ -6572,7 +6571,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
     };
 
     let tools = tool_map([IncrementTool]);
-    let plugins: Vec<Arc<dyn tirea_agentos::contracts::plugin::AgentPlugin>> =
+    let plugins: Vec<Arc<dyn tirea_agentos::contracts::runtime::plugin::AgentPlugin>> =
         vec![Arc::new(PermissionPlugin)];
 
     // Phase 1: Suspend
@@ -6599,7 +6598,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
 
     // Resume with only InteractionPlugin — denial should block the tool
     let response_plugin = interaction_plugin_from_request(&deny_request);
-    let resume_plugins: Vec<Arc<dyn tirea_agentos::contracts::plugin::AgentPlugin>> =
+    let resume_plugins: Vec<Arc<dyn tirea_agentos::contracts::runtime::plugin::AgentPlugin>> =
         vec![Arc::new(response_plugin)];
 
     let resume_result = StreamResult {
@@ -6671,7 +6670,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
     };
 
     let tools = tool_map([IncrementTool]);
-    let plugins: Vec<Arc<dyn tirea_agentos::contracts::plugin::AgentPlugin>> =
+    let plugins: Vec<Arc<dyn tirea_agentos::contracts::runtime::plugin::AgentPlugin>> =
         vec![Arc::new(PermissionPlugin)];
 
     // Phase 1: Suspend
@@ -6697,7 +6696,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
 
     // Resume with only InteractionPlugin (no PermissionPlugin)
     let response_plugin = interaction_plugin_from_request(&approve_request);
-    let resume_plugins: Vec<Arc<dyn tirea_agentos::contracts::plugin::AgentPlugin>> =
+    let resume_plugins: Vec<Arc<dyn tirea_agentos::contracts::runtime::plugin::AgentPlugin>> =
         vec![Arc::new(response_plugin)];
 
     let resume_result = StreamResult {
@@ -12385,11 +12384,11 @@ mod llmmetry_tracing {
     use crate::AgentPluginTestDispatch;
     use serde_json::json;
     use std::sync::{Arc, Mutex};
-    use tirea_agentos::contracts::plugin::phase::{Phase, StepContext, ToolContext};
+    use tirea_agentos::contracts::runtime::plugin::phase::{Phase, StepContext, ToolContext};
     use tirea_agentos::contracts::runtime::StreamResult;
     use tirea_agentos::contracts::thread::Thread as ConversationAgentState;
     use tirea_agentos::contracts::thread::ToolCall;
-    use tirea_agentos::contracts::tool::ToolResult;
+    use tirea_agentos::contracts::runtime::tool_call::ToolResult;
     use tirea_agentos::extensions::observability::{InMemorySink, LLMMetryPlugin};
     use tirea_contract::testing::TestFixture;
     use tracing_subscriber::layer::SubscriberExt;

@@ -29,13 +29,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use tirea_contract::io::ResumeDecisionAction;
-use tirea_contract::plugin::phase::{
+use tirea_contract::runtime::plugin::phase::{
     BeforeInferenceContext, BeforeToolExecuteContext, PluginPhaseContext, SuspendTicket,
     ToolCallLifecycleAction,
 };
-use tirea_contract::plugin::AgentPlugin;
+use tirea_contract::runtime::plugin::AgentPlugin;
 use tirea_contract::runtime::{PendingToolCall, ToolCallResumeMode};
-use tirea_contract::tool::context::ToolCallContext;
+use tirea_contract::runtime::tool_call::ToolCallContext;
 use tirea_state::State;
 
 /// Tool permission behavior.
@@ -257,17 +257,17 @@ impl AgentPlugin for ToolPolicyPlugin {
 mod tests {
     use super::*;
     use serde_json::json;
-    use tirea_contract::plugin::phase::{BeforeToolExecuteContext, ToolContext};
+    use tirea_contract::runtime::plugin::phase::{BeforeToolExecuteContext, ToolContext};
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::ToolCall;
 
-    fn apply_interaction_intents(_step: &mut tirea_contract::plugin::phase::StepContext<'_>) {
+    fn apply_interaction_intents(_step: &mut tirea_contract::runtime::plugin::phase::StepContext<'_>) {
         // No-op: permission plugin now writes suspend tickets directly.
     }
 
     async fn run_before_tool_execute(
         plugin: &PermissionPlugin,
-        step: &mut tirea_contract::plugin::phase::StepContext<'_>,
+        step: &mut tirea_contract::runtime::plugin::phase::StepContext<'_>,
     ) {
         let mut ctx = BeforeToolExecuteContext::new(step);
         plugin.before_tool_execute(&mut ctx).await;
@@ -522,7 +522,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_skips_when_tool_already_pending() {
-        use tirea_contract::plugin::phase::SuspendTicket;
+        use tirea_contract::runtime::plugin::phase::SuspendTicket;
 
         let fixture = TestFixture::new_with_state(
             json!({ "permissions": { "default_behavior": "ask", "tools": {} } }),
@@ -824,7 +824,7 @@ mod tests {
 
     async fn run_tool_policy(
         plugin: &ToolPolicyPlugin,
-        step: &mut tirea_contract::plugin::phase::StepContext<'_>,
+        step: &mut tirea_contract::runtime::plugin::phase::StepContext<'_>,
     ) {
         let mut ctx = BeforeToolExecuteContext::new(step);
         plugin.before_tool_execute(&mut ctx).await;

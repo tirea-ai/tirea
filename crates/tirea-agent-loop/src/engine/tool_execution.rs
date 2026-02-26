@@ -2,8 +2,8 @@
 
 pub use crate::contracts::runtime::ToolExecution;
 use crate::contracts::thread::ToolCall;
-use crate::contracts::tool::context::ToolCallContext;
-use crate::contracts::tool::{Tool, ToolResult};
+use crate::contracts::runtime::tool_call::ToolCallContext;
+use crate::contracts::runtime::tool_call::{Tool, ToolResult};
 use futures::future::join_all;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -136,7 +136,7 @@ pub fn collect_patches(executions: &[ToolExecution]) -> Vec<TrackedPatch> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::tool::{ToolDescriptor, ToolError};
+    use crate::contracts::runtime::tool_call::{ToolDescriptor, ToolError};
     use crate::contracts::ToolCallContext;
     use async_trait::async_trait;
     use serde_json::json;

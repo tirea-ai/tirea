@@ -16,7 +16,7 @@ pub trait ActivityManager: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use crate::runtime::control::InferenceErrorState;
+    use crate::runtime::run::InferenceErrorState;
     use crate::testing::TestFixture;
     use serde_json::json;
 
@@ -35,7 +35,7 @@ mod tests {
         assert!(ctrl.error().unwrap().is_none());
 
         // Write
-        ctrl.set_error(Some(crate::runtime::control::InferenceError {
+        ctrl.set_error(Some(crate::runtime::run::InferenceError {
             error_type: "rate_limit".into(),
             message: "too many requests".into(),
         }))
@@ -56,7 +56,7 @@ mod tests {
         // Write via first state_of call
         let ctrl1 = ctx.state_of::<InferenceErrorState>();
         ctrl1
-            .set_error(Some(crate::runtime::control::InferenceError {
+            .set_error(Some(crate::runtime::run::InferenceError {
                 error_type: "timeout".into(),
                 message: "timed out".into(),
             }))
@@ -77,7 +77,7 @@ mod tests {
 
         // Write via state_of
         let ctrl = ctx.state_of::<InferenceErrorState>();
-        ctrl.set_error(Some(crate::runtime::control::InferenceError {
+        ctrl.set_error(Some(crate::runtime::run::InferenceError {
             error_type: "test_error".into(),
             message: "test".into(),
         }))

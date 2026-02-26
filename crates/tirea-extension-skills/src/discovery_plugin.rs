@@ -3,8 +3,8 @@ use crate::{SkillMeta, SkillRegistry, SkillState, SKILLS_DISCOVERY_PLUGIN_ID};
 use async_trait::async_trait;
 use std::collections::HashSet;
 use std::sync::Arc;
-use tirea_contract::plugin::phase::{BeforeInferenceContext, PluginPhaseContext};
-use tirea_contract::plugin::AgentPlugin;
+use tirea_contract::runtime::plugin::phase::{BeforeInferenceContext, PluginPhaseContext};
+use tirea_contract::runtime::plugin::AgentPlugin;
 
 /// Injects a skills catalog into the LLM context so the model can discover and activate skills.
 ///
@@ -161,10 +161,10 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use tempfile::TempDir;
-    use tirea_contract::plugin::phase::{BeforeInferenceContext, StepContext};
+    use tirea_contract::runtime::plugin::phase::{BeforeInferenceContext, StepContext};
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::Thread;
-    use tirea_contract::tool::ToolDescriptor;
+    use tirea_contract::runtime::tool_call::ToolDescriptor;
 
     fn make_registry(skills: Vec<Arc<dyn Skill>>) -> Arc<dyn SkillRegistry> {
         Arc::new(InMemorySkillRegistry::from_skills(skills))

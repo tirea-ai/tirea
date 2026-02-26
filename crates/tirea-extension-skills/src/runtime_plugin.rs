@@ -1,7 +1,7 @@
 use crate::SKILLS_RUNTIME_PLUGIN_ID;
 use async_trait::async_trait;
-use tirea_contract::plugin::phase::BeforeInferenceContext;
-use tirea_contract::plugin::AgentPlugin;
+use tirea_contract::runtime::plugin::phase::BeforeInferenceContext;
+use tirea_contract::runtime::plugin::AgentPlugin;
 
 /// Placeholder plugin for activated skill state.
 ///
@@ -34,7 +34,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tirea_contract::testing::TestFixture;
-    use tirea_contract::tool::ToolDescriptor;
+    use tirea_contract::runtime::tool_call::ToolDescriptor;
 
     #[tokio::test]
     async fn plugin_does_not_inject_system_context() {

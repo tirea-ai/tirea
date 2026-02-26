@@ -1,7 +1,7 @@
 //! System reminder trait for generating reminder messages.
 
 use async_trait::async_trait;
-use tirea_contract::tool::context::ToolCallContext;
+use tirea_contract::runtime::tool_call::ToolCallContext;
 
 /// System reminder for generating reminder messages.
 #[async_trait]

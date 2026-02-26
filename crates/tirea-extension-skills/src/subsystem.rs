@@ -4,8 +4,8 @@ use crate::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use tirea_contract::plugin::AgentPlugin;
-use tirea_contract::tool::Tool;
+use tirea_contract::runtime::plugin::AgentPlugin;
+use tirea_contract::runtime::tool_call::Tool;
 
 /// Errors returned when wiring the skills subsystem into an agent.
 #[derive(Debug, thiserror::Error)]
@@ -134,11 +134,11 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use tempfile::TempDir;
-    use tirea_contract::plugin::phase::{BeforeInferenceContext, StepContext};
+    use tirea_contract::runtime::plugin::phase::{BeforeInferenceContext, StepContext};
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::Thread;
     use tirea_contract::thread::{Message, ToolCall};
-    use tirea_contract::tool::{ToolDescriptor, ToolError, ToolResult};
+    use tirea_contract::runtime::tool_call::{ToolDescriptor, ToolError, ToolResult};
     use tirea_state::TrackedPatch;
 
     fn make_registry(skills: Vec<Arc<dyn Skill>>) -> Arc<dyn SkillRegistry> {
@@ -182,17 +182,17 @@ mod tests {
 
     #[async_trait]
     impl Tool for DummyTool {
-        fn descriptor(&self) -> tirea_contract::tool::ToolDescriptor {
-            tirea_contract::tool::ToolDescriptor::new(SKILL_ACTIVATE_TOOL_ID, "x", "x")
+        fn descriptor(&self) -> tirea_contract::runtime::tool_call::ToolDescriptor {
+            tirea_contract::runtime::tool_call::ToolDescriptor::new(SKILL_ACTIVATE_TOOL_ID, "x", "x")
                 .with_parameters(json!({}))
         }
 
         async fn execute(
             &self,
             _args: Value,
-            _ctx: &tirea_contract::tool::context::ToolCallContext<'_>,
-        ) -> Result<tirea_contract::tool::ToolResult, tirea_contract::tool::ToolError> {
-            Ok(tirea_contract::tool::ToolResult::success(
+            _ctx: &tirea_contract::runtime::tool_call::ToolCallContext<'_>,
+        ) -> Result<tirea_contract::runtime::tool_call::ToolResult, tirea_contract::runtime::tool_call::ToolError> {
+            Ok(tirea_contract::runtime::tool_call::ToolResult::success(
                 SKILL_ACTIVATE_TOOL_ID,
                 json!({}),
             ))
@@ -251,14 +251,14 @@ mod tests {
 
     #[async_trait]
     impl Tool for DummyOtherTool {
-        fn descriptor(&self) -> tirea_contract::tool::ToolDescriptor {
-            tirea_contract::tool::ToolDescriptor::new("other", "x", "x").with_parameters(json!({}))
+        fn descriptor(&self) -> tirea_contract::runtime::tool_call::ToolDescriptor {
+            tirea_contract::runtime::tool_call::ToolDescriptor::new("other", "x", "x").with_parameters(json!({}))
         }
 
         async fn execute(
             &self,
             _args: Value,
-            _ctx: &tirea_contract::tool::context::ToolCallContext<'_>,
+            _ctx: &tirea_contract::runtime::tool_call::ToolCallContext<'_>,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("other", json!({})))
         }

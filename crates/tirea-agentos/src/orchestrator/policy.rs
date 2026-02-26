@@ -1,5 +1,5 @@
 use super::AgentDefinition;
-use crate::contracts::tool::Tool;
+use crate::contracts::runtime::tool_call::Tool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tirea_contract::RunConfig;

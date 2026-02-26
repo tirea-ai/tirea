@@ -1,9 +1,9 @@
 use super::*;
-use tirea_contract::plugin::phase::PluginPhaseContext;
-use tirea_contract::runtime::control::{
-    PendingToolCall, ResumeDecisionAction, SuspendedCall, SuspendedToolCallsState,
-    ToolCallLifecycleState, ToolCallLifecycleStatesState, ToolCallResume, ToolCallResumeMode,
-    ToolCallStatus,
+use tirea_contract::runtime::plugin::phase::PluginPhaseContext;
+use tirea_contract::io::ResumeDecisionAction;
+use tirea_contract::runtime::{
+    PendingToolCall, SuspendedCall, SuspendedToolCallsState, ToolCallLifecycleState,
+    ToolCallLifecycleStatesState, ToolCallResume, ToolCallResumeMode, ToolCallStatus,
 };
 use tirea_contract::runtime::state_paths::SUSPENDED_TOOL_CALLS_STATE_PATH;
 use tirea_state::State;

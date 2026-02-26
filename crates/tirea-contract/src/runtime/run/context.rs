@@ -1,8 +1,8 @@
 use crate::runtime::activity::ActivityManager;
-use crate::runtime::control::{suspended_calls_from_state, SuspendedCall};
-use crate::runtime::delta::RunDelta;
+use crate::runtime::run::delta::RunDelta;
+use crate::runtime::tool_call::{suspended_calls_from_state, SuspendedCall};
 use crate::thread::Message;
-use crate::tool::context::ToolCallContext;
+use crate::runtime::tool_call::ToolCallContext;
 use crate::RunConfig;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn snapshot_of_deserializes_at_canonical_path() {
-        use crate::runtime::control::InferenceErrorState;
+        use crate::runtime::run::InferenceErrorState;
 
         let ctx = RunContext::new(
             "t-1",
@@ -405,7 +405,7 @@ mod tests {
 
     #[test]
     fn snapshot_at_deserializes_at_explicit_path() {
-        use crate::runtime::control::InferenceErrorState;
+        use crate::runtime::run::InferenceErrorState;
 
         let ctx = RunContext::new(
             "t-1",
@@ -419,7 +419,7 @@ mod tests {
 
     #[test]
     fn snapshot_of_returns_error_for_missing_path() {
-        use crate::runtime::control::InferenceErrorState;
+        use crate::runtime::run::InferenceErrorState;
 
         let ctx = RunContext::new("t-1", json!({}), vec![], RunConfig::default());
         assert!(ctx.snapshot_of::<InferenceErrorState>().is_err());

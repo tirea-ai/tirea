@@ -8,9 +8,9 @@ use phoenix_test_helpers::{
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tirea_agent_loop::contracts::plugin::AgentPlugin;
+use tirea_agent_loop::contracts::runtime::plugin::AgentPlugin;
 use tirea_agent_loop::contracts::thread::{Message, Thread, ToolCall};
-use tirea_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use tirea_agent_loop::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_agent_loop::contracts::{runtime::StreamResult, AgentEvent};
 use tirea_agent_loop::contracts::{RunContext, ToolCallContext};
 use tirea_agent_loop::runtime::loop_runner::{

@@ -13,7 +13,7 @@ use tirea_agentos::contracts::storage::{
     ThreadStoreError, ThreadWriter,
 };
 use tirea_agentos::contracts::thread::Thread;
-use tirea_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use tirea_agentos::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_agentos::contracts::ThreadChangeSet;
 use tirea_agentos::contracts::ToolCallContext;
 use tirea_agentos::orchestrator::AgentDefinition;

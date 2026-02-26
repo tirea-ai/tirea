@@ -9,12 +9,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tirea_contract::plugin::phase::{
+use tirea_contract::runtime::plugin::phase::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
     BeforeToolExecuteContext, PluginPhaseContext, RunEndContext, RunStartContext,
 };
-use tirea_contract::plugin::AgentPlugin;
-use tirea_contract::runtime::control::{InferenceError, InferenceErrorState};
+use tirea_contract::runtime::plugin::AgentPlugin;
+use tirea_contract::runtime::run::{InferenceError, InferenceErrorState};
 use tirea_contract::TokenUsage;
 
 fn lock_unpoison<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -557,7 +557,7 @@ impl AgentPlugin for LLMMetryPlugin {
             .unwrap_or(0);
 
         let result = ctx.tool_result();
-        let error_type = if result.status == tirea_contract::tool::ToolStatus::Error {
+        let error_type = if result.status == tirea_contract::runtime::tool_call::ToolStatus::Error {
             Some("tool_error".to_string())
         } else {
             None
@@ -639,16 +639,16 @@ mod tests {
     use futures::future::join_all;
     use serde_json::json;
     use std::sync::Arc;
-    use tirea_contract::plugin::phase::{
+    use tirea_contract::runtime::plugin::phase::{
         AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
         BeforeToolExecuteContext, Phase, RunEndContext, RunStartContext, StepContext,
         StepEndContext, StepStartContext, ToolContext as PhaseToolContext,
     };
-    use tirea_contract::plugin::AgentPlugin;
+    use tirea_contract::runtime::plugin::AgentPlugin;
     use tirea_contract::runtime::StreamResult;
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::ToolCall;
-    use tirea_contract::tool::ToolResult;
+    use tirea_contract::runtime::tool_call::ToolResult;
 
     #[async_trait::async_trait]
     trait AgentPluginTestDispatch {

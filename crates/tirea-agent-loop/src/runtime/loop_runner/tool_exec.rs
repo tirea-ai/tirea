@@ -7,8 +7,8 @@ use super::{
     AgentConfig, AgentLoopError, RunCancellationToken, TOOL_SCOPE_CALLER_MESSAGES_KEY,
     TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
-use crate::contracts::plugin::phase::{Phase, StateEffect, StepContext, ToolContext};
-use crate::contracts::plugin::AgentPlugin;
+use crate::contracts::runtime::plugin::phase::{Phase, StateEffect, StepContext, ToolContext};
+use crate::contracts::runtime::plugin::AgentPlugin;
 use crate::contracts::runtime::{
     ActivityManager, PendingToolCall, SuspendedCall, ToolCallResumeMode,
 };
@@ -18,7 +18,7 @@ use crate::contracts::runtime::{
 };
 use crate::contracts::thread::Thread;
 use crate::contracts::thread::{Message, MessageMetadata, ToolCall};
-use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult};
+use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
 use crate::contracts::{RunContext, Suspension};
 use crate::engine::convert::tool_response;
 use crate::engine::tool_execution::collect_patches;

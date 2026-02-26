@@ -1,5 +1,5 @@
 use super::*;
-use crate::interaction::Suspension;
+use crate::runtime::Suspension;
 use crate::runtime::{PendingToolCall, ToolCallResumeMode};
 use serde_json::json;
 

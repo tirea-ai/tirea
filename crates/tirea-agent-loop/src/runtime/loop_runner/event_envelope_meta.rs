@@ -8,7 +8,7 @@ pub(super) fn register_runtime_event_envelope_meta(
     timestamp_ms: u64,
     step_id: Option<String>,
 ) {
-    crate::contracts::event::stream::internal::register_runtime_event_envelope_meta(
+    crate::contracts::io::event::stream::internal::register_runtime_event_envelope_meta(
         event,
         run_id,
         thread_id,

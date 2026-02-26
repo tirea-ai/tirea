@@ -1,11 +1,11 @@
 use super::*;
-use crate::interaction::Suspension;
-use crate::lifecycle::TerminationReason;
-use crate::runtime::result::StreamResult;
+use crate::runtime::run::TerminationReason;
+use crate::runtime::tool_call::Suspension;
+use crate::runtime::llm::StreamResult;
 use crate::runtime::{PendingToolCall, ToolCallResumeMode};
 use crate::testing::TestFixture;
 use crate::thread::ToolCall;
-use crate::tool::contract::{ToolDescriptor, ToolResult};
+use crate::runtime::tool_call::{ToolDescriptor, ToolResult};
 use serde_json::json;
 
 fn mock_tools() -> Vec<ToolDescriptor> {

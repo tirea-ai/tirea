@@ -49,16 +49,17 @@ mod stream_core;
 mod stream_runner;
 mod tool_exec;
 
-use crate::contracts::plugin::phase::Phase;
+use crate::contracts::runtime::plugin::phase::Phase;
 use crate::contracts::runtime::ActivityManager;
+use crate::contracts::io::ResumeDecisionAction;
 use crate::contracts::runtime::{
-    state_paths::RUN_LIFECYCLE_STATE_PATH, DecisionReplayPolicy, ResumeDecisionAction,
-    RunLifecycleStatus, StreamResult, SuspendedCall, ToolCallResume, ToolCallResumeMode,
-    ToolCallStatus, ToolExecutionRequest, ToolExecutionResult,
+    state_paths::RUN_LIFECYCLE_STATE_PATH, DecisionReplayPolicy, RunLifecycleStatus, StreamResult,
+    SuspendedCall, ToolCallResume, ToolCallResumeMode, ToolCallStatus, ToolExecutionRequest,
+    ToolExecutionResult,
 };
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
-use crate::contracts::tool::{Tool, ToolResult};
+use crate::contracts::runtime::tool_call::{Tool, ToolResult};
 use crate::contracts::RunContext;
 use crate::contracts::{AgentEvent, RunLifecycleAction, TerminationReason, ToolCallDecision};
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
@@ -76,7 +77,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 #[cfg(test)]
-use crate::contracts::plugin::AgentPlugin;
+use crate::contracts::runtime::plugin::AgentPlugin;
 pub use crate::contracts::runtime::ToolExecutor;
 pub use crate::runtime::run_context::{
     await_or_cancel, is_cancelled, CancelAware, RunCancellationToken, StateCommitError,
@@ -145,13 +146,16 @@ impl ResolvedRun {
 
     /// Add a plugin to the resolved config.
     #[must_use]
-    pub fn with_plugin(mut self, plugin: Arc<dyn crate::contracts::plugin::AgentPlugin>) -> Self {
+    pub fn with_plugin(mut self, plugin: Arc<dyn crate::contracts::runtime::plugin::AgentPlugin>) -> Self {
         self.config.plugins.push(plugin);
         self
     }
 
     /// Overlay tools from a tool registry (insert-if-absent semantics).
-    pub fn overlay_tool_registry(&mut self, registry: &dyn crate::contracts::ToolRegistry) {
+    pub fn overlay_tool_registry(
+        &mut self,
+        registry: &dyn crate::contracts::runtime::tool_call::ToolRegistry,
+    ) {
         for (id, tool) in registry.snapshot() {
             self.tools.entry(id).or_insert(tool);
         }
@@ -442,7 +446,7 @@ where
 
 pub(super) async fn run_step_prepare_phases(
     run_ctx: &RunContext,
-    tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
+    tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
     config: &AgentConfig,
 ) -> Result<
     (
@@ -474,7 +478,7 @@ pub(super) struct PreparedStep {
 
 pub(super) async fn prepare_step_execution(
     run_ctx: &RunContext,
-    tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
+    tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
     config: &AgentConfig,
 ) -> Result<PreparedStep, AgentLoopError> {
     let (messages, filtered_tools, run_action, pending) =
@@ -489,8 +493,8 @@ pub(super) async fn prepare_step_execution(
 
 pub(super) async fn apply_llm_error_cleanup(
     run_ctx: &mut RunContext,
-    tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
-    plugins: &[Arc<dyn crate::contracts::plugin::AgentPlugin>],
+    tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
+    plugins: &[Arc<dyn crate::contracts::runtime::plugin::AgentPlugin>],
     error_type: &'static str,
     message: String,
 ) -> Result<(), AgentLoopError> {
@@ -502,8 +506,8 @@ pub(super) async fn complete_step_after_inference(
     result: &StreamResult,
     step_meta: MessageMetadata,
     assistant_message_id: Option<String>,
-    tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
-    plugins: &[Arc<dyn crate::contracts::plugin::AgentPlugin>],
+    tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
+    plugins: &[Arc<dyn crate::contracts::runtime::plugin::AgentPlugin>],
 ) -> Result<Option<TerminationReason>, AgentLoopError> {
     let (run_action, pending) = run_phase_block(
         run_ctx,
@@ -608,8 +612,8 @@ pub(super) fn prepare_tool_execution_context(
 
 pub(super) async fn finalize_run_end(
     run_ctx: &mut RunContext,
-    tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
-    plugins: &[Arc<dyn crate::contracts::plugin::AgentPlugin>],
+    tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
+    plugins: &[Arc<dyn crate::contracts::runtime::plugin::AgentPlugin>],
 ) {
     emit_run_end_phase(run_ctx, tool_descriptors, plugins).await
 }
@@ -645,8 +649,8 @@ fn normalize_termination_for_suspended_calls(
 async fn persist_run_termination(
     run_ctx: &mut RunContext,
     termination: &TerminationReason,
-    tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
-    plugins: &[Arc<dyn crate::contracts::plugin::AgentPlugin>],
+    tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
+    plugins: &[Arc<dyn crate::contracts::runtime::plugin::AgentPlugin>],
     pending_delta_commit: &PendingDeltaCommitContext<'_>,
     run_finished_commit_policy: RunFinishedCommitPolicy,
 ) -> Result<(), AgentLoopError> {
@@ -805,7 +809,7 @@ async fn drain_resuming_tool_calls_and_replay(
     run_ctx: &mut RunContext,
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
-    tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
+    tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
 ) -> Result<RunStartDrainOutcome, AgentLoopError> {
     let decisions = runtime_resume_inputs(run_ctx);
     if decisions.is_empty() {
@@ -1043,7 +1047,7 @@ async fn drain_run_start_resume_replay(
     run_ctx: &mut RunContext,
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
-    tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
+    tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
 ) -> Result<RunStartDrainOutcome, AgentLoopError> {
     drain_resuming_tool_calls_and_replay(run_ctx, tools, config, tool_descriptors).await
 }
@@ -1052,7 +1056,7 @@ async fn commit_run_start_and_drain_replay(
     run_ctx: &mut RunContext,
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
-    active_tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
+    active_tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
     pending_delta_commit: &PendingDeltaCommitContext<'_>,
 ) -> Result<RunStartDrainOutcome, AgentLoopError> {
     pending_delta_commit
@@ -1306,7 +1310,7 @@ async fn replay_after_decisions(
     decisions_applied: bool,
     step_tool_provider: &Arc<dyn StepToolProvider>,
     config: &AgentConfig,
-    active_tool_descriptors: &mut Vec<crate::contracts::tool::ToolDescriptor>,
+    active_tool_descriptors: &mut Vec<crate::contracts::runtime::tool_call::ToolDescriptor>,
     pending_delta_commit: &PendingDeltaCommitContext<'_>,
 ) -> Result<Vec<AgentEvent>, AgentLoopError> {
     if !decisions_applied {
@@ -1337,7 +1341,7 @@ async fn apply_decisions_and_replay(
     pending_decisions: &mut VecDeque<ToolCallDecision>,
     step_tool_provider: &Arc<dyn StepToolProvider>,
     config: &AgentConfig,
-    active_tool_descriptors: &mut Vec<crate::contracts::tool::ToolDescriptor>,
+    active_tool_descriptors: &mut Vec<crate::contracts::runtime::tool_call::ToolDescriptor>,
     pending_delta_commit: &PendingDeltaCommitContext<'_>,
 ) -> Result<Vec<AgentEvent>, AgentLoopError> {
     Ok(drain_and_replay_decisions(
@@ -1366,7 +1370,7 @@ async fn drain_and_replay_decisions(
     decision: Option<ToolCallDecision>,
     step_tool_provider: &Arc<dyn StepToolProvider>,
     config: &AgentConfig,
-    active_tool_descriptors: &mut Vec<crate::contracts::tool::ToolDescriptor>,
+    active_tool_descriptors: &mut Vec<crate::contracts::runtime::tool_call::ToolDescriptor>,
     pending_delta_commit: &PendingDeltaCommitContext<'_>,
 ) -> Result<DecisionReplayOutcome, AgentLoopError> {
     if let Some(decision) = decision {
@@ -1398,7 +1402,7 @@ async fn apply_decision_and_replay(
     pending_decisions: &mut VecDeque<ToolCallDecision>,
     step_tool_provider: &Arc<dyn StepToolProvider>,
     config: &AgentConfig,
-    active_tool_descriptors: &mut Vec<crate::contracts::tool::ToolDescriptor>,
+    active_tool_descriptors: &mut Vec<crate::contracts::runtime::tool_call::ToolDescriptor>,
     pending_delta_commit: &PendingDeltaCommitContext<'_>,
 ) -> Result<DecisionReplayOutcome, AgentLoopError> {
     drain_and_replay_decisions(

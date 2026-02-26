@@ -1,7 +1,7 @@
 //! Pure functions for converting between tirea and genai types.
 
 use crate::contracts::thread::{Message, Role, ToolCall};
-use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult};
+use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
 use genai::chat::{ChatMessage, ChatRequest, MessageContent, ToolResponse};
 
 /// Convert a ToolDescriptor to a genai Tool.
@@ -115,7 +115,7 @@ mod tests {
             &self,
             _args: serde_json::Value,
             _ctx: &crate::contracts::ToolCallContext<'_>,
-        ) -> Result<ToolResult, crate::contracts::tool::ToolError> {
+        ) -> Result<ToolResult, crate::contracts::runtime::tool_call::ToolError> {
             Ok(ToolResult::success("mock", json!({"result": "ok"})))
         }
     }
@@ -235,7 +235,7 @@ mod tests {
                 &self,
                 _: serde_json::Value,
                 _: &crate::contracts::ToolCallContext<'_>,
-            ) -> Result<ToolResult, crate::contracts::tool::ToolError> {
+            ) -> Result<ToolResult, crate::contracts::runtime::tool_call::ToolError> {
                 Ok(ToolResult::success("tool1", json!({})))
             }
         }
@@ -249,7 +249,7 @@ mod tests {
                 &self,
                 _: serde_json::Value,
                 _: &crate::contracts::ToolCallContext<'_>,
-            ) -> Result<ToolResult, crate::contracts::tool::ToolError> {
+            ) -> Result<ToolResult, crate::contracts::runtime::tool_call::ToolError> {
                 Ok(ToolResult::success("tool2", json!({})))
             }
         }
@@ -263,7 +263,7 @@ mod tests {
                 &self,
                 _: serde_json::Value,
                 _: &crate::contracts::ToolCallContext<'_>,
-            ) -> Result<ToolResult, crate::contracts::tool::ToolError> {
+            ) -> Result<ToolResult, crate::contracts::runtime::tool_call::ToolError> {
                 Ok(ToolResult::success("tool3", json!({})))
             }
         }

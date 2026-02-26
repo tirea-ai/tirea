@@ -1,12 +1,12 @@
 use super::core::{clear_agent_inference_error, set_agent_inference_error};
 use super::AgentLoopError;
-use crate::contracts::plugin::phase::{
+use crate::contracts::runtime::plugin::phase::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
     BeforeToolExecuteContext, Phase, RunEndContext, RunLifecycleAction, RunStartContext,
     StateEffect, StepContext, StepEndContext, StepStartContext,
 };
-use crate::contracts::plugin::AgentPlugin;
-use crate::contracts::tool::ToolDescriptor;
+use crate::contracts::runtime::plugin::AgentPlugin;
+use crate::contracts::runtime::tool_call::ToolDescriptor;
 use crate::contracts::RunContext;
 use crate::contracts::ToolCallContext;
 use crate::runtime::control::InferenceError;

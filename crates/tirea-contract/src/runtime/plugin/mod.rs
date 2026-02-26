@@ -1,5 +1,3 @@
-//! Plugin contracts and phase-based execution system.
-
 pub mod contract;
 pub mod phase;
 

@@ -1,7 +1,7 @@
 use super::outcome::LoopFailure;
 use super::LlmExecutor;
 use super::*;
-use crate::contracts::plugin::phase::{
+use crate::contracts::runtime::plugin::phase::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
     BeforeToolExecuteContext, Phase, PluginPhaseContext, RunEndContext, RunStartContext,
     StepEndContext, StepStartContext, SuspendTicket,
@@ -11,7 +11,7 @@ use crate::contracts::runtime::{PendingToolCall, ToolCallResumeMode};
 use crate::contracts::storage::VersionPrecondition;
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{Message, Role, Thread, ToolCall};
-use crate::contracts::tool::{ToolDescriptor, ToolError, ToolResult, ToolSuspension};
+use crate::contracts::runtime::tool_call::{ToolDescriptor, ToolError, ToolResult, ToolSuspension};
 use crate::contracts::TerminationReason;
 use crate::contracts::{RunContext, Suspension, ToolCallContext};
 use crate::runtime::activity::ActivityHub;
@@ -410,7 +410,7 @@ fn suspend_ticket_from_invocation(invocation: FrontendToolInvocation) -> Suspend
 }
 
 fn suspend_frontend_tool(
-    step: &mut crate::contracts::plugin::phase::StepContext<'_>,
+    step: &mut crate::contracts::runtime::plugin::phase::StepContext<'_>,
     tool_name: impl Into<String>,
     arguments: Value,
     routing: ResponseRouting,
@@ -501,7 +501,7 @@ fn build_suspended_call(
 
 fn test_decision(
     target_id: &str,
-    action: crate::contracts::runtime::ResumeDecisionAction,
+    action: crate::contracts::io::ResumeDecisionAction,
     result: Value,
     reason: Option<&str>,
 ) -> crate::contracts::ToolCallDecision {
@@ -568,13 +568,13 @@ impl TestInteractionPlugin {
         result: Value,
     ) -> crate::contracts::runtime::ToolCallResume {
         let action = if crate::contracts::SuspensionResponse::is_denied(&result) {
-            crate::contracts::runtime::ResumeDecisionAction::Cancel
+            crate::contracts::io::ResumeDecisionAction::Cancel
         } else {
-            crate::contracts::runtime::ResumeDecisionAction::Resume
+            crate::contracts::io::ResumeDecisionAction::Resume
         };
         let reason = if matches!(
             action,
-            crate::contracts::runtime::ResumeDecisionAction::Cancel
+            crate::contracts::io::ResumeDecisionAction::Cancel
         ) {
             Self::cancel_reason(&result)
         } else {
@@ -1089,7 +1089,7 @@ fn test_execute_tools_injects_caller_scope_context_for_tools() {
             serde_json::from_str(&tool_msg.content).expect("tool result json");
         assert_eq!(
             tool_result.status,
-            crate::contracts::tool::ToolStatus::Success
+            crate::contracts::runtime::tool_call::ToolStatus::Success
         );
         assert_eq!(tool_result.data["thread_id"], json!("caller-s"));
         assert_eq!(tool_result.data["state"]["k"], json!("v"));
@@ -3663,7 +3663,7 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
         events.iter().any(|e| matches!(
             e,
             AgentEvent::ToolCallDone { id, result, .. }
-                if id == "call_1" && result.status == crate::contracts::tool::ToolStatus::Success
+                if id == "call_1" && result.status == crate::contracts::runtime::tool_call::ToolStatus::Success
         )),
         "approved flow must replay and execute original tool call: {events:?}"
     );
@@ -6306,7 +6306,7 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
         first_events.iter().any(|e| matches!(
             e,
             AgentEvent::ToolCallDone { id, result, .. }
-            if id == "call_1" && result.status == crate::contracts::tool::ToolStatus::Success
+            if id == "call_1" && result.status == crate::contracts::runtime::tool_call::ToolStatus::Success
         )),
         "first run should replay and execute the pending tool call"
     );
@@ -8884,7 +8884,7 @@ async fn test_stream_tool_execution_injects_scope_context_for_tools() {
         serde_json::from_str(&tool_msg.content).expect("tool result json");
     assert_eq!(
         tool_result.status,
-        crate::contracts::tool::ToolStatus::Success
+        crate::contracts::runtime::tool_call::ToolStatus::Success
     );
     assert_eq!(tool_result.data["thread_id"], json!("stream-caller"));
     assert_eq!(tool_result.data["state"]["k"], json!("v"));
@@ -11315,7 +11315,7 @@ async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
     decision_tx
         .send(test_decision(
             "unknown_call",
-            crate::contracts::runtime::ResumeDecisionAction::Resume,
+            crate::contracts::io::ResumeDecisionAction::Resume,
             json!(true),
             None,
         ))
@@ -11429,7 +11429,7 @@ async fn test_run_loop_decision_channel_rejects_illegal_terminal_to_resuming_tra
     decision_tx
         .send(test_decision(
             "call_pending",
-            crate::contracts::runtime::ResumeDecisionAction::Resume,
+            crate::contracts::io::ResumeDecisionAction::Resume,
             json!(true),
             None,
         ))
@@ -11523,7 +11523,7 @@ async fn test_stream_decision_channel_ignores_unknown_target_id() {
     decision_tx
         .send(test_decision(
             "unknown_call",
-            crate::contracts::runtime::ResumeDecisionAction::Resume,
+            crate::contracts::io::ResumeDecisionAction::Resume,
             json!(true),
             None,
         ))
@@ -11641,7 +11641,7 @@ async fn test_stream_decision_channel_rejects_illegal_terminal_to_resuming_trans
     decision_tx
         .send(test_decision(
             "call_pending",
-            crate::contracts::runtime::ResumeDecisionAction::Resume,
+            crate::contracts::io::ResumeDecisionAction::Resume,
             json!(true),
             None,
         ))
@@ -11820,7 +11820,7 @@ async fn test_run_loop_decision_channel_resolves_suspended_call() {
     decision_tx
         .send(test_decision(
             "call_pending",
-            crate::contracts::runtime::ResumeDecisionAction::Resume,
+            crate::contracts::io::ResumeDecisionAction::Resume,
             json!({"approved": true, "message": "need approval"}),
             None,
         ))
@@ -11916,7 +11916,7 @@ async fn test_run_loop_decision_channel_cancel_emits_single_tool_result_message(
     decision_tx
         .send(test_decision(
             "call_pending",
-            crate::contracts::runtime::ResumeDecisionAction::Cancel,
+            crate::contracts::io::ResumeDecisionAction::Cancel,
             json!({"status": "cancelled", "reason": "User canceled in UI"}),
             Some("User canceled in UI"),
         ))
@@ -12080,7 +12080,7 @@ async fn test_run_loop_stream_decision_channel_emits_resolution_and_replay() {
     decision_tx
         .send(test_decision(
             "call_pending",
-            crate::contracts::runtime::ResumeDecisionAction::Resume,
+            crate::contracts::io::ResumeDecisionAction::Resume,
             json!({"approved": true, "message": "need approval"}),
             None,
         ))
@@ -12218,7 +12218,7 @@ async fn test_run_loop_decision_channel_buffers_early_response_for_all_suspended
     decision_tx
         .send(test_decision(
             "call_pending",
-            crate::contracts::runtime::ResumeDecisionAction::Resume,
+            crate::contracts::io::ResumeDecisionAction::Resume,
             json!({"approved": true, "message": "need approval"}),
             None,
         ))
@@ -12347,7 +12347,7 @@ async fn test_stream_decision_channel_buffers_early_response_for_all_suspended_t
     decision_tx
         .send(test_decision(
             "call_pending",
-            crate::contracts::runtime::ResumeDecisionAction::Resume,
+            crate::contracts::io::ResumeDecisionAction::Resume,
             json!({"approved": true, "message": "need approval"}),
             None,
         ))
@@ -12457,7 +12457,7 @@ async fn test_stream_decision_channel_drains_while_inference_stream_is_running()
     decision_tx
         .send(test_decision(
             "call_pending",
-            crate::contracts::runtime::ResumeDecisionAction::Resume,
+            crate::contracts::io::ResumeDecisionAction::Resume,
             json!(true),
             None,
         ))
@@ -12506,7 +12506,7 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_tool_call_resu
                 .is_some_and(|resume| {
                     matches!(
                         resume.action,
-                        crate::contracts::runtime::ResumeDecisionAction::Resume
+                        crate::contracts::io::ResumeDecisionAction::Resume
                     )
                 });
             if has_resume_grant {
@@ -12560,7 +12560,7 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_tool_call_resu
     decision_tx
         .send(test_decision(
             "fc_perm_1",
-            crate::contracts::runtime::ResumeDecisionAction::Resume,
+            crate::contracts::io::ResumeDecisionAction::Resume,
             json!(true),
             None,
         ))

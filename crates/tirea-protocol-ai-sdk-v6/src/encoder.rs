@@ -1,7 +1,8 @@
 use super::UIStreamEvent;
 use serde_json::Value;
 use std::collections::HashSet;
-use tirea_contract::{AgentEvent, TerminationReason, ToolStatus, Transcoder};
+use tirea_contract::runtime::tool_call::ToolStatus;
+use tirea_contract::{AgentEvent, TerminationReason, Transcoder};
 
 pub(crate) const DATA_EVENT_STATE_SNAPSHOT: &str = "state-snapshot";
 pub(crate) const DATA_EVENT_STATE_DELTA: &str = "state-delta";
@@ -645,7 +646,10 @@ mod tests {
         let mut enc = AiSdkEncoder::new();
         let events = enc.on_agent_event(&AgentEvent::ToolCallDone {
             id: "call_error_1".to_string(),
-            result: tirea_contract::ToolResult::error("search", "tool backend failed"),
+            result: tirea_contract::runtime::tool_call::ToolResult::error(
+                "search",
+                "tool backend failed",
+            ),
             patch: None,
             message_id: "msg_tool_error_1".to_string(),
         });
@@ -703,7 +707,10 @@ mod tests {
 
         let done = enc.on_agent_event(&AgentEvent::ToolCallDone {
             id: "call_1".to_string(),
-            result: tirea_contract::ToolResult::success("search", json!({ "items": [1, 2] })),
+            result: tirea_contract::runtime::tool_call::ToolResult::success(
+                "search",
+                json!({ "items": [1, 2] }),
+            ),
             patch: None,
             message_id: "msg_tool_1".to_string(),
         });

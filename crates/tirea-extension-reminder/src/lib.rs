@@ -21,9 +21,9 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tirea_contract::plugin::phase::{BeforeInferenceContext, PluginPhaseContext};
-use tirea_contract::plugin::AgentPlugin;
-use tirea_contract::tool::context::ToolCallContext;
+use tirea_contract::runtime::plugin::phase::{BeforeInferenceContext, PluginPhaseContext};
+use tirea_contract::runtime::plugin::AgentPlugin;
+use tirea_contract::runtime::tool_call::ToolCallContext;
 use tirea_state::State;
 
 mod system_reminder;
@@ -150,12 +150,12 @@ impl AgentPlugin for ReminderPlugin {
 mod tests {
     use super::*;
     use serde_json::json;
-    use tirea_contract::plugin::phase::BeforeInferenceContext;
+    use tirea_contract::runtime::plugin::phase::BeforeInferenceContext;
     use tirea_contract::testing::TestFixture;
 
     async fn run_before_inference(
         plugin: &ReminderPlugin,
-        step: &mut tirea_contract::plugin::phase::StepContext<'_>,
+        step: &mut tirea_contract::runtime::plugin::phase::StepContext<'_>,
     ) {
         let mut ctx = BeforeInferenceContext::new(step);
         plugin.before_inference(&mut ctx).await;

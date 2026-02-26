@@ -1,8 +1,8 @@
 use super::{RunLifecycleAction, StateEffect, StepOutcome, SuspendTicket, ToolCallLifecycleAction};
-use crate::runtime::result::StreamResult;
+use crate::runtime::llm::StreamResult;
 use crate::thread::{Message, ToolCall};
-use crate::tool::context::ToolCallContext;
-use crate::tool::contract::{ToolDescriptor, ToolResult};
+use crate::runtime::tool_call::ToolCallContext;
+use crate::runtime::tool_call::{ToolDescriptor, ToolResult};
 use crate::RunConfig;
 use serde_json::Value;
 use std::sync::Arc;

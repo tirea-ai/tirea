@@ -1,5 +1,5 @@
 use super::*;
-use crate::contracts::plugin::phase::{
+use crate::contracts::runtime::plugin::phase::{
     AfterToolExecuteContext, BeforeInferenceContext, PluginPhaseContext, RunStartContext,
 };
 use tirea_extension_permission::PermissionState;

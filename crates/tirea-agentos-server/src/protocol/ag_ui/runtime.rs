@@ -11,12 +11,12 @@ use std::sync::Arc;
 use tirea_agentos::runtime::loop_runner::{
     ParallelToolExecutor, ResolvedRun, SequentialToolExecutor,
 };
-use tirea_contract::plugin::phase::{
+use tirea_contract::runtime::plugin::phase::{
     BeforeInferenceContext, BeforeToolExecuteContext, SuspendTicket, ToolCallLifecycleAction,
 };
-use tirea_contract::plugin::AgentPlugin;
+use tirea_contract::runtime::plugin::AgentPlugin;
 use tirea_contract::runtime::{PendingToolCall, ToolCallResumeMode};
-use tirea_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use tirea_contract::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_contract::ToolCallContext;
 
 use tirea_protocol_ag_ui::{build_context_addendum, RunAgentInput};
@@ -283,19 +283,19 @@ mod tests {
     use std::sync::Arc;
     use tirea_agentos::runtime::loop_runner::AgentConfig;
     use tirea_contract::io::ResumeDecisionAction;
-    use tirea_contract::plugin::phase::{StepContext, ToolContext};
-    use tirea_contract::plugin::AgentPlugin;
+    use tirea_contract::runtime::plugin::phase::{StepContext, ToolContext};
+    use tirea_contract::runtime::plugin::AgentPlugin;
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::ToolCall;
     use tirea_protocol_ag_ui::{Context, Message, ToolExecutionLocation};
 
     async fn run_before_tool_execute(plugin: &dyn AgentPlugin, step: &mut StepContext<'_>) {
-        let mut ctx = tirea_contract::plugin::phase::BeforeToolExecuteContext::new(step);
+        let mut ctx = tirea_contract::runtime::plugin::phase::BeforeToolExecuteContext::new(step);
         plugin.before_tool_execute(&mut ctx).await;
     }
 
     async fn run_before_inference(plugin: &dyn AgentPlugin, step: &mut StepContext<'_>) {
-        let mut ctx = tirea_contract::plugin::phase::BeforeInferenceContext::new(step);
+        let mut ctx = tirea_contract::runtime::plugin::phase::BeforeInferenceContext::new(step);
         plugin.before_inference(&mut ctx).await;
     }
 
@@ -575,7 +575,7 @@ mod tests {
         assert!(!step.tool_pending());
         let result = step.tool_result().expect("resume should set tool result");
         assert_eq!(result.tool_name, "copyToClipboard");
-        assert_eq!(result.status, tirea_contract::tool::ToolStatus::Success);
+        assert_eq!(result.status, tirea_contract::runtime::tool_call::ToolStatus::Success);
         assert_eq!(result.data, json!({"accepted": true}));
     }
 
@@ -612,7 +612,7 @@ mod tests {
         run_before_tool_execute(&plugin, &mut step).await;
 
         let result = step.tool_result().expect("cancel should set tool result");
-        assert_eq!(result.status, tirea_contract::tool::ToolStatus::Error);
+        assert_eq!(result.status, tirea_contract::runtime::tool_call::ToolStatus::Error);
         assert_eq!(result.message.as_deref(), Some("user denied"));
         let resume = step
             .ctx()

@@ -1,9 +1,9 @@
 use super::*;
-use crate::contracts::plugin::phase::{BeforeInferenceContext, RunEndContext};
+use crate::contracts::runtime::plugin::phase::{BeforeInferenceContext, RunEndContext};
 use crate::contracts::storage::{ThreadReader, ThreadWriter};
 use crate::contracts::thread::Thread;
-use crate::contracts::tool::ToolDescriptor;
-use crate::contracts::tool::{ToolError, ToolResult};
+use crate::contracts::runtime::tool_call::ToolDescriptor;
+use crate::contracts::runtime::tool_call::{ToolError, ToolResult};
 use crate::contracts::ToolCallContext;
 use crate::extensions::skills::{
     FsSkill, FsSkillRegistryManager, InMemorySkillRegistry, ScriptResult, Skill, SkillError,
@@ -25,7 +25,7 @@ use tirea_contract::TerminationReason;
 
 fn decision_for(
     target_id: &str,
-    action: crate::contracts::runtime::ResumeDecisionAction,
+    action: crate::contracts::io::ResumeDecisionAction,
     result: Value,
 ) -> crate::contracts::ToolCallDecision {
     crate::contracts::ToolCallDecision {
@@ -234,7 +234,7 @@ async fn wire_skills_inserts_tools_and_plugin() {
     });
     let fixture = TestFixture::new_with_state(state);
     let mut step = fixture.step(vec![ToolDescriptor::new("t", "t", "t")]);
-    let mut before = crate::contracts::plugin::phase::BeforeInferenceContext::new(&mut step);
+    let mut before = crate::contracts::runtime::plugin::phase::BeforeInferenceContext::new(&mut step);
     cfg.plugins[0].before_inference(&mut before).await;
     let merged = step.system_context.join("\n");
     assert!(merged.contains("<available_skills>"));
@@ -276,7 +276,7 @@ async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
     });
     let fixture = TestFixture::new_with_state(state);
     let mut step = fixture.step(vec![ToolDescriptor::new("t", "t", "t")]);
-    let mut before = crate::contracts::plugin::phase::BeforeInferenceContext::new(&mut step);
+    let mut before = crate::contracts::runtime::plugin::phase::BeforeInferenceContext::new(&mut step);
     cfg.plugins[0].before_inference(&mut before).await;
     let merged = step.system_context.join("\n");
     assert!(!merged.contains("<available_skills>"));
@@ -1905,7 +1905,7 @@ async fn run_stream_exposes_decision_sender_and_replays_suspended_calls() {
 
     run.submit_decision(decision_for(
         "call_pending",
-        crate::contracts::runtime::ResumeDecisionAction::Resume,
+        crate::contracts::io::ResumeDecisionAction::Resume,
         json!(true),
     ))
     .expect("decision channel should be connected");
@@ -1978,7 +1978,7 @@ async fn run_stream_replays_initial_decisions_without_submit_decision() {
             messages: vec![],
             initial_decisions: vec![decision_for(
                 "call_pending",
-                crate::contracts::runtime::ResumeDecisionAction::Resume,
+                crate::contracts::io::ResumeDecisionAction::Resume,
                 json!(true),
             )],
         })
@@ -2150,7 +2150,7 @@ async fn run_stream_initial_decisions_denied_returns_tool_error_and_clears_suspe
             messages: vec![],
             initial_decisions: vec![decision_for(
                 "call_pending",
-                crate::contracts::runtime::ResumeDecisionAction::Cancel,
+                crate::contracts::io::ResumeDecisionAction::Cancel,
                 json!(false),
             )],
         })
@@ -2237,7 +2237,7 @@ async fn run_stream_initial_decisions_cancelled_returns_tool_error_and_clears_su
             messages: vec![],
             initial_decisions: vec![decision_for(
                 "call_pending",
-                crate::contracts::runtime::ResumeDecisionAction::Cancel,
+                crate::contracts::io::ResumeDecisionAction::Cancel,
                 cancel_payload.clone(),
             )],
         })
@@ -2336,7 +2336,7 @@ async fn run_stream_initial_decisions_partial_match_keeps_unresolved_suspended_c
             messages: vec![],
             initial_decisions: vec![decision_for(
                 "call_approved",
-                crate::contracts::runtime::ResumeDecisionAction::Resume,
+                crate::contracts::io::ResumeDecisionAction::Resume,
                 json!(true),
             )],
         })
@@ -2445,7 +2445,7 @@ async fn run_stream_batch_approval_mode_waits_for_all_suspended_decisions_before
             messages: vec![],
             initial_decisions: vec![decision_for(
                 "call_approved",
-                crate::contracts::runtime::ResumeDecisionAction::Resume,
+                crate::contracts::io::ResumeDecisionAction::Resume,
                 json!(true),
             )],
         })
@@ -2497,7 +2497,7 @@ async fn run_stream_batch_approval_mode_waits_for_all_suspended_decisions_before
             messages: vec![],
             initial_decisions: vec![decision_for(
                 "call_waiting",
-                crate::contracts::runtime::ResumeDecisionAction::Resume,
+                crate::contracts::io::ResumeDecisionAction::Resume,
                 json!(true),
             )],
         })
@@ -2584,7 +2584,7 @@ async fn run_stream_initial_decisions_ignore_unknown_target() {
             messages: vec![],
             initial_decisions: vec![decision_for(
                 "unknown_call",
-                crate::contracts::runtime::ResumeDecisionAction::Resume,
+                crate::contracts::io::ResumeDecisionAction::Resume,
                 json!(true),
             )],
         })
@@ -2658,7 +2658,7 @@ async fn run_stream_duplicate_initial_decisions_are_idempotent() {
 
     let decision: tirea_contract::ToolCallDecision = decision_for(
         "call_pending",
-        crate::contracts::runtime::ResumeDecisionAction::Resume,
+        crate::contracts::io::ResumeDecisionAction::Resume,
         json!(true),
     );
     let run = os

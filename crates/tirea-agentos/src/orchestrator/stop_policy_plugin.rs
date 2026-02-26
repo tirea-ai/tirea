@@ -3,11 +3,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-use crate::contracts::plugin::phase::{AfterInferenceContext, PluginPhaseContext};
-use crate::contracts::plugin::AgentPlugin;
+use crate::contracts::runtime::plugin::phase::{AfterInferenceContext, PluginPhaseContext};
+use crate::contracts::runtime::plugin::AgentPlugin;
 use crate::contracts::runtime::StreamResult;
+use crate::contracts::runtime::tool_call::ToolResult;
 use crate::contracts::thread::{Message, Role, ToolCall};
-use crate::contracts::{RunContext, StoppedReason, ToolResult};
+use crate::contracts::{RunContext, StoppedReason};
 use tirea_state::State;
 
 pub const STOP_POLICY_PLUGIN_ID: &str = "stop_policy";

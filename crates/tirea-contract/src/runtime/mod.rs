@@ -1,28 +1,29 @@
-//! Runtime contracts and durable state schemas.
-//!
-//! - **Contracts**: `RunContext`, `ToolExecutor`, `ActivityManager`, `RunDelta`, `StreamResult`
-//! - **Durable state**: `RunLifecycleState`, `SuspendedToolCallsState`, `ToolCallLifecycleStatesState`,
-//!   `InferenceErrorState` — persisted under reserved `__*` thread-state paths
+//! Runtime contracts grouped by run/tool_call/llm lifecycle boundaries.
 
 pub mod activity;
-pub mod context;
-pub mod control;
-pub mod delta;
-pub mod executor;
-pub mod result;
+pub mod llm;
+pub mod plugin;
+pub mod run;
 pub mod state_paths;
+pub mod tool_call;
 
 pub use activity::ActivityManager;
-pub use context::RunContext;
-pub use control::{
-    InferenceError, InferenceErrorState, PendingToolCall, ResumeDecisionAction, RunLifecycleState,
-    RunLifecycleStatus, SuspendedCall, SuspendedToolCallsState, ToolCallDecision,
-    ToolCallLifecycleState, ToolCallLifecycleStatesState, ToolCallResume, ToolCallResumeMode,
-    ToolCallStatus,
+pub use llm::{StreamResult, TokenUsage};
+pub use plugin::{
+    AfterInferenceContext, AfterToolExecuteContext, AgentPlugin, BeforeInferenceContext,
+    BeforeToolExecuteContext, Phase, PhasePolicy, PluginPhaseContext, ResumeInputView,
+    RunEndContext, RunLifecycleAction, RunStartContext, StateEffect, StepContext, StepEndContext,
+    StepOutcome, StepStartContext, SuspendTicket, ToolCallLifecycleAction, ToolContext,
 };
-pub use delta::RunDelta;
-pub use executor::{
-    DecisionReplayPolicy, ToolCallOutcome, ToolExecution, ToolExecutionRequest,
-    ToolExecutionResult, ToolExecutor, ToolExecutorError,
+pub use run::{
+    run_lifecycle_from_state, InferenceError, InferenceErrorState, RunContext, RunDelta,
+    RunLifecycleState, RunLifecycleStatus, StoppedReason, TerminationReason,
 };
-pub use result::{StreamResult, TokenUsage};
+pub use tool_call::{
+    suspended_calls_from_state, tool_call_states_from_state, ActivityContext, DecisionReplayPolicy,
+    PendingToolCall, SuspendedCall, SuspendedToolCallsState, Suspension, SuspensionResponse,
+    ToolCallContext, ToolCallContextInit, ToolCallLifecycleState, ToolCallLifecycleStatesState,
+    ToolCallOutcome, ToolCallResume, ToolCallResumeMode, ToolCallStatus, ToolExecution,
+    ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
+    ToolProgressState, TOOL_PROGRESS_ACTIVITY_TYPE,
+};

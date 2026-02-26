@@ -199,7 +199,7 @@ impl AgentDefinition {
     /// Convert into loop-facing config with the given resolved plugins.
     pub(crate) fn into_loop_config(
         self,
-        plugins: Vec<Arc<dyn crate::contracts::plugin::AgentPlugin>>,
+        plugins: Vec<Arc<dyn crate::contracts::runtime::plugin::AgentPlugin>>,
     ) -> AgentConfig {
         let tool_executor: Arc<dyn ToolExecutor> = match self.tool_execution_mode {
             ToolExecutionMode::Sequential => Arc::new(SequentialToolExecutor),

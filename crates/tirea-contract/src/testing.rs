@@ -3,10 +3,10 @@
 //! Gated behind the `test-support` cargo feature so production builds are
 //! unaffected.  Enable via `[dev-dependencies] tirea-contract = { ..., features = ["test-support"] }`.
 
-use crate::plugin::phase::StepContext;
+use crate::runtime::StepContext;
 use crate::thread::Message;
-use crate::tool::context::ToolCallContext;
-use crate::tool::contract::ToolDescriptor;
+use crate::runtime::ToolCallContext;
+use crate::runtime::tool_call::ToolDescriptor;
 use crate::RunConfig;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};

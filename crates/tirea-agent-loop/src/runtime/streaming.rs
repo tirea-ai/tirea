@@ -235,7 +235,7 @@ pub enum StreamOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::tool::ToolResult;
+    use crate::contracts::runtime::tool_call::ToolResult;
     use crate::contracts::AgentEvent;
     use crate::contracts::TerminationReason;
     use serde_json::json;

@@ -2,8 +2,8 @@ mod bundle;
 mod registry;
 mod stop_policy_registry;
 
-use crate::contracts::plugin::AgentPlugin;
-use crate::contracts::tool::Tool;
+use crate::contracts::runtime::plugin::AgentPlugin;
+use crate::contracts::runtime::tool_call::Tool;
 use crate::orchestrator::AgentDefinition;
 use genai::chat::ChatOptions;
 use genai::Client;
@@ -23,7 +23,7 @@ pub use stop_policy_registry::{
     CompositeStopPolicyRegistry, InMemoryStopPolicyRegistry, StopPolicyRegistry,
     StopPolicyRegistryError,
 };
-pub use tirea_contract::{ToolRegistry, ToolRegistryError};
+pub use tirea_contract::runtime::tool_call::{ToolRegistry, ToolRegistryError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderRegistryError {

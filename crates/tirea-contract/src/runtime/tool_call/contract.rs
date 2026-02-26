@@ -2,9 +2,7 @@
 //!
 //! Tools execute actions and can modify state through `Thread`.
 
-use crate::interaction::Suspension;
-use crate::runtime::{PendingToolCall, ToolCallResumeMode};
-use crate::tool::context::ToolCallContext;
+use super::{PendingToolCall, Suspension, ToolCallContext, ToolCallResumeMode};
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -285,7 +283,7 @@ impl ToolDescriptor {
 /// # Example
 ///
 /// ```ignore
-/// use tirea::contracts::tool::{Tool, ToolDescriptor, ToolResult};
+/// use tirea::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
 /// use tirea::contracts::ToolCallContext;
 /// use tirea_state::State;
 ///

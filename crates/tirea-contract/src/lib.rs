@@ -95,15 +95,10 @@ macro_rules! impl_loop_config_builder_methods {
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
-pub mod event;
-pub mod interaction;
 pub mod io;
-pub mod lifecycle;
-pub mod plugin;
 pub mod runtime;
 pub mod storage;
 pub mod thread;
-pub mod tool;
 pub mod transport;
 
 /// Per-run configuration — a business alias for the generic `SealedState` container.
@@ -118,33 +113,19 @@ pub use thread::{
     ThreadMetadata, ToolCall, Version, Visibility,
 };
 
-// event
-pub use event::AgentEvent;
+// io
+pub use io::{AgentEvent, ResumeDecisionAction, RunRequest, RuntimeInput, RuntimeOutput, ToolCallDecision};
 
-// interaction/lifecycle
-pub use interaction::{Suspension, SuspensionResponse};
-pub use lifecycle::{StoppedReason, TerminationReason};
-
-// tool
-pub use tool::{
-    ActivityContext, Tool, ToolCallContext, ToolCallContextInit, ToolDescriptor, ToolError,
-    ToolProgressState, ToolRegistry, ToolRegistryError, ToolResult, ToolStatus, ToolSuspension,
-    TOOL_PROGRESS_ACTIVITY_TYPE,
-};
-
-// plugin
-pub use plugin::{
-    AfterInferenceContext, AfterToolExecuteContext, AgentPlugin, BeforeInferenceContext,
-    BeforeToolExecuteContext, Phase, PhasePolicy, PluginPhaseContext, ResumeInputView,
-    RunEndContext, RunLifecycleAction, RunStartContext, StateEffect, StepContext, StepEndContext,
-    StepOutcome, StepStartContext, SuspendTicket, ToolCallLifecycleAction, ToolContext,
-};
-
-// runtime
+// runtime plugin/tool-call/lifecycle
 pub use runtime::{
-    ActivityManager, DecisionReplayPolicy, RunContext, RunDelta, StreamResult, TokenUsage,
-    ToolCallOutcome, ToolExecution, ToolExecutionRequest, ToolExecutionResult, ToolExecutor,
-    ToolExecutorError,
+    ActivityContext, ActivityManager, AfterInferenceContext, AfterToolExecuteContext, AgentPlugin,
+    BeforeInferenceContext, BeforeToolExecuteContext, DecisionReplayPolicy, Phase, PhasePolicy,
+    PluginPhaseContext, ResumeInputView, RunContext, RunDelta, RunEndContext, RunLifecycleAction,
+    RunStartContext, StateEffect, StepContext, StepEndContext, StepOutcome, StepStartContext,
+    StoppedReason, StreamResult, SuspendTicket, Suspension, SuspensionResponse, TerminationReason,
+    TokenUsage, ToolCallContext, ToolCallContextInit, ToolCallLifecycleAction, ToolCallOutcome,
+    ToolContext, ToolExecution, ToolExecutionRequest, ToolExecutionResult, ToolExecutor,
+    ToolExecutorError, ToolProgressState, TOOL_PROGRESS_ACTIVITY_TYPE,
 };
 
 // storage
@@ -153,9 +134,6 @@ pub use storage::{
     ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore, ThreadStoreError,
     ThreadSync, ThreadWriter, VersionPrecondition,
 };
-
-// io
-pub use io::{ResumeDecisionAction, RunRequest, RuntimeInput, RuntimeOutput, ToolCallDecision};
 
 // transport
 pub use transport::{Identity, Transcoder};

@@ -26,14 +26,6 @@ pub struct RunRequest {
 }
 
 /// Unified upstream message type for the runtime endpoint.
-///
-/// All inputs to a running agent flow through this enum:
-/// - `Run` starts execution (first message).
-/// - `Decision` forwards a tool-call decision mid-run.
-/// - `Cancel` requests explicit application-level cancellation.
-///
-/// Transport disconnect does **not** imply cancellation; only an
-/// explicit `Cancel` message terminates the agent run.
 #[derive(Debug, Clone)]
 pub enum RuntimeInput {
     /// Start a new run with the given request.

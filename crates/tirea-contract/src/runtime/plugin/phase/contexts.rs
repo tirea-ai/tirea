@@ -1,10 +1,10 @@
 use super::{Phase, RunLifecycleAction, StepContext, SuspendTicket, ToolCallLifecycleAction};
 use crate::io::ResumeDecisionAction;
-use crate::lifecycle::TerminationReason;
-use crate::runtime::result::StreamResult;
+use crate::runtime::run::TerminationReason;
+use crate::runtime::llm::StreamResult;
 use crate::runtime::ToolCallResume;
 use crate::thread::Message;
-use crate::tool::contract::ToolResult;
+use crate::runtime::tool_call::ToolResult;
 use crate::RunConfig;
 use serde_json::Value;
 use std::sync::Arc;

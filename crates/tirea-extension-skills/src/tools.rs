@@ -9,8 +9,8 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
 use std::sync::Arc;
-use tirea_contract::tool::context::ToolCallContext;
-use tirea_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
+use tirea_contract::runtime::tool_call::ToolCallContext;
+use tirea_contract::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
 use tirea_extension_permission::PermissionContextExt;
 use tracing::{debug, warn};
 
