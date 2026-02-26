@@ -1,4 +1,3 @@
-use crate::io::ResumeDecisionAction;
 use crate::runtime::plugin::phase::SuspendTicket;
 use crate::runtime::state_paths::{SUSPENDED_TOOL_CALLS_STATE_PATH, TOOL_CALL_STATES_STATE_PATH};
 use crate::thread::ToolCall;
@@ -6,6 +5,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use tirea_state::State;
+
+/// Action to apply for a suspended tool call.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResumeDecisionAction {
+    Resume,
+    Cancel,
+}
 
 /// A tool call that has been suspended, awaiting external resolution.
 ///

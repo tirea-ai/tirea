@@ -1,14 +1,7 @@
+pub use crate::runtime::tool_call::lifecycle::ResumeDecisionAction;
 use crate::runtime::tool_call::lifecycle::ToolCallResume;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
-/// Action to apply for a suspended tool call.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ResumeDecisionAction {
-    Resume,
-    Cancel,
-}
 
 /// External decision command routed to a suspended tool call.
 ///
