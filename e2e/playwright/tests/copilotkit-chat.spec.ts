@@ -9,23 +9,20 @@ test.describe("CopilotKit Starter (with-tirea)", () => {
 
   test("chat panel is visible", async ({ page }) => {
     await page.goto("/");
-    await expect(page.locator(".starter-chat-v2")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole("complementary")).toBeVisible({ timeout: 15_000 });
   });
 
   test("basic chat: send message and receive response", async ({ page }) => {
     await page.goto("/");
 
-    const input = page.locator(".starter-chat-v2 textarea, .starter-chat-v2 input[type='text']").first();
+    const input = page.getByPlaceholder("Type a message...");
     await expect(input).toBeVisible({ timeout: 15_000 });
     await input.fill("What is 2+2? Reply with just the number.");
+    await input.press("Enter");
 
-    const sendBtn = page.locator('.starter-chat-v2 button[aria-label="Send"]');
-    await expect(sendBtn).toBeVisible({ timeout: 5_000 });
-    await sendBtn.click();
-
-    // Wait for any assistant message to appear.
-    const assistantMsg = page.locator(".copilotKitAssistantMessage").first();
-    await expect(assistantMsg).toBeVisible({ timeout: 45_000 });
-    await expect(assistantMsg).toContainText("4", { timeout: 15_000 });
+    // CopilotKit v2 renders assistant replies inside the complementary aside.
+    // The "4" response appears as a paragraph in the chat message list.
+    const chatPanel = page.getByRole("complementary");
+    await expect(chatPanel).toContainText("4", { timeout: 45_000 });
   });
 });
