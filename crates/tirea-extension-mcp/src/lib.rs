@@ -10,7 +10,6 @@ use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::{Duration, Instant};
 use tirea_contract::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_contract::ToolCallContext;
-use tirea_contract::runtime::tool_call::ToolRegistry;
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -548,7 +547,7 @@ impl McpToolRegistryManager {
     }
 }
 
-/// Dynamic `ToolRegistry` view backed by [`McpToolRegistryManager`].
+/// Dynamic tool registry view backed by [`McpToolRegistryManager`].
 #[derive(Clone)]
 pub struct McpToolRegistry {
     state: Arc<McpRegistryState>,
@@ -580,25 +579,27 @@ impl McpToolRegistry {
             .map(|server| (server.name.clone(), server.transport_type))
             .collect()
     }
-}
 
-impl ToolRegistry for McpToolRegistry {
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         read_lock(&self.state.snapshot).tools.len()
     }
 
-    fn get(&self, id: &str) -> Option<Arc<dyn Tool>> {
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn get(&self, id: &str) -> Option<Arc<dyn Tool>> {
         read_lock(&self.state.snapshot).tools.get(id).cloned()
     }
 
-    fn ids(&self) -> Vec<String> {
+    pub fn ids(&self) -> Vec<String> {
         let snapshot = read_lock(&self.state.snapshot);
         let mut ids: Vec<String> = snapshot.tools.keys().cloned().collect();
         ids.sort();
         ids
     }
 
-    fn snapshot(&self) -> HashMap<String, Arc<dyn Tool>> {
+    pub fn snapshot(&self) -> HashMap<String, Arc<dyn Tool>> {
         read_lock(&self.state.snapshot).tools.clone()
     }
 }
