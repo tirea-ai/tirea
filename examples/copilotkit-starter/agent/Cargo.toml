@@ -1,15 +1,15 @@
 [package]
-name = "with-tirea-agent"
+name = "copilotkit-starter-agent"
 version = "0.1.0"
 edition = "2021"
 publish = false
 
 [dependencies]
-tirea-agentos = { version = "0.1.1", path = "../../uncarve/crates/tirea-agentos" }
-tirea-agentos-server = { version = "0.1.1", path = "../../uncarve/crates/tirea-agentos-server" }
-tirea-store-adapters = { version = "0.1.1", path = "../../uncarve/crates/tirea-store-adapters" }
-tirea-state = { version = "0.1.1", path = "../../uncarve/crates/tirea-state" }
-tirea-state-derive = { version = "0.1.1", path = "../../uncarve/crates/tirea-state-derive" }
+tirea-agentos = { version = "0.1.1", path = "../../../crates/tirea-agentos" }
+tirea-agentos-server = { version = "0.1.1", path = "../../../crates/tirea-agentos-server" }
+tirea-store-adapters = { version = "0.1.1", path = "../../../crates/tirea-store-adapters" }
+tirea-state = { version = "0.1.1", path = "../../../crates/tirea-state" }
+tirea-state-derive = { version = "0.1.1", path = "../../../crates/tirea-state-derive" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
@@ -19,5 +19,5 @@ axum = { version = "0.7", default-features = false, features = ["http1", "json",
 genai = "0.5"
 
 [[bin]]
-name = "with-tirea-agent"
+name = "copilotkit-starter-agent"
 path = "src/main.rs"

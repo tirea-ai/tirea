@@ -16,12 +16,13 @@ export DEEPSEEK_API_KEY
 # Configurable ports (use high ports to avoid conflicts with dev services).
 BACKEND_PORT="${BACKEND_PORT:-8081}"
 AI_SDK_PORT="${AI_SDK_PORT:-3021}"
+COPILOTKIT_BACKEND_PORT="${COPILOTKIT_BACKEND_PORT:-8083}"
 COPILOTKIT_PORT="${COPILOTKIT_PORT:-3022}"
 TRAVEL_BACKEND_PORT="${TRAVEL_BACKEND_PORT:-8082}"
 TRAVEL_PORT="${TRAVEL_PORT:-3023}"
 
 # Check port availability before starting.
-for port in $BACKEND_PORT $AI_SDK_PORT $COPILOTKIT_PORT $TRAVEL_BACKEND_PORT $TRAVEL_PORT; do
+for port in $BACKEND_PORT $AI_SDK_PORT $COPILOTKIT_BACKEND_PORT $COPILOTKIT_PORT $TRAVEL_BACKEND_PORT $TRAVEL_PORT; do
     if ss -tlnH "sport = :$port" 2>/dev/null | grep -q LISTEN; then
         echo "ERROR: Port $port is already in use"
         exit 1
@@ -39,14 +40,20 @@ cleanup() {
 trap cleanup EXIT
 
 # Build backends.
-echo "Building tirea-agentos-server and tirea-examples..."
-cargo build --package tirea-agentos-server --package tirea-examples
+echo "Building tirea-agentos-server, tirea-examples, and copilotkit-starter-agent..."
+cargo build --package tirea-agentos-server --package tirea-examples --package copilotkit-starter-agent
 
-# Start backend for ai-sdk and copilotkit.
+# Start backend for ai-sdk.
 echo "Starting backend on :$BACKEND_PORT..."
 cargo run --package tirea-agentos-server -- \
     --http-addr "127.0.0.1:$BACKEND_PORT" \
     --config examples/ai-sdk-starter/agent-config.json &
+PIDS+=($!)
+
+# Start copilotkit backend (copilotkit-starter has its own agent binary).
+echo "Starting copilotkit backend on :$COPILOTKIT_BACKEND_PORT..."
+cargo run --package copilotkit-starter-agent -- \
+    --http-addr "127.0.0.1:$COPILOTKIT_BACKEND_PORT" &
 PIDS+=($!)
 
 # Start travel backend (separate binary with custom tools/state).
@@ -56,7 +63,7 @@ cargo run --package tirea-examples --bin travel -- \
 PIDS+=($!)
 
 # Wait for backends.
-for port in $BACKEND_PORT $TRAVEL_BACKEND_PORT; do
+for port in $BACKEND_PORT $COPILOTKIT_BACKEND_PORT $TRAVEL_BACKEND_PORT; do
     for i in $(seq 1 30); do
         if curl -sf "http://localhost:$port/health" > /dev/null 2>&1; then
             echo "Backend on :$port ready."
@@ -81,9 +88,9 @@ echo "Starting AI SDK frontend on :$AI_SDK_PORT..."
 (cd examples/ai-sdk-starter && BACKEND_URL="http://localhost:$BACKEND_PORT" npx next dev -p "$AI_SDK_PORT") &
 PIDS+=($!)
 
-# Start CopilotKit frontend.
+# Start CopilotKit frontend (points to its own copilotkit backend).
 echo "Starting CopilotKit frontend on :$COPILOTKIT_PORT..."
-(cd examples/copilotkit-starter && BACKEND_URL="http://localhost:$BACKEND_PORT" npx next dev -p "$COPILOTKIT_PORT") &
+(cd examples/copilotkit-starter && BACKEND_URL="http://localhost:$COPILOTKIT_BACKEND_PORT" npx next dev -p "$COPILOTKIT_PORT") &
 PIDS+=($!)
 
 # Start Travel frontend (points to travel backend).

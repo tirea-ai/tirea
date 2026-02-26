@@ -65,4 +65,4 @@ AGENT_ID="${AGENT_ID}" \
 AGENT_MODEL="${AGENT_MODEL}" \
 AGENT_MAX_ROUNDS="${AGENT_MAX_ROUNDS}" \
 AGENT_SYSTEM_PROMPT="${AGENT_SYSTEM_PROMPT}" \
-exec cargo run --manifest-path "${AGENT_MANIFEST}" --bin with-tirea-agent
+exec cargo run --manifest-path "${AGENT_MANIFEST}" --bin copilotkit-starter-agent

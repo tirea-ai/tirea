@@ -17,6 +17,7 @@ members = [
     "crates/tirea-store-adapters",
     "crates/tirea-agentos-server",
     "examples",
+    "examples/copilotkit-starter/agent",
     "e2e/phoenix/test-helpers",
 ]
 
