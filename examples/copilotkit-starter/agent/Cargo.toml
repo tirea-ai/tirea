@@ -5,11 +5,11 @@ edition = "2021"
 publish = false
 
 [dependencies]
-tirea-agentos = { version = "0.1.1", path = "../../../crates/tirea-agentos" }
-tirea-agentos-server = { version = "0.1.1", path = "../../../crates/tirea-agentos-server" }
-tirea-store-adapters = { version = "0.1.1", path = "../../../crates/tirea-store-adapters" }
-tirea-state = { version = "0.1.1", path = "../../../crates/tirea-state" }
-tirea-state-derive = { version = "0.1.1", path = "../../../crates/tirea-state-derive" }
+tirea-agentos = { version = "0.2.0", path = "../../../crates/tirea-agentos" }
+tirea-agentos-server = { version = "0.2.0", path = "../../../crates/tirea-agentos-server" }
+tirea-store-adapters = { version = "0.2.0", path = "../../../crates/tirea-store-adapters" }
+tirea-state = { version = "0.2.0", path = "../../../crates/tirea-state" }
+tirea-state-derive = { version = "0.2.0", path = "../../../crates/tirea-state-derive" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"

@@ -7,7 +7,7 @@ repository.workspace = true
 description = "Shared agent contracts: runtime, extension SPI, and composition registries"
 
 [dependencies]
-tirea-state = { version = "0.1.1", path = "../tirea-state", features = ["derive"] }
+tirea-state = { version = "0.2.0", path = "../tirea-state", features = ["derive"] }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
 schemars = { workspace = true }

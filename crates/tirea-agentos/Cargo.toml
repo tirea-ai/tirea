@@ -7,14 +7,14 @@ license = "MIT OR Apache-2.0"
 repository.workspace = true
 
 [dependencies]
-tirea-state = { version = "0.1.1", path = "../tirea-state" }
-tirea-contract = { version = "0.1.1", path = "../tirea-contract" }
-tirea-agent-loop = { version = "0.1.1", path = "../tirea-agent-loop" }
-tirea-extension-permission = { version = "0.1.1", path = "../tirea-extension-permission" }
-tirea-extension-reminder = { version = "0.1.1", path = "../tirea-extension-reminder" }
-tirea-extension-observability = { version = "0.1.1", path = "../tirea-extension-observability" }
-tirea-extension-skills = { version = "0.1.1", path = "../tirea-extension-skills" }
-tirea-extension-mcp = { version = "0.1.1", path = "../tirea-extension-mcp", optional = true }
+tirea-state = { version = "0.2.0", path = "../tirea-state" }
+tirea-contract = { version = "0.2.0", path = "../tirea-contract" }
+tirea-agent-loop = { version = "0.2.0", path = "../tirea-agent-loop" }
+tirea-extension-permission = { version = "0.2.0", path = "../tirea-extension-permission" }
+tirea-extension-reminder = { version = "0.2.0", path = "../tirea-extension-reminder" }
+tirea-extension-observability = { version = "0.2.0", path = "../tirea-extension-observability" }
+tirea-extension-skills = { version = "0.2.0", path = "../tirea-extension-skills" }
+tirea-extension-mcp = { version = "0.2.0", path = "../tirea-extension-mcp", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
@@ -29,8 +29,8 @@ default = []
 mcp = ["dep:tirea-extension-mcp"]
 
 [dev-dependencies]
-tirea-contract = { version = "0.1.1", path = "../tirea-contract", features = ["test-support"] }
-tirea-store-adapters = { version = "0.1.1", path = "../tirea-store-adapters" }
+tirea-contract = { version = "0.2.0", path = "../tirea-contract", features = ["test-support"] }
+tirea-store-adapters = { version = "0.2.0", path = "../tirea-store-adapters" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
 tempfile = "3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

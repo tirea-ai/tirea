@@ -8,22 +8,22 @@ repository.workspace = true
 
 [dependencies]
 # Always included: core contract types + state
-tirea-contract = { version = "0.1.1", path = "../tirea-contract" }
-tirea-state = { version = "0.1.1", path = "../tirea-state" }
+tirea-contract = { version = "0.2.0", path = "../tirea-contract" }
+tirea-state = { version = "0.2.0", path = "../tirea-state" }
 
 # Core: agent loop + orchestrator (default)
-tirea-agent-loop = { version = "0.1.1", path = "../tirea-agent-loop", optional = true }
-tirea-agentos = { version = "0.1.1", path = "../tirea-agentos", optional = true }
+tirea-agent-loop = { version = "0.2.0", path = "../tirea-agent-loop", optional = true }
+tirea-agentos = { version = "0.2.0", path = "../tirea-agentos", optional = true }
 
 # Protocols
-tirea-protocol-ag-ui = { version = "0.1.1", path = "../tirea-protocol-ag-ui", optional = true }
-tirea-protocol-ai-sdk-v6 = { version = "0.1.1", path = "../tirea-protocol-ai-sdk-v6", optional = true }
+tirea-protocol-ag-ui = { version = "0.2.0", path = "../tirea-protocol-ag-ui", optional = true }
+tirea-protocol-ai-sdk-v6 = { version = "0.2.0", path = "../tirea-protocol-ai-sdk-v6", optional = true }
 
 # Extensions
-tirea-extension-skills = { version = "0.1.1", path = "../tirea-extension-skills", optional = true }
+tirea-extension-skills = { version = "0.2.0", path = "../tirea-extension-skills", optional = true }
 
 # Storage backends
-tirea-store-adapters = { version = "0.1.1", path = "../tirea-store-adapters", optional = true }
+tirea-store-adapters = { version = "0.2.0", path = "../tirea-store-adapters", optional = true }
 
 # Re-exported for prelude convenience
 async-trait = "0.1"

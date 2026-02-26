@@ -7,8 +7,8 @@ license = "MIT OR Apache-2.0"
 repository.workspace = true
 
 [dependencies]
-tirea-state = { version = "0.1.1", path = "../tirea-state" }
-tirea-contract = { version = "0.1.1", path = "../tirea-contract" }
+tirea-state = { version = "0.2.0", path = "../tirea-state" }
+tirea-contract = { version = "0.2.0", path = "../tirea-contract" }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -16,7 +16,7 @@ genai = "0.5"
 tracing = "0.1"
 
 [dev-dependencies]
-tirea-contract = { version = "0.1.1", path = "../tirea-contract", features = ["test-support"] }
+tirea-contract = { version = "0.2.0", path = "../tirea-contract", features = ["test-support"] }
 futures = "0.3"
 tokio = { version = "1", features = ["rt", "macros", "time"] }
 opentelemetry = "0.28"
