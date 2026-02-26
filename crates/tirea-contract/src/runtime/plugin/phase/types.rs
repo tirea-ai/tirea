@@ -97,7 +97,7 @@ pub enum StepOutcome {
     /// Thread complete.
     Complete,
     /// Pending external suspension.
-    Pending(Suspension),
+    Pending(SuspendTicket),
 }
 
 /// Run-level control action emitted by plugins.
@@ -149,11 +149,6 @@ impl SuspendTicket {
     pub fn with_pending(mut self, pending: PendingToolCall) -> Self {
         self.pending = pending;
         self
-    }
-
-    /// Derived generic suspension payload for runtime pending outcomes.
-    pub fn suspension(&self) -> Suspension {
-        self.suspension.clone()
     }
 }
 

@@ -4927,7 +4927,7 @@ fn suspended_interaction(step: &StepContext<'_>) -> Option<Suspension> {
     step.tool
         .as_ref()
         .and_then(|tool| tool.suspend_ticket.as_ref())
-        .map(|ticket| ticket.suspension())
+        .map(|ticket| ticket.suspension.clone())
 }
 
 fn suspended_invocation(step: &StepContext<'_>) -> Option<FrontendToolInvocation> {

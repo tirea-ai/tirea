@@ -523,7 +523,7 @@ mod tests {
             .tool
             .as_ref()
             .and_then(|t| t.suspend_ticket.as_ref())
-            .map(|ticket| ticket.suspension())
+            .map(|ticket| ticket.suspension.clone())
             .expect("suspended interaction should exist");
         assert_eq!(pending.action, "tool:copyToClipboard");
 

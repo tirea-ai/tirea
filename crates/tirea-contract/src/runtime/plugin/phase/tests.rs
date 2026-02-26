@@ -363,7 +363,7 @@ fn test_step_result_pending() {
     ctx.suspend(test_suspend_ticket(interaction.clone()));
 
     match ctx.result() {
-        StepOutcome::Pending(i) => assert_eq!(i.id, "confirm_1"),
+        StepOutcome::Pending(ticket) => assert_eq!(ticket.suspension.id, "confirm_1"),
         _ => panic!("Expected Pending result"),
     }
 }
@@ -385,8 +385,8 @@ fn test_step_result_pending_prefers_suspend_ticket() {
     }
 
     match ctx.result() {
-        StepOutcome::Pending(interaction) => {
-            assert_eq!(interaction.id, ticket_interaction.id);
+        StepOutcome::Pending(ticket) => {
+            assert_eq!(ticket.suspension.id, ticket_interaction.id);
         }
         other => panic!("Expected Pending result, got: {other:?}"),
     }
@@ -411,7 +411,7 @@ fn test_before_tool_execute_decision_prefers_suspend_ticket() {
     let ctx = BeforeToolExecuteContext::new(&mut step);
     match ctx.decision() {
         ToolCallAction::Suspend(ticket) => {
-            assert_eq!(ticket.suspension().id, ticket_interaction.id);
+            assert_eq!(ticket.suspension.id, ticket_interaction.id);
         }
         other => panic!("Expected Suspend decision, got: {other:?}"),
     }
@@ -703,7 +703,7 @@ fn test_tool_context_suspend_ticket() {
     tool_ctx.suspend_ticket = Some(test_suspend_ticket(interaction.clone()));
 
     assert_eq!(
-        tool_ctx.suspend_ticket.as_ref().unwrap().suspension().id,
+        tool_ctx.suspend_ticket.as_ref().unwrap().suspension.id,
         "confirm_1"
     );
 }
@@ -735,7 +735,7 @@ fn test_suspend_with_pending_direct() {
         .unwrap()
         .suspend_ticket
         .as_ref()
-        .map(|ticket| (&ticket.pending, ticket.resume_mode, ticket.suspension()))
+        .map(|ticket| (&ticket.pending, ticket.resume_mode, ticket.suspension.clone()))
         .expect("pending ticket should exist");
     assert_eq!(pending.0.id, "call_copy");
     assert_eq!(pending.0.name, "copyToClipboard");
