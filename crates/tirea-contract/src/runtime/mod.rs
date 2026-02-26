@@ -7,7 +7,7 @@ pub mod run;
 pub mod state_paths;
 pub mod tool_call;
 
-pub use activity::ActivityManager;
+pub use activity::{ActivityManager, NoOpActivityManager};
 pub use llm::{StreamResult, TokenUsage};
 pub use plugin::{
     AfterInferenceContext, AfterToolExecuteContext, AgentPlugin, BeforeInferenceContext,

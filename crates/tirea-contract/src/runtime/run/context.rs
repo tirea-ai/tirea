@@ -207,7 +207,7 @@ impl RunContext {
         call_id: impl Into<String>,
         source: impl Into<String>,
         pending_messages: &'ctx Mutex<Vec<Arc<Message>>>,
-        activity_manager: Option<Arc<dyn ActivityManager>>,
+        activity_manager: Arc<dyn ActivityManager>,
     ) -> ToolCallContext<'ctx> {
         ToolCallContext::new(
             &self.doc,

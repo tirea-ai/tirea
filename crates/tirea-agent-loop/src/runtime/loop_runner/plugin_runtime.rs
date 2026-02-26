@@ -236,7 +236,7 @@ where
         "plugin:phase",
         &run_ctx.run_config,
         &pending_messages,
-        None,
+        tirea_contract::runtime::activity::NoOpActivityManager::arc(),
     );
     let mut step = StepContext::new(
         tool_call_ctx,
@@ -336,7 +336,7 @@ pub(super) async fn emit_run_end_phase(
             "plugin:run_end",
             &run_ctx.run_config,
             &pending_messages,
-            None,
+            tirea_contract::runtime::activity::NoOpActivityManager::arc(),
         );
         let mut step = StepContext::new(
             tool_call_ctx,

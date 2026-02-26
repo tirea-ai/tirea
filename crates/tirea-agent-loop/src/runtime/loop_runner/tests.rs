@@ -1125,7 +1125,7 @@ async fn test_activity_event_emitted_before_tool_completion() {
     let phase_ctx = super::tool_exec::ToolPhaseContext {
         tool_descriptors: &descriptors,
         plugins: &plugins,
-        activity_manager: Some(activity_manager),
+        activity_manager: activity_manager,
         run_config: &run_config,
         thread_id: "test",
         thread_messages: &[],
@@ -1210,7 +1210,7 @@ async fn test_parallel_tools_emit_activity_before_completion() {
         let phase_ctx = super::tool_exec::ToolPhaseContext {
             tool_descriptors: &tool_descriptors_for_task,
             plugins: &plugins_for_task,
-            activity_manager: Some(activity_manager),
+            activity_manager: activity_manager,
             run_config: &run_config,
             thread_id: "test",
             thread_messages: &[],
@@ -1286,7 +1286,7 @@ async fn test_parallel_tool_executor_honors_cancellation_token() {
         let phase_ctx = super::tool_exec::ToolPhaseContext {
             tool_descriptors: &tool_descriptors,
             plugins: &[],
-            activity_manager: None,
+            activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
             run_config: &run_config,
             thread_id: "cancel-test",
             thread_messages: &[],
@@ -1828,7 +1828,7 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
     let phase_ctx = super::tool_exec::ToolPhaseContext {
         tool_descriptors: &tool_descriptors,
         plugins: &plugins,
-        activity_manager: None,
+        activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
         run_config: &run_config,
         thread_id: "test",
         thread_messages: &[],
@@ -1904,7 +1904,7 @@ async fn test_execute_single_tool_context_waits_for_run_cancellation() {
     let phase_ctx = super::tool_exec::ToolPhaseContext {
         tool_descriptors: &tool_descriptors,
         plugins: &plugins,
-        activity_manager: None,
+        activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
         run_config: &run_config,
         thread_id: "test",
         thread_messages: &[],
@@ -1962,7 +1962,7 @@ async fn test_plugin_sees_real_session_id_and_scope_in_tool_phase() {
     let phase_ctx = super::tool_exec::ToolPhaseContext {
         tool_descriptors: &tool_descriptors,
         plugins: &plugins,
-        activity_manager: None,
+        activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
         run_config: &rt,
         thread_id: "real-thread-42",
         thread_messages: &[],

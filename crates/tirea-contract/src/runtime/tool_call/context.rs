@@ -49,7 +49,7 @@ pub struct ToolCallContext<'a> {
     source: String,
     run_config: &'a RunConfig,
     pending_messages: &'a Mutex<Vec<Arc<Message>>>,
-    activity_manager: Option<Arc<dyn ActivityManager>>,
+    activity_manager: Arc<dyn ActivityManager>,
     cancellation_token: Option<&'a CancellationToken>,
 }
 
@@ -75,7 +75,7 @@ impl<'a> ToolCallContext<'a> {
         source: impl Into<String>,
         run_config: &'a RunConfig,
         pending_messages: &'a Mutex<Vec<Arc<Message>>>,
-        activity_manager: Option<Arc<dyn ActivityManager>>,
+        activity_manager: Arc<dyn ActivityManager>,
     ) -> Self {
         Self {
             doc,
@@ -288,11 +288,7 @@ impl<'a> ToolCallContext<'a> {
     ) -> ActivityContext {
         let stream_id = stream_id.into();
         let activity_type = activity_type.into();
-        let snapshot = self
-            .activity_manager
-            .as_ref()
-            .map(|manager| manager.snapshot(&stream_id))
-            .unwrap_or_else(|| Value::Object(Default::default()));
+        let snapshot = self.activity_manager.snapshot(&stream_id);
 
         ActivityContext::new(
             snapshot,
@@ -399,7 +395,7 @@ pub struct ActivityContext {
     stream_id: String,
     activity_type: String,
     ops: Mutex<Vec<Op>>,
-    manager: Option<Arc<dyn ActivityManager>>,
+    manager: Arc<dyn ActivityManager>,
 }
 
 impl ActivityContext {
@@ -407,7 +403,7 @@ impl ActivityContext {
         doc: Value,
         stream_id: String,
         activity_type: String,
-        manager: Option<Arc<dyn ActivityManager>>,
+        manager: Arc<dyn ActivityManager>,
     ) -> Self {
         Self {
             doc: DocCell::new(doc),
@@ -432,28 +428,20 @@ impl ActivityContext {
     /// Get a typed activity state reference at the specified path.
     ///
     /// All modifications are automatically collected and immediately reported
-    /// to the activity manager (if configured). Writes are applied to the
-    /// shared doc for immediate read-back.
+    /// to the activity manager. Writes are applied to the shared doc for
+    /// immediate read-back.
     pub fn state<T: State>(&self, path: &str) -> T::Ref<'_> {
         let base = parse_path(path);
-        if let Some(manager) = self.manager.clone() {
-            let stream_id = self.stream_id.clone();
-            let activity_type = self.activity_type.clone();
-            let doc = &self.doc;
-            let hook: PatchHook<'_> = Arc::new(move |op: &Op| {
-                doc.apply(op)?;
-                manager.on_activity_op(&stream_id, &activity_type, op);
-                Ok(())
-            });
-            T::state_ref(&self.doc, base, PatchSink::new_with_hook(&self.ops, hook))
-        } else {
-            let doc = &self.doc;
-            let hook: PatchHook<'_> = Arc::new(move |op: &Op| {
-                doc.apply(op)?;
-                Ok(())
-            });
-            T::state_ref(&self.doc, base, PatchSink::new_with_hook(&self.ops, hook))
-        }
+        let manager = self.manager.clone();
+        let stream_id = self.stream_id.clone();
+        let activity_type = self.activity_type.clone();
+        let doc = &self.doc;
+        let hook: PatchHook<'_> = Arc::new(move |op: &Op| {
+            doc.apply(op)?;
+            manager.on_activity_op(&stream_id, &activity_type, op);
+            Ok(())
+        });
+        T::state_ref(&self.doc, base, PatchSink::new_with_hook(&self.ops, hook))
     }
 }
 
@@ -461,7 +449,7 @@ impl ActivityContext {
 mod tests {
     use super::*;
     use crate::io::ResumeDecisionAction;
-    use crate::runtime::activity::ActivityManager;
+    use crate::runtime::activity::{ActivityManager, NoOpActivityManager};
     use crate::runtime::run::InferenceErrorState;
     use serde_json::json;
     use std::sync::Arc;
@@ -474,7 +462,7 @@ mod tests {
         run_config: &'a RunConfig,
         pending: &'a Mutex<Vec<Arc<Message>>>,
     ) -> ToolCallContext<'a> {
-        ToolCallContext::new(doc, ops, "call-1", "test", run_config, pending, None)
+        ToolCallContext::new(doc, ops, "call-1", "test", run_config, pending, NoOpActivityManager::arc())
     }
 
     #[test]
@@ -702,7 +690,7 @@ mod tests {
         let pending = Mutex::new(Vec::new());
         let token = CancellationToken::new();
 
-        let ctx = ToolCallContext::new(&doc, &ops, "call-1", "test", &scope, &pending, None)
+        let ctx = ToolCallContext::new(&doc, &ops, "call-1", "test", &scope, &pending, NoOpActivityManager::arc())
             .with_cancellation_token(&token);
 
         let token_for_task = token.clone();
@@ -764,7 +752,7 @@ mod tests {
             "test",
             &scope,
             &pending,
-            Some(activity_manager.clone()),
+            activity_manager.clone(),
         );
 
         ctx.report_progress(0.5, Some(10.0), Some("half way".to_string()))

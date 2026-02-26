@@ -663,7 +663,7 @@ pub(super) fn run_stream(
                         state: &tool_context.state,
                         tool_descriptors: &tool_descriptors_for_exec,
                         plugins: &config.plugins,
-                        activity_manager: Some(activity_manager.clone()),
+                        activity_manager: activity_manager.clone(),
                         run_config: &tool_context.run_config,
                         thread_id: &sid_for_tools,
                         thread_messages: &thread_messages_for_tools,

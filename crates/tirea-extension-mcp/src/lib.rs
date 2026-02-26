@@ -861,7 +861,7 @@ mod tests {
             "test",
             &run_config,
             &pending_messages,
-            Some(activity_manager.clone()),
+            activity_manager.clone(),
         );
 
         let result = tool.execute(json!({}), &ctx).await.unwrap();
@@ -903,7 +903,7 @@ mod tests {
             "test",
             &run_config,
             &pending_messages,
-            Some(activity_manager.clone()),
+            activity_manager.clone(),
         );
 
         let result = tool.execute(json!({}), &ctx).await.unwrap();
@@ -1002,7 +1002,7 @@ mod tests {
             "test",
             &run_config,
             &pending_messages,
-            Some(activity_manager.clone()),
+            activity_manager.clone(),
         );
 
         let result = tool

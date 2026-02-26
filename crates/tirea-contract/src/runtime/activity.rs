@@ -1,6 +1,7 @@
 //! Activity management trait for external state updates.
 
 use serde_json::Value;
+use std::sync::Arc;
 use tirea_state::Op;
 
 /// Manager for activity state updates.
@@ -12,6 +13,24 @@ pub trait ActivityManager: Send + Sync {
 
     /// Handle an activity operation for a stream.
     fn on_activity_op(&self, stream_id: &str, activity_type: &str, op: &Op);
+}
+
+/// No-op activity manager that silently discards all operations.
+pub struct NoOpActivityManager;
+
+impl ActivityManager for NoOpActivityManager {
+    fn snapshot(&self, _stream_id: &str) -> Value {
+        Value::Object(Default::default())
+    }
+
+    fn on_activity_op(&self, _stream_id: &str, _activity_type: &str, _op: &Op) {}
+}
+
+impl NoOpActivityManager {
+    /// Create a shared no-op activity manager.
+    pub fn arc() -> Arc<dyn ActivityManager> {
+        Arc::new(Self)
+    }
 }
 
 #[cfg(test)]

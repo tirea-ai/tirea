@@ -51,7 +51,7 @@ pub struct ToolExecutionRequest<'a> {
     pub state: &'a Value,
     pub tool_descriptors: &'a [ToolDescriptor],
     pub plugins: &'a [Arc<dyn AgentPlugin>],
-    pub activity_manager: Option<Arc<dyn ActivityManager>>,
+    pub activity_manager: Arc<dyn ActivityManager>,
     pub run_config: &'a RunConfig,
     pub thread_id: &'a str,
     pub thread_messages: &'a [Arc<Message>],

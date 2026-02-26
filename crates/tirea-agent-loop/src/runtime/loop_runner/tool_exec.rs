@@ -67,7 +67,7 @@ pub(super) struct AppliedToolResults {
 pub(super) struct ToolPhaseContext<'a> {
     pub(super) tool_descriptors: &'a [ToolDescriptor],
     pub(super) plugins: &'a [Arc<dyn AgentPlugin>],
-    pub(super) activity_manager: Option<Arc<dyn ActivityManager>>,
+    pub(super) activity_manager: Arc<dyn ActivityManager>,
     pub(super) run_config: &'a tirea_contract::RunConfig,
     pub(super) thread_id: &'a str,
     pub(super) thread_messages: &'a [Arc<Message>],
@@ -693,7 +693,7 @@ pub async fn execute_tools_with_plugins_and_executor(
             state: &current_state,
             tool_descriptors: &tool_descriptors,
             plugins,
-            activity_manager: None,
+            activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
             run_config: &rt_for_tools,
             thread_id: run_ctx.thread_id(),
             thread_messages: run_ctx.messages(),
@@ -876,7 +876,7 @@ pub(super) async fn execute_single_tool_with_phases(
         "plugin:tool_phase",
         plugin_scope,
         &pending_messages,
-        None,
+        tirea_contract::runtime::activity::NoOpActivityManager::arc(),
     );
     if let Some(token) = phase_ctx.cancellation_token {
         plugin_tool_call_ctx = plugin_tool_call_ctx.with_cancellation_token(token);

@@ -918,7 +918,7 @@ async fn drain_resuming_tool_calls_and_replay(
                 let replay_phase_ctx = ToolPhaseContext {
                     tool_descriptors,
                     plugins: &config.plugins,
-                    activity_manager: None,
+                    activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
                     run_config: &rt_for_replay,
                     thread_id: run_ctx.thread_id(),
                     thread_messages: run_ctx.messages(),
@@ -1696,7 +1696,7 @@ pub async fn run_loop(
             state: &tool_context.state,
             tool_descriptors: &active_tool_descriptors,
             plugins: &config.plugins,
-            activity_manager: None,
+            activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
             run_config: &tool_context.run_config,
             thread_id: run_ctx.thread_id(),
             thread_messages: &thread_messages_for_tools,

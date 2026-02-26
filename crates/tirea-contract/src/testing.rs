@@ -3,6 +3,7 @@
 //! Gated behind the `test-support` cargo feature so production builds are
 //! unaffected.  Enable via `[dev-dependencies] tirea-contract = { ..., features = ["test-support"] }`.
 
+use crate::runtime::activity::NoOpActivityManager;
 use crate::runtime::tool_call::suspension::Suspension;
 use crate::runtime::tool_call::ToolDescriptor;
 use crate::runtime::{PendingToolCall, StepContext, SuspendTicket, ToolCallContext, ToolCallResumeMode};
@@ -46,7 +47,7 @@ impl TestFixture {
             "test",
             &self.run_config,
             &self.pending_messages,
-            None,
+            NoOpActivityManager::arc(),
         )
     }
 
@@ -62,7 +63,7 @@ impl TestFixture {
             source,
             &self.run_config,
             &self.pending_messages,
-            None,
+            NoOpActivityManager::arc(),
         )
     }
 

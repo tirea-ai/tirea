@@ -59,7 +59,7 @@ pub async fn execute_single_tool_with_scope(
         format!("tool:{}", call.name),
         scope,
         &pending_messages,
-        None,
+        tirea_contract::runtime::activity::NoOpActivityManager::arc(),
     );
 
     // Validate arguments against the tool's JSON Schema
