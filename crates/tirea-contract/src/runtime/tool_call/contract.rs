@@ -25,8 +25,6 @@ pub enum ToolStatus {
     Error,
 }
 
-const TOOL_SUSPENSION_METADATA_KEY: &str = "__tool_suspension";
-
 /// Result of tool execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
@@ -40,6 +38,9 @@ pub struct ToolResult {
     pub message: Option<String>,
     /// Metadata.
     pub metadata: HashMap<String, Value>,
+    /// Structured suspension payload for loop-level suspension handling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspension: Option<SuspendTicket>,
 }
 
 impl ToolResult {
@@ -51,6 +52,7 @@ impl ToolResult {
             data: data.into(),
             message: None,
             metadata: HashMap::new(),
+            suspension: None,
         }
     }
 
@@ -66,6 +68,7 @@ impl ToolResult {
             data: data.into(),
             message: Some(message.into()),
             metadata: HashMap::new(),
+            suspension: None,
         }
     }
 
@@ -77,6 +80,7 @@ impl ToolResult {
             data: Value::Null,
             message: Some(message.into()),
             metadata: HashMap::new(),
+            suspension: None,
         }
     }
 
@@ -100,6 +104,7 @@ impl ToolResult {
             }),
             message: Some(format!("[{code}] {message}")),
             metadata: HashMap::new(),
+            suspension: None,
         }
     }
 
@@ -111,6 +116,7 @@ impl ToolResult {
             data: Value::Null,
             message: Some(message.into()),
             metadata: HashMap::new(),
+            suspension: None,
         }
     }
 
@@ -118,9 +124,16 @@ impl ToolResult {
     pub fn suspended_with(
         tool_name: impl Into<String>,
         message: impl Into<String>,
-        suspension: SuspendTicket,
+        ticket: SuspendTicket,
     ) -> Self {
-        Self::suspended(tool_name, message).with_suspension(suspension)
+        Self {
+            tool_name: tool_name.into(),
+            status: ToolStatus::Pending,
+            data: Value::Null,
+            message: Some(message.into()),
+            metadata: HashMap::new(),
+            suspension: Some(ticket),
+        }
     }
 
     /// Create a warning result.
@@ -135,6 +148,7 @@ impl ToolResult {
             data: data.into(),
             message: Some(message.into()),
             metadata: HashMap::new(),
+            suspension: None,
         }
     }
 
@@ -145,11 +159,8 @@ impl ToolResult {
     }
 
     /// Attach structured suspension payload for loop-level suspension handling.
-    pub fn with_suspension(mut self, suspension: SuspendTicket) -> Self {
-        if let Ok(value) = serde_json::to_value(suspension) {
-            self.metadata
-                .insert(TOOL_SUSPENSION_METADATA_KEY.to_string(), value);
-        }
+    pub fn with_suspension(mut self, ticket: SuspendTicket) -> Self {
+        self.suspension = Some(ticket);
         self
     }
 
@@ -170,10 +181,7 @@ impl ToolResult {
 
     /// Structured suspension payload attached by `with_suspension`.
     pub fn suspension(&self) -> Option<SuspendTicket> {
-        self.metadata
-            .get(TOOL_SUSPENSION_METADATA_KEY)
-            .cloned()
-            .and_then(|value| serde_json::from_value(value).ok())
+        self.suspension.clone()
     }
 
     /// Convert to JSON value for serialization.

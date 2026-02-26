@@ -211,6 +211,7 @@ impl Tool for SkillActivateTool {
             }),
             message: Some(format!("Launching skill: {}", meta.id)),
             metadata: HashMap::new(),
+            suspension: None,
         };
 
         Ok(result)
