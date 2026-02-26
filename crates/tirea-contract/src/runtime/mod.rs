@@ -22,7 +22,7 @@ pub use run::{
 pub use tool_call::{
     suspended_calls_from_state, tool_call_states_from_state, ActivityContext, DecisionReplayPolicy,
     PendingToolCall, SuspendedCall, SuspendedToolCallsState, Suspension, SuspensionResponse,
-    ToolCallContext, ToolCallContextInit, ToolCallOutcome, ToolCallResume, ToolCallResumeMode,
+    ToolCallContext, ToolCallOutcome, ToolCallResume, ToolCallResumeMode,
     ToolCallState, ToolCallStatesMap, ToolCallStatus, ToolExecution, ToolExecutionRequest,
     ToolExecutionResult, ToolExecutor, ToolExecutorError, ToolProgressState,
     TOOL_PROGRESS_ACTIVITY_TYPE,

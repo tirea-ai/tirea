@@ -869,7 +869,7 @@ pub(super) async fn execute_single_tool_with_phases(
     let ops = std::sync::Mutex::new(Vec::new());
     let pending_messages = std::sync::Mutex::new(Vec::new());
     let plugin_scope = phase_ctx.run_config;
-    let mut plugin_ctx_init = crate::contracts::ToolCallContextInit::new(
+    let mut plugin_tool_call_ctx = crate::contracts::ToolCallContext::new(
         &doc,
         &ops,
         "plugin_phase",
@@ -879,9 +879,8 @@ pub(super) async fn execute_single_tool_with_phases(
         None,
     );
     if let Some(token) = phase_ctx.cancellation_token {
-        plugin_ctx_init = plugin_ctx_init.with_cancellation_token(token);
+        plugin_tool_call_ctx = plugin_tool_call_ctx.with_cancellation_token(token);
     }
-    let plugin_tool_call_ctx = crate::contracts::ToolCallContext::from_init(plugin_ctx_init);
 
     // Create StepContext for this tool
     let mut step = StepContext::new(
@@ -966,7 +965,7 @@ pub(super) async fn execute_single_tool_with_phases(
         let tool_doc = tirea_state::DocCell::new(state.clone());
         let tool_ops = std::sync::Mutex::new(Vec::new());
         let tool_pending_msgs = std::sync::Mutex::new(Vec::new());
-        let mut tool_ctx_init = crate::contracts::ToolCallContextInit::new(
+        let mut tool_ctx = crate::contracts::ToolCallContext::new(
             &tool_doc,
             &tool_ops,
             &call.id,
@@ -976,9 +975,8 @@ pub(super) async fn execute_single_tool_with_phases(
             phase_ctx.activity_manager.clone(),
         );
         if let Some(token) = phase_ctx.cancellation_token {
-            tool_ctx_init = tool_ctx_init.with_cancellation_token(token);
+            tool_ctx = tool_ctx.with_cancellation_token(token);
         }
-        let tool_ctx = crate::contracts::ToolCallContext::from_init(tool_ctx_init);
         let result = match tool
             .unwrap()
             .execute(call.arguments.clone(), &tool_ctx)

@@ -123,7 +123,7 @@ pub use runtime::{
     PluginPhaseContext, RunAction, RunContext, RunDelta, RunEndContext, RunStartContext,
     StateEffect, StepContext, StepEndContext, StepOutcome, StepStartContext, StoppedReason,
     StreamResult, SuspendTicket, Suspension, SuspensionResponse, TerminationReason, TokenUsage,
-    ToolCallAction, ToolCallContext, ToolCallContextInit, ToolCallOutcome, ToolContext,
+    ToolCallAction, ToolCallContext, ToolCallOutcome, ToolContext,
     ToolExecution, ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
     ToolProgressState, TOOL_PROGRESS_ACTIVITY_TYPE,
 };

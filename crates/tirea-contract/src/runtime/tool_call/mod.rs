@@ -9,8 +9,7 @@ pub use contract::{
     validate_against_schema, Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus, TypedTool,
 };
 pub use context::{
-    ActivityContext, ToolCallContext, ToolCallContextInit, ToolProgressState,
-    TOOL_PROGRESS_ACTIVITY_TYPE,
+    ActivityContext, ToolCallContext, ToolProgressState, TOOL_PROGRESS_ACTIVITY_TYPE,
 };
 pub use executor::{
     DecisionReplayPolicy, ToolCallOutcome, ToolExecution, ToolExecutionRequest,
