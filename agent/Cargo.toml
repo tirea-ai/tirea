@@ -1,0 +1,23 @@
+[package]
+name = "with-tirea-agent"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+tirea-agentos = { version = "0.1.1", path = "../../uncarve/crates/tirea-agentos" }
+tirea-agentos-server = { version = "0.1.1", path = "../../uncarve/crates/tirea-agentos-server" }
+tirea-store-adapters = { version = "0.1.1", path = "../../uncarve/crates/tirea-store-adapters" }
+tirea-state = { version = "0.1.1", path = "../../uncarve/crates/tirea-state" }
+tirea-state-derive = { version = "0.1.1", path = "../../uncarve/crates/tirea-state-derive" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+clap = { version = "4", features = ["derive", "env"] }
+axum = { version = "0.7", default-features = false, features = ["http1", "json", "query", "tokio"] }
+genai = "0.5"
+
+[[bin]]
+name = "with-tirea-agent"
+path = "src/main.rs"
