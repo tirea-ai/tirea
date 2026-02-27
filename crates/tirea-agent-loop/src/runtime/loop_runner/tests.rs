@@ -194,6 +194,7 @@ impl State for DebugFlags {
     }
 }
 
+#[derive(Clone, Copy)]
 enum DebugFlagAction {
     SetRunStartSideEffect,
     SetBeforeInferenceEffect,
@@ -744,6 +745,38 @@ impl Tool for ScopeSnapshotTool {
                 "messages_len": messages_len
             }),
         ))
+    }
+}
+
+struct ActionStateTool {
+    id: &'static str,
+    action: DebugFlagAction,
+}
+
+#[async_trait]
+impl Tool for ActionStateTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new(self.id, "Action State Tool", "Returns typed state actions")
+    }
+
+    async fn execute(
+        &self,
+        _args: Value,
+        _ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
+        Ok(ToolResult::success(self.id, json!({"ok": true})))
+    }
+
+    async fn execute_effect(
+        &self,
+        _args: Value,
+        _ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolExecutionEffect, ToolError> {
+        Ok(ToolExecutionEffect::new(ToolResult::success(
+            self.id,
+            json!({"ok": true}),
+        ))
+        .with_state_action(AnyStateAction::new::<DebugFlags>(self.action)))
     }
 }
 
@@ -8248,6 +8281,46 @@ fn test_parallel_tools_conflicting_state_patches_return_error() {
         let err = execute_tools(thread, &result, &tools, true)
             .await
             .expect_err("parallel conflicting patches should fail");
+        assert!(
+            matches!(err, AgentLoopError::StateError(ref msg) if msg.contains("conflict")),
+            "expected conflict state error, got: {err:?}"
+        );
+    });
+}
+
+#[test]
+fn test_parallel_tools_conflicting_state_actions_return_error() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let thread = Thread::with_initial_state("test", json!({"debug": {}}));
+        let result = StreamResult {
+            text: "conflicting action calls".to_string(),
+            tool_calls: vec![
+                crate::contracts::thread::ToolCall::new("call_1", "action_a", json!({})),
+                crate::contracts::thread::ToolCall::new("call_2", "action_b", json!({})),
+            ],
+            usage: None,
+        };
+
+        let mut tools = HashMap::new();
+        tools.insert(
+            "action_a".to_string(),
+            Arc::new(ActionStateTool {
+                id: "action_a",
+                action: DebugFlagAction::SetRunStartSideEffect,
+            }) as Arc<dyn Tool>,
+        );
+        tools.insert(
+            "action_b".to_string(),
+            Arc::new(ActionStateTool {
+                id: "action_b",
+                action: DebugFlagAction::SetBeforeInferenceEffect,
+            }) as Arc<dyn Tool>,
+        );
+
+        let err = execute_tools(thread, &result, &tools, true)
+            .await
+            .expect_err("parallel conflicting state actions should fail");
         assert!(
             matches!(err, AgentLoopError::StateError(ref msg) if msg.contains("conflict")),
             "expected conflict state error, got: {err:?}"
