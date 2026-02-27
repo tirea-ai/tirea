@@ -179,9 +179,8 @@ mod tests {
         }
     }
 
-    fn make_ctx(doc: &DocCell, phase: Phase) -> ReadOnlyContext<'_> {
-        let config = Box::leak(Box::new(RunConfig::new()));
-        ReadOnlyContext::new(phase, "thread_1", &[], config, doc)
+    fn make_ctx<'a>(doc: &'a DocCell, run_config: &'a RunConfig, phase: Phase) -> ReadOnlyContext<'a> {
+        ReadOnlyContext::new(phase, "thread_1", &[], run_config, doc)
     }
 
     #[tokio::test]
@@ -199,7 +198,8 @@ mod tests {
         let composite = CompositeBehavior::new("test", behaviors);
 
         let doc = DocCell::new(json!({}));
-        let ctx = make_ctx(&doc, Phase::BeforeInference);
+        let run_config = RunConfig::new();
+        let ctx = make_ctx(&doc, &run_config, Phase::BeforeInference);
         let output = composite.before_inference(&ctx).await;
 
         assert_eq!(output.effects.len(), 2);
@@ -242,7 +242,8 @@ mod tests {
         let composite = CompositeBehavior::new("test", behaviors);
 
         let doc = DocCell::new(json!({}));
-        let ctx = make_ctx(&doc, Phase::BeforeInference);
+        let run_config = RunConfig::new();
+        let ctx = make_ctx(&doc, &run_config, Phase::BeforeInference);
         let output = composite.before_inference(&ctx).await;
 
         assert_eq!(output.state_actions.len(), 2);
@@ -295,7 +296,8 @@ mod tests {
     async fn composite_empty_behaviors_returns_empty() {
         let composite = CompositeBehavior::new("empty", vec![]);
         let doc = DocCell::new(json!({}));
-        let ctx = make_ctx(&doc, Phase::BeforeInference);
+        let run_config = RunConfig::new();
+        let ctx = make_ctx(&doc, &run_config, Phase::BeforeInference);
 
         let output = composite.before_inference(&ctx).await;
         assert!(output.is_empty());
@@ -317,7 +319,8 @@ mod tests {
         let composite = CompositeBehavior::new("order_test", behaviors);
 
         let doc = DocCell::new(json!({}));
-        let ctx = make_ctx(&doc, Phase::BeforeInference);
+        let run_config = RunConfig::new();
+        let ctx = make_ctx(&doc, &run_config, Phase::BeforeInference);
         let output = composite.before_inference(&ctx).await;
 
         // BlockBehavior returns empty for BeforeInference, so 2 effects
