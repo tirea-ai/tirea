@@ -3,6 +3,7 @@
 //! Tools execute actions and can modify state through `Thread`.
 
 use super::ToolCallContext;
+use crate::runtime::plugin::phase::AnyStateAction;
 use crate::runtime::plugin::phase::SuspendTicket;
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -190,6 +191,38 @@ impl ToolResult {
     }
 }
 
+/// Structured tool effect used by the action/reducer pipeline.
+///
+/// Tools return a normal [`ToolResult`] plus optional state actions that the
+/// runtime reduces into patches after execution.
+#[derive(Debug)]
+pub struct ToolExecutionEffect {
+    pub result: ToolResult,
+    pub state_actions: Vec<AnyStateAction>,
+}
+
+impl ToolExecutionEffect {
+    #[must_use]
+    pub fn new(result: ToolResult) -> Self {
+        Self {
+            result,
+            state_actions: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_state_action(mut self, action: AnyStateAction) -> Self {
+        self.state_actions.push(action);
+        self
+    }
+}
+
+impl From<ToolResult> for ToolExecutionEffect {
+    fn from(result: ToolResult) -> Self {
+        Self::new(result)
+    }
+}
+
 /// Tool execution errors.
 #[derive(Debug, Error)]
 pub enum ToolError {
@@ -328,6 +361,18 @@ pub trait Tool: Send + Sync {
         args: Value,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError>;
+
+    /// Execute tool and return structured effects.
+    ///
+    /// The default implementation preserves backward compatibility by
+    /// delegating to [`Tool::execute`] and wrapping the result.
+    async fn execute_effect(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolExecutionEffect, ToolError> {
+        self.execute(args, ctx).await.map(ToolExecutionEffect::from)
+    }
 }
 
 /// Validate a JSON value against a JSON Schema.
@@ -447,10 +492,13 @@ fn typed_tool_schema<T: JsonSchema>() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::plugin::phase::state_spec::StateSpec;
+    use crate::runtime::plugin::phase::AnyStateAction;
     use crate::runtime::plugin::phase::SuspendTicket;
     use crate::runtime::Suspension;
     use crate::runtime::{PendingToolCall, ToolCallResumeMode};
     use serde_json::json;
+    use tirea_state::{DocCell, PatchSink, Path as TPath, State, TireaResult};
 
     // =========================================================================
     // ToolError tests
@@ -1096,5 +1144,100 @@ mod tests {
         let ctx = fixture.ctx_with("call_1", "test");
         let err = Tool::execute(&tool, json!({}), &ctx).await.unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments(_)));
+    }
+
+    #[tokio::test]
+    async fn test_default_execute_effect_wraps_execute_result() {
+        let tool = GreetTool;
+        let fixture = crate::testing::TestFixture::new();
+        let ctx = fixture.ctx_with("call_1", "test");
+
+        let effect = Tool::execute_effect(&tool, json!({"name": "World"}), &ctx)
+            .await
+            .expect("execute_effect should succeed");
+
+        assert_eq!(effect.result.tool_name, "greet");
+        assert!(effect.result.is_success());
+        assert!(effect.state_actions.is_empty());
+    }
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    struct ToolEffectState {
+        value: i64,
+    }
+
+    struct ToolEffectStateRef;
+
+    impl State for ToolEffectState {
+        type Ref<'a> = ToolEffectStateRef;
+        const PATH: &'static str = "tool_effect";
+
+        fn state_ref<'a>(_: &'a DocCell, _: TPath, _: PatchSink<'a>) -> Self::Ref<'a> {
+            ToolEffectStateRef
+        }
+
+        fn from_value(value: &Value) -> TireaResult<Self> {
+            if value.is_null() {
+                return Ok(Self::default());
+            }
+            serde_json::from_value(value.clone()).map_err(tirea_state::TireaError::Serialization)
+        }
+
+        fn to_value(&self) -> TireaResult<Value> {
+            serde_json::to_value(self).map_err(tirea_state::TireaError::Serialization)
+        }
+    }
+
+    impl StateSpec for ToolEffectState {
+        type Action = i64;
+
+        fn reduce(&mut self, action: Self::Action) {
+            self.value += action;
+        }
+    }
+
+    struct EffectOnlyTool;
+
+    #[async_trait]
+    impl Tool for EffectOnlyTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("effect_only", "EffectOnly", "returns state actions")
+        }
+
+        async fn execute(
+            &self,
+            _args: Value,
+            _ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("effect_only", json!({"ok": true})))
+        }
+
+        async fn execute_effect(
+            &self,
+            _args: Value,
+            _ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolExecutionEffect, ToolError> {
+            Ok(ToolExecutionEffect::new(ToolResult::success(
+                "effect_only",
+                json!({"ok": true}),
+            ))
+            .with_state_action(AnyStateAction::new::<ToolEffectState>(1)))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tool_can_return_state_actions_via_execute_effect() {
+        let tool = EffectOnlyTool;
+        let fixture = crate::testing::TestFixture::new();
+        let ctx = fixture.ctx_with("call_1", "test");
+
+        let effect = Tool::execute_effect(&tool, json!({}), &ctx)
+            .await
+            .expect("effect tool should succeed");
+
+        assert!(effect.result.is_success());
+        assert_eq!(effect.state_actions.len(), 1);
+        let action = effect.state_actions.into_iter().next().unwrap();
+        assert!(action.state_type_name().contains("ToolEffectState"));
     }
 }

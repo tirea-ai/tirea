@@ -25,6 +25,6 @@ pub use tool_call::{
     PendingToolCall, SuspendedCall, SuspendedToolCallsAction, SuspendedToolCallsState, Suspension,
     SuspensionResponse, ToolCallContext, ToolCallOutcome, ToolCallResume, ToolCallResumeMode,
     ToolCallState, ToolCallStatesAction, ToolCallStatesMap, ToolCallStatus, ToolExecution,
-    ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError, ToolProgressState,
-    TOOL_PROGRESS_ACTIVITY_TYPE,
+    ToolExecutionEffect, ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
+    ToolProgressState, TOOL_PROGRESS_ACTIVITY_TYPE,
 };

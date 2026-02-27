@@ -5,7 +5,8 @@ pub mod lifecycle;
 pub mod suspension;
 
 pub use tool::{
-    validate_against_schema, Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus, TypedTool,
+    validate_against_schema, Tool, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult,
+    ToolStatus, TypedTool,
 };
 pub use context::{
     ActivityContext, ToolCallContext, ToolProgressState, TOOL_PROGRESS_ACTIVITY_TYPE,
