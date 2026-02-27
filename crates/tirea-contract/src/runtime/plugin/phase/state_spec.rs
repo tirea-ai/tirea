@@ -5,6 +5,15 @@ use tirea_state::{get_at_path, parse_path, Op, Patch, Path, State, TrackedPatch,
 
 type ApplyFn = Box<dyn FnOnce(&Value) -> TireaResult<Patch> + Send>;
 
+/// Runtime scope where a state is valid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateScope {
+    /// State that lives for the entire run.
+    Run,
+    /// State that is scoped to a single tool call.
+    ToolCall,
+}
+
 /// Extends [`State`] with a typed action and a pure reducer.
 ///
 /// Implementors define what actions their state accepts and how the state
@@ -28,6 +37,9 @@ pub trait StateSpec: State + Sized + Send + 'static {
     /// The action type accepted by this state.
     type Action: Send + 'static;
 
+    /// Runtime scope for this state.
+    const SCOPE: StateScope = StateScope::Run;
+
     /// Pure reducer: apply an action to produce the next state.
     fn reduce(&mut self, action: Self::Action);
 }
@@ -44,6 +56,7 @@ pub enum AnyStateAction {
     Typed {
         state_type_id: TypeId,
         state_type_name: &'static str,
+        scope: StateScope,
         apply_fn: ApplyFn,
     },
     /// Pre-built tracked patch emitted directly as a state effect.
@@ -65,6 +78,7 @@ impl AnyStateAction {
         Self::Typed {
             state_type_id: TypeId::of::<S>(),
             state_type_name: std::any::type_name::<S>(),
+            scope: S::SCOPE,
             apply_fn: Box::new(move |doc: &Value| {
                 let path = parse_path(S::PATH);
                 let sub_doc = get_at_path(doc, &path).cloned().unwrap_or(Value::Null);
@@ -108,6 +122,14 @@ impl AnyStateAction {
         }
     }
 
+    /// Scope of the targeted state.
+    pub fn scope(&self) -> StateScope {
+        match self {
+            Self::Typed { scope, .. } => *scope,
+            Self::Patch(_) => StateScope::Run,
+        }
+    }
+
     /// Apply this action to a JSON document, producing a patch.
     ///
     /// Consumes `self` since the inner closure is `FnOnce`.
@@ -134,10 +156,16 @@ impl AnyStateAction {
 impl fmt::Debug for AnyStateAction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Typed { state_type_name, state_type_id, .. } => {
+            Self::Typed {
+                state_type_name,
+                state_type_id,
+                scope,
+                ..
+            } => {
                 f.debug_struct("AnyStateAction::Typed")
                     .field("state", state_type_name)
                     .field("type_id", state_type_id)
+                    .field("scope", scope)
                     .finish()
             }
             Self::Patch(tracked) => {
@@ -250,6 +278,45 @@ mod tests {
         fn reduce(&mut self, _: ()) {}
     }
 
+    #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+    struct ToolScopedCounter {
+        value: i64,
+    }
+
+    struct ToolScopedCounterRef;
+
+    impl State for ToolScopedCounter {
+        type Ref<'a> = ToolScopedCounterRef;
+        const PATH: &'static str = "__tool_call_states.counter";
+
+        fn state_ref<'a>(_: &'a DocCell, _: TPath, _: PatchSink<'a>) -> Self::Ref<'a> {
+            ToolScopedCounterRef
+        }
+
+        fn from_value(value: &Value) -> TireaResult<Self> {
+            if value.is_null() {
+                return Ok(Self::default());
+            }
+            serde_json::from_value(value.clone()).map_err(tirea_state::TireaError::Serialization)
+        }
+
+        fn to_value(&self) -> TireaResult<Value> {
+            serde_json::to_value(self).map_err(tirea_state::TireaError::Serialization)
+        }
+    }
+
+    impl StateSpec for ToolScopedCounter {
+        type Action = CounterAction;
+        const SCOPE: StateScope = StateScope::ToolCall;
+
+        fn reduce(&mut self, action: Self::Action) {
+            match action {
+                CounterAction::Increment(n) => self.value += n,
+                CounterAction::Reset => self.value = 0,
+            }
+        }
+    }
+
     // -- Tests --
 
     #[test]
@@ -300,6 +367,18 @@ mod tests {
     fn any_state_action_state_type_id() {
         let action = AnyStateAction::new::<Counter>(CounterAction::Increment(1));
         assert_eq!(action.state_type_id(), Some(TypeId::of::<Counter>()));
+    }
+
+    #[test]
+    fn any_state_action_scope_defaults_to_run() {
+        let action = AnyStateAction::new::<Counter>(CounterAction::Increment(1));
+        assert_eq!(action.scope(), StateScope::Run);
+    }
+
+    #[test]
+    fn any_state_action_scope_tool_call() {
+        let action = AnyStateAction::new::<ToolScopedCounter>(CounterAction::Increment(1));
+        assert_eq!(action.scope(), StateScope::ToolCall);
     }
 
     #[test]

@@ -101,7 +101,7 @@ pub use runtime::{
     AfterToolExecuteContext, AgentBehavior, AnyStateAction, BeforeInferenceContext,
     BeforeToolExecuteContext, DecisionReplayPolicy, NoOpBehavior, Phase, PhaseContext, PhaseEffect,
     PhaseOutput, PhasePolicy, ReadOnlyContext, RunAction, RunContext, RunDelta, RunEndContext,
-    RunStartContext, StateEffect, StateSpec, StepContext, StepEndContext, StepOutcome,
+    RunStartContext, StateEffect, StateScope, StateSpec, StepContext, StepEndContext, StepOutcome,
     StepStartContext, StoppedReason, StreamResult, SuspendTicket, Suspension, SuspensionResponse,
     TerminationReason, TokenUsage, ToolCallAction, ToolCallContext, ToolCallOutcome, ToolContext,
     ToolExecution, ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
