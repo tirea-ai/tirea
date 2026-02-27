@@ -28,7 +28,7 @@ fn make_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::orchestrator::Ag
     };
 
     AgentOsBuilder::new()
-        .with_registered_plugin(
+        .with_registered_behavior(
             "terminate_plugin_requested_e2e_nats_postgres",
             Arc::new(TerminatePlugin::new(
                 "terminate_plugin_requested_e2e_nats_postgres",

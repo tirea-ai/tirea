@@ -5,8 +5,6 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
 use tirea_contract::runtime::plugin::phase::effect::PhaseOutput;
-use tirea_contract::runtime::plugin::phase::{BeforeInferenceContext, PluginPhaseContext};
-use tirea_contract::runtime::plugin::AgentPlugin;
 
 /// Injects a skills catalog into the LLM context so the model can discover and activate skills.
 ///
@@ -128,34 +126,6 @@ impl SkillDiscoveryPlugin {
 }
 
 #[async_trait]
-impl AgentPlugin for SkillDiscoveryPlugin {
-    fn id(&self) -> &str {
-        SKILLS_DISCOVERY_PLUGIN_ID
-    }
-
-    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-        let (active, scope) = {
-            let skill_state = step.state_of::<SkillState>();
-            let active: HashSet<String> = skill_state
-                .active()
-                .ok()
-                .unwrap_or_default()
-                .into_iter()
-                .collect();
-            // Clone scope to release immutable borrow on step
-            (active, step.run_config().clone())
-        };
-
-        let rendered = self.render_catalog(&active, Some(&scope));
-        if rendered.is_empty() {
-            return;
-        }
-
-        step.add_system_context(rendered);
-    }
-}
-
-#[async_trait]
 impl AgentBehavior for SkillDiscoveryPlugin {
     fn id(&self) -> &str {
         SKILLS_DISCOVERY_PLUGIN_ID
@@ -185,10 +155,10 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use tempfile::TempDir;
-    use tirea_contract::runtime::plugin::phase::{BeforeInferenceContext, StepContext};
-    use tirea_contract::testing::TestFixture;
-    use tirea_contract::thread::Thread;
-    use tirea_contract::runtime::tool_call::ToolDescriptor;
+    use tirea_contract::runtime::plugin::phase::Phase;
+    use tirea_contract::runtime::plugin::phase::effect::PhaseEffect;
+    use tirea_contract::RunConfig;
+    use tirea_state::DocCell;
 
     fn make_registry(skills: Vec<Arc<dyn Skill>>) -> Arc<dyn SkillRegistry> {
         Arc::new(InMemorySkillRegistry::from_skills(skills))
@@ -213,26 +183,28 @@ mod tests {
         (td, skills)
     }
 
-    async fn run_before_inference(plugin: &SkillDiscoveryPlugin, step: &mut StepContext<'_>) {
-        let mut ctx = BeforeInferenceContext::new(step);
-        AgentPlugin::before_inference(plugin, &mut ctx).await;
+    fn extract_system_contexts(output: &PhaseOutput) -> Vec<&str> {
+        output
+            .effects
+            .iter()
+            .filter_map(|e| match e {
+                PhaseEffect::SystemContext(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect()
     }
 
     #[tokio::test]
     async fn injects_catalog_with_usage() {
-        let fix = TestFixture::new();
         let (_td, skills) = make_skills();
         let p = SkillDiscoveryPlugin::new(make_registry(skills)).with_limits(10, 8 * 1024);
-        let thread = Thread::with_initial_state("s", json!({}));
-        let mut step = StepContext::new(
-            fix.ctx(),
-            &thread.id,
-            &thread.messages,
-            vec![ToolDescriptor::new("t", "t", "t")],
-        );
-        run_before_inference(&p, &mut step).await;
-        assert_eq!(step.system_context.len(), 1);
-        let s = &step.system_context[0];
+        let config = RunConfig::new();
+        let doc = DocCell::new(json!({}));
+        let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
+        let output = AgentBehavior::before_inference(&p, &ctx).await;
+        let contexts = extract_system_contexts(&output);
+        assert_eq!(contexts.len(), 1);
+        let s = contexts[0];
         assert!(s.contains("<available_skills>"));
         assert!(s.contains("<skills_usage>"));
         assert!(s.contains("&amp;"));
@@ -242,49 +214,36 @@ mod tests {
 
     #[tokio::test]
     async fn marks_active_skills() {
-        let fix = TestFixture::new();
         let (_td, skills) = make_skills();
         let p = SkillDiscoveryPlugin::new(make_registry(skills));
-        let thread = Thread::with_initial_state(
-            "s",
-            json!({
-                "skills": {
-                    "active": ["a"],
-                    "instructions": {"a": "Do X"},
-                    "references": {},
-                    "scripts": {}
-                }
-            }),
-        );
-        let mut step = StepContext::new(
-            fix.ctx(),
-            &thread.id,
-            &thread.messages,
-            vec![ToolDescriptor::new("t", "t", "t")],
-        );
-        run_before_inference(&p, &mut step).await;
-        let s = &step.system_context[0];
+        let config = RunConfig::new();
+        let doc = DocCell::new(json!({
+            "skills": {
+                "active": ["a"],
+                "instructions": {"a": "Do X"},
+                "references": {},
+                "scripts": {}
+            }
+        }));
+        let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
+        let output = AgentBehavior::before_inference(&p, &ctx).await;
+        let contexts = extract_system_contexts(&output);
+        let s = contexts[0];
         assert!(s.contains("<name>a-skill</name>"));
     }
 
     #[tokio::test]
     async fn does_not_inject_when_skills_empty() {
-        let fix = TestFixture::new();
         let p = SkillDiscoveryPlugin::new(make_registry(vec![]));
-        let thread = Thread::with_initial_state("s", json!({}));
-        let mut step = StepContext::new(
-            fix.ctx(),
-            &thread.id,
-            &thread.messages,
-            vec![ToolDescriptor::new("t", "t", "t")],
-        );
-        run_before_inference(&p, &mut step).await;
-        assert!(step.system_context.is_empty());
+        let config = RunConfig::new();
+        let doc = DocCell::new(json!({}));
+        let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
+        let output = AgentBehavior::before_inference(&p, &ctx).await;
+        assert!(output.is_empty());
     }
 
     #[tokio::test]
     async fn does_not_inject_when_all_skills_invalid() {
-        let fix = TestFixture::new();
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(root.join("BadSkill")).unwrap();
@@ -299,20 +258,15 @@ mod tests {
 
         let skills = FsSkill::into_arc_skills(result.skills);
         let p = SkillDiscoveryPlugin::new(make_registry(skills));
-        let thread = Thread::with_initial_state("s", json!({}));
-        let mut step = StepContext::new(
-            fix.ctx(),
-            &thread.id,
-            &thread.messages,
-            vec![ToolDescriptor::new("t", "t", "t")],
-        );
-        run_before_inference(&p, &mut step).await;
-        assert!(step.system_context.is_empty());
+        let config = RunConfig::new();
+        let doc = DocCell::new(json!({}));
+        let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
+        let output = AgentBehavior::before_inference(&p, &ctx).await;
+        assert!(output.is_empty());
     }
 
     #[tokio::test]
     async fn injects_only_valid_skills_and_never_warnings() {
-        let fix = TestFixture::new();
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(root.join("good-skill")).unwrap();
@@ -331,17 +285,13 @@ mod tests {
         let result = FsSkill::discover(root).unwrap();
         let skills = FsSkill::into_arc_skills(result.skills);
         let p = SkillDiscoveryPlugin::new(make_registry(skills));
-        let thread = Thread::with_initial_state("s", json!({}));
-        let mut step = StepContext::new(
-            fix.ctx(),
-            &thread.id,
-            &thread.messages,
-            vec![ToolDescriptor::new("t", "t", "t")],
-        );
-        run_before_inference(&p, &mut step).await;
-
-        assert_eq!(step.system_context.len(), 1);
-        let s = &step.system_context[0];
+        let config = RunConfig::new();
+        let doc = DocCell::new(json!({}));
+        let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
+        let output = AgentBehavior::before_inference(&p, &ctx).await;
+        let contexts = extract_system_contexts(&output);
+        assert_eq!(contexts.len(), 1);
+        let s = contexts[0];
         assert!(s.contains("<name>good-skill</name>"));
         assert!(!s.contains("BadSkill"));
         assert!(!s.contains("skills_warnings"));
@@ -350,7 +300,6 @@ mod tests {
 
     #[tokio::test]
     async fn truncates_by_entry_limit_and_emits_note() {
-        let fix = TestFixture::new();
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         for i in 0..5 {
@@ -365,15 +314,12 @@ mod tests {
         let result = FsSkill::discover(root).unwrap();
         let skills = FsSkill::into_arc_skills(result.skills);
         let p = SkillDiscoveryPlugin::new(make_registry(skills)).with_limits(2, 8 * 1024);
-        let thread = Thread::with_initial_state("s", json!({}));
-        let mut step = StepContext::new(
-            fix.ctx(),
-            &thread.id,
-            &thread.messages,
-            vec![ToolDescriptor::new("t", "t", "t")],
-        );
-        run_before_inference(&p, &mut step).await;
-        let s = &step.system_context[0];
+        let config = RunConfig::new();
+        let doc = DocCell::new(json!({}));
+        let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
+        let output = AgentBehavior::before_inference(&p, &ctx).await;
+        let contexts = extract_system_contexts(&output);
+        let s = contexts[0];
         assert!(s.contains("<available_skills>"));
         assert!(s.contains("truncated"));
         assert_eq!(s.matches("<skill>").count(), 2);
@@ -381,7 +327,6 @@ mod tests {
 
     #[tokio::test]
     async fn truncates_by_char_limit() {
-        let fix = TestFixture::new();
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(root.join("s")).unwrap();
@@ -393,36 +338,27 @@ mod tests {
         let result = FsSkill::discover(root).unwrap();
         let skills = FsSkill::into_arc_skills(result.skills);
         let p = SkillDiscoveryPlugin::new(make_registry(skills)).with_limits(10, 256);
-        let thread = Thread::with_initial_state("s", json!({}));
-        let mut step = StepContext::new(
-            fix.ctx(),
-            &thread.id,
-            &thread.messages,
-            vec![ToolDescriptor::new("t", "t", "t")],
-        );
-        run_before_inference(&p, &mut step).await;
-        let s = &step.system_context[0];
+        let config = RunConfig::new();
+        let doc = DocCell::new(json!({}));
+        let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
+        let output = AgentBehavior::before_inference(&p, &ctx).await;
+        let contexts = extract_system_contexts(&output);
+        let s = contexts[0];
         assert!(s.len() <= 256);
     }
 
     #[tokio::test]
     async fn filters_catalog_by_runtime_skill_policy() {
-        let mut fix = TestFixture::new();
         let (_td, skills) = make_skills();
         let p = SkillDiscoveryPlugin::new(make_registry(skills));
-        let thread = Thread::with_initial_state("s", json!({}));
-        fix.run_config
-            .set(SCOPE_ALLOWED_SKILLS_KEY, vec!["a-skill"])
-            .unwrap();
-        let mut step = StepContext::new(
-            fix.ctx(),
-            &thread.id,
-            &thread.messages,
-            vec![ToolDescriptor::new("t", "t", "t")],
-        );
-        run_before_inference(&p, &mut step).await;
-        assert_eq!(step.system_context.len(), 1);
-        let s = &step.system_context[0];
+        let mut config = RunConfig::new();
+        config.set(SCOPE_ALLOWED_SKILLS_KEY, vec!["a-skill"]).unwrap();
+        let doc = DocCell::new(json!({}));
+        let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
+        let output = AgentBehavior::before_inference(&p, &ctx).await;
+        let contexts = extract_system_contexts(&output);
+        assert_eq!(contexts.len(), 1);
+        let s = contexts[0];
         assert!(s.contains("<name>a-skill</name>"));
         assert!(!s.contains("<name>b-skill</name>"));
     }

@@ -1,6 +1,5 @@
 use super::policy::{is_scope_allowed, SCOPE_ALLOWED_AGENTS_KEY, SCOPE_EXCLUDED_AGENTS_KEY};
 use super::{AgentOs, AgentRegistry};
-use crate::contracts::runtime::plugin::AgentPlugin;
 use crate::contracts::thread::{Message, Role, ToolCall};
 use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
 use crate::contracts::{AgentEvent, Suspension};

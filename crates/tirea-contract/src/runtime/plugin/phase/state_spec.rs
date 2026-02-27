@@ -68,7 +68,18 @@ impl AnyStateAction {
             apply_fn: Box::new(move |doc: &Value| {
                 let path = parse_path(S::PATH);
                 let sub_doc = get_at_path(doc, &path).cloned().unwrap_or(Value::Null);
-                let mut state = S::from_value(&sub_doc)?;
+                // When the path doesn't exist (Null) and from_value fails,
+                // fall back to an empty object. This handles derive(State) structs
+                // whose #[serde(default)] fields can deserialize from `{}` but not
+                // from `null` (serde_json rejects null for struct types).
+                let mut state = S::from_value(&sub_doc).or_else(|first_err| {
+                    if sub_doc.is_null() {
+                        S::from_value(&Value::Object(Default::default()))
+                            .map_err(|_| first_err)
+                    } else {
+                        Err(first_err)
+                    }
+                })?;
                 state.reduce(action);
                 let new_value = state.to_value()?;
                 Ok(Patch::with_ops(vec![Op::set(
@@ -288,7 +299,7 @@ mod tests {
     #[test]
     fn any_state_action_state_type_id() {
         let action = AnyStateAction::new::<Counter>(CounterAction::Increment(1));
-        assert_eq!(action.state_type_id(), TypeId::of::<Counter>());
+        assert_eq!(action.state_type_id(), Some(TypeId::of::<Counter>()));
     }
 
     #[test]

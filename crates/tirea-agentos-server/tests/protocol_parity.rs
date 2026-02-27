@@ -20,7 +20,7 @@ fn make_os() -> AgentOs {
     };
 
     AgentOsBuilder::new()
-        .with_registered_plugin(
+        .with_registered_behavior(
             "terminate_plugin_requested_parity",
             Arc::new(TerminatePlugin::new("terminate_plugin_requested_parity")),
         )

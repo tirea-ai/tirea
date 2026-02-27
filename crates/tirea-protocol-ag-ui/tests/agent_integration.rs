@@ -550,7 +550,7 @@ use tirea_agentos::contracts::runtime::StreamResult;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadWriter};
 use tirea_agentos::contracts::thread::Message;
 use tirea_agentos::runtime::loop_runner::{
-    execute_tools_with_plugins, tool_map, BaseAgent, SequentialToolExecutor,
+    execute_tools, tool_map, BaseAgent, SequentialToolExecutor,
 };
 use tirea_state::{path, Op, Patch, TrackedPatch};
 use tirea_store_adapters::{FileStore, MemoryStore};
@@ -562,7 +562,7 @@ async fn loop_execute_tools(
     tools: &std::collections::HashMap<String, Arc<dyn Tool>>,
     parallel: bool,
 ) -> Result<Thread, AgentLoopError> {
-    execute_tools_with_plugins(thread, result, tools, parallel, &[])
+    execute_tools(thread, result, tools, parallel)
         .await
         .map(|outcome| outcome.into_thread())
 }
@@ -4578,13 +4578,11 @@ fn test_scenario_various_interaction_types() {
 
 use std::collections::{HashMap, HashSet};
 use tirea_agentos::contracts::runtime::plugin::phase::{
-    AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
-    BeforeToolExecuteContext, Phase, PluginPhaseContext, RunEndContext, RunStartContext,
-    StepContext, StepEndContext, StepStartContext, ToolContext,
+    Phase, StepContext, ToolContext,
 };
 use tirea_agentos::contracts::runtime::plugin::agent::ReadOnlyContext;
 use tirea_agentos::contracts::runtime::plugin::phase::effect::PhaseOutput;
-use tirea_agentos::contracts::runtime::plugin::{AgentBehavior, AgentPlugin};
+use tirea_agentos::contracts::runtime::plugin::AgentBehavior;
 use tirea_agentos::contracts::io::ResumeDecisionAction;
 use tirea_agentos::contracts::runtime::{
     AnyStateAction, SuspendedCall, SuspendedToolCallsState,
@@ -4680,43 +4678,21 @@ trait AgentPluginTestDispatch {
 #[async_trait::async_trait]
 impl<T> AgentPluginTestDispatch for T
 where
-    T: AgentPlugin + ?Sized,
+    T: AgentBehavior + ?Sized,
 {
     async fn run_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        match phase {
-            Phase::RunStart => {
-                let mut ctx = RunStartContext::new(step);
-                self.run_start(&mut ctx).await;
-            }
-            Phase::StepStart => {
-                let mut ctx = StepStartContext::new(step);
-                self.step_start(&mut ctx).await;
-            }
-            Phase::BeforeInference => {
-                let mut ctx = BeforeInferenceContext::new(step);
-                self.before_inference(&mut ctx).await;
-            }
-            Phase::AfterInference => {
-                let mut ctx = AfterInferenceContext::new(step);
-                self.after_inference(&mut ctx).await;
-            }
-            Phase::BeforeToolExecute => {
-                let mut ctx = BeforeToolExecuteContext::new(step);
-                self.before_tool_execute(&mut ctx).await;
-            }
-            Phase::AfterToolExecute => {
-                let mut ctx = AfterToolExecuteContext::new(step);
-                self.after_tool_execute(&mut ctx).await;
-            }
-            Phase::StepEnd => {
-                let mut ctx = StepEndContext::new(step);
-                self.step_end(&mut ctx).await;
-            }
-            Phase::RunEnd => {
-                let mut ctx = RunEndContext::new(step);
-                self.run_end(&mut ctx).await;
-            }
-        }
+        let ctx = build_read_only_ctx_for_dispatch(phase, step);
+        let output = match phase {
+            Phase::RunStart => self.run_start(&ctx).await,
+            Phase::StepStart => self.step_start(&ctx).await,
+            Phase::BeforeInference => self.before_inference(&ctx).await,
+            Phase::AfterInference => self.after_inference(&ctx).await,
+            Phase::BeforeToolExecute => self.before_tool_execute(&ctx).await,
+            Phase::AfterToolExecute => self.after_tool_execute(&ctx).await,
+            Phase::StepEnd => self.step_end(&ctx).await,
+            Phase::RunEnd => self.run_end(&ctx).await,
+        };
+        apply_phase_output_for_test(phase, step, output);
     }
 }
 
@@ -4786,49 +4762,16 @@ fn apply_phase_output_for_test(
         let snapshot = step.ctx().doc().snapshot();
         let patch = action.apply(&snapshot).expect("state action should apply");
         if !patch.is_empty() {
+            let doc = step.ctx().doc();
+            for op in patch.ops() {
+                let _ = doc.apply(op);
+            }
             let tracked = TrackedPatch::new(patch).with_source("agent");
             step.emit_state_effect(StateEffect::Patch(tracked));
         }
     }
 }
 
-/// Dispatch `AgentPluginTestDispatch` for `InteractionPlugin` via `AgentBehavior`.
-#[async_trait::async_trait]
-impl AgentPluginTestDispatch for InteractionPlugin {
-    async fn run_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        let ctx = build_read_only_ctx_for_dispatch(phase, step);
-        let output = match phase {
-            Phase::RunStart => self.run_start(&ctx).await,
-            Phase::StepStart => self.step_start(&ctx).await,
-            Phase::BeforeInference => self.before_inference(&ctx).await,
-            Phase::AfterInference => self.after_inference(&ctx).await,
-            Phase::BeforeToolExecute => self.before_tool_execute(&ctx).await,
-            Phase::AfterToolExecute => self.after_tool_execute(&ctx).await,
-            Phase::StepEnd => self.step_end(&ctx).await,
-            Phase::RunEnd => self.run_end(&ctx).await,
-        };
-        apply_phase_output_for_test(phase, step, output);
-    }
-}
-
-/// Dispatch `AgentPluginTestDispatch` for `TestFrontendToolPlugin` via `AgentBehavior`.
-#[async_trait::async_trait]
-impl AgentPluginTestDispatch for TestFrontendToolPlugin {
-    async fn run_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        let ctx = build_read_only_ctx_for_dispatch(phase, step);
-        let output = match phase {
-            Phase::RunStart => self.run_start(&ctx).await,
-            Phase::StepStart => self.step_start(&ctx).await,
-            Phase::BeforeInference => self.before_inference(&ctx).await,
-            Phase::AfterInference => self.after_inference(&ctx).await,
-            Phase::BeforeToolExecute => self.before_tool_execute(&ctx).await,
-            Phase::AfterToolExecute => self.after_tool_execute(&ctx).await,
-            Phase::StepEnd => self.step_end(&ctx).await,
-            Phase::RunEnd => self.run_end(&ctx).await,
-        };
-        apply_phase_output_for_test(phase, step, output);
-    }
-}
 
 #[derive(Debug, Default)]
 struct InteractionPlugin {
@@ -6571,17 +6514,17 @@ async fn test_permission_flow_multiple_tools_mixed() {
 }
 
 // ============================================================================
-// HITL Suspend/Resume via execute_tools_with_plugins
+// HITL Suspend/Resume via execute_tools_with_behaviors
 // ============================================================================
 
-/// Test: PermissionPlugin "ask" suspends tool execution via execute_tools_with_plugins.
+/// Test: PermissionPlugin "ask" suspends tool execution via execute_tools_with_behaviors.
 ///
 /// Verifies: Suspended outcome returned, no tool messages, interaction details correct,
 /// and suspended_interaction persisted in session state.
 #[tokio::test]
 async fn test_e2e_permission_suspend_with_real_tool() {
     use tirea_agentos::runtime::loop_runner::{
-        execute_tools_with_plugins, tool_map, ExecuteToolsOutcome,
+        execute_tools_with_behaviors, tool_map, ExecuteToolsOutcome,
     };
 
     // Thread with permissions.default_behavior = "ask"
@@ -6601,11 +6544,11 @@ async fn test_e2e_permission_suspend_with_real_tool() {
     };
 
     let tools = tool_map([IncrementTool]);
-    let plugins: Vec<Arc<dyn tirea_agentos::contracts::runtime::plugin::AgentPlugin>> =
-        vec![Arc::new(PermissionPlugin)];
+    let behavior: Arc<dyn tirea_agentos::contracts::runtime::plugin::AgentBehavior> =
+        Arc::new(PermissionPlugin);
 
-    // execute_tools_with_plugins should return Suspended outcome
-    let outcome = execute_tools_with_plugins(thread, &result, &tools, false, &plugins)
+    // execute_tools_with_behaviors should return Suspended outcome
+    let outcome = execute_tools_with_behaviors(thread, &result, &tools, false, behavior)
         .await
         .unwrap();
 
@@ -6658,13 +6601,13 @@ async fn test_e2e_permission_suspend_with_real_tool() {
     );
 }
 
-/// Test: InteractionPlugin denial blocks tool via execute_tools_with_plugins.
+/// Test: InteractionPlugin denial blocks tool via execute_tools_with_behaviors.
 ///
 /// After suspend, denial causes the tool to be blocked (error result, no execution).
 #[tokio::test]
 async fn test_e2e_permission_deny_blocks_via_execute_tools() {
     use tirea_agentos::runtime::loop_runner::{
-        execute_tools_with_plugins, tool_map, ExecuteToolsOutcome,
+        execute_tools_with_behaviors, tool_map, ExecuteToolsOutcome,
     };
 
     let thread = Thread::with_initial_state(
@@ -6683,11 +6626,11 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
     };
 
     let tools = tool_map([IncrementTool]);
-    let plugins: Vec<Arc<dyn tirea_agentos::contracts::runtime::plugin::AgentPlugin>> =
-        vec![Arc::new(PermissionPlugin)];
+    let behavior: Arc<dyn tirea_agentos::contracts::runtime::plugin::AgentBehavior> =
+        Arc::new(PermissionPlugin);
 
     // Phase 1: Suspend
-    let outcome = execute_tools_with_plugins(thread, &result, &tools, false, &plugins)
+    let outcome = execute_tools_with_behaviors(thread, &result, &tools, false, behavior)
         .await
         .unwrap();
 
@@ -6710,8 +6653,8 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
 
     // Resume with only InteractionPlugin — denial should block the tool
     let response_plugin = interaction_plugin_from_request(&deny_request);
-    let resume_plugins: Vec<Arc<dyn tirea_agentos::contracts::runtime::plugin::AgentPlugin>> =
-        vec![Arc::new(response_plugin)];
+    let resume_behavior: Arc<dyn tirea_agentos::contracts::runtime::plugin::AgentBehavior> =
+        Arc::new(response_plugin);
 
     let resume_result = StreamResult {
         text: "Resuming".to_string(),
@@ -6723,12 +6666,12 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
         usage: None,
     };
 
-    let resumed_thread = execute_tools_with_plugins(
+    let resumed_thread = execute_tools_with_behaviors(
         suspended_thread,
         &resume_result,
         &tools,
         false,
-        &resume_plugins,
+        resume_behavior,
     )
     .await
     .unwrap()
@@ -6757,13 +6700,13 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
     );
 }
 
-/// Test: InteractionPlugin approval allows tool via execute_tools_with_plugins.
+/// Test: InteractionPlugin approval allows tool via execute_tools_with_behaviors.
 ///
 /// After suspend, approval (without PermissionPlugin re-running) lets the tool execute.
 #[tokio::test]
 async fn test_e2e_permission_approve_executes_via_execute_tools() {
     use tirea_agentos::runtime::loop_runner::{
-        execute_tools_with_plugins, tool_map, ExecuteToolsOutcome,
+        execute_tools_with_behaviors, tool_map, ExecuteToolsOutcome,
     };
 
     let thread = Thread::with_initial_state(
@@ -6782,11 +6725,11 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
     };
 
     let tools = tool_map([IncrementTool]);
-    let plugins: Vec<Arc<dyn tirea_agentos::contracts::runtime::plugin::AgentPlugin>> =
-        vec![Arc::new(PermissionPlugin)];
+    let behavior: Arc<dyn tirea_agentos::contracts::runtime::plugin::AgentBehavior> =
+        Arc::new(PermissionPlugin);
 
     // Phase 1: Suspend
-    let outcome = execute_tools_with_plugins(thread, &result, &tools, false, &plugins)
+    let outcome = execute_tools_with_behaviors(thread, &result, &tools, false, behavior)
         .await
         .unwrap();
 
@@ -6808,8 +6751,8 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
 
     // Resume with only InteractionPlugin (no PermissionPlugin)
     let response_plugin = interaction_plugin_from_request(&approve_request);
-    let resume_plugins: Vec<Arc<dyn tirea_agentos::contracts::runtime::plugin::AgentPlugin>> =
-        vec![Arc::new(response_plugin)];
+    let resume_behavior: Arc<dyn tirea_agentos::contracts::runtime::plugin::AgentBehavior> =
+        Arc::new(response_plugin);
 
     let resume_result = StreamResult {
         text: "Resuming".to_string(),
@@ -6821,12 +6764,12 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
         usage: None,
     };
 
-    let resumed_thread = execute_tools_with_plugins(
+    let resumed_thread = execute_tools_with_behaviors(
         suspended_thread,
         &resume_result,
         &tools,
         false,
-        &resume_plugins,
+        resume_behavior,
     )
     .await
     .unwrap()

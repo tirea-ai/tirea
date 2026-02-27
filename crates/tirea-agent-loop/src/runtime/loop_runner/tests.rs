@@ -3,11 +3,7 @@ use super::LlmExecutor;
 use super::*;
 use crate::contracts::runtime::plugin::agent::ReadOnlyContext;
 use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
-use crate::contracts::runtime::plugin::phase::{
-    AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
-    BeforeToolExecuteContext, Phase, PluginPhaseContext, RunEndContext, RunStartContext,
-    StepEndContext, StepStartContext, SuspendTicket,
-};
+use crate::contracts::runtime::plugin::phase::{Phase, SuspendTicket};
 use crate::contracts::AgentBehavior;
 use crate::contracts::{AnyStateAction, StateSpec};
 use crate::contracts::runtime::ActivityManager;
@@ -31,308 +27,6 @@ use tirea_contract::testing::TestFixture;
 use tirea_state::{Op, Patch, State};
 use tokio::sync::Notify;
 use uuid::Uuid;
-
-macro_rules! phase_dispatch_methods {
-    (|$this:ident, $phase:ident, $step:ident| $body:block) => {
-        fn run_start<'life0, 'life1, 's, 'a, 'async_trait>(
-            &'life0 self,
-            ctx: &'life1 mut RunStartContext<'s, 'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
-        where
-            'life0: 'async_trait,
-            'life1: 'async_trait,
-            's: 'async_trait,
-            'a: 'async_trait,
-            Self: Sync + 'async_trait,
-        {
-            Box::pin(async move {
-                let $this = self;
-                let $phase = Phase::RunStart;
-                let $step = ctx.step_mut_for_tests();
-                $body
-            })
-        }
-
-        fn step_start<'life0, 'life1, 's, 'a, 'async_trait>(
-            &'life0 self,
-            ctx: &'life1 mut StepStartContext<'s, 'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
-        where
-            'life0: 'async_trait,
-            'life1: 'async_trait,
-            's: 'async_trait,
-            'a: 'async_trait,
-            Self: Sync + 'async_trait,
-        {
-            Box::pin(async move {
-                let $this = self;
-                let $phase = Phase::StepStart;
-                let $step = ctx.step_mut_for_tests();
-                $body
-            })
-        }
-
-        fn before_inference<'life0, 'life1, 's, 'a, 'async_trait>(
-            &'life0 self,
-            ctx: &'life1 mut BeforeInferenceContext<'s, 'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
-        where
-            'life0: 'async_trait,
-            'life1: 'async_trait,
-            's: 'async_trait,
-            'a: 'async_trait,
-            Self: Sync + 'async_trait,
-        {
-            Box::pin(async move {
-                let $this = self;
-                let $phase = Phase::BeforeInference;
-                let $step = ctx.step_mut_for_tests();
-                $body
-            })
-        }
-
-        fn after_inference<'life0, 'life1, 's, 'a, 'async_trait>(
-            &'life0 self,
-            ctx: &'life1 mut AfterInferenceContext<'s, 'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
-        where
-            'life0: 'async_trait,
-            'life1: 'async_trait,
-            's: 'async_trait,
-            'a: 'async_trait,
-            Self: Sync + 'async_trait,
-        {
-            Box::pin(async move {
-                let $this = self;
-                let $phase = Phase::AfterInference;
-                let $step = ctx.step_mut_for_tests();
-                $body
-            })
-        }
-
-        fn before_tool_execute<'life0, 'life1, 's, 'a, 'async_trait>(
-            &'life0 self,
-            ctx: &'life1 mut BeforeToolExecuteContext<'s, 'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
-        where
-            'life0: 'async_trait,
-            'life1: 'async_trait,
-            's: 'async_trait,
-            'a: 'async_trait,
-            Self: Sync + 'async_trait,
-        {
-            Box::pin(async move {
-                let $this = self;
-                let $phase = Phase::BeforeToolExecute;
-                let $step = ctx.step_mut_for_tests();
-                $body
-            })
-        }
-
-        fn after_tool_execute<'life0, 'life1, 's, 'a, 'async_trait>(
-            &'life0 self,
-            ctx: &'life1 mut AfterToolExecuteContext<'s, 'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
-        where
-            'life0: 'async_trait,
-            'life1: 'async_trait,
-            's: 'async_trait,
-            'a: 'async_trait,
-            Self: Sync + 'async_trait,
-        {
-            Box::pin(async move {
-                let $this = self;
-                let $phase = Phase::AfterToolExecute;
-                let $step = ctx.step_mut_for_tests();
-                $body
-            })
-        }
-
-        fn step_end<'life0, 'life1, 's, 'a, 'async_trait>(
-            &'life0 self,
-            ctx: &'life1 mut StepEndContext<'s, 'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
-        where
-            'life0: 'async_trait,
-            'life1: 'async_trait,
-            's: 'async_trait,
-            'a: 'async_trait,
-            Self: Sync + 'async_trait,
-        {
-            Box::pin(async move {
-                let $this = self;
-                let $phase = Phase::StepEnd;
-                let $step = ctx.step_mut_for_tests();
-                $body
-            })
-        }
-
-        fn run_end<'life0, 'life1, 's, 'a, 'async_trait>(
-            &'life0 self,
-            ctx: &'life1 mut RunEndContext<'s, 'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
-        where
-            'life0: 'async_trait,
-            'life1: 'async_trait,
-            's: 'async_trait,
-            'a: 'async_trait,
-            Self: Sync + 'async_trait,
-        {
-            Box::pin(async move {
-                let $this = self;
-                let $phase = Phase::RunEnd;
-                let $step = ctx.step_mut_for_tests();
-                $body
-            })
-        }
-    };
-
-    (|$phase:ident, $step:ident| $body:block) => {
-        fn run_start<'life0, 'life1, 's, 'a, 'async_trait>(
-            &'life0 self,
-            ctx: &'life1 mut RunStartContext<'s, 'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
-        where
-            'life0: 'async_trait,
-            'life1: 'async_trait,
-            's: 'async_trait,
-            'a: 'async_trait,
-            Self: Sync + 'async_trait,
-        {
-            Box::pin(async move {
-                let $phase = Phase::RunStart;
-                let $step = ctx.step_mut_for_tests();
-                $body
-            })
-        }
-
-        fn step_start<'life0, 'life1, 's, 'a, 'async_trait>(
-            &'life0 self,
-            ctx: &'life1 mut StepStartContext<'s, 'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
-        where
-            'life0: 'async_trait,
-            'life1: 'async_trait,
-            's: 'async_trait,
-            'a: 'async_trait,
-            Self: Sync + 'async_trait,
-        {
-            Box::pin(async move {
-                let $phase = Phase::StepStart;
-                let $step = ctx.step_mut_for_tests();
-                $body
-            })
-        }
-
-        fn before_inference<'life0, 'life1, 's, 'a, 'async_trait>(
-            &'life0 self,
-            ctx: &'life1 mut BeforeInferenceContext<'s, 'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
-        where
-            'life0: 'async_trait,
-            'life1: 'async_trait,
-            's: 'async_trait,
-            'a: 'async_trait,
-            Self: Sync + 'async_trait,
-        {
-            Box::pin(async move {
-                let $phase = Phase::BeforeInference;
-                let $step = ctx.step_mut_for_tests();
-                $body
-            })
-        }
-
-        fn after_inference<'life0, 'life1, 's, 'a, 'async_trait>(
-            &'life0 self,
-            ctx: &'life1 mut AfterInferenceContext<'s, 'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
-        where
-            'life0: 'async_trait,
-            'life1: 'async_trait,
-            's: 'async_trait,
-            'a: 'async_trait,
-            Self: Sync + 'async_trait,
-        {
-            Box::pin(async move {
-                let $phase = Phase::AfterInference;
-                let $step = ctx.step_mut_for_tests();
-                $body
-            })
-        }
-
-        fn before_tool_execute<'life0, 'life1, 's, 'a, 'async_trait>(
-            &'life0 self,
-            ctx: &'life1 mut BeforeToolExecuteContext<'s, 'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
-        where
-            'life0: 'async_trait,
-            'life1: 'async_trait,
-            's: 'async_trait,
-            'a: 'async_trait,
-            Self: Sync + 'async_trait,
-        {
-            Box::pin(async move {
-                let $phase = Phase::BeforeToolExecute;
-                let $step = ctx.step_mut_for_tests();
-                $body
-            })
-        }
-
-        fn after_tool_execute<'life0, 'life1, 's, 'a, 'async_trait>(
-            &'life0 self,
-            ctx: &'life1 mut AfterToolExecuteContext<'s, 'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
-        where
-            'life0: 'async_trait,
-            'life1: 'async_trait,
-            's: 'async_trait,
-            'a: 'async_trait,
-            Self: Sync + 'async_trait,
-        {
-            Box::pin(async move {
-                let $phase = Phase::AfterToolExecute;
-                let $step = ctx.step_mut_for_tests();
-                $body
-            })
-        }
-
-        fn step_end<'life0, 'life1, 's, 'a, 'async_trait>(
-            &'life0 self,
-            ctx: &'life1 mut StepEndContext<'s, 'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
-        where
-            'life0: 'async_trait,
-            'life1: 'async_trait,
-            's: 'async_trait,
-            'a: 'async_trait,
-            Self: Sync + 'async_trait,
-        {
-            Box::pin(async move {
-                let $phase = Phase::StepEnd;
-                let $step = ctx.step_mut_for_tests();
-                $body
-            })
-        }
-
-        fn run_end<'life0, 'life1, 's, 'a, 'async_trait>(
-            &'life0 self,
-            ctx: &'life1 mut RunEndContext<'s, 'a>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'async_trait>>
-        where
-            'life0: 'async_trait,
-            'life1: 'async_trait,
-            's: 'async_trait,
-            'a: 'async_trait,
-            Self: Sync + 'async_trait,
-        {
-            Box::pin(async move {
-                let $phase = Phase::RunEnd;
-                let $step = ctx.step_mut_for_tests();
-                $body
-            })
-        }
-    };
-}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 struct TestCounterState {
@@ -698,24 +392,26 @@ impl TestInteractionPlugin {
 }
 
 #[async_trait]
-impl AgentPlugin for TestInteractionPlugin {
+impl AgentBehavior for TestInteractionPlugin {
     fn id(&self) -> &str {
         "test_interaction"
     }
 
-    async fn run_start(&self, step: &mut RunStartContext<'_, '_>) {
+    async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
         if self.responses.is_empty() {
-            return;
+            return PhaseOutput::default();
         }
-        let suspended_state = step.state_of::<crate::contracts::runtime::SuspendedToolCallsState>();
-        let suspended_calls = suspended_state.calls().ok().unwrap_or_default();
+        let suspended_state = ctx.snapshot_of::<crate::contracts::runtime::SuspendedToolCallsState>()
+            .unwrap_or_default();
+        let suspended_calls = suspended_state.calls;
         if suspended_calls.is_empty() {
-            return;
+            return PhaseOutput::default();
         }
 
-        let tool_states =
-            step.state_of::<crate::contracts::runtime::ToolCallStatesMap>();
-        let mut states = tool_states.calls().ok().unwrap_or_default();
+        let existing_states = ctx.snapshot_of::<crate::contracts::runtime::ToolCallStatesMap>()
+            .unwrap_or_default();
+        let mut states = existing_states.calls;
+        let mut output = PhaseOutput::default();
         for (call_id, suspended_call) in suspended_calls {
             if states.get(&call_id).is_some_and(|state| {
                 matches!(
@@ -749,9 +445,13 @@ impl AgentPlugin for TestInteractionPlugin {
             state.resume_token = Some(suspended_call.ticket.pending.id.clone());
             state.resume = Some(resume);
             state.updated_at = updated_at;
-            states.insert(call_id.clone(), state);
+            output = output.with_state_action(
+                AnyStateAction::new::<crate::contracts::runtime::ToolCallStatesMap>(
+                    crate::contracts::runtime::ToolCallStatesAction::InsertState { state },
+                ),
+            );
         }
-        let _ = tool_states.set_calls(states);
+        output
     }
 }
 
@@ -1218,13 +918,11 @@ async fn test_activity_event_emitted_before_tool_completion() {
 
     let call = crate::contracts::thread::ToolCall::new("call_1", "activity_gate", json!({}));
     let descriptors = vec![tool.descriptor()];
-    let plugins: Vec<Arc<dyn AgentPlugin>> = Vec::new();
     let state = json!({});
     let run_config = tirea_contract::RunConfig::default();
     let phase_ctx = super::tool_exec::ToolPhaseContext {
         tool_descriptors: &descriptors,
         agent_behavior: None,
-        plugins: &plugins,
         activity_manager: activity_manager,
         run_config: &run_config,
         thread_id: "test",
@@ -1296,7 +994,6 @@ async fn test_parallel_tools_emit_activity_before_completion() {
     ];
     let tool_descriptors: Vec<ToolDescriptor> =
         tools.values().map(|t| t.descriptor().clone()).collect();
-    let plugins: Vec<Arc<dyn AgentPlugin>> = Vec::new();
     let state = json!({});
     let run_config = tirea_contract::RunConfig::default();
 
@@ -1304,13 +1001,11 @@ async fn test_parallel_tools_emit_activity_before_completion() {
     let tools_for_task = tools.clone();
     let calls_for_task = calls.clone();
     let tool_descriptors_for_task = tool_descriptors.clone();
-    let plugins_for_task = plugins.clone();
     let state_for_task = state.clone();
     let handle = tokio::spawn(async move {
         let phase_ctx = super::tool_exec::ToolPhaseContext {
             tool_descriptors: &tool_descriptors_for_task,
             agent_behavior: None,
-            plugins: &plugins_for_task,
             activity_manager: activity_manager,
             run_config: &run_config,
             thread_id: "test",
@@ -1387,7 +1082,6 @@ async fn test_parallel_tool_executor_honors_cancellation_token() {
         let phase_ctx = super::tool_exec::ToolPhaseContext {
             tool_descriptors: &tool_descriptors,
             agent_behavior: None,
-            plugins: &[],
             activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
             run_config: &run_config,
             thread_id: "cancel-test",
@@ -1570,7 +1264,7 @@ fn test_agent_config_with_phase_plugin() {
     let behavior: Arc<dyn AgentBehavior> = Arc::new(TestPhasePlugin::new("test"));
     let config = BaseAgent::new("gpt-4").add_behavior(behavior);
 
-    assert!(config.has_plugins());
+    assert!(config.has_behavior());
 }
 
 struct BlockingPhasePlugin;
@@ -1917,7 +1611,6 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
     let phase_ctx = super::tool_exec::ToolPhaseContext {
         tool_descriptors: &tool_descriptors,
         agent_behavior: Some(guarded_behavior.as_ref()),
-        plugins: &[],
         activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
         run_config: &run_config,
         thread_id: "test",
@@ -1993,7 +1686,6 @@ async fn test_execute_single_tool_context_waits_for_run_cancellation() {
     let phase_ctx = super::tool_exec::ToolPhaseContext {
         tool_descriptors: &tool_descriptors,
         agent_behavior: None,
-        plugins: &[],
         activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
         run_config: &run_config,
         thread_id: "test",
@@ -2051,7 +1743,6 @@ async fn test_plugin_sees_real_session_id_and_scope_in_tool_phase() {
     let phase_ctx = super::tool_exec::ToolPhaseContext {
         tool_descriptors: &tool_descriptors,
         agent_behavior: Some(session_check_behavior.as_ref()),
-        plugins: &[],
         activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
         run_config: &rt,
         thread_id: "real-thread-42",
@@ -2974,7 +2665,7 @@ fn test_execute_tools_with_config_denied_response_is_applied_via_tool_call_state
         let interaction =
             TestInteractionPlugin::with_responses(Vec::new(), vec!["call_1".to_string()]);
         let config =
-            BaseAgent::new("gpt-4").with_plugin(Arc::new(interaction) as Arc<dyn AgentPlugin>);
+            BaseAgent::new("gpt-4").add_behavior(Arc::new(interaction) as Arc<dyn AgentBehavior>);
 
         let thread = execute_tools_with_config(thread, &result, &tools, &config)
             .await
@@ -3613,20 +3304,20 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
     struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
             "terminate_plugin_requested"
         }
-        async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
-            ctx.request_termination(TerminationReason::PluginRequested);
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
         }
     }
 
     let interaction =
         TestInteractionPlugin::with_responses(Vec::new(), vec!["call_write".to_string()]);
     let config = BaseAgent::new("gpt-4o-mini")
-        .with_plugin(Arc::new(interaction))
-        .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
+        .add_behavior(Arc::new(interaction))
+        .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>);
     let thread = Thread::with_initial_state(
         "test",
         serde_json::json!({
@@ -3680,19 +3371,19 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
     struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
             "terminate_plugin_requested_for_permission_approval"
         }
-        async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
-            ctx.request_termination(TerminationReason::PluginRequested);
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
         }
     }
 
     let interaction = TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
     let config = BaseAgent::new("mock")
-        .with_plugin(Arc::new(interaction))
-        .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
+        .add_behavior(Arc::new(interaction))
+        .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>);
     let thread = Thread::with_initial_state(
         "test",
         json!({
@@ -3804,19 +3495,19 @@ async fn test_run_loop_permission_approval_replays_tool_and_updates_lifecycle_st
     struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
             "terminate_plugin_requested_for_permission_approval_nonstream"
         }
-        async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
-            ctx.request_termination(TerminationReason::PluginRequested);
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
         }
     }
 
     let interaction = TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
     let config = BaseAgent::new("mock")
-        .with_plugin(Arc::new(interaction))
-        .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>)
+        .add_behavior(Arc::new(interaction))
+        .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>)
         .with_llm_executor(Arc::new(MockChatProvider::new(vec![Ok(text_chat_response(
             "unused",
         ))])) as Arc<dyn LlmExecutor>);
@@ -3917,20 +3608,20 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
     struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
             "terminate_plugin_requested_for_permission_approval_checkpoint"
         }
-        async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
-            ctx.request_termination(TerminationReason::PluginRequested);
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
         }
     }
 
     let committer = Arc::new(RecordingStateCommitter::new(None));
     let interaction = TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
     let config = BaseAgent::new("mock")
-        .with_plugin(Arc::new(interaction))
-        .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>)
+        .add_behavior(Arc::new(interaction))
+        .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>)
         .with_llm_executor(
             Arc::new(MockStreamProvider::new(vec![MockResponse::text("unused")]))
                 as Arc<dyn LlmExecutor>,
@@ -4187,19 +3878,19 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
     struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
             "terminate_plugin_requested_for_permission_denial"
         }
-        async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
-            ctx.request_termination(TerminationReason::PluginRequested);
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
         }
     }
 
     let interaction = TestInteractionPlugin::with_responses(Vec::new(), vec!["call_1".to_string()]);
     let config = BaseAgent::new("mock")
-        .with_plugin(Arc::new(interaction))
-        .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
+        .add_behavior(Arc::new(interaction))
+        .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>);
     let thread = Thread::with_initial_state(
         "test",
         json!({
@@ -4308,19 +3999,19 @@ async fn test_run_loop_permission_denied_appends_tool_result_for_model_context()
     struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
             "terminate_plugin_requested_for_permission_denial_nonstream"
         }
-        async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
-            ctx.request_termination(TerminationReason::PluginRequested);
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
         }
     }
 
     let interaction = TestInteractionPlugin::with_responses(Vec::new(), vec!["call_1".to_string()]);
     let config = BaseAgent::new("mock")
-        .with_plugin(Arc::new(interaction))
-        .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
+        .add_behavior(Arc::new(interaction))
+        .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>);
 
     let thread = Thread::with_initial_state(
         "test",
@@ -4389,12 +4080,12 @@ async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_contex
     struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
             "terminate_plugin_requested_for_permission_cancel_nonstream"
         }
-        async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
-            ctx.request_termination(TerminationReason::PluginRequested);
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
         }
     }
 
@@ -4405,8 +4096,8 @@ async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_contex
         ),
     ]);
     let config = BaseAgent::new("mock")
-        .with_plugin(Arc::new(interaction))
-        .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
+        .add_behavior(Arc::new(interaction))
+        .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>);
 
     let thread = Thread::with_initial_state(
         "test",
@@ -6305,12 +5996,12 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
     struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
             "terminate_plugin_requested_replay_idempotent"
         }
-        async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
-            ctx.request_termination(TerminationReason::PluginRequested);
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
         }
     }
 
@@ -6318,8 +6009,8 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
         let interaction =
             TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
         BaseAgent::new("mock")
-            .with_plugin(Arc::new(interaction))
-            .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>)
+            .add_behavior(Arc::new(interaction))
+            .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>)
     }
 
     let calls = Arc::new(AtomicUsize::new(0));
@@ -6430,12 +6121,12 @@ async fn test_nonstream_replay_is_idempotent_across_reruns() {
     struct TerminatePluginRequestedPlugin;
 
     #[async_trait]
-    impl AgentPlugin for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminatePluginRequestedPlugin {
         fn id(&self) -> &str {
             "terminate_plugin_requested_replay_idempotent_nonstream"
         }
-        async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
-            ctx.request_termination(TerminationReason::PluginRequested);
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
         }
     }
 
@@ -6443,8 +6134,8 @@ async fn test_nonstream_replay_is_idempotent_across_reruns() {
         let interaction =
             TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
         BaseAgent::new("mock")
-            .with_plugin(Arc::new(interaction))
-            .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>)
+            .add_behavior(Arc::new(interaction))
+            .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>)
             .with_llm_executor(provider)
     }
 

@@ -53,9 +53,6 @@ pub use crate::contracts::runtime::tool_call::{
 // Message types
 pub use crate::contracts::thread::{Message, Role, ToolCall};
 
-// Plugin trait
-pub use crate::contracts::runtime::plugin::AgentPlugin;
-
 // Phase types for plugins
 pub use crate::contracts::runtime::plugin::phase::{
     Phase, RunAction, StateEffect, StepContext, StepOutcome, ToolCallAction, ToolContext,

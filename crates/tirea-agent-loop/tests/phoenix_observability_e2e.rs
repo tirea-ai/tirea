@@ -8,13 +8,13 @@ use phoenix_test_helpers::{
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tirea_agent_loop::contracts::runtime::plugin::AgentPlugin;
+use tirea_agent_loop::contracts::AgentBehavior;
 use tirea_agent_loop::contracts::thread::{Message, Thread, ToolCall};
 use tirea_agent_loop::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_agent_loop::contracts::{runtime::StreamResult, AgentEvent};
 use tirea_agent_loop::contracts::{RunContext, ToolCallContext};
 use tirea_agent_loop::runtime::loop_runner::{
-    execute_tools_with_plugins, run_loop, run_loop_stream, Agent, BaseAgent, GenaiLlmExecutor,
+    execute_tools_with_behaviors, run_loop, run_loop_stream, Agent, BaseAgent, GenaiLlmExecutor,
 };
 use tirea_extension_observability::{InMemorySink, LLMMetryPlugin};
 
@@ -92,7 +92,7 @@ async fn test_llmmetry_exports_to_phoenix_via_otlp() {
         LLMMetryPlugin::new(sink)
             .with_model(model_name.clone())
             .with_provider("test-provider"),
-    ) as Arc<dyn AgentPlugin>;
+    ) as Arc<dyn AgentBehavior>;
 
     let client = genai::Client::builder()
         .with_service_target_resolver_fn(move |mut t: genai::ServiceTarget| {
@@ -103,7 +103,7 @@ async fn test_llmmetry_exports_to_phoenix_via_otlp() {
         .build();
 
     let config = BaseAgent::new(model_name.clone())
-        .with_plugin(plugin)
+        .add_behavior(plugin)
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("phoenix-e2e-state", json!({}))
         .with_message(Message::user("hi"));
@@ -153,7 +153,7 @@ async fn test_llmmetry_exports_error_span_to_phoenix_via_otlp() {
         LLMMetryPlugin::new(sink)
             .with_model(model_name.clone())
             .with_provider("test-provider"),
-    ) as Arc<dyn AgentPlugin>;
+    ) as Arc<dyn AgentBehavior>;
 
     let client = genai::Client::builder()
         .with_service_target_resolver_fn(move |mut t: genai::ServiceTarget| {
@@ -164,7 +164,7 @@ async fn test_llmmetry_exports_error_span_to_phoenix_via_otlp() {
         .build();
 
     let config = BaseAgent::new(model_name.clone())
-        .with_plugin(plugin)
+        .add_behavior(plugin)
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("phoenix-e2e-state-err", json!({}))
         .with_message(Message::user("hi"));
@@ -200,7 +200,7 @@ async fn test_llmmetry_exports_tool_spans_to_phoenix_via_otlp() {
 
     let sink = InMemorySink::new();
     let plugin = Arc::new(LLMMetryPlugin::new(sink).with_provider(provider_name.clone()))
-        as Arc<dyn AgentPlugin>;
+        as Arc<dyn AgentBehavior>;
 
     let thread = Thread::with_initial_state("phoenix-tool-span-state", json!({}))
         .with_message(Message::user("hi"));
@@ -223,7 +223,7 @@ async fn test_llmmetry_exports_tool_spans_to_phoenix_via_otlp() {
         Arc::new(NoopTool { id: "phoenix_t2" }),
     );
 
-    let _ = execute_tools_with_plugins(thread, &result, &tools, true, &[plugin])
+    let _ = execute_tools_with_behaviors(thread, &result, &tools, true, plugin)
         .await
         .expect("tool execution with observability plugin should succeed");
 
@@ -272,7 +272,7 @@ async fn test_llmmetry_exports_streaming_success_span_to_phoenix_via_otlp() {
         LLMMetryPlugin::new(sink)
             .with_model(model_name.clone())
             .with_provider("test-provider"),
-    ) as Arc<dyn AgentPlugin>;
+    ) as Arc<dyn AgentBehavior>;
 
     let client = genai::Client::builder()
         .with_service_target_resolver_fn(move |mut t: genai::ServiceTarget| {
@@ -283,7 +283,7 @@ async fn test_llmmetry_exports_streaming_success_span_to_phoenix_via_otlp() {
         .build();
 
     let config = BaseAgent::new(model_name.clone())
-        .with_plugin(plugin)
+        .add_behavior(plugin)
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("phoenix-stream-ok-state", json!({}))
         .with_message(Message::user("hi"));
@@ -335,7 +335,7 @@ async fn test_llmmetry_exports_tool_error_span_to_phoenix_via_otlp() {
 
     let sink = InMemorySink::new();
     let plugin = Arc::new(LLMMetryPlugin::new(sink).with_provider(provider_name.clone()))
-        as Arc<dyn AgentPlugin>;
+        as Arc<dyn AgentBehavior>;
 
     let thread = Thread::with_initial_state("phoenix-tool-err-state", json!({}))
         .with_message(Message::user("hi"));
@@ -351,7 +351,7 @@ async fn test_llmmetry_exports_tool_error_span_to_phoenix_via_otlp() {
         Arc::new(FailingTool { id: "phoenix_bad" }),
     );
 
-    let _ = execute_tools_with_plugins(thread, &result, &tools, true, &[plugin])
+    let _ = execute_tools_with_behaviors(thread, &result, &tools, true, plugin)
         .await
         .expect("tool execution with observability plugin should succeed even on tool error");
 

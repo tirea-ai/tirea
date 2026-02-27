@@ -24,6 +24,11 @@ impl CompositeBehavior {
             behaviors,
         }
     }
+
+    /// Return a reference to the ordered list of child behaviors.
+    pub fn children(&self) -> &[Arc<dyn AgentBehavior>] {
+        &self.behaviors
+    }
 }
 
 /// Merge `source` effects and state actions into `target`.
@@ -42,6 +47,13 @@ impl AgentBehavior for CompositeBehavior {
         self.behaviors
             .iter()
             .flat_map(|b| b.owned_states())
+            .collect()
+    }
+
+    fn behavior_ids(&self) -> Vec<&str> {
+        self.behaviors
+            .iter()
+            .flat_map(|b| b.behavior_ids())
             .collect()
     }
 

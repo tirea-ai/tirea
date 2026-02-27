@@ -2,7 +2,7 @@ mod bundle;
 mod registry;
 mod stop_policy_registry;
 
-use crate::contracts::runtime::plugin::AgentPlugin;
+use crate::contracts::runtime::plugin::AgentBehavior;
 use crate::contracts::runtime::tool_call::Tool;
 use crate::orchestrator::AgentDefinition;
 use genai::chat::ChatOptions;
@@ -12,12 +12,13 @@ use std::sync::Arc;
 
 pub use bundle::{
     BundleComposeError, BundleComposer, BundleRegistryAccumulator, BundleRegistryKind, RegistrySet,
-    ToolPluginBundle,
+    ToolBehaviorBundle,
 };
 pub use registry::{
-    CompositeAgentRegistry, CompositeModelRegistry, CompositePluginRegistry,
-    CompositeProviderRegistry, CompositeToolRegistry, InMemoryAgentRegistry, InMemoryModelRegistry,
-    InMemoryPluginRegistry, InMemoryProviderRegistry, InMemoryToolRegistry,
+    CompositeAgentRegistry, CompositeBehaviorRegistry, CompositeModelRegistry,
+    CompositeProviderRegistry, CompositeToolRegistry, InMemoryAgentRegistry,
+    InMemoryBehaviorRegistry, InMemoryModelRegistry, InMemoryProviderRegistry,
+    InMemoryToolRegistry,
 };
 pub use stop_policy_registry::{
     CompositeStopPolicyRegistry, InMemoryStopPolicyRegistry, StopPolicyRegistry,
@@ -70,26 +71,26 @@ pub trait ProviderRegistry: Send + Sync {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum PluginRegistryError {
-    #[error("plugin id already registered: {0}")]
-    PluginIdConflict(String),
+pub enum BehaviorRegistryError {
+    #[error("behavior id already registered: {0}")]
+    BehaviorIdConflict(String),
 
-    #[error("plugin id mismatch: key={key} plugin.id()={plugin_id}")]
-    PluginIdMismatch { key: String, plugin_id: String },
+    #[error("behavior id mismatch: key={key} behavior.id()={behavior_id}")]
+    BehaviorIdMismatch { key: String, behavior_id: String },
 }
 
-pub trait PluginRegistry: Send + Sync {
+pub trait BehaviorRegistry: Send + Sync {
     fn len(&self) -> usize;
 
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    fn get(&self, id: &str) -> Option<Arc<dyn AgentPlugin>>;
+    fn get(&self, id: &str) -> Option<Arc<dyn AgentBehavior>>;
 
     fn ids(&self) -> Vec<String>;
 
-    fn snapshot(&self) -> HashMap<String, Arc<dyn AgentPlugin>>;
+    fn snapshot(&self) -> HashMap<String, Arc<dyn AgentBehavior>>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -185,11 +186,11 @@ pub trait RegistryBundle: Send + Sync {
         Vec::new()
     }
 
-    fn plugin_definitions(&self) -> HashMap<String, Arc<dyn AgentPlugin>> {
+    fn behavior_definitions(&self) -> HashMap<String, Arc<dyn AgentBehavior>> {
         HashMap::new()
     }
 
-    fn plugin_registries(&self) -> Vec<Arc<dyn PluginRegistry>> {
+    fn behavior_registries(&self) -> Vec<Arc<dyn BehaviorRegistry>> {
         Vec::new()
     }
 

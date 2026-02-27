@@ -69,27 +69,13 @@ macro_rules! impl_shared_agent_builder_methods {
     };
 }
 
-/// Builder methods for runtime instance fields (plugins).
+/// Builder methods for runtime instance fields.
 ///
-/// Only used by BaseAgent (loop layer) which directly holds plugin and
-/// runtime instances. AgentDefinition uses id-based references instead.
+/// Only used by BaseAgent (loop layer) which directly holds runtime
+/// instances. AgentDefinition uses id-based references instead.
 #[macro_export]
 macro_rules! impl_loop_config_builder_methods {
-    () => {
-        /// Set legacy plugins.
-        #[must_use]
-        pub fn with_plugins(mut self, plugins: Vec<Arc<dyn AgentPlugin>>) -> Self {
-            self.plugins = plugins;
-            self
-        }
-
-        /// Add a single legacy plugin.
-        #[must_use]
-        pub fn with_plugin(mut self, plugin: Arc<dyn AgentPlugin>) -> Self {
-            self.plugins.push(plugin);
-            self
-        }
-    };
+    () => {};
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -119,7 +105,7 @@ pub use io::{AgentEvent, ResumeDecisionAction, RunRequest, RuntimeInput, Runtime
 // runtime plugin/tool-call/lifecycle
 pub use runtime::{
     ActivityContext, ActivityManager, AfterInferenceContext, AfterToolExecuteContext, AgentBehavior,
-    AgentPlugin, AnyStateAction, BeforeInferenceContext, BeforeToolExecuteContext,
+    AnyStateAction, BeforeInferenceContext, BeforeToolExecuteContext,
     CompositeBehavior, DecisionReplayPolicy, NoOpBehavior, Phase, PhaseEffect, PhaseOutput,
     PhasePolicy, PluginPhaseContext, ReadOnlyContext, RunAction, RunContext, RunDelta,
     RunEndContext, RunStartContext, StateEffect, StateSpec, StepContext, StepEndContext,

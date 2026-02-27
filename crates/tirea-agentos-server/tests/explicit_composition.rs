@@ -21,7 +21,7 @@ fn make_os(write_store: Arc<dyn ThreadStore>) -> AgentOs {
     };
 
     AgentOsBuilder::new()
-        .with_registered_plugin(
+        .with_registered_behavior(
             "terminate_plugin_requested_explicit",
             Arc::new(TerminatePlugin::new("terminate_plugin_requested_explicit")),
         )

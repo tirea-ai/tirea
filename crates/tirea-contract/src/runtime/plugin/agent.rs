@@ -176,6 +176,15 @@ pub trait AgentBehavior: Send + Sync {
         HashSet::new()
     }
 
+    /// Return the ordered list of leaf behavior IDs.
+    ///
+    /// For simple behaviors this returns a single-element vec of `self.id()`.
+    /// [`CompositeBehavior`](super::CompositeBehavior) overrides this to
+    /// return the IDs of all child behaviors.
+    fn behavior_ids(&self) -> Vec<&str> {
+        vec![self.id()]
+    }
+
     async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
         PhaseOutput::default()
     }

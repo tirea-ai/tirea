@@ -77,7 +77,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::contracts::runtime::plugin::AgentPlugin;
 pub use crate::contracts::runtime::ToolExecutor;
 pub use crate::runtime::run_context::{
     await_or_cancel, is_cancelled, CancelAware, RunCancellationToken, StateCommitError,
@@ -101,7 +100,6 @@ pub use outcome::{LoopOutcome, LoopStats, LoopUsage};
 use plugin_runtime::emit_agent_phase;
 #[cfg(test)]
 use plugin_runtime::unified_emit_cleanup_phases_and_apply;
-use plugin_runtime::run_phase_block;
 use run_state::RunState;
 pub use state_commit::ChannelStateCommitter;
 use state_commit::PendingDeltaCommitContext;
@@ -117,9 +115,8 @@ use tool_exec::{
     scope_with_tool_caller_context, step_metadata, ToolPhaseContext,
 };
 pub use tool_exec::{
-    execute_tools, execute_tools_with_config, execute_tools_with_plugins,
-    execute_tools_with_plugins_and_executor, ParallelToolExecutionMode, ParallelToolExecutor,
-    SequentialToolExecutor,
+    execute_tools, execute_tools_with_behaviors, execute_tools_with_config,
+    ParallelToolExecutionMode, ParallelToolExecutor, SequentialToolExecutor,
 };
 
 /// Fully resolved agent wiring ready for execution.
@@ -155,10 +152,15 @@ impl ResolvedRun {
         }
     }
 
-    /// Add a single legacy plugin to the agent.
+    /// Add a behavior to the agent, composing with any existing behavior.
+    ///
+    /// Delegates to [`BaseAgent::add_behavior`].
     #[must_use]
-    pub fn with_plugin(mut self, plugin: Arc<dyn AgentPlugin>) -> Self {
-        self.agent.plugins.push(plugin);
+    pub fn add_behavior(
+        mut self,
+        behavior: Arc<dyn crate::contracts::runtime::plugin::AgentBehavior>,
+    ) -> Self {
+        self.agent = self.agent.add_behavior(behavior);
         self
     }
 }
@@ -929,7 +931,6 @@ async fn drain_resuming_tool_calls_and_replay(
                 let replay_phase_ctx = ToolPhaseContext {
                     tool_descriptors,
                     agent_behavior: Some(agent.behavior()),
-                    plugins: agent.plugins(),
                     activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
                     run_config: &rt_for_replay,
                     thread_id: run_ctx.thread_id(),
@@ -1711,7 +1712,6 @@ pub async fn run_loop(
             state: &tool_context.state,
             tool_descriptors: &active_tool_descriptors,
             agent_behavior: Some(agent.behavior()),
-            plugins: agent.plugins(),
             activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
             run_config: &tool_context.run_config,
             thread_id: run_ctx.thread_id(),

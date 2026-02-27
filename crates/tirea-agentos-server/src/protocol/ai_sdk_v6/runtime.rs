@@ -40,7 +40,6 @@ mod tests {
         .expect("request should deserialize");
         let mut resolved = empty_resolved();
         apply_ai_sdk_extensions(&mut resolved, &req);
-        assert!(resolved.agent.plugins.is_empty());
         assert_eq!(
             resolved.agent.tool_executor.name(),
             "parallel_batch_approval"
@@ -63,7 +62,6 @@ mod tests {
         .expect("request should deserialize");
         let mut resolved = empty_resolved();
         apply_ai_sdk_extensions(&mut resolved, &req);
-        assert!(resolved.agent.plugins.is_empty());
         assert_eq!(
             resolved.agent.tool_executor.name(),
             "parallel_batch_approval"

@@ -2,9 +2,6 @@ use super::state::current_unix_millis;
 use super::*;
 use crate::contracts::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
 use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
-use crate::contracts::runtime::plugin::phase::{
-    AfterToolExecuteContext, BeforeInferenceContext, PluginPhaseContext, RunStartContext,
-};
 use tirea_extension_permission::PermissionState;
 pub struct AgentRecoveryPlugin {
     manager: Arc<AgentRunManager>,
@@ -15,67 +12,6 @@ impl AgentRecoveryPlugin {
         Self { manager }
     }
 
-    async fn on_run_start(&self, step: &mut RunStartContext<'_, '_>) {
-        let state = step.snapshot();
-        let mut runs = parse_persisted_runs_from_doc(&state);
-        if runs.is_empty() {
-            return;
-        }
-
-        let has_suspended_recovery = has_suspended_recovery_interaction(&state);
-
-        let outcome =
-            reconcile_persisted_runs(self.manager.as_ref(), step.thread_id(), &mut runs).await;
-        if outcome.changed {
-            let delegation = step.state_of::<DelegationState>();
-            if delegation.set_runs(runs.clone()).is_err() {
-                return;
-            }
-        }
-
-        if has_suspended_recovery || outcome.orphaned_run_ids.is_empty() {
-            return;
-        }
-
-        let run_id = outcome.orphaned_run_ids[0].clone();
-        let Some(run) = runs.get(&run_id) else {
-            return;
-        };
-
-        let behavior = {
-            let state = step.state_of::<PermissionState>();
-            if let Ok(tools) = state.tools() {
-                if let Some(permission) = tools.get(AGENT_RECOVERY_INTERACTION_ACTION) {
-                    *permission
-                } else {
-                    state.default_behavior().ok().unwrap_or_default()
-                }
-            } else {
-                state.default_behavior().ok().unwrap_or_default()
-            }
-        };
-        match behavior {
-            ToolPermissionBehavior::Allow => {
-                schedule_recovery_replay(step, &run_id, run);
-            }
-            ToolPermissionBehavior::Deny => {}
-            ToolPermissionBehavior::Ask => {
-                let interaction = build_recovery_interaction(&run_id, run);
-                set_suspended_recovery_interaction(step, interaction);
-            }
-        }
-    }
-}
-
-#[async_trait]
-impl AgentPlugin for AgentRecoveryPlugin {
-    fn id(&self) -> &str {
-        AGENT_RECOVERY_PLUGIN_ID
-    }
-
-    async fn run_start(&self, ctx: &mut RunStartContext<'_, '_>) {
-        self.on_run_start(ctx).await;
-    }
 }
 
 #[async_trait]
@@ -328,35 +264,6 @@ impl AgentToolsPlugin {
         Some(s)
     }
 
-    async fn maybe_reminder(&self, step: &mut AfterToolExecuteContext<'_, '_>) {
-        if let Some(s) = self.render_reminder(step.thread_id()).await {
-            step.add_system_reminder(s);
-        }
-    }
-}
-
-#[async_trait]
-impl AgentPlugin for AgentToolsPlugin {
-    fn id(&self) -> &str {
-        AGENT_TOOLS_PLUGIN_ID
-    }
-
-    async fn before_inference(&self, step: &mut BeforeInferenceContext<'_, '_>) {
-        let caller_agent = step
-            .run_config()
-            .value(SCOPE_CALLER_AGENT_ID_KEY)
-            .and_then(|v| v.as_str());
-        let rendered = self.render_available_agents(caller_agent, Some(step.run_config()));
-        if !rendered.is_empty() {
-            step.add_system_context(rendered);
-        }
-    }
-
-    async fn after_tool_execute(&self, step: &mut AfterToolExecuteContext<'_, '_>) {
-        // Inject system reminders after tool execution so the reminder is persisted
-        // as internal-system history for subsequent turns.
-        self.maybe_reminder(step).await;
-    }
 }
 
 #[async_trait]

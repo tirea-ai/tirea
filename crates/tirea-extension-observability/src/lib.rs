@@ -11,11 +11,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
 use tirea_contract::runtime::plugin::phase::effect::PhaseOutput;
-use tirea_contract::runtime::plugin::phase::{
-    AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
-    BeforeToolExecuteContext, PluginPhaseContext, RunEndContext, RunStartContext,
-};
-use tirea_contract::runtime::plugin::AgentPlugin;
 use tirea_contract::runtime::run::{InferenceError, InferenceErrorState};
 use tirea_contract::TokenUsage;
 
@@ -312,7 +307,7 @@ impl MetricsSink for InMemorySink {
 ///     .with_model("gpt-4o-mini")
 ///     .with_provider("openai");
 /// let config = AgentDefinition::new("gpt-4o-mini")
-///     .with_plugin(Arc::new(plugin));
+///     .add_behavior(Arc::new(plugin));
 /// // ... run agent ...
 /// let metrics = sink.metrics();
 /// let _total = metrics.total_tokens();
@@ -384,231 +379,6 @@ impl LLMMetryPlugin {
             *lock_unpoison(&self.stop_sequences) = seqs.clone();
         }
         self
-    }
-}
-
-#[async_trait]
-impl AgentPlugin for LLMMetryPlugin {
-    fn id(&self) -> &str {
-        "llmmetry"
-    }
-
-    async fn run_start(&self, _ctx: &mut RunStartContext<'_, '_>) {
-        *lock_unpoison(&self.run_start) = Some(Instant::now());
-    }
-
-    async fn before_inference(&self, _ctx: &mut BeforeInferenceContext<'_, '_>) {
-        *lock_unpoison(&self.inference_start) = Some(Instant::now());
-        let model = lock_unpoison(&self.model).clone();
-        let provider = lock_unpoison(&self.provider).clone();
-        let span_name = format!("{} {}", self.operation, model);
-        let span = tracing::info_span!("gen_ai",
-            "otel.name" = %span_name,
-            "otel.kind" = "client",
-            "otel.status_code" = tracing::field::Empty,
-            "otel.status_description" = tracing::field::Empty,
-            "gen_ai.provider.name" = %provider,
-            "gen_ai.operation.name" = %self.operation,
-            "gen_ai.request.model" = %model,
-            "gen_ai.request.temperature" = tracing::field::Empty,
-            "gen_ai.request.top_p" = tracing::field::Empty,
-            "gen_ai.request.max_tokens" = tracing::field::Empty,
-            "gen_ai.request.stop_sequences" = tracing::field::Empty,
-            "gen_ai.response.model" = tracing::field::Empty,
-            "gen_ai.response.id" = tracing::field::Empty,
-            "gen_ai.usage.input_tokens" = tracing::field::Empty,
-            "gen_ai.usage.output_tokens" = tracing::field::Empty,
-            "gen_ai.response.finish_reasons" = tracing::field::Empty,
-            "gen_ai.usage.cache_read.input_tokens" = tracing::field::Empty,
-            "gen_ai.usage.cache_creation.input_tokens" = tracing::field::Empty,
-            "error.type" = tracing::field::Empty,
-            "error.message" = tracing::field::Empty,
-        );
-        if let Some(t) = *lock_unpoison(&self.temperature) {
-            span.record("gen_ai.request.temperature", t);
-        }
-        if let Some(t) = *lock_unpoison(&self.top_p) {
-            span.record("gen_ai.request.top_p", t);
-        }
-        if let Some(t) = *lock_unpoison(&self.max_tokens) {
-            span.record("gen_ai.request.max_tokens", t as i64);
-        }
-        {
-            let seqs = lock_unpoison(&self.stop_sequences);
-            if !seqs.is_empty() {
-                span.record(
-                    "gen_ai.request.stop_sequences",
-                    format!("{:?}", *seqs).as_str(),
-                );
-            }
-        }
-        *lock_unpoison(&self.inference_tracing_span) = Some(span);
-    }
-
-    async fn after_inference(&self, ctx: &mut AfterInferenceContext<'_, '_>) {
-        let duration_ms = self
-            .inference_start
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .take()
-            .map(|s| s.elapsed().as_millis() as u64)
-            .unwrap_or(0);
-
-        let usage = ctx.response_opt().and_then(|r| r.usage.as_ref());
-        let (input_tokens, output_tokens, total_tokens) = extract_token_counts(usage);
-        let (cache_read_input_tokens, cache_creation_input_tokens) = extract_cache_tokens(usage);
-        let error = inference_error_from_state(ctx);
-
-        let model = lock_unpoison(&self.model).clone();
-        let provider = lock_unpoison(&self.provider).clone();
-        let span = GenAISpan {
-            model,
-            provider,
-            operation: self.operation.clone(),
-            response_model: None,
-            response_id: None,
-            finish_reasons: Vec::new(),
-            error_type: error.as_ref().map(|e| e.error_type.clone()),
-            input_tokens,
-            output_tokens,
-            total_tokens,
-            cache_read_input_tokens,
-            cache_creation_input_tokens,
-            temperature: *lock_unpoison(&self.temperature),
-            top_p: *lock_unpoison(&self.top_p),
-            max_tokens: *lock_unpoison(&self.max_tokens),
-            stop_sequences: lock_unpoison(&self.stop_sequences).clone(),
-            duration_ms,
-        };
-
-        if let Some(tracing_span) = lock_unpoison(&self.inference_tracing_span).take() {
-            if let Some(v) = span.input_tokens {
-                tracing_span.record("gen_ai.usage.input_tokens", v);
-            }
-            if let Some(v) = span.output_tokens {
-                tracing_span.record("gen_ai.usage.output_tokens", v);
-            }
-            if let Some(v) = span.cache_read_input_tokens {
-                tracing_span.record("gen_ai.usage.cache_read.input_tokens", v);
-            }
-            if let Some(v) = span.cache_creation_input_tokens {
-                tracing_span.record("gen_ai.usage.cache_creation.input_tokens", v);
-            }
-            if !span.finish_reasons.is_empty() {
-                tracing_span.record(
-                    "gen_ai.response.finish_reasons",
-                    format!("{:?}", span.finish_reasons).as_str(),
-                );
-            }
-            if let Some(ref v) = span.response_model {
-                tracing_span.record("gen_ai.response.model", v.as_str());
-            }
-            if let Some(ref v) = span.response_id {
-                tracing_span.record("gen_ai.response.id", v.as_str());
-            }
-            if let Some(ref err) = error {
-                tracing_span.record("error.type", err.error_type.as_str());
-                tracing_span.record("error.message", err.message.as_str());
-                tracing_span.record("otel.status_code", "ERROR");
-                tracing_span.record("otel.status_description", err.message.as_str());
-            }
-            drop(tracing_span);
-        }
-
-        self.sink.on_inference(&span);
-        lock_unpoison(&self.metrics).inferences.push(span);
-    }
-
-    async fn before_tool_execute(&self, ctx: &mut BeforeToolExecuteContext<'_, '_>) {
-        let tool_name = ctx.tool_name().unwrap_or_default().to_string();
-        let call_id = ctx.tool_call_id().unwrap_or_default().to_string();
-        if !call_id.is_empty() {
-            self.tool_start
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .insert(call_id.clone(), Instant::now());
-        }
-        let provider = lock_unpoison(&self.provider).clone();
-        let span_name = format!("execute_tool {}", tool_name);
-        let span = tracing::info_span!("gen_ai",
-            "otel.name" = %span_name,
-            "otel.kind" = "internal",
-            "otel.status_code" = tracing::field::Empty,
-            "otel.status_description" = tracing::field::Empty,
-            "gen_ai.provider.name" = %provider,
-            "gen_ai.operation.name" = "execute_tool",
-            "gen_ai.tool.name" = %tool_name,
-            "gen_ai.tool.call.id" = %call_id,
-            "gen_ai.tool.type" = "function",
-            "error.type" = tracing::field::Empty,
-            "error.message" = tracing::field::Empty,
-        );
-        if !call_id.is_empty() {
-            lock_unpoison(&self.tool_tracing_span).insert(call_id, span);
-        }
-    }
-
-    async fn after_tool_execute(&self, ctx: &mut AfterToolExecuteContext<'_, '_>) {
-        let call_id_for_span = ctx.tool_call_id().unwrap_or_default().to_string();
-        let duration_ms = self
-            .tool_start
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&call_id_for_span)
-            .map(|s| s.elapsed().as_millis() as u64)
-            .unwrap_or(0);
-
-        let result = ctx.tool_result();
-        let error_type = if result.status == tirea_contract::runtime::tool_call::ToolStatus::Error {
-            Some("tool_error".to_string())
-        } else {
-            None
-        };
-        let error_message = result.message.clone().filter(|_| error_type.is_some());
-        let span = ToolSpan {
-            name: result.tool_name.clone(),
-            operation: "execute_tool".to_string(),
-            call_id: call_id_for_span.clone(),
-            tool_type: "function".to_string(),
-            error_type,
-            duration_ms,
-        };
-
-        let tracing_span = self
-            .tool_tracing_span
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&call_id_for_span);
-        if let Some(tracing_span) = tracing_span {
-            if let (Some(ref v), Some(ref msg)) = (&span.error_type, &error_message) {
-                tracing_span.record("error.type", v.as_str());
-                tracing_span.record("error.message", msg.as_str());
-                tracing_span.record("otel.status_code", "ERROR");
-                tracing_span.record("otel.status_description", msg.as_str());
-            }
-            drop(tracing_span);
-        }
-
-        self.sink.on_tool(&span);
-        lock_unpoison(&self.metrics).tools.push(span);
-    }
-
-    async fn run_end(&self, _ctx: &mut RunEndContext<'_, '_>) {
-        let session_duration_ms = self
-            .run_start
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .take()
-            .map(|s| s.elapsed().as_millis() as u64)
-            .unwrap_or(0);
-
-        lock_unpoison(&self.inference_tracing_span).take();
-        lock_unpoison(&self.tool_tracing_span).clear();
-        lock_unpoison(&self.tool_start).clear();
-
-        let mut metrics = lock_unpoison(&self.metrics).clone();
-        metrics.session_duration_ms = session_duration_ms;
-        self.sink.on_run_end(&metrics);
     }
 }
 
@@ -860,11 +630,6 @@ fn extract_cache_tokens(usage: Option<&TokenUsage>) -> (Option<i32>, Option<i32>
     }
 }
 
-fn inference_error_from_state(ctx: &impl PluginPhaseContext) -> Option<InferenceError> {
-    let state = ctx.state_of::<InferenceErrorState>();
-    state.error().ok().flatten()
-}
-
 fn inference_error_from_snapshot(ctx: &ReadOnlyContext<'_>) -> Option<InferenceError> {
     ctx.snapshot_of::<InferenceErrorState>()
         .ok()
@@ -882,61 +647,52 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
     use tirea_contract::runtime::plugin::phase::{
-        AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
-        BeforeToolExecuteContext, Phase, RunEndContext, RunStartContext, StepContext,
-        StepEndContext, StepStartContext, ToolContext as PhaseToolContext,
+        Phase, StepContext, ToolContext as PhaseToolContext,
     };
-    use tirea_contract::runtime::plugin::AgentPlugin;
     use tirea_contract::runtime::StreamResult;
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::ToolCall;
     use tirea_contract::runtime::tool_call::ToolResult;
 
-    #[async_trait::async_trait]
-    trait AgentPluginTestDispatch {
-        async fn run_phase(&self, phase: Phase, step: &mut StepContext<'_>);
-    }
+    /// Dispatch helper that builds a ReadOnlyContext from StepContext + fixture
+    /// and calls the appropriate AgentBehavior hook.
+    async fn run_phase(
+        plugin: &(impl AgentBehavior + ?Sized),
+        phase: Phase,
+        step: &StepContext<'_>,
+        fixture: &TestFixture,
+    ) {
+        let config = &fixture.run_config;
+        let doc = &fixture.doc;
+        let messages = step.messages();
+        let thread_id = step.thread_id();
 
-    #[async_trait::async_trait]
-    impl<T> AgentPluginTestDispatch for T
-    where
-        T: AgentPlugin + ?Sized,
-    {
-        async fn run_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-            match phase {
-                Phase::RunStart => {
-                    let mut ctx = RunStartContext::new(step);
-                    self.run_start(&mut ctx).await;
-                }
-                Phase::StepStart => {
-                    let mut ctx = StepStartContext::new(step);
-                    self.step_start(&mut ctx).await;
-                }
-                Phase::BeforeInference => {
-                    let mut ctx = BeforeInferenceContext::new(step);
-                    self.before_inference(&mut ctx).await;
-                }
-                Phase::AfterInference => {
-                    let mut ctx = AfterInferenceContext::new(step);
-                    self.after_inference(&mut ctx).await;
-                }
-                Phase::BeforeToolExecute => {
-                    let mut ctx = BeforeToolExecuteContext::new(step);
-                    self.before_tool_execute(&mut ctx).await;
-                }
-                Phase::AfterToolExecute => {
-                    let mut ctx = AfterToolExecuteContext::new(step);
-                    self.after_tool_execute(&mut ctx).await;
-                }
-                Phase::StepEnd => {
-                    let mut ctx = StepEndContext::new(step);
-                    self.step_end(&mut ctx).await;
-                }
-                Phase::RunEnd => {
-                    let mut ctx = RunEndContext::new(step);
-                    self.run_end(&mut ctx).await;
-                }
+        let mut ctx = ReadOnlyContext::new(phase, thread_id, messages, config, doc);
+
+        if let Some(ref response) = step.response {
+            ctx = ctx.with_response(response);
+        }
+
+        if let Some(ref tool) = step.tool {
+            ctx = ctx.with_tool_info(
+                tool.name.as_str(),
+                tool.id.as_str(),
+                Some(&tool.args),
+            );
+            if let Some(ref result) = tool.result {
+                ctx = ctx.with_tool_result(result);
             }
+        }
+
+        match phase {
+            Phase::RunStart => { AgentBehavior::run_start(plugin, &ctx).await; }
+            Phase::StepStart => { AgentBehavior::step_start(plugin, &ctx).await; }
+            Phase::BeforeInference => { AgentBehavior::before_inference(plugin, &ctx).await; }
+            Phase::AfterInference => { AgentBehavior::after_inference(plugin, &ctx).await; }
+            Phase::BeforeToolExecute => { AgentBehavior::before_tool_execute(plugin, &ctx).await; }
+            Phase::AfterToolExecute => { AgentBehavior::after_tool_execute(plugin, &ctx).await; }
+            Phase::StepEnd => { AgentBehavior::step_end(plugin, &ctx).await; }
+            Phase::RunEnd => { AgentBehavior::run_end(plugin, &ctx).await; }
         }
     }
 
@@ -1085,7 +841,7 @@ mod tests {
 
         let mut step = fix.step(vec![]);
 
-        plugin.run_phase(Phase::BeforeInference, &mut step).await;
+        run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
 
         step.response = Some(StreamResult {
             text: "hello".into(),
@@ -1093,7 +849,7 @@ mod tests {
             usage: Some(usage(100, 50, 150)),
         });
 
-        plugin.run_phase(Phase::AfterInference, &mut step).await;
+        run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
         let m = sink.metrics();
         assert_eq!(m.inference_count(), 1);
@@ -1115,7 +871,7 @@ mod tests {
 
         let mut step = fix.step(vec![]);
 
-        plugin.run_phase(Phase::BeforeInference, &mut step).await;
+        run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
 
         step.response = Some(StreamResult {
             text: "hello".into(),
@@ -1123,7 +879,7 @@ mod tests {
             usage: Some(usage_with_cache(100, 50, 150, 30)),
         });
 
-        plugin.run_phase(Phase::AfterInference, &mut step).await;
+        run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
         let m = sink.metrics();
         let span = &m.inferences[0];
@@ -1142,12 +898,12 @@ mod tests {
         let call = ToolCall::new("c1", "search", json!({}));
         step.tool = Some(PhaseToolContext::new(&call));
 
-        plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
 
         step.tool.as_mut().unwrap().result =
             Some(ToolResult::success("search", json!({"found": true})));
 
-        plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
+        run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
         let m = sink.metrics();
         assert_eq!(m.tool_count(), 1);
@@ -1169,11 +925,11 @@ mod tests {
         let call = ToolCall::new("c1", "write", json!({}));
         step.tool = Some(PhaseToolContext::new(&call));
 
-        plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
 
         step.tool.as_mut().unwrap().result = Some(ToolResult::error("write", "permission denied"));
 
-        plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
+        run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
         let m = sink.metrics();
         assert!(!m.tools[0].is_success());
@@ -1188,11 +944,11 @@ mod tests {
 
         let mut step = fix.step(vec![]);
 
-        plugin.run_phase(Phase::RunStart, &mut step).await;
+        run_phase(&plugin, Phase::RunStart, &step, &fix).await;
 
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        plugin.run_phase(Phase::RunEnd, &mut step).await;
+        run_phase(&plugin, Phase::RunEnd, &step, &fix).await;
 
         let m = sink.metrics();
         assert!(m.session_duration_ms >= 10);
@@ -1206,13 +962,13 @@ mod tests {
 
         let mut step = fix.step(vec![]);
 
-        plugin.run_phase(Phase::BeforeInference, &mut step).await;
+        run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
         step.response = Some(StreamResult {
             text: "hi".into(),
             tool_calls: vec![],
             usage: None,
         });
-        plugin.run_phase(Phase::AfterInference, &mut step).await;
+        run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
         let m = sink.metrics();
         assert_eq!(m.inference_count(), 1);
@@ -1229,13 +985,13 @@ mod tests {
         let mut step = fix.step(vec![]);
 
         for i in 0..3 {
-            plugin.run_phase(Phase::BeforeInference, &mut step).await;
+            run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
             step.response = Some(StreamResult {
                 text: format!("r{i}"),
                 tool_calls: vec![],
                 usage: Some(usage(10 * (i + 1), 5 * (i + 1), 15 * (i + 1))),
             });
-            plugin.run_phase(Phase::AfterInference, &mut step).await;
+            run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
         }
 
         let m = sink.metrics();
@@ -1261,8 +1017,8 @@ mod tests {
 
         let mut step = fix.step(vec![]);
 
-        plugin.run_phase(Phase::BeforeInference, &mut step).await;
-        plugin.run_phase(Phase::AfterInference, &mut step).await;
+        run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
+        run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
         let m = sink.metrics();
         assert_eq!(m.inference_count(), 1);
@@ -1289,12 +1045,12 @@ mod tests {
             async move {
                 let mut step = fix.step(vec![]);
                 step.tool = Some(PhaseToolContext::new(&call));
-                plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
+                run_phase(&*plugin, Phase::BeforeToolExecute, &step, fix).await;
                 // Stagger completion to maximize the chance of cross-talk.
                 tokio::time::sleep(Duration::from_millis(5 * (3 - i) as u64)).await;
                 step.tool.as_mut().unwrap().result =
                     Some(ToolResult::success(&call.name, json!({"ok": true})));
-                plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
+                run_phase(&*plugin, Phase::AfterToolExecute, &step, fix).await;
             }
         });
 
@@ -1618,13 +1374,13 @@ mod tests {
 
         let mut step = fix.step(vec![]);
 
-        plugin.run_phase(Phase::BeforeInference, &mut step).await;
+        run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
         step.response = Some(StreamResult {
             text: "hi".into(),
             tool_calls: vec![],
             usage: Some(usage(10, 20, 30)),
         });
-        plugin.run_phase(Phase::AfterInference, &mut step).await;
+        run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
         let spans = captured.lock().unwrap();
         let inference_span = spans.iter().find(|s| s.name == "gen_ai");
@@ -1650,10 +1406,10 @@ mod tests {
         let call = ToolCall::new("c1", "search", json!({}));
         step.tool = Some(PhaseToolContext::new(&call));
 
-        plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
+        run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
         step.tool.as_mut().unwrap().result =
             Some(ToolResult::success("search", json!({"found": true})));
-        plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
+        run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
         let spans = captured.lock().unwrap();
         let tool_span = spans.iter().find(|s| s.name == "gen_ai");
@@ -1665,7 +1421,7 @@ mod tests {
     fn test_plugin_id() {
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink);
-        assert_eq!(AgentPlugin::id(&plugin), "llmmetry");
+        assert_eq!(AgentBehavior::id(&plugin), "llmmetry");
     }
 
     // ---- OTel export compatibility tests ----
@@ -1712,13 +1468,13 @@ mod tests {
 
             let mut step = fix.step(vec![]);
 
-            plugin.run_phase(Phase::BeforeInference, &mut step).await;
+            run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
             step.response = Some(StreamResult {
                 text: "hello".into(),
                 tool_calls: vec![],
                 usage: Some(usage(100, 50, 150)),
             });
-            plugin.run_phase(Phase::AfterInference, &mut step).await;
+            run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1781,8 +1537,8 @@ mod tests {
 
             let mut step = fix.step(vec![]);
 
-            plugin.run_phase(Phase::BeforeInference, &mut step).await;
-            plugin.run_phase(Phase::AfterInference, &mut step).await;
+            run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
+            run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1818,14 +1574,14 @@ mod tests {
 
             let mut step = fix.step(vec![]);
 
-            plugin.run_phase(Phase::BeforeInference, &mut step).await;
+            run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
 
             step.response = Some(StreamResult {
                 text: "hello".into(),
                 tool_calls: vec![],
                 usage: Some(usage(100, 50, 150)),
             });
-            plugin.run_phase(Phase::AfterInference, &mut step).await;
+            run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
             drop(_parent_guard);
             drop(parent);
@@ -1872,11 +1628,11 @@ mod tests {
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
+            run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
 
             step.tool.as_mut().unwrap().result =
                 Some(ToolResult::success("search", json!({"found": true})));
-            plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
+            run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
             drop(_parent_guard);
             drop(parent);
@@ -1916,13 +1672,13 @@ mod tests {
             // No parent span entered — should be a root span
             let mut step = fix.step(vec![]);
 
-            plugin.run_phase(Phase::BeforeInference, &mut step).await;
+            run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
             });
-            plugin.run_phase(Phase::AfterInference, &mut step).await;
+            run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1951,13 +1707,13 @@ mod tests {
             // Inference span should be closed (exported) after AfterInference
             {
                 let mut step = fix.step(vec![]);
-                plugin.run_phase(Phase::BeforeInference, &mut step).await;
+                run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
                 step.response = Some(StreamResult {
                     text: "hi".into(),
                     tool_calls: vec![],
                     usage: None,
                 });
-                plugin.run_phase(Phase::AfterInference, &mut step).await;
+                run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
             }
 
             // Tool span should be closed (exported) after AfterToolExecute
@@ -1965,9 +1721,9 @@ mod tests {
                 let mut step = fix.step(vec![]);
                 let call = ToolCall::new("c1", "test", json!({}));
                 step.tool = Some(PhaseToolContext::new(&call));
-                plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
+                run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
                 step.tool.as_mut().unwrap().result = Some(ToolResult::success("test", json!({})));
-                plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
+                run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
             }
 
             let _ = provider.force_flush();
@@ -1996,13 +1752,13 @@ mod tests {
             // Inference phase
             {
                 let mut step = fix.step(vec![]);
-                plugin.run_phase(Phase::BeforeInference, &mut step).await;
+                run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
                 step.response = Some(StreamResult {
                     text: "calling tool".into(),
                     tool_calls: vec![ToolCall::new("c1", "search", json!({}))],
                     usage: Some(usage(10, 5, 15)),
                 });
-                plugin.run_phase(Phase::AfterInference, &mut step).await;
+                run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
             }
 
             // Tool phase
@@ -2010,9 +1766,9 @@ mod tests {
                 let mut step = fix.step(vec![]);
                 let call = ToolCall::new("c1", "search", json!({}));
                 step.tool = Some(PhaseToolContext::new(&call));
-                plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
+                run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
                 step.tool.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
-                plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
+                run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
             }
 
             drop(_parent_guard);
@@ -2077,10 +1833,10 @@ mod tests {
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
+            run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
             step.tool.as_mut().unwrap().result =
                 Some(ToolResult::success("search", json!({"found": true})));
-            plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
+            run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -2123,13 +1879,13 @@ mod tests {
 
             let mut step = fix.step(vec![]);
 
-            plugin.run_phase(Phase::BeforeInference, &mut step).await;
+            run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
             });
-            plugin.run_phase(Phase::AfterInference, &mut step).await;
+            run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -2159,9 +1915,9 @@ mod tests {
             let call = ToolCall::new("tc1", "web_search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
+            run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
             step.tool.as_mut().unwrap().result = Some(ToolResult::success("web_search", json!({})));
-            plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
+            run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -2190,13 +1946,13 @@ mod tests {
 
             let mut step = fix.step(vec![]);
 
-            plugin.run_phase(Phase::BeforeInference, &mut step).await;
+            run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
             });
-            plugin.run_phase(Phase::AfterInference, &mut step).await;
+            run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -2228,9 +1984,9 @@ mod tests {
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
+            run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
             step.tool.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
-            plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
+            run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -2260,9 +2016,9 @@ mod tests {
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
+            run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
             step.tool.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
-            plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
+            run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -2296,10 +2052,10 @@ mod tests {
             let call = ToolCall::new("tc1", "write", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
+            run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
             step.tool.as_mut().unwrap().result =
                 Some(ToolResult::error("write", "permission denied"));
-            plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
+            run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -2334,13 +2090,13 @@ mod tests {
 
             let mut step = fix.step(vec![]);
 
-            plugin.run_phase(Phase::BeforeInference, &mut step).await;
+            run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
             step.response = Some(StreamResult {
                 text: "ok".into(),
                 tool_calls: vec![],
                 usage: Some(usage(10, 5, 15)),
             });
-            plugin.run_phase(Phase::AfterInference, &mut step).await;
+            run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -2372,13 +2128,13 @@ mod tests {
 
             let mut step = fix.step(vec![]);
 
-            plugin.run_phase(Phase::BeforeInference, &mut step).await;
+            run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: Some(usage(100, 50, 150)),
             });
-            plugin.run_phase(Phase::AfterInference, &mut step).await;
+            run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -2430,13 +2186,13 @@ mod tests {
 
             let mut step = fix.step(vec![]);
 
-            plugin.run_phase(Phase::BeforeInference, &mut step).await;
+            run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
             });
-            plugin.run_phase(Phase::AfterInference, &mut step).await;
+            run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -2468,13 +2224,13 @@ mod tests {
             // Test with cache tokens present
             {
                 let mut step = fix.step(vec![]);
-                plugin.run_phase(Phase::BeforeInference, &mut step).await;
+                run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
                 step.response = Some(StreamResult {
                     text: "hi".into(),
                     tool_calls: vec![],
                     usage: Some(usage_with_cache(100, 50, 150, 30)),
                 });
-                plugin.run_phase(Phase::AfterInference, &mut step).await;
+                run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
             }
 
             let _ = provider.force_flush();
@@ -2517,13 +2273,13 @@ mod tests {
 
             let mut step = fix.step(vec![]);
 
-            plugin.run_phase(Phase::BeforeInference, &mut step).await;
+            run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: Some(usage(10, 5, 15)),
             });
-            plugin.run_phase(Phase::AfterInference, &mut step).await;
+            run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
             let m = sink.metrics();
             let span = &m.inferences[0];
@@ -2550,13 +2306,13 @@ mod tests {
 
             let mut step = fix.step(vec![]);
 
-            plugin.run_phase(Phase::BeforeInference, &mut step).await;
+            run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
             });
-            plugin.run_phase(Phase::AfterInference, &mut step).await;
+            run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -2591,13 +2347,13 @@ mod tests {
 
             let mut step = fix.step(vec![]);
 
-            plugin.run_phase(Phase::BeforeInference, &mut step).await;
+            run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
             });
-            plugin.run_phase(Phase::AfterInference, &mut step).await;
+            run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -2625,9 +2381,9 @@ mod tests {
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
+            run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
             step.tool.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
-            plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
+            run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();

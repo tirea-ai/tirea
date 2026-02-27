@@ -663,7 +663,6 @@ pub(super) fn run_stream(
                         state: &tool_context.state,
                         tool_descriptors: &tool_descriptors_for_exec,
                         agent_behavior: Some(agent.behavior()),
-                        plugins: agent.plugins(),
                         activity_manager: activity_manager.clone(),
                         run_config: &tool_context.run_config,
                         thread_id: &sid_for_tools,

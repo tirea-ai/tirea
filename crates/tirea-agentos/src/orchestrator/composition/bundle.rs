@@ -1,8 +1,8 @@
 use super::{
-    AgentRegistry, ModelDefinition, ModelRegistry, PluginRegistry, ProviderRegistry,
+    AgentRegistry, BehaviorRegistry, ModelDefinition, ModelRegistry, ProviderRegistry,
     RegistryBundle, ToolRegistry,
 };
-use crate::contracts::runtime::plugin::AgentPlugin;
+use crate::contracts::runtime::plugin::AgentBehavior;
 use crate::contracts::runtime::tool_call::Tool;
 use crate::orchestrator::AgentDefinition;
 use genai::Client;
@@ -14,7 +14,7 @@ use std::sync::Arc;
 pub struct RegistrySet {
     pub agents: Arc<dyn AgentRegistry>,
     pub tools: Arc<dyn ToolRegistry>,
-    pub plugins: Arc<dyn PluginRegistry>,
+    pub behaviors: Arc<dyn BehaviorRegistry>,
     pub providers: Arc<dyn ProviderRegistry>,
     pub models: Arc<dyn ModelRegistry>,
 }
@@ -23,14 +23,14 @@ impl RegistrySet {
     pub fn new(
         agents: Arc<dyn AgentRegistry>,
         tools: Arc<dyn ToolRegistry>,
-        plugins: Arc<dyn PluginRegistry>,
+        behaviors: Arc<dyn BehaviorRegistry>,
         providers: Arc<dyn ProviderRegistry>,
         models: Arc<dyn ModelRegistry>,
     ) -> Self {
         Self {
             agents,
             tools,
-            plugins,
+            behaviors,
             providers,
             models,
         }
@@ -41,7 +41,7 @@ impl RegistrySet {
 pub enum BundleRegistryKind {
     Agent,
     Tool,
-    Plugin,
+    Behavior,
     Provider,
     Model,
 }
@@ -51,7 +51,7 @@ impl std::fmt::Display for BundleRegistryKind {
         match self {
             Self::Agent => write!(f, "agent"),
             Self::Tool => write!(f, "tool"),
-            Self::Plugin => write!(f, "plugin"),
+            Self::Behavior => write!(f, "behavior"),
             Self::Provider => write!(f, "provider"),
             Self::Model => write!(f, "model"),
         }
@@ -79,8 +79,8 @@ pub struct BundleRegistryAccumulator<'a> {
     pub agent_registries: &'a mut Vec<Arc<dyn AgentRegistry>>,
     pub tool_definitions: &'a mut HashMap<String, Arc<dyn Tool>>,
     pub tool_registries: &'a mut Vec<Arc<dyn ToolRegistry>>,
-    pub plugin_definitions: &'a mut HashMap<String, Arc<dyn AgentPlugin>>,
-    pub plugin_registries: &'a mut Vec<Arc<dyn PluginRegistry>>,
+    pub behavior_definitions: &'a mut HashMap<String, Arc<dyn AgentBehavior>>,
+    pub behavior_registries: &'a mut Vec<Arc<dyn BehaviorRegistry>>,
     pub provider_definitions: &'a mut HashMap<String, Client>,
     pub provider_registries: &'a mut Vec<Arc<dyn ProviderRegistry>>,
     pub model_definitions: &'a mut HashMap<String, ModelDefinition>,
@@ -99,8 +99,8 @@ impl BundleComposer {
             agent_registries,
             tool_definitions,
             tool_registries,
-            plugin_definitions,
-            plugin_registries,
+            behavior_definitions,
+            behavior_registries,
             provider_definitions,
             provider_registries,
             model_definitions,
@@ -126,12 +126,12 @@ impl BundleComposer {
             tool_registries.extend(bundle.tool_registries());
 
             Self::merge_named(
-                plugin_definitions,
-                bundle.plugin_definitions(),
+                behavior_definitions,
+                bundle.behavior_definitions(),
                 &bundle_id,
-                BundleRegistryKind::Plugin,
+                BundleRegistryKind::Behavior,
             )?;
-            plugin_registries.extend(bundle.plugin_registries());
+            behavior_registries.extend(bundle.behavior_registries());
 
             Self::merge_named(
                 provider_definitions,
@@ -179,18 +179,18 @@ impl BundleComposer {
     }
 }
 
-/// Lightweight bundle carrying only tools/plugins contributions.
+/// Lightweight bundle carrying only tools/behaviors contributions.
 ///
 /// This is useful for runtime/system wiring where agent/model/provider registries
-/// should not be mutated, but tools/plugins still need a uniform bundle path.
+/// should not be mutated, but tools/behaviors still need a uniform bundle path.
 #[derive(Clone, Default)]
-pub struct ToolPluginBundle {
+pub struct ToolBehaviorBundle {
     id: String,
     tools: HashMap<String, Arc<dyn Tool>>,
-    plugins: HashMap<String, Arc<dyn AgentPlugin>>,
+    behaviors: HashMap<String, Arc<dyn AgentBehavior>>,
 }
 
-impl ToolPluginBundle {
+impl ToolBehaviorBundle {
     pub fn new(id: impl Into<String>) -> Self {
         Self {
             id: id.into(),
@@ -208,13 +208,13 @@ impl ToolPluginBundle {
         self
     }
 
-    pub fn with_plugin(mut self, plugin: Arc<dyn AgentPlugin>) -> Self {
-        self.plugins.insert(plugin.id().to_string(), plugin);
+    pub fn with_behavior(mut self, behavior: Arc<dyn AgentBehavior>) -> Self {
+        self.behaviors.insert(behavior.id().to_string(), behavior);
         self
     }
 }
 
-impl RegistryBundle for ToolPluginBundle {
+impl RegistryBundle for ToolBehaviorBundle {
     fn id(&self) -> &str {
         &self.id
     }
@@ -223,7 +223,7 @@ impl RegistryBundle for ToolPluginBundle {
         self.tools.clone()
     }
 
-    fn plugin_definitions(&self) -> HashMap<String, Arc<dyn AgentPlugin>> {
-        self.plugins.clone()
+    fn behavior_definitions(&self) -> HashMap<String, Arc<dyn AgentBehavior>> {
+        self.behaviors.clone()
     }
 }

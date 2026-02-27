@@ -6,7 +6,7 @@ use std::time::Duration;
 use futures::Stream;
 use genai::Client;
 
-use crate::contracts::runtime::plugin::AgentPlugin;
+use crate::contracts::runtime::plugin::AgentBehavior;
 use crate::contracts::storage::{ThreadHead, ThreadStore, ThreadStoreError, VersionPrecondition};
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::Message;
@@ -42,12 +42,12 @@ use agent_tools::{
 pub use composition::{
     AgentRegistry, AgentRegistryError, BundleComposeError, BundleComposer,
     BundleRegistryAccumulator, BundleRegistryKind, CompositeAgentRegistry, CompositeModelRegistry,
-    CompositePluginRegistry, CompositeProviderRegistry, CompositeStopPolicyRegistry,
-    CompositeToolRegistry, InMemoryAgentRegistry, InMemoryModelRegistry, InMemoryPluginRegistry,
+    CompositeBehaviorRegistry, CompositeProviderRegistry, CompositeStopPolicyRegistry,
+    CompositeToolRegistry, InMemoryAgentRegistry, InMemoryBehaviorRegistry, InMemoryModelRegistry,
     InMemoryProviderRegistry, InMemoryStopPolicyRegistry, InMemoryToolRegistry, ModelDefinition,
-    ModelRegistry, ModelRegistryError, PluginRegistry, PluginRegistryError, ProviderRegistry,
+    ModelRegistry, ModelRegistryError, BehaviorRegistry, BehaviorRegistryError, ProviderRegistry,
     ProviderRegistryError, RegistryBundle, RegistrySet, StopPolicyRegistry,
-    StopPolicyRegistryError, ToolPluginBundle, ToolRegistry, ToolRegistryError,
+    StopPolicyRegistryError, ToolBehaviorBundle, ToolRegistry, ToolRegistryError,
 };
 pub use stop_policy_plugin::{
     ConsecutiveErrors, ContentMatch, LoopDetection, MaxRounds, StopConditionSpec, StopOnTool,
@@ -126,23 +126,23 @@ impl Default for AgentToolsConfig {
 
 #[derive(Debug, thiserror::Error)]
 pub enum AgentOsWiringError {
-    #[error("reserved plugin id cannot be used: {0}")]
-    ReservedPluginId(String),
+    #[error("reserved behavior id cannot be used: {0}")]
+    ReservedBehaviorId(String),
 
-    #[error("plugin not found: {0}")]
-    PluginNotFound(String),
+    #[error("behavior not found: {0}")]
+    BehaviorNotFound(String),
 
     #[error("stop condition not found: {0}")]
     StopConditionNotFound(String),
 
-    #[error("plugin id already installed: {0}")]
-    PluginAlreadyInstalled(String),
+    #[error("behavior id already installed: {0}")]
+    BehaviorAlreadyInstalled(String),
 
     #[error("skills tool id already registered: {0}")]
     SkillsToolIdConflict(String),
 
-    #[error("skills plugin already installed: {0}")]
-    SkillsPluginAlreadyInstalled(String),
+    #[error("skills behavior already installed: {0}")]
+    SkillsBehaviorAlreadyInstalled(String),
 
     #[error("skills enabled but no skills configured")]
     SkillsNotConfigured,
@@ -150,11 +150,11 @@ pub enum AgentOsWiringError {
     #[error("agent tool id already registered: {0}")]
     AgentToolIdConflict(String),
 
-    #[error("agent tools plugin already installed: {0}")]
-    AgentToolsPluginAlreadyInstalled(String),
+    #[error("agent tools behavior already installed: {0}")]
+    AgentToolsBehaviorAlreadyInstalled(String),
 
-    #[error("agent recovery plugin already installed: {0}")]
-    AgentRecoveryPluginAlreadyInstalled(String),
+    #[error("agent recovery behavior already installed: {0}")]
+    AgentRecoveryBehaviorAlreadyInstalled(String),
 
     #[error("bundle '{bundle_id}' includes unsupported contribution in wiring: {kind}")]
     BundleUnsupportedContribution { bundle_id: String, kind: String },
@@ -162,11 +162,11 @@ pub enum AgentOsWiringError {
     #[error("bundle '{bundle_id}' tool id already registered: {id}")]
     BundleToolIdConflict { bundle_id: String, id: String },
 
-    #[error("bundle '{bundle_id}' plugin id mismatch: key={key} plugin.id()={plugin_id}")]
-    BundlePluginIdMismatch {
+    #[error("bundle '{bundle_id}' behavior id mismatch: key={key} behavior.id()={behavior_id}")]
+    BundleBehaviorIdMismatch {
         bundle_id: String,
         key: String,
-        plugin_id: String,
+        behavior_id: String,
     },
 }
 
@@ -182,7 +182,7 @@ pub enum AgentOsBuildError {
     Tools(#[from] ToolRegistryError),
 
     #[error(transparent)]
-    Plugins(#[from] PluginRegistryError),
+    Behaviors(#[from] BehaviorRegistryError),
 
     #[error(transparent)]
     Providers(#[from] ProviderRegistryError),
@@ -202,17 +202,17 @@ pub enum AgentOsBuildError {
     #[error(transparent)]
     StopPolicies(#[from] StopPolicyRegistryError),
 
-    #[error("agent {agent_id} references an empty plugin id")]
-    AgentEmptyPluginRef { agent_id: String },
+    #[error("agent {agent_id} references an empty behavior id")]
+    AgentEmptyBehaviorRef { agent_id: String },
 
-    #[error("agent {agent_id} references reserved plugin id: {plugin_id}")]
-    AgentReservedPluginId { agent_id: String, plugin_id: String },
+    #[error("agent {agent_id} references reserved behavior id: {behavior_id}")]
+    AgentReservedBehaviorId { agent_id: String, behavior_id: String },
 
-    #[error("agent {agent_id} references unknown plugin id: {plugin_id}")]
-    AgentPluginNotFound { agent_id: String, plugin_id: String },
+    #[error("agent {agent_id} references unknown behavior id: {behavior_id}")]
+    AgentBehaviorNotFound { agent_id: String, behavior_id: String },
 
-    #[error("agent {agent_id} has duplicate plugin reference: {plugin_id}")]
-    AgentDuplicatePluginRef { agent_id: String, plugin_id: String },
+    #[error("agent {agent_id} has duplicate behavior reference: {behavior_id}")]
+    AgentDuplicateBehaviorRef { agent_id: String, behavior_id: String },
 
     #[error("agent {agent_id} references an empty stop condition id")]
     AgentEmptyStopConditionRef { agent_id: String },
@@ -341,7 +341,7 @@ pub struct AgentOs {
     default_client: Client,
     agents: Arc<dyn AgentRegistry>,
     base_tools: Arc<dyn ToolRegistry>,
-    plugins: Arc<dyn PluginRegistry>,
+    behaviors: Arc<dyn BehaviorRegistry>,
     providers: Arc<dyn ProviderRegistry>,
     models: Arc<dyn ModelRegistry>,
     stop_policies: Arc<dyn StopPolicyRegistry>,
@@ -360,8 +360,8 @@ pub struct AgentOsBuilder {
     agent_registries: Vec<Arc<dyn AgentRegistry>>,
     base_tools: HashMap<String, Arc<dyn Tool>>,
     base_tool_registries: Vec<Arc<dyn ToolRegistry>>,
-    plugins: HashMap<String, Arc<dyn AgentPlugin>>,
-    plugin_registries: Vec<Arc<dyn PluginRegistry>>,
+    behaviors: HashMap<String, Arc<dyn AgentBehavior>>,
+    behavior_registries: Vec<Arc<dyn BehaviorRegistry>>,
     stop_policies: HashMap<String, Arc<dyn StopPolicy>>,
     stop_policy_registries: Vec<Arc<dyn StopPolicyRegistry>>,
     providers: HashMap<String, Client>,

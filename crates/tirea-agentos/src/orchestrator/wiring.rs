@@ -11,27 +11,27 @@ use crate::extensions::skills::{
 use crate::runtime::loop_runner::GenaiLlmExecutor;
 
 #[derive(Default)]
-struct ResolvedPlugins {
-    global: Vec<Arc<dyn AgentPlugin>>,
-    agent_default: Vec<Arc<dyn AgentPlugin>>,
+struct ResolvedBehaviors {
+    global: Vec<Arc<dyn AgentBehavior>>,
+    agent_default: Vec<Arc<dyn AgentBehavior>>,
 }
 
-impl ResolvedPlugins {
-    fn with_global(mut self, plugins: Vec<Arc<dyn AgentPlugin>>) -> Self {
+impl ResolvedBehaviors {
+    fn with_global(mut self, plugins: Vec<Arc<dyn AgentBehavior>>) -> Self {
         self.global.extend(plugins);
         self
     }
 
-    fn with_agent_default(mut self, plugins: Vec<Arc<dyn AgentPlugin>>) -> Self {
+    fn with_agent_default(mut self, plugins: Vec<Arc<dyn AgentBehavior>>) -> Self {
         self.agent_default.extend(plugins);
         self
     }
 
-    fn into_plugins(self) -> Result<Vec<Arc<dyn AgentPlugin>>, AgentOsWiringError> {
+    fn into_plugins(self) -> Result<Vec<Arc<dyn AgentBehavior>>, AgentOsWiringError> {
         let mut plugins = Vec::new();
         plugins.extend(self.global);
         plugins.extend(self.agent_default);
-        AgentOs::ensure_unique_plugin_ids(&plugins)?;
+        AgentOs::ensure_unique_behavior_ids(&plugins)?;
         Ok(plugins)
     }
 }
@@ -65,7 +65,7 @@ impl AgentOs {
         self.base_tools.snapshot()
     }
 
-    pub(super) fn reserved_plugin_ids() -> &'static [&'static str] {
+    pub(super) fn reserved_behavior_ids() -> &'static [&'static str] {
         &[
             SKILLS_PLUGIN_ID,
             SKILLS_DISCOVERY_PLUGIN_ID,
@@ -84,21 +84,21 @@ impl AgentOs {
         ]
     }
 
-    fn resolve_plugin_id_list(
+    fn resolve_behavior_id_list(
         &self,
         plugin_ids: &[String],
-    ) -> Result<Vec<Arc<dyn AgentPlugin>>, AgentOsWiringError> {
-        let reserved = Self::reserved_plugin_ids();
-        let mut out: Vec<Arc<dyn AgentPlugin>> = Vec::new();
+    ) -> Result<Vec<Arc<dyn AgentBehavior>>, AgentOsWiringError> {
+        let reserved = Self::reserved_behavior_ids();
+        let mut out: Vec<Arc<dyn AgentBehavior>> = Vec::new();
         for id in plugin_ids {
             let id = id.trim();
             if reserved.contains(&id) {
-                return Err(AgentOsWiringError::ReservedPluginId(id.to_string()));
+                return Err(AgentOsWiringError::ReservedBehaviorId(id.to_string()));
             }
             let p = self
-                .plugins
+                .behaviors
                 .get(id)
-                .ok_or_else(|| AgentOsWiringError::PluginNotFound(id.to_string()))?;
+                .ok_or_else(|| AgentOsWiringError::BehaviorNotFound(id.to_string()))?;
             out.push(p);
         }
         Ok(out)
@@ -120,22 +120,22 @@ impl AgentOs {
         Ok(out)
     }
 
-    pub(super) fn ensure_unique_plugin_ids(
-        plugins: &[Arc<dyn AgentPlugin>],
+    pub(super) fn ensure_unique_behavior_ids(
+        plugins: &[Arc<dyn AgentBehavior>],
     ) -> Result<(), AgentOsWiringError> {
-        // Fail-fast: plugins are keyed by `AgentPlugin::id()`. Duplicates are almost always a bug.
+        // Fail-fast: plugins are keyed by `AgentBehavior::id()`. Duplicates are almost always a bug.
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         for p in plugins {
             let id = p.id().to_string();
             if !seen.insert(id.clone()) {
-                return Err(AgentOsWiringError::PluginAlreadyInstalled(id));
+                return Err(AgentOsWiringError::BehaviorAlreadyInstalled(id));
             }
         }
         Ok(())
     }
 
     fn ensure_skills_plugin_not_installed(
-        plugins: &[Arc<dyn AgentPlugin>],
+        plugins: &[Arc<dyn AgentBehavior>],
     ) -> Result<(), AgentOsWiringError> {
         let reserved = Self::reserved_skills_plugin_ids();
         if let Some(existing) = plugins
@@ -143,7 +143,7 @@ impl AgentOs {
             .map(|p| p.id())
             .find(|id| reserved.contains(id))
         {
-            return Err(AgentOsWiringError::SkillsPluginAlreadyInstalled(
+            return Err(AgentOsWiringError::SkillsBehaviorAlreadyInstalled(
                 existing.to_string(),
             ));
         }
@@ -151,16 +151,16 @@ impl AgentOs {
     }
 
     fn ensure_agent_tools_plugin_not_installed(
-        plugins: &[Arc<dyn AgentPlugin>],
+        plugins: &[Arc<dyn AgentBehavior>],
     ) -> Result<(), AgentOsWiringError> {
         for existing in plugins.iter().map(|p| p.id()) {
             if existing == AGENT_TOOLS_PLUGIN_ID {
-                return Err(AgentOsWiringError::AgentToolsPluginAlreadyInstalled(
+                return Err(AgentOsWiringError::AgentToolsBehaviorAlreadyInstalled(
                     existing.to_string(),
                 ));
             }
             if existing == AGENT_RECOVERY_PLUGIN_ID {
-                return Err(AgentOsWiringError::AgentRecoveryPluginAlreadyInstalled(
+                return Err(AgentOsWiringError::AgentRecoveryBehaviorAlreadyInstalled(
                     existing.to_string(),
                 ));
             }
@@ -168,7 +168,7 @@ impl AgentOs {
         Ok(())
     }
 
-    fn build_skills_plugins(&self, registry: Arc<dyn SkillRegistry>) -> Vec<Arc<dyn AgentPlugin>> {
+    fn build_skills_plugins(&self, registry: Arc<dyn SkillRegistry>) -> Vec<Arc<dyn AgentBehavior>> {
         match self.skills_config.mode {
             SkillsMode::Disabled => Vec::new(),
             SkillsMode::DiscoveryAndRuntime => {
@@ -216,7 +216,7 @@ impl AgentOs {
 
     fn build_skills_wiring_bundles(
         &self,
-        resolved_plugins: &[Arc<dyn AgentPlugin>],
+        resolved_plugins: &[Arc<dyn AgentBehavior>],
         skills_registry: Option<Arc<dyn SkillRegistry>>,
     ) -> Result<Vec<Arc<dyn RegistryBundle>>, AgentOsWiringError> {
         if self.skills_config.mode == SkillsMode::Disabled {
@@ -236,16 +236,16 @@ impl AgentOs {
                 }
             })?;
 
-        let mut bundle = ToolPluginBundle::new(SKILLS_BUNDLE_ID).with_tools(tool_defs);
+        let mut bundle = ToolBehaviorBundle::new(SKILLS_BUNDLE_ID).with_tools(tool_defs);
         for plugin in self.build_skills_plugins(registry) {
-            bundle = bundle.with_plugin(plugin);
+            bundle = bundle.with_behavior(plugin);
         }
         Ok(vec![Arc::new(bundle)])
     }
 
     fn build_agent_tool_wiring_bundles(
         &self,
-        resolved_plugins: &[Arc<dyn AgentPlugin>],
+        resolved_plugins: &[Arc<dyn AgentBehavior>],
         agents_registry: Arc<dyn AgentRegistry>,
         skills_registry: Option<Arc<dyn SkillRegistry>>,
     ) -> Result<Vec<Arc<dyn RegistryBundle>>, AgentOsWiringError> {
@@ -264,13 +264,13 @@ impl AgentOs {
         let recovery_plugin = AgentRecoveryPlugin::new(self.agent_runs.clone());
 
         let tools_bundle: Arc<dyn RegistryBundle> = Arc::new(
-            ToolPluginBundle::new(AGENT_TOOLS_PLUGIN_ID)
+            ToolBehaviorBundle::new(AGENT_TOOLS_PLUGIN_ID)
                 .with_tool(run_tool)
                 .with_tool(stop_tool)
-                .with_plugin(Arc::new(tools_plugin)),
+                .with_behavior(Arc::new(tools_plugin)),
         );
         let recovery_bundle: Arc<dyn RegistryBundle> = Arc::new(
-            ToolPluginBundle::new(AGENT_RECOVERY_PLUGIN_ID).with_plugin(Arc::new(recovery_plugin)),
+            ToolBehaviorBundle::new(AGENT_RECOVERY_PLUGIN_ID).with_behavior(Arc::new(recovery_plugin)),
         );
 
         Ok(vec![tools_bundle, recovery_bundle])
@@ -280,15 +280,15 @@ impl AgentOs {
         &self,
         bundles: &[Arc<dyn RegistryBundle>],
         tools: &mut HashMap<String, Arc<dyn Tool>>,
-    ) -> Result<Vec<Arc<dyn AgentPlugin>>, AgentOsWiringError> {
+    ) -> Result<Vec<Arc<dyn AgentBehavior>>, AgentOsWiringError> {
         let mut plugins = Vec::new();
         for bundle in bundles {
             Self::validate_wiring_bundle(bundle.as_ref())?;
             Self::merge_wiring_bundle_tools(bundle.as_ref(), tools)?;
-            let mut bundle_plugins = Self::collect_wiring_bundle_plugins(bundle.as_ref())?;
+            let mut bundle_plugins = Self::collect_wiring_bundle_behaviors(bundle.as_ref())?;
             plugins.append(&mut bundle_plugins);
         }
-        Self::ensure_unique_plugin_ids(&plugins)?;
+        Self::ensure_unique_behavior_ids(&plugins)?;
         Ok(plugins)
     }
 
@@ -358,41 +358,41 @@ impl AgentOs {
         Ok(())
     }
 
-    fn collect_wiring_bundle_plugins(
+    fn collect_wiring_bundle_behaviors(
         bundle: &dyn RegistryBundle,
-    ) -> Result<Vec<Arc<dyn AgentPlugin>>, AgentOsWiringError> {
+    ) -> Result<Vec<Arc<dyn AgentBehavior>>, AgentOsWiringError> {
         let mut out = Vec::new();
 
-        let mut defs: Vec<(String, Arc<dyn AgentPlugin>)> =
-            bundle.plugin_definitions().into_iter().collect();
+        let mut defs: Vec<(String, Arc<dyn AgentBehavior>)> =
+            bundle.behavior_definitions().into_iter().collect();
         defs.sort_by(|a, b| a.0.cmp(&b.0));
-        for (key, plugin) in defs {
-            let plugin_id = plugin.id().to_string();
-            if key != plugin_id {
-                return Err(AgentOsWiringError::BundlePluginIdMismatch {
+        for (key, behavior) in defs {
+            let behavior_id = behavior.id().to_string();
+            if key != behavior_id {
+                return Err(AgentOsWiringError::BundleBehaviorIdMismatch {
                     bundle_id: bundle.id().to_string(),
                     key,
-                    plugin_id,
+                    behavior_id,
                 });
             }
-            out.push(plugin);
+            out.push(behavior);
         }
 
-        for reg in bundle.plugin_registries() {
+        for reg in bundle.behavior_registries() {
             let mut ids = reg.ids();
             ids.sort();
             for id in ids {
-                let Some(plugin) = reg.get(&id) else {
+                let Some(behavior) = reg.get(&id) else {
                     continue;
                 };
-                if id != plugin.id() {
-                    return Err(AgentOsWiringError::BundlePluginIdMismatch {
+                if id != behavior.id() {
+                    return Err(AgentOsWiringError::BundleBehaviorIdMismatch {
                         bundle_id: bundle.id().to_string(),
                         key: id,
-                        plugin_id: plugin.id().to_string(),
+                        behavior_id: behavior.id().to_string(),
                     });
                 }
-                out.push(plugin);
+                out.push(behavior);
             }
         }
 
@@ -416,13 +416,13 @@ impl AgentOs {
     pub(crate) fn wire_plugins_into(
         &self,
         definition: AgentDefinition,
-    ) -> Result<Vec<Arc<dyn AgentPlugin>>, AgentOsWiringError> {
+    ) -> Result<Vec<Arc<dyn AgentBehavior>>, AgentOsWiringError> {
         if definition.plugin_ids.is_empty() {
             return Ok(Vec::new());
         }
 
-        let resolved_plugins = self.resolve_plugin_id_list(&definition.plugin_ids)?;
-        ResolvedPlugins::default()
+        let resolved_plugins = self.resolve_behavior_id_list(&definition.plugin_ids)?;
+        ResolvedBehaviors::default()
             .with_agent_default(resolved_plugins)
             .into_plugins()
     }
@@ -433,7 +433,7 @@ impl AgentOs {
         tools: &mut HashMap<String, Arc<dyn Tool>>,
     ) -> Result<BaseAgent, AgentOsWiringError> {
         // Resolve plugins: system bundles (skills, agent_tools, agent_recovery) -> plugin_ids
-        let resolved_plugins = self.resolve_plugin_id_list(&definition.plugin_ids)?;
+        let resolved_plugins = self.resolve_behavior_id_list(&definition.plugin_ids)?;
         let frozen_agents = self.freeze_agent_registry();
         let frozen_skills = self.freeze_skill_registry();
 
@@ -445,7 +445,7 @@ impl AgentOs {
             frozen_skills,
         )?);
         let system_plugins = self.merge_wiring_bundles(&system_bundles, tools)?;
-        let mut all_plugins = ResolvedPlugins::default()
+        let mut all_plugins = ResolvedBehaviors::default()
             .with_global(system_plugins)
             .with_agent_default(resolved_plugins)
             .into_plugins()?;
@@ -457,7 +457,7 @@ impl AgentOs {
         let stop_plugin = StopPolicyPlugin::new(stop_conditions, specs);
         if !stop_plugin.is_empty() {
             all_plugins.push(Arc::new(stop_plugin));
-            AgentOs::ensure_unique_plugin_ids(&all_plugins)?;
+            AgentOs::ensure_unique_behavior_ids(&all_plugins)?;
         }
 
         Ok(definition.into_loop_config(all_plugins))
@@ -494,11 +494,11 @@ impl AgentOs {
         definition: AgentDefinition,
         tools: &mut HashMap<String, Arc<dyn Tool>>,
     ) -> Result<BaseAgent, AgentOsWiringError> {
-        let resolved_plugins = self.resolve_plugin_id_list(&definition.plugin_ids)?;
+        let resolved_plugins = self.resolve_behavior_id_list(&definition.plugin_ids)?;
         let skills_bundles =
             self.build_skills_wiring_bundles(&resolved_plugins, self.freeze_skill_registry())?;
         let skills_plugins = self.merge_wiring_bundles(&skills_bundles, tools)?;
-        let mut all_plugins = ResolvedPlugins::default()
+        let mut all_plugins = ResolvedBehaviors::default()
             .with_global(skills_plugins)
             .with_agent_default(resolved_plugins)
             .into_plugins()?;
@@ -509,7 +509,7 @@ impl AgentOs {
         let stop_plugin = StopPolicyPlugin::new(stop_conditions, specs);
         if !stop_plugin.is_empty() {
             all_plugins.push(Arc::new(stop_plugin));
-            AgentOs::ensure_unique_plugin_ids(&all_plugins)?;
+            AgentOs::ensure_unique_behavior_ids(&all_plugins)?;
         }
 
         Ok(definition.into_loop_config(all_plugins))

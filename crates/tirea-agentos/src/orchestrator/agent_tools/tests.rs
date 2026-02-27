@@ -1,15 +1,11 @@
 use super::*;
-use crate::contracts::runtime::plugin::phase::{
-    AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
-    BeforeToolExecuteContext, Phase, RunEndContext, RunStartContext, StepContext, StepEndContext,
-    StepStartContext,
-};
+use crate::contracts::runtime::plugin::phase::{Phase, StateEffect, StepContext};
 use crate::contracts::runtime::plugin::agent::ReadOnlyContext;
-use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
-use crate::contracts::runtime::plugin::AgentPlugin;
+use crate::contracts::runtime::plugin::phase::effect::{PhaseEffect, PhaseOutput};
 use crate::contracts::AgentBehavior;
 use crate::contracts::thread::Thread;
 use crate::contracts::runtime::tool_call::ToolStatus;
+use crate::contracts::runtime::plugin::phase::RunAction;
 use crate::orchestrator::InMemoryAgentRegistry;
 use crate::runtime::loop_runner::{
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
@@ -19,53 +15,84 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::time::Duration;
 use tirea_contract::testing::TestFixture;
-use tirea_state::apply_patches;
+use tirea_state::{apply_patches, TrackedPatch};
+
+/// Apply a [`PhaseOutput`] to the mutable [`StepContext`] for testing.
+///
+/// Replicates the effect-application logic from the agent-loop's
+/// `effect_applicator` module, which is not publicly exported.
+fn apply_phase_output_for_test(step: &mut StepContext<'_>, output: PhaseOutput) {
+    for effect in output.effects {
+        match effect {
+            PhaseEffect::SystemContext(s) => step.system(s),
+            PhaseEffect::SessionContext(s) => step.thread(s),
+            PhaseEffect::SystemReminder(s) => step.reminder(s),
+            PhaseEffect::ExcludeTool(id) => step.exclude(&id),
+            PhaseEffect::IncludeOnlyTools(ids) => {
+                let refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
+                step.include_only(&refs);
+            }
+            PhaseEffect::BlockTool(reason) => step.block(reason),
+            PhaseEffect::AllowTool => step.allow(),
+            PhaseEffect::SuspendTool(ticket) => step.suspend(ticket),
+            PhaseEffect::OverrideToolResult(result) => step.set_tool_result(result),
+            PhaseEffect::RequestTermination(reason) => {
+                step.set_run_action(RunAction::Terminate(reason));
+            }
+        }
+    }
+    for action in output.state_actions {
+        let snapshot = step.snapshot();
+        if let Ok(patch) = action.apply(&snapshot) {
+            if !patch.is_empty() {
+                // Apply ops to the doc so TestFixture::updated_state() reflects changes.
+                let doc = step.ctx().doc();
+                for op in patch.ops() {
+                    let _ = doc.apply(op);
+                }
+                let tracked = TrackedPatch::new(patch).with_source("agent");
+                step.emit_state_effect(StateEffect::Patch(tracked));
+            }
+        }
+    }
+    for patch in output.pending_patches {
+        let doc = step.ctx().doc();
+        for op in patch.patch().ops() {
+            let _ = doc.apply(op);
+        }
+        step.pending_patches.push(patch);
+    }
+}
 
 #[async_trait]
-trait AgentPluginTestDispatch {
+trait AgentBehaviorTestDispatch {
     async fn run_phase(&self, phase: Phase, step: &mut StepContext<'_>);
 }
 
 #[async_trait]
-impl<T> AgentPluginTestDispatch for T
+impl<T> AgentBehaviorTestDispatch for T
 where
-    T: AgentPlugin + ?Sized,
+    T: AgentBehavior + ?Sized,
 {
     async fn run_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        match phase {
-            Phase::RunStart => {
-                let mut ctx = RunStartContext::new(step);
-                self.run_start(&mut ctx).await;
-            }
-            Phase::StepStart => {
-                let mut ctx = StepStartContext::new(step);
-                self.step_start(&mut ctx).await;
-            }
-            Phase::BeforeInference => {
-                let mut ctx = BeforeInferenceContext::new(step);
-                self.before_inference(&mut ctx).await;
-            }
-            Phase::AfterInference => {
-                let mut ctx = AfterInferenceContext::new(step);
-                self.after_inference(&mut ctx).await;
-            }
-            Phase::BeforeToolExecute => {
-                let mut ctx = BeforeToolExecuteContext::new(step);
-                self.before_tool_execute(&mut ctx).await;
-            }
-            Phase::AfterToolExecute => {
-                let mut ctx = AfterToolExecuteContext::new(step);
-                self.after_tool_execute(&mut ctx).await;
-            }
-            Phase::StepEnd => {
-                let mut ctx = StepEndContext::new(step);
-                self.step_end(&mut ctx).await;
-            }
-            Phase::RunEnd => {
-                let mut ctx = RunEndContext::new(step);
-                self.run_end(&mut ctx).await;
-            }
-        }
+        let ctx = ReadOnlyContext::new(
+            phase,
+            step.thread_id(),
+            step.messages(),
+            step.run_config(),
+            step.ctx().doc(),
+        );
+        let output = match phase {
+            Phase::RunStart => self.run_start(&ctx).await,
+            Phase::StepStart => self.step_start(&ctx).await,
+            Phase::BeforeInference => self.before_inference(&ctx).await,
+            Phase::AfterInference => self.after_inference(&ctx).await,
+            Phase::BeforeToolExecute => self.before_tool_execute(&ctx).await,
+            Phase::AfterToolExecute => self.after_tool_execute(&ctx).await,
+            Phase::StepEnd => self.step_end(&ctx).await,
+            Phase::RunEnd => self.run_end(&ctx).await,
+        };
+        apply_phase_output_for_test(step, output);
     }
 }
 
@@ -339,7 +366,7 @@ fn caller_scope() -> tirea_contract::RunConfig {
 #[tokio::test]
 async fn agent_run_tool_fork_context_passes_non_system_messages_and_filters_unpaired_tool_calls() {
     let os = AgentOs::builder()
-        .with_registered_plugin(
+        .with_registered_behavior(
             "slow_terminate_plugin_requested",
             Arc::new(SlowTerminatePlugin),
         )
@@ -477,7 +504,7 @@ async fn agent_run_tool_fork_context_passes_non_system_messages_and_filters_unpa
 #[tokio::test]
 async fn background_stop_then_resume_completes() {
     let os = AgentOs::builder()
-        .with_registered_plugin(
+        .with_registered_behavior(
             "slow_terminate_plugin_requested",
             Arc::new(SlowTerminatePlugin),
         )
@@ -620,7 +647,7 @@ async fn manager_stop_tree_stops_descendants() {
 #[tokio::test]
 async fn agent_run_tool_persists_run_state_patch() {
     let os = AgentOs::builder()
-        .with_registered_plugin(
+        .with_registered_behavior(
             "slow_terminate_plugin_requested",
             Arc::new(SlowTerminatePlugin),
         )
@@ -668,7 +695,7 @@ async fn agent_run_tool_persists_run_state_patch() {
 #[tokio::test]
 async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
     let os = AgentOs::builder()
-        .with_registered_plugin(
+        .with_registered_behavior(
             "slow_terminate_plugin_requested",
             Arc::new(SlowTerminatePlugin),
         )
@@ -722,7 +749,7 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
 #[tokio::test]
 async fn agent_run_tool_injects_prompt_into_child_thread() {
     let os = AgentOs::builder()
-        .with_registered_plugin(
+        .with_registered_behavior(
             "slow_terminate_plugin_requested",
             Arc::new(SlowTerminatePlugin),
         )
@@ -770,7 +797,7 @@ async fn agent_run_tool_injects_prompt_into_child_thread() {
 #[tokio::test]
 async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
     let os = AgentOs::builder()
-        .with_registered_plugin(
+        .with_registered_behavior(
             "slow_terminate_plugin_requested",
             Arc::new(SlowTerminatePlugin),
         )
@@ -817,7 +844,7 @@ async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
 #[tokio::test]
 async fn agent_run_tool_resume_injects_prompt_into_child_thread() {
     let os = AgentOs::builder()
-        .with_registered_plugin(
+        .with_registered_behavior(
             "slow_terminate_plugin_requested",
             Arc::new(SlowTerminatePlugin),
         )
@@ -876,7 +903,7 @@ async fn agent_run_tool_resume_injects_prompt_into_child_thread() {
 #[tokio::test]
 async fn agent_run_tool_resume_updates_parent_run_lineage() {
     let os = AgentOs::builder()
-        .with_registered_plugin(
+        .with_registered_behavior(
             "slow_terminate_plugin_requested",
             Arc::new(SlowTerminatePlugin),
         )
@@ -940,7 +967,7 @@ async fn agent_run_tool_resume_updates_parent_run_lineage() {
 #[tokio::test]
 async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
     let os = AgentOs::builder()
-        .with_registered_plugin(
+        .with_registered_behavior(
             "slow_terminate_plugin_requested",
             Arc::new(SlowTerminatePlugin),
         )

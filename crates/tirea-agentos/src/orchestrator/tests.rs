@@ -1,7 +1,6 @@
 use super::*;
 use crate::contracts::runtime::plugin::agent::ReadOnlyContext;
 use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
-use crate::contracts::runtime::plugin::phase::BeforeInferenceContext;
 use crate::contracts::storage::{ThreadReader, ThreadWriter};
 use crate::contracts::thread::Thread;
 use crate::contracts::runtime::tool_call::ToolDescriptor;
@@ -253,9 +252,10 @@ async fn wire_skills_inserts_tools_and_plugin() {
     assert!(tools.contains_key("load_skill_resource"));
     assert!(tools.contains_key("skill_script"));
 
-    assert_eq!(cfg.plugins.len(), 2);
-    assert_eq!(cfg.plugins[0].id(), "skills");
-    assert_eq!(cfg.plugins[1].id(), "stop_policy");
+    let behavior_ids = cfg.behavior.behavior_ids();
+    assert_eq!(behavior_ids.len(), 2);
+    assert_eq!(behavior_ids[0], "skills");
+    assert_eq!(behavior_ids[1], "stop_policy");
 
     // Verify injection does not panic and includes catalog.
     let state = json!({
@@ -266,11 +266,28 @@ async fn wire_skills_inserts_tools_and_plugin() {
             "scripts": {}
         }
     });
-    let fixture = TestFixture::new_with_state(state);
-    let mut step = fixture.step(vec![ToolDescriptor::new("t", "t", "t")]);
-    let mut before = crate::contracts::runtime::plugin::phase::BeforeInferenceContext::new(&mut step);
-    cfg.plugins[0].before_inference(&mut before).await;
-    let merged = step.system_context.join("\n");
+    let doc = tirea_state::DocCell::new(state);
+    let run_config = crate::contracts::RunConfig::new();
+    let ctx = ReadOnlyContext::new(
+        crate::contracts::runtime::plugin::phase::Phase::BeforeInference,
+        "thread_1",
+        &[],
+        &run_config,
+        &doc,
+    );
+    let output = cfg.behavior.before_inference(&ctx).await;
+    let merged: String = output
+        .effects
+        .iter()
+        .filter_map(|e| {
+            if let crate::contracts::runtime::plugin::phase::effect::PhaseEffect::SystemContext(s) = e {
+                Some(s.as_str())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(merged.contains("<available_skills>"));
     assert!(
         !merged.contains("<skill_instructions skill=\"s1\">"),
@@ -296,9 +313,10 @@ async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
     let cfg = AgentDefinition::new("gpt-4o-mini");
     let cfg = os.wire_skills_into(cfg, &mut tools).unwrap();
 
-    assert_eq!(cfg.plugins.len(), 2);
-    assert_eq!(cfg.plugins[0].id(), "skills_runtime");
-    assert_eq!(cfg.plugins[1].id(), "stop_policy");
+    let behavior_ids = cfg.behavior.behavior_ids();
+    assert_eq!(behavior_ids.len(), 2);
+    assert_eq!(behavior_ids[0], "skills_runtime");
+    assert_eq!(behavior_ids[1], "stop_policy");
 
     let state = json!({
         "skills": {
@@ -308,11 +326,28 @@ async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
             "scripts": {}
         }
     });
-    let fixture = TestFixture::new_with_state(state);
-    let mut step = fixture.step(vec![ToolDescriptor::new("t", "t", "t")]);
-    let mut before = crate::contracts::runtime::plugin::phase::BeforeInferenceContext::new(&mut step);
-    cfg.plugins[0].before_inference(&mut before).await;
-    let merged = step.system_context.join("\n");
+    let doc = tirea_state::DocCell::new(state);
+    let run_config = crate::contracts::RunConfig::new();
+    let ctx = ReadOnlyContext::new(
+        crate::contracts::runtime::plugin::phase::Phase::BeforeInference,
+        "thread_1",
+        &[],
+        &run_config,
+        &doc,
+    );
+    let output = cfg.behavior.before_inference(&ctx).await;
+    let merged: String = output
+        .effects
+        .iter()
+        .filter_map(|e| {
+            if let crate::contracts::runtime::plugin::phase::effect::PhaseEffect::SystemContext(s) = e {
+                Some(s.as_str())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(!merged.contains("<available_skills>"));
     assert!(
         !merged.contains("<skill_instructions skill=\"s1\">"),
@@ -340,8 +375,9 @@ fn wire_skills_disabled_is_noop() {
 
     assert!(tools.is_empty());
     // Only the synthesized stop-policy plugin (from default max_rounds=10).
-    assert_eq!(cfg2.plugins.len(), 1);
-    assert_eq!(cfg2.plugins[0].id(), "stop_policy");
+    let behavior_ids = cfg2.behavior.behavior_ids();
+    assert_eq!(behavior_ids.len(), 1);
+    assert_eq!(behavior_ids[0], "stop_policy");
 }
 
 #[test]
@@ -357,8 +393,8 @@ fn wire_plugins_into_orders_plugin_ids() {
     }
 
     let os = AgentOs::builder()
-        .with_registered_plugin("policy1", Arc::new(LocalPlugin("policy1")))
-        .with_registered_plugin("p1", Arc::new(LocalPlugin("p1")))
+        .with_registered_behavior("policy1", Arc::new(LocalPlugin("policy1")))
+        .with_registered_behavior("p1", Arc::new(LocalPlugin("p1")))
         .build()
         .unwrap();
 
@@ -387,7 +423,7 @@ fn wire_plugins_into_rejects_duplicate_plugin_ids_after_assembly() {
     // by the registry, but we can test the wire_plugins_into dedup via an agent
     // that references the same id twice.
     let os = AgentOs::builder()
-        .with_registered_plugin("p1", Arc::new(LocalPlugin("p1")))
+        .with_registered_behavior("p1", Arc::new(LocalPlugin("p1")))
         .build()
         .unwrap();
 
@@ -397,7 +433,7 @@ fn wire_plugins_into_rejects_duplicate_plugin_ids_after_assembly() {
         .with_plugin_id("p1");
 
     let err = os.wire_plugins_into(cfg).err().expect("expected error");
-    assert!(matches!(err, AgentOsWiringError::PluginAlreadyInstalled(id) if id == "p1"));
+    assert!(matches!(err, AgentOsWiringError::BehaviorAlreadyInstalled(id) if id == "p1"));
 }
 
 #[derive(Debug)]
@@ -421,7 +457,7 @@ fn build_errors_if_agent_references_reserved_skills_plugin_id() {
             mode: SkillsMode::DiscoveryAndRuntime,
             ..SkillsConfig::default()
         })
-        .with_registered_plugin("skills", Arc::new(FakeSkillsPlugin))
+        .with_registered_behavior("skills", Arc::new(FakeSkillsPlugin))
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin_id("skills"),
@@ -431,8 +467,8 @@ fn build_errors_if_agent_references_reserved_skills_plugin_id() {
 
     assert!(matches!(
         err,
-        AgentOsBuildError::AgentReservedPluginId { ref agent_id, ref plugin_id }
-        if agent_id == "a1" && plugin_id == "skills"
+        AgentOsBuildError::AgentReservedBehaviorId { ref agent_id, ref behavior_id }
+        if agent_id == "a1" && behavior_id == "skills"
     ));
 }
 
@@ -449,7 +485,7 @@ impl AgentBehavior for FakeAgentToolsPlugin {
 #[test]
 fn build_errors_if_agent_references_reserved_agent_tools_plugin_id() {
     let err = AgentOs::builder()
-        .with_registered_plugin("agent_tools", Arc::new(FakeAgentToolsPlugin))
+        .with_registered_behavior("agent_tools", Arc::new(FakeAgentToolsPlugin))
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin_id("agent_tools"),
@@ -459,8 +495,8 @@ fn build_errors_if_agent_references_reserved_agent_tools_plugin_id() {
 
     assert!(matches!(
         err,
-        AgentOsBuildError::AgentReservedPluginId { ref agent_id, ref plugin_id }
-        if agent_id == "a1" && plugin_id == "agent_tools"
+        AgentOsBuildError::AgentReservedBehaviorId { ref agent_id, ref behavior_id }
+        if agent_id == "a1" && behavior_id == "agent_tools"
     ));
 }
 
@@ -477,7 +513,7 @@ impl AgentBehavior for FakeAgentRecoveryPlugin {
 #[test]
 fn build_errors_if_agent_references_reserved_agent_recovery_plugin_id() {
     let err = AgentOs::builder()
-        .with_registered_plugin("agent_recovery", Arc::new(FakeAgentRecoveryPlugin))
+        .with_registered_behavior("agent_recovery", Arc::new(FakeAgentRecoveryPlugin))
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin_id("agent_recovery"),
@@ -487,8 +523,8 @@ fn build_errors_if_agent_references_reserved_agent_recovery_plugin_id() {
 
     assert!(matches!(
         err,
-        AgentOsBuildError::AgentReservedPluginId { ref agent_id, ref plugin_id }
-        if agent_id == "a1" && plugin_id == "agent_recovery"
+        AgentOsBuildError::AgentReservedBehaviorId { ref agent_id, ref behavior_id }
+        if agent_id == "a1" && behavior_id == "agent_recovery"
     ));
 }
 
@@ -545,11 +581,12 @@ async fn resolve_wires_skills_and_preserves_base_tools() {
     assert!(resolved.tools.contains_key("skill_script"));
     assert!(resolved.tools.contains_key("agent_run"));
     assert!(resolved.tools.contains_key("agent_stop"));
-    assert_eq!(resolved.agent.plugins.len(), 4);
-    assert_eq!(resolved.agent.plugins[0].id(), "skills");
-    assert_eq!(resolved.agent.plugins[1].id(), "agent_tools");
-    assert_eq!(resolved.agent.plugins[2].id(), "agent_recovery");
-    assert_eq!(resolved.agent.plugins[3].id(), "stop_policy");
+    let behavior_ids = resolved.agent.behavior.behavior_ids();
+    assert_eq!(behavior_ids.len(), 4);
+    assert_eq!(behavior_ids[0], "skills");
+    assert_eq!(behavior_ids[1], "agent_tools");
+    assert_eq!(behavior_ids[2], "agent_recovery");
+    assert_eq!(behavior_ids[3], "stop_policy");
 }
 
 #[test]
@@ -967,7 +1004,7 @@ async fn run_and_run_stream_work_without_llm_when_terminate_plugin_requested() {
     }
 
     let os = AgentOs::builder()
-        .with_registered_plugin(
+        .with_registered_behavior(
             "terminate_plugin_requested",
             Arc::new(TerminatePluginRequestedPlugin),
         )
@@ -1036,10 +1073,11 @@ async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_condition
     assert!(
         resolved
             .agent
-            .plugins
+            .behavior
+            .behavior_ids()
             .iter()
-            .any(|plugin| plugin.id() == "stop_policy"),
-        "resolved agent should carry stop policy via plugin"
+            .any(|id| *id == "stop_policy"),
+        "resolved agent should carry stop policy via behavior"
     );
 
     #[derive(Debug)]
@@ -1197,8 +1235,9 @@ async fn resolve_wires_agent_tools_by_default() {
     let resolved = os.resolve("a1").unwrap();
     assert!(resolved.tools.contains_key("agent_run"));
     assert!(resolved.tools.contains_key("agent_stop"));
-    assert_eq!(resolved.agent.plugins[0].id(), "agent_tools");
-    assert_eq!(resolved.agent.plugins[1].id(), "agent_recovery");
+    let behavior_ids = resolved.agent.behavior.behavior_ids();
+    assert_eq!(behavior_ids[0], "agent_tools");
+    assert_eq!(behavior_ids[1], "agent_recovery");
 }
 
 #[tokio::test]
@@ -1322,7 +1361,7 @@ impl AgentBehavior for TestPlugin {
 #[tokio::test]
 async fn resolve_wires_plugins_from_registry() {
     let os = AgentOs::builder()
-        .with_registered_plugin("p1", Arc::new(TestPlugin("p1")))
+        .with_registered_behavior("p1", Arc::new(TestPlugin("p1")))
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin_id("p1"),
@@ -1331,22 +1370,37 @@ async fn resolve_wires_plugins_from_registry() {
         .unwrap();
 
     let resolved = os.resolve("a1").unwrap();
-    assert!(resolved.agent.plugins.iter().any(|p| p.id() == "p1"));
+    assert!(resolved.agent.behavior.behavior_ids().iter().any(|id| *id == "p1"));
 
-    let fixture = TestFixture::new();
-    let mut step = fixture.step(vec![ToolDescriptor::new("t", "t", "t")]);
-    for p in &resolved.agent.plugins {
-        let mut before = BeforeInferenceContext::new(&mut step);
-        p.before_inference(&mut before).await;
-    }
-    assert!(step.system_context.iter().any(|s| s.contains("p1")));
+    let doc = tirea_state::DocCell::new(json!({}));
+    let run_config = crate::contracts::RunConfig::new();
+    let ctx = ReadOnlyContext::new(
+        crate::contracts::runtime::plugin::phase::Phase::BeforeInference,
+        "thread_1",
+        &[],
+        &run_config,
+        &doc,
+    );
+    let output = resolved.agent.behavior.before_inference(&ctx).await;
+    let system_contexts: Vec<&str> = output
+        .effects
+        .iter()
+        .filter_map(|e| {
+            if let crate::contracts::runtime::plugin::phase::effect::PhaseEffect::SystemContext(s) = e {
+                Some(s.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(system_contexts.iter().any(|s| s.contains("p1")));
 }
 
 #[tokio::test]
 async fn resolve_wires_plugins_in_order() {
     let os = AgentOs::builder()
-        .with_registered_plugin("policy1", Arc::new(TestPlugin("policy1")))
-        .with_registered_plugin("p1", Arc::new(TestPlugin("p1")))
+        .with_registered_behavior("policy1", Arc::new(TestPlugin("policy1")))
+        .with_registered_behavior("p1", Arc::new(TestPlugin("p1")))
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini")
@@ -1357,10 +1411,11 @@ async fn resolve_wires_plugins_in_order() {
         .unwrap();
 
     let resolved = os.resolve("a1").unwrap();
-    assert_eq!(resolved.agent.plugins[0].id(), "agent_tools");
-    assert_eq!(resolved.agent.plugins[1].id(), "agent_recovery");
-    assert_eq!(resolved.agent.plugins[2].id(), "policy1");
-    assert_eq!(resolved.agent.plugins[3].id(), "p1");
+    let behavior_ids = resolved.agent.behavior.behavior_ids();
+    assert_eq!(behavior_ids[0], "agent_tools");
+    assert_eq!(behavior_ids[1], "agent_recovery");
+    assert_eq!(behavior_ids[2], "policy1");
+    assert_eq!(behavior_ids[3], "p1");
 }
 
 #[tokio::test]
@@ -1374,8 +1429,8 @@ async fn resolve_wires_skills_before_plugins() {
             mode: SkillsMode::DiscoveryAndRuntime,
             ..SkillsConfig::default()
         })
-        .with_registered_plugin("policy1", Arc::new(TestPlugin("policy1")))
-        .with_registered_plugin("p1", Arc::new(TestPlugin("p1")))
+        .with_registered_behavior("policy1", Arc::new(TestPlugin("policy1")))
+        .with_registered_behavior("p1", Arc::new(TestPlugin("p1")))
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini")
@@ -1392,11 +1447,12 @@ async fn resolve_wires_skills_before_plugins() {
     assert!(resolved.tools.contains_key("agent_run"));
     assert!(resolved.tools.contains_key("agent_stop"));
 
-    assert_eq!(resolved.agent.plugins[0].id(), "skills");
-    assert_eq!(resolved.agent.plugins[1].id(), "agent_tools");
-    assert_eq!(resolved.agent.plugins[2].id(), "agent_recovery");
-    assert_eq!(resolved.agent.plugins[3].id(), "policy1");
-    assert_eq!(resolved.agent.plugins[4].id(), "p1");
+    let behavior_ids = resolved.agent.behavior.behavior_ids();
+    assert_eq!(behavior_ids[0], "skills");
+    assert_eq!(behavior_ids[1], "agent_tools");
+    assert_eq!(behavior_ids[2], "agent_recovery");
+    assert_eq!(behavior_ids[3], "policy1");
+    assert_eq!(behavior_ids[4], "p1");
 }
 
 #[test]
@@ -1410,15 +1466,15 @@ fn build_errors_if_builder_agent_references_missing_plugin() {
         .unwrap_err();
     assert!(matches!(
         err,
-        AgentOsBuildError::AgentPluginNotFound { ref agent_id, ref plugin_id }
-        if agent_id == "a1" && plugin_id == "p1"
+        AgentOsBuildError::AgentBehaviorNotFound { ref agent_id, ref behavior_id }
+        if agent_id == "a1" && behavior_id == "p1"
     ));
 }
 
 #[test]
 fn build_errors_on_duplicate_plugin_id_in_agent() {
     let err = AgentOs::builder()
-        .with_registered_plugin("p1", Arc::new(TestPlugin("p1")))
+        .with_registered_behavior("p1", Arc::new(TestPlugin("p1")))
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini")
@@ -1430,15 +1486,15 @@ fn build_errors_on_duplicate_plugin_id_in_agent() {
 
     assert!(matches!(
         err,
-        AgentOsBuildError::AgentDuplicatePluginRef { ref agent_id, ref plugin_id }
-        if agent_id == "a1" && plugin_id == "p1"
+        AgentOsBuildError::AgentDuplicateBehaviorRef { ref agent_id, ref behavior_id }
+        if agent_id == "a1" && behavior_id == "p1"
     ));
 }
 
 #[test]
 fn build_errors_on_duplicate_plugin_ref_in_builder_agent() {
     let err = AgentOs::builder()
-        .with_registered_plugin("p1", Arc::new(TestPlugin("p1")))
+        .with_registered_behavior("p1", Arc::new(TestPlugin("p1")))
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini")
@@ -1449,8 +1505,8 @@ fn build_errors_on_duplicate_plugin_ref_in_builder_agent() {
         .unwrap_err();
     assert!(matches!(
         err,
-        AgentOsBuildError::AgentDuplicatePluginRef { ref agent_id, ref plugin_id }
-        if agent_id == "a1" && plugin_id == "p1"
+        AgentOsBuildError::AgentDuplicateBehaviorRef { ref agent_id, ref behavior_id }
+        if agent_id == "a1" && behavior_id == "p1"
     ));
 }
 
@@ -1465,8 +1521,8 @@ fn build_errors_on_reserved_plugin_id_in_builder_agent() {
         .unwrap_err();
     assert!(matches!(
         err,
-        AgentOsBuildError::AgentReservedPluginId { ref agent_id, ref plugin_id }
-        if agent_id == "a1" && plugin_id == "skills"
+        AgentOsBuildError::AgentReservedBehaviorId { ref agent_id, ref behavior_id }
+        if agent_id == "a1" && behavior_id == "skills"
     ));
 }
 
@@ -1487,7 +1543,7 @@ fn resolve_errors_on_reserved_plugin_id() {
     let err = os.resolve("a1").err().unwrap();
     assert!(matches!(
         err,
-        AgentOsResolveError::Wiring(AgentOsWiringError::ReservedPluginId(ref id)) if id == "skills"
+        AgentOsResolveError::Wiring(AgentOsWiringError::ReservedBehaviorId(ref id)) if id == "skills"
     ));
 }
 
@@ -1502,8 +1558,8 @@ fn build_errors_on_reserved_plugin_id_agent_tools_in_builder_agent() {
         .unwrap_err();
     assert!(matches!(
         err,
-        AgentOsBuildError::AgentReservedPluginId { ref agent_id, ref plugin_id }
-        if agent_id == "a1" && plugin_id == "agent_tools"
+        AgentOsBuildError::AgentReservedBehaviorId { ref agent_id, ref behavior_id }
+        if agent_id == "a1" && behavior_id == "agent_tools"
     ));
 }
 
@@ -1528,7 +1584,7 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
         .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
-        .with_registered_plugin(
+        .with_registered_behavior(
             "terminate_plugin_requested",
             Arc::new(TerminatePluginRequestedPlugin),
         )
@@ -1592,7 +1648,7 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
         .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
-        .with_registered_plugin(
+        .with_registered_behavior(
             "terminate_plugin_requested",
             Arc::new(TerminatePluginRequestedPlugin),
         )
@@ -1646,7 +1702,7 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
         .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
-        .with_registered_plugin(
+        .with_registered_behavior(
             "terminate_plugin_requested",
             Arc::new(TerminatePluginRequestedPlugin),
         )
@@ -1703,7 +1759,7 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
         .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
-        .with_registered_plugin(
+        .with_registered_behavior(
             "terminate_plugin_requested",
             Arc::new(TerminatePluginRequestedPlugin),
         )
@@ -1776,7 +1832,7 @@ async fn execute_prepared_runs_stream() {
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
         .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
-        .with_registered_plugin(
+        .with_registered_behavior(
             "terminate_plugin_requested",
             Arc::new(TerminatePluginRequestedPlugin),
         )
@@ -1874,7 +1930,7 @@ fn make_decision_test_os_with_mode(
     AgentOs::builder()
         .with_agent_state_store(storage as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_tools(tools)
-        .with_registered_plugin(
+        .with_registered_behavior(
             "decision_terminate_plugin_requested",
             Arc::new(DecisionTerminatePlugin),
         )
@@ -2747,7 +2803,7 @@ async fn run_stream_checkpoint_append_failure_keeps_persisted_prefix_consistent(
     let storage = Arc::new(FailOnNthAppendStorage::new(2));
     let os = AgentOs::builder()
         .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
-        .with_registered_plugin(
+        .with_registered_behavior(
             "terminate_with_run_end_patch",
             Arc::new(TerminateWithRunEndPatchPlugin),
         )
@@ -2834,7 +2890,7 @@ async fn run_stream_checkpoint_failure_on_existing_thread_keeps_pre_checkpoint_s
 
     let os = AgentOs::builder()
         .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
-        .with_registered_plugin(
+        .with_registered_behavior(
             "terminate_with_run_end_patch",
             Arc::new(TerminateWithRunEndPatchPlugin),
         )
@@ -2902,8 +2958,8 @@ fn build_errors_on_reserved_plugin_id_agent_recovery_in_builder_agent() {
         .unwrap_err();
     assert!(matches!(
         err,
-        AgentOsBuildError::AgentReservedPluginId { ref agent_id, ref plugin_id }
-        if agent_id == "a1" && plugin_id == "agent_recovery"
+        AgentOsBuildError::AgentReservedBehaviorId { ref agent_id, ref behavior_id }
+        if agent_id == "a1" && behavior_id == "agent_recovery"
     ));
 }
 
@@ -3071,17 +3127,10 @@ async fn prepare_run_scope_appends_plugins() {
         .await
         .unwrap();
 
-    assert!(prepared
-        .agent
-        .plugins()
-        .iter()
-        .any(|p| p.id() == "run_scoped"));
+    let behavior_ids = prepared.agent.behavior().behavior_ids();
+    assert!(behavior_ids.iter().any(|id| *id == "run_scoped"));
     // System plugins should still be present
-    assert!(prepared
-        .agent
-        .plugins()
-        .iter()
-        .any(|p| p.id() == "agent_tools"));
+    assert!(behavior_ids.iter().any(|id| *id == "agent_tools"));
 }
 
 #[tokio::test]
@@ -3124,7 +3173,7 @@ async fn prepare_run_scope_rejects_duplicate_plugin_id() {
     assert!(matches!(
         err,
         AgentOsRunError::Resolve(AgentOsResolveError::Wiring(
-            AgentOsWiringError::PluginAlreadyInstalled(ref id)
+            AgentOsWiringError::BehaviorAlreadyInstalled(ref id)
         )) if id == "agent_tools"
     ));
 }
@@ -3283,9 +3332,10 @@ async fn resolve_wires_stop_conditions_from_registry() {
     assert!(
         resolved
             .agent
-            .plugins
+            .behavior
+            .behavior_ids()
             .iter()
-            .any(|plugin| plugin.id() == "stop_policy"),
-        "stop policies should be handled by stop_policy plugin"
+            .any(|id| *id == "stop_policy"),
+        "stop policies should be handled by stop_policy behavior"
     );
 }

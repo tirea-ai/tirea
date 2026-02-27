@@ -5,7 +5,7 @@ use clap::Parser;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tirea_agentos::contracts::runtime::plugin::AgentPlugin;
+use tirea_agentos::contracts::runtime::plugin::agent::AgentBehavior;
 use tirea_agentos::contracts::runtime::tool_call::Tool;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
 use tirea_agentos::orchestrator::{AgentDefinition, AgentOsBuilder, ToolExecutionMode};
@@ -66,9 +66,9 @@ async fn main() {
         .with_tools(tool_map)
         .with_agent_state_store(file_store.clone() as Arc<dyn ThreadStore>);
 
-    let plugins: Vec<(String, Arc<dyn AgentPlugin>)> = Vec::new();
+    let plugins: Vec<(String, Arc<dyn AgentBehavior>)> = Vec::new();
     for (id, plugin) in plugins {
-        builder = builder.with_registered_plugin(id, plugin);
+        builder = builder.with_registered_behavior(id, plugin);
     }
 
     let os = builder.build().expect("failed to build AgentOs");

@@ -4,7 +4,7 @@ use crate::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use tirea_contract::runtime::plugin::AgentPlugin;
+use tirea_contract::runtime::plugin::AgentBehavior;
 use tirea_contract::runtime::tool_call::Tool;
 
 /// Errors returned when wiring the skills subsystem into an agent.
@@ -67,13 +67,13 @@ impl SkillSubsystem {
     }
 
     /// Build the combined skills plugin (discovery + runtime).
-    pub fn plugin(&self) -> Arc<dyn AgentPlugin> {
+    pub fn plugin(&self) -> Arc<dyn AgentBehavior> {
         let discovery = SkillDiscoveryPlugin::new(self.registry.clone());
         SkillPlugin::new(discovery).boxed()
     }
 
     /// Build only the runtime plugin (inject activated skills).
-    pub fn runtime_plugin(&self) -> Arc<dyn AgentPlugin> {
+    pub fn runtime_plugin(&self) -> Arc<dyn AgentBehavior> {
         Arc::new(SkillRuntimePlugin::new())
     }
 
@@ -134,7 +134,8 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use tempfile::TempDir;
-    use tirea_contract::runtime::plugin::phase::{BeforeInferenceContext, StepContext};
+    use tirea_contract::runtime::plugin::agent::ReadOnlyContext;
+    use tirea_contract::runtime::plugin::phase::Phase;
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::Thread;
     use tirea_contract::thread::{Message, ToolCall};
@@ -309,16 +310,27 @@ mod tests {
         let plugin = sys.plugin();
         let state = thread.rebuild_state().unwrap();
         let fix = tirea_contract::testing::TestFixture::new_with_state(state);
-        let mut step = StepContext::new(
-            fix.ctx(),
+        let run_config = tirea_contract::RunConfig::default();
+        let fixture_ctx = fix.ctx();
+        let ctx = ReadOnlyContext::new(
+            Phase::BeforeInference,
             &thread.id,
             &thread.messages,
-            vec![ToolDescriptor::new("t", "t", "t")],
+            &run_config,
+            fixture_ctx.doc(),
         );
-        let mut before = BeforeInferenceContext::new(&mut step);
-        plugin.before_inference(&mut before).await;
+        let output = plugin.before_inference(&ctx).await;
 
-        assert_eq!(step.system_context.len(), 1);
-        assert!(step.system_context[0].contains("<available_skills>"));
+        use tirea_contract::runtime::plugin::phase::effect::PhaseEffect;
+        let system_contexts: Vec<&str> = output
+            .effects
+            .iter()
+            .filter_map(|e| match e {
+                PhaseEffect::SystemContext(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(system_contexts.len(), 1);
+        assert!(system_contexts[0].contains("<available_skills>"));
     }
 }

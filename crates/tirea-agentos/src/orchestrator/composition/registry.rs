@@ -1,9 +1,9 @@
 use super::{
     AgentRegistry, AgentRegistryError, ModelDefinition, ModelRegistry, ModelRegistryError,
-    PluginRegistry, PluginRegistryError, ProviderRegistry, ProviderRegistryError,
+    BehaviorRegistry, BehaviorRegistryError, ProviderRegistry, ProviderRegistryError,
     ToolRegistry, ToolRegistryError,
 };
-use crate::contracts::runtime::plugin::AgentPlugin;
+use crate::contracts::runtime::plugin::AgentBehavior;
 use crate::contracts::runtime::tool_call::Tool;
 use crate::orchestrator::AgentDefinition;
 use genai::Client;
@@ -123,103 +123,103 @@ impl ProviderRegistry for CompositeProviderRegistry {
 }
 
 #[derive(Clone, Default)]
-pub struct InMemoryPluginRegistry {
-    plugins: HashMap<String, Arc<dyn AgentPlugin>>,
+pub struct InMemoryBehaviorRegistry {
+    behaviors: HashMap<String, Arc<dyn AgentBehavior>>,
 }
 
-impl std::fmt::Debug for InMemoryPluginRegistry {
+impl std::fmt::Debug for InMemoryBehaviorRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("InMemoryPluginRegistry")
-            .field("len", &self.plugins.len())
+        f.debug_struct("InMemoryBehaviorRegistry")
+            .field("len", &self.behaviors.len())
             .finish()
     }
 }
 
-impl InMemoryPluginRegistry {
+impl InMemoryBehaviorRegistry {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn register(&mut self, plugin: Arc<dyn AgentPlugin>) -> Result<(), PluginRegistryError> {
-        let id = plugin.id().to_string();
-        if self.plugins.contains_key(&id) {
-            return Err(PluginRegistryError::PluginIdConflict(id));
+    pub fn register(&mut self, behavior: Arc<dyn AgentBehavior>) -> Result<(), BehaviorRegistryError> {
+        let id = behavior.id().to_string();
+        if self.behaviors.contains_key(&id) {
+            return Err(BehaviorRegistryError::BehaviorIdConflict(id));
         }
-        self.plugins.insert(id, plugin);
+        self.behaviors.insert(id, behavior);
         Ok(())
     }
 
     pub fn register_named(
         &mut self,
         id: impl Into<String>,
-        plugin: Arc<dyn AgentPlugin>,
-    ) -> Result<(), PluginRegistryError> {
+        behavior: Arc<dyn AgentBehavior>,
+    ) -> Result<(), BehaviorRegistryError> {
         let key = id.into();
-        let plugin_id = plugin.id().to_string();
-        if key != plugin_id {
-            return Err(PluginRegistryError::PluginIdMismatch { key, plugin_id });
+        let behavior_id = behavior.id().to_string();
+        if key != behavior_id {
+            return Err(BehaviorRegistryError::BehaviorIdMismatch { key, behavior_id });
         }
-        if self.plugins.contains_key(&key) {
-            return Err(PluginRegistryError::PluginIdConflict(key));
+        if self.behaviors.contains_key(&key) {
+            return Err(BehaviorRegistryError::BehaviorIdConflict(key));
         }
-        self.plugins.insert(key, plugin);
+        self.behaviors.insert(key, behavior);
         Ok(())
     }
 
     pub fn extend_named(
         &mut self,
-        plugins: HashMap<String, Arc<dyn AgentPlugin>>,
-    ) -> Result<(), PluginRegistryError> {
-        for (key, plugin) in plugins {
-            self.register_named(key, plugin)?;
+        behaviors: HashMap<String, Arc<dyn AgentBehavior>>,
+    ) -> Result<(), BehaviorRegistryError> {
+        for (key, behavior) in behaviors {
+            self.register_named(key, behavior)?;
         }
         Ok(())
     }
 
     pub fn extend_registry(
         &mut self,
-        other: &dyn PluginRegistry,
-    ) -> Result<(), PluginRegistryError> {
+        other: &dyn BehaviorRegistry,
+    ) -> Result<(), BehaviorRegistryError> {
         self.extend_named(other.snapshot())
     }
 }
 
-impl PluginRegistry for InMemoryPluginRegistry {
+impl BehaviorRegistry for InMemoryBehaviorRegistry {
     fn len(&self) -> usize {
-        self.plugins.len()
+        self.behaviors.len()
     }
 
-    fn get(&self, id: &str) -> Option<Arc<dyn AgentPlugin>> {
-        self.plugins.get(id).cloned()
+    fn get(&self, id: &str) -> Option<Arc<dyn AgentBehavior>> {
+        self.behaviors.get(id).cloned()
     }
 
     fn ids(&self) -> Vec<String> {
-        sorted_registry_ids(&self.plugins)
+        sorted_registry_ids(&self.behaviors)
     }
 
-    fn snapshot(&self) -> HashMap<String, Arc<dyn AgentPlugin>> {
-        self.plugins.clone()
+    fn snapshot(&self) -> HashMap<String, Arc<dyn AgentBehavior>> {
+        self.behaviors.clone()
     }
 }
 
 #[derive(Clone, Default)]
-pub struct CompositePluginRegistry {
-    merged: InMemoryPluginRegistry,
+pub struct CompositeBehaviorRegistry {
+    merged: InMemoryBehaviorRegistry,
 }
 
-impl std::fmt::Debug for CompositePluginRegistry {
+impl std::fmt::Debug for CompositeBehaviorRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CompositePluginRegistry")
+        f.debug_struct("CompositeBehaviorRegistry")
             .field("len", &self.merged.len())
             .finish()
     }
 }
 
-impl CompositePluginRegistry {
+impl CompositeBehaviorRegistry {
     pub fn try_new(
-        regs: impl IntoIterator<Item = Arc<dyn PluginRegistry>>,
-    ) -> Result<Self, PluginRegistryError> {
-        let mut merged = InMemoryPluginRegistry::new();
+        regs: impl IntoIterator<Item = Arc<dyn BehaviorRegistry>>,
+    ) -> Result<Self, BehaviorRegistryError> {
+        let mut merged = InMemoryBehaviorRegistry::new();
         for r in regs {
             merged.extend_registry(r.as_ref())?;
         }
@@ -227,20 +227,20 @@ impl CompositePluginRegistry {
     }
 }
 
-impl PluginRegistry for CompositePluginRegistry {
+impl BehaviorRegistry for CompositeBehaviorRegistry {
     fn len(&self) -> usize {
         self.merged.len()
     }
 
-    fn get(&self, id: &str) -> Option<Arc<dyn AgentPlugin>> {
+    fn get(&self, id: &str) -> Option<Arc<dyn AgentBehavior>> {
         self.merged.get(id)
     }
 
     fn ids(&self) -> Vec<String> {
-        sorted_registry_ids(&self.merged.plugins)
+        sorted_registry_ids(&self.merged.behaviors)
     }
 
-    fn snapshot(&self) -> HashMap<String, Arc<dyn AgentPlugin>> {
+    fn snapshot(&self) -> HashMap<String, Arc<dyn AgentBehavior>> {
         self.merged.snapshot()
     }
 }

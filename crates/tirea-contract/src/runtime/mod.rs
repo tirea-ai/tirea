@@ -10,7 +10,7 @@ pub mod tool_call;
 pub use activity::{ActivityManager, NoOpActivityManager};
 pub use llm::{StreamResult, TokenUsage};
 pub use plugin::{
-    AfterInferenceContext, AfterToolExecuteContext, AgentBehavior, AgentPlugin, AnyStateAction,
+    AfterInferenceContext, AfterToolExecuteContext, AgentBehavior, AnyStateAction,
     BeforeInferenceContext, BeforeToolExecuteContext, CompositeBehavior, NoOpBehavior, Phase,
     PhaseEffect, PhaseOutput, PhasePolicy, PluginPhaseContext, ReadOnlyContext, RunAction,
     RunEndContext, RunStartContext, StateEffect, StateSpec, StepContext, StepEndContext,

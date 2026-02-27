@@ -12,7 +12,7 @@ use clap::Parser;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tirea_agentos::contracts::runtime::plugin::AgentPlugin;
+use tirea_agentos::contracts::runtime::plugin::agent::AgentBehavior;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
 use tirea_agentos::contracts::runtime::tool_call::Tool;
 use tirea_agentos::orchestrator::{AgentDefinition, AgentOsBuilder, ModelDefinition};
@@ -40,7 +40,7 @@ pub async fn serve(
     args: Args,
     agent_def: AgentDefinition,
     tools: Vec<Arc<dyn Tool>>,
-    plugins: Vec<(String, Arc<dyn AgentPlugin>)>,
+    plugins: Vec<(String, Arc<dyn AgentBehavior>)>,
 ) {
     let agent_id = agent_def.id.clone();
     let model_id = agent_def.model.clone();
@@ -69,7 +69,7 @@ pub async fn serve(
     }
 
     for (id, plugin) in plugins {
-        builder = builder.with_registered_plugin(id, plugin);
+        builder = builder.with_registered_behavior(id, plugin);
     }
 
     let file_store = Arc::new(FileStore::new(args.storage_dir));

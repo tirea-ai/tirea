@@ -135,10 +135,22 @@ impl AgentOs {
             let _ = resolved.run_config.set("parent_run_id", parent.to_string());
         }
 
-        // 6. Validate plugin uniqueness (caller may have added plugins to resolved).
-        Self::ensure_unique_plugin_ids(&resolved.agent.plugins)
-            .map_err(AgentOsResolveError::from)
-            .map_err(AgentOsRunError::from)?;
+        // 6. Behavior uniqueness: wiring ensures base uniqueness, but callers
+        //    may add behaviors via `resolved.add_behavior()` after resolve.
+        //    Validate the final composed behavior_ids for duplicates.
+        {
+            let ids = resolved.agent.behavior.behavior_ids();
+            let mut seen = std::collections::HashSet::with_capacity(ids.len());
+            for id in &ids {
+                if !seen.insert(*id) {
+                    return Err(AgentOsRunError::Resolve(
+                        AgentOsResolveError::Wiring(
+                            AgentOsWiringError::BehaviorAlreadyInstalled(id.to_string()),
+                        ),
+                    ));
+                }
+            }
+        }
 
         let run_ctx = RunContext::from_thread(&thread, resolved.run_config)
             .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;

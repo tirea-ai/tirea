@@ -1,10 +1,5 @@
 use super::*;
-use tirea_contract::runtime::plugin::phase::PluginPhaseContext;
-use tirea_contract::io::ResumeDecisionAction;
-use tirea_contract::runtime::{
-    PendingToolCall, SuspendTicket, SuspendedCall, SuspendedToolCallsState, ToolCallResume,
-    ToolCallResumeMode, ToolCallState, ToolCallStatesMap, ToolCallStatus,
-};
+use tirea_contract::runtime::SuspendedCall;
 use tirea_contract::runtime::state_paths::SUSPENDED_TOOL_CALLS_STATE_PATH;
 use tirea_state::State;
 pub(super) fn as_delegation_record(
@@ -101,102 +96,6 @@ pub(super) fn has_suspended_recovery_interaction(state: &Value) -> bool {
         .unwrap_or_default()
         .values()
         .any(|call| call.ticket.suspension.action == AGENT_RECOVERY_INTERACTION_ACTION)
-}
-
-pub(super) fn set_suspended_recovery_interaction(
-    step: &impl PluginPhaseContext,
-    interaction: Suspension,
-) {
-    let state = step.state_of::<SuspendedToolCallsState>();
-    let Ok(mut calls) = state.calls() else {
-        return;
-    };
-    let call_id = interaction.id.clone();
-    let call_arguments = interaction.parameters.clone();
-    let pending = PendingToolCall::new(
-        interaction.id.clone(),
-        AGENT_RECOVERY_INTERACTION_ACTION,
-        call_arguments.clone(),
-    );
-    calls.insert(
-        call_id.clone(),
-        SuspendedCall {
-            call_id,
-            tool_name: AGENT_RUN_TOOL_ID.to_string(),
-            arguments: call_arguments,
-            ticket: SuspendTicket::new(interaction, pending, ToolCallResumeMode::ReplayToolCall),
-        },
-    );
-    let _ = state.set_calls(calls);
-}
-
-pub(super) fn schedule_recovery_replay(
-    step: &impl PluginPhaseContext,
-    run_id: &str,
-    run: &DelegationRecord,
-) {
-    let call_id = recovery_target_id(run_id);
-    let suspended_state = step.state_of::<SuspendedToolCallsState>();
-    let Ok(mut suspended_calls) = suspended_state.calls() else {
-        return;
-    };
-
-    if !suspended_calls.contains_key(&call_id) {
-        let interaction = build_recovery_interaction(run_id, run);
-        let interaction_arguments = interaction.parameters.clone();
-        let pending = PendingToolCall::new(
-            call_id.clone(),
-            AGENT_RECOVERY_INTERACTION_ACTION,
-            interaction_arguments.clone(),
-        );
-        suspended_calls.insert(
-            call_id.clone(),
-            SuspendedCall {
-                call_id: call_id.clone(),
-                tool_name: AGENT_RUN_TOOL_ID.to_string(),
-                arguments: interaction_arguments,
-                ticket: SuspendTicket::new(interaction, pending, ToolCallResumeMode::ReplayToolCall),
-            },
-        );
-    } else if suspended_calls
-        .get(&call_id)
-        .is_some_and(|call| call.tool_name != AGENT_RUN_TOOL_ID)
-    {
-        if let Some(call) = suspended_calls.get_mut(&call_id) {
-            call.tool_name = AGENT_RUN_TOOL_ID.to_string();
-        }
-    }
-    let suspended_call = suspended_calls.get(&call_id).cloned();
-    let _ = suspended_state.set_calls(suspended_calls);
-
-    let updated_at = current_unix_millis();
-    let resume = ToolCallResume {
-        decision_id: call_id.clone(),
-        action: ResumeDecisionAction::Resume,
-        result: serde_json::Value::Bool(true),
-        reason: None,
-        updated_at,
-    };
-
-    if let Some(suspended_call) = suspended_call {
-        let tool_states = step.state_of::<ToolCallStatesMap>();
-        if let Ok(mut calls) = tool_states.calls() {
-            calls.insert(
-                call_id.clone(),
-                ToolCallState {
-                    call_id: call_id.clone(),
-                    tool_name: AGENT_RUN_TOOL_ID.to_string(),
-                    arguments: suspended_call.arguments.clone(),
-                    status: ToolCallStatus::Resuming,
-                    resume_token: Some(suspended_call.ticket.pending.id),
-                    resume: Some(resume.clone()),
-                    scratch: serde_json::Value::Null,
-                    updated_at,
-                },
-            );
-            let _ = tool_states.set_calls(calls);
-        }
-    }
 }
 
 pub(super) fn current_unix_millis() -> u64 {

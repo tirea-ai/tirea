@@ -9,7 +9,6 @@ use super::{
 };
 use crate::contracts::runtime::plugin::agent::AgentBehavior;
 use crate::contracts::runtime::plugin::phase::{Phase, StateEffect, StepContext, ToolContext};
-use crate::contracts::runtime::plugin::AgentPlugin;
 use crate::contracts::runtime::{
     ActivityManager, PendingToolCall, SuspendTicket, SuspendedCall, ToolCallResumeMode,
 };
@@ -68,7 +67,6 @@ pub(super) struct AppliedToolResults {
 pub(super) struct ToolPhaseContext<'a> {
     pub(super) tool_descriptors: &'a [ToolDescriptor],
     pub(super) agent_behavior: Option<&'a dyn AgentBehavior>,
-    pub(super) plugins: &'a [Arc<dyn AgentPlugin>],
     pub(super) activity_manager: Arc<dyn ActivityManager>,
     pub(super) run_config: &'a tirea_contract::RunConfig,
     pub(super) thread_id: &'a str,
@@ -81,7 +79,6 @@ impl<'a> ToolPhaseContext<'a> {
         Self {
             tool_descriptors: request.tool_descriptors,
             agent_behavior: request.agent_behavior,
-            plugins: request.plugins,
             activity_manager: request.activity_manager.clone(),
             run_config: request.run_config,
             thread_id: request.thread_id,
@@ -538,14 +535,21 @@ pub(super) fn step_metadata(run_id: Option<String>, step_index: u32) -> MessageM
 
 /// Execute tool calls (simplified version without plugins).
 ///
-/// This is the simpler API for tests and cases where plugins aren't needed.
+/// This is the simpler API for tests and cases where no behavior is needed.
 pub async fn execute_tools(
     thread: Thread,
     result: &StreamResult,
     tools: &HashMap<String, Arc<dyn Tool>>,
     parallel: bool,
 ) -> Result<ExecuteToolsOutcome, AgentLoopError> {
-    execute_tools_with_plugins(thread, result, tools, parallel, &[]).await
+    let parallel_executor = ParallelToolExecutor::streaming();
+    let sequential_executor = SequentialToolExecutor;
+    let executor: &dyn ToolExecutor = if parallel {
+        &parallel_executor
+    } else {
+        &sequential_executor
+    };
+    execute_tools_with_agent_and_executor(thread, result, tools, executor, None).await
 }
 
 /// Execute tool calls with phase-based plugin hooks.
@@ -561,9 +565,7 @@ pub async fn execute_tools_with_config(
         tools,
         agent.tool_executor().as_ref(),
         Some(agent.behavior()),
-        agent.plugins(),
-    )
-    .await
+    ).await
 }
 
 pub(super) fn scope_with_tool_caller_context(
@@ -589,32 +591,23 @@ pub(super) fn scope_with_tool_caller_context(
     Ok(rt)
 }
 
-/// Execute tool calls with plugin hooks.
-pub async fn execute_tools_with_plugins(
+/// Execute tool calls with behavior hooks.
+pub async fn execute_tools_with_behaviors(
     thread: Thread,
     result: &StreamResult,
     tools: &HashMap<String, Arc<dyn Tool>>,
     parallel: bool,
-    plugins: &[Arc<dyn AgentPlugin>],
+    behavior: Arc<dyn AgentBehavior>,
 ) -> Result<ExecuteToolsOutcome, AgentLoopError> {
-    let parallel_executor = ParallelToolExecutor::streaming();
-    let sequential_executor = SequentialToolExecutor;
-    let executor: &dyn ToolExecutor = if parallel {
-        &parallel_executor
+    let executor: Arc<dyn ToolExecutor> = if parallel {
+        Arc::new(ParallelToolExecutor::streaming())
     } else {
-        &sequential_executor
+        Arc::new(SequentialToolExecutor)
     };
-    execute_tools_with_plugins_and_executor(thread, result, tools, executor, plugins).await
-}
-
-pub async fn execute_tools_with_plugins_and_executor(
-    thread: Thread,
-    result: &StreamResult,
-    tools: &HashMap<String, Arc<dyn Tool>>,
-    executor: &dyn ToolExecutor,
-    plugins: &[Arc<dyn AgentPlugin>],
-) -> Result<ExecuteToolsOutcome, AgentLoopError> {
-    execute_tools_with_agent_and_executor(thread, result, tools, executor, None, plugins).await
+    let agent = BaseAgent::default()
+        .with_behavior(behavior)
+        .with_tool_executor(executor);
+    execute_tools_with_config(thread, result, tools, &agent).await
 }
 
 async fn execute_tools_with_agent_and_executor(
@@ -622,8 +615,7 @@ async fn execute_tools_with_agent_and_executor(
     result: &StreamResult,
     tools: &HashMap<String, Arc<dyn Tool>>,
     executor: &dyn ToolExecutor,
-    agent: Option<&dyn AgentBehavior>,
-    plugins: &[Arc<dyn AgentPlugin>],
+    behavior: Option<&dyn AgentBehavior>,
 ) -> Result<ExecuteToolsOutcome, AgentLoopError> {
     // Build RunContext from thread for internal use
     let rebuilt_state = thread
@@ -638,28 +630,29 @@ async fn execute_tools_with_agent_and_executor(
 
     let tool_descriptors: Vec<ToolDescriptor> =
         tools.values().map(|t| t.descriptor().clone()).collect();
-    let (_, run_start_patches) = super::run_phase_block(
-        &run_ctx,
-        &tool_descriptors,
-        plugins,
-        &[Phase::RunStart],
-        |_| {},
-        |_| (),
-    )
-    .await?;
-    if !run_start_patches.is_empty() {
-        run_ctx.add_thread_patches(run_start_patches);
+    // Run the RunStart phase via behavior dispatch
+    if let Some(behavior) = behavior {
+        let run_start_patches = super::plugin_runtime::behavior_run_phase_block(
+            &run_ctx,
+            &tool_descriptors,
+            behavior,
+            &[Phase::RunStart],
+            |_| {},
+            |_| (),
+        )
+        .await?
+        .1;
+        if !run_start_patches.is_empty() {
+            run_ctx.add_thread_patches(run_start_patches);
+        }
     }
 
     let replay_executor: Arc<dyn ToolExecutor> = match executor.decision_replay_policy() {
         DecisionReplayPolicy::BatchAllSuspended => Arc::new(ParallelToolExecutor::batch_approval()),
         DecisionReplayPolicy::Immediate => Arc::new(ParallelToolExecutor::streaming()),
     };
-    let replay_config = BaseAgent {
-        plugins: plugins.to_vec(),
-        tool_executor: replay_executor,
-        ..BaseAgent::default()
-    };
+    let replay_config = BaseAgent::default()
+        .with_tool_executor(replay_executor);
     let replay = super::drain_resuming_tool_calls_and_replay(
         &mut run_ctx,
         tools,
@@ -706,8 +699,7 @@ async fn execute_tools_with_agent_and_executor(
             calls: &result.tool_calls,
             state: &current_state,
             tool_descriptors: &tool_descriptors,
-            agent_behavior: agent,
-            plugins,
+            agent_behavior: behavior,
             activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
             run_config: &rt_for_tools,
             thread_id: run_ctx.thread_id(),
@@ -763,13 +755,11 @@ pub(super) async fn execute_tools_parallel_with_phases(
     let thread_messages = Arc::new(phase_ctx.thread_messages.to_vec());
     let tool_descriptors = phase_ctx.tool_descriptors.to_vec();
     let agent = phase_ctx.agent_behavior;
-    let plugins = phase_ctx.plugins.to_vec();
 
     let futures = calls.iter().map(|call| {
         let tool = tools.get(&call.name).cloned();
         let state = state.clone();
         let call = call.clone();
-        let plugins = plugins.clone();
         let tool_descriptors = tool_descriptors.clone();
         let activity_manager = phase_ctx.activity_manager.clone();
         let rt = run_config_owned.clone();
@@ -784,7 +774,6 @@ pub(super) async fn execute_tools_parallel_with_phases(
                 &ToolPhaseContext {
                     tool_descriptors: &tool_descriptors,
                     agent_behavior: agent,
-                    plugins: &plugins,
                     activity_manager,
                     run_config: &rt,
                     thread_id: &sid,
@@ -826,7 +815,6 @@ pub(super) async fn execute_tools_sequential_with_phases(
         let call_phase_ctx = ToolPhaseContext {
             tool_descriptors: phase_ctx.tool_descriptors,
             agent_behavior: phase_ctx.agent_behavior,
-            plugins: phase_ctx.plugins,
             activity_manager: phase_ctx.activity_manager.clone(),
             run_config: phase_ctx.run_config,
             thread_id: phase_ctx.thread_id,
@@ -909,7 +897,7 @@ pub(super) async fn execute_single_tool_with_phases(
     );
     step.tool = Some(ToolContext::new(call));
     // Phase: BeforeToolExecute
-    unified_emit_tool_phase(Phase::BeforeToolExecute, &mut step, phase_ctx.agent_behavior, phase_ctx.plugins, &doc).await?;
+    unified_emit_tool_phase(Phase::BeforeToolExecute, &mut step, phase_ctx.agent_behavior, &doc).await?;
 
     // Check if blocked or pending
     let (execution, outcome, suspended_call) = if step.tool_blocked() {
@@ -1033,7 +1021,7 @@ pub(super) async fn execute_single_tool_with_phases(
     step.set_tool_result(execution.result.clone());
 
     // Phase: AfterToolExecute
-    unified_emit_tool_phase(Phase::AfterToolExecute, &mut step, phase_ctx.agent_behavior, phase_ctx.plugins, &doc).await?;
+    unified_emit_tool_phase(Phase::AfterToolExecute, &mut step, phase_ctx.agent_behavior, &doc).await?;
 
     match outcome {
         ToolCallOutcome::Suspended => {

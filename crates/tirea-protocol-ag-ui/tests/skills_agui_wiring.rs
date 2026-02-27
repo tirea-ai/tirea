@@ -152,9 +152,19 @@ async fn test_skills_plugin_injection_is_in_system_context_before_inference() {
     // Even without activation, discovery should inject available_skills.
     let fixture = TestFixture::new();
     let mut step = fixture.step(vec![ToolDescriptor::new("t", "t", "t")]);
-    let mut before =
-        tirea_agentos::contracts::runtime::plugin::phase::BeforeInferenceContext::new(&mut step);
-    plugin.before_inference(&mut before).await;
+    let ctx = tirea_agentos::contracts::runtime::plugin::agent::ReadOnlyContext::new(
+        tirea_agentos::contracts::runtime::plugin::phase::Phase::BeforeInference,
+        step.thread_id(),
+        step.messages(),
+        step.run_config(),
+        step.ctx().doc(),
+    );
+    let output = plugin.before_inference(&ctx).await;
+    for effect in output.effects {
+        if let tirea_agentos::contracts::runtime::plugin::phase::effect::PhaseEffect::SystemContext(s) = effect {
+            step.system(s);
+        }
+    }
     assert_eq!(step.system_context.len(), 1);
     assert!(step.system_context[0].contains("<available_skills>"));
 }

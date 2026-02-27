@@ -6,8 +6,6 @@ use std::sync::Arc;
 use crate::contracts::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
 use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
 use crate::contracts::runtime::plugin::phase::state_spec::{AnyStateAction, StateSpec};
-use crate::contracts::runtime::plugin::phase::{AfterInferenceContext, PluginPhaseContext};
-use crate::contracts::runtime::plugin::AgentPlugin;
 use crate::contracts::runtime::StreamResult;
 use crate::contracts::runtime::tool_call::ToolResult;
 use crate::contracts::thread::{Message, Role, ToolCall};
@@ -307,85 +305,6 @@ impl StopPolicyPlugin {
 
     pub fn is_empty(&self) -> bool {
         self.conditions.is_empty()
-    }
-}
-
-#[async_trait]
-impl AgentPlugin for StopPolicyPlugin {
-    fn id(&self) -> &str {
-        STOP_POLICY_PLUGIN_ID
-    }
-
-    async fn after_inference(&self, step: &mut AfterInferenceContext<'_, '_>) {
-        if self.conditions.is_empty() {
-            return;
-        }
-
-        let Some(response) = step.response_opt() else {
-            return;
-        };
-        let now_ms = now_millis();
-        let prompt_tokens = response
-            .usage
-            .as_ref()
-            .and_then(|usage| usage.prompt_tokens)
-            .unwrap_or(0) as usize;
-        let completion_tokens = response
-            .usage
-            .as_ref()
-            .and_then(|usage| usage.completion_tokens)
-            .unwrap_or(0) as usize;
-
-        let (started_at_ms, total_input_tokens, total_output_tokens) = {
-            let runtime = step.state_of::<StopPolicyRuntimeState>();
-            let started_at_ms = runtime.started_at_ms().ok().flatten().unwrap_or(now_ms);
-            if runtime.started_at_ms().ok().flatten().is_none() {
-                let _ = runtime.set_started_at_ms(Some(now_ms));
-            }
-
-            let current_input = runtime.total_input_tokens().ok().unwrap_or(0);
-            let current_output = runtime.total_output_tokens().ok().unwrap_or(0);
-            let total_input_tokens = current_input.saturating_add(prompt_tokens);
-            let total_output_tokens = current_output.saturating_add(completion_tokens);
-            if prompt_tokens > 0 {
-                let _ = runtime.set_total_input_tokens(total_input_tokens);
-            }
-            if completion_tokens > 0 {
-                let _ = runtime.set_total_output_tokens(total_output_tokens);
-            }
-            (started_at_ms, total_input_tokens, total_output_tokens)
-        };
-
-        let message_stats = derive_stats_from_messages_with_response(step.messages(), response);
-        let elapsed = std::time::Duration::from_millis(now_ms.saturating_sub(started_at_ms));
-
-        let run_ctx = RunContext::new(
-            step.thread_id().to_string(),
-            step.snapshot(),
-            step.messages().to_vec(),
-            step.run_config().clone(),
-        );
-        let input = StopPolicyInput {
-            run_ctx: &run_ctx,
-            stats: StopPolicyStats {
-                step: message_stats.step,
-                step_tool_call_count: message_stats.step_tool_call_count,
-                total_tool_call_count: message_stats.total_tool_call_count,
-                total_input_tokens,
-                total_output_tokens,
-                consecutive_errors: message_stats.consecutive_errors,
-                elapsed,
-                last_tool_calls: &message_stats.last_tool_calls,
-                last_text: &message_stats.last_text,
-                tool_call_history: &message_stats.tool_call_history,
-            },
-        };
-        for condition in &self.conditions {
-            if let Some(stopped) = condition.evaluate(&input) {
-                step.request_termination(crate::contracts::TerminationReason::Stopped(stopped));
-                break;
-            }
-        }
     }
 }
 

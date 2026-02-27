@@ -41,7 +41,7 @@ fn make_os(
     };
 
     AgentOsBuilder::new()
-        .with_registered_plugin("llmmetry", plugin)
+        .with_registered_behavior("llmmetry", plugin)
         .with_provider(observed_provider, provider_client)
         .with_model(
             configured_model,

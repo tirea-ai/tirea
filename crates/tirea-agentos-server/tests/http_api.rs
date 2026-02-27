@@ -42,7 +42,7 @@ fn make_os_with_storage_and_tools(
     };
 
     AgentOsBuilder::new()
-        .with_registered_plugin(
+        .with_registered_behavior(
             "terminate_plugin_requested_test",
             Arc::new(TerminatePlugin::new("terminate_plugin_requested_test")),
         )
@@ -63,7 +63,7 @@ fn make_os_with_slow_terminate_plugin_requested_plugin(
     };
 
     AgentOsBuilder::new()
-        .with_registered_plugin(
+        .with_registered_behavior(
             "slow_terminate_plugin_requested_test",
             Arc::new(SlowTerminatePlugin::new(
                 "slow_terminate_plugin_requested_test",

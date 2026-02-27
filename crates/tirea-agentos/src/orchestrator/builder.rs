@@ -30,7 +30,7 @@ impl std::fmt::Debug for AgentOs {
             .field("default_client", &"[genai::Client]")
             .field("agents", &self.agents.len())
             .field("base_tools", &self.base_tools.len())
-            .field("plugins", &self.plugins.len())
+            .field("behaviors", &self.behaviors.len())
             .field("stop_policies", &self.stop_policies.len())
             .field("providers", &self.providers.len())
             .field("models", &self.models.len())
@@ -52,7 +52,7 @@ impl std::fmt::Debug for AgentOsBuilder {
             .field("bundles", &self.bundles.len())
             .field("agents", &self.agents.len())
             .field("base_tools", &self.base_tools.len())
-            .field("plugins", &self.plugins.len())
+            .field("behaviors", &self.behaviors.len())
             .field("stop_policies", &self.stop_policies.len())
             .field("stop_policy_registries", &self.stop_policy_registries.len())
             .field("providers", &self.providers.len())
@@ -76,8 +76,8 @@ impl AgentOsBuilder {
             agent_registries: Vec::new(),
             base_tools: HashMap::new(),
             base_tool_registries: Vec::new(),
-            plugins: HashMap::new(),
-            plugin_registries: Vec::new(),
+            behaviors: HashMap::new(),
+            behavior_registries: Vec::new(),
             stop_policies: HashMap::new(),
             stop_policy_registries: Vec::new(),
             providers: HashMap::new(),
@@ -127,17 +127,17 @@ impl AgentOsBuilder {
         self
     }
 
-    pub fn with_registered_plugin(
+    pub fn with_registered_behavior(
         mut self,
-        plugin_id: impl Into<String>,
-        plugin: Arc<dyn AgentPlugin>,
+        behavior_id: impl Into<String>,
+        behavior: Arc<dyn AgentBehavior>,
     ) -> Self {
-        self.plugins.insert(plugin_id.into(), plugin);
+        self.behaviors.insert(behavior_id.into(), behavior);
         self
     }
 
-    pub fn with_plugin_registry(mut self, registry: Arc<dyn PluginRegistry>) -> Self {
-        self.plugin_registries.push(registry);
+    pub fn with_behavior_registry(mut self, registry: Arc<dyn BehaviorRegistry>) -> Self {
+        self.behavior_registries.push(registry);
         self
     }
 
@@ -214,8 +214,8 @@ impl AgentOsBuilder {
             mut agent_registries,
             base_tools: mut base_tools_defs,
             mut base_tool_registries,
-            plugins: mut plugin_defs,
-            mut plugin_registries,
+            behaviors: mut behavior_defs,
+            mut behavior_registries,
             stop_policies: stop_policy_defs,
             stop_policy_registries,
             providers: mut provider_defs,
@@ -237,8 +237,8 @@ impl AgentOsBuilder {
                 agent_registries: &mut agent_registries,
                 tool_definitions: &mut base_tools_defs,
                 tool_registries: &mut base_tool_registries,
-                plugin_definitions: &mut plugin_defs,
-                plugin_registries: &mut plugin_registries,
+                behavior_definitions: &mut behavior_defs,
+                behavior_registries: &mut behavior_registries,
                 provider_definitions: &mut provider_defs,
                 provider_registries: &mut provider_registries,
                 model_definitions: &mut model_defs,
@@ -286,15 +286,15 @@ impl AgentOsBuilder {
             |regs| Ok(Arc::new(CompositeToolRegistry::try_new(regs)?)),
         )?;
 
-        let mut plugins = InMemoryPluginRegistry::new();
-        plugins.extend_named(plugin_defs)?;
+        let mut behaviors = InMemoryBehaviorRegistry::new();
+        behaviors.extend_named(behavior_defs)?;
 
-        let plugins: Arc<dyn PluginRegistry> = merge_registry(
-            plugins,
-            plugin_registries,
-            |reg: &InMemoryPluginRegistry| reg.is_empty(),
+        let behaviors: Arc<dyn BehaviorRegistry> = merge_registry(
+            behaviors,
+            behavior_registries,
+            |reg: &InMemoryBehaviorRegistry| reg.is_empty(),
             |reg| Arc::new(reg),
-            |regs| Ok(Arc::new(CompositePluginRegistry::try_new(regs)?)),
+            |regs| Ok(Arc::new(CompositeBehaviorRegistry::try_new(regs)?)),
         )?;
 
         let mut stop_policies_mem = InMemoryStopPolicyRegistry::new();
@@ -310,32 +310,32 @@ impl AgentOsBuilder {
 
         // Fail-fast for builder-provided agents (external registries may be dynamic).
         {
-            let reserved = AgentOs::reserved_plugin_ids();
+            let reserved = AgentOs::reserved_behavior_ids();
             for (agent_id, def) in &agents_defs {
                 let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
                 for id in &def.plugin_ids {
                     let id = id.trim();
                     if id.is_empty() {
-                        return Err(AgentOsBuildError::AgentEmptyPluginRef {
+                        return Err(AgentOsBuildError::AgentEmptyBehaviorRef {
                             agent_id: agent_id.clone(),
                         });
                     }
                     if reserved.contains(&id) {
-                        return Err(AgentOsBuildError::AgentReservedPluginId {
+                        return Err(AgentOsBuildError::AgentReservedBehaviorId {
                             agent_id: agent_id.clone(),
-                            plugin_id: id.to_string(),
+                            behavior_id: id.to_string(),
                         });
                     }
                     if !seen.insert(id.to_string()) {
-                        return Err(AgentOsBuildError::AgentDuplicatePluginRef {
+                        return Err(AgentOsBuildError::AgentDuplicateBehaviorRef {
                             agent_id: agent_id.clone(),
-                            plugin_id: id.to_string(),
+                            behavior_id: id.to_string(),
                         });
                     }
-                    if plugins.get(id).is_none() {
-                        return Err(AgentOsBuildError::AgentPluginNotFound {
+                    if behaviors.get(id).is_none() {
+                        return Err(AgentOsBuildError::AgentBehaviorNotFound {
                             agent_id: agent_id.clone(),
-                            plugin_id: id.to_string(),
+                            behavior_id: id.to_string(),
                         });
                     }
                 }
@@ -412,13 +412,13 @@ impl AgentOsBuilder {
             |regs| Ok(Arc::new(CompositeAgentRegistry::try_new(regs)?)),
         )?;
 
-        let registries = RegistrySet::new(agents, base_tools, plugins, providers, models);
+        let registries = RegistrySet::new(agents, base_tools, behaviors, providers, models);
 
         Ok(AgentOs {
             default_client: client.unwrap_or_default(),
             agents: registries.agents,
             base_tools: registries.tools,
-            plugins: registries.plugins,
+            behaviors: registries.behaviors,
             providers: registries.providers,
             models: registries.models,
             stop_policies,

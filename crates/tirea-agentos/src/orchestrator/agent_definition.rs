@@ -1,5 +1,6 @@
 use super::stop_policy_plugin::StopConditionSpec;
-use crate::contracts::runtime::plugin::agent::NoOpBehavior;
+use crate::contracts::runtime::plugin::agent::{AgentBehavior, NoOpBehavior};
+use crate::contracts::runtime::plugin::CompositeBehavior;
 use crate::contracts::runtime::ToolExecutor;
 use crate::runtime::loop_runner::{
     BaseAgent, LlmRetryPolicy, ParallelToolExecutor, SequentialToolExecutor,
@@ -197,10 +198,13 @@ impl AgentDefinition {
         self
     }
 
-    /// Convert into loop-facing config with the given resolved plugins.
+    /// Convert into loop-facing config with the given resolved behaviors.
+    ///
+    /// Behaviors are composed into a single `CompositeBehavior` and set on
+    /// `BaseAgent::behavior`. The legacy `plugins` field is left empty.
     pub(crate) fn into_loop_config(
         self,
-        plugins: Vec<Arc<dyn crate::contracts::runtime::plugin::AgentPlugin>>,
+        behaviors: Vec<Arc<dyn AgentBehavior>>,
     ) -> BaseAgent {
         let tool_executor: Arc<dyn ToolExecutor> = match self.tool_execution_mode {
             ToolExecutionMode::Sequential => Arc::new(SequentialToolExecutor),
@@ -208,6 +212,11 @@ impl AgentDefinition {
                 Arc::new(ParallelToolExecutor::batch_approval())
             }
             ToolExecutionMode::ParallelStreaming => Arc::new(ParallelToolExecutor::streaming()),
+        };
+        let behavior: Arc<dyn AgentBehavior> = if behaviors.is_empty() {
+            Arc::new(NoOpBehavior)
+        } else {
+            Arc::new(CompositeBehavior::new(self.id.clone(), behaviors))
         };
         BaseAgent {
             id: self.id,
@@ -218,8 +227,7 @@ impl AgentDefinition {
             chat_options: self.chat_options,
             fallback_models: self.fallback_models,
             llm_retry_policy: self.llm_retry_policy,
-            behavior: Arc::new(NoOpBehavior),
-            plugins,
+            behavior,
             step_tool_provider: None,
             llm_executor: None,
         }

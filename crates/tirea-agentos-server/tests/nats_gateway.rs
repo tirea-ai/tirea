@@ -32,7 +32,7 @@ fn make_os(storage: Arc<dyn ThreadStore>) -> tirea_agentos::orchestrator::AgentO
     };
 
     AgentOsBuilder::new()
-        .with_registered_plugin(
+        .with_registered_behavior(
             "terminate_plugin_requested_test",
             Arc::new(TerminatePlugin::new("terminate_plugin_requested_test")),
         )

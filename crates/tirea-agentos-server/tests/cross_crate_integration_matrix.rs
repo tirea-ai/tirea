@@ -19,7 +19,7 @@ fn make_os(store: Arc<MemoryStore>) -> AgentOs {
     };
 
     AgentOsBuilder::new()
-        .with_registered_plugin(
+        .with_registered_behavior(
             "terminate_plugin_requested_cross_crate_matrix",
             Arc::new(TerminatePlugin::new(
                 "terminate_plugin_requested_cross_crate_matrix",

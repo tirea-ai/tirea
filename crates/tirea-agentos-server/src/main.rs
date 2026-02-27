@@ -207,8 +207,8 @@ fn build_os(
 ) -> AgentOs {
     let mut builder = AgentOsBuilder::new()
         .with_agent_state_store(write_store)
-        .with_registered_plugin("tool_policy", Arc::new(ToolPolicyPlugin))
-        .with_registered_plugin("permission", Arc::new(PermissionPlugin))
+        .with_registered_behavior("tool_policy", Arc::new(ToolPolicyPlugin))
+        .with_registered_behavior("permission", Arc::new(PermissionPlugin))
         .with_tools({
             let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
             tools.insert("serverInfo".to_string(), Arc::new(ServerInfoTool));

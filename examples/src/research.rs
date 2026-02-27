@@ -1,6 +1,6 @@
 use clap::Parser;
 use std::sync::Arc;
-use tirea_agentos::contracts::runtime::plugin::AgentPlugin;
+use tirea_agentos::contracts::runtime::plugin::agent::AgentBehavior;
 use tirea_agentos::contracts::runtime::tool_call::Tool;
 use tirea_agentos::extensions::permission::PermissionPlugin;
 use tirea_agentos::orchestrator::AgentDefinition;
@@ -36,7 +36,7 @@ async fn main() {
         Arc::new(ExtractResourcesTool),
     ];
 
-    let plugins: Vec<(String, Arc<dyn AgentPlugin>)> =
+    let plugins: Vec<(String, Arc<dyn AgentBehavior>)> =
         vec![("permission".into(), Arc::new(PermissionPlugin))];
 
     tirea_examples::serve(args, agent_def, tools, plugins).await;

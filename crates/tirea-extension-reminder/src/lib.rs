@@ -24,8 +24,6 @@ use serde::{Deserialize, Serialize};
 use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
 use tirea_contract::runtime::plugin::phase::effect::PhaseOutput;
 use tirea_contract::runtime::plugin::phase::state_spec::{AnyStateAction, StateSpec};
-use tirea_contract::runtime::plugin::phase::{BeforeInferenceContext, PluginPhaseContext};
-use tirea_contract::runtime::plugin::AgentPlugin;
 use tirea_contract::runtime::tool_call::ToolCallContext;
 use tirea_state::State;
 
@@ -139,33 +137,6 @@ impl ReminderPlugin {
 }
 
 #[async_trait]
-impl AgentPlugin for ReminderPlugin {
-    fn id(&self) -> &str {
-        "reminder"
-    }
-
-    async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
-        let reminders = ctx
-            .state_of::<ReminderState>()
-            .items()
-            .ok()
-            .unwrap_or_default();
-        if reminders.is_empty() {
-            return;
-        }
-
-        for text in &reminders {
-            ctx.add_session_message(format!("Reminder: {}", text));
-        }
-
-        if self.clear_after_llm_request {
-            let state = ctx.state_of::<ReminderState>();
-            let _ = state.set_items(Vec::new());
-        }
-    }
-}
-
-#[async_trait]
 impl AgentBehavior for ReminderPlugin {
     fn id(&self) -> &str {
         "reminder"
@@ -198,15 +169,21 @@ impl AgentBehavior for ReminderPlugin {
 mod tests {
     use super::*;
     use serde_json::json;
-    use tirea_contract::runtime::plugin::phase::BeforeInferenceContext;
+    use tirea_contract::runtime::plugin::phase::Phase;
+    use tirea_contract::runtime::plugin::phase::effect::PhaseEffect;
     use tirea_contract::testing::TestFixture;
+    use tirea_contract::RunConfig;
+    use tirea_state::DocCell;
 
-    async fn run_before_inference(
-        plugin: &ReminderPlugin,
-        step: &mut tirea_contract::runtime::plugin::phase::StepContext<'_>,
-    ) {
-        let mut ctx = BeforeInferenceContext::new(step);
-        AgentPlugin::before_inference(plugin, &mut ctx).await;
+    fn extract_session_contexts(output: &PhaseOutput) -> Vec<&str> {
+        output
+            .effects
+            .iter()
+            .filter_map(|e| match e {
+                PhaseEffect::SessionContext(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
@@ -311,7 +288,7 @@ mod tests {
     #[test]
     fn test_reminder_plugin_id() {
         let plugin = ReminderPlugin::new();
-        assert_eq!(AgentPlugin::id(&plugin), "reminder");
+        assert_eq!(AgentBehavior::id(&plugin), "reminder");
     }
 
     #[test]
@@ -322,76 +299,63 @@ mod tests {
 
     #[tokio::test]
     async fn test_reminder_plugin_before_inference() {
-        let fixture =
-            TestFixture::new_with_state(json!({ "reminders": { "items": ["Test reminder"] } }));
-
         let plugin = ReminderPlugin::new();
-        let mut step = fixture.step(vec![]);
-
-        run_before_inference(&plugin, &mut step).await;
-
-        assert!(!step.session_context.is_empty());
-        assert!(step.session_context[0].contains("Test reminder"));
+        let config = RunConfig::new();
+        let doc = DocCell::new(json!({ "reminders": { "items": ["Test reminder"] } }));
+        let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
+        let output = AgentBehavior::before_inference(&plugin, &ctx).await;
+        let contexts = extract_session_contexts(&output);
+        assert!(!contexts.is_empty());
+        assert!(contexts[0].contains("Test reminder"));
     }
 
     #[tokio::test]
-    async fn test_reminder_plugin_generates_clear_patch() {
-        let fixture = TestFixture::new_with_state(
+    async fn test_reminder_plugin_generates_clear_action() {
+        let plugin = ReminderPlugin::new(); // clear_after_llm_request = true
+        let config = RunConfig::new();
+        let doc = DocCell::new(
             json!({ "reminders": { "items": ["Reminder A", "Reminder B"] } }),
         );
-
-        let plugin = ReminderPlugin::new(); // clear_after_llm_request = true
-        let mut step = fixture.step(vec![]);
-
-        run_before_inference(&plugin, &mut step).await;
-
-        // Should have injected reminders as session context
-        assert_eq!(step.session_context.len(), 2);
-        assert!(step.session_context[0].contains("Reminder A"));
-        assert!(step.session_context[1].contains("Reminder B"));
-
-        // Plugin ops are collected in fixture; verify changes were made
-        assert!(fixture.has_changes());
+        let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
+        let output = AgentBehavior::before_inference(&plugin, &ctx).await;
+        let contexts = extract_session_contexts(&output);
+        assert_eq!(contexts.len(), 2);
+        assert!(contexts[0].contains("Reminder A"));
+        assert!(contexts[1].contains("Reminder B"));
+        // Should have a state action for clearing
+        assert!(!output.state_actions.is_empty());
     }
 
     #[tokio::test]
     async fn test_reminder_plugin_no_clear_when_disabled() {
-        let fixture =
-            TestFixture::new_with_state(json!({ "reminders": { "items": ["Reminder"] } }));
-
         let plugin = ReminderPlugin::new().with_clear_after_llm_request(false);
-        let mut step = fixture.step(vec![]);
-
-        run_before_inference(&plugin, &mut step).await;
-
-        assert!(!step.session_context.is_empty());
-        // No pending patches when clearing is disabled
-        assert!(step.pending_patches.is_empty());
+        let config = RunConfig::new();
+        let doc = DocCell::new(json!({ "reminders": { "items": ["Reminder"] } }));
+        let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
+        let output = AgentBehavior::before_inference(&plugin, &ctx).await;
+        let contexts = extract_session_contexts(&output);
+        assert!(!contexts.is_empty());
+        // No state actions when clearing is disabled
+        assert!(output.state_actions.is_empty());
     }
 
     #[tokio::test]
     async fn test_reminder_plugin_empty_reminders() {
-        let fixture = TestFixture::new_with_state(json!({ "reminders": { "items": [] } }));
-
         let plugin = ReminderPlugin::new();
-        let mut step = fixture.step(vec![]);
-
-        run_before_inference(&plugin, &mut step).await;
-
-        assert!(step.session_context.is_empty());
-        assert!(step.pending_patches.is_empty());
+        let config = RunConfig::new();
+        let doc = DocCell::new(json!({ "reminders": { "items": [] } }));
+        let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
+        let output = AgentBehavior::before_inference(&plugin, &ctx).await;
+        assert!(output.is_empty());
     }
 
     #[tokio::test]
     async fn test_reminder_plugin_no_state() {
-        let fixture = TestFixture::new();
-
         let plugin = ReminderPlugin::new();
-        let mut step = fixture.step(vec![]);
-
-        run_before_inference(&plugin, &mut step).await;
-
-        assert!(step.session_context.is_empty());
-        assert!(step.pending_patches.is_empty());
+        let config = RunConfig::new();
+        let doc = DocCell::new(json!({}));
+        let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
+        let output = AgentBehavior::before_inference(&plugin, &ctx).await;
+        assert!(output.is_empty());
     }
 }

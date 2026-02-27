@@ -3,7 +3,6 @@ use super::AgentLoopError;
 use crate::contracts::runtime::plugin::agent::NoOpBehavior;
 use crate::contracts::runtime::plugin::composite_agent::CompositeBehavior;
 use crate::contracts::runtime::plugin::AgentBehavior;
-use crate::contracts::runtime::plugin::AgentPlugin;
 use crate::contracts::runtime::ToolExecutor;
 use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor};
 use crate::contracts::RunContext;
@@ -235,15 +234,6 @@ pub trait Agent: Send + Sync {
     /// The agent behavior (phase hooks) dispatched by the loop.
     fn behavior(&self) -> &dyn AgentBehavior;
 
-    // --- Legacy backward compat ---
-
-    /// Legacy plugins for backward compatibility.
-    ///
-    /// When `behavior()` returns a [`NoOpBehavior`] and this is non-empty,
-    /// the loop falls back to mutable plugin dispatch.
-    fn plugins(&self) -> &[Arc<dyn AgentPlugin>] {
-        &[]
-    }
 }
 
 impl std::fmt::Debug for dyn Agent {
@@ -285,8 +275,6 @@ pub struct BaseAgent {
     pub llm_retry_policy: LlmRetryPolicy,
     /// Agent behavior (declarative model).
     pub behavior: Arc<dyn AgentBehavior>,
-    /// Legacy plugins (deprecated — use `behavior` for new code).
-    pub plugins: Vec<Arc<dyn AgentPlugin>>,
     /// Optional per-step tool provider.
     pub step_tool_provider: Option<Arc<dyn StepToolProvider>>,
     /// Optional LLM executor override.
@@ -310,7 +298,6 @@ impl Default for BaseAgent {
             fallback_models: Vec::new(),
             llm_retry_policy: LlmRetryPolicy::default(),
             behavior: Arc::new(NoOpBehavior),
-            plugins: Vec::new(),
             step_tool_provider: None,
             llm_executor: None,
         }
@@ -332,7 +319,6 @@ impl std::fmt::Debug for BaseAgent {
             .field("fallback_models", &self.fallback_models)
             .field("llm_retry_policy", &self.llm_retry_policy)
             .field("behavior", &self.behavior.id())
-            .field("plugins", &format!("[{} plugins]", self.plugins.len()))
             .field(
                 "step_tool_provider",
                 &self.step_tool_provider.as_ref().map(|_| "<set>"),
@@ -392,10 +378,6 @@ impl Agent for BaseAgent {
 
     fn behavior(&self) -> &dyn AgentBehavior {
         self.behavior.as_ref()
-    }
-
-    fn plugins(&self) -> &[Arc<dyn AgentPlugin>] {
-        &self.plugins
     }
 }
 
@@ -457,8 +439,8 @@ impl BaseAgent {
         self
     }
 
-    /// Check if any behavior is configured (behavior or legacy plugins).
-    pub fn has_plugins(&self) -> bool {
-        self.behavior.id() != "noop" || !self.plugins.is_empty()
+    /// Check if any behavior is configured.
+    pub fn has_behavior(&self) -> bool {
+        self.behavior.id() != "noop"
     }
 }

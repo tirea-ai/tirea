@@ -1,7 +1,7 @@
 use clap::Parser;
 use genai::chat::ChatOptions;
 use std::sync::Arc;
-use tirea_agentos::contracts::runtime::plugin::AgentPlugin;
+use tirea_agentos::contracts::runtime::plugin::agent::AgentBehavior;
 use tirea_agentos::contracts::runtime::tool_call::Tool;
 use tirea_agentos::extensions::observability::{
     AgentMetrics, GenAISpan, LLMMetryPlugin, MetricsSink, ToolSpan,
@@ -104,7 +104,7 @@ async fn main() {
         .with_provider("deepseek")
         .with_chat_options(&chat_options);
 
-    let plugins: Vec<(String, Arc<dyn AgentPlugin>)> = vec![
+    let plugins: Vec<(String, Arc<dyn AgentBehavior>)> = vec![
         ("permission".into(), Arc::new(PermissionPlugin)),
         ("llmmetry".into(), Arc::new(llmmetry)),
     ];
