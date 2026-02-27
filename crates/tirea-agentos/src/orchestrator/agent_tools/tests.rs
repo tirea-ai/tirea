@@ -1,11 +1,10 @@
 use super::*;
-use crate::contracts::reduce_state_actions;
 use crate::contracts::runtime::plugin::agent::ReadOnlyContext;
-use crate::contracts::runtime::plugin::phase::effect::{PhaseEffect, PhaseOutput};
-use crate::contracts::runtime::plugin::phase::RunAction;
+use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
 use crate::contracts::runtime::plugin::phase::{Phase, StepContext};
 use crate::contracts::runtime::tool_call::ToolStatus;
 use crate::contracts::thread::Thread;
+use crate::contracts::testing::apply_phase_output_for_test as apply_shared_phase_output_for_test;
 use crate::contracts::AgentBehavior;
 use crate::orchestrator::InMemoryAgentRegistry;
 use crate::runtime::loop_runner::{
@@ -22,37 +21,9 @@ use tirea_state::apply_patches;
 ///
 /// Replicates the effect-application logic from the agent-loop's
 /// `effect_applicator` module, which is not publicly exported.
-fn apply_phase_output_for_test(step: &mut StepContext<'_>, output: PhaseOutput) {
-    for effect in output.effects {
-        match effect {
-            PhaseEffect::SystemContext(s) => step.system(s),
-            PhaseEffect::SessionContext(s) => step.thread(s),
-            PhaseEffect::SystemReminder(s) => step.reminder(s),
-            PhaseEffect::ExcludeTool(id) => step.exclude(&id),
-            PhaseEffect::IncludeOnlyTools(ids) => {
-                let refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
-                step.include_only(&refs);
-            }
-            PhaseEffect::BlockTool(reason) => step.block(reason),
-            PhaseEffect::AllowTool => step.allow(),
-            PhaseEffect::SuspendTool(ticket) => step.suspend(ticket),
-            PhaseEffect::OverrideToolResult(result) => step.set_tool_result(result),
-            PhaseEffect::RequestTermination(reason) => {
-                step.set_run_action(RunAction::Terminate(reason));
-            }
-        }
-    }
-    let tracked = reduce_state_actions(output.state_actions, &step.snapshot(), "agent")
-        .expect("state action reduce should succeed");
-    for patch in tracked {
-        {
-            let doc = step.ctx().doc();
-            for op in patch.patch().ops() {
-                let _ = doc.apply(op);
-            }
-        }
-        step.emit_patch(patch);
-    }
+fn apply_phase_output_for_test(phase: Phase, step: &mut StepContext<'_>, output: PhaseOutput) {
+    apply_shared_phase_output_for_test(phase, step, output)
+        .expect("phase output apply should succeed");
 }
 
 #[async_trait]
@@ -83,7 +54,7 @@ where
             Phase::StepEnd => self.step_end(&ctx).await,
             Phase::RunEnd => self.run_end(&ctx).await,
         };
-        apply_phase_output_for_test(step, output);
+        apply_phase_output_for_test(phase, step, output);
     }
 }
 

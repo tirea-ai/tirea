@@ -4,9 +4,13 @@
 //! unaffected.  Enable via `[dev-dependencies] tirea-contract = { ..., features = ["test-support"] }`.
 
 use crate::runtime::activity::NoOpActivityManager;
+use crate::runtime::plugin::phase::effect::{validate_effect, PhaseEffect, PhaseOutput};
 use crate::runtime::tool_call::suspension::Suspension;
 use crate::runtime::tool_call::ToolDescriptor;
-use crate::runtime::{PendingToolCall, StepContext, SuspendTicket, ToolCallContext, ToolCallResumeMode};
+use crate::runtime::{
+    reduce_state_actions, PendingToolCall, Phase, RunAction, StepContext, SuspendTicket,
+    ToolCallContext, ToolCallResumeMode,
+};
 use crate::RunConfig;
 use crate::thread::Message;
 use serde_json::Value;
@@ -112,4 +116,52 @@ pub fn test_suspend_ticket(interaction: Suspension) -> SuspendTicket {
         PendingToolCall::new(interaction.id, tool_name, interaction.parameters),
         ToolCallResumeMode::PassDecisionToTool,
     )
+}
+
+/// Apply a phase output in tests using the same reducer path as runtime.
+///
+/// This helper validates effects, applies them to `StepContext`, reduces
+/// `state_actions`, applies patch ops to the fixture doc, then queues the
+/// tracked patch on `step.pending_patches`.
+pub fn apply_phase_output_for_test(
+    phase: Phase,
+    step: &mut StepContext<'_>,
+    output: PhaseOutput,
+) -> Result<(), String> {
+    for effect in &output.effects {
+        validate_effect(phase, effect)?;
+    }
+    for effect in output.effects {
+        match effect {
+            PhaseEffect::SystemContext(s) => step.system(s),
+            PhaseEffect::SessionContext(s) => step.thread(s),
+            PhaseEffect::SystemReminder(s) => step.reminder(s),
+            PhaseEffect::ExcludeTool(id) => step.exclude(&id),
+            PhaseEffect::IncludeOnlyTools(ids) => {
+                let refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
+                step.include_only(&refs);
+            }
+            PhaseEffect::BlockTool(reason) => step.block(reason),
+            PhaseEffect::AllowTool => step.allow(),
+            PhaseEffect::SuspendTool(ticket) => step.suspend(ticket),
+            PhaseEffect::OverrideToolResult(result) => step.set_tool_result(result),
+            PhaseEffect::RequestTermination(reason) => {
+                step.set_run_action(RunAction::Terminate(reason));
+            }
+        }
+    }
+
+    let tracked = reduce_state_actions(output.state_actions, &step.snapshot(), "agent")
+        .map_err(|e| e.to_string())?;
+    for patch in tracked {
+        {
+            let doc = step.ctx().doc();
+            for op in patch.patch().ops() {
+                doc.apply(op).map_err(|e| e.to_string())?;
+            }
+        }
+        step.emit_patch(patch);
+    }
+
+    Ok(())
 }

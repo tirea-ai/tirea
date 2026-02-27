@@ -4726,41 +4726,8 @@ fn build_read_only_ctx_for_dispatch<'a>(
 }
 
 fn apply_phase_output_for_test(phase: Phase, step: &mut StepContext<'_>, output: PhaseOutput) {
-    use tirea_agentos::contracts::reduce_state_actions;
-    use tirea_agentos::contracts::runtime::plugin::phase::effect::{validate_effect, PhaseEffect};
-    use tirea_agentos::contracts::runtime::plugin::phase::RunAction;
-
-    for effect in &output.effects {
-        validate_effect(phase, effect).expect("phase effect should be valid");
-    }
-    for effect in output.effects {
-        match effect {
-            PhaseEffect::SystemContext(s) => step.system(s),
-            PhaseEffect::SessionContext(s) => step.thread(s),
-            PhaseEffect::SystemReminder(s) => step.reminder(s),
-            PhaseEffect::ExcludeTool(id) => step.exclude(&id),
-            PhaseEffect::IncludeOnlyTools(ids) => {
-                let refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
-                step.include_only(&refs);
-            }
-            PhaseEffect::BlockTool(reason) => step.block(reason),
-            PhaseEffect::AllowTool => step.allow(),
-            PhaseEffect::SuspendTool(ticket) => step.suspend(ticket),
-            PhaseEffect::OverrideToolResult(result) => step.set_tool_result(result),
-            PhaseEffect::RequestTermination(reason) => {
-                step.set_run_action(RunAction::Terminate(reason));
-            }
-        }
-    }
-    let tracked = reduce_state_actions(output.state_actions, &step.ctx().doc().snapshot(), "agent")
-        .expect("state actions should reduce");
-    for patch in tracked {
-        let doc = step.ctx().doc();
-        for op in patch.patch().ops() {
-            let _ = doc.apply(op);
-        }
-        step.emit_patch(patch);
-    }
+    tirea_contract::testing::apply_phase_output_for_test(phase, step, output)
+        .expect("phase output apply should succeed");
 }
 
 #[derive(Debug, Default)]
