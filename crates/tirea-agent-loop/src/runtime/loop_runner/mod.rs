@@ -40,7 +40,6 @@
 
 mod config;
 mod core;
-mod effect_applicator;
 mod event_envelope_meta;
 mod outcome;
 mod parallel_state_merge;
@@ -489,7 +488,8 @@ pub(super) async fn complete_step_after_inference(
         agent,
         &[Phase::AfterInference],
         |step| {
-            step.response = Some(result.clone());
+            use crate::contracts::runtime::plugin::phase::core::ext::LLMResponse;
+            step.extensions.insert(LLMResponse::new(result.clone()));
         },
         |step| step.run_action(),
     )

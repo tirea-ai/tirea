@@ -4,16 +4,14 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use crate::contracts::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
-use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
-use crate::contracts::runtime::plugin::phase::state_spec::{
-    reduce_state_actions, AnyStateAction, StateSpec,
-};
-use crate::contracts::runtime::plugin::phase::{AnyPluginAction, Phase};
+use crate::contracts::runtime::plugin::phase::action::Action;
+use crate::contracts::runtime::plugin::phase::core::actions::{EmitStatePatch, RequestTermination};
+use crate::contracts::runtime::plugin::phase::state_spec::{AnyStateAction, StateSpec};
 use crate::contracts::runtime::tool_call::ToolResult;
 use crate::contracts::runtime::StreamResult;
 use crate::contracts::thread::{Message, Role, ToolCall};
 use crate::contracts::{RunContext, StoppedReason, TerminationReason};
-use tirea_state::{State, TrackedPatch};
+use tirea_state::State;
 
 pub const STOP_POLICY_PLUGIN_ID: &str = "stop_policy";
 
@@ -58,11 +56,6 @@ pub(crate) enum StopPolicyRuntimeAction {
     },
 }
 
-impl From<StopPolicyRuntimeAction> for AnyPluginAction {
-    fn from(action: StopPolicyRuntimeAction) -> Self {
-        AnyPluginAction::new(STOP_POLICY_PLUGIN_ID, action)
-    }
-}
 
 impl StateSpec for StopPolicyRuntimeState {
     type Action = StopPolicyRuntimeAction;
@@ -323,13 +316,13 @@ impl AgentBehavior for StopPolicyPlugin {
         STOP_POLICY_PLUGIN_ID
     }
 
-    async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+    async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
         if self.conditions.is_empty() {
-            return PhaseOutput::default();
+            return vec![];
         }
 
         let Some(response) = ctx.response() else {
-            return PhaseOutput::default();
+            return vec![];
         };
         let now_ms = now_millis();
         let prompt_tokens = response
@@ -352,7 +345,21 @@ impl AgentBehavior for StopPolicyPlugin {
             .total_output_tokens
             .saturating_add(completion_tokens);
 
-        let mut output = PhaseOutput::new();
+        let mut actions: Vec<Box<dyn Action>> = Vec::new();
+
+        // Emit state patch for token recording
+        let record_action = StopPolicyRuntimeAction::RecordTokens {
+            started_at_ms: if runtime.started_at_ms.is_none() {
+                Some(now_ms)
+            } else {
+                None
+            },
+            prompt_tokens,
+            completion_tokens,
+        };
+        actions.push(Box::new(EmitStatePatch(
+            AnyStateAction::new::<StopPolicyRuntimeState>(record_action),
+        )));
 
         let message_stats = derive_stats_from_messages_with_response(ctx.messages(), response);
         let elapsed = std::time::Duration::from_millis(now_ms.saturating_sub(started_at_ms));
@@ -380,75 +387,13 @@ impl AgentBehavior for StopPolicyPlugin {
         };
         for condition in &self.conditions {
             if let Some(stopped) = condition.evaluate(&input) {
-                output = output.request_termination(TerminationReason::Stopped(stopped));
+                actions.push(Box::new(RequestTermination(TerminationReason::Stopped(
+                    stopped,
+                ))));
                 break;
             }
         }
-        output
-    }
-
-    async fn phase_actions(&self, phase: Phase, ctx: &ReadOnlyContext<'_>) -> Vec<AnyPluginAction> {
-        if phase != Phase::AfterInference || self.conditions.is_empty() {
-            return Vec::new();
-        }
-
-        let Some(response) = ctx.response() else {
-            return Vec::new();
-        };
-
-        let prompt_tokens = response
-            .usage
-            .as_ref()
-            .and_then(|usage| usage.prompt_tokens)
-            .unwrap_or(0) as usize;
-        let completion_tokens = response
-            .usage
-            .as_ref()
-            .and_then(|usage| usage.completion_tokens)
-            .unwrap_or(0) as usize;
-        let now_ms = now_millis();
-        let runtime = ctx
-            .snapshot_of::<StopPolicyRuntimeState>()
-            .unwrap_or_default();
-
-        vec![StopPolicyRuntimeAction::RecordTokens {
-            started_at_ms: if runtime.started_at_ms.is_none() {
-                Some(now_ms)
-            } else {
-                None
-            },
-            prompt_tokens,
-            completion_tokens,
-        }
-        .into()]
-    }
-
-    fn reduce_plugin_actions(
-        &self,
-        actions: Vec<AnyPluginAction>,
-        base_snapshot: &serde_json::Value,
-    ) -> Result<Vec<TrackedPatch>, String> {
-        let mut state_actions = Vec::new();
-        for action in actions {
-            if action.plugin_id() != STOP_POLICY_PLUGIN_ID {
-                return Err(format!(
-                    "stop policy plugin received action for unexpected plugin '{}'",
-                    action.plugin_id()
-                ));
-            }
-            let action = action
-                .downcast::<StopPolicyRuntimeAction>()
-                .map_err(|other| {
-                    format!(
-                        "stop policy plugin failed to downcast action '{}'",
-                        other.action_type_name()
-                    )
-                })?;
-            state_actions.push(AnyStateAction::new::<StopPolicyRuntimeState>(action));
-        }
-
-        reduce_state_actions(state_actions, base_snapshot, "plugin:stop_policy")
-            .map_err(|e| e.to_string())
+        actions
     }
 }
 

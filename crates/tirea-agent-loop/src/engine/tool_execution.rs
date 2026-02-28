@@ -14,7 +14,6 @@ use tirea_contract::RunConfig;
 use tirea_state::{apply_patch, DocCell, Patch, TrackedPatch};
 
 const DIRECT_STATE_WRITE_DENIED_ERROR_CODE: &str = "tool_context_state_write_not_allowed";
-const PLUGIN_ACTIONS_UNSUPPORTED_ERROR_CODE: &str = "tool_plugin_actions_not_supported";
 
 pub(crate) fn merge_context_patch_into_effect(
     call: &ToolCall,
@@ -69,7 +68,7 @@ pub async fn execute_single_tool_with_scope_and_behavior(
     call: &ToolCall,
     state: &Value,
     scope: Option<&RunConfig>,
-    behavior: Option<&dyn AgentBehavior>,
+    _behavior: Option<&dyn AgentBehavior>,
 ) -> ToolExecution {
     let Some(tool) = tool else {
         return ToolExecution {
@@ -118,7 +117,7 @@ pub async fn execute_single_tool_with_scope_and_behavior(
             patch: None,
         };
     }
-    let (result, state_actions, plugin_actions, _user_messages) = effect.into_parts();
+    let (result, state_actions, _user_messages) = effect.into_parts();
 
     let action_patches =
         match reduce_state_actions(state_actions, state, &format!("tool:{}", call.name)) {
@@ -138,37 +137,6 @@ pub async fn execute_single_tool_with_scope_and_behavior(
     let mut merged_patch = Patch::new();
     for tracked in action_patches {
         merged_patch.extend(tracked.patch().clone());
-    }
-
-    if !plugin_actions.is_empty() {
-        let Some(behavior) = behavior else {
-            return ToolExecution {
-                call: call.clone(),
-                result: ToolResult::error_with_code(
-                    &call.name,
-                    PLUGIN_ACTIONS_UNSUPPORTED_ERROR_CODE,
-                    "tool returned plugin actions but this execution path has no plugin behavior router",
-                ),
-                patch: None,
-            };
-        };
-
-        let plugin_patches = match behavior.reduce_plugin_actions(plugin_actions, state) {
-            Ok(patches) => patches,
-            Err(err) => {
-                return ToolExecution {
-                    call: call.clone(),
-                    result: ToolResult::error(
-                        &call.name,
-                        format!("tool plugin action reduce failed: {err}"),
-                    ),
-                    patch: None,
-                };
-            }
-        };
-        for tracked in plugin_patches {
-            merged_patch.extend(tracked.patch().clone());
-        }
     }
 
     let patch = if merged_patch.is_empty() {

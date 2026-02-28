@@ -4,7 +4,8 @@ use async_trait::async_trait;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
-use tirea_contract::runtime::plugin::phase::effect::PhaseOutput;
+use tirea_contract::runtime::plugin::phase::action::Action;
+use tirea_contract::runtime::plugin::phase::core::actions::AddSystemContext;
 
 /// Injects a skills catalog into the LLM context so the model can discover and activate skills.
 ///
@@ -131,7 +132,7 @@ impl AgentBehavior for SkillDiscoveryPlugin {
         SKILLS_DISCOVERY_PLUGIN_ID
     }
 
-    async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+    async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
         let active: HashSet<String> = ctx
             .snapshot_of::<SkillState>()
             .ok()
@@ -140,10 +141,10 @@ impl AgentBehavior for SkillDiscoveryPlugin {
 
         let rendered = self.render_catalog(&active, Some(ctx.run_config()));
         if rendered.is_empty() {
-            return PhaseOutput::default();
+            return vec![];
         }
 
-        PhaseOutput::new().system_context(rendered)
+        vec![Box::new(AddSystemContext(rendered))]
     }
 }
 
@@ -155,7 +156,6 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use tempfile::TempDir;
-    use tirea_contract::runtime::plugin::phase::effect::PhaseEffect;
     use tirea_contract::runtime::plugin::phase::Phase;
     use tirea_contract::RunConfig;
     use tirea_state::DocCell;
@@ -183,15 +183,29 @@ mod tests {
         (td, skills)
     }
 
-    fn extract_system_contexts(output: &PhaseOutput) -> Vec<&str> {
-        output
-            .effects
+    fn count_system_context_actions(actions: &[Box<dyn Action>]) -> usize {
+        actions
             .iter()
-            .filter_map(|e| match e {
-                PhaseEffect::SystemContext(s) => Some(s.as_str()),
-                _ => None,
-            })
-            .collect()
+            .filter(|a| a.label() == "add_system_context")
+            .count()
+    }
+
+    /// Apply AddSystemContext actions to collect their string values for assertion.
+    fn apply_and_extract_system_contexts(actions: Vec<Box<dyn Action>>) -> Vec<String> {
+        use tirea_contract::runtime::plugin::phase::core::ext::InferenceContext;
+        use tirea_contract::testing::TestFixture;
+
+        let fix = TestFixture::new();
+        let mut step = fix.step(vec![]);
+        for action in actions {
+            if action.label() == "add_system_context" {
+                action.apply(&mut step);
+            }
+        }
+        step.extensions
+            .get::<InferenceContext>()
+            .map(|inf| inf.system_context.clone())
+            .unwrap_or_default()
     }
 
     #[tokio::test]
@@ -201,10 +215,11 @@ mod tests {
         let config = RunConfig::new();
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
-        let output = AgentBehavior::before_inference(&p, &ctx).await;
-        let contexts = extract_system_contexts(&output);
+        let actions = AgentBehavior::before_inference(&p, &ctx).await;
+        assert_eq!(count_system_context_actions(&actions), 1);
+        let contexts = apply_and_extract_system_contexts(actions);
         assert_eq!(contexts.len(), 1);
-        let s = contexts[0];
+        let s = &contexts[0];
         assert!(s.contains("<available_skills>"));
         assert!(s.contains("<skills_usage>"));
         assert!(s.contains("&amp;"));
@@ -226,9 +241,9 @@ mod tests {
             }
         }));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
-        let output = AgentBehavior::before_inference(&p, &ctx).await;
-        let contexts = extract_system_contexts(&output);
-        let s = contexts[0];
+        let actions = AgentBehavior::before_inference(&p, &ctx).await;
+        let contexts = apply_and_extract_system_contexts(actions);
+        let s = &contexts[0];
         assert!(s.contains("<name>a-skill</name>"));
     }
 
@@ -238,8 +253,8 @@ mod tests {
         let config = RunConfig::new();
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
-        let output = AgentBehavior::before_inference(&p, &ctx).await;
-        assert!(output.is_empty());
+        let actions = AgentBehavior::before_inference(&p, &ctx).await;
+        assert!(actions.is_empty());
     }
 
     #[tokio::test]
@@ -261,8 +276,8 @@ mod tests {
         let config = RunConfig::new();
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
-        let output = AgentBehavior::before_inference(&p, &ctx).await;
-        assert!(output.is_empty());
+        let actions = AgentBehavior::before_inference(&p, &ctx).await;
+        assert!(actions.is_empty());
     }
 
     #[tokio::test]
@@ -288,10 +303,10 @@ mod tests {
         let config = RunConfig::new();
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
-        let output = AgentBehavior::before_inference(&p, &ctx).await;
-        let contexts = extract_system_contexts(&output);
+        let actions = AgentBehavior::before_inference(&p, &ctx).await;
+        let contexts = apply_and_extract_system_contexts(actions);
         assert_eq!(contexts.len(), 1);
-        let s = contexts[0];
+        let s = &contexts[0];
         assert!(s.contains("<name>good-skill</name>"));
         assert!(!s.contains("BadSkill"));
         assert!(!s.contains("skills_warnings"));
@@ -317,9 +332,9 @@ mod tests {
         let config = RunConfig::new();
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
-        let output = AgentBehavior::before_inference(&p, &ctx).await;
-        let contexts = extract_system_contexts(&output);
-        let s = contexts[0];
+        let actions = AgentBehavior::before_inference(&p, &ctx).await;
+        let contexts = apply_and_extract_system_contexts(actions);
+        let s = &contexts[0];
         assert!(s.contains("<available_skills>"));
         assert!(s.contains("truncated"));
         assert_eq!(s.matches("<skill>").count(), 2);
@@ -341,9 +356,9 @@ mod tests {
         let config = RunConfig::new();
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
-        let output = AgentBehavior::before_inference(&p, &ctx).await;
-        let contexts = extract_system_contexts(&output);
-        let s = contexts[0];
+        let actions = AgentBehavior::before_inference(&p, &ctx).await;
+        let contexts = apply_and_extract_system_contexts(actions);
+        let s = &contexts[0];
         assert!(s.len() <= 256);
     }
 
@@ -357,10 +372,10 @@ mod tests {
             .unwrap();
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
-        let output = AgentBehavior::before_inference(&p, &ctx).await;
-        let contexts = extract_system_contexts(&output);
+        let actions = AgentBehavior::before_inference(&p, &ctx).await;
+        let contexts = apply_and_extract_system_contexts(actions);
         assert_eq!(contexts.len(), 1);
-        let s = contexts[0];
+        let s = &contexts[0];
         assert!(s.contains("<name>a-skill</name>"));
         assert!(!s.contains("<name>b-skill</name>"));
     }

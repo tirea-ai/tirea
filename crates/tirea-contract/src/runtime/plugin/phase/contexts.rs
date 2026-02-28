@@ -1,3 +1,4 @@
+use super::core::ext::{LLMResponse, ToolGate};
 use super::{Phase, RunAction, StepContext, SuspendTicket, ToolCallAction};
 use crate::runtime::llm::StreamResult;
 use crate::runtime::run::TerminationReason;
@@ -118,14 +119,19 @@ impl_phase_context!(AfterInferenceContext, Phase::AfterInference);
 
 impl<'s, 'a> AfterInferenceContext<'s, 'a> {
     pub fn response_opt(&self) -> Option<&StreamResult> {
-        self.step.response.as_ref()
+        self.step
+            .extensions
+            .get::<LLMResponse>()
+            .map(|r| &r.result)
     }
 
     pub fn response(&self) -> &StreamResult {
-        self.step
-            .response
-            .as_ref()
+        &self
+            .step
+            .extensions
+            .get::<LLMResponse>()
             .expect("AfterInferenceContext.response() requires response to be set")
+            .result
     }
 
     /// Request run termination with a specific reason after inference has completed.
@@ -154,8 +160,8 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
 
     /// Resume payload attached to current tool call, if present.
     pub fn resume_input(&self) -> Option<ToolCallResume> {
-        let call_id = self.tool_call_id()?;
-        self.step.ctx().resume_input_for(call_id).ok().flatten()
+        let gate = self.step.extensions.get::<ToolGate>()?;
+        self.step.ctx().resume_input_for(&gate.id).ok().flatten()
     }
 
     pub fn decision(&self) -> ToolCallAction {
@@ -210,7 +216,9 @@ impl<'s, 'a> AfterToolExecuteContext<'s, 'a> {
 
     pub fn tool_result(&self) -> &ToolResult {
         self.step
-            .tool_result()
+            .extensions
+            .get::<ToolGate>()
+            .and_then(|g| g.result.as_ref())
             .expect("AfterToolExecuteContext.tool_result() requires tool result")
     }
 

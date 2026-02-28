@@ -1,19 +1,20 @@
 use crate::runtime::llm::StreamResult;
-use crate::runtime::plugin::phase::effect::PhaseOutput;
-use crate::runtime::plugin::phase::{AnyPluginAction, Phase};
+use crate::runtime::plugin::phase::action::Action;
+use crate::runtime::plugin::phase::core::ext::{LLMResponse, ToolGate};
+use crate::runtime::plugin::phase::Phase;
 use crate::runtime::tool_call::{ToolCallResume, ToolResult};
 use crate::thread::Message;
 use crate::RunConfig;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
-use tirea_state::{get_at_path, parse_path, DocCell, State, TireaResult, TrackedPatch};
+use tirea_state::{get_at_path, parse_path, DocCell, State, TireaResult};
 
-/// Immutable snapshot of step context passed to [`Agent`] phase hooks.
+/// Immutable snapshot of step context passed to [`AgentBehavior`] phase hooks.
 ///
 /// The loop builds a `ReadOnlyContext` from the current `StepContext` before
 /// each phase hook and passes it by shared reference. Agents read data from
-/// this snapshot and return a [`PhaseOutput`] describing declarative effects.
+/// this snapshot and return a `Vec<Box<dyn Action>>` describing effects to apply.
 pub struct ReadOnlyContext<'a> {
     phase: Phase,
     thread_id: &'a str,
@@ -29,7 +30,6 @@ pub struct ReadOnlyContext<'a> {
 }
 
 impl<'a> ReadOnlyContext<'a> {
-    /// Create a new read-only context with the minimum required fields.
     pub fn new(
         phase: Phase,
         thread_id: &'a str,
@@ -51,8 +51,6 @@ impl<'a> ReadOnlyContext<'a> {
             resume_input: None,
         }
     }
-
-    // -- builder methods for optional fields --
 
     #[must_use]
     pub fn with_response(mut self, response: &'a StreamResult) -> Self {
@@ -84,8 +82,6 @@ impl<'a> ReadOnlyContext<'a> {
         self.resume_input = Some(resume);
         self
     }
-
-    // -- accessors --
 
     pub fn phase(&self) -> Phase {
         self.phase
@@ -135,14 +131,10 @@ impl<'a> ReadOnlyContext<'a> {
         self.resume_input.as_ref()
     }
 
-    // -- state access --
-
-    /// Raw state snapshot from the document.
     pub fn snapshot(&self) -> Value {
         self.doc.snapshot()
     }
 
-    /// Typed state snapshot at the canonical path for `T`.
     pub fn snapshot_of<T: State>(&self) -> TireaResult<T> {
         let val = self.doc.snapshot();
         let at = get_at_path(&val, &parse_path(T::PATH)).unwrap_or(&Value::Null);
@@ -152,122 +144,51 @@ impl<'a> ReadOnlyContext<'a> {
 
 /// Behavioral abstraction for agent phase hooks.
 ///
-/// `AgentBehavior` defines the phase-hook interface that the agent loop
-/// dispatches during each run lifecycle phase. Hooks receive an immutable
-/// [`ReadOnlyContext`] snapshot and return a [`PhaseOutput`] describing
-/// declarative effects to apply. The loop engine validates and applies
-/// these effects after each hook returns.
-///
-/// # Composition
-///
-/// Multiple `AgentBehavior` implementations can be composed, merging
-/// their [`PhaseOutput`]s. All sub-behaviors see the same
-/// [`ReadOnlyContext`] snapshot — effects are applied after all hooks
-/// return.
+/// Hooks receive an immutable [`ReadOnlyContext`] snapshot and return a
+/// `Vec<Box<dyn Action>>` describing effects to apply. The loop engine
+/// validates and applies these actions after each hook returns.
 #[async_trait]
 pub trait AgentBehavior: Send + Sync {
-    /// Unique identifier for this agent.
     fn id(&self) -> &str;
 
-    /// Return the ordered list of leaf behavior IDs.
-    ///
-    /// For simple behaviors this returns a single-element vec of `self.id()`.
-    /// Composite implementations override this to return the IDs of all
-    /// child behaviors.
     fn behavior_ids(&self) -> Vec<&str> {
         vec![self.id()]
     }
 
-    async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-        PhaseOutput::default()
+    async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        vec![]
     }
 
-    async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-        PhaseOutput::default()
+    async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        vec![]
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-        PhaseOutput::default()
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        vec![]
     }
 
-    async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-        PhaseOutput::default()
+    async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        vec![]
     }
 
-    async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-        PhaseOutput::default()
+    async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        vec![]
     }
 
-    async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-        PhaseOutput::default()
+    async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        vec![]
     }
 
-    async fn step_end(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-        PhaseOutput::default()
+    async fn step_end(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        vec![]
     }
 
-    async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-        PhaseOutput::default()
-    }
-
-    /// Emit plugin-domain actions for the current phase.
-    ///
-    /// These actions are routed back to plugin-owned reducers via
-    /// [`AgentBehavior::reduce_plugin_actions`], keeping state internals private.
-    async fn phase_actions(
-        &self,
-        _phase: Phase,
-        _ctx: &ReadOnlyContext<'_>,
-    ) -> Vec<AnyPluginAction> {
-        Vec::new()
-    }
-
-    /// Reduce plugin-domain actions into tracked patches.
-    ///
-    /// Implementations must only consume actions targeted to themselves.
-    /// Unknown actions should return an error.
-    fn reduce_plugin_actions(
-        &self,
-        actions: Vec<AnyPluginAction>,
-        _base_snapshot: &Value,
-    ) -> Result<Vec<TrackedPatch>, String> {
-        if actions.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let owned: Vec<&AnyPluginAction> = actions
-            .iter()
-            .filter(|action| action.plugin_id() == self.id())
-            .collect();
-        if !owned.is_empty() {
-            let action_types: Vec<&str> = owned
-                .iter()
-                .map(|action| action.action_type_name())
-                .collect();
-            return Err(format!(
-                "behavior '{}' received plugin actions but does not implement reduce_plugin_actions: {:?}",
-                self.id(),
-                action_types
-            ));
-        }
-
-        let mut ids: Vec<String> = actions
-            .into_iter()
-            .map(|action| action.plugin_id().to_string())
-            .collect();
-        ids.sort();
-        ids.dedup();
-        Err(format!(
-            "behavior '{}' cannot route plugin actions for plugin ids: {:?}",
-            self.id(),
-            ids
-        ))
+    async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        vec![]
     }
 }
 
-/// A no-op behavior that returns empty [`PhaseOutput`] for all hooks.
-///
-/// Used as the default behavior in configurations where no custom behavior is set.
+/// A no-op behavior that returns empty action lists for all hooks.
 pub struct NoOpBehavior;
 
 #[async_trait]
@@ -277,38 +198,63 @@ impl AgentBehavior for NoOpBehavior {
     }
 }
 
+/// Build a [`ReadOnlyContext`] from step Extensions and doc state.
+///
+/// Extracts response, tool info, and resume_input from the step's Extensions.
+pub fn build_read_only_context_from_step<'a>(
+    phase: Phase,
+    step: &'a crate::runtime::plugin::phase::StepContext<'a>,
+    doc: &'a DocCell,
+) -> ReadOnlyContext<'a> {
+    let mut ctx = ReadOnlyContext::new(
+        phase,
+        step.thread_id(),
+        step.messages(),
+        step.run_config(),
+        doc,
+    );
+    if let Some(llm) = step.extensions.get::<LLMResponse>() {
+        ctx = ctx.with_response(&llm.result);
+    }
+    if let Some(gate) = step.extensions.get::<ToolGate>() {
+        ctx = ctx.with_tool_info(&gate.name, &gate.id, Some(&gate.args));
+        if let Some(result) = gate.result.as_ref() {
+            ctx = ctx.with_tool_result(result);
+        }
+    }
+    if phase == Phase::BeforeToolExecute {
+        if let Some(call_id) = step.tool_call_id() {
+            if let Ok(Some(resume)) = step.ctx().resume_input_for(call_id) {
+                ctx = ctx.with_resume_input(resume);
+            }
+        }
+    }
+    ctx
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::plugin::phase::effect::PhaseEffect;
+    use crate::runtime::plugin::phase::core::actions::AddSystemContext;
     use serde_json::json;
 
     #[tokio::test]
     async fn default_agent_all_phases_noop() {
-        struct NoOpBehavior;
-
-        #[async_trait]
-        impl AgentBehavior for NoOpBehavior {
-            fn id(&self) -> &str {
-                "noop"
-            }
-        }
-
         let agent = NoOpBehavior;
         let config = RunConfig::new();
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::RunStart, "t1", &[], &config, &doc);
 
-        let output = agent.run_start(&ctx).await;
-        assert!(output.is_empty());
+        let actions = agent.run_start(&ctx).await;
+        assert!(actions.is_empty());
 
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
-        let output = agent.before_inference(&ctx).await;
-        assert!(output.is_empty());
+        let actions = agent.before_inference(&ctx).await;
+        assert!(actions.is_empty());
     }
 
     #[tokio::test]
-    async fn agent_returns_declarative_effects() {
+    async fn agent_returns_actions() {
         struct ContextBehavior;
 
         #[async_trait]
@@ -316,8 +262,8 @@ mod tests {
             fn id(&self) -> &str {
                 "ctx"
             }
-            async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-                PhaseOutput::new().system_context("from agent")
+            async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+                vec![Box::new(AddSystemContext("from agent".into()))]
             }
         }
 
@@ -326,9 +272,9 @@ mod tests {
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
 
-        let output = agent.before_inference(&ctx).await;
-        assert_eq!(output.effects.len(), 1);
-        assert!(matches!(&output.effects[0], PhaseEffect::SystemContext(s) if s == "from agent"));
+        let actions = agent.before_inference(&ctx).await;
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].label(), "add_system_context");
     }
 
     #[tokio::test]

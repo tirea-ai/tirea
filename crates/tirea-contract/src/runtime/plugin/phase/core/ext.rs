@@ -1,6 +1,7 @@
 use crate::runtime::llm::StreamResult;
 use crate::runtime::plugin::phase::types::{RunAction, SuspendTicket};
 use crate::runtime::tool_call::{ToolDescriptor, ToolResult};
+use crate::thread::ToolCall;
 use serde_json::Value;
 
 /// Inference-phase extension: system/session context and tool descriptors.
@@ -54,6 +55,11 @@ impl ToolGate {
             pending: false,
             suspend_ticket: None,
         }
+    }
+
+    /// Create from a `ToolCall`.
+    pub fn from_tool_call(call: &ToolCall) -> Self {
+        Self::new(&call.id, &call.name, call.arguments.clone())
     }
 
     /// Check if the tool execution is blocked.

@@ -4,7 +4,7 @@
 //! unaffected.  Enable via `[dev-dependencies] tirea-contract = { ..., features = ["test-support"] }`.
 
 use crate::runtime::activity::NoOpActivityManager;
-use crate::runtime::plugin::phase::effect::PhaseOutput;
+use crate::runtime::plugin::phase::action::Action;
 use crate::runtime::tool_call::suspension::Suspension;
 use crate::runtime::tool_call::ToolDescriptor;
 use crate::runtime::{
@@ -118,13 +118,17 @@ pub fn test_suspend_ticket(interaction: Suspension) -> SuspendTicket {
     )
 }
 
-/// Apply a phase output in tests using the same reducer path as runtime.
-///
-/// This helper validates effects and applies them to `StepContext`.
-pub fn apply_phase_output_for_test(
+/// Validate and apply actions in tests using the same path as runtime.
+pub fn apply_actions_for_test(
     phase: Phase,
     step: &mut StepContext<'_>,
-    output: PhaseOutput,
+    actions: Vec<Box<dyn Action>>,
 ) -> Result<(), String> {
-    output.validate_and_apply(phase, step)
+    for action in &actions {
+        action.validate(phase)?;
+    }
+    for action in actions {
+        action.apply(step);
+    }
+    Ok(())
 }

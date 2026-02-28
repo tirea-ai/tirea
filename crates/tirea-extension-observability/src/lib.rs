@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
-use tirea_contract::runtime::plugin::phase::effect::PhaseOutput;
+use tirea_contract::runtime::plugin::phase::action::Action;
 use tirea_contract::runtime::run::{InferenceError, InferenceErrorState};
 use tirea_contract::TokenUsage;
 
@@ -388,12 +388,12 @@ impl AgentBehavior for LLMMetryPlugin {
         "llmmetry"
     }
 
-    async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+    async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
         *lock_unpoison(&self.run_start) = Some(Instant::now());
-        PhaseOutput::default()
+        vec![]
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
         *lock_unpoison(&self.inference_start) = Some(Instant::now());
         let model = lock_unpoison(&self.model).clone();
         let provider = lock_unpoison(&self.provider).clone();
@@ -439,10 +439,10 @@ impl AgentBehavior for LLMMetryPlugin {
             }
         }
         *lock_unpoison(&self.inference_tracing_span) = Some(span);
-        PhaseOutput::default()
+        vec![]
     }
 
-    async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+    async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
         let duration_ms = self
             .inference_start
             .lock()
@@ -514,10 +514,10 @@ impl AgentBehavior for LLMMetryPlugin {
 
         self.sink.on_inference(&span);
         lock_unpoison(&self.metrics).inferences.push(span);
-        PhaseOutput::default()
+        vec![]
     }
 
-    async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+    async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
         let tool_name = ctx.tool_name().unwrap_or_default().to_string();
         let call_id = ctx.tool_call_id().unwrap_or_default().to_string();
         if !call_id.is_empty() {
@@ -544,10 +544,10 @@ impl AgentBehavior for LLMMetryPlugin {
         if !call_id.is_empty() {
             lock_unpoison(&self.tool_tracing_span).insert(call_id, span);
         }
-        PhaseOutput::default()
+        vec![]
     }
 
-    async fn after_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+    async fn after_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
         let call_id_for_span = ctx.tool_call_id().unwrap_or_default().to_string();
         let duration_ms = self
             .tool_start
@@ -558,7 +558,7 @@ impl AgentBehavior for LLMMetryPlugin {
             .unwrap_or(0);
 
         let Some(result) = ctx.tool_result() else {
-            return PhaseOutput::default();
+            return vec![];
         };
         let error_type = if result.status == tirea_contract::runtime::tool_call::ToolStatus::Error {
             Some("tool_error".to_string())
@@ -592,10 +592,10 @@ impl AgentBehavior for LLMMetryPlugin {
 
         self.sink.on_tool(&span);
         lock_unpoison(&self.metrics).tools.push(span);
-        PhaseOutput::default()
+        vec![]
     }
 
-    async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+    async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
         let session_duration_ms = self
             .run_start
             .lock()
@@ -611,7 +611,7 @@ impl AgentBehavior for LLMMetryPlugin {
         let mut metrics = lock_unpoison(&self.metrics).clone();
         metrics.session_duration_ms = session_duration_ms;
         self.sink.on_run_end(&metrics);
-        PhaseOutput::default()
+        vec![]
     }
 }
 
@@ -645,9 +645,8 @@ mod tests {
     use futures::future::join_all;
     use serde_json::json;
     use std::sync::Arc;
-    use tirea_contract::runtime::plugin::phase::{
-        Phase, StepContext, ToolContext as PhaseToolContext,
-    };
+    use tirea_contract::runtime::plugin::phase::core::ext::{LLMResponse, ToolGate};
+    use tirea_contract::runtime::plugin::phase::{Phase, StepContext};
     use tirea_contract::runtime::tool_call::ToolResult;
     use tirea_contract::runtime::StreamResult;
     use tirea_contract::testing::TestFixture;
@@ -668,13 +667,13 @@ mod tests {
 
         let mut ctx = ReadOnlyContext::new(phase, thread_id, messages, config, doc);
 
-        if let Some(ref response) = step.response {
-            ctx = ctx.with_response(response);
+        if let Some(ref response) = step.extensions.get::<LLMResponse>() {
+            ctx = ctx.with_response(&response.result);
         }
 
-        if let Some(ref tool) = step.tool {
-            ctx = ctx.with_tool_info(tool.name.as_str(), tool.id.as_str(), Some(&tool.args));
-            if let Some(ref result) = tool.result {
+        if let Some(ref gate) = step.extensions.get::<ToolGate>() {
+            ctx = ctx.with_tool_info(gate.name.as_str(), gate.id.as_str(), Some(&gate.args));
+            if let Some(ref result) = gate.result {
                 ctx = ctx.with_tool_result(result);
             }
         }
@@ -854,11 +853,11 @@ mod tests {
 
         run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
 
-        step.response = Some(StreamResult {
+        step.extensions.insert(LLMResponse::new(StreamResult {
             text: "hello".into(),
             tool_calls: vec![],
             usage: Some(usage(100, 50, 150)),
-        });
+        }));
 
         run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
@@ -884,11 +883,11 @@ mod tests {
 
         run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
 
-        step.response = Some(StreamResult {
+        step.extensions.insert(LLMResponse::new(StreamResult {
             text: "hello".into(),
             tool_calls: vec![],
             usage: Some(usage_with_cache(100, 50, 150, 30)),
-        });
+        }));
 
         run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
@@ -907,11 +906,11 @@ mod tests {
         let mut step = fix.step(vec![]);
 
         let call = ToolCall::new("c1", "search", json!({}));
-        step.tool = Some(PhaseToolContext::new(&call));
+        step.extensions.insert(ToolGate::from_tool_call(&call));
 
         run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
 
-        step.tool.as_mut().unwrap().result =
+        step.extensions.get_mut::<ToolGate>().unwrap().result =
             Some(ToolResult::success("search", json!({"found": true})));
 
         run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
@@ -934,11 +933,11 @@ mod tests {
         let mut step = fix.step(vec![]);
 
         let call = ToolCall::new("c1", "write", json!({}));
-        step.tool = Some(PhaseToolContext::new(&call));
+        step.extensions.insert(ToolGate::from_tool_call(&call));
 
         run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
 
-        step.tool.as_mut().unwrap().result = Some(ToolResult::error("write", "permission denied"));
+        step.extensions.get_mut::<ToolGate>().unwrap().result = Some(ToolResult::error("write", "permission denied"));
 
         run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
@@ -974,11 +973,11 @@ mod tests {
         let mut step = fix.step(vec![]);
 
         run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-        step.response = Some(StreamResult {
+        step.extensions.insert(LLMResponse::new(StreamResult {
             text: "hi".into(),
             tool_calls: vec![],
             usage: None,
-        });
+        }));
         run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
         let m = sink.metrics();
@@ -997,11 +996,11 @@ mod tests {
 
         for i in 0..3 {
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-            step.response = Some(StreamResult {
+            step.extensions.insert(LLMResponse::new(StreamResult {
                 text: format!("r{i}"),
                 tool_calls: vec![],
                 usage: Some(usage(10 * (i + 1), 5 * (i + 1), 15 * (i + 1))),
-            });
+            }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
         }
 
@@ -1055,11 +1054,11 @@ mod tests {
             let plugin = plugin.clone();
             async move {
                 let mut step = fix.step(vec![]);
-                step.tool = Some(PhaseToolContext::new(&call));
+                step.extensions.insert(ToolGate::from_tool_call(&call));
                 run_phase(&*plugin, Phase::BeforeToolExecute, &step, fix).await;
                 // Stagger completion to maximize the chance of cross-talk.
                 tokio::time::sleep(Duration::from_millis(5 * (3 - i) as u64)).await;
-                step.tool.as_mut().unwrap().result =
+                step.extensions.get_mut::<ToolGate>().unwrap().result =
                     Some(ToolResult::success(&call.name, json!({"ok": true})));
                 run_phase(&*plugin, Phase::AfterToolExecute, &step, fix).await;
             }
@@ -1386,11 +1385,11 @@ mod tests {
         let mut step = fix.step(vec![]);
 
         run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-        step.response = Some(StreamResult {
+        step.extensions.insert(LLMResponse::new(StreamResult {
             text: "hi".into(),
             tool_calls: vec![],
             usage: Some(usage(10, 20, 30)),
-        });
+        }));
         run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
         let spans = captured.lock().unwrap();
@@ -1415,10 +1414,10 @@ mod tests {
         let mut step = fix.step(vec![]);
 
         let call = ToolCall::new("c1", "search", json!({}));
-        step.tool = Some(PhaseToolContext::new(&call));
+        step.extensions.insert(ToolGate::from_tool_call(&call));
 
         run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
-        step.tool.as_mut().unwrap().result =
+        step.extensions.get_mut::<ToolGate>().unwrap().result =
             Some(ToolResult::success("search", json!({"found": true})));
         run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
@@ -1480,11 +1479,11 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-            step.response = Some(StreamResult {
+            step.extensions.insert(LLMResponse::new(StreamResult {
                 text: "hello".into(),
                 tool_calls: vec![],
                 usage: Some(usage(100, 50, 150)),
-            });
+            }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
             let _ = provider.force_flush();
@@ -1587,11 +1586,11 @@ mod tests {
 
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
 
-            step.response = Some(StreamResult {
+            step.extensions.insert(LLMResponse::new(StreamResult {
                 text: "hello".into(),
                 tool_calls: vec![],
                 usage: Some(usage(100, 50, 150)),
-            });
+            }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
             drop(_parent_guard);
@@ -1637,11 +1636,11 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             let call = ToolCall::new("tc1", "search", json!({}));
-            step.tool = Some(PhaseToolContext::new(&call));
+            step.extensions.insert(ToolGate::from_tool_call(&call));
 
             run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
 
-            step.tool.as_mut().unwrap().result =
+            step.extensions.get_mut::<ToolGate>().unwrap().result =
                 Some(ToolResult::success("search", json!({"found": true})));
             run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
@@ -1684,11 +1683,11 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-            step.response = Some(StreamResult {
+            step.extensions.insert(LLMResponse::new(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
-            });
+            }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
             let _ = provider.force_flush();
@@ -1719,11 +1718,11 @@ mod tests {
             {
                 let mut step = fix.step(vec![]);
                 run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-                step.response = Some(StreamResult {
+                step.extensions.insert(LLMResponse::new(StreamResult {
                     text: "hi".into(),
                     tool_calls: vec![],
                     usage: None,
-                });
+                }));
                 run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
             }
 
@@ -1731,9 +1730,9 @@ mod tests {
             {
                 let mut step = fix.step(vec![]);
                 let call = ToolCall::new("c1", "test", json!({}));
-                step.tool = Some(PhaseToolContext::new(&call));
+                step.extensions.insert(ToolGate::from_tool_call(&call));
                 run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
-                step.tool.as_mut().unwrap().result = Some(ToolResult::success("test", json!({})));
+                step.extensions.get_mut::<ToolGate>().unwrap().result = Some(ToolResult::success("test", json!({})));
                 run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
             }
 
@@ -1764,11 +1763,11 @@ mod tests {
             {
                 let mut step = fix.step(vec![]);
                 run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-                step.response = Some(StreamResult {
+                step.extensions.insert(LLMResponse::new(StreamResult {
                     text: "calling tool".into(),
                     tool_calls: vec![ToolCall::new("c1", "search", json!({}))],
                     usage: Some(usage(10, 5, 15)),
-                });
+                }));
                 run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
             }
 
@@ -1776,9 +1775,9 @@ mod tests {
             {
                 let mut step = fix.step(vec![]);
                 let call = ToolCall::new("c1", "search", json!({}));
-                step.tool = Some(PhaseToolContext::new(&call));
+                step.extensions.insert(ToolGate::from_tool_call(&call));
                 run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
-                step.tool.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
+                step.extensions.get_mut::<ToolGate>().unwrap().result = Some(ToolResult::success("search", json!({})));
                 run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
             }
 
@@ -1842,10 +1841,10 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             let call = ToolCall::new("tc1", "search", json!({}));
-            step.tool = Some(PhaseToolContext::new(&call));
+            step.extensions.insert(ToolGate::from_tool_call(&call));
 
             run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
-            step.tool.as_mut().unwrap().result =
+            step.extensions.get_mut::<ToolGate>().unwrap().result =
                 Some(ToolResult::success("search", json!({"found": true})));
             run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
@@ -1891,11 +1890,11 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-            step.response = Some(StreamResult {
+            step.extensions.insert(LLMResponse::new(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
-            });
+            }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
             let _ = provider.force_flush();
@@ -1924,10 +1923,10 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             let call = ToolCall::new("tc1", "web_search", json!({}));
-            step.tool = Some(PhaseToolContext::new(&call));
+            step.extensions.insert(ToolGate::from_tool_call(&call));
 
             run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
-            step.tool.as_mut().unwrap().result = Some(ToolResult::success("web_search", json!({})));
+            step.extensions.get_mut::<ToolGate>().unwrap().result = Some(ToolResult::success("web_search", json!({})));
             run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
             let _ = provider.force_flush();
@@ -1958,11 +1957,11 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-            step.response = Some(StreamResult {
+            step.extensions.insert(LLMResponse::new(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
-            });
+            }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
             let _ = provider.force_flush();
@@ -1993,10 +1992,10 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             let call = ToolCall::new("tc1", "search", json!({}));
-            step.tool = Some(PhaseToolContext::new(&call));
+            step.extensions.insert(ToolGate::from_tool_call(&call));
 
             run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
-            step.tool.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
+            step.extensions.get_mut::<ToolGate>().unwrap().result = Some(ToolResult::success("search", json!({})));
             run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
             let _ = provider.force_flush();
@@ -2025,10 +2024,10 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             let call = ToolCall::new("tc1", "search", json!({}));
-            step.tool = Some(PhaseToolContext::new(&call));
+            step.extensions.insert(ToolGate::from_tool_call(&call));
 
             run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
-            step.tool.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
+            step.extensions.get_mut::<ToolGate>().unwrap().result = Some(ToolResult::success("search", json!({})));
             run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
             let _ = provider.force_flush();
@@ -2061,10 +2060,10 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             let call = ToolCall::new("tc1", "write", json!({}));
-            step.tool = Some(PhaseToolContext::new(&call));
+            step.extensions.insert(ToolGate::from_tool_call(&call));
 
             run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
-            step.tool.as_mut().unwrap().result =
+            step.extensions.get_mut::<ToolGate>().unwrap().result =
                 Some(ToolResult::error("write", "permission denied"));
             run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
@@ -2102,11 +2101,11 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-            step.response = Some(StreamResult {
+            step.extensions.insert(LLMResponse::new(StreamResult {
                 text: "ok".into(),
                 tool_calls: vec![],
                 usage: Some(usage(10, 5, 15)),
-            });
+            }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
             let _ = provider.force_flush();
@@ -2140,11 +2139,11 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-            step.response = Some(StreamResult {
+            step.extensions.insert(LLMResponse::new(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: Some(usage(100, 50, 150)),
-            });
+            }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
             let _ = provider.force_flush();
@@ -2198,11 +2197,11 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-            step.response = Some(StreamResult {
+            step.extensions.insert(LLMResponse::new(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
-            });
+            }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
             let _ = provider.force_flush();
@@ -2236,11 +2235,11 @@ mod tests {
             {
                 let mut step = fix.step(vec![]);
                 run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-                step.response = Some(StreamResult {
+                step.extensions.insert(LLMResponse::new(StreamResult {
                     text: "hi".into(),
                     tool_calls: vec![],
                     usage: Some(usage_with_cache(100, 50, 150, 30)),
-                });
+                }));
                 run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
             }
 
@@ -2285,11 +2284,11 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-            step.response = Some(StreamResult {
+            step.extensions.insert(LLMResponse::new(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: Some(usage(10, 5, 15)),
-            });
+            }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
             let m = sink.metrics();
@@ -2318,11 +2317,11 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-            step.response = Some(StreamResult {
+            step.extensions.insert(LLMResponse::new(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
-            });
+            }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
             let _ = provider.force_flush();
@@ -2359,11 +2358,11 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             run_phase(&plugin, Phase::BeforeInference, &step, &fix).await;
-            step.response = Some(StreamResult {
+            step.extensions.insert(LLMResponse::new(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
-            });
+            }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
             let _ = provider.force_flush();
@@ -2390,10 +2389,10 @@ mod tests {
             let mut step = fix.step(vec![]);
 
             let call = ToolCall::new("tc1", "search", json!({}));
-            step.tool = Some(PhaseToolContext::new(&call));
+            step.extensions.insert(ToolGate::from_tool_call(&call));
 
             run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
-            step.tool.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
+            step.extensions.get_mut::<ToolGate>().unwrap().result = Some(ToolResult::success("search", json!({})));
             run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
             let _ = provider.force_flush();

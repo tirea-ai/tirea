@@ -4,7 +4,7 @@
 
 use super::ToolCallContext;
 use crate::runtime::plugin::phase::SuspendTicket;
-use crate::runtime::plugin::phase::{AnyPluginAction, AnyStateAction};
+use crate::runtime::plugin::phase::AnyStateAction;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -199,7 +199,6 @@ impl ToolResult {
 pub struct ToolExecutionEffect {
     pub result: ToolResult,
     state_actions: Vec<AnyStateAction>,
-    plugin_actions: Vec<AnyPluginAction>,
     user_messages: Vec<String>,
 }
 
@@ -209,16 +208,11 @@ impl ToolExecutionEffect {
         Self {
             result,
             state_actions: Vec::new(),
-            plugin_actions: Vec::new(),
             user_messages: Vec::new(),
         }
     }
 
-    /// Add one low-level state action.
-    ///
-    /// This legacy escape hatch is kept only for test-support scenarios.
-    /// Production integrations should emit plugin actions instead.
-    #[cfg(feature = "test-support")]
+    /// Add a state action to be reduced into a patch after execution.
     #[must_use]
     pub fn with_state_action(mut self, action: AnyStateAction) -> Self {
         self.state_actions.push(action);
@@ -230,34 +224,13 @@ impl ToolExecutionEffect {
     }
 
     #[must_use]
-    pub fn with_plugin_action<A>(mut self, action: A) -> Self
-    where
-        A: Into<AnyPluginAction>,
-    {
-        self.plugin_actions.push(action.into());
-        self
-    }
-
-    #[must_use]
     pub fn with_user_message(mut self, text: impl Into<String>) -> Self {
         self.user_messages.push(text.into());
         self
     }
 
-    pub fn into_parts(
-        self,
-    ) -> (
-        ToolResult,
-        Vec<AnyStateAction>,
-        Vec<AnyPluginAction>,
-        Vec<String>,
-    ) {
-        (
-            self.result,
-            self.state_actions,
-            self.plugin_actions,
-            self.user_messages,
-        )
+    pub fn into_parts(self) -> (ToolResult, Vec<AnyStateAction>, Vec<String>) {
+        (self.result, self.state_actions, self.user_messages)
     }
 }
 

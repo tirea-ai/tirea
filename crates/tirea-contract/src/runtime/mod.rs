@@ -10,12 +10,12 @@ pub mod tool_call;
 pub use activity::{ActivityManager, NoOpActivityManager};
 pub use llm::{StreamResult, TokenUsage};
 pub use plugin::{
-    reduce_state_actions, validate_effect, AfterInferenceContext, AfterToolExecuteContext,
-    AgentBehavior, AnyPluginAction, AnyStateAction, BeforeInferenceContext,
-    BeforeToolExecuteContext, CommutativeAction, NoOpBehavior, Phase, PhaseContext, PhaseEffect,
-    PhaseOutput, PhasePolicy, ReadOnlyContext, RunAction, RunEndContext, RunStartContext,
-    StateScope, StateSpec, StepContext, StepEndContext, StepOutcome, StepStartContext,
-    SuspendTicket, ToolCallAction, ToolContext,
+    build_read_only_context_from_step, reduce_state_actions, Action, AfterInferenceContext,
+    AfterToolExecuteContext, AgentBehavior, AnyStateAction, BeforeInferenceContext,
+    BeforeToolExecuteContext, CommutativeAction, Extensions, NoOpBehavior, Phase, PhaseContext,
+    PhasePolicy, ReadOnlyContext, RunAction, RunEndContext, RunStartContext, StateScope, StateSpec,
+    StepContext, StepEndContext, StepOutcome, StepStartContext, SuspendTicket, ToolCallAction,
+    ToolGate,
 };
 pub use run::{
     run_lifecycle_from_state, InferenceError, InferenceErrorState, RunContext, RunDelta,

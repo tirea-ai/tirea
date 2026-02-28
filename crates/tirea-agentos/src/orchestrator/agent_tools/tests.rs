@@ -1,9 +1,9 @@
 use super::*;
 use crate::contracts::runtime::plugin::agent::ReadOnlyContext;
-use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
+use crate::contracts::runtime::plugin::phase::action::Action;
 use crate::contracts::runtime::plugin::phase::{Phase, StepContext};
+use crate::contracts::runtime::plugin::phase::state_spec::reduce_state_actions;
 use crate::contracts::runtime::tool_call::ToolStatus;
-use crate::contracts::testing::apply_phase_output_for_test as apply_shared_phase_output_for_test;
 use crate::contracts::thread::Thread;
 use crate::contracts::AgentBehavior;
 use crate::orchestrator::InMemoryAgentRegistry;
@@ -16,15 +16,6 @@ use serde_json::json;
 use std::time::Duration;
 use tirea_contract::testing::TestFixture;
 use tirea_state::apply_patches;
-
-/// Apply a [`PhaseOutput`] to the mutable [`StepContext`] for testing.
-///
-/// Replicates the effect-application logic from the agent-loop's
-/// `effect_applicator` module, which is not publicly exported.
-fn apply_phase_output_for_test(phase: Phase, step: &mut StepContext<'_>, output: PhaseOutput) {
-    apply_shared_phase_output_for_test(phase, step, output)
-        .expect("phase output apply should succeed");
-}
 
 #[async_trait]
 trait AgentBehaviorTestDispatch {
@@ -44,8 +35,7 @@ where
             step.run_config(),
             step.ctx().doc(),
         );
-        let actions = self.phase_actions(phase, &ctx).await;
-        let output = match phase {
+        let actions = match phase {
             Phase::RunStart => self.run_start(&ctx).await,
             Phase::StepStart => self.step_start(&ctx).await,
             Phase::BeforeInference => self.before_inference(&ctx).await,
@@ -55,18 +45,22 @@ where
             Phase::StepEnd => self.step_end(&ctx).await,
             Phase::RunEnd => self.run_end(&ctx).await,
         };
-        apply_phase_output_for_test(phase, step, output);
-
-        if !actions.is_empty() {
-            let patches = self
-                .reduce_plugin_actions(actions, &step.snapshot())
-                .expect("plugin actions should reduce");
+        for action in &actions {
+            action.validate(phase).expect("action should validate");
+        }
+        for action in actions {
+            action.apply(step);
+        }
+        // Reduce any pending state actions emitted by EmitStatePatch
+        if !step.pending_state_actions.is_empty() {
+            let state_actions = std::mem::take(&mut step.pending_state_actions);
+            let snapshot = step.snapshot();
+            let patches = reduce_state_actions(state_actions, &snapshot, "test")
+                .expect("state actions should reduce");
             for patch in patches {
-                {
-                    let doc = step.ctx().doc();
-                    for op in patch.patch().ops() {
-                        doc.apply(op).expect("plugin action patch op should apply");
-                    }
+                let doc = step.ctx().doc();
+                for op in patch.patch().ops() {
+                    doc.apply(op).expect("state action patch op should apply");
                 }
                 step.emit_patch(patch);
             }
@@ -124,8 +118,9 @@ async fn plugin_adds_reminder_for_running_and_stopped_runs() {
     let mut step = StepContext::new(fixture.ctx(), "owner-1", &fixture.messages, vec![]);
     plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
     let reminder = step
-        .system_reminders
-        .first()
+        .extensions
+        .get::<tirea_contract::runtime::plugin::phase::core::ext::MessagingContext>()
+        .and_then(|m| m.reminders.first())
         .expect("running reminder should be present");
     assert!(reminder.contains("status=\"running\""));
 
@@ -134,8 +129,9 @@ async fn plugin_adds_reminder_for_running_and_stopped_runs() {
     let mut step2 = StepContext::new(fixture2.ctx(), "owner-1", &fixture2.messages, vec![]);
     plugin.run_phase(Phase::AfterToolExecute, &mut step2).await;
     let reminder2 = step2
-        .system_reminders
-        .first()
+        .extensions
+        .get::<tirea_contract::runtime::plugin::phase::core::ext::MessagingContext>()
+        .and_then(|m| m.reminders.first())
         .expect("stopped reminder should be present");
     assert!(reminder2.contains("status=\"stopped\""));
 }
@@ -301,9 +297,13 @@ impl AgentBehavior for SlowTerminatePlugin {
         "slow_terminate_behavior_requested"
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
         tokio::time::sleep(Duration::from_millis(120)).await;
-        PhaseOutput::default().terminate_behavior_requested()
+        vec![Box::new(
+            crate::contracts::runtime::plugin::phase::core::actions::RequestTermination(
+                crate::contracts::TerminationReason::BehaviorRequested,
+            ),
+        )]
     }
 }
 

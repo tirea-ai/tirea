@@ -6,12 +6,10 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
-use tirea_contract::runtime::plugin::phase::effect::PhaseOutput;
-use tirea_contract::runtime::plugin::phase::state_spec::{
-    reduce_state_actions, AnyStateAction, StateSpec,
-};
-use tirea_contract::runtime::plugin::phase::{AnyPluginAction, Phase};
-use tirea_state::{State, TrackedPatch};
+use tirea_contract::runtime::plugin::phase::action::Action;
+use tirea_contract::runtime::plugin::phase::core::actions::{AddSessionContext, EmitStatePatch};
+use tirea_contract::runtime::plugin::phase::state_spec::{AnyStateAction, StateSpec};
+use tirea_state::State;
 
 mod system_reminder;
 pub use system_reminder::SystemReminder;
@@ -39,12 +37,6 @@ pub enum ReminderAction {
 
 /// Stable plugin id for reminder actions.
 pub const REMINDER_PLUGIN_ID: &str = "reminder";
-
-impl From<ReminderAction> for AnyPluginAction {
-    fn from(action: ReminderAction) -> Self {
-        AnyPluginAction::new(REMINDER_PLUGIN_ID, action)
-    }
-}
 
 impl StateSpec for ReminderState {
     type Action = ReminderAction;
@@ -99,65 +91,28 @@ impl AgentBehavior for ReminderPlugin {
         REMINDER_PLUGIN_ID
     }
 
-    async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+    async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
         let reminders = ctx
             .snapshot_of::<ReminderState>()
             .ok()
             .map(|s| s.items)
             .unwrap_or_default();
         if reminders.is_empty() {
-            return PhaseOutput::default();
+            return vec![];
         }
 
-        let mut output = PhaseOutput::new();
+        let mut actions: Vec<Box<dyn Action>> = Vec::new();
         for text in &reminders {
-            output = output.session_context(format!("Reminder: {}", text));
+            actions.push(Box::new(AddSessionContext(format!("Reminder: {}", text))));
         }
 
-        output
-    }
-
-    async fn phase_actions(&self, phase: Phase, ctx: &ReadOnlyContext<'_>) -> Vec<AnyPluginAction> {
-        if phase != Phase::BeforeInference || !self.clear_after_llm_request {
-            return Vec::new();
+        if self.clear_after_llm_request {
+            actions.push(Box::new(EmitStatePatch(
+                AnyStateAction::new::<ReminderState>(ReminderAction::Clear),
+            )));
         }
 
-        let has_reminders = ctx
-            .snapshot_of::<ReminderState>()
-            .ok()
-            .map(|state| !state.items.is_empty())
-            .unwrap_or(false);
-        if !has_reminders {
-            return Vec::new();
-        }
-
-        vec![ReminderAction::Clear.into()]
-    }
-
-    fn reduce_plugin_actions(
-        &self,
-        actions: Vec<AnyPluginAction>,
-        base_snapshot: &serde_json::Value,
-    ) -> Result<Vec<TrackedPatch>, String> {
-        let mut state_actions = Vec::new();
-        for action in actions {
-            if action.plugin_id() != REMINDER_PLUGIN_ID {
-                return Err(format!(
-                    "reminder plugin received action for unexpected plugin '{}'",
-                    action.plugin_id()
-                ));
-            }
-            let action = action.downcast::<ReminderAction>().map_err(|other| {
-                format!(
-                    "reminder plugin failed to downcast action '{}'",
-                    other.action_type_name()
-                )
-            })?;
-            state_actions.push(AnyStateAction::new::<ReminderState>(action));
-        }
-
-        reduce_state_actions(state_actions, base_snapshot, "plugin:reminder")
-            .map_err(|e| e.to_string())
+        actions
     }
 }
 
@@ -165,20 +120,19 @@ impl AgentBehavior for ReminderPlugin {
 mod tests {
     use super::*;
     use serde_json::json;
-    use tirea_contract::runtime::plugin::phase::effect::PhaseEffect;
     use tirea_contract::runtime::plugin::phase::Phase;
     use tirea_contract::RunConfig;
     use tirea_state::DocCell;
 
-    fn extract_session_contexts(output: &PhaseOutput) -> Vec<&str> {
-        output
-            .effects
+    fn count_session_contexts(actions: &[Box<dyn Action>]) -> usize {
+        actions
             .iter()
-            .filter_map(|e| match e {
-                PhaseEffect::SessionContext(s) => Some(s.as_str()),
-                _ => None,
-            })
-            .collect()
+            .filter(|a| a.label() == "add_session_context")
+            .count()
+    }
+
+    fn has_emit_state_patch(actions: &[Box<dyn Action>]) -> bool {
+        actions.iter().any(|a| a.label() == "emit_state_patch")
     }
 
     #[test]
@@ -200,33 +154,6 @@ mod tests {
     }
 
     #[test]
-    fn test_reminder_plugin_reduces_actions() {
-        let base = json!({
-            "reminders": { "items": ["Keep", "Remove"] }
-        });
-        let actions = vec![
-            ReminderAction::Add {
-                text: "Added".to_string(),
-            }
-            .into(),
-            ReminderAction::Remove {
-                text: "Remove".to_string(),
-            }
-            .into(),
-        ];
-        let patches = ReminderPlugin::new()
-            .reduce_plugin_actions(actions, &base)
-            .expect("reminder action reduce should succeed");
-        let next = tirea_state::apply_patches(&base, patches.iter().map(|p| p.patch()))
-            .expect("patches should apply");
-        assert_eq!(
-            next["reminders"]["items"],
-            json!(["Keep", "Added"]),
-            "plugin actions should be reduced by reminder plugin"
-        );
-    }
-
-    #[test]
     fn test_reminder_plugin_id() {
         let plugin = ReminderPlugin::new();
         assert_eq!(AgentBehavior::id(&plugin), REMINDER_PLUGIN_ID);
@@ -244,10 +171,8 @@ mod tests {
         let config = RunConfig::new();
         let doc = DocCell::new(json!({ "reminders": { "items": ["Test reminder"] } }));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
-        let output = AgentBehavior::before_inference(&plugin, &ctx).await;
-        let contexts = extract_session_contexts(&output);
-        assert!(!contexts.is_empty());
-        assert!(contexts[0].contains("Test reminder"));
+        let actions = AgentBehavior::before_inference(&plugin, &ctx).await;
+        assert!(count_session_contexts(&actions) > 0);
     }
 
     #[tokio::test]
@@ -256,13 +181,12 @@ mod tests {
         let config = RunConfig::new();
         let doc = DocCell::new(json!({ "reminders": { "items": ["Reminder A", "Reminder B"] } }));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
-        let output = AgentBehavior::before_inference(&plugin, &ctx).await;
-        let actions = AgentBehavior::phase_actions(&plugin, Phase::BeforeInference, &ctx).await;
-        let contexts = extract_session_contexts(&output);
-        assert_eq!(contexts.len(), 2);
-        assert!(contexts[0].contains("Reminder A"));
-        assert!(contexts[1].contains("Reminder B"));
-        assert_eq!(actions.len(), 1);
+        let actions = AgentBehavior::before_inference(&plugin, &ctx).await;
+        assert_eq!(count_session_contexts(&actions), 2);
+        assert!(
+            has_emit_state_patch(&actions),
+            "should include EmitStatePatch for clear"
+        );
     }
 
     #[tokio::test]
@@ -271,11 +195,12 @@ mod tests {
         let config = RunConfig::new();
         let doc = DocCell::new(json!({ "reminders": { "items": ["Reminder"] } }));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
-        let output = AgentBehavior::before_inference(&plugin, &ctx).await;
-        let actions = AgentBehavior::phase_actions(&plugin, Phase::BeforeInference, &ctx).await;
-        let contexts = extract_session_contexts(&output);
-        assert!(!contexts.is_empty());
-        assert!(actions.is_empty());
+        let actions = AgentBehavior::before_inference(&plugin, &ctx).await;
+        assert!(count_session_contexts(&actions) > 0);
+        assert!(
+            !has_emit_state_patch(&actions),
+            "should not include EmitStatePatch when clear disabled"
+        );
     }
 
     #[tokio::test]
@@ -284,8 +209,8 @@ mod tests {
         let config = RunConfig::new();
         let doc = DocCell::new(json!({ "reminders": { "items": [] } }));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
-        let output = AgentBehavior::before_inference(&plugin, &ctx).await;
-        assert!(output.is_empty());
+        let actions = AgentBehavior::before_inference(&plugin, &ctx).await;
+        assert!(actions.is_empty());
     }
 
     #[tokio::test]
@@ -294,7 +219,7 @@ mod tests {
         let config = RunConfig::new();
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
-        let output = AgentBehavior::before_inference(&plugin, &ctx).await;
-        assert!(output.is_empty());
+        let actions = AgentBehavior::before_inference(&plugin, &ctx).await;
+        assert!(actions.is_empty());
     }
 }

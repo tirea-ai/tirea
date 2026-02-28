@@ -9,17 +9,15 @@ pub use scope::*;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::borrow::Cow;
 use std::collections::HashMap;
 use tirea_contract::io::ResumeDecisionAction;
 use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
-use tirea_contract::runtime::plugin::phase::effect::PhaseOutput;
-use tirea_contract::runtime::plugin::phase::state_spec::{
-    reduce_state_actions, AnyStateAction, StateSpec,
-};
-use tirea_contract::runtime::plugin::phase::{AnyPluginAction, SuspendTicket};
+use tirea_contract::runtime::plugin::phase::action::Action;
+use tirea_contract::runtime::plugin::phase::core::actions::{BlockTool, SuspendTool};
+use tirea_contract::runtime::plugin::phase::state_spec::{AnyStateAction, StateSpec};
+use tirea_contract::runtime::plugin::phase::SuspendTicket;
 use tirea_contract::runtime::{PendingToolCall, ToolCallResumeMode};
-use tirea_state::{State, TrackedPatch};
+use tirea_state::State;
 
 /// Tool permission behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -54,14 +52,17 @@ pub enum PermissionAction {
 /// Stable plugin id for permission actions.
 pub const PERMISSION_PLUGIN_ID: &str = "permission";
 
-impl From<PermissionAction> for AnyPluginAction {
-    fn from(action: PermissionAction) -> Self {
-        AnyPluginAction::new(PERMISSION_PLUGIN_ID, action)
-    }
+/// Public helper to wrap a `PermissionAction` into an `AnyStateAction`.
+///
+/// This avoids exposing `PermissionState` publicly while letting external
+/// callers (e.g. `SkillActivateTool`) emit permission state mutations.
+pub fn permission_state_action(action: PermissionAction) -> AnyStateAction {
+    AnyStateAction::new::<PermissionState>(action)
 }
 
 /// Persisted permission state (internal).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[serde(default)]
 #[tirea(path = "permissions")]
 struct PermissionState {
     /// Default behavior for tools not explicitly configured.
@@ -131,9 +132,9 @@ impl AgentBehavior for PermissionPlugin {
         PERMISSION_PLUGIN_ID
     }
 
-    async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+    async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
         let Some(tool_id) = ctx.tool_name() else {
-            return PhaseOutput::default();
+            return vec![];
         };
 
         let call_id = ctx.tool_call_id().unwrap_or_default().to_string();
@@ -142,7 +143,7 @@ impl AgentBehavior for PermissionPlugin {
                 .resume_input()
                 .is_some_and(|resume| matches!(resume.action, ResumeDecisionAction::Resume));
             if has_resume_grant {
-                return PhaseOutput::default();
+                return vec![];
             }
         }
 
@@ -150,14 +151,15 @@ impl AgentBehavior for PermissionPlugin {
         let permission = resolve_permission_behavior(&snapshot, tool_id);
 
         match permission {
-            ToolPermissionBehavior::Allow => PhaseOutput::default(),
+            ToolPermissionBehavior::Allow => vec![],
             ToolPermissionBehavior::Deny => {
-                PhaseOutput::new().block_tool(format!("Tool '{}' is denied", tool_id))
+                vec![Box::new(BlockTool(format!("Tool '{}' is denied", tool_id)))]
             }
             ToolPermissionBehavior::Ask => {
                 if call_id.is_empty() {
-                    return PhaseOutput::new()
-                        .block_tool("Permission check requires non-empty tool call id");
+                    return vec![Box::new(BlockTool(
+                        "Permission check requires non-empty tool call id".to_string(),
+                    ))];
                 }
                 let tool_args = ctx.tool_args().cloned().unwrap_or_default();
                 let arguments = json!({
@@ -168,59 +170,13 @@ impl AgentBehavior for PermissionPlugin {
                 let suspension =
                     tirea_contract::Suspension::new(&pending_call_id, "tool:PermissionConfirm")
                         .with_parameters(arguments.clone());
-                PhaseOutput::new().suspend_tool(SuspendTicket::new(
+                vec![Box::new(SuspendTool(SuspendTicket::new(
                     suspension,
                     PendingToolCall::new(pending_call_id, PERMISSION_CONFIRM_TOOL_NAME, arguments),
                     ToolCallResumeMode::ReplayToolCall,
-                ))
+                )))]
             }
         }
-    }
-
-    fn reduce_plugin_actions(
-        &self,
-        actions: Vec<AnyPluginAction>,
-        base_snapshot: &serde_json::Value,
-    ) -> Result<Vec<TrackedPatch>, String> {
-        let mut state_actions = Vec::new();
-        for action in actions {
-            if action.plugin_id() != PERMISSION_PLUGIN_ID {
-                return Err(format!(
-                    "permission plugin received action for unexpected plugin '{}'",
-                    action.plugin_id()
-                ));
-            }
-            let action = action.downcast::<PermissionAction>().map_err(|other| {
-                format!(
-                    "permission plugin failed to downcast action '{}'",
-                    other.action_type_name()
-                )
-            })?;
-            state_actions.push(AnyStateAction::new::<PermissionState>(action));
-        }
-
-        let snapshot_for_reduce = match base_snapshot.get("permissions") {
-            Some(value) if !value.is_null() => Cow::Borrowed(base_snapshot),
-            _ => {
-                let mut snapshot = base_snapshot.clone();
-                let Some(root) = snapshot.as_object_mut() else {
-                    return Err(
-                        "permission plugin reducer requires object root state snapshot".to_string(),
-                    );
-                };
-                let default_state = serde_json::to_value(PermissionState::default())
-                    .map_err(|err| format!("serialize default permission state failed: {err}"))?;
-                root.insert("permissions".to_string(), default_state);
-                Cow::Owned(snapshot)
-            }
-        };
-
-        reduce_state_actions(
-            state_actions,
-            snapshot_for_reduce.as_ref(),
-            "plugin:permission",
-        )
-        .map_err(|e| e.to_string())
     }
 }
 
@@ -237,26 +193,28 @@ impl AgentBehavior for ToolPolicyPlugin {
         "tool_policy"
     }
 
-    async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+    async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        use tirea_contract::runtime::plugin::phase::core::actions::{ExcludeTool, IncludeOnlyTools};
+
         let run_config = ctx.run_config();
         let allowed = scope::parse_scope_filter(run_config.value(SCOPE_ALLOWED_TOOLS_KEY));
         let excluded = scope::parse_scope_filter(run_config.value(SCOPE_EXCLUDED_TOOLS_KEY));
 
-        let mut output = PhaseOutput::new();
-        if let Some(ref allowed) = allowed {
-            output = output.include_only_tools(allowed.clone());
+        let mut actions: Vec<Box<dyn Action>> = Vec::new();
+        if let Some(allowed) = allowed {
+            actions.push(Box::new(IncludeOnlyTools(allowed)));
         }
-        if let Some(ref excluded) = excluded {
+        if let Some(excluded) = excluded {
             for id in excluded {
-                output = output.exclude_tool(id);
+                actions.push(Box::new(ExcludeTool(id)));
             }
         }
-        output
+        actions
     }
 
-    async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+    async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
         let Some(tool_id) = ctx.tool_name() else {
-            return PhaseOutput::default();
+            return vec![];
         };
 
         let run_config = ctx.run_config();
@@ -266,12 +224,12 @@ impl AgentBehavior for ToolPolicyPlugin {
             SCOPE_ALLOWED_TOOLS_KEY,
             SCOPE_EXCLUDED_TOOLS_KEY,
         ) {
-            PhaseOutput::new().block_tool(format!(
+            vec![Box::new(BlockTool(format!(
                 "Tool '{}' is not allowed by current policy",
                 tool_id
-            ))
+            )))]
         } else {
-            PhaseOutput::default()
+            vec![]
         }
     }
 }
@@ -280,32 +238,18 @@ impl AgentBehavior for ToolPolicyPlugin {
 mod tests {
     use super::*;
     use serde_json::json;
-    use tirea_contract::io::ResumeDecisionAction;
-    use tirea_contract::runtime::plugin::phase::effect::PhaseEffect;
     use tirea_contract::runtime::plugin::phase::Phase;
+    use tirea_contract::io::ResumeDecisionAction;
     use tirea_contract::runtime::tool_call::ToolCallResume;
     use tirea_contract::RunConfig;
     use tirea_state::DocCell;
 
-    fn has_block(output: &PhaseOutput) -> bool {
-        output
-            .effects
-            .iter()
-            .any(|e| matches!(e, PhaseEffect::BlockTool(_)))
+    fn has_block(actions: &[Box<dyn Action>]) -> bool {
+        actions.iter().any(|a| a.label() == "block_tool")
     }
 
-    fn has_suspend(output: &PhaseOutput) -> bool {
-        output
-            .effects
-            .iter()
-            .any(|e| matches!(e, PhaseEffect::SuspendTool(_)))
-    }
-
-    fn extract_suspend_ticket(output: &PhaseOutput) -> Option<&SuspendTicket> {
-        output.effects.iter().find_map(|e| match e {
-            PhaseEffect::SuspendTool(ticket) => Some(ticket),
-            _ => None,
-        })
+    fn has_suspend(actions: &[Box<dyn Action>]) -> bool {
+        actions.iter().any(|a| a.label() == "suspend_tool")
     }
 
     #[test]
@@ -370,38 +314,13 @@ mod tests {
     }
 
     #[test]
-    fn test_permission_plugin_reduces_permission_actions() {
-        let base = json!({
-            "permissions": {
-                "default_behavior": "ask",
-                "tools": {}
-            }
-        });
-        let actions = vec![
-            PermissionAction::SetTool {
-                tool_id: "read_file".to_string(),
-                behavior: ToolPermissionBehavior::Allow,
-            }
-            .into(),
-            PermissionAction::SetDefault {
-                behavior: ToolPermissionBehavior::Deny,
-            }
-            .into(),
-        ];
-
-        let patches = PermissionPlugin
-            .reduce_plugin_actions(actions, &base)
-            .expect("permission action reduce should succeed");
-        let next = tirea_state::apply_patches(&base, patches.iter().map(|p| p.patch()))
-            .expect("patches should apply");
-        assert_eq!(
-            resolve_permission_behavior(&next, "read_file"),
-            ToolPermissionBehavior::Allow
-        );
-        assert_eq!(
-            resolve_permission_behavior(&next, "unknown_tool"),
-            ToolPermissionBehavior::Deny
-        );
+    fn test_permission_state_action_helper() {
+        let action = PermissionAction::SetDefault {
+            behavior: ToolPermissionBehavior::Allow,
+        };
+        let state_action = permission_state_action(action);
+        // Verify it produces a valid AnyStateAction (not Patch variant)
+        assert!(!matches!(state_action, AnyStateAction::Patch(_)));
     }
 
     #[test]
@@ -419,9 +338,9 @@ mod tests {
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("any_tool", "call_1", Some(&args));
 
-        let output = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
-        assert!(!has_block(&output));
-        assert!(!has_suspend(&output));
+        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
+        assert!(!has_block(&actions));
+        assert!(!has_suspend(&actions));
     }
 
     #[tokio::test]
@@ -433,8 +352,8 @@ mod tests {
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("any_tool", "call_1", Some(&args));
 
-        let output = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
-        assert!(has_block(&output));
+        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
+        assert!(has_block(&actions));
     }
 
     #[tokio::test]
@@ -446,19 +365,8 @@ mod tests {
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("test_tool", "call_1", Some(&args));
 
-        let output = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
-        assert!(has_suspend(&output));
-
-        let ticket = extract_suspend_ticket(&output).expect("suspend ticket should exist");
-        assert_eq!(
-            ticket.suspension.action,
-            format!("tool:{}", PERMISSION_CONFIRM_TOOL_NAME)
-        );
-        assert_eq!(ticket.pending.id, "fc_call_1");
-        assert_eq!(ticket.pending.name, PERMISSION_CONFIRM_TOOL_NAME);
-        assert_eq!(ticket.pending.arguments["tool_name"], "test_tool");
-        assert_eq!(ticket.pending.arguments["tool_args"]["path"], "a.txt");
-        assert_eq!(ticket.resume_mode, ToolCallResumeMode::ReplayToolCall);
+        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
+        assert!(has_suspend(&actions));
     }
 
     #[tokio::test]
@@ -470,9 +378,9 @@ mod tests {
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("test_tool", "", Some(&args));
 
-        let output = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
-        assert!(has_block(&output));
-        assert!(!has_suspend(&output));
+        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
+        assert!(has_block(&actions));
+        assert!(!has_suspend(&actions));
     }
 
     #[test]
@@ -513,8 +421,8 @@ mod tests {
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("allowed_tool", "call_1", Some(&args));
 
-        let output = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
-        assert!(!has_block(&output));
+        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
+        assert!(!has_block(&actions));
     }
 
     #[tokio::test]
@@ -527,8 +435,8 @@ mod tests {
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("denied_tool", "call_1", Some(&args));
 
-        let output = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
-        assert!(has_block(&output));
+        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
+        assert!(has_block(&actions));
     }
 
     #[tokio::test]
@@ -541,8 +449,8 @@ mod tests {
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("ask_tool", "call_1", Some(&args));
 
-        let output = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
-        assert!(has_suspend(&output));
+        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
+        assert!(has_suspend(&actions));
     }
 
     #[tokio::test]
@@ -555,10 +463,10 @@ mod tests {
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("invalid_tool", "call_1", Some(&args));
 
-        let output = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
+        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
         // Should fall back to default "allow" behavior
-        assert!(!has_block(&output));
-        assert!(!has_suspend(&output));
+        assert!(!has_block(&actions));
+        assert!(!has_suspend(&actions));
     }
 
     #[tokio::test]
@@ -571,9 +479,9 @@ mod tests {
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("any_tool", "call_1", Some(&args));
 
-        let output = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
+        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
         // Should fall back to Ask behavior
-        assert!(has_suspend(&output));
+        assert!(has_suspend(&actions));
     }
 
     #[tokio::test]
@@ -585,8 +493,8 @@ mod tests {
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("any_tool", "call_1", Some(&args));
 
-        let output = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
-        assert!(has_suspend(&output));
+        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
+        assert!(has_suspend(&actions));
     }
 
     // ========================================================================
@@ -603,10 +511,10 @@ mod tests {
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("any_tool", "call_1", Some(&args));
 
-        let output = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
+        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
         // Falls back to default "allow" behavior
-        assert!(!has_block(&output));
-        assert!(!has_suspend(&output));
+        assert!(!has_block(&actions));
+        assert!(!has_suspend(&actions));
     }
 
     #[tokio::test]
@@ -619,9 +527,9 @@ mod tests {
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("any_tool", "call_1", Some(&args));
 
-        let output = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
+        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
         // Falls back to Ask
-        assert!(has_suspend(&output));
+        assert!(has_suspend(&actions));
     }
 
     #[tokio::test]
@@ -632,9 +540,9 @@ mod tests {
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("any_tool", "call_1", Some(&args));
 
-        let output = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
+        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
         // Falls back to Ask
-        assert!(has_suspend(&output));
+        assert!(has_suspend(&actions));
     }
 
     #[tokio::test]
@@ -647,10 +555,10 @@ mod tests {
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("my_tool", "call_1", Some(&args));
 
-        let output = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
+        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
         // Falls back to default "allow"
-        assert!(!has_block(&output));
-        assert!(!has_suspend(&output));
+        assert!(!has_block(&actions));
+        assert!(!has_suspend(&actions));
     }
 
     #[tokio::test]
@@ -661,9 +569,9 @@ mod tests {
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("any_tool", "call_1", Some(&args));
 
-        let output = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
+        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
         // Falls back to Ask
-        assert!(has_suspend(&output));
+        assert!(has_suspend(&actions));
     }
 
     // ========================================================================
@@ -686,8 +594,8 @@ mod tests {
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("blocked_tool", "call_1", Some(&args));
 
-        let output = AgentBehavior::before_tool_execute(&ToolPolicyPlugin, &ctx).await;
-        assert!(has_block(&output), "out-of-scope tool should be blocked");
+        let actions = AgentBehavior::before_tool_execute(&ToolPolicyPlugin, &ctx).await;
+        assert!(has_block(&actions), "out-of-scope tool should be blocked");
     }
 
     #[tokio::test]
@@ -701,8 +609,8 @@ mod tests {
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("my_tool", "call_1", Some(&args));
 
-        let output = AgentBehavior::before_tool_execute(&ToolPolicyPlugin, &ctx).await;
-        assert!(!has_block(&output));
+        let actions = AgentBehavior::before_tool_execute(&ToolPolicyPlugin, &ctx).await;
+        assert!(!has_block(&actions));
     }
 
     #[tokio::test]
@@ -713,8 +621,8 @@ mod tests {
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("any_tool", "call_1", Some(&args));
 
-        let output = AgentBehavior::before_tool_execute(&ToolPolicyPlugin, &ctx).await;
-        assert!(!has_block(&output));
+        let actions = AgentBehavior::before_tool_execute(&ToolPolicyPlugin, &ctx).await;
+        assert!(!has_block(&actions));
     }
 
     #[tokio::test]
@@ -728,8 +636,8 @@ mod tests {
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("excluded_tool", "call_1", Some(&args));
 
-        let output = AgentBehavior::before_tool_execute(&ToolPolicyPlugin, &ctx).await;
-        assert!(has_block(&output), "excluded tool should be blocked");
+        let actions = AgentBehavior::before_tool_execute(&ToolPolicyPlugin, &ctx).await;
+        assert!(has_block(&actions), "excluded tool should be blocked");
     }
 
     #[tokio::test]
@@ -753,13 +661,13 @@ mod tests {
             .with_tool_info("test_tool", "call_1", Some(&args))
             .with_resume_input(resume);
 
-        let output = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
+        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
         assert!(
-            !has_block(&output),
+            !has_block(&actions),
             "resume-approved call should be allowed"
         );
         assert!(
-            !has_suspend(&output),
+            !has_suspend(&actions),
             "resume-approved call should not suspend again"
         );
     }

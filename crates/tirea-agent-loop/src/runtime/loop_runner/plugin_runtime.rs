@@ -1,9 +1,11 @@
 use super::core::{clear_agent_inference_error, set_agent_inference_error};
-use super::effect_applicator::{apply_phase_output, apply_phase_output_with_options};
 use super::AgentLoopError;
-use crate::contracts::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
+use crate::contracts::runtime::plugin::agent::{
+    build_read_only_context_from_step, AgentBehavior, ReadOnlyContext,
+};
+use crate::contracts::runtime::plugin::phase::action::Action;
 use crate::contracts::runtime::plugin::phase::{
-    reduce_state_actions, AnyPluginAction, AnyStateAction, CommutativeAction, Phase, StepContext,
+    reduce_state_actions, AnyStateAction, CommutativeAction, Phase, StepContext,
 };
 use crate::contracts::runtime::tool_call::ToolDescriptor;
 use crate::contracts::RunContext;
@@ -14,48 +16,17 @@ use std::sync::Mutex;
 use tirea_state::{DocCell, Patch, PatchExt, TrackedPatch};
 
 // =========================================================================
-// Agent-based dispatch (declarative model: ReadOnlyContext → PhaseOutput)
+// Agent-based dispatch (declarative model: ReadOnlyContext → Vec<Action>)
 // =========================================================================
 
-/// Build a [`ReadOnlyContext`] from the current step and doc state.
-fn build_read_only_context<'a>(
-    phase: Phase,
-    step: &'a StepContext<'a>,
-    doc: &'a DocCell,
-) -> ReadOnlyContext<'a> {
-    let mut ctx = ReadOnlyContext::new(
-        phase,
-        step.thread_id(),
-        step.messages(),
-        step.run_config(),
-        doc,
-    );
-    if let Some(response) = step.response.as_ref() {
-        ctx = ctx.with_response(response);
-    }
-    if let Some(tool) = step.tool.as_ref() {
-        ctx = ctx.with_tool_info(&tool.name, &tool.id, Some(&tool.args));
-        if let Some(result) = tool.result.as_ref() {
-            ctx = ctx.with_tool_result(result);
-        }
-    }
-    // Populate resume_input for BeforeToolExecute.
-    if phase == Phase::BeforeToolExecute {
-        if let Some(call_id) = step.tool_call_id() {
-            if let Ok(Some(resume)) = step.ctx().resume_input_for(call_id) {
-                ctx = ctx.with_resume_input(resume);
-            }
-        }
-    }
-    ctx
-}
-
-/// Dispatch a single phase hook on an [`Agent`].
+/// Dispatch a single phase hook on an [`AgentBehavior`].
+///
+/// Returns the actions emitted by the behavior for the given phase.
 async fn dispatch_agent_phase<'a>(
     agent: &dyn AgentBehavior,
     phase: Phase,
     ctx: &ReadOnlyContext<'a>,
-) -> crate::contracts::runtime::plugin::phase::effect::PhaseOutput {
+) -> Vec<Box<dyn Action>> {
     match phase {
         Phase::RunStart => agent.run_start(ctx).await,
         Phase::StepStart => agent.step_start(ctx).await,
@@ -68,10 +39,10 @@ async fn dispatch_agent_phase<'a>(
     }
 }
 
-/// Emit a single phase using the [`Agent`] declarative model.
+/// Emit a single phase using the [`AgentBehavior`] declarative model.
 ///
-/// Builds a [`ReadOnlyContext`], calls the agent hook, and applies the
-/// returned [`PhaseOutput`] to the mutable `StepContext`.
+/// Builds a [`ReadOnlyContext`], calls the agent hook, validates and applies
+/// the returned actions to the mutable `StepContext`.
 pub(super) async fn emit_agent_phase(
     phase: Phase,
     step: &mut StepContext<'_>,
@@ -86,19 +57,30 @@ async fn emit_agent_phase_with_options(
     step: &mut StepContext<'_>,
     agent: &dyn AgentBehavior,
     doc: &DocCell,
-    defer_commutative_state_actions: bool,
+    _defer_commutative_state_actions: bool,
 ) -> Result<(), AgentLoopError> {
-    let ctx = build_read_only_context(phase, step, doc);
-    let output = dispatch_agent_phase(agent, phase, &ctx).await;
-    let plugin_actions = agent.phase_actions(phase, &ctx).await;
-    if defer_commutative_state_actions {
-        apply_phase_output_with_options(phase, step, output, doc, true)?
-    } else {
-        apply_phase_output(phase, step, output, doc)?
+    let ctx = build_read_only_context_from_step(phase, step, doc);
+    let actions = dispatch_agent_phase(agent, phase, &ctx).await;
+    for action in &actions {
+        action
+            .validate(phase)
+            .map_err(AgentLoopError::StateError)?;
     }
-    let plugin_patches = reduce_behavior_plugin_actions(agent, &doc.snapshot(), plugin_actions)?;
-    for patch in plugin_patches {
-        step.emit_patch(patch);
+    for action in actions {
+        action.apply(step);
+    }
+    // Reduce any pending_state_actions that were added by EmitStatePatch actions.
+    let state_actions = std::mem::take(&mut step.pending_state_actions);
+    if !state_actions.is_empty() {
+        let patches = reduce_state_actions(state_actions, &doc.snapshot(), "agent:phase")
+            .map_err(|e| {
+                AgentLoopError::StateError(format!(
+                    "failed to reduce pending state actions: {e}"
+                ))
+            })?;
+        for p in patches {
+            step.emit_patch(p);
+        }
     }
     Ok(())
 }
@@ -148,20 +130,6 @@ fn reduce_commutative_actions_to_patch(
         AgentLoopError::StateError(format!("failed to reduce commutative state actions: {e}"))
     })?;
     Ok(merge_tracked_patches(&tracked, source))
-}
-
-pub(super) fn reduce_behavior_plugin_actions(
-    behavior: &dyn AgentBehavior,
-    base_snapshot: &Value,
-    actions: Vec<AnyPluginAction>,
-) -> Result<Vec<TrackedPatch>, AgentLoopError> {
-    if actions.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    behavior
-        .reduce_plugin_actions(actions, base_snapshot)
-        .map_err(AgentLoopError::StateError)
 }
 
 fn finalize_step_pending_outputs(
@@ -425,99 +393,52 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::runtime::plugin::phase::state_spec::StateSpec;
-    use crate::contracts::runtime::plugin::phase::{AnyPluginAction, AnyStateAction};
+    use crate::contracts::runtime::plugin::agent::NoOpBehavior;
+    use crate::contracts::runtime::plugin::phase::core::actions::AddSystemContext;
     use crate::contracts::testing::TestFixture;
     use async_trait::async_trait;
-    use serde::{Deserialize, Serialize};
-    use serde_json::Value;
-    use tirea_state::{DocCell, PatchSink, Path as TPath, State, TireaResult};
+    use tirea_state::DocCell;
 
-    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-    struct OwnedDebugState {
-        value: bool,
-    }
-
-    struct OwnedDebugStateRef;
-
-    impl State for OwnedDebugState {
-        type Ref<'a> = OwnedDebugStateRef;
-        const PATH: &'static str = "debug.owned";
-
-        fn state_ref<'a>(_: &'a DocCell, _: TPath, _: PatchSink<'a>) -> Self::Ref<'a> {
-            OwnedDebugStateRef
-        }
-
-        fn from_value(value: &Value) -> TireaResult<Self> {
-            if value.is_null() {
-                return Ok(Self::default());
-            }
-            serde_json::from_value(value.clone()).map_err(tirea_state::TireaError::Serialization)
-        }
-
-        fn to_value(&self) -> TireaResult<Value> {
-            serde_json::to_value(self).map_err(tirea_state::TireaError::Serialization)
-        }
-    }
-
-    impl StateSpec for OwnedDebugState {
-        type Action = bool;
-
-        fn reduce(&mut self, action: Self::Action) {
-            self.value = action;
-        }
-    }
-
-    struct PluginActionBehavior;
+    struct TestActionBehavior;
 
     #[async_trait]
-    impl AgentBehavior for PluginActionBehavior {
+    impl AgentBehavior for TestActionBehavior {
         fn id(&self) -> &str {
-            "plugin_action"
+            "test_action"
         }
 
-        async fn phase_actions(
+        async fn before_inference(
             &self,
-            phase: Phase,
             _ctx: &ReadOnlyContext<'_>,
-        ) -> Vec<AnyPluginAction> {
-            if phase == Phase::RunStart {
-                vec![AnyPluginAction::new(self.id(), true)]
-            } else {
-                Vec::new()
-            }
-        }
-
-        fn reduce_plugin_actions(
-            &self,
-            actions: Vec<AnyPluginAction>,
-            base_snapshot: &serde_json::Value,
-        ) -> Result<Vec<TrackedPatch>, String> {
-            let mut state_actions = Vec::new();
-            for action in actions {
-                let enabled = action.downcast::<bool>().map_err(|other| {
-                    format!(
-                        "plugin action behavior failed to downcast '{}'",
-                        other.action_type_name()
-                    )
-                })?;
-                state_actions.push(AnyStateAction::new::<OwnedDebugState>(enabled));
-            }
-            reduce_state_actions(state_actions, base_snapshot, "plugin:plugin_action")
-                .map_err(|e| e.to_string())
+        ) -> Vec<Box<dyn Action>> {
+            vec![Box::new(AddSystemContext("injected by action".into()))]
         }
     }
 
     #[tokio::test]
-    async fn emit_agent_phase_accepts_plugin_actions() {
+    async fn emit_agent_phase_validates_and_applies_actions() {
+        use crate::contracts::runtime::plugin::phase::core::ext::InferenceContext;
+
         let fix = TestFixture::new();
         let mut step = fix.step(vec![]);
         let doc = DocCell::new(serde_json::json!({}));
 
-        emit_agent_phase(Phase::RunStart, &mut step, &PluginActionBehavior, &doc)
+        emit_agent_phase(Phase::BeforeInference, &mut step, &TestActionBehavior, &doc)
             .await
-            .expect("plugin action should be reduced to patch");
+            .expect("actions should be validated and applied");
 
-        assert!(!step.pending_patches.is_empty());
+        let inf = step.extensions.get::<InferenceContext>().unwrap();
+        assert_eq!(inf.system_context, vec!["injected by action"]);
+    }
+
+    #[tokio::test]
+    async fn emit_agent_phase_noop_behavior_succeeds() {
+        let fix = TestFixture::new();
+        let mut step = fix.step(vec![]);
+        let doc = DocCell::new(serde_json::json!({}));
+
+        emit_agent_phase(Phase::RunStart, &mut step, &NoOpBehavior, &doc)
+            .await
+            .expect("noop behavior should succeed");
     }
 }

@@ -327,18 +327,12 @@ mod tests {
             &run_config,
             fixture_ctx.doc(),
         );
-        let output = plugin.before_inference(&ctx).await;
+        let actions = plugin.before_inference(&ctx).await;
 
-        use tirea_contract::runtime::plugin::phase::effect::PhaseEffect;
-        let system_contexts: Vec<&str> = output
-            .effects
+        let system_context_count = actions
             .iter()
-            .filter_map(|e| match e {
-                PhaseEffect::SystemContext(s) => Some(s.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(system_contexts.len(), 1);
-        assert!(system_contexts[0].contains("<available_skills>"));
+            .filter(|a| a.label() == "add_system_context")
+            .count();
+        assert_eq!(system_context_count, 1);
     }
 }

@@ -1,3 +1,4 @@
+use super::core::ext::{FlowControl, InferenceContext, LLMResponse, MessagingContext, ToolGate};
 use super::*;
 use crate::runtime::llm::StreamResult;
 use crate::runtime::run::TerminationReason;
@@ -66,13 +67,13 @@ fn test_step_context_new() {
     let fix = TestFixture::new();
     let ctx = fix.step(mock_tools());
 
-    assert!(ctx.system_context.is_empty());
-    assert!(ctx.session_context.is_empty());
-    assert!(ctx.system_reminders.is_empty());
-    assert_eq!(ctx.tools.len(), 3);
-    assert!(ctx.tool.is_none());
-    assert!(ctx.response.is_none());
-    assert!(ctx.run_action.is_none());
+    let inf = ctx.extensions.get::<InferenceContext>().unwrap();
+    assert!(inf.system_context.is_empty());
+    assert!(inf.session_context.is_empty());
+    assert_eq!(inf.tools.len(), 3);
+    assert!(!ctx.extensions.contains::<ToolGate>());
+    assert!(!ctx.extensions.contains::<LLMResponse>());
+    assert!(!ctx.extensions.contains::<FlowControl>());
     assert!(ctx.pending_patches.is_empty());
 }
 
@@ -88,10 +89,12 @@ fn test_step_context_reset() {
 
     ctx.reset();
 
-    assert!(ctx.system_context.is_empty());
-    assert!(ctx.session_context.is_empty());
-    assert!(ctx.system_reminders.is_empty());
-    assert!(ctx.run_action.is_none());
+    let inf = ctx.extensions.get::<InferenceContext>().unwrap();
+    assert!(inf.system_context.is_empty());
+    assert!(inf.session_context.is_empty());
+    assert_eq!(inf.tools.len(), 3); // tools preserved
+    assert!(!ctx.extensions.contains::<MessagingContext>());
+    assert!(!ctx.extensions.contains::<FlowControl>());
     assert!(ctx.pending_patches.is_empty());
 }
 
@@ -103,8 +106,9 @@ fn test_after_inference_request_termination_sets_run_action() {
         let mut ctx = AfterInferenceContext::new(&mut step);
         ctx.request_termination(TerminationReason::BehaviorRequested);
     }
+    let fc = step.extensions.get::<FlowControl>().unwrap();
     assert_eq!(
-        step.run_action,
+        fc.run_action,
         Some(RunAction::Terminate(TerminationReason::BehaviorRequested))
     );
 }
@@ -121,9 +125,10 @@ fn test_system_context() {
     ctx.system("Context 1");
     ctx.system("Context 2");
 
-    assert_eq!(ctx.system_context.len(), 2);
-    assert_eq!(ctx.system_context[0], "Context 1");
-    assert_eq!(ctx.system_context[1], "Context 2");
+    let inf = ctx.extensions.get::<InferenceContext>().unwrap();
+    assert_eq!(inf.system_context.len(), 2);
+    assert_eq!(inf.system_context[0], "Context 1");
+    assert_eq!(inf.system_context[1], "Context 2");
 }
 
 #[test]
@@ -133,10 +138,13 @@ fn test_set_system_context() {
 
     ctx.system("Context 1");
     ctx.system("Context 2");
-    ctx.system_context = vec!["Replaced".to_string()];
+    ctx.extensions
+        .get_or_default::<InferenceContext>()
+        .system_context = vec!["Replaced".to_string()];
 
-    assert_eq!(ctx.system_context.len(), 1);
-    assert_eq!(ctx.system_context[0], "Replaced");
+    let inf = ctx.extensions.get::<InferenceContext>().unwrap();
+    assert_eq!(inf.system_context.len(), 1);
+    assert_eq!(inf.system_context[0], "Replaced");
 }
 
 #[test]
@@ -145,9 +153,13 @@ fn test_clear_system_context() {
     let mut ctx = fix.step(vec![]);
 
     ctx.system("Context 1");
-    ctx.system_context.clear();
+    ctx.extensions
+        .get_or_default::<InferenceContext>()
+        .system_context
+        .clear();
 
-    assert!(ctx.system_context.is_empty());
+    let inf = ctx.extensions.get::<InferenceContext>().unwrap();
+    assert!(inf.system_context.is_empty());
 }
 
 #[test]
@@ -158,7 +170,8 @@ fn test_session_context() {
     ctx.thread("Thread 1");
     ctx.thread("Thread 2");
 
-    assert_eq!(ctx.session_context.len(), 2);
+    let inf = ctx.extensions.get::<InferenceContext>().unwrap();
+    assert_eq!(inf.session_context.len(), 2);
 }
 
 #[test]
@@ -167,10 +180,13 @@ fn test_set_session_context() {
     let mut ctx = fix.step(vec![]);
 
     ctx.thread("Thread 1");
-    ctx.session_context = vec!["Replaced".to_string()];
+    ctx.extensions
+        .get_or_default::<InferenceContext>()
+        .session_context = vec!["Replaced".to_string()];
 
-    assert_eq!(ctx.session_context.len(), 1);
-    assert_eq!(ctx.session_context[0], "Replaced");
+    let inf = ctx.extensions.get::<InferenceContext>().unwrap();
+    assert_eq!(inf.session_context.len(), 1);
+    assert_eq!(inf.session_context[0], "Replaced");
 }
 
 #[test]
@@ -181,7 +197,8 @@ fn test_reminder() {
     ctx.reminder("Reminder 1");
     ctx.reminder("Reminder 2");
 
-    assert_eq!(ctx.system_reminders.len(), 2);
+    let msg = ctx.extensions.get::<MessagingContext>().unwrap();
+    assert_eq!(msg.reminders.len(), 2);
 }
 
 #[test]
@@ -190,9 +207,13 @@ fn test_clear_reminders() {
     let mut ctx = fix.step(vec![]);
 
     ctx.reminder("Reminder 1");
-    ctx.system_reminders.clear();
+    ctx.extensions
+        .get_or_default::<MessagingContext>()
+        .reminders
+        .clear();
 
-    assert!(ctx.system_reminders.is_empty());
+    let msg = ctx.extensions.get::<MessagingContext>().unwrap();
+    assert!(msg.reminders.is_empty());
 }
 
 // =========================================================================
@@ -206,8 +227,9 @@ fn test_exclude_tool() {
 
     ctx.exclude("delete_file");
 
-    assert_eq!(ctx.tools.len(), 2);
-    assert!(ctx.tools.iter().all(|t| t.id != "delete_file"));
+    let inf = ctx.extensions.get::<InferenceContext>().unwrap();
+    assert_eq!(inf.tools.len(), 2);
+    assert!(inf.tools.iter().all(|t| t.id != "delete_file"));
 }
 
 #[test]
@@ -217,13 +239,18 @@ fn test_include_only_tools() {
 
     ctx.include_only(&["read_file"]);
 
-    assert_eq!(ctx.tools.len(), 1);
-    assert_eq!(ctx.tools[0].id, "read_file");
+    let inf = ctx.extensions.get::<InferenceContext>().unwrap();
+    assert_eq!(inf.tools.len(), 1);
+    assert_eq!(inf.tools[0].id, "read_file");
 }
 
 // =========================================================================
-// Tool control tests
+// Tool control tests (via ToolGate extension)
 // =========================================================================
+
+fn set_tool_gate(ctx: &mut StepContext<'_>, call: &ToolCall) {
+    ctx.extensions.insert(ToolGate::from_tool_call(call));
+}
 
 #[test]
 fn test_tool_context() {
@@ -231,7 +258,7 @@ fn test_tool_context() {
     let mut ctx = fix.step(vec![]);
 
     let call = ToolCall::new("call_1", "read_file", json!({"path": "/test"}));
-    ctx.tool = Some(ToolContext::new(&call));
+    set_tool_gate(&mut ctx, &call);
 
     assert_eq!(ctx.tool_name(), Some("read_file"));
     assert_eq!(ctx.tool_call_id(), Some("call_1"));
@@ -247,17 +274,15 @@ fn test_block_tool() {
     let mut ctx = fix.step(vec![]);
 
     let call = ToolCall::new("call_1", "delete_file", json!({}));
-    ctx.tool = Some(ToolContext::new(&call));
+    set_tool_gate(&mut ctx, &call);
 
     ctx.block("Permission denied");
 
     assert!(ctx.tool_blocked());
     assert!(!ctx.tool_pending());
-    assert_eq!(
-        ctx.tool.as_ref().unwrap().block_reason,
-        Some("Permission denied".to_string())
-    );
-    assert!(ctx.tool.as_ref().unwrap().suspend_ticket.is_none());
+    let gate = ctx.extensions.get::<ToolGate>().unwrap();
+    assert_eq!(gate.block_reason, Some("Permission denied".to_string()));
+    assert!(gate.suspend_ticket.is_none());
 }
 
 #[test]
@@ -266,15 +291,16 @@ fn test_pending_tool() {
     let mut ctx = fix.step(vec![]);
 
     let call = ToolCall::new("call_1", "write_file", json!({}));
-    ctx.tool = Some(ToolContext::new(&call));
+    set_tool_gate(&mut ctx, &call);
 
     let interaction = Suspension::new("confirm_1", "confirm").with_message("Allow write?");
     ctx.suspend(test_suspend_ticket(interaction));
 
     assert!(ctx.tool_pending());
     assert!(!ctx.tool_blocked());
-    assert!(ctx.tool.as_ref().unwrap().block_reason.is_none());
-    assert!(ctx.tool.as_ref().unwrap().suspend_ticket.is_some());
+    let gate = ctx.extensions.get::<ToolGate>().unwrap();
+    assert!(gate.block_reason.is_none());
+    assert!(gate.suspend_ticket.is_some());
 }
 
 #[test]
@@ -283,7 +309,7 @@ fn test_confirm_tool() {
     let mut ctx = fix.step(vec![]);
 
     let call = ToolCall::new("call_1", "write_file", json!({}));
-    ctx.tool = Some(ToolContext::new(&call));
+    set_tool_gate(&mut ctx, &call);
 
     let interaction = Suspension::new("confirm_1", "confirm").with_message("Allow write?");
     ctx.suspend(test_suspend_ticket(interaction));
@@ -291,8 +317,9 @@ fn test_confirm_tool() {
 
     assert!(!ctx.tool_pending());
     assert!(!ctx.tool_blocked());
-    assert!(ctx.tool.as_ref().unwrap().block_reason.is_none());
-    assert!(ctx.tool.as_ref().unwrap().suspend_ticket.is_none());
+    let gate = ctx.extensions.get::<ToolGate>().unwrap();
+    assert!(gate.block_reason.is_none());
+    assert!(gate.suspend_ticket.is_none());
 }
 
 #[test]
@@ -301,7 +328,7 @@ fn test_allow_deny_ask_transitions_are_mutually_exclusive() {
     let mut ctx = fix.step(vec![]);
 
     let call = ToolCall::new("call_1", "write_file", json!({}));
-    ctx.tool = Some(ToolContext::new(&call));
+    set_tool_gate(&mut ctx, &call);
 
     ctx.block("denied");
     assert!(ctx.tool_blocked());
@@ -312,12 +339,12 @@ fn test_allow_deny_ask_transitions_are_mutually_exclusive() {
     ));
     assert!(!ctx.tool_blocked());
     assert!(ctx.tool_pending());
-    assert!(ctx.tool.as_ref().unwrap().block_reason.is_none());
+    assert!(ctx.extensions.get::<ToolGate>().unwrap().block_reason.is_none());
 
     ctx.allow();
     assert!(!ctx.tool_blocked());
     assert!(!ctx.tool_pending());
-    assert!(ctx.tool.as_ref().unwrap().suspend_ticket.is_none());
+    assert!(ctx.extensions.get::<ToolGate>().unwrap().suspend_ticket.is_none());
 }
 
 #[test]
@@ -326,7 +353,7 @@ fn test_set_tool_result() {
     let mut ctx = fix.step(vec![]);
 
     let call = ToolCall::new("call_1", "read_file", json!({}));
-    ctx.tool = Some(ToolContext::new(&call));
+    set_tool_gate(&mut ctx, &call);
 
     let result = ToolResult::success("read_file", json!({"content": "hello"}));
     ctx.set_tool_result(result);
@@ -343,7 +370,6 @@ fn test_set_tool_result() {
 fn test_step_result_continue() {
     let fix = TestFixture::new();
     let ctx = fix.step(vec![]);
-
     assert_eq!(ctx.result(), StepOutcome::Continue);
 }
 
@@ -353,7 +379,7 @@ fn test_step_result_pending() {
     let mut ctx = fix.step(vec![]);
 
     let call = ToolCall::new("call_1", "write_file", json!({}));
-    ctx.tool = Some(ToolContext::new(&call));
+    set_tool_gate(&mut ctx, &call);
 
     let interaction = Suspension::new("confirm_1", "confirm").with_message("Allow?");
     ctx.suspend(test_suspend_ticket(interaction.clone()));
@@ -370,14 +396,14 @@ fn test_step_result_pending_prefers_suspend_ticket() {
     let mut ctx = fix.step(vec![]);
 
     let call = ToolCall::new("call_1", "write_file", json!({}));
-    ctx.tool = Some(ToolContext::new(&call));
+    set_tool_gate(&mut ctx, &call);
 
     let ticket_interaction =
         Suspension::new("ticket_1", "confirm").with_message("Suspend via ticket");
 
-    if let Some(tool) = ctx.tool.as_mut() {
-        tool.pending = true;
-        tool.suspend_ticket = Some(test_suspend_ticket(ticket_interaction.clone()));
+    if let Some(gate) = ctx.extensions.get_mut::<ToolGate>() {
+        gate.pending = true;
+        gate.suspend_ticket = Some(test_suspend_ticket(ticket_interaction.clone()));
     }
 
     match ctx.result() {
@@ -394,14 +420,14 @@ fn test_before_tool_execute_decision_prefers_suspend_ticket() {
     let mut step = fix.step(vec![]);
 
     let call = ToolCall::new("call_1", "write_file", json!({}));
-    step.tool = Some(ToolContext::new(&call));
+    set_tool_gate(&mut step, &call);
 
     let ticket_interaction =
         Suspension::new("ticket_2", "confirm").with_message("Suspend via ticket");
 
-    if let Some(tool) = step.tool.as_mut() {
-        tool.pending = true;
-        tool.suspend_ticket = Some(test_suspend_ticket(ticket_interaction.clone()));
+    if let Some(gate) = step.extensions.get_mut::<ToolGate>() {
+        gate.pending = true;
+        gate.suspend_ticket = Some(test_suspend_ticket(ticket_interaction.clone()));
     }
 
     let ctx = BeforeToolExecuteContext::new(&mut step);
@@ -418,51 +444,51 @@ fn test_step_result_complete() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.response = Some(StreamResult {
+    ctx.extensions.insert(LLMResponse::new(StreamResult {
         text: "Done!".to_string(),
         tool_calls: vec![],
         usage: None,
-    });
+    }));
 
     assert_eq!(ctx.result(), StepOutcome::Complete);
 }
 
 // =========================================================================
-// ToolContext tests
+// ToolGate tests
 // =========================================================================
 
 #[test]
-fn test_tool_context_new() {
+fn test_tool_gate_new() {
     let call = ToolCall::new("call_1", "test_tool", json!({"arg": "value"}));
-    let tool_ctx = ToolContext::new(&call);
+    let gate = ToolGate::from_tool_call(&call);
 
-    assert_eq!(tool_ctx.id, "call_1");
-    assert_eq!(tool_ctx.idempotency_key(), "call_1");
-    assert_eq!(tool_ctx.name, "test_tool");
-    assert_eq!(tool_ctx.args["arg"], "value");
-    assert!(tool_ctx.result.is_none());
-    assert!(!tool_ctx.blocked);
-    assert!(!tool_ctx.pending);
+    assert_eq!(gate.id, "call_1");
+    assert_eq!(gate.idempotency_key(), "call_1");
+    assert_eq!(gate.name, "test_tool");
+    assert_eq!(gate.args["arg"], "value");
+    assert!(gate.result.is_none());
+    assert!(!gate.blocked);
+    assert!(!gate.pending);
 }
 
 #[test]
-fn test_tool_context_is_blocked() {
+fn test_tool_gate_is_blocked() {
     let call = ToolCall::new("call_1", "test", json!({}));
-    let mut tool_ctx = ToolContext::new(&call);
+    let mut gate = ToolGate::from_tool_call(&call);
 
-    assert!(!tool_ctx.is_blocked());
-    tool_ctx.blocked = true;
-    assert!(tool_ctx.is_blocked());
+    assert!(!gate.is_blocked());
+    gate.blocked = true;
+    assert!(gate.is_blocked());
 }
 
 #[test]
-fn test_tool_context_is_pending() {
+fn test_tool_gate_is_pending() {
     let call = ToolCall::new("call_1", "test", json!({}));
-    let mut tool_ctx = ToolContext::new(&call);
+    let mut gate = ToolGate::from_tool_call(&call);
 
-    assert!(!tool_ctx.is_pending());
-    tool_ctx.pending = true;
-    assert!(tool_ctx.is_pending());
+    assert!(!gate.is_pending());
+    gate.pending = true;
+    assert!(gate.is_pending());
 }
 
 // =========================================================================
@@ -481,9 +507,7 @@ fn test_phase_all_8_values() {
         Phase::StepEnd,
         Phase::RunEnd,
     ];
-
     assert_eq!(phases.len(), 8);
-    // All should be unique
     for (i, p1) in phases.iter().enumerate() {
         for (j, p2) in phases.iter().enumerate() {
             if i != j {
@@ -498,8 +522,9 @@ fn test_step_context_empty_session() {
     let fix = TestFixture::new();
     let ctx = fix.step(vec![]);
 
-    assert!(ctx.tools.is_empty());
-    assert!(ctx.system_context.is_empty());
+    let inf = ctx.extensions.get::<InferenceContext>().unwrap();
+    assert!(inf.tools.is_empty());
+    assert!(inf.system_context.is_empty());
     assert_eq!(ctx.result(), StepOutcome::Continue);
 }
 
@@ -512,9 +537,10 @@ fn test_step_context_multiple_system_contexts() {
     ctx.system("Context 2");
     ctx.system("Context 3");
 
-    assert_eq!(ctx.system_context.len(), 3);
-    assert_eq!(ctx.system_context[0], "Context 1");
-    assert_eq!(ctx.system_context[2], "Context 3");
+    let inf = ctx.extensions.get::<InferenceContext>().unwrap();
+    assert_eq!(inf.system_context.len(), 3);
+    assert_eq!(inf.system_context[0], "Context 1");
+    assert_eq!(inf.system_context[2], "Context 3");
 }
 
 #[test]
@@ -525,7 +551,8 @@ fn test_step_context_multiple_session_contexts() {
     ctx.thread("Thread 1");
     ctx.thread("Thread 2");
 
-    assert_eq!(ctx.session_context.len(), 2);
+    let inf = ctx.extensions.get::<InferenceContext>().unwrap();
+    assert_eq!(inf.session_context.len(), 2);
 }
 
 #[test]
@@ -537,7 +564,8 @@ fn test_step_context_multiple_reminders() {
     ctx.reminder("Reminder 2");
     ctx.reminder("Reminder 3");
 
-    assert_eq!(ctx.system_reminders.len(), 3);
+    let msg = ctx.extensions.get::<MessagingContext>().unwrap();
+    assert_eq!(msg.reminders.len(), 3);
 }
 
 #[test]
@@ -549,8 +577,8 @@ fn test_exclude_nonexistent_tool() {
 
     ctx.exclude("nonexistent_tool");
 
-    // Should not change anything
-    assert_eq!(ctx.tools.len(), original_len);
+    let inf = ctx.extensions.get::<InferenceContext>().unwrap();
+    assert_eq!(inf.tools.len(), original_len);
 }
 
 #[test]
@@ -561,8 +589,9 @@ fn test_exclude_multiple_tools() {
     ctx.exclude("read_file");
     ctx.exclude("delete_file");
 
-    assert_eq!(ctx.tools.len(), 1);
-    assert_eq!(ctx.tools[0].id, "write_file");
+    let inf = ctx.extensions.get::<InferenceContext>().unwrap();
+    assert_eq!(inf.tools.len(), 1);
+    assert_eq!(inf.tools[0].id, "write_file");
 }
 
 #[test]
@@ -572,7 +601,8 @@ fn test_include_only_empty_list() {
 
     ctx.include_only(&[]);
 
-    assert!(ctx.tools.is_empty());
+    let inf = ctx.extensions.get::<InferenceContext>().unwrap();
+    assert!(inf.tools.is_empty());
 }
 
 #[test]
@@ -582,8 +612,9 @@ fn test_include_only_with_nonexistent() {
 
     ctx.include_only(&["read_file", "nonexistent"]);
 
-    assert_eq!(ctx.tools.len(), 1);
-    assert_eq!(ctx.tools[0].id, "read_file");
+    let inf = ctx.extensions.get::<InferenceContext>().unwrap();
+    assert_eq!(inf.tools.len(), 1);
+    assert_eq!(inf.tools[0].id, "read_file");
 }
 
 #[test]
@@ -591,10 +622,8 @@ fn test_block_without_tool_context() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    // No tool context, block should not panic
     ctx.block("test");
-
-    assert!(!ctx.tool_blocked()); // tool_blocked returns false when no tool
+    assert!(!ctx.tool_blocked());
 }
 
 #[test]
@@ -605,7 +634,7 @@ fn test_pending_without_tool_context() {
     let interaction = Suspension::new("id", "confirm").with_message("test");
     ctx.suspend(test_suspend_ticket(interaction));
 
-    assert!(!ctx.tool_pending()); // tool_pending returns false when no tool
+    assert!(!ctx.tool_pending());
 }
 
 #[test]
@@ -614,9 +643,7 @@ fn test_confirm_without_pending() {
     let mut ctx = fix.step(vec![]);
 
     let call = ToolCall::new("call_1", "test", json!({}));
-    ctx.tool = Some(ToolContext::new(&call));
-
-    // Confirm without pending should not panic
+    set_tool_gate(&mut ctx, &call);
     ctx.allow();
 
     assert!(!ctx.tool_pending());
@@ -626,7 +653,6 @@ fn test_confirm_without_pending() {
 fn test_tool_args_without_tool() {
     let fix = TestFixture::new();
     let ctx = fix.step(vec![]);
-
     assert!(ctx.tool_args().is_none());
 }
 
@@ -634,7 +660,6 @@ fn test_tool_args_without_tool() {
 fn test_tool_name_without_tool() {
     let fix = TestFixture::new();
     let ctx = fix.step(vec![]);
-
     assert!(ctx.tool_name().is_none());
     assert!(ctx.tool_call_id().is_none());
     assert!(ctx.tool_idempotency_key().is_none());
@@ -644,7 +669,6 @@ fn test_tool_name_without_tool() {
 fn test_tool_result_without_tool() {
     let fix = TestFixture::new();
     let ctx = fix.step(vec![]);
-
     assert!(ctx.tool_result().is_none());
 }
 
@@ -653,13 +677,12 @@ fn test_step_result_with_tool_calls() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.response = Some(StreamResult {
+    ctx.extensions.insert(LLMResponse::new(StreamResult {
         text: "Calling tools".to_string(),
         tool_calls: vec![ToolCall::new("call_1", "test", json!({}))],
         usage: None,
-    });
+    }));
 
-    // With tool calls, should continue
     assert_eq!(ctx.result(), StepOutcome::Continue);
 }
 
@@ -668,38 +691,37 @@ fn test_step_result_empty_text_no_tools() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.response = Some(StreamResult {
+    ctx.extensions.insert(LLMResponse::new(StreamResult {
         text: String::new(),
         tool_calls: vec![],
         usage: None,
-    });
+    }));
 
-    // Empty text, no tool calls -> Continue (not Complete)
     assert_eq!(ctx.result(), StepOutcome::Continue);
 }
 
 #[test]
-fn test_tool_context_block_reason() {
+fn test_tool_gate_block_reason() {
     let call = ToolCall::new("call_1", "test", json!({}));
-    let mut tool_ctx = ToolContext::new(&call);
+    let mut gate = ToolGate::from_tool_call(&call);
 
-    assert!(tool_ctx.block_reason.is_none());
-    tool_ctx.block_reason = Some("Test reason".to_string());
-    assert_eq!(tool_ctx.block_reason, Some("Test reason".to_string()));
+    assert!(gate.block_reason.is_none());
+    gate.block_reason = Some("Test reason".to_string());
+    assert_eq!(gate.block_reason, Some("Test reason".to_string()));
 }
 
 #[test]
-fn test_tool_context_suspend_ticket() {
+fn test_tool_gate_suspend_ticket() {
     let call = ToolCall::new("call_1", "test", json!({}));
-    let mut tool_ctx = ToolContext::new(&call);
+    let mut gate = ToolGate::from_tool_call(&call);
 
-    assert!(tool_ctx.suspend_ticket.is_none());
+    assert!(gate.suspend_ticket.is_none());
 
     let interaction = Suspension::new("confirm_1", "confirm").with_message("Test?");
-    tool_ctx.suspend_ticket = Some(test_suspend_ticket(interaction.clone()));
+    gate.suspend_ticket = Some(test_suspend_ticket(interaction.clone()));
 
     assert_eq!(
-        tool_ctx.suspend_ticket.as_ref().unwrap().suspension.id,
+        gate.suspend_ticket.as_ref().unwrap().suspension.id,
         "confirm_1"
     );
 }
@@ -710,7 +732,7 @@ fn test_suspend_with_pending_direct() {
     let mut ctx = fix.step(vec![]);
 
     let call = ToolCall::new("call_copy", "copyToClipboard", json!({"text": "hello"}));
-    ctx.tool = Some(ToolContext::new(&call));
+    set_tool_gate(&mut ctx, &call);
     ctx.block("old deny state");
 
     let interaction = Suspension::new("call_copy", "tool:copyToClipboard")
@@ -723,12 +745,10 @@ fn test_suspend_with_pending_direct() {
 
     assert!(ctx.tool_pending());
     assert!(!ctx.tool_blocked());
-    assert!(ctx.tool.as_ref().unwrap().block_reason.is_none());
+    let gate = ctx.extensions.get::<ToolGate>().unwrap();
+    assert!(gate.block_reason.is_none());
 
-    let pending = ctx
-        .tool
-        .as_ref()
-        .unwrap()
+    let pending = gate
         .suspend_ticket
         .as_ref()
         .map(|ticket| {
@@ -753,7 +773,7 @@ fn test_suspend_with_pending_replay_tool_call() {
     let mut ctx = fix.step(vec![]);
 
     let call = ToolCall::new("call_write", "write_file", json!({"path": "a.txt"}));
-    ctx.tool = Some(ToolContext::new(&call));
+    set_tool_gate(&mut ctx, &call);
 
     let call_id = "fc_generated";
     let interaction = Suspension::new(call_id, "tool:PermissionConfirm")
@@ -769,17 +789,14 @@ fn test_suspend_with_pending_replay_tool_call() {
     ));
 
     assert!(ctx.tool_pending());
-    // ReplayOriginalTool should use a dedicated frontend call id.
     assert!(
         call_id.starts_with("fc_"),
         "expected generated ID, got: {call_id}"
     );
     assert_ne!(call_id, "call_write");
 
-    let pending = ctx
-        .tool
-        .as_ref()
-        .unwrap()
+    let gate = ctx.extensions.get::<ToolGate>().unwrap();
+    let pending = gate
         .suspend_ticket
         .as_ref()
         .map(|ticket| (&ticket.pending, ticket.resume_mode))
@@ -811,8 +828,11 @@ fn test_set_clear_session_context() {
 
     ctx.thread("Context 1");
     ctx.thread("Context 2");
-    ctx.session_context = vec!["Only this".to_string()];
+    ctx.extensions
+        .get_or_default::<InferenceContext>()
+        .session_context = vec!["Only this".to_string()];
 
-    assert_eq!(ctx.session_context.len(), 1);
-    assert_eq!(ctx.session_context[0], "Only this");
+    let inf = ctx.extensions.get::<InferenceContext>().unwrap();
+    assert_eq!(inf.session_context.len(), 1);
+    assert_eq!(inf.session_context[0], "Only this");
 }

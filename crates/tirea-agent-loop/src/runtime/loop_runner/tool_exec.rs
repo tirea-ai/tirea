@@ -3,7 +3,7 @@ use super::core::{
     ToolCallStateTransition,
 };
 use super::parallel_state_merge::merge_parallel_state_patches;
-use super::plugin_runtime::{emit_tool_phase, reduce_behavior_plugin_actions};
+use super::plugin_runtime::emit_tool_phase;
 use super::{
     Agent, AgentLoopError, BaseAgent, RunCancellationToken, TOOL_SCOPE_CALLER_MESSAGES_KEY,
     TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
@@ -12,7 +12,8 @@ use crate::contracts::runtime::plugin::agent::AgentBehavior;
 use crate::contracts::runtime::plugin::phase::{
     reduce_state_actions, AnyStateAction, CommutativeAction,
 };
-use crate::contracts::runtime::plugin::phase::{Phase, StepContext, ToolContext};
+use crate::contracts::runtime::plugin::phase::core::ext::{MessagingContext, ToolGate};
+use crate::contracts::runtime::plugin::phase::{Phase, StepContext};
 use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
 use crate::contracts::runtime::{
     ActivityManager, PendingToolCall, SuspendTicket, SuspendedCall, ToolCallResumeMode,
@@ -900,7 +901,7 @@ async fn execute_single_tool_with_phases_impl(
         phase_ctx.thread_messages,
         phase_ctx.tool_descriptors.to_vec(),
     );
-    step.tool = Some(ToolContext::new(call));
+    step.extensions.insert(ToolGate::from_tool_call(call));
     // Phase: BeforeToolExecute
     emit_tool_phase(
         Phase::BeforeToolExecute,
@@ -917,13 +918,12 @@ async fn execute_single_tool_with_phases_impl(
         outcome,
         suspended_call,
         tool_state_actions,
-        tool_plugin_actions,
         tool_user_messages,
     ) = if step.tool_blocked() {
         let reason = step
-            .tool
-            .as_ref()
-            .and_then(|t| t.block_reason.clone())
+            .extensions
+            .get::<ToolGate>()
+            .and_then(|g| g.block_reason.clone())
             .unwrap_or_else(|| "Blocked by plugin".to_string());
         (
             ToolExecution {
@@ -933,7 +933,6 @@ async fn execute_single_tool_with_phases_impl(
             },
             ToolCallOutcome::Failed,
             None,
-            Vec::new(),
             Vec::new(),
             Vec::new(),
         )
@@ -949,7 +948,6 @@ async fn execute_single_tool_with_phases_impl(
             None,
             Vec::new(),
             Vec::new(),
-            Vec::new(),
         )
     } else if tool.is_none() {
         (
@@ -960,7 +958,6 @@ async fn execute_single_tool_with_phases_impl(
             },
             ToolCallOutcome::Failed,
             None,
-            Vec::new(),
             Vec::new(),
             Vec::new(),
         )
@@ -976,10 +973,9 @@ async fn execute_single_tool_with_phases_impl(
             None,
             Vec::new(),
             Vec::new(),
-            Vec::new(),
         )
     } else if step.tool_pending() {
-        let Some(suspend_ticket) = step.tool.as_ref().and_then(|t| t.suspend_ticket.clone()) else {
+        let Some(suspend_ticket) = step.extensions.get::<ToolGate>().and_then(|g| g.suspend_ticket.clone()) else {
             return Err(AgentLoopError::StateError(
                 "tool is pending but suspend ticket is missing".to_string(),
             ));
@@ -995,7 +991,6 @@ async fn execute_single_tool_with_phases_impl(
             },
             ToolCallOutcome::Suspended,
             Some(SuspendedCall::new(call, suspend_ticket)),
-            Vec::new(),
             Vec::new(),
             Vec::new(),
         )
@@ -1030,7 +1025,7 @@ async fn execute_single_tool_with_phases_impl(
         if let Err(result) = merge_context_patch_into_effect(call, &mut effect, context_patch) {
             effect = ToolExecutionEffect::from(result);
         }
-        let (result, state_actions, plugin_actions, user_messages) = effect.into_parts();
+        let (result, state_actions, user_messages) = effect.into_parts();
         let outcome = ToolCallOutcome::from_tool_result(&result);
 
         let suspended_call = if matches!(outcome, ToolCallOutcome::Suspended) {
@@ -1048,7 +1043,6 @@ async fn execute_single_tool_with_phases_impl(
             outcome,
             suspended_call,
             state_actions,
-            plugin_actions,
             user_messages,
         )
     };
@@ -1057,7 +1051,9 @@ async fn execute_single_tool_with_phases_impl(
     step.set_tool_result(execution.result.clone());
 
     // Pre-populate user messages from tool effect so plugins see them in AfterToolExecute
-    step.user_messages = tool_user_messages;
+    step.extensions
+        .get_or_default::<MessagingContext>()
+        .user_messages = tool_user_messages;
 
     // Phase: AfterToolExecute
     emit_tool_phase(
@@ -1100,33 +1096,11 @@ async fn execute_single_tool_with_phases_impl(
     let (tool_commutative_actions, reducible_state_actions) =
         partition_tool_state_actions(tool_state_actions, defer_commutative_state_actions);
     commutative_state_actions.extend(tool_commutative_actions);
-    let mut execution_patch_parts = reduce_tool_state_actions(
+    let execution_patch_parts = reduce_tool_state_actions(
         state,
         reducible_state_actions,
         &format!("tool:{}", call.name),
     )?;
-    if !tool_plugin_actions.is_empty() {
-        let Some(behavior) = phase_ctx.agent_behavior else {
-            return Err(AgentLoopError::StateError(
-                "tool returned plugin actions but no agent behavior is configured".to_string(),
-            ));
-        };
-        let plugin_action_base = if let Some(tool_patch) =
-            merge_tracked_patches(&execution_patch_parts, &format!("tool:{}", call.name))
-        {
-            tirea_state::apply_patch(state, tool_patch.patch()).map_err(|e| {
-                AgentLoopError::StateError(format!(
-                    "failed to apply tool patch before plugin action reduce for call '{}': {}",
-                    call.id, e
-                ))
-            })?
-        } else {
-            state.clone()
-        };
-        let plugin_patches =
-            reduce_behavior_plugin_actions(behavior, &plugin_action_base, tool_plugin_actions)?;
-        execution_patch_parts.extend(plugin_patches);
-    }
     execution.patch = merge_tracked_patches(&execution_patch_parts, &format!("tool:{}", call.name));
 
     let phase_base_state = if let Some(tool_patch) = execution.patch.as_ref() {
@@ -1142,12 +1116,23 @@ async fn execute_single_tool_with_phases_impl(
     let pending_patches =
         reduce_tool_state_actions(&phase_base_state, phase_patch_actions.collect(), "agent")?;
 
+    let reminders = step
+        .extensions
+        .get::<MessagingContext>()
+        .map(|m| m.reminders.clone())
+        .unwrap_or_default();
+    let user_messages = step
+        .extensions
+        .get_mut::<MessagingContext>()
+        .map(|m| std::mem::take(&mut m.user_messages))
+        .unwrap_or_default();
+
     Ok(ToolExecutionResult {
         execution,
         outcome,
         suspended_call,
-        reminders: step.system_reminders.clone(),
-        user_messages: std::mem::take(&mut step.user_messages),
+        reminders,
+        user_messages,
         pending_patches,
         commutative_state_actions,
     })

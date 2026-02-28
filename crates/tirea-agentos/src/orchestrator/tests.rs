@@ -1,8 +1,10 @@
 use super::*;
 use crate::contracts::runtime::plugin::agent::ReadOnlyContext;
-use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
-use crate::contracts::runtime::plugin::phase::state_spec::{reduce_state_actions, AnyStateAction};
-use crate::contracts::runtime::plugin::phase::{AnyPluginAction, Phase};
+use crate::contracts::runtime::plugin::phase::action::Action;
+use crate::contracts::runtime::plugin::phase::core::actions::{
+    AddSystemContext, EmitStatePatch, RequestTermination,
+};
+use crate::contracts::runtime::plugin::phase::state_spec::AnyStateAction;
 use crate::contracts::runtime::tool_call::ToolDescriptor;
 use crate::contracts::runtime::tool_call::{ToolError, ToolResult};
 use crate::contracts::storage::{ThreadReader, ThreadWriter};
@@ -26,7 +28,6 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tirea_contract::testing::TestFixture;
 use tirea_contract::TerminationReason;
-use tirea_state::TrackedPatch;
 
 fn decision_for(
     target_id: &str,
@@ -223,54 +224,16 @@ impl AgentBehavior for TerminateWithRunEndPatchPlugin {
         "terminate_with_run_end_patch"
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-        PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        vec![Box::new(RequestTermination(
+            TerminationReason::BehaviorRequested,
+        ))]
     }
 
-    async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-        PhaseOutput::default()
-    }
-
-    async fn phase_actions(
-        &self,
-        phase: Phase,
-        _ctx: &ReadOnlyContext<'_>,
-    ) -> Vec<AnyPluginAction> {
-        if phase == Phase::RunEnd {
-            vec![AnyPluginAction::new(self.id(), true)]
-        } else {
-            Vec::new()
-        }
-    }
-
-    fn reduce_plugin_actions(
-        &self,
-        actions: Vec<AnyPluginAction>,
-        base_snapshot: &serde_json::Value,
-    ) -> Result<Vec<TrackedPatch>, String> {
-        let mut state_actions = Vec::new();
-        for action in actions {
-            if action.plugin_id() != self.id() {
-                return Err(format!(
-                    "run-end marker plugin received action for unexpected plugin '{}'",
-                    action.plugin_id()
-                ));
-            }
-            let enabled = action.downcast::<bool>().map_err(|other| {
-                format!(
-                    "run-end marker plugin failed to downcast action '{}'",
-                    other.action_type_name()
-                )
-            })?;
-            state_actions.push(AnyStateAction::new::<RunEndMarkerState>(enabled));
-        }
-
-        reduce_state_actions(
-            state_actions,
-            base_snapshot,
-            "plugin:terminate_with_run_end_patch",
-        )
-        .map_err(|e| e.to_string())
+    async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        vec![Box::new(EmitStatePatch(
+            AnyStateAction::new::<RunEndMarkerState>(true),
+        ))]
     }
 }
 
@@ -319,21 +282,17 @@ async fn wire_skills_inserts_tools_and_plugin() {
         &run_config,
         &doc,
     );
-    let output = cfg.behavior.before_inference(&ctx).await;
-    let merged: String = output
-        .effects
-        .iter()
-        .filter_map(|e| {
-            if let crate::contracts::runtime::plugin::phase::effect::PhaseEffect::SystemContext(s) =
-                e
-            {
-                Some(s.as_str())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let actions = cfg.behavior.before_inference(&ctx).await;
+    let apply_fixture = TestFixture::new();
+    let mut apply_step = apply_fixture.step(vec![]);
+    for action in actions {
+        action.apply(&mut apply_step);
+    }
+    let inf = apply_step
+        .extensions
+        .get::<tirea_contract::runtime::plugin::phase::core::ext::InferenceContext>()
+        .unwrap();
+    let merged: String = inf.system_context.join("\n");
     assert!(merged.contains("<available_skills>"));
     assert!(
         !merged.contains("<skill_instructions skill=\"s1\">"),
@@ -381,21 +340,18 @@ async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
         &run_config,
         &doc,
     );
-    let output = cfg.behavior.before_inference(&ctx).await;
-    let merged: String = output
-        .effects
-        .iter()
-        .filter_map(|e| {
-            if let crate::contracts::runtime::plugin::phase::effect::PhaseEffect::SystemContext(s) =
-                e
-            {
-                Some(s.as_str())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let actions = cfg.behavior.before_inference(&ctx).await;
+    let apply_fixture = TestFixture::new();
+    let mut apply_step = apply_fixture.step(vec![]);
+    for action in actions {
+        action.apply(&mut apply_step);
+    }
+    let inf = apply_step
+        .extensions
+        .get::<tirea_contract::runtime::plugin::phase::core::ext::InferenceContext>();
+    let merged: String = inf
+        .map(|i| i.system_context.join("\n"))
+        .unwrap_or_default();
     assert!(!merged.contains("<available_skills>"));
     assert!(
         !merged.contains("<skill_instructions skill=\"s1\">"),
@@ -1046,8 +1002,10 @@ async fn run_and_run_stream_work_without_llm_when_terminate_behavior_requested()
             "terminate_behavior_requested"
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+            vec![Box::new(RequestTermination(
+                TerminationReason::BehaviorRequested,
+            ))]
         }
     }
 
@@ -1401,8 +1359,11 @@ impl AgentBehavior for TestPlugin {
         self.0
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-        PhaseOutput::default().system_context(format!("<plugin id=\"{}\"/>", self.0))
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        vec![Box::new(AddSystemContext(format!(
+            "<plugin id=\"{}\"/>",
+            self.0
+        )))]
     }
 }
 
@@ -1434,21 +1395,17 @@ async fn resolve_wires_plugins_from_registry() {
         &run_config,
         &doc,
     );
-    let output = resolved.agent.behavior.before_inference(&ctx).await;
-    let system_contexts: Vec<&str> = output
-        .effects
-        .iter()
-        .filter_map(|e| {
-            if let crate::contracts::runtime::plugin::phase::effect::PhaseEffect::SystemContext(s) =
-                e
-            {
-                Some(s.as_str())
-            } else {
-                None
-            }
-        })
-        .collect();
-    assert!(system_contexts.iter().any(|s| s.contains("p1")));
+    let actions = resolved.agent.behavior.before_inference(&ctx).await;
+    let apply_fixture = TestFixture::new();
+    let mut apply_step = apply_fixture.step(vec![]);
+    for action in actions {
+        action.apply(&mut apply_step);
+    }
+    let inf = apply_step
+        .extensions
+        .get::<tirea_contract::runtime::plugin::phase::core::ext::InferenceContext>()
+        .unwrap();
+    assert!(inf.system_context.iter().any(|s| s.contains("p1")));
 }
 
 #[tokio::test]
@@ -1631,8 +1588,10 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
         fn id(&self) -> &str {
             "terminate_behavior_requested"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+            vec![Box::new(RequestTermination(
+                TerminationReason::BehaviorRequested,
+            ))]
         }
     }
 
@@ -1695,8 +1654,10 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
         fn id(&self) -> &str {
             "terminate_behavior_requested"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+            vec![Box::new(RequestTermination(
+                TerminationReason::BehaviorRequested,
+            ))]
         }
     }
 
@@ -1749,8 +1710,10 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
         fn id(&self) -> &str {
             "terminate_behavior_requested"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+            vec![Box::new(RequestTermination(
+                TerminationReason::BehaviorRequested,
+            ))]
         }
     }
 
@@ -1806,8 +1769,10 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
         fn id(&self) -> &str {
             "terminate_behavior_requested"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+            vec![Box::new(RequestTermination(
+                TerminationReason::BehaviorRequested,
+            ))]
         }
     }
 
@@ -1879,8 +1844,10 @@ async fn execute_prepared_runs_stream() {
         fn id(&self) -> &str {
             "terminate_behavior_requested"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+            vec![Box::new(RequestTermination(
+                TerminationReason::BehaviorRequested,
+            ))]
         }
     }
 
@@ -1941,8 +1908,10 @@ impl AgentBehavior for DecisionTerminatePlugin {
         "decision_terminate_behavior_requested"
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-        PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        vec![Box::new(RequestTermination(
+            TerminationReason::BehaviorRequested,
+        ))]
     }
 }
 

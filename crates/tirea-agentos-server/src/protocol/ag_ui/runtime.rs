@@ -13,7 +13,10 @@ use tirea_agentos::runtime::loop_runner::{
     BaseAgent, ParallelToolExecutor, ResolvedRun, SequentialToolExecutor,
 };
 use tirea_contract::runtime::plugin::agent::ReadOnlyContext;
-use tirea_contract::runtime::plugin::phase::effect::PhaseOutput;
+use tirea_contract::runtime::plugin::phase::action::Action;
+use tirea_contract::runtime::plugin::phase::core::actions::{
+    AddSystemContext, AllowTool, OverrideToolResult, SuspendTool,
+};
 use tirea_contract::runtime::plugin::phase::SuspendTicket;
 use tirea_contract::runtime::plugin::AgentBehavior;
 use tirea_contract::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
@@ -219,8 +222,8 @@ impl AgentBehavior for ContextInjectionPlugin {
         "agui_context_injection"
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-        PhaseOutput::default().system_context(&self.addendum)
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        vec![Box::new(AddSystemContext(self.addendum.clone()))]
     }
 }
 
@@ -241,12 +244,12 @@ impl AgentBehavior for FrontendToolPendingPlugin {
         "agui_frontend_tools"
     }
 
-    async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+    async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
         let Some(tool_name) = ctx.tool_name() else {
-            return PhaseOutput::default();
+            return vec![];
         };
         if !self.frontend_tools.contains(tool_name) {
-            return PhaseOutput::default();
+            return vec![];
         }
 
         if let Some(resume) = ctx.resume_input() {
@@ -263,22 +266,23 @@ impl AgentBehavior for FrontendToolPendingPlugin {
                         .unwrap_or_else(|| "User denied the action".to_string()),
                 ),
             };
-            return PhaseOutput::default()
-                .override_tool_result(result)
-                .allow_tool();
+            return vec![
+                Box::new(OverrideToolResult(result)),
+                Box::new(AllowTool),
+            ];
         }
         let Some(call_id) = ctx.tool_call_id().map(str::to_string) else {
-            return PhaseOutput::default();
+            return vec![];
         };
 
         let args = ctx.tool_args().cloned().unwrap_or_default();
         let suspension = tirea_contract::Suspension::new(&call_id, format!("tool:{tool_name}"))
             .with_parameters(args.clone());
-        PhaseOutput::default().suspend_tool(SuspendTicket::new(
+        vec![Box::new(SuspendTool(SuspendTicket::new(
             suspension,
             PendingToolCall::new(call_id, tool_name.to_string(), args),
             ToolCallResumeMode::UseDecisionAsToolResult,
-        ))
+        )))]
     }
 }
 
@@ -290,8 +294,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use tirea_agentos::runtime::loop_runner::BaseAgent;
-    use tirea_contract::runtime::plugin::phase::effect::PhaseEffect;
-    use tirea_contract::runtime::plugin::phase::{Phase, StepContext, ToolContext};
+    use tirea_contract::runtime::plugin::phase::{Phase, StepContext, ToolGate};
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::ToolCall;
     use tirea_protocol_ag_ui::{Context, Message, ToolExecutionLocation};
@@ -312,9 +315,9 @@ mod tests {
             step.run_config(),
             step.ctx().doc(),
         );
-        if let Some(tool) = step.tool.as_ref() {
-            ctx = ctx.with_tool_info(&tool.name, &tool.id, Some(&tool.args));
-            if let Some(result) = tool.result.as_ref() {
+        if let Some(gate) = step.extensions.get::<ToolGate>() {
+            ctx = ctx.with_tool_info(&gate.name, &gate.id, Some(&gate.args));
+            if let Some(result) = gate.result.as_ref() {
                 ctx = ctx.with_tool_result(result);
             }
         }
@@ -527,28 +530,23 @@ mod tests {
         let fixture = TestFixture::new();
         let mut step = fixture.step(vec![]);
         let call = ToolCall::new("call_1", "copyToClipboard", json!({"text":"hello"}));
-        step.tool = Some(ToolContext::new(&call));
+        step.extensions.insert(ToolGate::from_tool_call(&call));
 
         let ctx = build_read_only_ctx(Phase::BeforeToolExecute, &step);
-        let output = plugin.before_tool_execute(&ctx).await;
+        let actions = plugin.before_tool_execute(&ctx).await;
+        tirea_contract::testing::apply_actions_for_test(Phase::BeforeToolExecute, &mut step, actions).unwrap();
 
-        // Should contain a SuspendTool effect
-        let suspend_effect = output
-            .effects
-            .iter()
-            .find(|e| matches!(e, PhaseEffect::SuspendTool(_)));
-        assert!(suspend_effect.is_some(), "should have SuspendTool effect");
-
-        if let Some(PhaseEffect::SuspendTool(ticket)) = suspend_effect {
-            assert_eq!(ticket.suspension.action, "tool:copyToClipboard");
-            assert_eq!(ticket.pending.id, "call_1");
-            assert_eq!(ticket.pending.name, "copyToClipboard");
-            assert_eq!(ticket.pending.arguments["text"], "hello");
-            assert_eq!(
-                ticket.resume_mode,
-                tirea_contract::runtime::ToolCallResumeMode::UseDecisionAsToolResult
-            );
-        }
+        let gate = step.extensions.get::<ToolGate>().expect("ToolGate should exist");
+        assert!(gate.pending, "should be pending (suspended)");
+        let ticket = gate.suspend_ticket.as_ref().expect("should have SuspendTool ticket");
+        assert_eq!(ticket.suspension.action, "tool:copyToClipboard");
+        assert_eq!(ticket.pending.id, "call_1");
+        assert_eq!(ticket.pending.name, "copyToClipboard");
+        assert_eq!(ticket.pending.arguments["text"], "hello");
+        assert_eq!(
+            ticket.resume_mode,
+            tirea_contract::runtime::ToolCallResumeMode::UseDecisionAsToolResult
+        );
     }
 
     #[tokio::test]
@@ -578,34 +576,22 @@ mod tests {
         }));
         let mut step = fixture.step(vec![]);
         let call = ToolCall::new("call_1", "copyToClipboard", json!({"text":"hello"}));
-        step.tool = Some(ToolContext::new(&call));
+        step.extensions.insert(ToolGate::from_tool_call(&call));
 
         let ctx = build_read_only_ctx(Phase::BeforeToolExecute, &step);
-        let output = plugin.before_tool_execute(&ctx).await;
+        let actions = plugin.before_tool_execute(&ctx).await;
+        tirea_contract::testing::apply_actions_for_test(Phase::BeforeToolExecute, &mut step, actions).unwrap();
 
-        // Should have OverrideToolResult + AllowTool
-        let override_effect = output.effects.iter().find_map(|e| {
-            if let PhaseEffect::OverrideToolResult(result) = e {
-                Some(result)
-            } else {
-                None
-            }
-        });
-        assert!(
-            override_effect.is_some(),
-            "resume should produce OverrideToolResult"
-        );
-        let result = override_effect.unwrap();
+        let gate = step.extensions.get::<ToolGate>().expect("ToolGate should exist");
+        assert!(!gate.blocked, "should not be blocked");
+        assert!(!gate.pending, "should not be pending");
+        let result = gate.result.as_ref().expect("resume should produce OverrideToolResult");
         assert_eq!(result.tool_name, "copyToClipboard");
         assert_eq!(
             result.status,
             tirea_contract::runtime::tool_call::ToolStatus::Success
         );
         assert_eq!(result.data, json!({"accepted": true}));
-        assert!(output
-            .effects
-            .iter()
-            .any(|e| matches!(e, PhaseEffect::AllowTool)));
     }
 
     #[tokio::test]
@@ -636,32 +622,21 @@ mod tests {
         }));
         let mut step = fixture.step(vec![]);
         let call = ToolCall::new("call_1", "copyToClipboard", json!({"text":"hello"}));
-        step.tool = Some(ToolContext::new(&call));
+        step.extensions.insert(ToolGate::from_tool_call(&call));
 
         let ctx = build_read_only_ctx(Phase::BeforeToolExecute, &step);
-        let output = plugin.before_tool_execute(&ctx).await;
+        let actions = plugin.before_tool_execute(&ctx).await;
+        tirea_contract::testing::apply_actions_for_test(Phase::BeforeToolExecute, &mut step, actions).unwrap();
 
-        let override_effect = output.effects.iter().find_map(|e| {
-            if let PhaseEffect::OverrideToolResult(result) = e {
-                Some(result)
-            } else {
-                None
-            }
-        });
-        assert!(
-            override_effect.is_some(),
-            "cancel should produce OverrideToolResult"
-        );
-        let result = override_effect.unwrap();
+        let gate = step.extensions.get::<ToolGate>().expect("ToolGate should exist");
+        assert!(!gate.blocked, "should not be blocked");
+        assert!(!gate.pending, "should not be pending");
+        let result = gate.result.as_ref().expect("cancel should produce OverrideToolResult");
         assert_eq!(
             result.status,
             tirea_contract::runtime::tool_call::ToolStatus::Error
         );
         assert_eq!(result.message.as_deref(), Some("user denied"));
-        assert!(output
-            .effects
-            .iter()
-            .any(|e| matches!(e, PhaseEffect::AllowTool)));
     }
 
     #[test]
@@ -716,24 +691,15 @@ mod tests {
         let behavior = &resolved.agent.behavior;
 
         let fixture = TestFixture::new();
-        let step = fixture.step(vec![]);
+        let mut step = fixture.step(vec![]);
         let ctx = build_read_only_ctx(Phase::BeforeInference, &step);
 
-        let output = behavior.before_inference(&ctx).await;
+        let actions = behavior.before_inference(&ctx).await;
+        tirea_contract::testing::apply_actions_for_test(Phase::BeforeInference, &mut step, actions).unwrap();
 
-        let system_contexts: Vec<&str> = output
-            .effects
-            .iter()
-            .filter_map(|e| {
-                if let PhaseEffect::SystemContext(s) = e {
-                    Some(s.as_str())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        assert!(!system_contexts.is_empty());
-        let merged = system_contexts.join("\n");
+        let inf = step.extensions.get::<tirea_contract::runtime::plugin::phase::core::ext::InferenceContext>().unwrap();
+        assert!(!inf.system_context.is_empty());
+        let merged = inf.system_context.join("\n");
         assert!(
             merged.contains("Task list"),
             "should contain context description"

@@ -4,9 +4,11 @@ use axum::http::{Request, StatusCode};
 use serde_json::{json, Value};
 use std::time::Duration;
 use tirea_agentos::contracts::runtime::plugin::agent::ReadOnlyContext;
-use tirea_agentos::contracts::runtime::plugin::phase::effect::PhaseOutput;
+use tirea_agentos::contracts::runtime::plugin::phase::action::Action;
+use tirea_agentos::contracts::runtime::plugin::phase::core::actions::RequestTermination;
 use tirea_agentos::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_agentos::contracts::AgentBehavior;
+use tirea_agentos::contracts::TerminationReason;
 use tirea_agentos::contracts::ToolCallContext;
 use tirea_agentos_server::service::AppState;
 use tirea_agentos_server::{http, protocol};
@@ -31,8 +33,8 @@ impl AgentBehavior for TerminatePlugin {
         &self.id
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-        PhaseOutput::default().terminate_behavior_requested()
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
     }
 }
 
@@ -57,9 +59,9 @@ impl AgentBehavior for SlowTerminatePlugin {
         &self.id
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
         tokio::time::sleep(self.delay).await;
-        PhaseOutput::default().terminate_behavior_requested()
+        vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
     }
 }
 

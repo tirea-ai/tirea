@@ -3,14 +3,12 @@
 //! This module provides the core types for the plugin phase system:
 //! - `Phase`: Execution phases in the agent loop
 //! - `StepContext`: Mutable context passed through all phases
-//! - `ToolContext`: Tool-call state carried by `StepContext`
+//! - `ToolGate`: Tool-call gate state in the Extensions type map
 
 pub mod action;
 pub mod core;
 mod contexts;
-pub mod effect;
 mod extensions;
-mod plugin_action;
 pub mod state_spec;
 mod step;
 mod types;
@@ -24,11 +22,10 @@ pub use contexts::{
     BeforeToolExecuteContext, PhaseContext, RunEndContext, RunStartContext, StepEndContext,
     StepStartContext,
 };
-pub use effect::{validate_effect, PhaseEffect, PhaseOutput};
+pub use core::ext::ToolGate;
 pub use extensions::Extensions;
-pub use plugin_action::AnyPluginAction;
 pub use state_spec::{
     reduce_state_actions, AnyStateAction, CommutativeAction, StateScope, StateSpec,
 };
-pub use step::{StepContext, ToolContext};
+pub use step::StepContext;
 pub use types::{Phase, PhasePolicy, RunAction, StepOutcome, SuspendTicket, ToolCallAction};
