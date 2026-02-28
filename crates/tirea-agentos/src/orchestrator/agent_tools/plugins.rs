@@ -13,7 +13,6 @@ impl AgentRecoveryPlugin {
     pub fn new(manager: Arc<AgentRunManager>) -> Self {
         Self { manager }
     }
-
 }
 
 #[async_trait]
@@ -136,9 +135,7 @@ impl AgentBehavior for AgentRecoveryPlugin {
             ToolPermissionBehavior::Ask => {
                 let interaction = build_recovery_interaction(&run_id, run);
                 let suspended_call = make_suspended_call(&interaction);
-                output = output.with_state_action(AnyStateAction::new::<
-                    SuspendedToolCallsState,
-                >(
+                output = output.with_state_action(AnyStateAction::new::<SuspendedToolCallsState>(
                     SuspendedToolCallsAction::InsertCall {
                         call: suspended_call,
                     },
@@ -235,10 +232,7 @@ impl AgentToolsPlugin {
     }
 
     async fn render_reminder(&self, thread_id: &str) -> Option<String> {
-        let runs = self
-            .manager
-            .running_or_stopped_for_owner(thread_id)
-            .await;
+        let runs = self.manager.running_or_stopped_for_owner(thread_id).await;
         if runs.is_empty() {
             return None;
         }
@@ -274,7 +268,6 @@ impl AgentToolsPlugin {
         }
         Some(s)
     }
-
 }
 
 #[async_trait]

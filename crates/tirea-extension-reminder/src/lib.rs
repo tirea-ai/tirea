@@ -175,8 +175,8 @@ impl AgentBehavior for ReminderPlugin {
 mod tests {
     use super::*;
     use serde_json::json;
-    use tirea_contract::runtime::plugin::phase::Phase;
     use tirea_contract::runtime::plugin::phase::effect::PhaseEffect;
+    use tirea_contract::runtime::plugin::phase::Phase;
     use tirea_contract::testing::TestFixture;
     use tirea_contract::RunConfig;
     use tirea_state::DocCell;
@@ -319,9 +319,7 @@ mod tests {
     async fn test_reminder_plugin_generates_clear_action() {
         let plugin = ReminderPlugin::new(); // clear_after_llm_request = true
         let config = RunConfig::new();
-        let doc = DocCell::new(
-            json!({ "reminders": { "items": ["Reminder A", "Reminder B"] } }),
-        );
+        let doc = DocCell::new(json!({ "reminders": { "items": ["Reminder A", "Reminder B"] } }));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
         let output = AgentBehavior::before_inference(&plugin, &ctx).await;
         let contexts = extract_session_contexts(&output);

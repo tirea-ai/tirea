@@ -3,6 +3,5 @@
 pub use crate::contracts::io::ResumeDecisionAction;
 pub use crate::contracts::runtime::run::{InferenceError, InferenceErrorState};
 pub use crate::contracts::runtime::tool_call::{
-    SuspendedToolCallsState, ToolCallState, ToolCallStatesMap, ToolCallResume,
-    ToolCallStatus,
+    SuspendedToolCallsState, ToolCallResume, ToolCallState, ToolCallStatesMap, ToolCallStatus,
 };

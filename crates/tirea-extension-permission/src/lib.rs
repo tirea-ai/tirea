@@ -32,8 +32,8 @@ use tirea_contract::io::ResumeDecisionAction;
 use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
 use tirea_contract::runtime::plugin::phase::effect::PhaseOutput;
 use tirea_contract::runtime::plugin::phase::SuspendTicket;
-use tirea_contract::runtime::{PendingToolCall, ToolCallResumeMode};
 use tirea_contract::runtime::tool_call::ToolCallContext;
+use tirea_contract::runtime::{PendingToolCall, ToolCallResumeMode};
 use tirea_state::State;
 
 /// Tool permission behavior.
@@ -154,7 +154,9 @@ impl AgentBehavior for PermissionPlugin {
         // default_behavior field. If default_behavior is also invalid, fall
         // back to Ask (the Default).
         let snapshot = ctx.snapshot();
-        let perms = snapshot.get("permissions").unwrap_or(&serde_json::Value::Null);
+        let perms = snapshot
+            .get("permissions")
+            .unwrap_or(&serde_json::Value::Null);
 
         let tool_permission = perms
             .get("tools")
@@ -254,8 +256,8 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tirea_contract::io::ResumeDecisionAction;
-    use tirea_contract::runtime::plugin::phase::Phase;
     use tirea_contract::runtime::plugin::phase::effect::PhaseEffect;
+    use tirea_contract::runtime::plugin::phase::Phase;
     use tirea_contract::runtime::tool_call::ToolCallResume;
     use tirea_contract::testing::TestFixture;
     use tirea_contract::RunConfig;
@@ -448,9 +450,8 @@ mod tests {
     #[tokio::test]
     async fn test_permission_plugin_allow() {
         let config = RunConfig::new();
-        let doc = DocCell::new(
-            json!({ "permissions": { "default_behavior": "allow", "tools": {} } }),
-        );
+        let doc =
+            DocCell::new(json!({ "permissions": { "default_behavior": "allow", "tools": {} } }));
         let args = json!({});
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("any_tool", "call_1", Some(&args));
@@ -463,9 +464,8 @@ mod tests {
     #[tokio::test]
     async fn test_permission_plugin_deny() {
         let config = RunConfig::new();
-        let doc = DocCell::new(
-            json!({ "permissions": { "default_behavior": "deny", "tools": {} } }),
-        );
+        let doc =
+            DocCell::new(json!({ "permissions": { "default_behavior": "deny", "tools": {} } }));
         let args = json!({});
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("any_tool", "call_1", Some(&args));
@@ -477,9 +477,8 @@ mod tests {
     #[tokio::test]
     async fn test_permission_plugin_ask() {
         let config = RunConfig::new();
-        let doc = DocCell::new(
-            json!({ "permissions": { "default_behavior": "ask", "tools": {} } }),
-        );
+        let doc =
+            DocCell::new(json!({ "permissions": { "default_behavior": "ask", "tools": {} } }));
         let args = json!({"path": "a.txt"});
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("test_tool", "call_1", Some(&args));
@@ -502,9 +501,8 @@ mod tests {
     #[tokio::test]
     async fn test_permission_plugin_ask_with_empty_call_id_blocks() {
         let config = RunConfig::new();
-        let doc = DocCell::new(
-            json!({ "permissions": { "default_behavior": "ask", "tools": {} } }),
-        );
+        let doc =
+            DocCell::new(json!({ "permissions": { "default_behavior": "ask", "tools": {} } }));
         let args = json!({"path": "a.txt"});
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("test_tool", "", Some(&args));
@@ -675,9 +673,7 @@ mod tests {
     #[tokio::test]
     async fn test_permission_plugin_default_behavior_is_number() {
         let config = RunConfig::new();
-        let doc = DocCell::new(
-            json!({ "permissions": { "default_behavior": 42, "tools": {} } }),
-        );
+        let doc = DocCell::new(json!({ "permissions": { "default_behavior": 42, "tools": {} } }));
         let args = json!({});
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("any_tool", "call_1", Some(&args));
@@ -801,7 +797,7 @@ mod tests {
         };
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)
             .with_tool_info("test_tool", "call_1", Some(&args))
-            .with_resume_input(&resume);
+            .with_resume_input(resume);
 
         let output = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
         assert!(

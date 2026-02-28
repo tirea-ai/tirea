@@ -5,9 +5,9 @@ use std::fs;
 use std::io::Write;
 use std::sync::Arc;
 use tempfile::TempDir;
+use tirea_agent_loop::contracts::runtime::tool_call::{Tool, ToolResult};
 use tirea_agent_loop::contracts::thread::Thread;
 use tirea_agent_loop::contracts::thread::{Message, ToolCall};
-use tirea_agent_loop::contracts::runtime::tool_call::{Tool, ToolResult};
 use tirea_agent_loop::engine::tool_execution::{
     execute_single_tool, execute_single_tool_with_scope,
 };

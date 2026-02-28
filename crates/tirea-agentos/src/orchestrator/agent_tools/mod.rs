@@ -1,7 +1,7 @@
 use super::policy::{is_scope_allowed, SCOPE_ALLOWED_AGENTS_KEY, SCOPE_EXCLUDED_AGENTS_KEY};
 use super::{AgentOs, AgentRegistry};
-use crate::contracts::thread::{Message, Role, ToolCall};
 use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
+use crate::contracts::thread::{Message, Role, ToolCall};
 use crate::contracts::{AgentEvent, Suspension};
 use crate::extensions::permission::ToolPermissionBehavior;
 pub(super) use crate::runtime::loop_runner::TOOL_SCOPE_CALLER_AGENT_ID_KEY as SCOPE_CALLER_AGENT_ID_KEY;

@@ -1,7 +1,7 @@
 //! Pure functions for converting between tirea and genai types.
 
-use crate::contracts::thread::{Message, Role, ToolCall};
 use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
+use crate::contracts::thread::{Message, Role, ToolCall};
 use genai::chat::{ChatMessage, ChatRequest, MessageContent, ToolResponse};
 
 /// Convert a ToolDescriptor to a genai Tool.

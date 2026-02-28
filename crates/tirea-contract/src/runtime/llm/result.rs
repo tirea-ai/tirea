@@ -1,5 +1,5 @@
-use crate::thread::ToolCall;
 pub use crate::runtime::tool_call::{ToolResult, ToolStatus};
+use crate::thread::ToolCall;
 use serde::{Deserialize, Serialize};
 
 /// Provider-neutral token usage.

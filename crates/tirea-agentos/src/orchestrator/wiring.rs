@@ -168,7 +168,10 @@ impl AgentOs {
         Ok(())
     }
 
-    fn build_skills_plugins(&self, registry: Arc<dyn SkillRegistry>) -> Vec<Arc<dyn AgentBehavior>> {
+    fn build_skills_plugins(
+        &self,
+        registry: Arc<dyn SkillRegistry>,
+    ) -> Vec<Arc<dyn AgentBehavior>> {
         match self.skills_config.mode {
             SkillsMode::Disabled => Vec::new(),
             SkillsMode::DiscoveryAndRuntime => {
@@ -270,7 +273,8 @@ impl AgentOs {
                 .with_behavior(Arc::new(tools_plugin)),
         );
         let recovery_bundle: Arc<dyn RegistryBundle> = Arc::new(
-            ToolBehaviorBundle::new(AGENT_RECOVERY_PLUGIN_ID).with_behavior(Arc::new(recovery_plugin)),
+            ToolBehaviorBundle::new(AGENT_RECOVERY_PLUGIN_ID)
+                .with_behavior(Arc::new(recovery_plugin)),
         );
 
         Ok(vec![tools_bundle, recovery_bundle])

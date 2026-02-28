@@ -7,8 +7,8 @@ use std::sync::Arc;
 use crate::contracts::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
 use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
 use crate::contracts::runtime::plugin::phase::state_spec::{AnyStateAction, StateSpec};
-use crate::contracts::runtime::StreamResult;
 use crate::contracts::runtime::tool_call::ToolResult;
+use crate::contracts::runtime::StreamResult;
 use crate::contracts::thread::{Message, Role, ToolCall};
 use crate::contracts::{RunContext, StoppedReason, TerminationReason};
 use tirea_state::State;
@@ -344,10 +344,12 @@ impl AgentBehavior for StopPolicyPlugin {
             .unwrap_or_default();
         let started_at_ms = runtime.started_at_ms.unwrap_or(now_ms);
         let total_input_tokens = runtime.total_input_tokens.saturating_add(prompt_tokens);
-        let total_output_tokens = runtime.total_output_tokens.saturating_add(completion_tokens);
+        let total_output_tokens = runtime
+            .total_output_tokens
+            .saturating_add(completion_tokens);
 
-        let mut output = PhaseOutput::new().with_state_action(
-            AnyStateAction::new::<StopPolicyRuntimeState>(
+        let mut output =
+            PhaseOutput::new().with_state_action(AnyStateAction::new::<StopPolicyRuntimeState>(
                 StopPolicyRuntimeAction::RecordTokens {
                     started_at_ms: if runtime.started_at_ms.is_none() {
                         Some(now_ms)
@@ -357,8 +359,7 @@ impl AgentBehavior for StopPolicyPlugin {
                     prompt_tokens,
                     completion_tokens,
                 },
-            ),
-        );
+            ));
 
         let message_stats = derive_stats_from_messages_with_response(ctx.messages(), response);
         let elapsed = std::time::Duration::from_millis(now_ms.saturating_sub(started_at_ms));

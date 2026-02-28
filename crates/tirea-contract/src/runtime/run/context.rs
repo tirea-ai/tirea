@@ -1,8 +1,8 @@
 use crate::runtime::activity::ActivityManager;
 use crate::runtime::run::delta::RunDelta;
+use crate::runtime::tool_call::ToolCallContext;
 use crate::runtime::tool_call::{suspended_calls_from_state, SuspendedCall};
 use crate::thread::Message;
-use crate::runtime::tool_call::ToolCallContext;
 use crate::RunConfig;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};

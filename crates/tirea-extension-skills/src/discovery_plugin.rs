@@ -155,8 +155,8 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use tempfile::TempDir;
-    use tirea_contract::runtime::plugin::phase::Phase;
     use tirea_contract::runtime::plugin::phase::effect::PhaseEffect;
+    use tirea_contract::runtime::plugin::phase::Phase;
     use tirea_contract::RunConfig;
     use tirea_state::DocCell;
 
@@ -352,7 +352,9 @@ mod tests {
         let (_td, skills) = make_skills();
         let p = SkillDiscoveryPlugin::new(make_registry(skills));
         let mut config = RunConfig::new();
-        config.set(SCOPE_ALLOWED_SKILLS_KEY, vec!["a-skill"]).unwrap();
+        config
+            .set(SCOPE_ALLOWED_SKILLS_KEY, vec!["a-skill"])
+            .unwrap();
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
         let output = AgentBehavior::before_inference(&p, &ctx).await;

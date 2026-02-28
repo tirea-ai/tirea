@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tirea_agentos::orchestrator::AgentDefinition;
 use tirea_agentos::orchestrator::AgentOs;
-use tirea_contract::thread::Message;
 use tirea_contract::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
+use tirea_contract::thread::Message;
 use tirea_contract::ToolCallContext;
 use tirea_contract::{AgentEvent, RunRequest};
 

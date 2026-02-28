@@ -136,10 +136,10 @@ mod tests {
     use tempfile::TempDir;
     use tirea_contract::runtime::plugin::agent::ReadOnlyContext;
     use tirea_contract::runtime::plugin::phase::Phase;
+    use tirea_contract::runtime::tool_call::{ToolDescriptor, ToolError, ToolResult};
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::Thread;
     use tirea_contract::thread::{Message, ToolCall};
-    use tirea_contract::runtime::tool_call::{ToolDescriptor, ToolError, ToolResult};
     use tirea_state::TrackedPatch;
 
     fn make_registry(skills: Vec<Arc<dyn Skill>>) -> Arc<dyn SkillRegistry> {
@@ -184,15 +184,22 @@ mod tests {
     #[async_trait]
     impl Tool for DummyTool {
         fn descriptor(&self) -> tirea_contract::runtime::tool_call::ToolDescriptor {
-            tirea_contract::runtime::tool_call::ToolDescriptor::new(SKILL_ACTIVATE_TOOL_ID, "x", "x")
-                .with_parameters(json!({}))
+            tirea_contract::runtime::tool_call::ToolDescriptor::new(
+                SKILL_ACTIVATE_TOOL_ID,
+                "x",
+                "x",
+            )
+            .with_parameters(json!({}))
         }
 
         async fn execute(
             &self,
             _args: Value,
             _ctx: &tirea_contract::runtime::tool_call::ToolCallContext<'_>,
-        ) -> Result<tirea_contract::runtime::tool_call::ToolResult, tirea_contract::runtime::tool_call::ToolError> {
+        ) -> Result<
+            tirea_contract::runtime::tool_call::ToolResult,
+            tirea_contract::runtime::tool_call::ToolError,
+        > {
             Ok(tirea_contract::runtime::tool_call::ToolResult::success(
                 SKILL_ACTIVATE_TOOL_ID,
                 json!({}),
@@ -253,7 +260,8 @@ mod tests {
     #[async_trait]
     impl Tool for DummyOtherTool {
         fn descriptor(&self) -> tirea_contract::runtime::tool_call::ToolDescriptor {
-            tirea_contract::runtime::tool_call::ToolDescriptor::new("other", "x", "x").with_parameters(json!({}))
+            tirea_contract::runtime::tool_call::ToolDescriptor::new("other", "x", "x")
+                .with_parameters(json!({}))
         }
 
         async fn execute(

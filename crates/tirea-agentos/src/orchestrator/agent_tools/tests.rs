@@ -3,8 +3,8 @@ use crate::contracts::runtime::plugin::agent::ReadOnlyContext;
 use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
 use crate::contracts::runtime::plugin::phase::{Phase, StepContext};
 use crate::contracts::runtime::tool_call::ToolStatus;
-use crate::contracts::thread::Thread;
 use crate::contracts::testing::apply_phase_output_for_test as apply_shared_phase_output_for_test;
+use crate::contracts::thread::Thread;
 use crate::contracts::AgentBehavior;
 use crate::orchestrator::InMemoryAgentRegistry;
 use crate::runtime::loop_runner::{

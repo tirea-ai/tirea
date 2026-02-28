@@ -50,8 +50,14 @@ impl AgentBehavior for SkillPlugin {
 
     async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
         let mut merged = PhaseOutput::default();
-        merge_output(&mut merged, AgentBehavior::before_inference(&self.discovery, ctx).await);
-        merge_output(&mut merged, AgentBehavior::before_inference(&self.runtime, ctx).await);
+        merge_output(
+            &mut merged,
+            AgentBehavior::before_inference(&self.discovery, ctx).await,
+        );
+        merge_output(
+            &mut merged,
+            AgentBehavior::before_inference(&self.runtime, ctx).await,
+        );
         merged
     }
 }
@@ -63,8 +69,8 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use tempfile::TempDir;
-    use tirea_contract::runtime::plugin::phase::Phase;
     use tirea_contract::runtime::plugin::phase::effect::PhaseEffect;
+    use tirea_contract::runtime::plugin::phase::Phase;
     use tirea_contract::RunConfig;
     use tirea_state::DocCell;
 

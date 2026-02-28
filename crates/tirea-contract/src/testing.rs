@@ -11,8 +11,8 @@ use crate::runtime::{
     reduce_state_actions, PendingToolCall, Phase, RunAction, StepContext, SuspendTicket,
     ToolCallContext, ToolCallResumeMode,
 };
-use crate::RunConfig;
 use crate::thread::Message;
+use crate::RunConfig;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use tirea_state::{DocCell, Op};

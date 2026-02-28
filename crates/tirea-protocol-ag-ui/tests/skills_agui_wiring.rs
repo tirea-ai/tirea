@@ -4,8 +4,8 @@ use serde_json::json;
 use std::fs;
 use std::sync::Arc;
 use tempfile::TempDir;
-use tirea_agentos::contracts::thread::{Thread as ConversationAgentState, ToolCall};
 use tirea_agentos::contracts::runtime::tool_call::ToolDescriptor;
+use tirea_agentos::contracts::thread::{Thread as ConversationAgentState, ToolCall};
 use tirea_agentos::contracts::AgentEvent;
 use tirea_agentos::engine::tool_execution::execute_single_tool;
 use tirea_agentos::extensions::skills::{

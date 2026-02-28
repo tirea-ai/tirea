@@ -66,7 +66,10 @@ mod tests {
         decision.resume.decision_id = "decision_fc_1".to_string();
         assert_eq!(decision.target_id, "fc_1");
         assert_eq!(decision.resume.decision_id, "decision_fc_1");
-        assert!(matches!(decision.resume.action, ResumeDecisionAction::Resume));
+        assert!(matches!(
+            decision.resume.action,
+            ResumeDecisionAction::Resume
+        ));
         assert_eq!(decision.resume.result, Value::Bool(true));
         assert!(decision.resume.reason.is_none());
         assert_eq!(decision.resume.updated_at, 123);
@@ -84,7 +87,10 @@ mod tests {
             456,
         );
         decision.resume.decision_id = "decision_fc_2".to_string();
-        assert!(matches!(decision.resume.action, ResumeDecisionAction::Cancel));
+        assert!(matches!(
+            decision.resume.action,
+            ResumeDecisionAction::Cancel
+        ));
         assert_eq!(decision.resume.reason.as_deref(), Some("denied by user"));
         assert_eq!(decision.resume.updated_at, 456);
     }

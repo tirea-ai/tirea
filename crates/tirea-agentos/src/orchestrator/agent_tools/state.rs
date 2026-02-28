@@ -1,6 +1,6 @@
 use super::*;
-use tirea_contract::runtime::SuspendedCall;
 use tirea_contract::runtime::state_paths::SUSPENDED_TOOL_CALLS_STATE_PATH;
+use tirea_contract::runtime::SuspendedCall;
 use tirea_state::State;
 pub(super) fn as_delegation_record(
     summary: &AgentRunSummary,

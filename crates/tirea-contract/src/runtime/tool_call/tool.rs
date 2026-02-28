@@ -616,8 +616,11 @@ mod tests {
 
     #[test]
     fn test_tool_result_success_with_message() {
-        let result =
-            ToolResult::success_with_message("my_tool", json!({"done": true}), "Operation complete");
+        let result = ToolResult::success_with_message(
+            "my_tool",
+            json!({"done": true}),
+            "Operation complete",
+        );
         assert_eq!(result.tool_name, "my_tool");
         assert_eq!(result.status, ToolStatus::Success);
         assert_eq!(result.data, json!({"done": true}));
@@ -767,7 +770,8 @@ mod tests {
 
     #[test]
     fn test_tool_descriptor_with_category() {
-        let desc = ToolDescriptor::new("read_file", "Read File", "Read").with_category("filesystem");
+        let desc =
+            ToolDescriptor::new("read_file", "Read File", "Read").with_category("filesystem");
         assert_eq!(desc.category, Some("filesystem".to_string()));
     }
 
@@ -794,7 +798,8 @@ mod tests {
 
     #[test]
     fn test_tool_descriptor_serialization() {
-        let desc = ToolDescriptor::new("my_tool", "My Tool", "Does things").with_category("utilities");
+        let desc =
+            ToolDescriptor::new("my_tool", "My Tool", "Does things").with_category("utilities");
 
         let json = serde_json::to_string(&desc).unwrap();
         let parsed: ToolDescriptor = serde_json::from_str(&json).unwrap();
@@ -1217,11 +1222,10 @@ mod tests {
             _args: Value,
             _ctx: &ToolCallContext<'_>,
         ) -> Result<ToolExecutionEffect, ToolError> {
-            Ok(ToolExecutionEffect::new(ToolResult::success(
-                "effect_only",
-                json!({"ok": true}),
-            ))
-            .with_state_action(AnyStateAction::new::<ToolEffectState>(1)))
+            Ok(
+                ToolExecutionEffect::new(ToolResult::success("effect_only", json!({"ok": true})))
+                    .with_state_action(AnyStateAction::new::<ToolEffectState>(1)),
+            )
         }
     }
 

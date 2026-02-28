@@ -8,12 +8,12 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use tirea_agentos::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_agentos::contracts::storage::{
     Committed, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore,
     ThreadStoreError, ThreadWriter,
 };
 use tirea_agentos::contracts::thread::Thread;
-use tirea_agentos::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_agentos::contracts::ThreadChangeSet;
 use tirea_agentos::contracts::ToolCallContext;
 use tirea_agentos::orchestrator::AgentDefinition;

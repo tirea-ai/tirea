@@ -1,9 +1,9 @@
 use super::{Phase, RunAction, StepContext, SuspendTicket, ToolCallAction};
-use crate::runtime::run::TerminationReason;
 use crate::runtime::llm::StreamResult;
+use crate::runtime::run::TerminationReason;
+use crate::runtime::tool_call::ToolResult;
 use crate::runtime::ToolCallResume;
 use crate::thread::Message;
-use crate::runtime::tool_call::ToolResult;
 use crate::RunConfig;
 use serde_json::Value;
 use std::sync::Arc;
@@ -101,15 +101,13 @@ impl<'s, 'a> BeforeInferenceContext<'s, 'a> {
 
     /// Terminate current run as behavior-requested before inference.
     pub fn terminate_behavior_requested(&mut self) {
-        self.step.set_run_action(RunAction::Terminate(
-            TerminationReason::BehaviorRequested,
-        ));
+        self.step
+            .set_run_action(RunAction::Terminate(TerminationReason::BehaviorRequested));
     }
 
     /// Request run termination with a specific reason.
     pub fn request_termination(&mut self, reason: TerminationReason) {
-        self.step
-            .set_run_action(RunAction::Terminate(reason));
+        self.step.set_run_action(RunAction::Terminate(reason));
     }
 }
 
@@ -132,8 +130,7 @@ impl<'s, 'a> AfterInferenceContext<'s, 'a> {
 
     /// Request run termination with a specific reason after inference has completed.
     pub fn request_termination(&mut self, reason: TerminationReason) {
-        self.step
-            .set_run_action(RunAction::Terminate(reason));
+        self.step.set_run_action(RunAction::Terminate(reason));
     }
 }
 

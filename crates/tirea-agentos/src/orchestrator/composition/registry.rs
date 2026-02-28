@@ -1,7 +1,7 @@
 use super::{
-    AgentRegistry, AgentRegistryError, ModelDefinition, ModelRegistry, ModelRegistryError,
-    BehaviorRegistry, BehaviorRegistryError, ProviderRegistry, ProviderRegistryError,
-    ToolRegistry, ToolRegistryError,
+    AgentRegistry, AgentRegistryError, BehaviorRegistry, BehaviorRegistryError, ModelDefinition,
+    ModelRegistry, ModelRegistryError, ProviderRegistry, ProviderRegistryError, ToolRegistry,
+    ToolRegistryError,
 };
 use crate::contracts::runtime::plugin::AgentBehavior;
 use crate::contracts::runtime::tool_call::Tool;
@@ -140,7 +140,10 @@ impl InMemoryBehaviorRegistry {
         Self::default()
     }
 
-    pub fn register(&mut self, behavior: Arc<dyn AgentBehavior>) -> Result<(), BehaviorRegistryError> {
+    pub fn register(
+        &mut self,
+        behavior: Arc<dyn AgentBehavior>,
+    ) -> Result<(), BehaviorRegistryError> {
         let id = behavior.id().to_string();
         if self.behaviors.contains_key(&id) {
             return Err(BehaviorRegistryError::BehaviorIdConflict(id));

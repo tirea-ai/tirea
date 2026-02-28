@@ -1,8 +1,8 @@
 use crate::runtime::activity::ActivityManager;
 use crate::runtime::plugin::agent::AgentBehavior;
 use crate::runtime::tool_call::lifecycle::SuspendedCall;
-use crate::thread::{Message, ToolCall};
 use crate::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
+use crate::thread::{Message, ToolCall};
 use crate::RunConfig;
 use async_trait::async_trait;
 use serde_json::Value;

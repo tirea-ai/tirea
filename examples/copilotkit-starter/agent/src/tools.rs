@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use tirea_agentos::contracts::runtime::tool_call::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult};
+use tirea_agentos::contracts::runtime::tool_call::{
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
+};
 
 use crate::state::StarterState;
 

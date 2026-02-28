@@ -2,7 +2,7 @@ use serde_json::Value;
 use std::any::TypeId;
 use std::fmt;
 use tirea_state::{
-    apply_patch, get_at_path, parse_path, Op, Patch, Path, State, TrackedPatch, TireaResult,
+    apply_patch, get_at_path, parse_path, Op, Patch, Path, State, TireaResult, TrackedPatch,
 };
 
 type ApplyFn = Box<dyn FnOnce(&Value) -> TireaResult<Patch> + Send>;
@@ -90,8 +90,7 @@ impl AnyStateAction {
                 // from `null` (serde_json rejects null for struct types).
                 let mut state = S::from_value(&sub_doc).or_else(|first_err| {
                     if sub_doc.is_null() {
-                        S::from_value(&Value::Object(Default::default()))
-                            .map_err(|_| first_err)
+                        S::from_value(&Value::Object(Default::default())).map_err(|_| first_err)
                     } else {
                         Err(first_err)
                     }
@@ -119,7 +118,9 @@ impl AnyStateAction {
     /// Human-readable name of the state type (for diagnostics).
     pub fn state_type_name(&self) -> &str {
         match self {
-            Self::Typed { state_type_name, .. } => state_type_name,
+            Self::Typed {
+                state_type_name, ..
+            } => state_type_name,
             Self::Patch(_) => "raw_patch",
         }
     }
@@ -199,18 +200,16 @@ impl fmt::Debug for AnyStateAction {
                 state_type_id,
                 scope,
                 ..
-            } => {
-                f.debug_struct("AnyStateAction::Typed")
-                    .field("state", state_type_name)
-                    .field("type_id", state_type_id)
-                    .field("scope", scope)
-                    .finish()
-            }
-            Self::Patch(tracked) => {
-                f.debug_struct("AnyStateAction::Patch")
-                    .field("source", &tracked.source)
-                    .finish()
-            }
+            } => f
+                .debug_struct("AnyStateAction::Typed")
+                .field("state", state_type_name)
+                .field("type_id", state_type_id)
+                .field("scope", scope)
+                .finish(),
+            Self::Patch(tracked) => f
+                .debug_struct("AnyStateAction::Patch")
+                .field("source", &tracked.source)
+                .finish(),
         }
     }
 }

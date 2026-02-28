@@ -320,7 +320,6 @@ mod tests {
         }
         if let Some(call_id) = step.tool_call_id() {
             if let Ok(Some(resume)) = step.ctx().resume_input_for(call_id) {
-                let resume = Box::leak(Box::new(resume));
                 ctx = ctx.with_resume_input(resume);
             }
         }

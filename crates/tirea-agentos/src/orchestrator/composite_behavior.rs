@@ -179,7 +179,11 @@ mod tests {
         }
     }
 
-    fn make_ctx<'a>(doc: &'a DocCell, run_config: &'a RunConfig, phase: Phase) -> ReadOnlyContext<'a> {
+    fn make_ctx<'a>(
+        doc: &'a DocCell,
+        run_config: &'a RunConfig,
+        phase: Phase,
+    ) -> ReadOnlyContext<'a> {
         ReadOnlyContext::new(phase, "thread_1", &[], run_config, doc)
     }
 

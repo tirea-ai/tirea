@@ -1,6 +1,6 @@
 use super::AgentEvent;
-use crate::runtime::TerminationReason;
 use crate::runtime::tool_call::ToolResult;
+use crate::runtime::TerminationReason;
 use serde_json::{json, Value};
 
 #[test]
@@ -120,7 +120,10 @@ fn standard_activity_snapshot_roundtrip() {
     let restored: AgentEvent = serde_json::from_value(wire).unwrap();
     assert!(matches!(
         restored,
-        AgentEvent::ActivitySnapshot { replace: Some(true), .. }
+        AgentEvent::ActivitySnapshot {
+            replace: Some(true),
+            ..
+        }
     ));
 }
 
@@ -151,9 +154,7 @@ fn all_event_types_roundtrip() {
             result: None,
             termination: TerminationReason::NaturalEnd,
         },
-        AgentEvent::TextDelta {
-            delta: "hi".into(),
-        },
+        AgentEvent::TextDelta { delta: "hi".into() },
         AgentEvent::ReasoningDelta {
             delta: "think".into(),
         },

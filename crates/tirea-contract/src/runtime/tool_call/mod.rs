@@ -1,13 +1,9 @@
-pub mod tool;
 pub mod context;
 pub mod executor;
 pub mod lifecycle;
 pub mod suspension;
+pub mod tool;
 
-pub use tool::{
-    validate_against_schema, Tool, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult,
-    ToolStatus, TypedTool,
-};
 pub use context::{
     ActivityContext, ToolCallContext, ToolProgressState, TOOL_PROGRESS_ACTIVITY_TYPE,
 };
@@ -21,3 +17,7 @@ pub use lifecycle::{
     ToolCallResumeMode, ToolCallState, ToolCallStatesAction, ToolCallStatesMap, ToolCallStatus,
 };
 pub use suspension::{Suspension, SuspensionResponse};
+pub use tool::{
+    validate_against_schema, Tool, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult,
+    ToolStatus, TypedTool,
+};

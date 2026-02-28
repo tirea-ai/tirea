@@ -6,7 +6,7 @@
 
 use crate::runtime::activity::ActivityManager;
 use crate::runtime::state_paths::TOOL_CALL_STATES_STATE_PATH;
-use crate::runtime::{ToolCallState, ToolCallStatesMap, ToolCallResume};
+use crate::runtime::{ToolCallResume, ToolCallState, ToolCallStatesMap};
 use crate::thread::Message;
 use crate::RunConfig;
 use futures::future::pending;
@@ -196,10 +196,7 @@ impl<'a> ToolCallContext<'a> {
     }
 
     /// Read persisted runtime state for a specific tool call.
-    pub fn tool_call_state_for(
-        &self,
-        call_id: &str,
-    ) -> TireaResult<Option<ToolCallState>> {
+    pub fn tool_call_state_for(&self, call_id: &str) -> TireaResult<Option<ToolCallState>> {
         if call_id.trim().is_empty() {
             return Ok(None);
         }
@@ -214,11 +211,7 @@ impl<'a> ToolCallContext<'a> {
     }
 
     /// Upsert persisted runtime state for a specific tool call.
-    pub fn set_tool_call_state_for(
-        &self,
-        call_id: &str,
-        state: ToolCallState,
-    ) -> TireaResult<()> {
+    pub fn set_tool_call_state_for(&self, call_id: &str, state: ToolCallState) -> TireaResult<()> {
         if call_id.trim().is_empty() {
             return Err(TireaError::invalid_operation(
                 "tool_call_state requires non-empty call_id",
@@ -467,7 +460,15 @@ mod tests {
         run_config: &'a RunConfig,
         pending: &'a Mutex<Vec<Arc<Message>>>,
     ) -> ToolCallContext<'a> {
-        ToolCallContext::new(doc, ops, "call-1", "test", run_config, pending, NoOpActivityManager::arc())
+        ToolCallContext::new(
+            doc,
+            ops,
+            "call-1",
+            "test",
+            run_config,
+            pending,
+            NoOpActivityManager::arc(),
+        )
     }
 
     #[test]
@@ -695,8 +696,16 @@ mod tests {
         let pending = Mutex::new(Vec::new());
         let token = CancellationToken::new();
 
-        let ctx = ToolCallContext::new(&doc, &ops, "call-1", "test", &scope, &pending, NoOpActivityManager::arc())
-            .with_cancellation_token(&token);
+        let ctx = ToolCallContext::new(
+            &doc,
+            &ops,
+            "call-1",
+            "test",
+            &scope,
+            &pending,
+            NoOpActivityManager::arc(),
+        )
+        .with_cancellation_token(&token);
 
         let token_for_task = token.clone();
         tokio::spawn(async move {

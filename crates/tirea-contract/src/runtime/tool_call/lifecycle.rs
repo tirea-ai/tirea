@@ -324,9 +324,18 @@ mod tests {
 
         // Flattened fields should appear at top level, not nested under "ticket"
         assert!(json.get("ticket").is_none(), "ticket should be flattened");
-        assert!(json.get("suspension").is_some(), "suspension should be at top level");
-        assert!(json.get("pending").is_some(), "pending should be at top level");
-        assert!(json.get("resume_mode").is_some(), "resume_mode should be at top level");
+        assert!(
+            json.get("suspension").is_some(),
+            "suspension should be at top level"
+        );
+        assert!(
+            json.get("pending").is_some(),
+            "pending should be at top level"
+        );
+        assert!(
+            json.get("resume_mode").is_some(),
+            "resume_mode should be at top level"
+        );
         assert_eq!(json["call_id"], "call_1");
         assert_eq!(json["suspension"]["id"], "susp_1");
         assert_eq!(json["pending"]["id"], "pending_1");
