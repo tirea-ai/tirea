@@ -7,6 +7,7 @@
     "dev": "concurrently \"vite --port 3001\" \"cargo run -p ai-sdk-starter-agent\" --names ui,agent --prefix-colors blue,green --kill-others",
     "dev:ui": "vite --port 3001",
     "dev:agent": "cargo run -p ai-sdk-starter-agent",
+    "dev:mcp": "concurrently \"vite --port 3001\" \"cargo run -p ai-sdk-starter-agent -- --mcp-server-cmd 'python3 -u ../shared/mcp-ui-demo-server.py'\" --names ui,agent --prefix-colors blue,green --kill-others",
     "build": "vite build",
     "preview": "vite preview --port 3001",
     "test": "vitest run"

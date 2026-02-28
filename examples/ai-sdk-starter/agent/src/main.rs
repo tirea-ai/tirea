@@ -2,6 +2,7 @@ mod state;
 mod tools;
 
 use clap::Parser;
+use mcp::transport::McpServerConnectionConfig;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,6 +13,7 @@ use tirea_agentos::orchestrator::{AgentDefinition, AgentOsBuilder, ToolExecution
 use tirea_agentos::runtime::loop_runner::tool_map_from_arc;
 use tirea_agentos_server::http::{self, AppState};
 use tirea_agentos_server::protocol;
+use tirea_extension_mcp::McpToolRegistryManager;
 use tirea_store_adapters::FileStore;
 use tools::{AppendNoteTool, GetStockPriceTool, GetWeatherTool};
 use tower_http::cors::{Any, CorsLayer};
@@ -39,6 +41,9 @@ struct Args {
         default_value = "You are the with-tirea starter assistant. Use tools proactively when users ask for weather, stock quotes, or note updates."
     )]
     system_prompt: String,
+
+    #[arg(long, env = "MCP_SERVER_CMD")]
+    mcp_server_cmd: Option<String>,
 }
 
 #[tokio::main]
@@ -59,7 +64,31 @@ async fn main() {
         Arc::new(GetStockPriceTool),
         Arc::new(AppendNoteTool),
     ];
-    let tool_map: HashMap<String, Arc<dyn Tool>> = tool_map_from_arc(tools);
+    let mut tool_map: HashMap<String, Arc<dyn Tool>> = tool_map_from_arc(tools);
+
+    let _mcp_manager = if let Some(ref cmd_str) = args.mcp_server_cmd {
+        let parts: Vec<&str> = cmd_str.split_whitespace().collect();
+        let (command, cmd_args) = parts.split_first().expect("MCP_SERVER_CMD must not be empty");
+        let cfg = McpServerConnectionConfig::stdio(
+            "mcp_demo",
+            *command,
+            cmd_args.iter().map(|s| s.to_string()).collect(),
+        );
+        match McpToolRegistryManager::connect([cfg]).await {
+            Ok(manager) => {
+                let mcp_tools = manager.registry().snapshot();
+                eprintln!("MCP: connected, discovered {} tools", mcp_tools.len());
+                tool_map.extend(mcp_tools);
+                Some(manager)
+            }
+            Err(e) => {
+                eprintln!("MCP: failed to connect: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     let file_store = Arc::new(FileStore::new(args.storage_dir));
     let mut builder = AgentOsBuilder::new()

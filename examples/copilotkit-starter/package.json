@@ -7,6 +7,7 @@
     "dev": "concurrently \"npm run dev:ui\" \"npm run dev:agent\" --names ui,agent --prefix-colors blue,green --kill-others",
     "dev:ui": "next dev -p ${FRONTEND_PORT:-3000}",
     "dev:agent": "bash scripts/run-agent.sh",
+    "dev:mcp": "MCP_SERVER_CMD='python3 -u ../shared/mcp-ui-demo-server.py' npm run dev",
     "dev:all": "npm run dev",
     "build": "next build",
     "start": "next start -p 3000",
