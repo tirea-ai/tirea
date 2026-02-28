@@ -772,7 +772,13 @@ pub(super) async fn execute_tools_sequential_with_phases(
         };
         let result = match await_or_cancel(
             phase_ctx.cancellation_token,
-            execute_single_tool_with_phases(tool.as_deref(), call, &state, &call_phase_ctx),
+            execute_single_tool_with_phases_impl(
+                tool.as_deref(),
+                call,
+                &state,
+                &call_phase_ctx,
+                true,
+            ),
         )
         .await
         {
@@ -794,6 +800,18 @@ pub(super) async fn execute_tools_sequential_with_phases(
             state = apply_patch(&state, pp.patch()).map_err(|e| {
                 AgentLoopError::StateError(format!(
                     "failed to apply plugin patch for call '{}': {}",
+                    result.execution.call.id, e
+                ))
+            })?;
+        }
+        if let Some(commutative_patch) = reduce_commutative_state_actions(
+            &state,
+            &result.commutative_state_actions,
+            &format!("tool:{}", result.execution.call.name),
+        )? {
+            state = apply_patch(&state, commutative_patch.patch()).map_err(|e| {
+                AgentLoopError::StateError(format!(
+                    "failed to apply commutative patch for call '{}': {}",
                     result.execution.call.id, e
                 ))
             })?;
@@ -1089,6 +1107,27 @@ fn reduce_tool_state_actions(
     reduce_state_actions(actions, base_state, source).map_err(|e| {
         AgentLoopError::StateError(format!("failed to reduce tool state actions: {e}"))
     })
+}
+
+fn reduce_commutative_state_actions(
+    base_state: &Value,
+    actions: &[CommutativeAction],
+    source: &str,
+) -> Result<Option<TrackedPatch>, AgentLoopError> {
+    if actions.is_empty() {
+        return Ok(None);
+    }
+
+    let tracked = reduce_tool_state_actions(
+        base_state,
+        actions
+            .iter()
+            .cloned()
+            .map(AnyStateAction::Commutative)
+            .collect(),
+        source,
+    )?;
+    Ok(merge_tracked_patches(&tracked, source))
 }
 
 fn merge_tracked_patches(patches: &[TrackedPatch], source: &str) -> Option<TrackedPatch> {
