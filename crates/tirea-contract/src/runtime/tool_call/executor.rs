@@ -1,5 +1,6 @@
 use crate::runtime::activity::ActivityManager;
 use crate::runtime::plugin::agent::AgentBehavior;
+use crate::runtime::plugin::phase::CommutativeAction;
 use crate::runtime::tool_call::lifecycle::SuspendedCall;
 use crate::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
 use crate::thread::{Message, ToolCall};
@@ -69,6 +70,8 @@ pub struct ToolExecutionResult {
     pub suspended_call: Option<SuspendedCall>,
     pub reminders: Vec<String>,
     pub pending_patches: Vec<TrackedPatch>,
+    /// Merge-friendly actions deferred to apply stage (primarily for parallel execution).
+    pub commutative_state_actions: Vec<CommutativeAction>,
 }
 
 /// Error returned by custom tool executors.

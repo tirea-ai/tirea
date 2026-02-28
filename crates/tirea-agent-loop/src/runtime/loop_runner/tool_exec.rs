@@ -9,7 +9,9 @@ use super::{
     TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use crate::contracts::runtime::plugin::agent::AgentBehavior;
-use crate::contracts::runtime::plugin::phase::{reduce_state_actions, AnyStateAction};
+use crate::contracts::runtime::plugin::phase::{
+    reduce_state_actions, AnyStateAction, CommutativeAction,
+};
 use crate::contracts::runtime::plugin::phase::{Phase, StepContext, ToolContext};
 use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
 use crate::contracts::runtime::{
@@ -334,7 +336,11 @@ pub(super) fn apply_tool_results_impl(
         })
         .collect();
 
-    let patches = merge_parallel_state_patches(results, check_parallel_patch_conflicts)?;
+    let base_snapshot = run_ctx
+        .snapshot()
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    let patches =
+        merge_parallel_state_patches(&base_snapshot, results, check_parallel_patch_conflicts)?;
     let mut state_changed = !patches.is_empty();
     run_ctx.add_thread_patches(patches);
 
@@ -709,7 +715,7 @@ pub(super) async fn execute_tools_parallel_with_phases(
         let thread_messages = thread_messages.clone();
 
         async move {
-            execute_single_tool_with_phases(
+            execute_single_tool_with_phases_impl(
                 tool.as_deref(),
                 &call,
                 &state,
@@ -722,6 +728,7 @@ pub(super) async fn execute_tools_parallel_with_phases(
                     thread_messages: thread_messages.as_slice(),
                     cancellation_token: None,
                 },
+                true,
             )
             .await
         }
@@ -811,6 +818,16 @@ pub(super) async fn execute_single_tool_with_phases(
     call: &crate::contracts::thread::ToolCall,
     state: &Value,
     phase_ctx: &ToolPhaseContext<'_>,
+) -> Result<ToolExecutionResult, AgentLoopError> {
+    execute_single_tool_with_phases_impl(tool, call, state, phase_ctx, false).await
+}
+
+async fn execute_single_tool_with_phases_impl(
+    tool: Option<&dyn Tool>,
+    call: &crate::contracts::thread::ToolCall,
+    state: &Value,
+    phase_ctx: &ToolPhaseContext<'_>,
+    defer_commutative_state_actions: bool,
 ) -> Result<ToolExecutionResult, AgentLoopError> {
     // Create ToolCallContext for plugin phases
     let doc = tirea_state::DocCell::new(state.clone());
@@ -1009,8 +1026,13 @@ pub(super) async fn execute_single_tool_with_phases(
         .into_iter()
         .map(AnyStateAction::Patch);
 
-    let tool_patches =
-        reduce_tool_state_actions(state, tool_state_actions, &format!("tool:{}", call.name))?;
+    let (commutative_state_actions, reducible_state_actions) =
+        partition_tool_state_actions(tool_state_actions, defer_commutative_state_actions);
+    let tool_patches = reduce_tool_state_actions(
+        state,
+        reducible_state_actions,
+        &format!("tool:{}", call.name),
+    )?;
     execution.patch = merge_tracked_patches(&tool_patches, &format!("tool:{}", call.name));
 
     let phase_base_state = if let Some(tool_patch) = execution.patch.as_ref() {
@@ -1032,7 +1054,27 @@ pub(super) async fn execute_single_tool_with_phases(
         suspended_call,
         reminders: step.system_reminders.clone(),
         pending_patches,
+        commutative_state_actions,
     })
+}
+
+fn partition_tool_state_actions(
+    actions: Vec<AnyStateAction>,
+    defer_commutative_state_actions: bool,
+) -> (Vec<CommutativeAction>, Vec<AnyStateAction>) {
+    if !defer_commutative_state_actions {
+        return (Vec::new(), actions);
+    }
+
+    let mut commutative_actions = Vec::new();
+    let mut reducible_actions = Vec::new();
+    for action in actions {
+        match action {
+            AnyStateAction::Commutative(commutative) => commutative_actions.push(commutative),
+            other => reducible_actions.push(other),
+        }
+    }
+    (commutative_actions, reducible_actions)
 }
 
 fn reduce_tool_state_actions(

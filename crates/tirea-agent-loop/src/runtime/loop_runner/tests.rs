@@ -762,6 +762,41 @@ impl Tool for ActionStateTool {
     }
 }
 
+struct CommutativeCounterTool {
+    id: &'static str,
+    delta: i64,
+}
+
+#[async_trait]
+impl Tool for CommutativeCounterTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new(
+            self.id,
+            "Commutative Counter Tool",
+            "Adds to counter via state action",
+        )
+    }
+
+    async fn execute(
+        &self,
+        _args: Value,
+        _ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
+        Ok(ToolResult::success(self.id, json!({"ok": true})))
+    }
+
+    async fn execute_effect(
+        &self,
+        _args: Value,
+        _ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolExecutionEffect, ToolError> {
+        Ok(
+            ToolExecutionEffect::new(ToolResult::success(self.id, json!({"ok": true})))
+                .with_state_action(AnyStateAction::counter_add("counter", self.delta)),
+        )
+    }
+}
+
 struct ActivityGateTool {
     id: String,
     stream_id: String,
@@ -801,6 +836,7 @@ fn tool_execution_result(call_id: &str, patch: Option<TrackedPatch>) -> ToolExec
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
+        commutative_state_actions: Vec::new(),
     }
 }
 
@@ -834,6 +870,7 @@ fn skill_activation_result(
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
+        commutative_state_actions: Vec::new(),
     }
 }
 
@@ -2646,6 +2683,7 @@ fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
+        commutative_state_actions: Vec::new(),
     };
 
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
@@ -2693,6 +2731,7 @@ fn test_apply_tool_results_ignores_blank_agent_state_outbox_messages() {
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
+        commutative_state_actions: Vec::new(),
     };
 
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
@@ -7252,7 +7291,10 @@ async fn test_stream_state_commit_failure_on_assistant_turn_emits_error_and_run_
     );
     let events = collect_stream_events(stream).await;
 
-    assert!(matches!(extract_termination(&events), Some(TerminationReason::Error(_))));
+    assert!(matches!(
+        extract_termination(&events),
+        Some(TerminationReason::Error(_))
+    ));
     assert!(
         events
             .iter()
@@ -7355,7 +7397,10 @@ async fn test_stream_state_commit_failure_on_tool_results_emits_error_before_too
     );
     let events = collect_stream_events(stream).await;
 
-    assert!(matches!(extract_termination(&events), Some(TerminationReason::Error(_))));
+    assert!(matches!(
+        extract_termination(&events),
+        Some(TerminationReason::Error(_))
+    ));
     assert!(
         events
             .iter()
@@ -8397,6 +8442,47 @@ fn test_parallel_tools_conflicting_state_actions_return_error() {
 }
 
 #[test]
+fn test_parallel_tools_commutative_state_actions_merge_without_conflict() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let thread = Thread::with_initial_state("test", json!({"counter": 0}));
+        let result = StreamResult {
+            text: "commutative action calls".to_string(),
+            tool_calls: vec![
+                crate::contracts::thread::ToolCall::new("call_1", "comm_add_a", json!({})),
+                crate::contracts::thread::ToolCall::new("call_2", "comm_add_b", json!({})),
+            ],
+            usage: None,
+        };
+
+        let mut tools = HashMap::new();
+        tools.insert(
+            "comm_add_a".to_string(),
+            Arc::new(CommutativeCounterTool {
+                id: "comm_add_a",
+                delta: 1,
+            }) as Arc<dyn Tool>,
+        );
+        tools.insert(
+            "comm_add_b".to_string(),
+            Arc::new(CommutativeCounterTool {
+                id: "comm_add_b",
+                delta: 2,
+            }) as Arc<dyn Tool>,
+        );
+
+        let thread = execute_tools(thread, &result, &tools, true)
+            .await
+            .expect("parallel commutative actions should merge")
+            .into_thread();
+
+        let state = thread.rebuild_state().expect("state should rebuild");
+        assert_eq!(state["counter"], json!(3));
+        assert_eq!(thread.message_count(), 2);
+    });
+}
+
+#[test]
 fn test_sequential_tools_partial_failure() {
     // Same test but with sequential execution.
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -9239,7 +9325,10 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
         changeset.apply_to(&mut final_thread);
     }
 
-    assert!(matches!(extract_termination(&events), Some(TerminationReason::Error(_))));
+    assert!(matches!(
+        extract_termination(&events),
+        Some(TerminationReason::Error(_))
+    ));
     assert!(
         events
             .iter()
