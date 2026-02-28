@@ -43,6 +43,7 @@ mod core;
 mod effect_applicator;
 mod event_envelope_meta;
 mod outcome;
+mod parallel_state_merge;
 mod plugin_runtime;
 mod run_state;
 mod state_commit;

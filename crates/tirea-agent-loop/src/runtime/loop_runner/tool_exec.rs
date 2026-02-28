@@ -2,6 +2,7 @@ use super::core::{
     drain_agent_append_user_messages, set_agent_suspended_calls, transition_tool_call_state,
     ToolCallStateSeed, ToolCallStateTransition,
 };
+use super::parallel_state_merge::merge_parallel_state_patches;
 use super::plugin_runtime::emit_tool_phase;
 use super::{
     Agent, AgentLoopError, BaseAgent, RunCancellationToken, TOOL_SCOPE_CALLER_MESSAGES_KEY,
@@ -23,13 +24,13 @@ use crate::contracts::thread::Thread;
 use crate::contracts::thread::{Message, MessageMetadata, ToolCall};
 use crate::contracts::{RunContext, Suspension};
 use crate::engine::convert::tool_response;
-use crate::engine::tool_execution::{collect_patches, merge_context_patch_into_effect};
+use crate::engine::tool_execution::merge_context_patch_into_effect;
 use crate::runtime::run_context::{await_or_cancel, is_cancelled, CancelAware};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tirea_state::{Patch, PatchExt, TrackedPatch};
+use tirea_state::{Patch, TrackedPatch};
 
 /// Outcome of the public `execute_tools*` family of functions.
 ///
@@ -299,48 +300,6 @@ impl ToolExecutor for SequentialToolExecutor {
     }
 }
 
-fn validate_parallel_state_patch_conflicts(
-    results: &[ToolExecutionResult],
-) -> Result<(), AgentLoopError> {
-    for (left_idx, left) in results.iter().enumerate() {
-        let mut left_patches: Vec<&TrackedPatch> = Vec::new();
-        if let Some(ref patch) = left.execution.patch {
-            left_patches.push(patch);
-        }
-        left_patches.extend(left.pending_patches.iter());
-
-        if left_patches.is_empty() {
-            continue;
-        }
-
-        for right in results.iter().skip(left_idx + 1) {
-            let mut right_patches: Vec<&TrackedPatch> = Vec::new();
-            if let Some(ref patch) = right.execution.patch {
-                right_patches.push(patch);
-            }
-            right_patches.extend(right.pending_patches.iter());
-
-            if right_patches.is_empty() {
-                continue;
-            }
-
-            for left_patch in &left_patches {
-                for right_patch in &right_patches {
-                    let conflicts = left_patch.patch().conflicts_with(right_patch.patch());
-                    if let Some(conflict) = conflicts.first() {
-                        return Err(AgentLoopError::StateError(format!(
-                            "conflicting parallel state patches between '{}' and '{}' at {}",
-                            left.execution.call.id, right.execution.call.id, conflict.path
-                        )));
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
 pub(super) fn apply_tool_results_to_session(
     run_ctx: &mut RunContext,
     results: &[ToolExecutionResult],
@@ -375,26 +334,7 @@ pub(super) fn apply_tool_results_impl(
         })
         .collect();
 
-    if check_parallel_patch_conflicts {
-        validate_parallel_state_patch_conflicts(results)?;
-    }
-
-    // Collect patches from completed tools and plugin pending patches.
-    let mut patches: Vec<TrackedPatch> = collect_patches(
-        &results
-            .iter()
-            .map(|r| r.execution.clone())
-            .collect::<Vec<_>>(),
-    );
-    let mut merged_pending_patch = Patch::new();
-    for r in results {
-        for pending in &r.pending_patches {
-            merged_pending_patch.extend(pending.patch().clone());
-        }
-    }
-    if !merged_pending_patch.is_empty() {
-        patches.push(TrackedPatch::new(merged_pending_patch).with_source("agent_loop"));
-    }
+    let patches = merge_parallel_state_patches(results, check_parallel_patch_conflicts)?;
     let mut state_changed = !patches.is_empty();
     run_ctx.add_thread_patches(patches);
 
