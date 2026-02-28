@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::any::TypeId;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use crate::contracts::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
@@ -322,10 +321,6 @@ impl StopPolicyPlugin {
 impl AgentBehavior for StopPolicyPlugin {
     fn id(&self) -> &str {
         STOP_POLICY_PLUGIN_ID
-    }
-
-    fn owned_states(&self) -> HashSet<TypeId> {
-        HashSet::from([TypeId::of::<StopPolicyRuntimeState>()])
     }
 
     async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {

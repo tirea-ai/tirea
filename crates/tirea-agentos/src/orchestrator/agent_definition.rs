@@ -235,7 +235,6 @@ impl AgentDefinition {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use std::collections::HashSet;
     use std::sync::Arc;
 
     struct TestBehavior {
@@ -246,10 +245,6 @@ mod tests {
     impl AgentBehavior for TestBehavior {
         fn id(&self) -> &str {
             self.id
-        }
-
-        fn owned_states(&self) -> HashSet<std::any::TypeId> {
-            HashSet::new()
         }
     }
 

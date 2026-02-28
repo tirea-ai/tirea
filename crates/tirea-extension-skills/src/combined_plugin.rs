@@ -42,7 +42,6 @@ impl SkillPlugin {
 
 fn merge_output(target: &mut PhaseOutput, source: PhaseOutput) {
     target.effects.extend(source.effects);
-    target.state_actions.extend(source.state_actions);
 }
 
 #[async_trait]

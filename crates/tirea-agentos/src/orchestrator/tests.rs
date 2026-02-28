@@ -1,6 +1,8 @@
 use super::*;
 use crate::contracts::runtime::plugin::agent::ReadOnlyContext;
 use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
+use crate::contracts::runtime::plugin::phase::state_spec::{reduce_state_actions, AnyStateAction};
+use crate::contracts::runtime::plugin::phase::{AnyPluginAction, Phase};
 use crate::contracts::runtime::tool_call::ToolDescriptor;
 use crate::contracts::runtime::tool_call::{ToolError, ToolResult};
 use crate::contracts::storage::{ThreadReader, ThreadWriter};
@@ -24,6 +26,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tirea_contract::testing::TestFixture;
 use tirea_contract::TerminationReason;
+use tirea_state::TrackedPatch;
 
 fn decision_for(
     target_id: &str,
@@ -225,8 +228,49 @@ impl AgentBehavior for TerminateWithRunEndPatchPlugin {
     }
 
     async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-        use crate::contracts::runtime::plugin::phase::state_spec::AnyStateAction;
-        PhaseOutput::default().with_state_action(AnyStateAction::new::<RunEndMarkerState>(true))
+        PhaseOutput::default()
+    }
+
+    async fn phase_actions(
+        &self,
+        phase: Phase,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> Vec<AnyPluginAction> {
+        if phase == Phase::RunEnd {
+            vec![AnyPluginAction::new(self.id(), true)]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn reduce_plugin_actions(
+        &self,
+        actions: Vec<AnyPluginAction>,
+        base_snapshot: &serde_json::Value,
+    ) -> Result<Vec<TrackedPatch>, String> {
+        let mut state_actions = Vec::new();
+        for action in actions {
+            if action.plugin_id() != self.id() {
+                return Err(format!(
+                    "run-end marker plugin received action for unexpected plugin '{}'",
+                    action.plugin_id()
+                ));
+            }
+            let enabled = action.downcast::<bool>().map_err(|other| {
+                format!(
+                    "run-end marker plugin failed to downcast action '{}'",
+                    other.action_type_name()
+                )
+            })?;
+            state_actions.push(AnyStateAction::new::<RunEndMarkerState>(enabled));
+        }
+
+        reduce_state_actions(
+            state_actions,
+            base_snapshot,
+            "plugin:terminate_with_run_end_patch",
+        )
+        .map_err(|e| e.to_string())
     }
 }
 

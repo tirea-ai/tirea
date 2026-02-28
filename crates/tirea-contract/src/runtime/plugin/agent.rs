@@ -6,8 +6,6 @@ use crate::thread::Message;
 use crate::RunConfig;
 use async_trait::async_trait;
 use serde_json::Value;
-use std::any::TypeId;
-use std::collections::HashSet;
 use std::sync::Arc;
 use tirea_state::{get_at_path, parse_path, DocCell, State, TireaResult, TrackedPatch};
 
@@ -170,11 +168,6 @@ impl<'a> ReadOnlyContext<'a> {
 pub trait AgentBehavior: Send + Sync {
     /// Unique identifier for this agent.
     fn id(&self) -> &str;
-
-    /// State types owned by this agent (used by composite behaviors for union).
-    fn owned_states(&self) -> HashSet<TypeId> {
-        HashSet::new()
-    }
 
     /// Return the ordered list of leaf behavior IDs.
     ///

@@ -3,9 +3,7 @@ use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
 use crate::contracts::runtime::plugin::phase::{AnyPluginAction, Phase};
 use async_trait::async_trait;
 use serde_json::Value;
-use std::any::TypeId;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::sync::Arc;
 use tirea_state::TrackedPatch;
 
@@ -52,20 +50,12 @@ impl CompositeBehavior {
 /// Merge `source` effects and state actions into `target`.
 fn merge_output(target: &mut PhaseOutput, source: PhaseOutput) {
     target.effects.extend(source.effects);
-    target.state_actions.extend(source.state_actions);
 }
 
 #[async_trait]
 impl AgentBehavior for CompositeBehavior {
     fn id(&self) -> &str {
         &self.id
-    }
-
-    fn owned_states(&self) -> HashSet<TypeId> {
-        self.behaviors
-            .iter()
-            .flat_map(|b| b.owned_states())
-            .collect()
     }
 
     fn behavior_ids(&self) -> Vec<&str> {
@@ -197,7 +187,9 @@ impl AgentBehavior for CompositeBehavior {
 mod tests {
     use super::*;
     use crate::contracts::runtime::plugin::phase::effect::PhaseEffect;
-    use crate::contracts::runtime::plugin::phase::AnyStateAction;
+    use crate::contracts::runtime::plugin::phase::state_spec::{
+        reduce_state_actions, AnyStateAction,
+    };
     use crate::contracts::runtime::plugin::phase::Phase;
     use crate::contracts::RunConfig;
     use serde_json::json;
@@ -269,33 +261,68 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn composite_merges_patch_state_actions() {
-        struct PendingPatchBehavior {
+    async fn composite_routes_phase_actions_to_child_reducers() {
+        struct RoutedPatchBehavior {
             id: &'static str,
             key: &'static str,
         }
 
         #[async_trait]
-        impl AgentBehavior for PendingPatchBehavior {
+        impl AgentBehavior for RoutedPatchBehavior {
             fn id(&self) -> &str {
                 self.id
             }
 
-            async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-                let patch = TrackedPatch::new(
-                    Patch::new().with_op(Op::set(path!("debug", self.key), json!(true))),
-                )
-                .with_source(self.id);
-                PhaseOutput::default().with_state_action(AnyStateAction::Patch(patch))
+            async fn phase_actions(
+                &self,
+                phase: Phase,
+                _ctx: &ReadOnlyContext<'_>,
+            ) -> Vec<AnyPluginAction> {
+                if phase != Phase::BeforeInference {
+                    return Vec::new();
+                }
+
+                vec![AnyPluginAction::new(self.id(), self.key.to_string())]
+            }
+
+            fn reduce_plugin_actions(
+                &self,
+                actions: Vec<AnyPluginAction>,
+                base_snapshot: &Value,
+            ) -> Result<Vec<TrackedPatch>, String> {
+                let mut state_actions = Vec::new();
+                for action in actions {
+                    if action.plugin_id() != self.id {
+                        return Err(format!(
+                            "plugin '{}' received action for '{}'",
+                            self.id,
+                            action.plugin_id()
+                        ));
+                    }
+                    let key = action.downcast::<String>().map_err(|other| {
+                        format!(
+                            "plugin '{}' failed to downcast action '{}'",
+                            self.id,
+                            other.action_type_name()
+                        )
+                    })?;
+                    let patch = TrackedPatch::new(
+                        Patch::new().with_op(Op::set(path!("debug", key), json!(true))),
+                    )
+                    .with_source(self.id);
+                    state_actions.push(AnyStateAction::Patch(patch));
+                }
+                reduce_state_actions(state_actions, base_snapshot, &format!("plugin:{}", self.id))
+                    .map_err(|e| e.to_string())
             }
         }
 
         let behaviors: Vec<Arc<dyn AgentBehavior>> = vec![
-            Arc::new(PendingPatchBehavior {
+            Arc::new(RoutedPatchBehavior {
                 id: "a",
                 key: "from_a",
             }),
-            Arc::new(PendingPatchBehavior {
+            Arc::new(RoutedPatchBehavior {
                 id: "b",
                 key: "from_b",
             }),
@@ -305,52 +332,15 @@ mod tests {
         let doc = DocCell::new(json!({}));
         let run_config = RunConfig::new();
         let ctx = make_ctx(&doc, &run_config, Phase::BeforeInference);
-        let output = composite.before_inference(&ctx).await;
+        let actions = composite.phase_actions(Phase::BeforeInference, &ctx).await;
+        assert_eq!(actions.len(), 2);
+        let patches = composite
+            .reduce_plugin_actions(actions, &ctx.snapshot())
+            .expect("composite should route actions");
 
-        assert_eq!(output.state_actions.len(), 2);
-        match &output.state_actions[0] {
-            AnyStateAction::Patch(patch) => assert_eq!(patch.source.as_deref(), Some("a")),
-            other => panic!("expected patch state action, got {other:?}"),
-        }
-        match &output.state_actions[1] {
-            AnyStateAction::Patch(patch) => assert_eq!(patch.source.as_deref(), Some("b")),
-            other => panic!("expected patch state action, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn composite_owned_states_union() {
-        struct TypedBehavior {
-            types: HashSet<TypeId>,
-        }
-
-        #[async_trait]
-        impl AgentBehavior for TypedBehavior {
-            fn id(&self) -> &str {
-                "typed"
-            }
-            fn owned_states(&self) -> HashSet<TypeId> {
-                self.types.clone()
-            }
-        }
-
-        let type_a = TypeId::of::<u32>();
-        let type_b = TypeId::of::<String>();
-
-        let behaviors: Vec<Arc<dyn AgentBehavior>> = vec![
-            Arc::new(TypedBehavior {
-                types: [type_a].into_iter().collect(),
-            }),
-            Arc::new(TypedBehavior {
-                types: [type_b].into_iter().collect(),
-            }),
-        ];
-        let composite = CompositeBehavior::new("test", behaviors);
-
-        let states = composite.owned_states();
-        assert!(states.contains(&type_a));
-        assert!(states.contains(&type_b));
-        assert_eq!(states.len(), 2);
+        assert_eq!(patches.len(), 2);
+        assert_eq!(patches[0].source.as_deref(), Some("a"));
+        assert_eq!(patches[1].source.as_deref(), Some("b"));
     }
 
     #[tokio::test]

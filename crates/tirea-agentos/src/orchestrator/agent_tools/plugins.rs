@@ -4,8 +4,6 @@ use crate::contracts::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
 use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
 use crate::contracts::runtime::plugin::phase::state_spec::{reduce_state_actions, AnyStateAction};
 use crate::contracts::runtime::plugin::phase::{AnyPluginAction, Phase};
-use std::any::TypeId;
-use std::collections::HashSet;
 use tirea_extension_permission::resolve_permission_behavior;
 use tirea_state::TrackedPatch;
 
@@ -41,15 +39,6 @@ impl AgentRecoveryPlugin {
 impl AgentBehavior for AgentRecoveryPlugin {
     fn id(&self) -> &str {
         AGENT_RECOVERY_PLUGIN_ID
-    }
-
-    fn owned_states(&self) -> HashSet<TypeId> {
-        use crate::contracts::runtime::{SuspendedToolCallsState, ToolCallStatesMap};
-        HashSet::from([
-            TypeId::of::<DelegationState>(),
-            TypeId::of::<SuspendedToolCallsState>(),
-            TypeId::of::<ToolCallStatesMap>(),
-        ])
     }
 
     async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {

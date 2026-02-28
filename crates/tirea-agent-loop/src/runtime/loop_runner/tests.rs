@@ -3,7 +3,9 @@ use super::LlmExecutor;
 use super::*;
 use crate::contracts::runtime::plugin::agent::ReadOnlyContext;
 use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
-use crate::contracts::runtime::plugin::phase::{reduce_state_actions, AnyPluginAction, Phase, SuspendTicket};
+use crate::contracts::runtime::plugin::phase::{
+    reduce_state_actions, AnyPluginAction, Phase, SuspendTicket,
+};
 use crate::contracts::runtime::tool_call::{
     ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult,
 };
@@ -47,12 +49,6 @@ fn compose_test_behaviors(behaviors: Vec<Arc<dyn AgentBehavior>>) -> Arc<dyn Age
     impl AgentBehavior for TestCompositeBehavior {
         fn id(&self) -> &str {
             &self.id
-        }
-        fn owned_states(&self) -> std::collections::HashSet<std::any::TypeId> {
-            self.behaviors
-                .iter()
-                .flat_map(|b| b.owned_states())
-                .collect()
         }
         fn behavior_ids(&self) -> Vec<&str> {
             self.behaviors
@@ -586,11 +582,7 @@ impl AgentBehavior for TestInteractionPlugin {
         PhaseOutput::default()
     }
 
-    async fn phase_actions(
-        &self,
-        phase: Phase,
-        ctx: &ReadOnlyContext<'_>,
-    ) -> Vec<AnyPluginAction> {
+    async fn phase_actions(&self, phase: Phase, ctx: &ReadOnlyContext<'_>) -> Vec<AnyPluginAction> {
         if phase != Phase::RunStart || self.responses.is_empty() {
             return Vec::new();
         }
@@ -647,7 +639,7 @@ impl AgentBehavior for TestInteractionPlugin {
             actions.push(plugin_state_action(
                 self.id(),
                 AnyStateAction::new::<crate::contracts::runtime::ToolCallStatesMap>(
-                crate::contracts::runtime::ToolCallStatesAction::InsertState { state },
+                    crate::contracts::runtime::ToolCallStatesAction::InsertState { state },
                 ),
             ));
         }
@@ -2206,10 +2198,7 @@ async fn test_plugin_state_patch_visible_in_next_step_before_inference() {
                     json!(true),
                 )))
                 .with_source("test:state_channel");
-                actions.push(plugin_state_action(
-                    self.id(),
-                    AnyStateAction::Patch(patch),
-                ));
+                actions.push(plugin_state_action(self.id(), AnyStateAction::Patch(patch)));
             }
 
             if phase == Phase::BeforeInference {
@@ -2225,10 +2214,7 @@ async fn test_plugin_state_patch_visible_in_next_step_before_inference() {
                         json!(true),
                     )))
                     .with_source("test:state_channel");
-                    actions.push(plugin_state_action(
-                        self.id(),
-                        AnyStateAction::Patch(patch),
-                    ));
+                    actions.push(plugin_state_action(self.id(), AnyStateAction::Patch(patch)));
                 }
             }
             actions
@@ -2326,10 +2312,7 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
                 json!(true),
             )))
             .with_source("test:phase_block");
-            vec![plugin_state_action(
-                self.id(),
-                AnyStateAction::Patch(patch),
-            )]
+            vec![plugin_state_action(self.id(), AnyStateAction::Patch(patch))]
         }
 
         fn reduce_plugin_actions(
@@ -2492,8 +2475,11 @@ async fn test_run_phase_block_rejects_conflicting_commutative_and_patch_outputs(
     .await
     .expect("plugin actions are reduced in order within the same phase");
 
-    let next = tirea_state::apply_patches(&run_ctx.snapshot().expect("snapshot"), pending.iter().map(|p| p.patch()))
-        .expect("pending patches should apply");
+    let next = tirea_state::apply_patches(
+        &run_ctx.snapshot().expect("snapshot"),
+        pending.iter().map(|p| p.patch()),
+    )
+    .expect("pending patches should apply");
     assert_eq!(next["counter"], json!(11));
 }
 
@@ -2543,10 +2529,7 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
                 json!(true),
             )))
             .with_source("test:cleanup");
-            vec![plugin_state_action(
-                self.id(),
-                AnyStateAction::Patch(patch),
-            )]
+            vec![plugin_state_action(self.id(), AnyStateAction::Patch(patch))]
         }
 
         fn reduce_plugin_actions(
@@ -2617,10 +2600,7 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
                     json!(1),
                 )))
                 .with_source("test:run_scoped_state");
-                return vec![plugin_state_action(
-                    self.id(),
-                    AnyStateAction::Patch(patch),
-                )];
+                return vec![plugin_state_action(self.id(), AnyStateAction::Patch(patch))];
             }
 
             if phase == Phase::StepStart {
@@ -2635,10 +2615,7 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
                     json!(current + 1),
                 )))
                 .with_source("test:run_scoped_state");
-                return vec![plugin_state_action(
-                    self.id(),
-                    AnyStateAction::Patch(patch),
-                )];
+                return vec![plugin_state_action(self.id(), AnyStateAction::Patch(patch))];
             }
 
             if phase != Phase::RunEnd {
@@ -2678,7 +2655,9 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
             let _ = current; // keep parity with previous evaluation order for debug state read
             vec![plugin_state_action(
                 self.id(),
-                AnyStateAction::Patch(TrackedPatch::new(patch).with_source("test:run_scoped_state")),
+                AnyStateAction::Patch(
+                    TrackedPatch::new(patch).with_source("test:run_scoped_state"),
+                ),
             )]
         }
 
@@ -2687,7 +2666,12 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
             actions: Vec<AnyPluginAction>,
             base_snapshot: &Value,
         ) -> Result<Vec<TrackedPatch>, String> {
-            reduce_plugin_state_actions(self.id(), actions, base_snapshot, "plugin:run_scoped_state")
+            reduce_plugin_state_actions(
+                self.id(),
+                actions,
+                base_snapshot,
+                "plugin:run_scoped_state",
+            )
         }
     }
 
@@ -3609,10 +3593,7 @@ fn test_execute_tools_sequential_propagates_intermediate_state_apply_errors() {
                 Patch::new().with_op(Op::increment(tirea_state::path!("counter"), 1_i64)),
             )
             .with_source("test:intermediate_apply_error");
-            vec![plugin_state_action(
-                self.id(),
-                AnyStateAction::Patch(patch),
-            )]
+            vec![plugin_state_action(self.id(), AnyStateAction::Patch(patch))]
         }
 
         fn reduce_plugin_actions(
@@ -3918,10 +3899,7 @@ async fn test_stream_terminate_behavior_requested_with_pending_state_emits_pendi
                 None,
             )
             .expect("failed to set suspended interaction");
-            vec![plugin_state_action(
-                self.id(),
-                AnyStateAction::Patch(patch),
-            )]
+            vec![plugin_state_action(self.id(), AnyStateAction::Patch(patch))]
         }
 
         fn reduce_plugin_actions(
@@ -5071,10 +5049,7 @@ async fn test_legacy_resume_replay_nonstream_queue_is_ignored() {
                 ]),
             )))
             .with_source("test:legacy_resume_replay_queue");
-            vec![plugin_state_action(
-                self.id(),
-                AnyStateAction::Patch(patch),
-            )]
+            vec![plugin_state_action(self.id(), AnyStateAction::Patch(patch))]
         }
 
         async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
@@ -5184,10 +5159,7 @@ async fn test_run_loop_terminate_behavior_requested_with_suspended_state_returns
                 None,
             )
             .expect("failed to set suspended interaction");
-            vec![plugin_state_action(
-                self.id(),
-                AnyStateAction::Patch(patch),
-            )]
+            vec![plugin_state_action(self.id(), AnyStateAction::Patch(patch))]
         }
 
         async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
@@ -6738,10 +6710,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
                 None,
             )
             .expect("failed to set suspended interaction");
-            vec![plugin_state_action(
-                self.id(),
-                AnyStateAction::Patch(patch),
-            )]
+            vec![plugin_state_action(self.id(), AnyStateAction::Patch(patch))]
         }
 
         fn reduce_plugin_actions(
@@ -8143,8 +8112,7 @@ async fn test_legacy_resume_replay_stream_queue_is_ignored() {
             }
             vec![plugin_state_action(
                 self.id(),
-                AnyStateAction::new::<ResumeToolCallsState>(
-                json!([
+                AnyStateAction::new::<ResumeToolCallsState>(json!([
                     {
                         "id": "replay_call_1",
                         "name": "echo",
@@ -8155,8 +8123,7 @@ async fn test_legacy_resume_replay_stream_queue_is_ignored() {
                         "name": "echo",
                         "arguments": {"message": "second"}
                     }
-                ]),
-                ),
+                ])),
             )]
         }
 
@@ -9764,10 +9731,7 @@ async fn test_run_step_terminate_behavior_requested_with_suspended_state_returns
                 None,
             )
             .expect("failed to set suspended interaction");
-            vec![plugin_state_action(
-                self.id(),
-                AnyStateAction::Patch(patch),
-            )]
+            vec![plugin_state_action(self.id(), AnyStateAction::Patch(patch))]
         }
 
         fn reduce_plugin_actions(
@@ -11700,10 +11664,7 @@ async fn test_nonstream_run_start_added_pending_pauses_before_inference() {
                 None,
             )
             .expect("failed to set suspended interaction");
-            vec![plugin_state_action(
-                self.id(),
-                AnyStateAction::Patch(patch),
-            )]
+            vec![plugin_state_action(self.id(), AnyStateAction::Patch(patch))]
         }
 
         fn reduce_plugin_actions(
@@ -11779,10 +11740,7 @@ async fn test_stream_run_start_added_pending_emits_and_pauses_before_inference()
                 None,
             )
             .expect("failed to set suspended interaction");
-            vec![plugin_state_action(
-                self.id(),
-                AnyStateAction::Patch(patch),
-            )]
+            vec![plugin_state_action(self.id(), AnyStateAction::Patch(patch))]
         }
 
         fn reduce_plugin_actions(
@@ -12127,10 +12085,7 @@ async fn test_run_loop_applies_plugin_state_effect_patch_before_inference() {
                 json!(true),
             )))
             .with_source("test:state_effect_before_inference");
-            vec![plugin_state_action(
-                self.id(),
-                AnyStateAction::Patch(patch),
-            )]
+            vec![plugin_state_action(self.id(), AnyStateAction::Patch(patch))]
         }
 
         fn reduce_plugin_actions(
@@ -12191,10 +12146,7 @@ async fn test_run_loop_applies_plugin_state_effect_patch_after_tool_execute() {
                     json!(true),
                 )))
                 .with_source("test:state_effect_after_tool_execute");
-                vec![plugin_state_action(
-                    self.id(),
-                    AnyStateAction::Patch(patch),
-                )]
+                vec![plugin_state_action(self.id(), AnyStateAction::Patch(patch))]
             } else {
                 Vec::new()
             }

@@ -4577,16 +4577,16 @@ fn test_scenario_various_interaction_types() {
 // InteractionPlugin Scenario Tests
 // ============================================================================
 
-use std::any::TypeId;
 use std::collections::{HashMap, HashSet};
 use tirea_agentos::contracts::io::ResumeDecisionAction;
 use tirea_agentos::contracts::runtime::plugin::agent::ReadOnlyContext;
 use tirea_agentos::contracts::runtime::plugin::phase::effect::PhaseOutput;
+use tirea_agentos::contracts::runtime::plugin::phase::state_spec::reduce_state_actions;
 use tirea_agentos::contracts::runtime::plugin::phase::{Phase, StepContext, ToolContext};
 use tirea_agentos::contracts::runtime::plugin::AgentBehavior;
 use tirea_agentos::contracts::runtime::{
-    AnyStateAction, SuspendedCall, SuspendedToolCallsState, ToolCallResume, ToolCallState,
-    ToolCallStatesAction, ToolCallStatesMap, ToolCallStatus,
+    AnyPluginAction, AnyStateAction, SuspendedCall, SuspendedToolCallsState, ToolCallResume,
+    ToolCallState, ToolCallStatesAction, ToolCallStatesMap, ToolCallStatus,
 };
 use tirea_agentos::contracts::thread::ToolCall;
 use tirea_protocol_ag_ui::RunAgentInput;
@@ -4681,6 +4681,7 @@ where
     T: AgentBehavior + ?Sized,
 {
     async fn run_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        let base_snapshot = step.snapshot();
         let ctx = build_read_only_ctx_for_dispatch(phase, step);
         let output = match phase {
             Phase::RunStart => self.run_start(&ctx).await,
@@ -4692,7 +4693,20 @@ where
             Phase::StepEnd => self.step_end(&ctx).await,
             Phase::RunEnd => self.run_end(&ctx).await,
         };
+        let plugin_actions = self.phase_actions(phase, &ctx).await;
         apply_phase_output_for_test(phase, step, output);
+        let plugin_patches = self
+            .reduce_plugin_actions(plugin_actions, &base_snapshot)
+            .expect("plugin actions should reduce");
+        for patch in plugin_patches {
+            {
+                let doc = step.ctx().doc();
+                for op in patch.patch().ops() {
+                    doc.apply(op).expect("plugin patch apply should succeed");
+                }
+            }
+            step.emit_patch(patch);
+        }
     }
 }
 
@@ -4816,12 +4830,6 @@ impl AgentBehavior for InteractionPlugin {
         "test_interaction"
     }
 
-    fn owned_states(&self) -> HashSet<TypeId> {
-        let mut owned = HashSet::new();
-        owned.insert(TypeId::of::<ToolCallStatesMap>());
-        owned
-    }
-
     async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
         if self.responses.is_empty() {
             return PhaseOutput::default();
@@ -4830,14 +4838,29 @@ impl AgentBehavior for InteractionPlugin {
         let suspended_state = ctx
             .snapshot_of::<SuspendedToolCallsState>()
             .unwrap_or_default();
+        if suspended_state.calls.is_empty() {
+            return PhaseOutput::default();
+        }
+
+        PhaseOutput::default()
+    }
+
+    async fn phase_actions(&self, phase: Phase, ctx: &ReadOnlyContext<'_>) -> Vec<AnyPluginAction> {
+        if phase != Phase::RunStart || self.responses.is_empty() {
+            return Vec::new();
+        }
+
+        let suspended_state = ctx
+            .snapshot_of::<SuspendedToolCallsState>()
+            .unwrap_or_default();
         let suspended_calls = suspended_state.calls;
         if suspended_calls.is_empty() {
-            return PhaseOutput::default();
+            return Vec::new();
         }
 
         let existing_states = ctx.snapshot_of::<ToolCallStatesMap>().unwrap_or_default();
         let mut states = existing_states.calls;
-        let mut output = PhaseOutput::default();
+        let mut actions = Vec::new();
         for (call_id, suspended_call) in suspended_calls {
             if states
                 .get(&call_id)
@@ -4867,11 +4890,38 @@ impl AgentBehavior for InteractionPlugin {
             state.resume_token = Some(suspended_call.ticket.pending.id.clone());
             state.resume = Some(resume);
             state.updated_at = updated_at;
-            output = output.with_state_action(AnyStateAction::new::<ToolCallStatesMap>(
+            actions.push(AnyPluginAction::new(
+                self.id(),
                 ToolCallStatesAction::InsertState { state },
             ));
         }
-        output
+        actions
+    }
+
+    fn reduce_plugin_actions(
+        &self,
+        actions: Vec<AnyPluginAction>,
+        base_snapshot: &serde_json::Value,
+    ) -> Result<Vec<TrackedPatch>, String> {
+        let mut state_actions = Vec::new();
+        for action in actions {
+            if action.plugin_id() != self.id() {
+                return Err(format!(
+                    "interaction plugin received action for unexpected plugin '{}'",
+                    action.plugin_id()
+                ));
+            }
+            let action = action.downcast::<ToolCallStatesAction>().map_err(|other| {
+                format!(
+                    "interaction plugin failed to downcast action '{}'",
+                    other.action_type_name()
+                )
+            })?;
+            state_actions.push(AnyStateAction::new::<ToolCallStatesMap>(action));
+        }
+
+        reduce_state_actions(state_actions, base_snapshot, "plugin:test_interaction")
+            .map_err(|e| e.to_string())
     }
 }
 
