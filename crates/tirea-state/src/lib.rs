@@ -108,8 +108,7 @@ mod writer;
 
 // Lattice / CRDT primitives
 pub use lattice::{
-    Flag, GCounter, GSet, LWWReg, Lattice, LatticeMerger, LatticeRegistry, MaxReg, MinReg, ORMap,
-    ORSet,
+    Flag, GCounter, GSet, Lattice, LatticeMerger, LatticeRegistry, MaxReg, MinReg, ORMap, ORSet,
 };
 
 // Core types

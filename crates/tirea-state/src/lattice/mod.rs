@@ -11,7 +11,6 @@
 //! | [`Flag`] | Boolean OR (monotonic enable) |
 //! | [`MaxReg<T>`] | Maximum value |
 //! | [`MinReg<T>`] | Minimum value |
-//! | [`LWWReg<T>`] | Last-writer-wins by `(timestamp, value)` |
 //! | [`GCounter`] | Grow-only counter (per-node max, sum for value) |
 //! | [`GSet<T>`] | Grow-only set (union) |
 //! | [`ORSet<T>`] | Observed-remove set (add-wins) |
@@ -20,7 +19,6 @@
 mod flag;
 mod g_counter;
 mod g_set;
-mod lww_reg;
 mod max_reg;
 mod min_reg;
 mod or_map;
@@ -30,7 +28,6 @@ mod registry;
 pub use flag::Flag;
 pub use g_counter::GCounter;
 pub use g_set::GSet;
-pub use lww_reg::LWWReg;
 pub use max_reg::MaxReg;
 pub use min_reg::MinReg;
 pub use or_map::ORMap;
