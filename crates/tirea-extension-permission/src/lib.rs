@@ -58,7 +58,7 @@ pub const PERMISSION_PLUGIN_ID: &str = "permission";
 ///
 /// `SetTool { Allow/Deny }` are routed through the CRDT-based
 /// [`PermissionPolicy`] for conflict-free parallel merges.
-/// Other actions go through the sequential [`PermissionState`] reducer.
+/// Other actions go through the sequential [`PermissionOverrides`] reducer.
 pub fn permission_state_action(action: PermissionAction) -> AnyStateAction {
     match action {
         PermissionAction::SetTool {
@@ -69,7 +69,7 @@ pub fn permission_state_action(action: PermissionAction) -> AnyStateAction {
             tool_id,
             behavior: ToolPermissionBehavior::Deny,
         } => AnyStateAction::new::<PermissionPolicy>(PermissionPolicyAction::DenyTool { tool_id }),
-        other => AnyStateAction::new::<PermissionState>(other),
+        other => AnyStateAction::new::<PermissionOverrides>(other),
     }
 }
 
@@ -77,14 +77,14 @@ pub fn permission_state_action(action: PermissionAction) -> AnyStateAction {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 #[serde(default)]
 #[tirea(path = "permissions")]
-struct PermissionState {
+struct PermissionOverrides {
     /// Default behavior for tools not explicitly configured.
     pub default_behavior: ToolPermissionBehavior,
     /// Per-tool permission overrides.
     pub tools: HashMap<String, ToolPermissionBehavior>,
 }
 
-impl StateSpec for PermissionState {
+impl StateSpec for PermissionOverrides {
     type Action = PermissionAction;
 
     fn reduce(&mut self, action: Self::Action) {
@@ -185,9 +185,9 @@ pub fn resolve_permission_behavior(
         // and legacy state has an explicit override.
     }
 
-    // 2. Fall back to legacy PermissionState.
-    let perms_value = snapshot.get(PermissionState::PATH);
-    if let Some(perms) = perms_value.and_then(|v| PermissionState::from_value(v).ok()) {
+    // 2. Fall back to legacy PermissionOverrides.
+    let perms_value = snapshot.get(PermissionOverrides::PATH);
+    if let Some(perms) = perms_value.and_then(|v| PermissionOverrides::from_value(v).ok()) {
         if let Some(&behavior) = perms.tools.get(tool_id) {
             return behavior;
         }
@@ -464,20 +464,20 @@ mod tests {
 
     #[test]
     fn test_permission_state_default() {
-        let state = PermissionState::default();
+        let state = PermissionOverrides::default();
         assert_eq!(state.default_behavior, ToolPermissionBehavior::Ask);
         assert!(state.tools.is_empty());
     }
 
     #[test]
     fn test_permission_state_serialization() {
-        let mut state = PermissionState::default();
+        let mut state = PermissionOverrides::default();
         state
             .tools
             .insert("read".to_string(), ToolPermissionBehavior::Allow);
 
         let json = serde_json::to_string(&state).unwrap();
-        let parsed: PermissionState = serde_json::from_str(&json).unwrap();
+        let parsed: PermissionOverrides = serde_json::from_str(&json).unwrap();
 
         assert_eq!(
             parsed.tools.get("read"),
@@ -931,7 +931,7 @@ mod tests {
             behavior: ToolPermissionBehavior::Allow,
         };
         let state_action = permission_state_action(action);
-        // Should be a typed action targeting PermissionPolicy, not PermissionState
+        // Should be a typed action targeting PermissionPolicy, not PermissionOverrides
         assert!(!matches!(state_action, AnyStateAction::Patch(_)));
     }
 

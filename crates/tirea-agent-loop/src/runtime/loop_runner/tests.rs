@@ -500,10 +500,8 @@ impl AgentBehavior for TestInteractionPlugin {
         if self.responses.is_empty() {
             return vec![];
         }
-        let suspended_state = ctx
-            .snapshot_of::<crate::contracts::runtime::SuspendedToolCallsState>()
-            .unwrap_or_default();
-        let suspended_calls = suspended_state.calls;
+        let state = ctx.snapshot();
+        let suspended_calls = crate::contracts::runtime::suspended_calls_from_state(&state);
         if suspended_calls.is_empty() {
             return vec![];
         }

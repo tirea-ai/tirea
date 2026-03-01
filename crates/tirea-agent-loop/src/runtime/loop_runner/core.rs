@@ -7,11 +7,11 @@ use crate::contracts::thread::{Message, Role};
 use crate::contracts::RunAction;
 use crate::contracts::RunContext;
 use crate::runtime::control::{
-    SuspendedToolCallsState, ToolCallResume, ToolCallState,
+    ToolCallResume, ToolCallState,
     ToolCallStatus,
 };
 use crate::contracts::runtime::tool_call::tool_call_states_from_state;
-use tirea_state::{DocCell, Op, Patch, Path, State, StateContext, TrackedPatch};
+use tirea_state::{parse_path, Op, Patch, TrackedPatch};
 
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -131,46 +131,33 @@ pub(super) fn build_request_for_filtered_tools(
 }
 
 /// Write suspended calls to internal state.
+///
+/// Each suspended call is stored at `__tool_call_scope.<call_id>.suspended_call`.
 pub(super) fn set_agent_suspended_calls(
-    state: &Value,
+    _state: &Value,
     calls: Vec<SuspendedCall>,
 ) -> Result<TrackedPatch, AgentLoopError> {
-    let doc = DocCell::new(state.clone());
-    let ctx = StateContext::new(&doc);
-    let suspended_state = ctx.state_of::<SuspendedToolCallsState>();
-
-    let map: HashMap<String, SuspendedCall> =
-        calls.into_iter().map(|c| (c.call_id.clone(), c)).collect();
-    suspended_state.set_calls(map).map_err(|e| {
-        let path = SuspendedToolCallsState::PATH;
-        AgentLoopError::StateError(format!("failed to set {path}.calls: {e}"))
-    })?;
-    Ok(ctx.take_tracked_patch("agent_loop"))
+    let mut ops = Vec::new();
+    for call in calls {
+        let scope_path = format!("__tool_call_scope.{}.suspended_call", call.call_id);
+        let path = parse_path(&scope_path);
+        let value = serde_json::to_value(&call)
+            .map_err(|e| AgentLoopError::StateError(format!("failed to serialize call: {e}")))?;
+        ops.push(Op::set(path, value));
+    }
+    let patch = Patch::with_ops(ops);
+    Ok(TrackedPatch::new(patch).with_source("agent_loop"))
 }
 
 /// Clear one suspended call.
 pub(super) fn clear_suspended_call(
-    state: &Value,
+    _state: &Value,
     call_id: &str,
 ) -> Result<TrackedPatch, AgentLoopError> {
-    let doc = DocCell::new(state.clone());
-    let ctx = StateContext::new(&doc);
-    let suspended_state = ctx.state_of::<SuspendedToolCallsState>();
-    let mut suspended = state
-        .get(SuspendedToolCallsState::PATH)
-        .and_then(|v| SuspendedToolCallsState::from_value(v).ok())
-        .map(|s| s.calls)
-        .unwrap_or_default();
-
-    if suspended.remove(call_id).is_none() {
-        return Ok(ctx.take_tracked_patch("agent_loop"));
-    }
-
-    suspended_state.set_calls(suspended).map_err(|e| {
-        let path = SuspendedToolCallsState::PATH;
-        AgentLoopError::StateError(format!("failed to set {path}.calls: {e}"))
-    })?;
-    Ok(ctx.take_tracked_patch("agent_loop"))
+    let scope_path = format!("__tool_call_scope.{}.suspended_call", call_id);
+    let path = parse_path(&scope_path);
+    let patch = Patch::with_ops(vec![Op::delete(path)]);
+    Ok(TrackedPatch::new(patch).with_source("agent_loop"))
 }
 
 #[allow(dead_code)]
@@ -241,10 +228,8 @@ pub(super) fn upsert_tool_call_state(
         ));
     }
 
-    let path = Path::root()
-        .key("__tool_call_scope")
-        .key(call_id)
-        .key("tool_call_state");
+    let scope_path = format!("__tool_call_scope.{}.tool_call_state", call_id);
+    let path = parse_path(&scope_path);
     let value = serde_json::to_value(tool_state).map_err(|e| {
         AgentLoopError::StateError(format!(
             "failed to serialize tool call state for '{call_id}': {e}"

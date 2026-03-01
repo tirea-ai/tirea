@@ -78,29 +78,50 @@ impl SuspendedCall {
     }
 }
 
-/// Durable suspended tool-call map persisted at `state["__suspended_tool_calls"]`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-#[tirea(path = "__suspended_tool_calls")]
-pub struct SuspendedToolCallsState {
-    /// Per-call suspended tool calls awaiting external resolution.
-    #[serde(default)]
-    #[tirea(default = "HashMap::new()")]
-    pub calls: HashMap<String, SuspendedCall>,
+/// Per-tool-call suspended state stored at `__tool_call_scope.<call_id>.suspended_call`.
+///
+/// When a tool call is suspended, this state holds the suspension ticket, pending
+/// interaction payload, and resume strategy. It is automatically deleted when the
+/// tool call reaches a terminal outcome (Succeeded/Failed/Cancelled).
+#[derive(Debug, Clone, Serialize, Deserialize, State)]
+#[tirea(path = "suspended_call")]
+pub struct SuspendedCallState {
+    /// The suspended call data (flattened for serialization).
+    #[serde(flatten)]
+    pub call: SuspendedCall,
 }
 
-/// Action type for `SuspendedToolCallsState` reducer.
-pub enum SuspendedToolCallsAction {
-    /// Insert or replace a suspended call entry.
-    InsertCall { call: SuspendedCall },
+impl Default for SuspendedCallState {
+    fn default() -> Self {
+        Self {
+            call: SuspendedCall {
+                call_id: String::new(),
+                tool_name: String::new(),
+                arguments: serde_json::Value::Null,
+                ticket: crate::runtime::phase::SuspendTicket::new(
+                    crate::Suspension::new("", ""),
+                    PendingToolCall::new("", "", serde_json::Value::Null),
+                    ToolCallResumeMode::ReplayToolCall,
+                ),
+            },
+        }
+    }
 }
 
-impl StateSpec for SuspendedToolCallsState {
-    type Action = SuspendedToolCallsAction;
+/// Action type for `SuspendedCallState` reducer.
+pub enum SuspendedCallAction {
+    /// Set the suspended call state.
+    Set(SuspendedCall),
+}
 
-    fn reduce(&mut self, action: SuspendedToolCallsAction) {
+impl StateSpec for SuspendedCallState {
+    type Action = SuspendedCallAction;
+    const SCOPE: crate::runtime::state::StateScope = crate::runtime::state::StateScope::ToolCall;
+
+    fn reduce(&mut self, action: SuspendedCallAction) {
         match action {
-            SuspendedToolCallsAction::InsertCall { call } => {
-                self.calls.insert(call.call_id.clone(), call);
+            SuspendedCallAction::Set(call) => {
+                self.call = call;
             }
         }
     }
@@ -249,11 +270,18 @@ impl StateSpec for ToolCallState {
 
 /// Parse suspended tool calls from a rebuilt state snapshot.
 pub fn suspended_calls_from_state(state: &Value) -> HashMap<String, SuspendedCall> {
-    state
-        .get(SuspendedToolCallsState::PATH)
-        .and_then(|v| SuspendedToolCallsState::from_value(v).ok())
-        .map(|s| s.calls)
-        .unwrap_or_default()
+    let Some(Value::Object(scopes)) = state.get("__tool_call_scope") else {
+        return HashMap::new();
+    };
+    scopes
+        .iter()
+        .filter_map(|(call_id, scope_val)| {
+            scope_val
+                .get("suspended_call")
+                .and_then(|v| SuspendedCallState::from_value(v).ok())
+                .map(|s| (call_id.clone(), s.call))
+        })
+        .collect()
 }
 
 /// Parse persisted tool call runtime states from a rebuilt state snapshot.
@@ -279,9 +307,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn suspended_tool_calls_state_defaults_to_empty() {
-        let suspended = SuspendedToolCallsState::default();
-        assert!(suspended.calls.is_empty());
+    fn suspended_call_state_default() {
+        let suspended = SuspendedCallState::default();
+        assert_eq!(suspended.call.call_id, "");
+        assert_eq!(suspended.call.tool_name, "");
     }
 
     #[test]

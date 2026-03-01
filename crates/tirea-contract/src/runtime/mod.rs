@@ -32,7 +32,7 @@ pub use state::{
 };
 pub use tool_call::{
     suspended_calls_from_state, tool_call_states_from_state, ActivityContext, DecisionReplayPolicy,
-    PendingToolCall, SuspendedCall, SuspendedToolCallsAction, SuspendedToolCallsState, Suspension,
+    PendingToolCall, SuspendedCall, SuspendedCallAction, SuspendedCallState, Suspension,
     SuspensionResponse, ToolCallContext, ToolCallOutcome, ToolCallResume, ToolCallResumeMode,
     ToolCallState, ToolCallStateAction, ToolCallStatus, ToolExecution,
     ToolExecutionEffect, ToolExecutionRequest, ToolExecutionResult, ToolExecutor,

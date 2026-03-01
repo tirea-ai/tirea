@@ -95,7 +95,7 @@ impl AgentBehavior for AgentRecoveryPlugin {
 
     async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
         use crate::contracts::runtime::{
-            PendingToolCall, SuspendedCall, SuspendedToolCallsAction, SuspendedToolCallsState,
+            PendingToolCall, SuspendedCall, SuspendedCallAction, SuspendedCallState,
             ToolCallResumeMode, ToolCallState, ToolCallStateAction,
         };
 
@@ -159,16 +159,17 @@ impl AgentBehavior for AgentRecoveryPlugin {
                 let resume_token = suspended_call.ticket.pending.id.clone();
                 let arguments = suspended_call.arguments.clone();
 
+                let suspended_call_for_action = SuspendedCall {
+                    call_id: suspended_call.call_id.clone(),
+                    tool_name: suspended_call.tool_name.clone(),
+                    arguments: suspended_call.arguments.clone(),
+                    ticket: suspended_call.ticket.clone(),
+                };
+                let call_id_for_action = suspended_call_for_action.call_id.clone();
                 actions.push(Box::new(EmitRecoveryPatch(
-                    AnyStateAction::new::<SuspendedToolCallsState>(
-                        SuspendedToolCallsAction::InsertCall {
-                            call: SuspendedCall {
-                                call_id: suspended_call.call_id.clone(),
-                                tool_name: suspended_call.tool_name.clone(),
-                                arguments: suspended_call.arguments.clone(),
-                                ticket: suspended_call.ticket.clone(),
-                            },
-                        },
+                    AnyStateAction::new_for_call::<SuspendedCallState>(
+                        SuspendedCallAction::Set(suspended_call_for_action),
+                        call_id_for_action,
                     ),
                 )));
                 actions.push(Box::new(EmitRecoveryPatch(
@@ -197,11 +198,11 @@ impl AgentBehavior for AgentRecoveryPlugin {
             ToolPermissionBehavior::Ask => {
                 let interaction = build_recovery_interaction(&run_id, run);
                 let suspended_call = make_suspended_call(&interaction);
+                let call_id_for_ask = suspended_call.call_id.clone();
                 actions.push(Box::new(EmitRecoveryPatch(
-                    AnyStateAction::new::<SuspendedToolCallsState>(
-                        SuspendedToolCallsAction::InsertCall {
-                            call: suspended_call,
-                        },
+                    AnyStateAction::new_for_call::<SuspendedCallState>(
+                        SuspendedCallAction::Set(suspended_call),
+                        call_id_for_ask,
                     ),
                 )));
             }

@@ -2,9 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use tirea_contract::io::ResumeDecisionAction;
-use tirea_contract::runtime::tool_call::SuspendedToolCallsState;
+use tirea_contract::runtime::suspended_calls_from_state;
 use tirea_contract::runtime::ToolCallResume;
-use tirea_state::State as _;
 use tirea_contract::{gen_message_id, RunRequest, Visibility};
 use tirea_contract::{SuspensionResponse, ToolCallDecision};
 use tracing::warn;
@@ -387,30 +386,11 @@ impl RunAgentInput {
             return ids;
         };
 
-        if let Some(calls) = state
-            .get(SuspendedToolCallsState::PATH)
-            .and_then(|v| v.get("calls"))
-            .and_then(Value::as_object)
-        {
-            for call in calls.values() {
-                if let Some(id) = call
-                    .get("pending")
-                    .and_then(|v| v.get("id"))
-                    .and_then(Value::as_str)
-                {
-                    ids.insert(id.to_string());
-                }
-                if let Some(id) = call.get("call_id").and_then(Value::as_str) {
-                    ids.insert(id.to_string());
-                }
-                if let Some(id) = call
-                    .get("suspension")
-                    .and_then(|v| v.get("id"))
-                    .and_then(Value::as_str)
-                {
-                    ids.insert(id.to_string());
-                }
-            }
+        let calls = suspended_calls_from_state(state);
+        for call in calls.values() {
+            ids.insert(call.ticket.pending.id.clone());
+            ids.insert(call.call_id.clone());
+            ids.insert(call.ticket.suspension.id.clone());
         }
 
         ids

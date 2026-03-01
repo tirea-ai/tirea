@@ -1,5 +1,5 @@
 use super::*;
-use tirea_contract::runtime::SuspendedToolCallsState;
+use tirea_contract::runtime::suspended_calls_from_state;
 use tirea_state::State;
 pub(super) fn as_delegation_record(
     summary: &AgentRunSummary,
@@ -86,11 +86,7 @@ pub(super) fn build_recovery_interaction(run_id: &str, run: &DelegationRecord) -
 }
 
 pub(super) fn has_suspended_recovery_interaction(state: &Value) -> bool {
-    state
-        .get(SuspendedToolCallsState::PATH)
-        .and_then(|v| SuspendedToolCallsState::from_value(v).ok())
-        .map(|s| s.calls)
-        .unwrap_or_default()
+    suspended_calls_from_state(state)
         .values()
         .any(|call| call.ticket.suspension.action == AGENT_RECOVERY_INTERACTION_ACTION)
 }

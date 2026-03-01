@@ -14,7 +14,7 @@ pub use executor::{
 };
 pub use lifecycle::{
     suspended_calls_from_state, tool_call_states_from_state, PendingToolCall, ResumeDecisionAction,
-    SuspendedCall, SuspendedToolCallsAction, SuspendedToolCallsState, ToolCallResume,
+    SuspendedCall, SuspendedCallAction, SuspendedCallState, ToolCallResume,
     ToolCallResumeMode, ToolCallState, ToolCallStateAction, ToolCallStatus,
 };
 pub use gate::{SuspendTicket, ToolCallAction, ToolGate};
