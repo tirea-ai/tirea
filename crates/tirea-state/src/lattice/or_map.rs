@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use super::Lattice;
@@ -23,12 +24,45 @@ pub(crate) struct Entry<V> {
 ///
 /// The internal clock advances automatically on mutation and is bumped to
 /// `max(self, other)` on merge.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ORMap<K: Ord, V: Lattice> {
     entries: BTreeMap<K, Entry<V>>,
     tombstones: BTreeMap<K, u64>,
     #[serde(skip)]
     clock: u64,
+}
+
+impl<'de, K, V> Deserialize<'de> for ORMap<K, V>
+where
+    K: Ord + DeserializeOwned,
+    V: Lattice + DeserializeOwned,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Raw<K: Ord, V> {
+            entries: BTreeMap<K, Entry<V>>,
+            tombstones: BTreeMap<K, u64>,
+        }
+
+        let raw = Raw::<K, V>::deserialize(deserializer)?;
+        let max_entry = raw
+            .entries
+            .values()
+            .map(|e| e.timestamp)
+            .max()
+            .unwrap_or(0);
+        let max_tomb = raw.tombstones.values().copied().max().unwrap_or(0);
+        let clock = max_entry.max(max_tomb);
+
+        Ok(Self {
+            entries: raw.entries,
+            tombstones: raw.tombstones,
+            clock,
+        })
+    }
 }
 
 impl<K: Ord, V: Lattice> ORMap<K, V> {

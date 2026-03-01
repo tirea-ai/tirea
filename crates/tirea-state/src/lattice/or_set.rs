@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use super::Lattice;
@@ -13,12 +14,36 @@ use super::Lattice;
 ///
 /// The internal clock advances automatically on mutation and is bumped to
 /// `max(self, other)` on merge.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ORSet<T: Ord> {
     entries: BTreeMap<T, u64>,
     tombstones: BTreeMap<T, u64>,
     #[serde(skip)]
     clock: u64,
+}
+
+impl<'de, T: Ord + DeserializeOwned> Deserialize<'de> for ORSet<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Raw<T: Ord> {
+            entries: BTreeMap<T, u64>,
+            tombstones: BTreeMap<T, u64>,
+        }
+
+        let raw = Raw::deserialize(deserializer)?;
+        let max_entry = raw.entries.values().copied().max().unwrap_or(0);
+        let max_tomb = raw.tombstones.values().copied().max().unwrap_or(0);
+        let clock = max_entry.max(max_tomb);
+
+        Ok(Self {
+            entries: raw.entries,
+            tombstones: raw.tombstones,
+            clock,
+        })
+    }
 }
 
 impl<T: Ord> ORSet<T> {
