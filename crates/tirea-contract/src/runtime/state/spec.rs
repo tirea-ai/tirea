@@ -73,6 +73,31 @@ pub enum CommutativeAction {
     },
     /// Monotonic flag: once enabled it stays `true`.
     EnableFlag { path: String, scope: StateScope },
+    /// Remove values from an array at `path` (set semantics).
+    SetRemove {
+        path: String,
+        values: Vec<Value>,
+        scope: StateScope,
+    },
+    /// Put entries into a map at `path` (per-key granularity).
+    /// `entries` must be a JSON object.
+    MapPut {
+        path: String,
+        entries: Value,
+        scope: StateScope,
+    },
+    /// Remove keys from a map at `path`.
+    MapRemove {
+        path: String,
+        keys: Vec<String>,
+        scope: StateScope,
+    },
+    /// Set integer at `path` to min(current, value) (missing path treated as unset).
+    MinI64 {
+        path: String,
+        value: i64,
+        scope: StateScope,
+    },
 }
 
 impl CommutativeAction {
@@ -83,6 +108,10 @@ impl CommutativeAction {
             Self::SetUnion { .. } => "commutative_set_union",
             Self::MaxI64 { .. } => "commutative_max_i64",
             Self::EnableFlag { .. } => "commutative_enable_flag",
+            Self::SetRemove { .. } => "commutative_set_remove",
+            Self::MapPut { .. } => "commutative_map_put",
+            Self::MapRemove { .. } => "commutative_map_remove",
+            Self::MinI64 { .. } => "commutative_min_i64",
         }
     }
 
@@ -92,7 +121,11 @@ impl CommutativeAction {
             Self::CounterAdd { scope, .. }
             | Self::SetUnion { scope, .. }
             | Self::MaxI64 { scope, .. }
-            | Self::EnableFlag { scope, .. } => *scope,
+            | Self::EnableFlag { scope, .. }
+            | Self::SetRemove { scope, .. }
+            | Self::MapPut { scope, .. }
+            | Self::MapRemove { scope, .. }
+            | Self::MinI64 { scope, .. } => *scope,
         }
     }
 
@@ -168,6 +201,101 @@ impl CommutativeAction {
                 },
             ) if l_path == r_path && l_scope == r_scope => Some(Self::EnableFlag {
                 path: l_path.clone(),
+                scope: *l_scope,
+            }),
+            (
+                Self::SetRemove {
+                    path: l_path,
+                    values: l_values,
+                    scope: l_scope,
+                },
+                Self::SetRemove {
+                    path: r_path,
+                    values: r_values,
+                    scope: r_scope,
+                },
+            ) if l_path == r_path && l_scope == r_scope => {
+                let mut merged = l_values.clone();
+                for value in r_values {
+                    if !merged.contains(value) {
+                        merged.push(value.clone());
+                    }
+                }
+                Some(Self::SetRemove {
+                    path: l_path.clone(),
+                    values: merged,
+                    scope: *l_scope,
+                })
+            }
+            (
+                Self::MapPut {
+                    path: l_path,
+                    entries: l_entries,
+                    scope: l_scope,
+                },
+                Self::MapPut {
+                    path: r_path,
+                    entries: r_entries,
+                    scope: r_scope,
+                },
+            ) if l_path == r_path && l_scope == r_scope => {
+                let l_obj = l_entries.as_object()?;
+                let r_obj = r_entries.as_object()?;
+                let mut merged = l_obj.clone();
+                for (key, r_value) in r_obj {
+                    if let Some(l_value) = merged.get(key) {
+                        if l_value != r_value {
+                            return None; // same key, different value → conflict
+                        }
+                        // same key, same value → deduplicate (no-op)
+                    } else {
+                        merged.insert(key.clone(), r_value.clone());
+                    }
+                }
+                Some(Self::MapPut {
+                    path: l_path.clone(),
+                    entries: Value::Object(merged),
+                    scope: *l_scope,
+                })
+            }
+            (
+                Self::MapRemove {
+                    path: l_path,
+                    keys: l_keys,
+                    scope: l_scope,
+                },
+                Self::MapRemove {
+                    path: r_path,
+                    keys: r_keys,
+                    scope: r_scope,
+                },
+            ) if l_path == r_path && l_scope == r_scope => {
+                let mut merged = l_keys.clone();
+                for key in r_keys {
+                    if !merged.contains(key) {
+                        merged.push(key.clone());
+                    }
+                }
+                Some(Self::MapRemove {
+                    path: l_path.clone(),
+                    keys: merged,
+                    scope: *l_scope,
+                })
+            }
+            (
+                Self::MinI64 {
+                    path: l_path,
+                    value: l_value,
+                    scope: l_scope,
+                },
+                Self::MinI64 {
+                    path: r_path,
+                    value: r_value,
+                    scope: r_scope,
+                },
+            ) if l_path == r_path && l_scope == r_scope => Some(Self::MinI64 {
+                path: l_path.clone(),
+                value: (*l_value).min(*r_value),
                 scope: *l_scope,
             }),
             _ => None,
@@ -260,6 +388,80 @@ impl CommutativeAction {
                         "enable_flag expects boolean at path '{path}'"
                     ))),
                 }
+            }
+            Self::SetRemove { path, values, .. } => {
+                let parsed = parse_path(path);
+                let current = get_at_path(doc, &parsed).cloned().unwrap_or(Value::Null);
+                match current {
+                    Value::Null => Ok(Patch::new()),
+                    Value::Array(items) => {
+                        let filtered: Vec<Value> =
+                            items.into_iter().filter(|v| !values.contains(v)).collect();
+                        Ok(Patch::with_ops(vec![Op::set(
+                            path_from_str(path),
+                            Value::Array(filtered),
+                        )]))
+                    }
+                    _ => Err(TireaError::invalid_operation(format!(
+                        "set_remove expects array at path '{path}'"
+                    ))),
+                }
+            }
+            Self::MapPut { path, entries, .. } => {
+                let obj = entries.as_object().ok_or_else(|| {
+                    TireaError::invalid_operation(format!(
+                        "map_put entries must be a JSON object at path '{path}'"
+                    ))
+                })?;
+                let base_path = path_from_str(path);
+                let ops: Vec<Op> = obj
+                    .iter()
+                    .map(|(key, value)| Op::set(base_path.clone().key(key), value.clone()))
+                    .collect();
+                Ok(Patch::with_ops(ops))
+            }
+            Self::MapRemove { path, keys, .. } => {
+                let parsed = parse_path(path);
+                let current = get_at_path(doc, &parsed).cloned().unwrap_or(Value::Null);
+                match current {
+                    Value::Null => Ok(Patch::new()),
+                    Value::Object(map) => {
+                        let base_path = path_from_str(path);
+                        let ops: Vec<Op> = keys
+                            .iter()
+                            .filter(|k| map.contains_key(k.as_str()))
+                            .map(|k| Op::delete(base_path.clone().key(k)))
+                            .collect();
+                        Ok(Patch::with_ops(ops))
+                    }
+                    _ => Err(TireaError::invalid_operation(format!(
+                        "map_remove expects object at path '{path}'"
+                    ))),
+                }
+            }
+            Self::MinI64 { path, value, .. } => {
+                let parsed = parse_path(path);
+                let current = get_at_path(doc, &parsed).cloned().unwrap_or(Value::Null);
+                let next = match current {
+                    Value::Null => *value,
+                    Value::Number(number) => {
+                        let current = number.as_i64().ok_or_else(|| {
+                            TireaError::invalid_operation(format!(
+                                "min_i64 expects integer at path '{path}'"
+                            ))
+                        })?;
+                        current.min(*value)
+                    }
+                    _ => {
+                        return Err(TireaError::invalid_operation(format!(
+                            "min_i64 expects integer at path '{path}'"
+                        )))
+                    }
+                };
+                Ok(Patch::with_ops(vec![Op::set(
+                    path_from_str(path),
+                    Value::from(next),
+                )]))
             }
         }
     }
@@ -387,6 +589,70 @@ impl AnyStateAction {
     pub fn enable_flag_scoped(path: impl Into<String>, scope: StateScope) -> Self {
         Self::Commutative(CommutativeAction::EnableFlag {
             path: path.into(),
+            scope,
+        })
+    }
+
+    /// Build a run-scoped set-remove action.
+    pub fn set_remove(path: impl Into<String>, values: Vec<Value>) -> Self {
+        Self::set_remove_scoped(path, values, StateScope::Run)
+    }
+
+    /// Build a set-remove action with explicit scope.
+    pub fn set_remove_scoped(
+        path: impl Into<String>,
+        values: Vec<Value>,
+        scope: StateScope,
+    ) -> Self {
+        Self::Commutative(CommutativeAction::SetRemove {
+            path: path.into(),
+            values,
+            scope,
+        })
+    }
+
+    /// Build a run-scoped map-put action.
+    pub fn map_put(path: impl Into<String>, entries: Value) -> Self {
+        Self::map_put_scoped(path, entries, StateScope::Run)
+    }
+
+    /// Build a map-put action with explicit scope.
+    pub fn map_put_scoped(path: impl Into<String>, entries: Value, scope: StateScope) -> Self {
+        Self::Commutative(CommutativeAction::MapPut {
+            path: path.into(),
+            entries,
+            scope,
+        })
+    }
+
+    /// Build a run-scoped map-remove action.
+    pub fn map_remove(path: impl Into<String>, keys: Vec<String>) -> Self {
+        Self::map_remove_scoped(path, keys, StateScope::Run)
+    }
+
+    /// Build a map-remove action with explicit scope.
+    pub fn map_remove_scoped(
+        path: impl Into<String>,
+        keys: Vec<String>,
+        scope: StateScope,
+    ) -> Self {
+        Self::Commutative(CommutativeAction::MapRemove {
+            path: path.into(),
+            keys,
+            scope,
+        })
+    }
+
+    /// Build a run-scoped min-i64 action.
+    pub fn min_i64(path: impl Into<String>, value: i64) -> Self {
+        Self::min_i64_scoped(path, value, StateScope::Run)
+    }
+
+    /// Build a min-i64 action with explicit scope.
+    pub fn min_i64_scoped(path: impl Into<String>, value: i64, scope: StateScope) -> Self {
+        Self::Commutative(CommutativeAction::MinI64 {
+            path: path.into(),
+            value,
             scope,
         })
     }
@@ -835,5 +1101,275 @@ mod tests {
     #[should_panic(expected = "no bound path")]
     fn any_state_action_panics_on_empty_path() {
         let _ = AnyStateAction::new::<Unbound>(());
+    }
+
+    // -- SetRemove tests --
+
+    #[test]
+    fn commutative_set_remove_filters_matching_values() {
+        let base = json!({"tags": ["a", "b", "c", "d"]});
+        let action = AnyStateAction::set_remove("tags", vec![json!("b"), json!("d")]);
+        let patch = action.apply(&base).unwrap();
+        let next = apply_patch(&base, &patch).unwrap();
+        assert_eq!(next["tags"], json!(["a", "c"]));
+    }
+
+    #[test]
+    fn commutative_set_remove_null_is_noop() {
+        let base = json!({});
+        let action = AnyStateAction::set_remove("tags", vec![json!("x")]);
+        let patch = action.apply(&base).unwrap();
+        assert!(patch.is_empty());
+    }
+
+    #[test]
+    fn commutative_set_remove_type_error() {
+        let base = json!({"tags": "not_an_array"});
+        let action = AnyStateAction::set_remove("tags", vec![json!("x")]);
+        let err = action.apply(&base).unwrap_err();
+        assert!(err.to_string().contains("set_remove expects array"));
+    }
+
+    #[test]
+    fn commutative_set_remove_merge_unions_values() {
+        let left = CommutativeAction::SetRemove {
+            path: "tags".into(),
+            values: vec![json!("a"), json!("b")],
+            scope: StateScope::Run,
+        };
+        let right = CommutativeAction::SetRemove {
+            path: "tags".into(),
+            values: vec![json!("b"), json!("c")],
+            scope: StateScope::Run,
+        };
+        let merged = left.merge(&right).unwrap();
+        match merged {
+            CommutativeAction::SetRemove { values, .. } => {
+                assert_eq!(values, vec![json!("a"), json!("b"), json!("c")]);
+            }
+            _ => panic!("expected SetRemove"),
+        }
+    }
+
+    #[test]
+    fn commutative_set_remove_merge_incompatible_with_set_union() {
+        let left = CommutativeAction::SetRemove {
+            path: "tags".into(),
+            values: vec![json!("a")],
+            scope: StateScope::Run,
+        };
+        let right = CommutativeAction::SetUnion {
+            path: "tags".into(),
+            values: vec![json!("b")],
+            scope: StateScope::Run,
+        };
+        assert!(left.merge(&right).is_none());
+    }
+
+    // -- MapPut tests --
+
+    #[test]
+    fn commutative_map_put_generates_per_key_ops() {
+        let base = json!({"data": {"existing": 1}});
+        let action = AnyStateAction::map_put("data", json!({"new_key": 42, "another": "hello"}));
+        let patch = action.apply(&base).unwrap();
+        let next = apply_patch(&base, &patch).unwrap();
+        assert_eq!(next["data"]["existing"], 1);
+        assert_eq!(next["data"]["new_key"], 42);
+        assert_eq!(next["data"]["another"], "hello");
+    }
+
+    #[test]
+    fn commutative_map_put_on_null_creates_keys() {
+        let base = json!({});
+        let action = AnyStateAction::map_put("data", json!({"key": "value"}));
+        let patch = action.apply(&base).unwrap();
+        let next = apply_patch(&base, &patch).unwrap();
+        assert_eq!(next["data"]["key"], "value");
+    }
+
+    #[test]
+    fn commutative_map_put_merge_disjoint_keys() {
+        let left = CommutativeAction::MapPut {
+            path: "data".into(),
+            entries: json!({"a": 1}),
+            scope: StateScope::Run,
+        };
+        let right = CommutativeAction::MapPut {
+            path: "data".into(),
+            entries: json!({"b": 2}),
+            scope: StateScope::Run,
+        };
+        let merged = left.merge(&right).unwrap();
+        match merged {
+            CommutativeAction::MapPut { entries, .. } => {
+                assert_eq!(entries, json!({"a": 1, "b": 2}));
+            }
+            _ => panic!("expected MapPut"),
+        }
+    }
+
+    #[test]
+    fn commutative_map_put_merge_same_key_same_value_deduplicates() {
+        let left = CommutativeAction::MapPut {
+            path: "data".into(),
+            entries: json!({"a": 1}),
+            scope: StateScope::Run,
+        };
+        let right = CommutativeAction::MapPut {
+            path: "data".into(),
+            entries: json!({"a": 1}),
+            scope: StateScope::Run,
+        };
+        let merged = left.merge(&right).unwrap();
+        match merged {
+            CommutativeAction::MapPut { entries, .. } => {
+                assert_eq!(entries, json!({"a": 1}));
+            }
+            _ => panic!("expected MapPut"),
+        }
+    }
+
+    #[test]
+    fn commutative_map_put_merge_same_key_different_value_conflicts() {
+        let left = CommutativeAction::MapPut {
+            path: "data".into(),
+            entries: json!({"a": 1}),
+            scope: StateScope::Run,
+        };
+        let right = CommutativeAction::MapPut {
+            path: "data".into(),
+            entries: json!({"a": 2}),
+            scope: StateScope::Run,
+        };
+        assert!(left.merge(&right).is_none());
+    }
+
+    // -- MapRemove tests --
+
+    #[test]
+    fn commutative_map_remove_deletes_existing_keys() {
+        let base = json!({"data": {"a": 1, "b": 2, "c": 3}});
+        let action = AnyStateAction::map_remove("data", vec!["a".into(), "c".into()]);
+        let patch = action.apply(&base).unwrap();
+        let next = apply_patch(&base, &patch).unwrap();
+        assert_eq!(next["data"], json!({"b": 2}));
+    }
+
+    #[test]
+    fn commutative_map_remove_null_is_noop() {
+        let base = json!({});
+        let action = AnyStateAction::map_remove("data", vec!["x".into()]);
+        let patch = action.apply(&base).unwrap();
+        assert!(patch.is_empty());
+    }
+
+    #[test]
+    fn commutative_map_remove_ignores_missing_keys() {
+        let base = json!({"data": {"a": 1}});
+        let action = AnyStateAction::map_remove("data", vec!["missing".into()]);
+        let patch = action.apply(&base).unwrap();
+        assert!(patch.is_empty());
+    }
+
+    #[test]
+    fn commutative_map_remove_type_error() {
+        let base = json!({"data": [1, 2]});
+        let action = AnyStateAction::map_remove("data", vec!["x".into()]);
+        let err = action.apply(&base).unwrap_err();
+        assert!(err.to_string().contains("map_remove expects object"));
+    }
+
+    #[test]
+    fn commutative_map_remove_merge_unions_keys() {
+        let left = CommutativeAction::MapRemove {
+            path: "data".into(),
+            keys: vec!["a".into(), "b".into()],
+            scope: StateScope::Run,
+        };
+        let right = CommutativeAction::MapRemove {
+            path: "data".into(),
+            keys: vec!["b".into(), "c".into()],
+            scope: StateScope::Run,
+        };
+        let merged = left.merge(&right).unwrap();
+        match merged {
+            CommutativeAction::MapRemove { keys, .. } => {
+                assert_eq!(keys, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+            }
+            _ => panic!("expected MapRemove"),
+        }
+    }
+
+    // -- MinI64 tests --
+
+    #[test]
+    fn commutative_min_i64_uses_min_value() {
+        let base = json!({"score": 10});
+        let actions = vec![
+            AnyStateAction::min_i64("score", 15),
+            AnyStateAction::min_i64("score", 3),
+        ];
+        let tracked = reduce_state_actions(actions, &base, "agent").unwrap();
+        let mut next = base;
+        for patch in tracked {
+            next = apply_patch(&next, patch.patch()).unwrap();
+        }
+        assert_eq!(next["score"], json!(3));
+    }
+
+    #[test]
+    fn commutative_min_i64_null_uses_value() {
+        let base = json!({});
+        let action = AnyStateAction::min_i64("score", 42);
+        let patch = action.apply(&base).unwrap();
+        let next = apply_patch(&base, &patch).unwrap();
+        assert_eq!(next["score"], 42);
+    }
+
+    #[test]
+    fn commutative_min_i64_type_error() {
+        let base = json!({"score": "not_a_number"});
+        let action = AnyStateAction::min_i64("score", 5);
+        let err = action.apply(&base).unwrap_err();
+        assert!(err.to_string().contains("min_i64 expects integer"));
+    }
+
+    #[test]
+    fn commutative_min_i64_merge_takes_min() {
+        let left = CommutativeAction::MinI64 {
+            path: "score".into(),
+            value: 10,
+            scope: StateScope::Run,
+        };
+        let right = CommutativeAction::MinI64 {
+            path: "score".into(),
+            value: 3,
+            scope: StateScope::Run,
+        };
+        let merged = left.merge(&right).unwrap();
+        assert_eq!(
+            merged,
+            CommutativeAction::MinI64 {
+                path: "score".into(),
+                value: 3,
+                scope: StateScope::Run,
+            }
+        );
+    }
+
+    #[test]
+    fn commutative_min_i64_merge_incompatible_with_max_i64() {
+        let left = CommutativeAction::MinI64 {
+            path: "score".into(),
+            value: 10,
+            scope: StateScope::Run,
+        };
+        let right = CommutativeAction::MaxI64 {
+            path: "score".into(),
+            value: 5,
+            scope: StateScope::Run,
+        };
+        assert!(left.merge(&right).is_none());
     }
 }

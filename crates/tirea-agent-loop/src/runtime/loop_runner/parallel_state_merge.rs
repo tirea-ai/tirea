@@ -44,7 +44,11 @@ fn commutative_action_path(action: &CommutativeAction) -> &str {
         CommutativeAction::CounterAdd { path, .. }
         | CommutativeAction::SetUnion { path, .. }
         | CommutativeAction::MaxI64 { path, .. }
-        | CommutativeAction::EnableFlag { path, .. } => path,
+        | CommutativeAction::EnableFlag { path, .. }
+        | CommutativeAction::SetRemove { path, .. }
+        | CommutativeAction::MapPut { path, .. }
+        | CommutativeAction::MapRemove { path, .. }
+        | CommutativeAction::MinI64 { path, .. } => path,
     }
 }
 
@@ -87,10 +91,10 @@ fn merge_commutative_actions(
         }
 
         if check_conflicts {
-            if let Some((existing, existing_call_id)) = merged.iter().find(|(existing, _)| {
-                actions_share_path_and_scope(existing, item.action)
-                    && existing.label() != item.action.label()
-            }) {
+            if let Some((existing, existing_call_id)) = merged
+                .iter()
+                .find(|(existing, _)| actions_share_path_and_scope(existing, item.action))
+            {
                 return Err(AgentLoopError::StateError(format!(
                     "incompatible commutative actions between '{}' ({}) and '{}' ({}) at {}",
                     existing_call_id,
@@ -556,5 +560,132 @@ mod tests {
             }
             other => panic!("expected state error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn merge_parallel_set_remove_actions() {
+        let base = json!({"tags": ["a", "b", "c", "d"]});
+        let left = result_with(
+            "call_left",
+            None,
+            Vec::new(),
+            vec![CommutativeAction::SetRemove {
+                path: "tags".to_string(),
+                values: vec![json!("a")],
+                scope: crate::contracts::runtime::state::StateScope::Run,
+            }],
+        );
+        let right = result_with(
+            "call_right",
+            None,
+            Vec::new(),
+            vec![CommutativeAction::SetRemove {
+                path: "tags".to_string(),
+                values: vec![json!("c")],
+                scope: crate::contracts::runtime::state::StateScope::Run,
+            }],
+        );
+
+        let patches = merge_parallel_state_patches(&base, &[left, right], true)
+            .expect("merge should succeed");
+        assert_eq!(patches.len(), 1);
+
+        let merged = apply_all(&base, &patches);
+        assert_eq!(merged["tags"], json!(["b", "d"]));
+    }
+
+    #[test]
+    fn merge_parallel_map_put_disjoint_keys() {
+        let base = json!({"data": {}});
+        let left = result_with(
+            "call_left",
+            None,
+            Vec::new(),
+            vec![CommutativeAction::MapPut {
+                path: "data".to_string(),
+                entries: json!({"key_a": 1}),
+                scope: crate::contracts::runtime::state::StateScope::Run,
+            }],
+        );
+        let right = result_with(
+            "call_right",
+            None,
+            Vec::new(),
+            vec![CommutativeAction::MapPut {
+                path: "data".to_string(),
+                entries: json!({"key_b": 2}),
+                scope: crate::contracts::runtime::state::StateScope::Run,
+            }],
+        );
+
+        let patches = merge_parallel_state_patches(&base, &[left, right], true)
+            .expect("merge should succeed");
+        let merged = apply_all(&base, &patches);
+        assert_eq!(merged["data"]["key_a"], 1);
+        assert_eq!(merged["data"]["key_b"], 2);
+    }
+
+    #[test]
+    fn merge_parallel_map_put_same_key_different_value_conflicts() {
+        let base = json!({"data": {}});
+        let left = result_with(
+            "call_left",
+            None,
+            Vec::new(),
+            vec![CommutativeAction::MapPut {
+                path: "data".to_string(),
+                entries: json!({"key": 1}),
+                scope: crate::contracts::runtime::state::StateScope::Run,
+            }],
+        );
+        let right = result_with(
+            "call_right",
+            None,
+            Vec::new(),
+            vec![CommutativeAction::MapPut {
+                path: "data".to_string(),
+                entries: json!({"key": 2}),
+                scope: crate::contracts::runtime::state::StateScope::Run,
+            }],
+        );
+
+        let err = merge_parallel_state_patches(&base, &[left, right], true)
+            .expect_err("must reject conflicting MapPut");
+        match err {
+            AgentLoopError::StateError(message) => {
+                assert!(message.contains("data"));
+            }
+            other => panic!("expected state error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn merge_parallel_min_i64_actions() {
+        let base = json!({"score": 100});
+        let left = result_with(
+            "call_left",
+            None,
+            Vec::new(),
+            vec![CommutativeAction::MinI64 {
+                path: "score".to_string(),
+                value: 50,
+                scope: crate::contracts::runtime::state::StateScope::Run,
+            }],
+        );
+        let right = result_with(
+            "call_right",
+            None,
+            Vec::new(),
+            vec![CommutativeAction::MinI64 {
+                path: "score".to_string(),
+                value: 25,
+                scope: crate::contracts::runtime::state::StateScope::Run,
+            }],
+        );
+
+        let patches = merge_parallel_state_patches(&base, &[left, right], true)
+            .expect("merge should succeed");
+        let merged = apply_all(&base, &patches);
+        assert_eq!(merged["score"], json!(25));
     }
 }
