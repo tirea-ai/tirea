@@ -107,10 +107,13 @@ mod state;
 mod writer;
 
 // Lattice / CRDT primitives
-pub use lattice::{Flag, GCounter, GSet, LWWReg, Lattice, MaxReg, MinReg, ORMap, ORSet};
+pub use lattice::{
+    Flag, GCounter, GSet, LWWReg, Lattice, LatticeMerger, LatticeRegistry, MaxReg, MinReg, ORMap,
+    ORSet,
+};
 
 // Core types
-pub use apply::{apply_patch, apply_patches, get_at_path};
+pub use apply::{apply_patch, apply_patch_with_registry, apply_patches, get_at_path};
 pub use conflict::{compute_touched, detect_conflicts, Conflict, ConflictKind, PatchExt};
 pub use delta_tracked::DeltaTracked;
 pub use doc_cell::DocCell;

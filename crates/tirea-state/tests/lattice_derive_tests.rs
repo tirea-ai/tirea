@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Mutex;
 use tirea_state::{
-    apply_patch, DocCell, Flag, GCounter, GSet, PatchSink, Path,
-    State as StateTrait,
+    apply_patch, apply_patch_with_registry, DocCell, Flag, GCounter, GSet, LatticeRegistry,
+    PatchSink, Path, State as StateTrait,
 };
 use tirea_state_derive::State;
 
@@ -193,7 +193,9 @@ fn test_lattice_merge_existing() {
         state.merge_counter(&other).unwrap();
     });
 
-    let result = apply_patch(&doc, &patch).unwrap();
+    let mut registry = LatticeRegistry::new();
+    registry.register::<GCounter>(Path::root().key("counter"));
+    let result = apply_patch_with_registry(&doc, &patch, &registry).unwrap();
     let merged: GCounter = serde_json::from_value(result["counter"].clone()).unwrap();
 
     // node1: max(5, 8) = 8
@@ -314,7 +316,10 @@ fn test_lattice_multiple_fields_merge() {
         state.merge_tags(&other_tags).unwrap();
     });
 
-    let result = apply_patch(&doc, &patch).unwrap();
+    let mut registry = LatticeRegistry::new();
+    registry.register::<GCounter>(Path::root().key("counter"));
+    registry.register::<GSet<String>>(Path::root().key("tags"));
+    let result = apply_patch_with_registry(&doc, &patch, &registry).unwrap();
 
     let c: GCounter = serde_json::from_value(result["counter"].clone()).unwrap();
     assert_eq!(c.value(), 8); // 5 + 3

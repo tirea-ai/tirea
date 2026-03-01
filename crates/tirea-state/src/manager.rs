@@ -5,14 +5,19 @@
 //! - State replay to any point in history
 //! - Batch application with conflict detection
 
-use crate::apply::apply_patch_in_place;
+use crate::apply::apply_patch_in_place_with_registry;
 use crate::{
-    detect_conflicts, Conflict, ConflictKind, Patch, PatchExt, Path, TireaError, TrackedPatch,
+    detect_conflicts, Conflict, ConflictKind, LatticeRegistry, Op, Patch, PatchExt, Path,
+    TireaError, TrackedPatch,
 };
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
+
+use crate::Lattice;
 
 /// Errors that can occur during state management.
 #[derive(Debug, Error)]
@@ -91,6 +96,7 @@ pub struct StateManager {
     initial: Arc<RwLock<Value>>,
     state: Arc<RwLock<Value>>,
     history: Arc<RwLock<Vec<TrackedPatch>>>,
+    registry: Arc<RwLock<LatticeRegistry>>,
 }
 
 impl StateManager {
@@ -100,7 +106,16 @@ impl StateManager {
             initial: Arc::new(RwLock::new(initial.clone())),
             state: Arc::new(RwLock::new(initial)),
             history: Arc::new(RwLock::new(Vec::new())),
+            registry: Arc::new(RwLock::new(LatticeRegistry::new())),
         }
+    }
+
+    /// Register a lattice type at the given path for automatic merge during apply.
+    pub async fn register_lattice<T>(&self, path: impl Into<Path>)
+    where
+        T: Lattice + Serialize + DeserializeOwned + Send + Sync + 'static,
+    {
+        self.registry.write().await.register::<T>(path);
     }
 
     /// Get a snapshot of the current state.
@@ -117,10 +132,11 @@ impl StateManager {
     pub async fn commit(&self, patch: TrackedPatch) -> Result<ApplyResult, StateError> {
         let ops_count = patch.patch().len();
 
+        let registry = self.registry.read().await;
         let mut state = self.state.write().await;
         let mut history = self.history.write().await;
         let mut new_state = state.clone();
-        apply_patch_in_place(&mut new_state, patch.patch())?;
+        apply_patch_in_place_with_registry(&mut new_state, patch.patch(), &registry)?;
         *state = new_state;
         history.push(patch);
 
@@ -145,7 +161,11 @@ impl StateManager {
             });
         }
 
-        if let Some((left, right, conflict)) = first_batch_conflict(&patches) {
+        let registry = self.registry.read().await;
+
+        if let Some((left, right, conflict)) =
+            first_batch_conflict(&patches, &registry)
+        {
             return Err(StateError::BatchConflict {
                 left,
                 right,
@@ -161,7 +181,7 @@ impl StateManager {
 
         for patch in &patches {
             total_ops += patch.patch().len();
-            apply_patch_in_place(&mut new_state, patch.patch())?;
+            apply_patch_in_place_with_registry(&mut new_state, patch.patch(), &registry)?;
         }
         *state = new_state;
         let patches_count = patches.len();
@@ -180,9 +200,10 @@ impl StateManager {
     ///
     /// Useful for validation, dry-runs, or showing users what changes would occur.
     pub async fn preview_patch(&self, patch: &Patch) -> Result<Value, StateError> {
+        let registry = self.registry.read().await;
         let state = self.state.read().await;
         let mut preview = state.clone();
-        apply_patch_in_place(&mut preview, patch)?;
+        apply_patch_in_place_with_registry(&mut preview, patch, &registry)?;
         Ok(preview)
     }
 
@@ -202,6 +223,7 @@ impl StateManager {
     ///
     /// Returns the state as it was after applying patches [0..=index] to the initial state.
     pub async fn replay_to(&self, index: usize) -> Result<Value, StateError> {
+        let registry = self.registry.read().await;
         let history = self.history.read().await;
 
         if index >= history.len() {
@@ -213,7 +235,7 @@ impl StateManager {
 
         let mut state = self.initial.read().await.clone();
         for patch in history.iter().take(index + 1) {
-            apply_patch_in_place(&mut state, patch.patch())?;
+            apply_patch_in_place_with_registry(&mut state, patch.patch(), &registry)?;
         }
 
         Ok(state)
@@ -250,6 +272,7 @@ impl StateManager {
     ///
     /// The number of patches that were removed.
     pub async fn prune_history(&self, keep_last: usize) -> Result<usize, StateError> {
+        let registry = self.registry.read().await;
         let mut history = self.history.write().await;
         let len = history.len();
 
@@ -262,7 +285,7 @@ impl StateManager {
         // Compute the new initial state by applying the patches to be removed
         let mut new_initial = self.initial.read().await.clone();
         for patch in history.iter().take(to_remove) {
-            apply_patch_in_place(&mut new_initial, patch.patch())?;
+            apply_patch_in_place_with_registry(&mut new_initial, patch.patch(), &registry)?;
         }
 
         // Update initial state and remove old patches
@@ -278,7 +301,19 @@ impl StateManager {
     }
 }
 
-fn first_batch_conflict(patches: &[TrackedPatch]) -> Option<(usize, usize, Conflict)> {
+/// Check whether all ops in `patch` that touch `path` are `LatticeMerge`.
+fn is_lattice_only_at(patch: &Patch, path: &Path) -> bool {
+    patch
+        .ops()
+        .iter()
+        .filter(|op| op.path() == path)
+        .all(|op| matches!(op, Op::LatticeMerge { .. }))
+}
+
+fn first_batch_conflict(
+    patches: &[TrackedPatch],
+    registry: &LatticeRegistry,
+) -> Option<(usize, usize, Conflict)> {
     let touched: Vec<_> = patches
         .iter()
         .map(|patch| patch.patch().touched(false))
@@ -286,10 +321,15 @@ fn first_batch_conflict(patches: &[TrackedPatch]) -> Option<(usize, usize, Confl
 
     for left_idx in 0..patches.len() {
         for right_idx in (left_idx + 1)..patches.len() {
-            if let Some(conflict) = detect_conflicts(&touched[left_idx], &touched[right_idx])
-                .into_iter()
-                .next()
-            {
+            for conflict in detect_conflicts(&touched[left_idx], &touched[right_idx]) {
+                // Skip conflicts where both patches only use LatticeMerge at the
+                // conflicting path AND the path is registered in the registry.
+                if registry.get(&conflict.path).is_some()
+                    && is_lattice_only_at(patches[left_idx].patch(), &conflict.path)
+                    && is_lattice_only_at(patches[right_idx].patch(), &conflict.path)
+                {
+                    continue;
+                }
                 return Some((left_idx, right_idx, conflict));
             }
         }
@@ -304,6 +344,7 @@ impl Clone for StateManager {
             initial: Arc::clone(&self.initial),
             state: Arc::clone(&self.state),
             history: Arc::clone(&self.history),
+            registry: Arc::clone(&self.registry),
         }
     }
 }

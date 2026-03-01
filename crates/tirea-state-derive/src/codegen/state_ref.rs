@@ -395,27 +395,15 @@ fn generate_write_method(field: &FieldInput) -> syn::Result<TokenStream> {
                     self.sink.collect(::tirea_state::Op::Set { path, value })
                 }
 
-                /// Merge another lattice value into this field.
+                /// Merge a lattice delta into this field.
                 ///
-                /// If the field is missing, writes `other` directly.
-                /// If the field exists, deserialises, calls `Lattice::merge`, and writes the result.
+                /// Emits an `Op::LatticeMerge` with the delta. The actual merge is
+                /// deferred to apply time via `LatticeRegistry`.
                 pub fn #merge_name(&self, other: &#field_ty) -> ::tirea_state::TireaResult<()> {
                     let path = self.base.clone().key(#json_key);
-                    let current_val = {
-                        let __guard = self.doc.get();
-                        ::tirea_state::get_at_path(&__guard, &path).cloned()
-                    };
-                    let merged = match current_val {
-                        None => other.clone(),
-                        Some(v) => {
-                            let current: #field_ty = ::serde_json::from_value(v)
-                                .map_err(::tirea_state::TireaError::from)?;
-                            ::tirea_state::Lattice::merge(&current, other)
-                        }
-                    };
-                    let value = ::serde_json::to_value(&merged)
+                    let value = ::serde_json::to_value(other)
                         .map_err(::tirea_state::TireaError::from)?;
-                    self.sink.collect(::tirea_state::Op::Set { path, value })
+                    self.sink.collect(::tirea_state::Op::LatticeMerge { path, value })
                 }
             }
         }

@@ -5,6 +5,7 @@
 
 use crate::{
     error::{value_type_name, TireaError, TireaResult},
+    lattice::LatticeRegistry,
     Number, Op, Patch, Path, Seg,
 };
 use serde_json::{Map, Value};
@@ -95,6 +96,53 @@ pub fn apply_patches<'a>(
     Ok(result)
 }
 
+/// Apply a patch to a JSON document using a `LatticeRegistry` for proper merges.
+///
+/// `LatticeMerge` ops whose path is registered will perform a real lattice merge;
+/// unregistered paths fall back to `Op::Set` semantics.
+pub fn apply_patch_with_registry(
+    doc: &Value,
+    patch: &Patch,
+    registry: &LatticeRegistry,
+) -> TireaResult<Value> {
+    let mut result = doc.clone();
+    apply_patch_in_place_with_registry(&mut result, patch, registry)?;
+    Ok(result)
+}
+
+/// Apply a patch in-place using a `LatticeRegistry`.
+pub(crate) fn apply_patch_in_place_with_registry(
+    doc: &mut Value,
+    patch: &Patch,
+    registry: &LatticeRegistry,
+) -> TireaResult<()> {
+    for op in patch.ops() {
+        apply_op_with_registry(doc, op, registry)?;
+    }
+    Ok(())
+}
+
+/// Apply a single operation using a registry (for `LatticeMerge` ops).
+fn apply_op_with_registry(
+    doc: &mut Value,
+    op: &Op,
+    registry: &LatticeRegistry,
+) -> TireaResult<()> {
+    match op {
+        Op::LatticeMerge { path, value } => {
+            if let Some(merger) = registry.get(path) {
+                let current = get_at_path(doc, path);
+                let merged = merger.merge(current, value)?;
+                apply_set(doc, path, merged)
+            } else {
+                // Unregistered path → fallback to Set
+                apply_set(doc, path, value.clone())
+            }
+        }
+        _ => apply_op(doc, op),
+    }
+}
+
 /// Apply a single operation to a document (mutating).
 pub(crate) fn apply_op(doc: &mut Value, op: &Op) -> TireaResult<()> {
     match op {
@@ -106,6 +154,8 @@ pub(crate) fn apply_op(doc: &mut Value, op: &Op) -> TireaResult<()> {
         Op::Decrement { path, amount } => apply_decrement(doc, path, amount),
         Op::Insert { path, index, value } => apply_insert(doc, path, *index, value.clone()),
         Op::Remove { path, value } => apply_remove(doc, path, value),
+        // Without a registry, LatticeMerge falls back to Set semantics
+        Op::LatticeMerge { path, value } => apply_set(doc, path, value.clone()),
     }
 }
 

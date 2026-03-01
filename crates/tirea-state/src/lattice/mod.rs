@@ -25,6 +25,7 @@ mod max_reg;
 mod min_reg;
 mod or_map;
 mod or_set;
+mod registry;
 
 pub use flag::Flag;
 pub use g_counter::GCounter;
@@ -34,6 +35,7 @@ pub use max_reg::MaxReg;
 pub use min_reg::MinReg;
 pub use or_map::ORMap;
 pub use or_set::ORSet;
+pub use registry::{LatticeMerger, LatticeRegistry};
 
 /// A join-semilattice: a set equipped with a commutative, associative, idempotent merge.
 ///

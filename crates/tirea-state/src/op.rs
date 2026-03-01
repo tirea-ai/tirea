@@ -187,6 +187,17 @@ pub enum Op {
         /// Value to remove.
         value: Value,
     },
+
+    /// Merge a lattice delta into an existing value at path.
+    ///
+    /// When applied via `LatticeRegistry`, performs a proper lattice merge.
+    /// Without a registry, falls back to `Op::Set` semantics (writes the delta directly).
+    LatticeMerge {
+        /// Target path.
+        path: Path,
+        /// Delta value to merge.
+        value: Value,
+    },
 }
 
 impl Op {
@@ -262,6 +273,15 @@ impl Op {
         }
     }
 
+    /// Create a LatticeMerge operation.
+    #[inline]
+    pub fn lattice_merge(path: Path, value: impl Into<Value>) -> Self {
+        Op::LatticeMerge {
+            path,
+            value: value.into(),
+        }
+    }
+
     /// Get the path this operation targets.
     #[inline]
     pub fn path(&self) -> &Path {
@@ -274,6 +294,7 @@ impl Op {
             Op::Decrement { path, .. } => path,
             Op::Insert { path, .. } => path,
             Op::Remove { path, .. } => path,
+            Op::LatticeMerge { path, .. } => path,
         }
     }
 
@@ -289,6 +310,7 @@ impl Op {
             Op::Decrement { path, .. } => path,
             Op::Insert { path, .. } => path,
             Op::Remove { path, .. } => path,
+            Op::LatticeMerge { path, .. } => path,
         }
     }
 
@@ -304,6 +326,7 @@ impl Op {
             Op::Decrement { .. } => "decrement",
             Op::Insert { .. } => "insert",
             Op::Remove { .. } => "remove",
+            Op::LatticeMerge { .. } => "lattice_merge",
         }
     }
 }
