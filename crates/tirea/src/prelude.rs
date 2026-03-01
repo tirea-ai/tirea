@@ -54,9 +54,10 @@ pub use crate::contracts::runtime::tool_call::{
 pub use crate::contracts::thread::{Message, Role, ToolCall};
 
 // Phase types for plugins
-pub use crate::contracts::runtime::plugin::phase::{
-    Phase, RunAction, StepContext, StepOutcome, ToolCallAction, ToolGate,
+pub use crate::contracts::runtime::phase::{
+    Phase, RunAction, StepContext, StepOutcome, ToolCallAction,
 };
+pub use crate::contracts::runtime::tool_call::ToolGate;
 pub use crate::contracts::{Suspension, SuspensionResponse};
 
 // ── Extension types (require "core" feature) ─────────────────────────────

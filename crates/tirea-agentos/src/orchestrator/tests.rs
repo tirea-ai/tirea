@@ -1,11 +1,11 @@
 use super::*;
-use crate::contracts::runtime::plugin::agent::ReadOnlyContext;
-use crate::contracts::runtime::plugin::phase::action::Action;
+use crate::contracts::runtime::behavior::ReadOnlyContext;
+use crate::contracts::runtime::action::Action;
 use tirea_contract::testing::{
     TestEmitStatePatch as EmitStatePatch, TestRequestTermination as RequestTermination,
     TestSystemContext as AddSystemContext,
 };
-use crate::contracts::runtime::plugin::phase::state_spec::AnyStateAction;
+use crate::contracts::runtime::state::AnyStateAction;
 use crate::contracts::runtime::tool_call::ToolDescriptor;
 use crate::contracts::runtime::tool_call::{ToolError, ToolResult};
 use crate::contracts::storage::{ThreadReader, ThreadWriter};
@@ -208,7 +208,7 @@ impl tirea_state::State for RunEndMarkerState {
     }
 }
 
-impl crate::contracts::runtime::plugin::phase::state_spec::StateSpec for RunEndMarkerState {
+impl crate::contracts::runtime::state::StateSpec for RunEndMarkerState {
     type Action = bool;
 
     fn reduce(&mut self, action: bool) {
@@ -277,7 +277,7 @@ async fn wire_skills_inserts_tools_and_plugin() {
     let doc = tirea_state::DocCell::new(state);
     let run_config = crate::contracts::RunConfig::new();
     let ctx = ReadOnlyContext::new(
-        crate::contracts::runtime::plugin::phase::Phase::BeforeInference,
+        crate::contracts::runtime::phase::Phase::BeforeInference,
         "thread_1",
         &[],
         &run_config,
@@ -291,7 +291,7 @@ async fn wire_skills_inserts_tools_and_plugin() {
     }
     let inf = apply_step
         .extensions
-        .get::<tirea_contract::runtime::plugin::phase::core::ext::InferenceContext>()
+        .get::<tirea_contract::runtime::inference::InferenceContext>()
         .unwrap();
     let merged: String = inf.system_context.join("\n");
     assert!(merged.contains("<available_skills>"));
@@ -335,7 +335,7 @@ async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
     let doc = tirea_state::DocCell::new(state);
     let run_config = crate::contracts::RunConfig::new();
     let ctx = ReadOnlyContext::new(
-        crate::contracts::runtime::plugin::phase::Phase::BeforeInference,
+        crate::contracts::runtime::phase::Phase::BeforeInference,
         "thread_1",
         &[],
         &run_config,
@@ -349,7 +349,7 @@ async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
     }
     let inf = apply_step
         .extensions
-        .get::<tirea_contract::runtime::plugin::phase::core::ext::InferenceContext>();
+        .get::<tirea_contract::runtime::inference::InferenceContext>();
     let merged: String = inf
         .map(|i| i.system_context.join("\n"))
         .unwrap_or_default();
@@ -1390,7 +1390,7 @@ async fn resolve_wires_plugins_from_registry() {
     let doc = tirea_state::DocCell::new(json!({}));
     let run_config = crate::contracts::RunConfig::new();
     let ctx = ReadOnlyContext::new(
-        crate::contracts::runtime::plugin::phase::Phase::BeforeInference,
+        crate::contracts::runtime::phase::Phase::BeforeInference,
         "thread_1",
         &[],
         &run_config,
@@ -1404,7 +1404,7 @@ async fn resolve_wires_plugins_from_registry() {
     }
     let inf = apply_step
         .extensions
-        .get::<tirea_contract::runtime::plugin::phase::core::ext::InferenceContext>()
+        .get::<tirea_contract::runtime::inference::InferenceContext>()
         .unwrap();
     assert!(inf.system_context.iter().any(|s| s.contains("p1")));
 }

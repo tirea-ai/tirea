@@ -1,16 +1,16 @@
 use super::outcome::LoopFailure;
 use super::LlmExecutor;
 use super::*;
-use crate::contracts::runtime::plugin::agent::ReadOnlyContext;
-use crate::contracts::runtime::plugin::phase::action::Action;
+use crate::contracts::runtime::behavior::ReadOnlyContext;
+use crate::contracts::runtime::action::Action;
 use tirea_contract::testing::{
     TestBlockTool as BlockTool, TestEmitStatePatch as EmitStatePatch,
     TestExcludeTool as ExcludeTool, TestRequestTermination as RequestTermination,
     TestSessionContext as AddSessionContext, TestSuspendTool as SuspendTool,
     TestSystemContext as AddSystemContext, TestSystemReminder as AddSystemReminder,
 };
-use crate::contracts::runtime::plugin::phase::core::ext::InferenceContext;
-use crate::contracts::runtime::plugin::phase::{Phase, SuspendTicket};
+use crate::contracts::runtime::inference::InferenceContext;
+use crate::contracts::runtime::phase::{Phase, SuspendTicket};
 use crate::contracts::runtime::tool_call::{
     ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult,
 };
@@ -39,7 +39,7 @@ use uuid::Uuid;
 
 /// Test-local behavior composition (mirrors agentos `compose_behaviors`).
 fn compose_test_behaviors(behaviors: Vec<Arc<dyn AgentBehavior>>) -> Arc<dyn AgentBehavior> {
-    use crate::contracts::runtime::plugin::agent::NoOpBehavior;
+    use crate::contracts::runtime::behavior::NoOpBehavior;
 
     struct TestCompositeBehavior {
         id: String,

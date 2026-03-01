@@ -1,11 +1,12 @@
 use super::core::{clear_agent_inference_error, set_agent_inference_error};
 use super::AgentLoopError;
-use crate::contracts::runtime::plugin::agent::{
+use crate::contracts::runtime::behavior::{
     build_read_only_context_from_step, AgentBehavior, ReadOnlyContext,
 };
-use crate::contracts::runtime::plugin::phase::action::Action;
-use crate::contracts::runtime::plugin::phase::{
-    reduce_state_actions, AnyStateAction, CommutativeAction, Phase, StepContext,
+use crate::contracts::runtime::action::Action;
+use crate::contracts::runtime::phase::{Phase, StepContext};
+use crate::contracts::runtime::state::{
+    reduce_state_actions, AnyStateAction, CommutativeAction,
 };
 use crate::contracts::runtime::tool_call::ToolDescriptor;
 use crate::contracts::RunContext;
@@ -393,7 +394,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::runtime::plugin::agent::NoOpBehavior;
+    use crate::contracts::runtime::behavior::NoOpBehavior;
     use tirea_contract::testing::TestSystemContext as AddSystemContext;
     use crate::contracts::testing::TestFixture;
     use async_trait::async_trait;
@@ -417,7 +418,7 @@ mod tests {
 
     #[tokio::test]
     async fn emit_agent_phase_validates_and_applies_actions() {
-        use crate::contracts::runtime::plugin::phase::core::ext::InferenceContext;
+        use crate::contracts::runtime::inference::InferenceContext;
 
         let fix = TestFixture::new();
         let mut step = fix.step(vec![]);

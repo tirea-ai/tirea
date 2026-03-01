@@ -3,12 +3,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-use crate::contracts::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
-use crate::contracts::runtime::plugin::phase::action::Action;
-use crate::contracts::runtime::plugin::phase::core::ext::FlowControl;
-use crate::contracts::runtime::plugin::phase::state_spec::{AnyStateAction, StateSpec};
-use crate::contracts::runtime::plugin::phase::step::StepContext;
-use crate::contracts::runtime::plugin::phase::Phase;
+use crate::contracts::runtime::behavior::{AgentBehavior, ReadOnlyContext};
+use crate::contracts::runtime::action::Action;
+use crate::contracts::runtime::run::FlowControl;
+use crate::contracts::runtime::state::{AnyStateAction, StateSpec};
+use crate::contracts::runtime::phase::step::StepContext;
+use crate::contracts::runtime::phase::Phase;
 use crate::contracts::runtime::RunAction;
 use crate::contracts::runtime::tool_call::ToolResult;
 use crate::contracts::runtime::StreamResult;

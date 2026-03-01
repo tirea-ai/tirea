@@ -12,12 +12,13 @@ use tirea_agentos::orchestrator::compose_behaviors;
 use tirea_agentos::runtime::loop_runner::{
     BaseAgent, ParallelToolExecutor, ResolvedRun, SequentialToolExecutor,
 };
-use tirea_contract::runtime::plugin::agent::ReadOnlyContext;
-use tirea_contract::runtime::plugin::phase::action::Action;
-use tirea_contract::runtime::plugin::phase::core::ext::{InferenceContext, ToolGate};
-use tirea_contract::runtime::plugin::phase::step::StepContext;
-use tirea_contract::runtime::plugin::phase::{Phase, SuspendTicket};
-use tirea_contract::runtime::plugin::AgentBehavior;
+use tirea_contract::runtime::behavior::ReadOnlyContext;
+use tirea_contract::runtime::action::Action;
+use tirea_contract::runtime::inference::InferenceContext;
+use tirea_contract::runtime::phase::step::StepContext;
+use tirea_contract::runtime::phase::{Phase, SuspendTicket};
+use tirea_contract::runtime::tool_call::ToolGate;
+use tirea_contract::runtime::AgentBehavior;
 use tirea_contract::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_contract::runtime::{PendingToolCall, ToolCallResumeMode};
 use tirea_contract::ToolCallContext;
@@ -379,7 +380,8 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use tirea_agentos::runtime::loop_runner::BaseAgent;
-    use tirea_contract::runtime::plugin::phase::{Phase, StepContext, ToolGate};
+    use tirea_contract::runtime::phase::{Phase, StepContext};
+    use tirea_contract::runtime::tool_call::ToolGate;
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::ToolCall;
     use tirea_protocol_ag_ui::{Context, Message, ToolExecutionLocation};
@@ -782,7 +784,7 @@ mod tests {
         let actions = behavior.before_inference(&ctx).await;
         tirea_contract::testing::apply_actions_for_test(Phase::BeforeInference, &mut step, actions).unwrap();
 
-        let inf = step.extensions.get::<tirea_contract::runtime::plugin::phase::core::ext::InferenceContext>().unwrap();
+        let inf = step.extensions.get::<tirea_contract::runtime::inference::InferenceContext>().unwrap();
         assert!(!inf.system_context.is_empty());
         let merged = inf.system_context.join("\n");
         assert!(

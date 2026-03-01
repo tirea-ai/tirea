@@ -51,8 +51,8 @@ mod stream_runner;
 mod tool_exec;
 
 use crate::contracts::io::ResumeDecisionAction;
-use crate::contracts::runtime::plugin::phase::Phase;
-use crate::contracts::runtime::plugin::phase::{reduce_state_actions, AnyStateAction};
+use crate::contracts::runtime::phase::Phase;
+use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction};
 use crate::contracts::runtime::tool_call::{Tool, ToolResult};
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
@@ -488,7 +488,7 @@ pub(super) async fn complete_step_after_inference(
         agent,
         &[Phase::AfterInference],
         |step| {
-            use crate::contracts::runtime::plugin::phase::core::ext::LLMResponse;
+            use crate::contracts::runtime::inference::LLMResponse;
             step.extensions.insert(LLMResponse::new(result.clone()));
         },
         |step| step.run_action(),

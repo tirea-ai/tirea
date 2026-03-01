@@ -1,7 +1,7 @@
 use super::tool_exec::ParallelToolExecutor;
 use super::AgentLoopError;
-use crate::contracts::runtime::plugin::agent::NoOpBehavior;
-use crate::contracts::runtime::plugin::AgentBehavior;
+use crate::contracts::runtime::behavior::NoOpBehavior;
+use crate::contracts::runtime::AgentBehavior;
 use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor};
 use crate::contracts::runtime::ToolExecutor;
 use crate::contracts::RunContext;

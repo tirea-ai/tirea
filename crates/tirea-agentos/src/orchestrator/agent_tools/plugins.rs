@@ -1,11 +1,11 @@
 use super::state::current_unix_millis;
 use super::*;
-use crate::contracts::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
-use crate::contracts::runtime::plugin::phase::action::Action;
-use crate::contracts::runtime::plugin::phase::core::ext::{InferenceContext, MessagingContext};
-use crate::contracts::runtime::plugin::phase::state_spec::AnyStateAction;
-use crate::contracts::runtime::plugin::phase::step::StepContext;
-use crate::contracts::runtime::plugin::phase::Phase;
+use crate::contracts::runtime::behavior::{AgentBehavior, ReadOnlyContext};
+use crate::contracts::runtime::action::Action;
+use crate::contracts::runtime::inference::{InferenceContext, MessagingContext};
+use crate::contracts::runtime::state::AnyStateAction;
+use crate::contracts::runtime::phase::step::StepContext;
+use crate::contracts::runtime::phase::Phase;
 use tirea_extension_permission::resolve_permission_behavior;
 
 // =============================================================================
@@ -143,7 +143,7 @@ impl AgentBehavior for AgentRecoveryPlugin {
                 call_id,
                 tool_name: AGENT_RUN_TOOL_ID.to_string(),
                 arguments: call_arguments,
-                ticket: crate::contracts::runtime::plugin::phase::SuspendTicket::new(
+                ticket: crate::contracts::runtime::phase::SuspendTicket::new(
                     interaction.clone(),
                     pending,
                     ToolCallResumeMode::ReplayToolCall,

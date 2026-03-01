@@ -1,8 +1,8 @@
 use crate::{SkillDiscoveryPlugin, SkillRuntimePlugin, SKILLS_PLUGIN_ID};
 use async_trait::async_trait;
 use std::sync::Arc;
-use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
-use tirea_contract::runtime::plugin::phase::action::Action;
+use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
+use tirea_contract::runtime::action::Action;
 
 /// Single plugin wrapper that injects both:
 /// - the skills catalog (discovery)
@@ -57,7 +57,7 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use tempfile::TempDir;
-    use tirea_contract::runtime::plugin::phase::Phase;
+    use tirea_contract::runtime::phase::Phase;
     use tirea_contract::RunConfig;
     use tirea_state::DocCell;
 

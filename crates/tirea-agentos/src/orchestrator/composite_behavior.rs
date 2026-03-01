@@ -1,5 +1,5 @@
-use crate::contracts::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
-use crate::contracts::runtime::plugin::phase::action::Action;
+use crate::contracts::runtime::behavior::{AgentBehavior, ReadOnlyContext};
+use crate::contracts::runtime::action::Action;
 use async_trait::async_trait;
 use std::sync::Arc;
 
@@ -16,7 +16,7 @@ pub fn compose_behaviors(
     behaviors: Vec<Arc<dyn AgentBehavior>>,
 ) -> Arc<dyn AgentBehavior> {
     match behaviors.len() {
-        0 => Arc::new(crate::contracts::runtime::plugin::agent::NoOpBehavior),
+        0 => Arc::new(crate::contracts::runtime::behavior::NoOpBehavior),
         1 => behaviors.into_iter().next().unwrap(),
         _ => Arc::new(CompositeBehavior::new(id, behaviors)),
     }
@@ -125,7 +125,7 @@ impl AgentBehavior for CompositeBehavior {
 mod tests {
     use super::*;
     use tirea_contract::testing::{TestBlockTool as BlockTool, TestSystemContext as AddSystemContext};
-    use crate::contracts::runtime::plugin::phase::Phase;
+    use crate::contracts::runtime::phase::Phase;
     use crate::contracts::RunConfig;
     use serde_json::json;
     use tirea_state::DocCell;

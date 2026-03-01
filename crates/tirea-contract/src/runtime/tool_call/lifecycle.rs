@@ -1,5 +1,5 @@
-use crate::runtime::plugin::phase::state_spec::StateSpec;
-use crate::runtime::plugin::phase::SuspendTicket;
+use crate::runtime::state::StateSpec;
+use crate::runtime::phase::SuspendTicket;
 use crate::runtime::state_paths::{SUSPENDED_TOOL_CALLS_STATE_PATH, TOOL_CALL_STATES_STATE_PATH};
 use crate::thread::ToolCall;
 use serde::{Deserialize, Serialize};

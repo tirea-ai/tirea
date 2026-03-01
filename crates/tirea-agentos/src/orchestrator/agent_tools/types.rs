@@ -3,7 +3,7 @@
 //! These types model the persisted state of delegated agent runs
 //! (created by `agent_run` / `agent_stop` tools).
 
-use crate::contracts::runtime::plugin::phase::state_spec::StateSpec;
+use crate::contracts::runtime::state::StateSpec;
 use crate::contracts::thread::Thread;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

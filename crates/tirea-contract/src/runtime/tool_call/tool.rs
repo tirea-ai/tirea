@@ -3,8 +3,8 @@
 //! Tools execute actions and can modify state through `Thread`.
 
 use super::ToolCallContext;
-use crate::runtime::plugin::phase::SuspendTicket;
-use crate::runtime::plugin::phase::AnyStateAction;
+use crate::runtime::phase::SuspendTicket;
+use crate::runtime::state::AnyStateAction;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -515,9 +515,9 @@ fn typed_tool_schema<T: JsonSchema>() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::plugin::phase::state_spec::StateSpec;
-    use crate::runtime::plugin::phase::AnyStateAction;
-    use crate::runtime::plugin::phase::SuspendTicket;
+    use crate::runtime::state::StateSpec;
+    use crate::runtime::state::AnyStateAction;
+    use crate::runtime::phase::SuspendTicket;
     use crate::runtime::Suspension;
     use crate::runtime::{InferenceError, InferenceErrorState};
     use crate::runtime::{PendingToolCall, ToolCallResumeMode};

@@ -3,7 +3,7 @@ use super::{
     ModelRegistry, ModelRegistryError, ProviderRegistry, ProviderRegistryError, ToolRegistry,
     ToolRegistryError,
 };
-use crate::contracts::runtime::plugin::AgentBehavior;
+use crate::contracts::runtime::AgentBehavior;
 use crate::contracts::runtime::tool_call::Tool;
 use crate::orchestrator::AgentDefinition;
 use genai::Client;

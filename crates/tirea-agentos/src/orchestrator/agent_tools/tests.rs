@@ -1,8 +1,8 @@
 use super::*;
-use crate::contracts::runtime::plugin::agent::ReadOnlyContext;
-use crate::contracts::runtime::plugin::phase::action::Action;
-use crate::contracts::runtime::plugin::phase::{Phase, StepContext};
-use crate::contracts::runtime::plugin::phase::state_spec::reduce_state_actions;
+use crate::contracts::runtime::behavior::ReadOnlyContext;
+use crate::contracts::runtime::action::Action;
+use crate::contracts::runtime::phase::{Phase, StepContext};
+use crate::contracts::runtime::state::reduce_state_actions;
 use crate::contracts::runtime::tool_call::ToolStatus;
 use crate::contracts::thread::Thread;
 use crate::contracts::AgentBehavior;
@@ -119,7 +119,7 @@ async fn plugin_adds_reminder_for_running_and_stopped_runs() {
     plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
     let reminder = step
         .extensions
-        .get::<tirea_contract::runtime::plugin::phase::core::ext::MessagingContext>()
+        .get::<tirea_contract::runtime::inference::MessagingContext>()
         .and_then(|m| m.reminders.first())
         .expect("running reminder should be present");
     assert!(reminder.contains("status=\"running\""));
@@ -130,7 +130,7 @@ async fn plugin_adds_reminder_for_running_and_stopped_runs() {
     plugin.run_phase(Phase::AfterToolExecute, &mut step2).await;
     let reminder2 = step2
         .extensions
-        .get::<tirea_contract::runtime::plugin::phase::core::ext::MessagingContext>()
+        .get::<tirea_contract::runtime::inference::MessagingContext>()
         .and_then(|m| m.reminders.first())
         .expect("stopped reminder should be present");
     assert!(reminder2.contains("status=\"stopped\""));

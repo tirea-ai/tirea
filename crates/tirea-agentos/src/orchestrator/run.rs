@@ -1,5 +1,5 @@
 use super::*;
-use crate::contracts::runtime::plugin::phase::{reduce_state_actions, AnyStateAction};
+use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction};
 use crate::contracts::runtime::{RunLifecycleAction, RunLifecycleState, RunStatus};
 use crate::contracts::storage::VersionPrecondition;
 use crate::runtime::loop_runner::run_loop_stream;

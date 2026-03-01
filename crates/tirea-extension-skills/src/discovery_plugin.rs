@@ -3,11 +3,11 @@ use crate::{SkillMeta, SkillRegistry, SkillState, SKILLS_DISCOVERY_PLUGIN_ID};
 use async_trait::async_trait;
 use std::collections::HashSet;
 use std::sync::Arc;
-use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
-use tirea_contract::runtime::plugin::phase::action::Action;
-use tirea_contract::runtime::plugin::phase::core::ext::InferenceContext;
-use tirea_contract::runtime::plugin::phase::step::StepContext;
-use tirea_contract::runtime::plugin::phase::Phase;
+use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
+use tirea_contract::runtime::action::Action;
+use tirea_contract::runtime::inference::InferenceContext;
+use tirea_contract::runtime::phase::step::StepContext;
+use tirea_contract::runtime::phase::Phase;
 
 /// Injects a skills catalog into the LLM context so the model can discover and activate skills.
 ///
@@ -184,7 +184,7 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use tempfile::TempDir;
-    use tirea_contract::runtime::plugin::phase::Phase;
+    use tirea_contract::runtime::phase::Phase;
     use tirea_contract::RunConfig;
     use tirea_state::DocCell;
 
@@ -220,7 +220,7 @@ mod tests {
 
     /// Apply AddSystemContext actions to collect their string values for assertion.
     fn apply_and_extract_system_contexts(actions: Vec<Box<dyn Action>>) -> Vec<String> {
-        use tirea_contract::runtime::plugin::phase::core::ext::InferenceContext;
+        use tirea_contract::runtime::inference::InferenceContext;
         use tirea_contract::testing::TestFixture;
 
         let fix = TestFixture::new();

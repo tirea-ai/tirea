@@ -1,5 +1,5 @@
 use super::AgentLoopError;
-use crate::contracts::runtime::plugin::phase::{
+use crate::contracts::runtime::state::{
     reduce_state_actions, AnyStateAction, CommutativeAction,
 };
 use crate::contracts::runtime::ToolExecutionResult;
@@ -292,7 +292,7 @@ pub(super) fn merge_parallel_state_patches(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::runtime::plugin::phase::CommutativeAction;
+    use crate::contracts::runtime::state::CommutativeAction;
     use crate::contracts::runtime::tool_call::ToolResult;
     use crate::contracts::runtime::{ToolCallOutcome, ToolExecution, ToolExecutionResult};
     use crate::contracts::thread::ToolCall;
@@ -437,7 +437,7 @@ mod tests {
             vec![CommutativeAction::CounterAdd {
                 path: "counter".to_string(),
                 delta: 1,
-                scope: crate::contracts::runtime::plugin::phase::StateScope::Run,
+                scope: crate::contracts::runtime::state::StateScope::Run,
             }],
         );
         let right = result_with(
@@ -465,7 +465,7 @@ mod tests {
             vec![CommutativeAction::CounterAdd {
                 path: "metrics.tokens".to_string(),
                 delta: 2,
-                scope: crate::contracts::runtime::plugin::phase::StateScope::Run,
+                scope: crate::contracts::runtime::state::StateScope::Run,
             }],
         );
         let right = result_with(
@@ -475,7 +475,7 @@ mod tests {
             vec![CommutativeAction::CounterAdd {
                 path: "metrics.tokens".to_string(),
                 delta: 3,
-                scope: crate::contracts::runtime::plugin::phase::StateScope::Run,
+                scope: crate::contracts::runtime::state::StateScope::Run,
             }],
         );
 
@@ -497,7 +497,7 @@ mod tests {
             vec![CommutativeAction::CounterAdd {
                 path: "shared.metric".to_string(),
                 delta: 1,
-                scope: crate::contracts::runtime::plugin::phase::StateScope::Run,
+                scope: crate::contracts::runtime::state::StateScope::Run,
             }],
         );
         let right = result_with(
@@ -507,7 +507,7 @@ mod tests {
             vec![CommutativeAction::MaxI64 {
                 path: "shared.metric".to_string(),
                 value: 5,
-                scope: crate::contracts::runtime::plugin::phase::StateScope::Run,
+                scope: crate::contracts::runtime::state::StateScope::Run,
             }],
         );
 
@@ -541,7 +541,7 @@ mod tests {
             vec![CommutativeAction::CounterAdd {
                 path: "shared.counter".to_string(),
                 delta: 1,
-                scope: crate::contracts::runtime::plugin::phase::StateScope::Run,
+                scope: crate::contracts::runtime::state::StateScope::Run,
             }],
         );
 

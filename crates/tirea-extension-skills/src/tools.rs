@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
 use std::sync::Arc;
-use tirea_contract::runtime::plugin::phase::state_spec::AnyStateAction;
+use tirea_contract::runtime::state::AnyStateAction;
 use tirea_contract::runtime::tool_call::ToolCallContext;
 use tirea_contract::runtime::tool_call::{
     Tool, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult, ToolStatus,

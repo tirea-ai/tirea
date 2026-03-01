@@ -1,7 +1,7 @@
 use crate::SKILLS_RUNTIME_PLUGIN_ID;
 use async_trait::async_trait;
-use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
-use tirea_contract::runtime::plugin::phase::action::Action;
+use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
+use tirea_contract::runtime::action::Action;
 
 /// Placeholder plugin for activated skill state.
 ///
@@ -34,7 +34,7 @@ impl AgentBehavior for SkillRuntimePlugin {
 mod tests {
     use super::*;
     use serde_json::json;
-    use tirea_contract::runtime::plugin::phase::Phase;
+    use tirea_contract::runtime::phase::Phase;
     use tirea_contract::RunConfig;
     use tirea_state::DocCell;
 

@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
-use tirea_contract::runtime::plugin::phase::action::Action;
+use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
+use tirea_contract::runtime::action::Action;
 use tirea_contract::runtime::run::{InferenceError, InferenceErrorState};
 use tirea_contract::TokenUsage;
 
@@ -645,8 +645,9 @@ mod tests {
     use futures::future::join_all;
     use serde_json::json;
     use std::sync::Arc;
-    use tirea_contract::runtime::plugin::phase::core::ext::{LLMResponse, ToolGate};
-    use tirea_contract::runtime::plugin::phase::{Phase, StepContext};
+    use tirea_contract::runtime::inference::LLMResponse;
+    use tirea_contract::runtime::phase::{Phase, StepContext};
+    use tirea_contract::runtime::tool_call::ToolGate;
     use tirea_contract::runtime::tool_call::ToolResult;
     use tirea_contract::runtime::StreamResult;
     use tirea_contract::testing::TestFixture;

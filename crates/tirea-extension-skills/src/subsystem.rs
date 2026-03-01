@@ -4,7 +4,7 @@ use crate::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use tirea_contract::runtime::plugin::AgentBehavior;
+use tirea_contract::runtime::AgentBehavior;
 use tirea_contract::runtime::tool_call::Tool;
 
 /// Errors returned when wiring the skills subsystem into an agent.
@@ -134,8 +134,8 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use tempfile::TempDir;
-    use tirea_contract::runtime::plugin::agent::ReadOnlyContext;
-    use tirea_contract::runtime::plugin::phase::Phase;
+    use tirea_contract::runtime::behavior::ReadOnlyContext;
+    use tirea_contract::runtime::phase::Phase;
     use tirea_contract::runtime::tool_call::{ToolError, ToolResult};
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::Thread;

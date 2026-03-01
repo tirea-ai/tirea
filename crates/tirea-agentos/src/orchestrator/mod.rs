@@ -6,7 +6,7 @@ use std::time::Duration;
 use futures::Stream;
 use genai::Client;
 
-use crate::contracts::runtime::plugin::AgentBehavior;
+use crate::contracts::runtime::AgentBehavior;
 use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::storage::{ThreadHead, ThreadStore, ThreadStoreError, VersionPrecondition};
 use crate::contracts::thread::CheckpointReason;

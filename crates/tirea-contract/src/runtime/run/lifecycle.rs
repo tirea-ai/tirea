@@ -1,4 +1,4 @@
-use crate::runtime::plugin::phase::state_spec::StateSpec;
+use crate::runtime::state::StateSpec;
 use crate::runtime::state_paths::RUN_LIFECYCLE_STATE_PATH;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -181,7 +181,7 @@ pub fn run_lifecycle_from_state(state: &Value) -> Option<RunLifecycleState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::plugin::phase::state_spec::{reduce_state_actions, AnyStateAction};
+    use crate::runtime::state::{reduce_state_actions, AnyStateAction};
     use tirea_state::apply_patch;
 
     #[test]

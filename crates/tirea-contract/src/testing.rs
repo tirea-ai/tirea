@@ -4,11 +4,11 @@
 //! unaffected.  Enable via `[dev-dependencies] tirea-contract = { ..., features = ["test-support"] }`.
 
 use crate::runtime::activity::NoOpActivityManager;
-use crate::runtime::plugin::phase::action::Action;
-use crate::runtime::plugin::phase::core::ext::{
-    FlowControl, InferenceContext, MessagingContext, ToolGate,
-};
-use crate::runtime::plugin::phase::state_spec::AnyStateAction;
+use crate::runtime::action::Action;
+use crate::runtime::inference::{InferenceContext, MessagingContext};
+use crate::runtime::run::FlowControl;
+use crate::runtime::tool_call::ToolGate;
+use crate::runtime::state::AnyStateAction;
 use crate::runtime::run::TerminationReason;
 use crate::runtime::tool_call::suspension::Suspension;
 use crate::runtime::tool_call::{ToolDescriptor, ToolResult};

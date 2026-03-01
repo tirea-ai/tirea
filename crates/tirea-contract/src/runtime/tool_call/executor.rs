@@ -1,6 +1,6 @@
 use crate::runtime::activity::ActivityManager;
-use crate::runtime::plugin::agent::AgentBehavior;
-use crate::runtime::plugin::phase::CommutativeAction;
+use crate::runtime::behavior::AgentBehavior;
+use crate::runtime::state::CommutativeAction;
 use crate::runtime::tool_call::lifecycle::SuspendedCall;
 use crate::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
 use crate::thread::{Message, ToolCall};

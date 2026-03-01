@@ -5,12 +5,12 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
-use tirea_contract::runtime::plugin::phase::action::Action;
-use tirea_contract::runtime::plugin::phase::core::ext::InferenceContext;
-use tirea_contract::runtime::plugin::phase::state_spec::{AnyStateAction, StateSpec};
-use tirea_contract::runtime::plugin::phase::step::StepContext;
-use tirea_contract::runtime::plugin::phase::Phase;
+use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
+use tirea_contract::runtime::action::Action;
+use tirea_contract::runtime::inference::InferenceContext;
+use tirea_contract::runtime::state::{AnyStateAction, StateSpec};
+use tirea_contract::runtime::phase::step::StepContext;
+use tirea_contract::runtime::phase::Phase;
 use tirea_state::State;
 
 mod system_reminder;
@@ -163,7 +163,7 @@ impl AgentBehavior for ReminderPlugin {
 mod tests {
     use super::*;
     use serde_json::json;
-    use tirea_contract::runtime::plugin::phase::Phase;
+    use tirea_contract::runtime::phase::Phase;
     use tirea_contract::RunConfig;
     use tirea_state::DocCell;
 

@@ -4579,11 +4579,12 @@ fn test_scenario_various_interaction_types() {
 
 use std::collections::{HashMap, HashSet};
 use tirea_agentos::contracts::io::ResumeDecisionAction;
-use tirea_agentos::contracts::runtime::plugin::agent::ReadOnlyContext;
-use tirea_agentos::contracts::runtime::plugin::phase::action::Action;
+use tirea_agentos::contracts::runtime::behavior::ReadOnlyContext;
+use tirea_agentos::contracts::runtime::action::Action;
 use tirea_contract::testing::{TestEmitStatePatch as EmitStatePatch, TestSuspendTool as SuspendTool};
-use tirea_agentos::contracts::runtime::plugin::phase::{Phase, StepContext, ToolGate};
-use tirea_agentos::contracts::runtime::plugin::AgentBehavior;
+use tirea_agentos::contracts::runtime::phase::{Phase, StepContext};
+use tirea_agentos::contracts::runtime::tool_call::ToolGate;
+use tirea_agentos::contracts::runtime::AgentBehavior;
 use tirea_agentos::contracts::runtime::{
     AnyStateAction, SuspendedCall, SuspendedToolCallsState, ToolCallResume,
     ToolCallState, ToolCallStatesAction, ToolCallStatesMap, ToolCallStatus,
@@ -4642,7 +4643,7 @@ impl FrontendToolInvocation {
 
 fn suspend_ticket_from_invocation(
     invocation: FrontendToolInvocation,
-) -> tirea_agentos::contracts::runtime::plugin::phase::SuspendTicket {
+) -> tirea_agentos::contracts::runtime::phase::SuspendTicket {
     let suspension = tirea_agentos::contracts::Suspension::new(
         &invocation.call_id,
         format!("tool:{}", invocation.tool_name),
@@ -4659,7 +4660,7 @@ fn suspend_ticket_from_invocation(
             tirea_agentos::contracts::runtime::ToolCallResumeMode::PassDecisionToTool
         }
     };
-    tirea_agentos::contracts::runtime::plugin::phase::SuspendTicket::new(
+    tirea_agentos::contracts::runtime::phase::SuspendTicket::new(
         suspension,
         tirea_agentos::contracts::runtime::PendingToolCall::new(
             invocation.call_id,
@@ -4701,7 +4702,7 @@ fn build_read_only_ctx_for_dispatch<'a>(
     phase: Phase,
     step: &'a StepContext<'a>,
 ) -> ReadOnlyContext<'a> {
-    tirea_agentos::contracts::runtime::plugin::agent::build_read_only_context_from_step(
+    tirea_agentos::contracts::runtime::behavior::build_read_only_context_from_step(
         phase,
         step,
         step.ctx().doc(),
@@ -6474,7 +6475,7 @@ async fn test_e2e_permission_suspend_with_real_tool() {
     };
 
     let tools = tool_map([IncrementTool]);
-    let behavior: Arc<dyn tirea_agentos::contracts::runtime::plugin::AgentBehavior> =
+    let behavior: Arc<dyn tirea_agentos::contracts::runtime::AgentBehavior> =
         Arc::new(PermissionPlugin);
 
     // execute_tools_with_behaviors should return Suspended outcome
@@ -6556,7 +6557,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
     };
 
     let tools = tool_map([IncrementTool]);
-    let behavior: Arc<dyn tirea_agentos::contracts::runtime::plugin::AgentBehavior> =
+    let behavior: Arc<dyn tirea_agentos::contracts::runtime::AgentBehavior> =
         Arc::new(PermissionPlugin);
 
     // Phase 1: Suspend
@@ -6583,7 +6584,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
 
     // Resume with only InteractionPlugin — denial should block the tool
     let response_plugin = interaction_plugin_from_request(&deny_request);
-    let resume_behavior: Arc<dyn tirea_agentos::contracts::runtime::plugin::AgentBehavior> =
+    let resume_behavior: Arc<dyn tirea_agentos::contracts::runtime::AgentBehavior> =
         Arc::new(response_plugin);
 
     let resume_result = StreamResult {
@@ -6655,7 +6656,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
     };
 
     let tools = tool_map([IncrementTool]);
-    let behavior: Arc<dyn tirea_agentos::contracts::runtime::plugin::AgentBehavior> =
+    let behavior: Arc<dyn tirea_agentos::contracts::runtime::AgentBehavior> =
         Arc::new(PermissionPlugin);
 
     // Phase 1: Suspend
@@ -6681,7 +6682,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
 
     // Resume with only InteractionPlugin (no PermissionPlugin)
     let response_plugin = interaction_plugin_from_request(&approve_request);
-    let resume_behavior: Arc<dyn tirea_agentos::contracts::runtime::plugin::AgentBehavior> =
+    let resume_behavior: Arc<dyn tirea_agentos::contracts::runtime::AgentBehavior> =
         Arc::new(response_plugin);
 
     let resume_result = StreamResult {
@@ -12372,8 +12373,9 @@ mod llmmetry_tracing {
     use crate::AgentBehaviorTestDispatch;
     use serde_json::json;
     use std::sync::{Arc, Mutex};
-    use tirea_agentos::contracts::runtime::plugin::phase::core::ext::LLMResponse;
-    use tirea_agentos::contracts::runtime::plugin::phase::{Phase, StepContext, ToolGate};
+    use tirea_agentos::contracts::runtime::inference::LLMResponse;
+    use tirea_agentos::contracts::runtime::phase::{Phase, StepContext};
+    use tirea_agentos::contracts::runtime::tool_call::ToolGate;
     use tirea_agentos::contracts::runtime::tool_call::ToolResult;
     use tirea_agentos::contracts::runtime::StreamResult;
     use tirea_agentos::contracts::thread::Thread as ConversationAgentState;

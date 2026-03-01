@@ -1,7 +1,7 @@
 //! Tool execution utilities.
 
 use crate::contracts::reduce_state_actions;
-use crate::contracts::runtime::plugin::agent::AgentBehavior;
+use crate::contracts::runtime::behavior::AgentBehavior;
 use crate::contracts::runtime::tool_call::ToolCallContext;
 use crate::contracts::runtime::tool_call::{Tool, ToolExecutionEffect, ToolResult};
 pub use crate::contracts::runtime::ToolExecution;
@@ -196,8 +196,8 @@ pub fn collect_patches(executions: &[ToolExecution]) -> Vec<TrackedPatch> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::runtime::plugin::phase::state_spec::StateSpec;
-    use crate::contracts::runtime::plugin::phase::AnyStateAction;
+    use crate::contracts::runtime::state::StateSpec;
+    use crate::contracts::runtime::state::AnyStateAction;
     use crate::contracts::runtime::tool_call::{ToolDescriptor, ToolError};
     use crate::contracts::runtime::{InferenceError, InferenceErrorState};
     use crate::contracts::ToolCallContext;

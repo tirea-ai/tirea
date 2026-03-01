@@ -11,12 +11,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use tirea_contract::io::ResumeDecisionAction;
-use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
-use tirea_contract::runtime::plugin::phase::action::Action;
-use tirea_contract::runtime::plugin::phase::core::ext::{InferenceContext, ToolGate};
-use tirea_contract::runtime::plugin::phase::state_spec::{AnyStateAction, StateSpec};
-use tirea_contract::runtime::plugin::phase::step::StepContext;
-use tirea_contract::runtime::plugin::phase::{Phase, SuspendTicket};
+use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
+use tirea_contract::runtime::action::Action;
+use tirea_contract::runtime::inference::InferenceContext;
+use tirea_contract::runtime::tool_call::ToolGate;
+use tirea_contract::runtime::state::{AnyStateAction, StateSpec};
+use tirea_contract::runtime::phase::step::StepContext;
+use tirea_contract::runtime::phase::{Phase, SuspendTicket};
 use tirea_contract::runtime::{PendingToolCall, ToolCallResumeMode};
 use tirea_state::State;
 
@@ -353,7 +354,7 @@ impl AgentBehavior for ToolPolicyPlugin {
 mod tests {
     use super::*;
     use serde_json::json;
-    use tirea_contract::runtime::plugin::phase::Phase;
+    use tirea_contract::runtime::phase::Phase;
     use tirea_contract::io::ResumeDecisionAction;
     use tirea_contract::runtime::tool_call::ToolCallResume;
     use tirea_contract::RunConfig;

@@ -12,7 +12,7 @@ use super::envelope_meta::{
     take_runtime_event_envelope_meta,
 };
 use super::wire::{from_data_value, to_data_value, EventEnvelope};
-use crate::runtime::llm::TokenUsage;
+use crate::runtime::inference::TokenUsage;
 use crate::runtime::tool_call::ToolResult;
 use crate::runtime::TerminationReason;
 use crate::runtime::ToolCallOutcome;
@@ -335,7 +335,7 @@ define_agent_events! {
     data_imports {
         use crate::runtime::TerminationReason;
         use crate::runtime::ToolCallOutcome;
-        use crate::runtime::llm::TokenUsage;
+        use crate::runtime::inference::TokenUsage;
         use crate::runtime::tool_call::ToolResult;
         use serde::{Deserialize, Serialize};
         use serde_json::Value;

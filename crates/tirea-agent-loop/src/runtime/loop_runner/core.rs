@@ -1,6 +1,6 @@
 use super::AgentLoopError;
-use crate::contracts::runtime::plugin::phase::StepContext;
-use crate::contracts::runtime::plugin::phase::{reduce_state_actions, AnyStateAction};
+use crate::contracts::runtime::phase::StepContext;
+use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction};
 use crate::contracts::runtime::state_paths::{
     INFERENCE_ERROR_STATE_PATH, SUSPENDED_TOOL_CALLS_STATE_PATH,
     TOOL_CALL_STATES_STATE_PATH,
@@ -28,7 +28,7 @@ fn is_pending_approval_placeholder(msg: &Message) -> bool {
 }
 
 pub(super) fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec<Message> {
-    use crate::contracts::runtime::plugin::phase::core::ext::InferenceContext;
+    use crate::contracts::runtime::inference::InferenceContext;
 
     let mut messages = Vec::new();
 
@@ -109,7 +109,7 @@ pub(super) fn inference_inputs_from_step(
     step: &mut StepContext<'_>,
     system_prompt: &str,
 ) -> InferenceInputs {
-    use crate::contracts::runtime::plugin::phase::core::ext::InferenceContext;
+    use crate::contracts::runtime::inference::InferenceContext;
 
     let messages = build_messages(step, system_prompt);
     let inf = step.extensions.get::<InferenceContext>();
