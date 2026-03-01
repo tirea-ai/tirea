@@ -4581,7 +4581,7 @@ use std::collections::{HashMap, HashSet};
 use tirea_agentos::contracts::io::ResumeDecisionAction;
 use tirea_agentos::contracts::runtime::plugin::agent::ReadOnlyContext;
 use tirea_agentos::contracts::runtime::plugin::phase::action::Action;
-use tirea_agentos::contracts::runtime::plugin::phase::core::actions::{EmitStatePatch, SuspendTool};
+use tirea_contract::testing::{TestEmitStatePatch as EmitStatePatch, TestSuspendTool as SuspendTool};
 use tirea_agentos::contracts::runtime::plugin::phase::{Phase, StepContext, ToolGate};
 use tirea_agentos::contracts::runtime::plugin::AgentBehavior;
 use tirea_agentos::contracts::runtime::{

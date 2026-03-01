@@ -1,7 +1,7 @@
-use super::core::ext::{FlowControl, InferenceContext, LLMResponse, MessagingContext, ToolGate};
+use super::core::ext::{FlowControl, InferenceContext, LLMResponse, ToolGate};
 use super::extensions::Extensions;
 use super::state_spec::{AnyStateAction, CommutativeAction};
-use super::{RunAction, StepOutcome, SuspendTicket, ToolCallAction};
+use super::{RunAction, StepOutcome, ToolCallAction};
 use crate::runtime::tool_call::ToolCallContext;
 use crate::runtime::tool_call::{ToolDescriptor, ToolResult};
 use crate::thread::Message;
@@ -125,61 +125,7 @@ impl<'a> StepContext<'a> {
     }
 
     // =========================================================================
-    // Context Injection — delegates to Extensions
-    // =========================================================================
-
-    /// Add system context (appended to system prompt) [Position 1].
-    pub fn system(&mut self, content: impl Into<String>) {
-        self.extensions
-            .get_or_default::<InferenceContext>()
-            .system_context
-            .push(content.into());
-    }
-
-    /// Add session context message (before user messages) [Position 2].
-    pub fn thread(&mut self, content: impl Into<String>) {
-        self.extensions
-            .get_or_default::<InferenceContext>()
-            .session_context
-            .push(content.into());
-    }
-
-    /// Add system reminder (after tool result) [Position 7].
-    pub fn reminder(&mut self, content: impl Into<String>) {
-        self.extensions
-            .get_or_default::<MessagingContext>()
-            .reminders
-            .push(content.into());
-    }
-
-    /// Append a user message to be injected after tool execution.
-    pub fn user_message(&mut self, content: impl Into<String>) {
-        self.extensions
-            .get_or_default::<MessagingContext>()
-            .user_messages
-            .push(content.into());
-    }
-
-    // =========================================================================
-    // Tool Filtering — delegates to InferenceContext.tools
-    // =========================================================================
-
-    /// Exclude a tool by ID.
-    pub fn exclude(&mut self, tool_id: &str) {
-        if let Some(inf) = self.extensions.get_mut::<InferenceContext>() {
-            inf.tools.retain(|t| t.id != tool_id);
-        }
-    }
-
-    /// Include only specified tools.
-    pub fn include_only(&mut self, tool_ids: &[&str]) {
-        if let Some(inf) = self.extensions.get_mut::<InferenceContext>() {
-            inf.tools.retain(|t| tool_ids.contains(&t.id.as_str()));
-        }
-    }
-
-    // =========================================================================
-    // Tool Control — delegates to ToolGate extension
+    // Tool Control — read-only accessors for ToolGate extension
     // =========================================================================
 
     pub fn tool_name(&self) -> Option<&str> {
@@ -218,50 +164,6 @@ impl<'a> StepContext<'a> {
             .get::<ToolGate>()
             .map(|g| g.pending)
             .unwrap_or(false)
-    }
-
-    /// Mark the current tool as explicitly allowed.
-    pub fn allow(&mut self) {
-        if let Some(gate) = self.extensions.get_mut::<ToolGate>() {
-            gate.blocked = false;
-            gate.block_reason = None;
-            gate.pending = false;
-            gate.suspend_ticket = None;
-        }
-    }
-
-    /// Mark the current tool as blocked with a reason.
-    pub fn block(&mut self, reason: impl Into<String>) {
-        if let Some(gate) = self.extensions.get_mut::<ToolGate>() {
-            gate.blocked = true;
-            gate.block_reason = Some(reason.into());
-            gate.pending = false;
-            gate.suspend_ticket = None;
-        }
-    }
-
-    /// Mark the current tool as suspended with a ticket.
-    pub fn suspend(&mut self, ticket: SuspendTicket) {
-        if let Some(gate) = self.extensions.get_mut::<ToolGate>() {
-            gate.blocked = false;
-            gate.block_reason = None;
-            gate.pending = true;
-            gate.suspend_ticket = Some(ticket);
-        }
-    }
-
-    /// Set tool result.
-    pub fn set_tool_result(&mut self, result: ToolResult) {
-        if let Some(gate) = self.extensions.get_mut::<ToolGate>() {
-            gate.result = Some(result);
-        }
-    }
-
-    /// Set run-level action.
-    pub fn set_run_action(&mut self, action: RunAction) {
-        self.extensions
-            .get_or_default::<FlowControl>()
-            .run_action = Some(action);
     }
 
     /// Emit a state patch side effect.

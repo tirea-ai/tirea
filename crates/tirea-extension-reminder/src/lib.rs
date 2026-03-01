@@ -7,8 +7,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
 use tirea_contract::runtime::plugin::phase::action::Action;
-use tirea_contract::runtime::plugin::phase::core::actions::{AddSessionContext, EmitStatePatch};
+use tirea_contract::runtime::plugin::phase::core::ext::InferenceContext;
 use tirea_contract::runtime::plugin::phase::state_spec::{AnyStateAction, StateSpec};
+use tirea_contract::runtime::plugin::phase::step::StepContext;
+use tirea_contract::runtime::plugin::phase::Phase;
 use tirea_state::State;
 
 mod system_reminder;
@@ -47,6 +49,47 @@ impl StateSpec for ReminderState {
             ReminderAction::Remove { text } => self.items.retain(|item| item != &text),
             ReminderAction::Clear => self.items.clear(),
         }
+    }
+}
+
+// =============================================================================
+// Reminder-domain Actions
+// =============================================================================
+
+/// Inject reminder texts into session context.
+pub struct InjectReminders(pub Vec<String>);
+
+impl Action for InjectReminders {
+    fn label(&self) -> &'static str {
+        "add_session_context"
+    }
+
+    fn validate(&self, phase: Phase) -> Result<(), String> {
+        if phase == Phase::BeforeInference {
+            Ok(())
+        } else {
+            Err(format!(
+                "InjectReminders is only allowed in BeforeInference, got {phase}"
+            ))
+        }
+    }
+
+    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
+        let inf = step.extensions.get_or_default::<InferenceContext>();
+        inf.session_context.extend(self.0);
+    }
+}
+
+/// Clear reminder state after injection.
+pub struct ClearReminderState;
+
+impl Action for ClearReminderState {
+    fn label(&self) -> &'static str {
+        "emit_state_patch"
+    }
+
+    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
+        step.emit_state_action(AnyStateAction::new::<ReminderState>(ReminderAction::Clear));
     }
 }
 
@@ -101,15 +144,15 @@ impl AgentBehavior for ReminderPlugin {
             return vec![];
         }
 
-        let mut actions: Vec<Box<dyn Action>> = Vec::new();
-        for text in &reminders {
-            actions.push(Box::new(AddSessionContext(format!("Reminder: {}", text))));
-        }
+        let texts: Vec<String> = reminders
+            .iter()
+            .map(|text| format!("Reminder: {}", text))
+            .collect();
+
+        let mut actions: Vec<Box<dyn Action>> = vec![Box::new(InjectReminders(texts))];
 
         if self.clear_after_llm_request {
-            actions.push(Box::new(EmitStatePatch(
-                AnyStateAction::new::<ReminderState>(ReminderAction::Clear),
-            )));
+            actions.push(Box::new(ClearReminderState));
         }
 
         actions
@@ -182,10 +225,10 @@ mod tests {
         let doc = DocCell::new(json!({ "reminders": { "items": ["Reminder A", "Reminder B"] } }));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
         let actions = AgentBehavior::before_inference(&plugin, &ctx).await;
-        assert_eq!(count_session_contexts(&actions), 2);
+        assert_eq!(count_session_contexts(&actions), 1);
         assert!(
             has_emit_state_patch(&actions),
-            "should include EmitStatePatch for clear"
+            "should include ClearReminderState for clear"
         );
     }
 

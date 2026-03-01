@@ -3,9 +3,11 @@ use super::LlmExecutor;
 use super::*;
 use crate::contracts::runtime::plugin::agent::ReadOnlyContext;
 use crate::contracts::runtime::plugin::phase::action::Action;
-use crate::contracts::runtime::plugin::phase::core::actions::{
-    AddSessionContext, AddSystemContext, AddSystemReminder, BlockTool, EmitStatePatch,
-    ExcludeTool, RequestTermination, SuspendTool,
+use tirea_contract::testing::{
+    TestBlockTool as BlockTool, TestEmitStatePatch as EmitStatePatch,
+    TestExcludeTool as ExcludeTool, TestRequestTermination as RequestTermination,
+    TestSessionContext as AddSessionContext, TestSuspendTool as SuspendTool,
+    TestSystemContext as AddSystemContext, TestSystemReminder as AddSystemReminder,
 };
 use crate::contracts::runtime::plugin::phase::core::ext::InferenceContext;
 use crate::contracts::runtime::plugin::phase::{Phase, SuspendTicket};
@@ -1678,9 +1680,18 @@ fn test_build_messages_with_context() {
     fixture.messages = thread.messages.clone();
     let mut step = fixture.step(tool_descriptors);
 
-    step.system("System context 1");
-    step.system("System context 2");
-    step.thread("Thread context");
+    step.extensions
+        .get_or_default::<InferenceContext>()
+        .system_context
+        .push("System context 1".into());
+    step.extensions
+        .get_or_default::<InferenceContext>()
+        .system_context
+        .push("System context 2".into());
+    step.extensions
+        .get_or_default::<InferenceContext>()
+        .session_context
+        .push("Thread context".into());
 
     let messages = build_messages(&step, "Base system prompt");
 
@@ -5163,7 +5174,7 @@ async fn test_run_loop_rejects_prompt_context_mutation_outside_before_inference(
         outcome.termination
     );
     assert!(
-        outcome.failure.as_ref().is_some_and(|f| matches!(f, LoopFailure::State(msg) if msg.contains("AddSystemContext is only allowed in BeforeInference"))),
+        outcome.failure.as_ref().is_some_and(|f| matches!(f, LoopFailure::State(msg) if msg.contains("is only allowed in BeforeInference"))),
         "expected prompt context mutation error in failure"
     );
 }
@@ -5292,7 +5303,7 @@ fn test_execute_tools_rejects_reminder_mutation_outside_after_tool_execute() {
             matches!(
                 err,
                 AgentLoopError::StateError(ref message)
-                if message.contains("AddSystemReminder is only allowed in AfterToolExecute")
+                if message.contains("is only allowed in AfterToolExecute")
             ),
             "unexpected error: {err:?}"
         );

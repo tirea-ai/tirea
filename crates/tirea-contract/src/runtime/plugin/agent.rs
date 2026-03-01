@@ -235,7 +235,7 @@ pub fn build_read_only_context_from_step<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::plugin::phase::core::actions::AddSystemContext;
+    use crate::testing::TestSystemContext as AddSystemContext;
     use serde_json::json;
 
     #[tokio::test]

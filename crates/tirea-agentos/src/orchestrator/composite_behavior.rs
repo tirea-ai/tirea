@@ -124,7 +124,7 @@ impl AgentBehavior for CompositeBehavior {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::runtime::plugin::phase::core::actions::{AddSystemContext, BlockTool};
+    use tirea_contract::testing::{TestBlockTool as BlockTool, TestSystemContext as AddSystemContext};
     use crate::contracts::runtime::plugin::phase::Phase;
     use crate::contracts::RunConfig;
     use serde_json::json;

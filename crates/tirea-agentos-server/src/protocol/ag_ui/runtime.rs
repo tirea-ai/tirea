@@ -14,10 +14,9 @@ use tirea_agentos::runtime::loop_runner::{
 };
 use tirea_contract::runtime::plugin::agent::ReadOnlyContext;
 use tirea_contract::runtime::plugin::phase::action::Action;
-use tirea_contract::runtime::plugin::phase::core::actions::{
-    AddSystemContext, AllowTool, OverrideToolResult, SuspendTool,
-};
-use tirea_contract::runtime::plugin::phase::SuspendTicket;
+use tirea_contract::runtime::plugin::phase::core::ext::{InferenceContext, ToolGate};
+use tirea_contract::runtime::plugin::phase::step::StepContext;
+use tirea_contract::runtime::plugin::phase::{Phase, SuspendTicket};
 use tirea_contract::runtime::plugin::AgentBehavior;
 use tirea_contract::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_contract::runtime::{PendingToolCall, ToolCallResumeMode};
@@ -204,6 +203,95 @@ impl Tool for FrontendToolStub {
     }
 }
 
+// =============================================================================
+// AG-UI-domain Actions
+// =============================================================================
+
+/// Inject AG-UI context into the system prompt.
+struct InjectAgUiContext(String);
+
+impl Action for InjectAgUiContext {
+    fn label(&self) -> &'static str {
+        "add_system_context"
+    }
+
+    fn validate(&self, phase: Phase) -> Result<(), String> {
+        if phase == Phase::BeforeInference {
+            Ok(())
+        } else {
+            Err(format!(
+                "InjectAgUiContext is only allowed in BeforeInference, got {phase}"
+            ))
+        }
+    }
+
+    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
+        step.extensions
+            .get_or_default::<InferenceContext>()
+            .system_context
+            .push(self.0);
+    }
+}
+
+/// Suspend tool execution for frontend interaction.
+struct SuspendForFrontend(SuspendTicket);
+
+impl Action for SuspendForFrontend {
+    fn label(&self) -> &'static str {
+        "suspend_tool"
+    }
+
+    fn validate(&self, phase: Phase) -> Result<(), String> {
+        if phase == Phase::BeforeToolExecute {
+            Ok(())
+        } else {
+            Err(format!(
+                "SuspendForFrontend is only allowed in BeforeToolExecute, got {phase}"
+            ))
+        }
+    }
+
+    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
+        if let Some(gate) = step.extensions.get_mut::<ToolGate>() {
+            gate.blocked = false;
+            gate.block_reason = None;
+            gate.pending = true;
+            gate.suspend_ticket = Some(self.0);
+        }
+    }
+}
+
+/// Resolve a frontend decision by setting the tool result and clearing block/suspend state.
+struct ResolveFrontendDecision {
+    result: ToolResult,
+}
+
+impl Action for ResolveFrontendDecision {
+    fn label(&self) -> &'static str {
+        "resolve_frontend"
+    }
+
+    fn validate(&self, phase: Phase) -> Result<(), String> {
+        if phase == Phase::BeforeToolExecute {
+            Ok(())
+        } else {
+            Err(format!(
+                "ResolveFrontendDecision is only allowed in BeforeToolExecute, got {phase}"
+            ))
+        }
+    }
+
+    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
+        if let Some(gate) = step.extensions.get_mut::<ToolGate>() {
+            gate.result = Some(self.result);
+            gate.blocked = false;
+            gate.block_reason = None;
+            gate.pending = false;
+            gate.suspend_ticket = None;
+        }
+    }
+}
+
 /// Run-scoped plugin that injects AG-UI context (from `useCopilotReadable`)
 /// into the agent's system prompt before inference.
 struct ContextInjectionPlugin {
@@ -223,7 +311,7 @@ impl AgentBehavior for ContextInjectionPlugin {
     }
 
     async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        vec![Box::new(AddSystemContext(self.addendum.clone()))]
+        vec![Box::new(InjectAgUiContext(self.addendum.clone()))]
     }
 }
 
@@ -266,10 +354,7 @@ impl AgentBehavior for FrontendToolPendingPlugin {
                         .unwrap_or_else(|| "User denied the action".to_string()),
                 ),
             };
-            return vec![
-                Box::new(OverrideToolResult(result)),
-                Box::new(AllowTool),
-            ];
+            return vec![Box::new(ResolveFrontendDecision { result })];
         }
         let Some(call_id) = ctx.tool_call_id().map(str::to_string) else {
             return vec![];
@@ -278,7 +363,7 @@ impl AgentBehavior for FrontendToolPendingPlugin {
         let args = ctx.tool_args().cloned().unwrap_or_default();
         let suspension = tirea_contract::Suspension::new(&call_id, format!("tool:{tool_name}"))
             .with_parameters(args.clone());
-        vec![Box::new(SuspendTool(SuspendTicket::new(
+        vec![Box::new(SuspendForFrontend(SuspendTicket::new(
             suspension,
             PendingToolCall::new(call_id, tool_name.to_string(), args),
             ToolCallResumeMode::UseDecisionAsToolResult,

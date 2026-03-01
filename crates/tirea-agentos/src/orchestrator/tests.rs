@@ -1,8 +1,9 @@
 use super::*;
 use crate::contracts::runtime::plugin::agent::ReadOnlyContext;
 use crate::contracts::runtime::plugin::phase::action::Action;
-use crate::contracts::runtime::plugin::phase::core::actions::{
-    AddSystemContext, EmitStatePatch, RequestTermination,
+use tirea_contract::testing::{
+    TestEmitStatePatch as EmitStatePatch, TestRequestTermination as RequestTermination,
+    TestSystemContext as AddSystemContext,
 };
 use crate::contracts::runtime::plugin::phase::state_spec::AnyStateAction;
 use crate::contracts::runtime::tool_call::ToolDescriptor;

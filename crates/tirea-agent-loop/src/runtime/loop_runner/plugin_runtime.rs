@@ -394,7 +394,7 @@ where
 mod tests {
     use super::*;
     use crate::contracts::runtime::plugin::agent::NoOpBehavior;
-    use crate::contracts::runtime::plugin::phase::core::actions::AddSystemContext;
+    use tirea_contract::testing::TestSystemContext as AddSystemContext;
     use crate::contracts::testing::TestFixture;
     use async_trait::async_trait;
     use tirea_state::DocCell;

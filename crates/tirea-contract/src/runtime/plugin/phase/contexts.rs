@@ -1,4 +1,6 @@
-use super::core::ext::{LLMResponse, ToolGate};
+use super::core::ext::{
+    FlowControl, InferenceContext, LLMResponse, MessagingContext, ToolGate,
+};
 use super::{Phase, RunAction, StepContext, SuspendTicket, ToolCallAction};
 use crate::runtime::llm::StreamResult;
 use crate::runtime::run::TerminationReason;
@@ -82,33 +84,50 @@ impl_phase_context!(BeforeInferenceContext, Phase::BeforeInference);
 impl<'s, 'a> BeforeInferenceContext<'s, 'a> {
     /// Append a system context line.
     pub fn add_system_context(&mut self, text: impl Into<String>) {
-        self.step.system(text);
+        self.step
+            .extensions
+            .get_or_default::<InferenceContext>()
+            .system_context
+            .push(text.into());
     }
 
     /// Append a session message.
     pub fn add_session_message(&mut self, text: impl Into<String>) {
-        self.step.thread(text);
+        self.step
+            .extensions
+            .get_or_default::<InferenceContext>()
+            .session_context
+            .push(text.into());
     }
 
     /// Exclude tool by id.
     pub fn exclude_tool(&mut self, tool_id: &str) {
-        self.step.exclude(tool_id);
+        if let Some(inf) = self.step.extensions.get_mut::<InferenceContext>() {
+            inf.tools.retain(|t| t.id != tool_id);
+        }
     }
 
     /// Keep only listed tools.
     pub fn include_only(&mut self, tool_ids: &[&str]) {
-        self.step.include_only(tool_ids);
+        if let Some(inf) = self.step.extensions.get_mut::<InferenceContext>() {
+            inf.tools.retain(|t| tool_ids.contains(&t.id.as_str()));
+        }
     }
 
     /// Terminate current run as behavior-requested before inference.
     pub fn terminate_behavior_requested(&mut self) {
         self.step
-            .set_run_action(RunAction::Terminate(TerminationReason::BehaviorRequested));
+            .extensions
+            .get_or_default::<FlowControl>()
+            .run_action = Some(RunAction::Terminate(TerminationReason::BehaviorRequested));
     }
 
     /// Request run termination with a specific reason.
     pub fn request_termination(&mut self, reason: TerminationReason) {
-        self.step.set_run_action(RunAction::Terminate(reason));
+        self.step
+            .extensions
+            .get_or_default::<FlowControl>()
+            .run_action = Some(RunAction::Terminate(reason));
     }
 }
 
@@ -136,7 +155,10 @@ impl<'s, 'a> AfterInferenceContext<'s, 'a> {
 
     /// Request run termination with a specific reason after inference has completed.
     pub fn request_termination(&mut self, reason: TerminationReason) {
-        self.step.set_run_action(RunAction::Terminate(reason));
+        self.step
+            .extensions
+            .get_or_default::<FlowControl>()
+            .run_action = Some(RunAction::Terminate(reason));
     }
 }
 
@@ -169,22 +191,49 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
     }
 
     pub fn set_decision(&mut self, decision: ToolCallAction) {
-        match decision {
-            ToolCallAction::Proceed => self.step.allow(),
-            ToolCallAction::Suspend(ticket) => self.step.suspend(*ticket),
-            ToolCallAction::Block { reason } => self.step.block(reason),
+        if let Some(gate) = self.step.extensions.get_mut::<ToolGate>() {
+            match decision {
+                ToolCallAction::Proceed => {
+                    gate.blocked = false;
+                    gate.block_reason = None;
+                    gate.pending = false;
+                    gate.suspend_ticket = None;
+                }
+                ToolCallAction::Suspend(ticket) => {
+                    gate.blocked = false;
+                    gate.block_reason = None;
+                    gate.pending = true;
+                    gate.suspend_ticket = Some(*ticket);
+                }
+                ToolCallAction::Block { reason } => {
+                    gate.blocked = true;
+                    gate.block_reason = Some(reason);
+                    gate.pending = false;
+                    gate.suspend_ticket = None;
+                }
+            }
         }
     }
 
     pub fn block(&mut self, reason: impl Into<String>) {
-        self.step.block(reason);
+        if let Some(gate) = self.step.extensions.get_mut::<ToolGate>() {
+            gate.blocked = true;
+            gate.block_reason = Some(reason.into());
+            gate.pending = false;
+            gate.suspend_ticket = None;
+        }
     }
 
     /// Explicitly allow tool execution.
     ///
     /// This clears any previous block/suspend state set by earlier plugins.
     pub fn allow(&mut self) {
-        self.step.allow();
+        if let Some(gate) = self.step.extensions.get_mut::<ToolGate>() {
+            gate.blocked = false;
+            gate.block_reason = None;
+            gate.pending = false;
+            gate.suspend_ticket = None;
+        }
     }
 
     /// Override current call result directly from plugin logic.
@@ -192,11 +241,18 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
     /// Useful for resumed frontend interactions where the external payload
     /// should become the tool result without executing a backend tool.
     pub fn set_tool_result(&mut self, result: ToolResult) {
-        self.step.set_tool_result(result);
+        if let Some(gate) = self.step.extensions.get_mut::<ToolGate>() {
+            gate.result = Some(result);
+        }
     }
 
     pub fn suspend(&mut self, ticket: SuspendTicket) {
-        self.step.suspend(ticket);
+        if let Some(gate) = self.step.extensions.get_mut::<ToolGate>() {
+            gate.blocked = false;
+            gate.block_reason = None;
+            gate.pending = true;
+            gate.suspend_ticket = Some(ticket);
+        }
     }
 }
 
@@ -223,7 +279,11 @@ impl<'s, 'a> AfterToolExecuteContext<'s, 'a> {
     }
 
     pub fn add_system_reminder(&mut self, text: impl Into<String>) {
-        self.step.reminder(text);
+        self.step
+            .extensions
+            .get_or_default::<MessagingContext>()
+            .reminders
+            .push(text.into());
     }
 }
 

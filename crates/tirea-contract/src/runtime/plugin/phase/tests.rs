@@ -82,10 +82,21 @@ fn test_step_context_reset() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(mock_tools());
 
-    ctx.system("test");
-    ctx.thread("test");
-    ctx.reminder("test");
-    ctx.set_run_action(RunAction::Terminate(TerminationReason::BehaviorRequested));
+    ctx.extensions
+        .get_or_default::<InferenceContext>()
+        .system_context
+        .push("test".into());
+    ctx.extensions
+        .get_or_default::<InferenceContext>()
+        .session_context
+        .push("test".into());
+    ctx.extensions
+        .get_or_default::<MessagingContext>()
+        .reminders
+        .push("test".into());
+    ctx.extensions
+        .get_or_default::<FlowControl>()
+        .run_action = Some(RunAction::Terminate(TerminationReason::BehaviorRequested));
 
     ctx.reset();
 
@@ -122,8 +133,14 @@ fn test_system_context() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.system("Context 1");
-    ctx.system("Context 2");
+    ctx.extensions
+        .get_or_default::<InferenceContext>()
+        .system_context
+        .push("Context 1".into());
+    ctx.extensions
+        .get_or_default::<InferenceContext>()
+        .system_context
+        .push("Context 2".into());
 
     let inf = ctx.extensions.get::<InferenceContext>().unwrap();
     assert_eq!(inf.system_context.len(), 2);
@@ -136,8 +153,14 @@ fn test_set_system_context() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.system("Context 1");
-    ctx.system("Context 2");
+    ctx.extensions
+        .get_or_default::<InferenceContext>()
+        .system_context
+        .push("Context 1".into());
+    ctx.extensions
+        .get_or_default::<InferenceContext>()
+        .system_context
+        .push("Context 2".into());
     ctx.extensions
         .get_or_default::<InferenceContext>()
         .system_context = vec!["Replaced".to_string()];
@@ -152,7 +175,10 @@ fn test_clear_system_context() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.system("Context 1");
+    ctx.extensions
+        .get_or_default::<InferenceContext>()
+        .system_context
+        .push("Context 1".into());
     ctx.extensions
         .get_or_default::<InferenceContext>()
         .system_context
@@ -167,8 +193,14 @@ fn test_session_context() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.thread("Thread 1");
-    ctx.thread("Thread 2");
+    ctx.extensions
+        .get_or_default::<InferenceContext>()
+        .session_context
+        .push("Thread 1".into());
+    ctx.extensions
+        .get_or_default::<InferenceContext>()
+        .session_context
+        .push("Thread 2".into());
 
     let inf = ctx.extensions.get::<InferenceContext>().unwrap();
     assert_eq!(inf.session_context.len(), 2);
@@ -179,7 +211,10 @@ fn test_set_session_context() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.thread("Thread 1");
+    ctx.extensions
+        .get_or_default::<InferenceContext>()
+        .session_context
+        .push("Thread 1".into());
     ctx.extensions
         .get_or_default::<InferenceContext>()
         .session_context = vec!["Replaced".to_string()];
@@ -194,8 +229,14 @@ fn test_reminder() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.reminder("Reminder 1");
-    ctx.reminder("Reminder 2");
+    ctx.extensions
+        .get_or_default::<MessagingContext>()
+        .reminders
+        .push("Reminder 1".into());
+    ctx.extensions
+        .get_or_default::<MessagingContext>()
+        .reminders
+        .push("Reminder 2".into());
 
     let msg = ctx.extensions.get::<MessagingContext>().unwrap();
     assert_eq!(msg.reminders.len(), 2);
@@ -206,7 +247,10 @@ fn test_clear_reminders() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.reminder("Reminder 1");
+    ctx.extensions
+        .get_or_default::<MessagingContext>()
+        .reminders
+        .push("Reminder 1".into());
     ctx.extensions
         .get_or_default::<MessagingContext>()
         .reminders
@@ -225,7 +269,10 @@ fn test_exclude_tool() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(mock_tools());
 
-    ctx.exclude("delete_file");
+    ctx.extensions
+        .get_or_default::<InferenceContext>()
+        .tools
+        .retain(|t| t.id != "delete_file");
 
     let inf = ctx.extensions.get::<InferenceContext>().unwrap();
     assert_eq!(inf.tools.len(), 2);
@@ -237,7 +284,11 @@ fn test_include_only_tools() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(mock_tools());
 
-    ctx.include_only(&["read_file"]);
+    let allowed = ["read_file"];
+    ctx.extensions
+        .get_or_default::<InferenceContext>()
+        .tools
+        .retain(|t| allowed.contains(&t.id.as_str()));
 
     let inf = ctx.extensions.get::<InferenceContext>().unwrap();
     assert_eq!(inf.tools.len(), 1);
@@ -276,7 +327,12 @@ fn test_block_tool() {
     let call = ToolCall::new("call_1", "delete_file", json!({}));
     set_tool_gate(&mut ctx, &call);
 
-    ctx.block("Permission denied");
+    if let Some(gate) = ctx.extensions.get_mut::<ToolGate>() {
+        gate.blocked = true;
+        gate.block_reason = Some("Permission denied".into());
+        gate.pending = false;
+        gate.suspend_ticket = None;
+    }
 
     assert!(ctx.tool_blocked());
     assert!(!ctx.tool_pending());
@@ -294,7 +350,12 @@ fn test_pending_tool() {
     set_tool_gate(&mut ctx, &call);
 
     let interaction = Suspension::new("confirm_1", "confirm").with_message("Allow write?");
-    ctx.suspend(test_suspend_ticket(interaction));
+    if let Some(gate) = ctx.extensions.get_mut::<ToolGate>() {
+        gate.blocked = false;
+        gate.block_reason = None;
+        gate.pending = true;
+        gate.suspend_ticket = Some(test_suspend_ticket(interaction));
+    }
 
     assert!(ctx.tool_pending());
     assert!(!ctx.tool_blocked());
@@ -312,8 +373,16 @@ fn test_confirm_tool() {
     set_tool_gate(&mut ctx, &call);
 
     let interaction = Suspension::new("confirm_1", "confirm").with_message("Allow write?");
-    ctx.suspend(test_suspend_ticket(interaction));
-    ctx.allow();
+    if let Some(gate) = ctx.extensions.get_mut::<ToolGate>() {
+        gate.pending = true;
+        gate.suspend_ticket = Some(test_suspend_ticket(interaction));
+    }
+    if let Some(gate) = ctx.extensions.get_mut::<ToolGate>() {
+        gate.blocked = false;
+        gate.block_reason = None;
+        gate.pending = false;
+        gate.suspend_ticket = None;
+    }
 
     assert!(!ctx.tool_pending());
     assert!(!ctx.tool_blocked());
@@ -330,21 +399,49 @@ fn test_allow_deny_ask_transitions_are_mutually_exclusive() {
     let call = ToolCall::new("call_1", "write_file", json!({}));
     set_tool_gate(&mut ctx, &call);
 
-    ctx.block("denied");
+    // block
+    if let Some(gate) = ctx.extensions.get_mut::<ToolGate>() {
+        gate.blocked = true;
+        gate.block_reason = Some("denied".into());
+        gate.pending = false;
+        gate.suspend_ticket = None;
+    }
     assert!(ctx.tool_blocked());
     assert!(!ctx.tool_pending());
 
-    ctx.suspend(test_suspend_ticket(
-        Suspension::new("confirm_1", "confirm").with_message("Allow write?"),
-    ));
+    // suspend
+    if let Some(gate) = ctx.extensions.get_mut::<ToolGate>() {
+        gate.blocked = false;
+        gate.block_reason = None;
+        gate.pending = true;
+        gate.suspend_ticket = Some(test_suspend_ticket(
+            Suspension::new("confirm_1", "confirm").with_message("Allow write?"),
+        ));
+    }
     assert!(!ctx.tool_blocked());
     assert!(ctx.tool_pending());
-    assert!(ctx.extensions.get::<ToolGate>().unwrap().block_reason.is_none());
+    assert!(ctx
+        .extensions
+        .get::<ToolGate>()
+        .unwrap()
+        .block_reason
+        .is_none());
 
-    ctx.allow();
+    // allow
+    if let Some(gate) = ctx.extensions.get_mut::<ToolGate>() {
+        gate.blocked = false;
+        gate.block_reason = None;
+        gate.pending = false;
+        gate.suspend_ticket = None;
+    }
     assert!(!ctx.tool_blocked());
     assert!(!ctx.tool_pending());
-    assert!(ctx.extensions.get::<ToolGate>().unwrap().suspend_ticket.is_none());
+    assert!(ctx
+        .extensions
+        .get::<ToolGate>()
+        .unwrap()
+        .suspend_ticket
+        .is_none());
 }
 
 #[test]
@@ -356,7 +453,9 @@ fn test_set_tool_result() {
     set_tool_gate(&mut ctx, &call);
 
     let result = ToolResult::success("read_file", json!({"content": "hello"}));
-    ctx.set_tool_result(result);
+    if let Some(gate) = ctx.extensions.get_mut::<ToolGate>() {
+        gate.result = Some(result);
+    }
 
     assert!(ctx.tool_result().is_some());
     assert!(ctx.tool_result().unwrap().is_success());
@@ -382,7 +481,10 @@ fn test_step_result_pending() {
     set_tool_gate(&mut ctx, &call);
 
     let interaction = Suspension::new("confirm_1", "confirm").with_message("Allow?");
-    ctx.suspend(test_suspend_ticket(interaction.clone()));
+    if let Some(gate) = ctx.extensions.get_mut::<ToolGate>() {
+        gate.pending = true;
+        gate.suspend_ticket = Some(test_suspend_ticket(interaction.clone()));
+    }
 
     match ctx.result() {
         StepOutcome::Pending(ticket) => assert_eq!(ticket.suspension.id, "confirm_1"),
@@ -533,9 +635,10 @@ fn test_step_context_multiple_system_contexts() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.system("Context 1");
-    ctx.system("Context 2");
-    ctx.system("Context 3");
+    let inf = ctx.extensions.get_or_default::<InferenceContext>();
+    inf.system_context.push("Context 1".into());
+    inf.system_context.push("Context 2".into());
+    inf.system_context.push("Context 3".into());
 
     let inf = ctx.extensions.get::<InferenceContext>().unwrap();
     assert_eq!(inf.system_context.len(), 3);
@@ -548,8 +651,9 @@ fn test_step_context_multiple_session_contexts() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.thread("Thread 1");
-    ctx.thread("Thread 2");
+    let inf = ctx.extensions.get_or_default::<InferenceContext>();
+    inf.session_context.push("Thread 1".into());
+    inf.session_context.push("Thread 2".into());
 
     let inf = ctx.extensions.get::<InferenceContext>().unwrap();
     assert_eq!(inf.session_context.len(), 2);
@@ -560,9 +664,10 @@ fn test_step_context_multiple_reminders() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.reminder("Reminder 1");
-    ctx.reminder("Reminder 2");
-    ctx.reminder("Reminder 3");
+    let msg = ctx.extensions.get_or_default::<MessagingContext>();
+    msg.reminders.push("Reminder 1".into());
+    msg.reminders.push("Reminder 2".into());
+    msg.reminders.push("Reminder 3".into());
 
     let msg = ctx.extensions.get::<MessagingContext>().unwrap();
     assert_eq!(msg.reminders.len(), 3);
@@ -575,7 +680,10 @@ fn test_exclude_nonexistent_tool() {
     let original_len = tools.len();
     let mut ctx = fix.step(tools);
 
-    ctx.exclude("nonexistent_tool");
+    ctx.extensions
+        .get_or_default::<InferenceContext>()
+        .tools
+        .retain(|t| t.id != "nonexistent_tool");
 
     let inf = ctx.extensions.get::<InferenceContext>().unwrap();
     assert_eq!(inf.tools.len(), original_len);
@@ -586,8 +694,10 @@ fn test_exclude_multiple_tools() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(mock_tools());
 
-    ctx.exclude("read_file");
-    ctx.exclude("delete_file");
+    ctx.extensions
+        .get_or_default::<InferenceContext>()
+        .tools
+        .retain(|t| t.id != "read_file" && t.id != "delete_file");
 
     let inf = ctx.extensions.get::<InferenceContext>().unwrap();
     assert_eq!(inf.tools.len(), 1);
@@ -599,7 +709,11 @@ fn test_include_only_empty_list() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(mock_tools());
 
-    ctx.include_only(&[]);
+    let empty: Vec<&str> = vec![];
+    ctx.extensions
+        .get_or_default::<InferenceContext>()
+        .tools
+        .retain(|t| empty.contains(&t.id.as_str()));
 
     let inf = ctx.extensions.get::<InferenceContext>().unwrap();
     assert!(inf.tools.is_empty());
@@ -610,7 +724,11 @@ fn test_include_only_with_nonexistent() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(mock_tools());
 
-    ctx.include_only(&["read_file", "nonexistent"]);
+    let allowed = ["read_file", "nonexistent"];
+    ctx.extensions
+        .get_or_default::<InferenceContext>()
+        .tools
+        .retain(|t| allowed.contains(&t.id.as_str()));
 
     let inf = ctx.extensions.get::<InferenceContext>().unwrap();
     assert_eq!(inf.tools.len(), 1);
@@ -622,7 +740,11 @@ fn test_block_without_tool_context() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.block("test");
+    // No ToolGate, so get_mut returns None — no-op
+    if let Some(gate) = ctx.extensions.get_mut::<ToolGate>() {
+        gate.blocked = true;
+        gate.block_reason = Some("test".into());
+    }
     assert!(!ctx.tool_blocked());
 }
 
@@ -632,7 +754,10 @@ fn test_pending_without_tool_context() {
     let mut ctx = fix.step(vec![]);
 
     let interaction = Suspension::new("id", "confirm").with_message("test");
-    ctx.suspend(test_suspend_ticket(interaction));
+    if let Some(gate) = ctx.extensions.get_mut::<ToolGate>() {
+        gate.pending = true;
+        gate.suspend_ticket = Some(test_suspend_ticket(interaction));
+    }
 
     assert!(!ctx.tool_pending());
 }
@@ -644,7 +769,12 @@ fn test_confirm_without_pending() {
 
     let call = ToolCall::new("call_1", "test", json!({}));
     set_tool_gate(&mut ctx, &call);
-    ctx.allow();
+    if let Some(gate) = ctx.extensions.get_mut::<ToolGate>() {
+        gate.blocked = false;
+        gate.block_reason = None;
+        gate.pending = false;
+        gate.suspend_ticket = None;
+    }
 
     assert!(!ctx.tool_pending());
 }
@@ -733,15 +863,23 @@ fn test_suspend_with_pending_direct() {
 
     let call = ToolCall::new("call_copy", "copyToClipboard", json!({"text": "hello"}));
     set_tool_gate(&mut ctx, &call);
-    ctx.block("old deny state");
+    if let Some(gate) = ctx.extensions.get_mut::<ToolGate>() {
+        gate.blocked = true;
+        gate.block_reason = Some("old deny state".into());
+    }
 
     let interaction = Suspension::new("call_copy", "tool:copyToClipboard")
         .with_parameters(json!({"text":"hello"}));
-    ctx.suspend(SuspendTicket::new(
-        interaction.clone(),
-        PendingToolCall::new("call_copy", "copyToClipboard", json!({"text":"hello"})),
-        ToolCallResumeMode::UseDecisionAsToolResult,
-    ));
+    if let Some(gate) = ctx.extensions.get_mut::<ToolGate>() {
+        gate.blocked = false;
+        gate.block_reason = None;
+        gate.pending = true;
+        gate.suspend_ticket = Some(SuspendTicket::new(
+            interaction.clone(),
+            PendingToolCall::new("call_copy", "copyToClipboard", json!({"text":"hello"})),
+            ToolCallResumeMode::UseDecisionAsToolResult,
+        ));
+    }
 
     assert!(ctx.tool_pending());
     assert!(!ctx.tool_blocked());
@@ -778,15 +916,20 @@ fn test_suspend_with_pending_replay_tool_call() {
     let call_id = "fc_generated";
     let interaction = Suspension::new(call_id, "tool:PermissionConfirm")
         .with_parameters(json!({"tool_name": "write_file", "tool_args": {"path": "a.txt"}}));
-    ctx.suspend(SuspendTicket::new(
-        interaction,
-        PendingToolCall::new(
-            call_id,
-            "PermissionConfirm",
-            json!({"tool_name": "write_file", "tool_args": {"path": "a.txt"}}),
-        ),
-        ToolCallResumeMode::ReplayToolCall,
-    ));
+    if let Some(gate) = ctx.extensions.get_mut::<ToolGate>() {
+        gate.blocked = false;
+        gate.block_reason = None;
+        gate.pending = true;
+        gate.suspend_ticket = Some(SuspendTicket::new(
+            interaction,
+            PendingToolCall::new(
+                call_id,
+                "PermissionConfirm",
+                json!({"tool_name": "write_file", "tool_args": {"path": "a.txt"}}),
+            ),
+            ToolCallResumeMode::ReplayToolCall,
+        ));
+    }
 
     assert!(ctx.tool_pending());
     assert!(
@@ -813,11 +956,15 @@ fn test_suspend_pending_without_tool_context_noop() {
 
     let interaction =
         Suspension::new("fc_noop", "tool:PermissionConfirm").with_parameters(json!({}));
-    ctx.suspend(SuspendTicket::new(
-        interaction,
-        PendingToolCall::new("fc_noop", "PermissionConfirm", json!({})),
-        ToolCallResumeMode::UseDecisionAsToolResult,
-    ));
+    // No ToolGate exists, so this is a no-op
+    if let Some(gate) = ctx.extensions.get_mut::<ToolGate>() {
+        gate.pending = true;
+        gate.suspend_ticket = Some(SuspendTicket::new(
+            interaction,
+            PendingToolCall::new("fc_noop", "PermissionConfirm", json!({})),
+            ToolCallResumeMode::UseDecisionAsToolResult,
+        ));
+    }
     assert!(!ctx.tool_pending());
 }
 
@@ -826,8 +973,14 @@ fn test_set_clear_session_context() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.thread("Context 1");
-    ctx.thread("Context 2");
+    ctx.extensions
+        .get_or_default::<InferenceContext>()
+        .session_context
+        .push("Context 1".into());
+    ctx.extensions
+        .get_or_default::<InferenceContext>()
+        .session_context
+        .push("Context 2".into());
     ctx.extensions
         .get_or_default::<InferenceContext>()
         .session_context = vec!["Only this".to_string()];

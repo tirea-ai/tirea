@@ -1048,7 +1048,9 @@ async fn execute_single_tool_with_phases_impl(
     };
 
     // Set tool result in context
-    step.set_tool_result(execution.result.clone());
+    if let Some(gate) = step.extensions.get_mut::<ToolGate>() {
+        gate.result = Some(execution.result.clone());
+    }
 
     // Pre-populate user messages from tool effect so plugins see them in AfterToolExecute
     step.extensions

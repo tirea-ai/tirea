@@ -300,7 +300,7 @@ impl AgentBehavior for SlowTerminatePlugin {
     async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
         tokio::time::sleep(Duration::from_millis(120)).await;
         vec![Box::new(
-            crate::contracts::runtime::plugin::phase::core::actions::RequestTermination(
+            tirea_contract::testing::TestRequestTermination(
                 crate::contracts::TerminationReason::BehaviorRequested,
             ),
         )]

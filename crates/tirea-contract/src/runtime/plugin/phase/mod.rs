@@ -10,7 +10,7 @@ pub mod core;
 mod contexts;
 mod extensions;
 pub mod state_spec;
-mod step;
+pub mod step;
 mod types;
 
 #[cfg(test)]

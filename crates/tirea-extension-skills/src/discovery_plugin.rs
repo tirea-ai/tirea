@@ -5,7 +5,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
 use tirea_contract::runtime::plugin::phase::action::Action;
-use tirea_contract::runtime::plugin::phase::core::actions::AddSystemContext;
+use tirea_contract::runtime::plugin::phase::core::ext::InferenceContext;
+use tirea_contract::runtime::plugin::phase::step::StepContext;
+use tirea_contract::runtime::plugin::phase::Phase;
 
 /// Injects a skills catalog into the LLM context so the model can discover and activate skills.
 ///
@@ -144,7 +146,33 @@ impl AgentBehavior for SkillDiscoveryPlugin {
             return vec![];
         }
 
-        vec![Box::new(AddSystemContext(rendered))]
+        vec![Box::new(InjectSkillCatalog(rendered))]
+    }
+}
+
+/// Inject the skill catalog into the system prompt context.
+pub struct InjectSkillCatalog(pub String);
+
+impl Action for InjectSkillCatalog {
+    fn label(&self) -> &'static str {
+        "add_system_context"
+    }
+
+    fn validate(&self, phase: Phase) -> Result<(), String> {
+        if phase == Phase::BeforeInference {
+            Ok(())
+        } else {
+            Err(format!(
+                "InjectSkillCatalog is only allowed in BeforeInference, got {phase}"
+            ))
+        }
+    }
+
+    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
+        step.extensions
+            .get_or_default::<InferenceContext>()
+            .system_context
+            .push(self.0);
     }
 }
 

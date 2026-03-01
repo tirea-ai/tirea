@@ -13,9 +13,10 @@ use std::collections::HashMap;
 use tirea_contract::io::ResumeDecisionAction;
 use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
 use tirea_contract::runtime::plugin::phase::action::Action;
-use tirea_contract::runtime::plugin::phase::core::actions::{BlockTool, SuspendTool};
+use tirea_contract::runtime::plugin::phase::core::ext::{InferenceContext, ToolGate};
 use tirea_contract::runtime::plugin::phase::state_spec::{AnyStateAction, StateSpec};
-use tirea_contract::runtime::plugin::phase::SuspendTicket;
+use tirea_contract::runtime::plugin::phase::step::StepContext;
+use tirea_contract::runtime::plugin::phase::{Phase, SuspendTicket};
 use tirea_contract::runtime::{PendingToolCall, ToolCallResumeMode};
 use tirea_state::State;
 
@@ -118,6 +119,128 @@ pub fn resolve_permission_behavior(
     })
 }
 
+// =============================================================================
+// Permission-domain Actions
+// =============================================================================
+
+/// Block tool execution with a denial reason.
+pub struct DenyTool(pub String);
+
+impl Action for DenyTool {
+    fn label(&self) -> &'static str {
+        "block_tool"
+    }
+
+    fn validate(&self, phase: Phase) -> Result<(), String> {
+        if phase == Phase::BeforeToolExecute {
+            Ok(())
+        } else {
+            Err(format!(
+                "DenyTool is only allowed in BeforeToolExecute, got {phase}"
+            ))
+        }
+    }
+
+    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
+        if let Some(gate) = step.extensions.get_mut::<ToolGate>() {
+            gate.blocked = true;
+            gate.block_reason = Some(self.0);
+            gate.pending = false;
+            gate.suspend_ticket = None;
+        }
+    }
+}
+
+/// Suspend tool execution pending user permission confirmation.
+pub struct RequestPermission(pub SuspendTicket);
+
+impl Action for RequestPermission {
+    fn label(&self) -> &'static str {
+        "suspend_tool"
+    }
+
+    fn validate(&self, phase: Phase) -> Result<(), String> {
+        if phase == Phase::BeforeToolExecute {
+            Ok(())
+        } else {
+            Err(format!(
+                "RequestPermission is only allowed in BeforeToolExecute, got {phase}"
+            ))
+        }
+    }
+
+    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
+        if let Some(gate) = step.extensions.get_mut::<ToolGate>() {
+            gate.blocked = false;
+            gate.block_reason = None;
+            gate.pending = true;
+            gate.suspend_ticket = Some(self.0);
+        }
+    }
+}
+
+/// Apply tool policy: keep only allowed tools, remove excluded ones.
+pub struct ApplyToolPolicy {
+    pub allowed: Option<Vec<String>>,
+    pub excluded: Option<Vec<String>>,
+}
+
+impl Action for ApplyToolPolicy {
+    fn label(&self) -> &'static str {
+        "apply_tool_policy"
+    }
+
+    fn validate(&self, phase: Phase) -> Result<(), String> {
+        if phase == Phase::BeforeInference {
+            Ok(())
+        } else {
+            Err(format!(
+                "ApplyToolPolicy is only allowed in BeforeInference, got {phase}"
+            ))
+        }
+    }
+
+    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
+        let inf = step.extensions.get_or_default::<InferenceContext>();
+        if let Some(allowed) = &self.allowed {
+            inf.tools.retain(|t| allowed.iter().any(|id| id == &t.id));
+        }
+        if let Some(excluded) = &self.excluded {
+            for id in excluded {
+                inf.tools.retain(|t| t.id != *id);
+            }
+        }
+    }
+}
+
+/// Block tool execution due to policy violation.
+pub struct RejectPolicyViolation(pub String);
+
+impl Action for RejectPolicyViolation {
+    fn label(&self) -> &'static str {
+        "block_tool"
+    }
+
+    fn validate(&self, phase: Phase) -> Result<(), String> {
+        if phase == Phase::BeforeToolExecute {
+            Ok(())
+        } else {
+            Err(format!(
+                "RejectPolicyViolation is only allowed in BeforeToolExecute, got {phase}"
+            ))
+        }
+    }
+
+    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
+        if let Some(gate) = step.extensions.get_mut::<ToolGate>() {
+            gate.blocked = true;
+            gate.block_reason = Some(self.0);
+            gate.pending = false;
+            gate.suspend_ticket = None;
+        }
+    }
+}
+
 /// Permission strategy plugin.
 ///
 /// This plugin checks permissions in `before_tool_execute`.
@@ -153,11 +276,11 @@ impl AgentBehavior for PermissionPlugin {
         match permission {
             ToolPermissionBehavior::Allow => vec![],
             ToolPermissionBehavior::Deny => {
-                vec![Box::new(BlockTool(format!("Tool '{}' is denied", tool_id)))]
+                vec![Box::new(DenyTool(format!("Tool '{}' is denied", tool_id)))]
             }
             ToolPermissionBehavior::Ask => {
                 if call_id.is_empty() {
-                    return vec![Box::new(BlockTool(
+                    return vec![Box::new(DenyTool(
                         "Permission check requires non-empty tool call id".to_string(),
                     ))];
                 }
@@ -170,7 +293,7 @@ impl AgentBehavior for PermissionPlugin {
                 let suspension =
                     tirea_contract::Suspension::new(&pending_call_id, "tool:PermissionConfirm")
                         .with_parameters(arguments.clone());
-                vec![Box::new(SuspendTool(SuspendTicket::new(
+                vec![Box::new(RequestPermission(SuspendTicket::new(
                     suspension,
                     PendingToolCall::new(pending_call_id, PERMISSION_CONFIRM_TOOL_NAME, arguments),
                     ToolCallResumeMode::ReplayToolCall,
@@ -194,22 +317,14 @@ impl AgentBehavior for ToolPolicyPlugin {
     }
 
     async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        use tirea_contract::runtime::plugin::phase::core::actions::{ExcludeTool, IncludeOnlyTools};
-
         let run_config = ctx.run_config();
         let allowed = scope::parse_scope_filter(run_config.value(SCOPE_ALLOWED_TOOLS_KEY));
         let excluded = scope::parse_scope_filter(run_config.value(SCOPE_EXCLUDED_TOOLS_KEY));
 
-        let mut actions: Vec<Box<dyn Action>> = Vec::new();
-        if let Some(allowed) = allowed {
-            actions.push(Box::new(IncludeOnlyTools(allowed)));
+        if allowed.is_none() && excluded.is_none() {
+            return vec![];
         }
-        if let Some(excluded) = excluded {
-            for id in excluded {
-                actions.push(Box::new(ExcludeTool(id)));
-            }
-        }
-        actions
+        vec![Box::new(ApplyToolPolicy { allowed, excluded })]
     }
 
     async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
@@ -224,7 +339,7 @@ impl AgentBehavior for ToolPolicyPlugin {
             SCOPE_ALLOWED_TOOLS_KEY,
             SCOPE_EXCLUDED_TOOLS_KEY,
         ) {
-            vec![Box::new(BlockTool(format!(
+            vec![Box::new(RejectPolicyViolation(format!(
                 "Tool '{}' is not allowed by current policy",
                 tool_id
             )))]

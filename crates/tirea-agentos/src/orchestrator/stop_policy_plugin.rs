@@ -5,8 +5,11 @@ use std::sync::Arc;
 
 use crate::contracts::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
 use crate::contracts::runtime::plugin::phase::action::Action;
-use crate::contracts::runtime::plugin::phase::core::actions::{EmitStatePatch, RequestTermination};
+use crate::contracts::runtime::plugin::phase::core::ext::FlowControl;
 use crate::contracts::runtime::plugin::phase::state_spec::{AnyStateAction, StateSpec};
+use crate::contracts::runtime::plugin::phase::step::StepContext;
+use crate::contracts::runtime::plugin::phase::Phase;
+use crate::contracts::runtime::RunAction;
 use crate::contracts::runtime::tool_call::ToolResult;
 use crate::contracts::runtime::StreamResult;
 use crate::contracts::thread::{Message, Role, ToolCall};
@@ -279,6 +282,58 @@ impl StopPolicy for LoopDetection {
     }
 }
 
+// =============================================================================
+// Stop-policy-domain Actions
+// =============================================================================
+
+/// Record token usage from a single inference call into persistent state.
+pub(crate) struct RecordTokenUsage {
+    pub started_at_ms: Option<u64>,
+    pub prompt_tokens: usize,
+    pub completion_tokens: usize,
+}
+
+impl Action for RecordTokenUsage {
+    fn label(&self) -> &'static str {
+        "emit_state_patch"
+    }
+
+    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
+        step.emit_state_action(AnyStateAction::new::<StopPolicyRuntimeState>(
+            StopPolicyRuntimeAction::RecordTokens {
+                started_at_ms: self.started_at_ms,
+                prompt_tokens: self.prompt_tokens,
+                completion_tokens: self.completion_tokens,
+            },
+        ));
+    }
+}
+
+/// Terminate the current run with a specific reason.
+pub(crate) struct TerminateRun(pub TerminationReason);
+
+impl Action for TerminateRun {
+    fn label(&self) -> &'static str {
+        "request_termination"
+    }
+
+    fn validate(&self, phase: Phase) -> Result<(), String> {
+        if phase == Phase::BeforeInference || phase == Phase::AfterInference {
+            Ok(())
+        } else {
+            Err(format!(
+                "TerminateRun is only allowed in BeforeInference/AfterInference, got {phase}"
+            ))
+        }
+    }
+
+    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
+        step.extensions
+            .get_or_default::<FlowControl>()
+            .run_action = Some(RunAction::Terminate(self.0));
+    }
+}
+
 /// Plugin adapter that evaluates configured stop policies at `AfterInference`.
 ///
 /// This keeps stop-domain semantics out of the core loop.
@@ -348,7 +403,7 @@ impl AgentBehavior for StopPolicyPlugin {
         let mut actions: Vec<Box<dyn Action>> = Vec::new();
 
         // Emit state patch for token recording
-        let record_action = StopPolicyRuntimeAction::RecordTokens {
+        actions.push(Box::new(RecordTokenUsage {
             started_at_ms: if runtime.started_at_ms.is_none() {
                 Some(now_ms)
             } else {
@@ -356,10 +411,7 @@ impl AgentBehavior for StopPolicyPlugin {
             },
             prompt_tokens,
             completion_tokens,
-        };
-        actions.push(Box::new(EmitStatePatch(
-            AnyStateAction::new::<StopPolicyRuntimeState>(record_action),
-        )));
+        }));
 
         let message_stats = derive_stats_from_messages_with_response(ctx.messages(), response);
         let elapsed = std::time::Duration::from_millis(now_ms.saturating_sub(started_at_ms));
@@ -387,7 +439,7 @@ impl AgentBehavior for StopPolicyPlugin {
         };
         for condition in &self.conditions {
             if let Some(stopped) = condition.evaluate(&input) {
-                actions.push(Box::new(RequestTermination(TerminationReason::Stopped(
+                actions.push(Box::new(TerminateRun(TerminationReason::Stopped(
                     stopped,
                 ))));
                 break;

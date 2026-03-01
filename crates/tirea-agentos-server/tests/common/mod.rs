@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use std::time::Duration;
 use tirea_agentos::contracts::runtime::plugin::agent::ReadOnlyContext;
 use tirea_agentos::contracts::runtime::plugin::phase::action::Action;
-use tirea_agentos::contracts::runtime::plugin::phase::core::actions::RequestTermination;
+use tirea_contract::testing::TestRequestTermination as RequestTermination;
 use tirea_agentos::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_agentos::contracts::AgentBehavior;
 use tirea_agentos::contracts::TerminationReason;
