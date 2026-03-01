@@ -37,6 +37,15 @@ use tirea_state::{Op, Patch, State, TrackedPatch};
 use tokio::sync::Notify;
 use uuid::Uuid;
 
+/// Test helper: get suspended call by ID from new ToolCall-scoped path structure
+fn get_suspended_call(state: &Value, call_id: &str) -> Option<Value> {
+    state
+        .get("__tool_call_scope")
+        .and_then(|scopes| scopes.get(call_id))
+        .and_then(|scope| scope.get("suspended_call"))
+        .cloned()
+}
+
 /// Test-local behavior composition (mirrors agentos `compose_behaviors`).
 fn compose_test_behaviors(behaviors: Vec<Arc<dyn AgentBehavior>>) -> Arc<dyn AgentBehavior> {
     use crate::contracts::runtime::behavior::NoOpBehavior;
@@ -981,7 +990,7 @@ fn test_execute_tools_tool_can_suspend_itself() {
 
         let state = thread.rebuild_state().expect("state should rebuild");
         assert_eq!(
-            state["__suspended_tool_calls"]["calls"]["call_1"]["pending"]["name"],
+            get_suspended_call(&state, "call_1").expect("call should be suspended")["pending"]["name"],
             json!("self_suspend")
         );
     });
@@ -2473,7 +2482,7 @@ fn test_execute_tools_with_pending_phase_plugin() {
 
         let state = thread.rebuild_state().unwrap();
         assert_eq!(
-            state["__suspended_tool_calls"]["calls"]["call_1"]["suspension"]["id"],
+            get_suspended_call(&state, "call_1").expect("call should be suspended")["suspension"]["id"],
             "confirm_1"
         );
     });
@@ -2524,9 +2533,7 @@ fn test_invalid_args_are_returned_as_tool_error_before_pending_confirmation() {
 
         let final_state = thread.rebuild_state().expect("state should rebuild");
         let pending = final_state
-            .get("__suspended_tool_calls")
-            .and_then(|a| a.get("calls"))
-            .and_then(|v| v.as_object());
+            .get("__tool_call_scope").and_then(|v| v.as_object());
         assert!(
             pending.map_or(true, |calls| calls.is_empty()),
             "invalid args should not persist suspended suspension: {pending:?}"
@@ -2583,13 +2590,13 @@ fn test_apply_tool_results_suspends_all_interactions() {
     );
     let state = run_ctx.snapshot().expect("snapshot should succeed");
     assert_eq!(
-        state["__suspended_tool_calls"]["calls"]["call_1"]["suspension"]["id"],
+        get_suspended_call(&state, "call_1").expect("call should be suspended")["suspension"]["id"],
         "confirm_1"
     );
     // Per-call map has both entries
-    let suspended = &state["__suspended_tool_calls"]["calls"];
-    assert!(suspended.get("call_1").is_some());
-    assert!(suspended.get("call_2").is_some());
+    let scopes = state.get("__tool_call_scope").and_then(|v| v.as_object());
+    assert!(scopes.as_ref().and_then(|s| s.get("call_1")).and_then(|e| e.get("suspended_call")).is_some());
+    assert!(scopes.as_ref().and_then(|s| s.get("call_2")).and_then(|e| e.get("suspended_call")).is_some());
 }
 
 #[test]
@@ -2925,26 +2932,6 @@ fn test_execute_tools_with_config_denied_response_is_applied_via_tool_call_state
         let thread = Thread::with_initial_state(
             "test",
             json!({
-                "__suspended_tool_calls": {
-                    "calls": {
-                        "call_1": {
-                            "call_id": "call_1",
-                            "tool_name": "echo",
-                            "suspension": {
-                                "id": "call_1",
-                                "action": "tool:echo",
-                                "parameters": { "source": "permission" }
-                            },
-                            "arguments": { "source": "permission" },
-                            "pending": {
-                                "id": "call_1",
-                                "name": "echo",
-                                "arguments": { "source": "permission" }
-                            },
-                            "resume_mode": "replay_tool_call"
-                        }
-                    }
-                }
             }),
         );
         let result = StreamResult {
@@ -2978,9 +2965,7 @@ fn test_execute_tools_with_config_denied_response_is_applied_via_tool_call_state
 
         let final_state = thread.rebuild_state().expect("state should rebuild");
         let suspended = final_state
-            .get("__suspended_tool_calls")
-            .and_then(|a| a.get("calls"))
-            .and_then(|v| v.as_object());
+            .get("__tool_call_scope").and_then(|v| v.as_object());
         assert!(
             suspended.map_or(true, |calls| !calls.contains_key("call_1")),
             "resolved suspended call should be cleared"
@@ -3085,7 +3070,7 @@ fn test_execute_tools_with_config_with_pending_plugin() {
         // Pending interaction should be persisted via state.
         let state = thread.rebuild_state().unwrap();
         assert_eq!(
-            state["__suspended_tool_calls"]["calls"]["call_1"]["suspension"]["id"],
+            get_suspended_call(&state, "call_1").expect("call should be suspended")["suspension"]["id"],
             "confirm_1"
         );
     });
@@ -3153,9 +3138,7 @@ fn test_execute_tools_with_config_preserves_unresolved_suspended_calls_on_succes
 
         let state = thread.rebuild_state().unwrap();
         let suspended = state
-            .get("__suspended_tool_calls")
-            .and_then(|a| a.get("calls"))
-            .and_then(|a| a.as_object());
+            .get("__tool_call_scope").and_then(|v| v.as_object());
         assert!(
             suspended.is_some_and(|calls| calls.contains_key("confirm_1")),
             "expected unresolved suspended call to be preserved, got: {suspended:?}"
@@ -3412,26 +3395,6 @@ async fn test_stream_run_start_resume_replay_emits_after_run_start() {
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "call_1": {
-                        "call_id": "call_1",
-                        "tool_name": "echo",
-                        "suspension": {
-                            "id": "resolution_1",
-                            "action": "confirm",
-                            "parameters": {}
-                        },
-                        "arguments": {},
-                        "pending": {
-                            "id": "call_1",
-                            "name": "echo",
-                            "arguments": {}
-                        },
-                        "resume_mode": "replay_tool_call"
-                    }
-                }
-            },
             "__tool_call_scope": {
                 "call_1": {
                     "tool_call_state": {
@@ -3559,27 +3522,6 @@ async fn test_stream_run_action_with_suspended_only_state_emits_pending_events()
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "recover_1": {
-                        "call_id": "recover_1",
-                        "tool_name": "recover_agent_run",
-                        "suspension": {
-                            "id": "recover_1",
-                            "action": "recover_agent_run",
-                            "message": "resume?",
-                            "parameters": {}
-                        },
-                        "arguments": {},
-                        "pending": {
-                            "id": "recover_1",
-                            "name": "recover_agent_run",
-                            "arguments": {}
-                        },
-                        "resume_mode": "replay_tool_call"
-                    }
-                }
-            }
         }),
     )
     .with_message(crate::contracts::thread::Message::user("hello"));
@@ -3639,29 +3581,6 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
     let thread = Thread::with_initial_state(
         "test",
         serde_json::json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "call_write": {
-                        "call_id": "call_write",
-                        "tool_name": "write_file",
-                        "suspension": {
-                            "id": "call_write",
-                            "action": "tool:write_file",
-                            "parameters": { "source": "permission" }
-                        },
-                        "arguments": { "path": "a.txt" },
-                        "pending": {
-                            "id": "call_write",
-                            "name": "PermissionConfirm",
-                            "arguments": {
-                                "tool_name": "write_file",
-                                "tool_args": { "path": "a.txt" }
-                            }
-                        },
-                        "resume_mode": "replay_tool_call"
-                    }
-                }
-            }
         }),
     )
     .with_message(crate::contracts::thread::Message::user("continue"));
@@ -3713,36 +3632,6 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "call_1": {
-                        "call_id": "call_1",
-                        "tool_name": "echo",
-                        "suspension": {
-                            "id": "call_1",
-                            "action": "tool:echo",
-                            "parameters": {
-                                "source": "permission",
-                                "origin_tool_call": {
-                                    "id": "call_1",
-                                    "name": "echo",
-                                    "arguments": { "message": "approved-run" }
-                                }
-                            }
-                        },
-                        "arguments": { "message": "approved-run" },
-                        "pending": {
-                            "id": "call_1",
-                            "name": "PermissionConfirm",
-                            "arguments": {
-                                "tool_name": "echo",
-                                "tool_args": { "message": "approved-run" }
-                            }
-                        },
-                        "resume_mode": "replay_tool_call"
-                    }
-                }
-            }
         }),
     )
     .with_message(Message::assistant_with_tool_calls(
@@ -3810,9 +3699,7 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
 
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
     let suspended = final_state
-        .get("__suspended_tool_calls")
-        .and_then(|a| a.get("calls"))
-        .and_then(|v| v.as_object());
+        .get("__tool_call_scope").and_then(|v| v.as_object());
     assert!(suspended.map_or(true, |calls| calls.is_empty()));
 }
 
@@ -3843,36 +3730,6 @@ async fn test_run_loop_permission_approval_replays_tool_and_updates_lifecycle_st
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "call_1": {
-                        "call_id": "call_1",
-                        "tool_name": "echo",
-                        "suspension": {
-                            "id": "call_1",
-                            "action": "tool:echo",
-                            "parameters": {
-                                "source": "permission",
-                                "origin_tool_call": {
-                                    "id": "call_1",
-                                    "name": "echo",
-                                    "arguments": { "message": "approved-run" }
-                                }
-                            }
-                        },
-                        "arguments": { "message": "approved-run" },
-                        "pending": {
-                            "id": "call_1",
-                            "name": "PermissionConfirm",
-                            "arguments": {
-                                "tool_name": "echo",
-                                "tool_args": { "message": "approved-run" }
-                            }
-                        },
-                        "resume_mode": "replay_tool_call"
-                    }
-                }
-            }
         }),
     )
     .with_message(Message::assistant_with_tool_calls(
@@ -3919,9 +3776,7 @@ async fn test_run_loop_permission_approval_replays_tool_and_updates_lifecycle_st
 
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     let suspended = state
-        .get("__suspended_tool_calls")
-        .and_then(|a| a.get("calls"))
-        .and_then(|v| v.as_object());
+        .get("__tool_call_scope").and_then(|v| v.as_object());
     assert!(suspended.map_or(true, |calls| calls.is_empty()));
 
     assert_eq!(
@@ -3959,29 +3814,6 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "call_1": {
-                        "call_id": "call_1",
-                        "tool_name": "echo",
-                        "suspension": {
-                            "id": "call_1",
-                            "action": "tool:echo",
-                            "parameters": { "source": "permission" }
-                        },
-                        "arguments": { "message": "approved-run" },
-                        "pending": {
-                            "id": "call_1",
-                            "name": "PermissionConfirm",
-                            "arguments": {
-                                "tool_name": "echo",
-                                "tool_args": { "message": "approved-run" }
-                            }
-                        },
-                        "resume_mode": "replay_tool_call"
-                    }
-                }
-            }
         }),
     )
     .with_message(Message::assistant_with_tool_calls(
@@ -4057,28 +3889,6 @@ async fn test_run_loop_run_start_replay_uses_tool_call_resume_state_without_mail
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "call_1": {
-                        "call_id": "call_1",
-                        "tool_name": "echo",
-                        "suspension": {
-                            "id": "call_1",
-                            "action": "tool:echo"
-                        },
-                        "arguments": { "message": "approved-run" },
-                        "pending": {
-                            "id": "call_1",
-                            "name": "PermissionConfirm",
-                            "arguments": {
-                                "tool_name": "echo",
-                                "tool_args": { "message": "approved-run" }
-                            }
-                        },
-                        "resume_mode": "replay_tool_call"
-                    }
-                }
-            },
             "__tool_call_scope": {
                 "call_1": {
                     "tool_call_state": {
@@ -4129,9 +3939,7 @@ async fn test_run_loop_run_start_replay_uses_tool_call_resume_state_without_mail
     let final_state = outcome.run_ctx.snapshot().expect("snapshot");
     assert!(
         final_state
-            .get("__suspended_tool_calls")
-            .and_then(|a| a.get("calls"))
-            .and_then(|v| v.as_object())
+            .get("__tool_call_scope").and_then(|v| v.as_object())
             .map_or(true, |calls| calls.is_empty()),
         "replayed call should clear suspended queue"
     );
@@ -4225,36 +4033,6 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "call_1": {
-                        "call_id": "call_1",
-                        "tool_name": "echo",
-                        "suspension": {
-                            "id": "call_1",
-                            "action": "tool:echo",
-                            "parameters": {
-                                "source": "permission",
-                                "origin_tool_call": {
-                                    "id": "call_1",
-                                    "name": "echo",
-                                    "arguments": { "message": "denied-run" }
-                                }
-                            }
-                        },
-                        "arguments": { "message": "denied-run" },
-                        "pending": {
-                            "id": "call_1",
-                            "name": "PermissionConfirm",
-                            "arguments": {
-                                "tool_name": "echo",
-                                "tool_args": { "message": "denied-run" }
-                            }
-                        },
-                        "resume_mode": "replay_tool_call"
-                    }
-                }
-            }
         }),
     )
     .with_message(Message::assistant_with_tool_calls(
@@ -4319,9 +4097,7 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
 
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
     let suspended = final_state
-        .get("__suspended_tool_calls")
-        .and_then(|a| a.get("calls"))
-        .and_then(|v| v.as_object());
+        .get("__tool_call_scope").and_then(|v| v.as_object());
     assert!(suspended.map_or(true, |calls| calls.is_empty()));
 }
 
@@ -4348,28 +4124,6 @@ async fn test_run_loop_permission_denied_appends_tool_result_for_model_context()
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "call_1": {
-                        "call_id": "call_1",
-                        "tool_name": "echo",
-                        "suspension": {
-                            "id": "call_1",
-                            "action": "tool:echo"
-                        },
-                        "arguments": { "message": "denied-run" },
-                        "pending": {
-                            "id": "call_1",
-                            "name": "PermissionConfirm",
-                            "arguments": {
-                                "tool_name": "echo",
-                                "tool_args": { "message": "denied-run" }
-                            }
-                        },
-                        "resume_mode": "replay_tool_call"
-                    }
-                }
-            }
         }),
     )
     .with_message(Message::assistant_with_tool_calls(
@@ -4435,28 +4189,6 @@ async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_contex
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "call_1": {
-                        "call_id": "call_1",
-                        "tool_name": "echo",
-                        "suspension": {
-                            "id": "call_1",
-                            "action": "tool:echo"
-                        },
-                        "arguments": { "message": "cancel-run" },
-                        "pending": {
-                            "id": "call_1",
-                            "name": "PermissionConfirm",
-                            "arguments": {
-                                "tool_name": "echo",
-                                "tool_args": { "message": "cancel-run" }
-                            }
-                        },
-                        "resume_mode": "replay_tool_call"
-                    }
-                }
-            }
         }),
     )
     .with_message(Message::assistant_with_tool_calls(
@@ -4505,9 +4237,7 @@ async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_contex
 
     let final_state = outcome.run_ctx.snapshot().expect("snapshot");
     let suspended = final_state
-        .get("__suspended_tool_calls")
-        .and_then(|a| a.get("calls"))
-        .and_then(|v| v.as_object());
+        .get("__tool_call_scope").and_then(|v| v.as_object());
     assert!(suspended.map_or(true, |calls| calls.is_empty()));
 }
 
@@ -4769,7 +4499,7 @@ async fn test_run_loop_terminate_behavior_requested_with_suspended_state_returns
 
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     assert_eq!(
-        state["__suspended_tool_calls"]["calls"]["agent_recovery_run-1"]["suspension"]["action"],
+        get_suspended_call(&state, "agent_recovery_run-1").expect("call should be suspended")["suspension"]["action"],
         Value::String("recover_agent_run".to_string())
     );
 
@@ -4804,27 +4534,6 @@ async fn test_run_loop_terminate_behavior_requested_with_suspended_only_state_re
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "recover_1": {
-                        "call_id": "recover_1",
-                        "tool_name": "recover_agent_run",
-                        "suspension": {
-                            "id": "recover_1",
-                            "action": "recover_agent_run",
-                            "message": "resume?",
-                            "parameters": {}
-                        },
-                        "arguments": {},
-                        "pending": {
-                            "id": "recover_1",
-                            "name": "recover_agent_run",
-                            "arguments": {}
-                        },
-                        "resume_mode": "replay_tool_call"
-                    }
-                }
-            }
         }),
     )
     .with_message(crate::contracts::thread::Message::user("hello"));
@@ -6303,8 +6012,8 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
         .rebuild_state()
         .expect("stream state should rebuild");
     assert_eq!(
-        nonstream_state["__suspended_tool_calls"]["calls"],
-        stream_state["__suspended_tool_calls"]["calls"]
+        nonstream_state.get("__tool_call_scope"),
+        stream_state.get("__tool_call_scope")
     );
 }
 
@@ -6395,36 +6104,6 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
     let thread = Thread::with_initial_state(
         "idempotent-replay",
         json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "call_1": {
-                        "call_id": "call_1",
-                        "tool_name": "counting_echo",
-                        "suspension": {
-                            "id": "call_1",
-                            "action": "tool:counting_echo",
-                            "parameters": {
-                                "source": "permission",
-                                "origin_tool_call": {
-                                    "id": "call_1",
-                                    "name": "counting_echo",
-                                    "arguments": { "message": "approved-run" }
-                                }
-                            }
-                        },
-                        "arguments": { "message": "approved-run" },
-                        "pending": {
-                            "id": "call_1",
-                            "name": "PermissionConfirm",
-                            "arguments": {
-                                "tool_name": "counting_echo",
-                                "tool_args": { "message": "approved-run" }
-                            }
-                        },
-                        "resume_mode": "replay_tool_call"
-                    }
-                }
-            }
         }),
     )
     .with_message(Message::assistant_with_tool_calls(
@@ -6483,9 +6162,7 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
 
     let final_state = second_thread.rebuild_state().expect("state should rebuild");
     let suspended = final_state
-        .get("__suspended_tool_calls")
-        .and_then(|a| a.get("calls"))
-        .and_then(|v| v.as_object());
+        .get("__tool_call_scope").and_then(|v| v.as_object());
     assert!(suspended.map_or(true, |calls| calls.is_empty()));
 }
 
@@ -6523,36 +6200,6 @@ async fn test_nonstream_replay_is_idempotent_across_reruns() {
     let seed_thread = Thread::with_initial_state(
         "idempotent-replay-nonstream",
         json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "call_1": {
-                        "call_id": "call_1",
-                        "tool_name": "counting_echo",
-                        "suspension": {
-                            "id": "call_1",
-                            "action": "tool:counting_echo",
-                            "parameters": {
-                                "source": "permission",
-                                "origin_tool_call": {
-                                    "id": "call_1",
-                                    "name": "counting_echo",
-                                    "arguments": { "message": "approved-run" }
-                                }
-                            }
-                        },
-                        "arguments": { "message": "approved-run" },
-                        "pending": {
-                            "id": "call_1",
-                            "name": "PermissionConfirm",
-                            "arguments": {
-                                "tool_name": "counting_echo",
-                                "tool_args": { "message": "approved-run" }
-                            }
-                        },
-                        "resume_mode": "replay_tool_call"
-                    }
-                }
-            }
         }),
     )
     .with_message(Message::assistant_with_tool_calls(
@@ -9128,7 +8775,7 @@ async fn test_run_step_terminate_behavior_requested_with_suspended_state_returns
 
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     assert_eq!(
-        state["__suspended_tool_calls"]["calls"]["agent_recovery_step-1"]["suspension"]["action"],
+        get_suspended_call(&state, "agent_recovery_step-1").expect("call should be suspended")["suspension"]["action"],
         Value::String("recover_agent_run".to_string())
     );
 }
@@ -10897,9 +10544,7 @@ async fn test_stream_mixed_pending_persists_interaction_state() {
     let state = last_state.unwrap();
     assert_eq!(
         state
-            .get("__suspended_tool_calls")
-            .and_then(|lc| lc.get("calls"))
-            .and_then(|calls| calls.get("call_2"))
+            .get("__tool_call_scope").and_then(|scope| scope.get("call_2"))
             .and_then(|entry| entry.get("suspension"))
             .and_then(|pi| pi.get("id"))
             .and_then(|id| id.as_str()),
@@ -11064,27 +10709,6 @@ async fn test_nonstream_completed_tool_round_does_not_clear_existing_suspended_c
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "leftover_confirm": {
-                        "call_id": "leftover_confirm",
-                        "tool_name": "echo",
-                        "suspension": {
-                            "id": "leftover_confirm",
-                            "action": "confirm",
-                            "message": "still waiting",
-                            "parameters": {}
-                        },
-                        "arguments": {},
-                        "pending": {
-                            "id": "leftover_confirm",
-                            "name": "echo",
-                            "arguments": {}
-                        },
-                        "resume_mode": "replay_tool_call"
-                    }
-                }
-            }
         }),
     )
     .with_message(Message::user("run"));
@@ -11104,9 +10728,7 @@ async fn test_nonstream_completed_tool_round_does_not_clear_existing_suspended_c
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     assert!(
         state
-            .get("__suspended_tool_calls")
-            .and_then(|lc| lc.get("calls"))
-            .and_then(|calls| calls.get("leftover_confirm"))
+            .get("__tool_call_scope").and_then(|scope| scope.get("leftover_confirm"))
             .is_some(),
         "existing unresolved suspended call must not be cleared by unrelated successful tool round"
     );
@@ -11117,27 +10739,6 @@ async fn test_stream_completed_tool_round_does_not_clear_existing_suspended_call
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "leftover_confirm": {
-                        "call_id": "leftover_confirm",
-                        "tool_name": "echo",
-                        "suspension": {
-                            "id": "leftover_confirm",
-                            "action": "confirm",
-                            "message": "still waiting",
-                            "parameters": {}
-                        },
-                        "arguments": {},
-                        "pending": {
-                            "id": "leftover_confirm",
-                            "name": "echo",
-                            "arguments": {}
-                        },
-                        "resume_mode": "replay_tool_call"
-                    }
-                }
-            }
         }),
     )
     .with_message(Message::user("run"));
@@ -11159,9 +10760,7 @@ async fn test_stream_completed_tool_round_does_not_clear_existing_suspended_call
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
     assert!(
         final_state
-            .get("__suspended_tool_calls")
-            .and_then(|lc| lc.get("calls"))
-            .and_then(|calls| calls.get("leftover_confirm"))
+            .get("__tool_call_scope").and_then(|scope| scope.get("leftover_confirm"))
             .is_some(),
         "existing unresolved suspended call must not be cleared by unrelated successful tool round"
     );
@@ -11560,27 +11159,6 @@ async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "call_keep": {
-                        "call_id": "call_keep",
-                        "tool_name": "echo",
-                        "suspension": {
-                            "id": "call_keep",
-                            "action": "confirm",
-                            "message": "still waiting",
-                            "parameters": {}
-                        },
-                        "arguments": {},
-                        "pending": {
-                            "id": "call_keep",
-                            "name": "echo",
-                            "arguments": {}
-                        },
-                        "resume_mode": "replay_tool_call"
-                    }
-                }
-            }
         }),
     )
     .with_message(Message::user("continue"));
@@ -11613,9 +11191,7 @@ async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
     let final_state = outcome.run_ctx.snapshot().expect("snapshot");
     assert!(
         final_state
-            .get("__suspended_tool_calls")
-            .and_then(|lc| lc.get("calls"))
-            .and_then(|calls| calls.get("call_keep"))
+            .get("__tool_call_scope").and_then(|scope| scope.get("call_keep"))
             .is_some(),
         "unknown decision must not clear existing suspended calls"
     );
@@ -11650,25 +11226,6 @@ async fn test_run_loop_decision_channel_rejects_illegal_terminal_to_resuming_tra
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "call_pending": {
-                        "call_id": "call_pending",
-                        "tool_name": "echo",
-                        "suspension": {
-                            "id": "call_pending",
-                            "action": "tool:echo"
-                        },
-                        "arguments": { "message": "should-not-replay" },
-                        "pending": {
-                            "id": "call_pending",
-                            "name": "echo",
-                            "arguments": { "message": "should-not-replay" }
-                        },
-                        "resume_mode": "replay_tool_call"
-                    }
-                }
-            },
             "__tool_call_scope": {
                 "call_pending": {
                     "tool_call_state": {
@@ -11727,9 +11284,7 @@ async fn test_run_loop_decision_channel_rejects_illegal_terminal_to_resuming_tra
     let final_state = outcome.run_ctx.snapshot().expect("snapshot");
     assert!(
         final_state
-            .get("__suspended_tool_calls")
-            .and_then(|lc| lc.get("calls"))
-            .and_then(|calls| calls.get("call_pending"))
+            .get("__tool_call_scope").and_then(|scope| scope.get("call_pending"))
             .is_some(),
         "illegal transition must keep suspended call pending"
     );
@@ -11758,27 +11313,6 @@ async fn test_stream_decision_channel_ignores_unknown_target_id() {
     let mut final_thread = Thread::with_initial_state(
         "test",
         json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "call_keep": {
-                        "call_id": "call_keep",
-                        "tool_name": "echo",
-                        "suspension": {
-                            "id": "call_keep",
-                            "action": "confirm",
-                            "message": "still waiting",
-                            "parameters": {}
-                        },
-                        "arguments": {},
-                        "pending": {
-                            "id": "call_keep",
-                            "name": "echo",
-                            "arguments": {}
-                        },
-                        "resume_mode": "replay_tool_call"
-                    }
-                }
-            }
         }),
     )
     .with_message(Message::user("continue"));
@@ -11826,9 +11360,7 @@ async fn test_stream_decision_channel_ignores_unknown_target_id() {
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
     assert!(
         final_state
-            .get("__suspended_tool_calls")
-            .and_then(|lc| lc.get("calls"))
-            .and_then(|calls| calls.get("call_keep"))
+            .get("__tool_call_scope").and_then(|scope| scope.get("call_keep"))
             .is_some(),
         "unknown decision must not clear existing suspended calls"
     );
@@ -11852,25 +11384,6 @@ async fn test_stream_decision_channel_rejects_illegal_terminal_to_resuming_trans
     let mut final_thread = Thread::with_initial_state(
         "test",
         json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "call_pending": {
-                        "call_id": "call_pending",
-                        "tool_name": "echo",
-                        "suspension": {
-                            "id": "call_pending",
-                            "action": "tool:echo"
-                        },
-                        "arguments": { "message": "should-not-replay" },
-                        "pending": {
-                            "id": "call_pending",
-                            "name": "echo",
-                            "arguments": { "message": "should-not-replay" }
-                        },
-                        "resume_mode": "replay_tool_call"
-                    }
-                }
-            },
             "__tool_call_scope": {
                 "call_pending": {
                     "tool_call_state": {
@@ -11947,9 +11460,7 @@ async fn test_stream_decision_channel_rejects_illegal_terminal_to_resuming_trans
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
     assert!(
         final_state
-            .get("__suspended_tool_calls")
-            .and_then(|lc| lc.get("calls"))
-            .and_then(|calls| calls.get("call_pending"))
+            .get("__tool_call_scope").and_then(|scope| scope.get("call_pending"))
             .is_some(),
         "illegal transition must keep suspended call pending"
     );
@@ -12140,25 +11651,6 @@ async fn test_run_loop_decision_channel_cancel_emits_single_tool_result_message(
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "call_pending": {
-                        "call_id": "call_pending",
-                        "tool_name": "echo",
-                        "suspension": {
-                            "id": "call_pending",
-                            "action": "tool:echo"
-                        },
-                        "arguments": { "message": "cancel-run" },
-                        "pending": {
-                            "id": "call_pending",
-                            "name": "echo",
-                            "arguments": { "message": "cancel-run" }
-                        },
-                        "resume_mode": "replay_tool_call"
-                    }
-                }
-            }
         }),
     )
     .with_message(Message::assistant_with_tool_calls(
@@ -12220,9 +11712,7 @@ async fn test_run_loop_decision_channel_cancel_emits_single_tool_result_message(
 
     let final_state = outcome.run_ctx.snapshot().expect("snapshot");
     let suspended = final_state
-        .get("__suspended_tool_calls")
-        .and_then(|a| a.get("calls"))
-        .and_then(|v| v.as_object());
+        .get("__tool_call_scope").and_then(|v| v.as_object());
     assert!(suspended.map_or(true, |calls| calls.is_empty()));
     assert_eq!(
         final_state["__tool_call_scope"]["call_pending"]["tool_call_state"]["status"],
@@ -12693,28 +12183,12 @@ async fn test_stream_decision_channel_drains_while_inference_stream_is_running()
         }
     }
 
-    let suspended_interaction = json!({
+    let _suspended_interaction = json!({
         "id": "call_pending",
         "action": "confirm",
         "parameters": { "message": "approved during stream" }
     });
     let state = json!({
-        "__suspended_tool_calls": {
-            "calls": {
-                "call_pending": {
-                    "call_id": "call_pending",
-                    "tool_name": "echo",
-                    "suspension": suspended_interaction.clone(),
-                    "arguments": { "message": "approved during stream" },
-                    "pending": {
-                        "id": "call_pending",
-                        "name": "echo",
-                        "arguments": { "message": "approved during stream" }
-                    },
-                    "resume_mode": "replay_tool_call"
-                }
-            }
-        }
     });
     let thread = Thread::with_initial_state("test", state).with_message(Message::user("resume"));
     let run_ctx =
@@ -12803,28 +12277,12 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_tool_call_resu
         }
     }
 
-    let suspended_interaction = json!({
+    let _suspended_interaction = json!({
         "id": "fc_perm_1",
         "action": "tool:PermissionConfirm",
         "parameters": { "source": "permission" }
     });
     let state = json!({
-        "__suspended_tool_calls": {
-            "calls": {
-                "call_write": {
-                    "call_id": "call_write",
-                    "tool_name": "echo",
-                    "suspension": suspended_interaction.clone(),
-                    "arguments": { "message": "hello" },
-                    "pending": {
-                        "id": "fc_perm_1",
-                        "name": "PermissionConfirm",
-                        "arguments": { "tool_name": "echo", "tool_args": { "message": "hello" } }
-                    },
-                    "resume_mode": "replay_tool_call"
-                }
-            }
-        }
     });
     let thread = Thread::with_initial_state("test", state).with_message(Message::user("resume"));
     let run_ctx =
