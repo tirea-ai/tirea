@@ -3612,6 +3612,8 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
 
 #[tokio::test]
 async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() {
+    use crate::contracts::Suspension;
+
     struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
@@ -3629,23 +3631,32 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
         Arc::new(interaction),
         Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>,
     ]));
-    let thread = Thread::with_initial_state(
-        "test",
-        json!({
-        }),
+
+    // Seed state with a pre-existing suspended interaction for the pending tool call.
+    let base_state = json!({});
+    let echo_args = json!({"message": "approved-run"});
+    let pending_patch = set_single_suspended_call(
+        &base_state,
+        Suspension::new("call_1", "tool:echo")
+            .with_message("awaiting approval")
+            .with_parameters(echo_args.clone()),
+        None,
     )
-    .with_message(Message::assistant_with_tool_calls(
-        "need permission",
-        vec![crate::contracts::thread::ToolCall::new(
+    .expect("failed to seed suspended interaction");
+    let thread = Thread::with_initial_state("test", base_state)
+        .with_patch(pending_patch)
+        .with_message(Message::assistant_with_tool_calls(
+            "need permission",
+            vec![crate::contracts::thread::ToolCall::new(
+                "call_1",
+                "echo",
+                echo_args,
+            )],
+        ))
+        .with_message(Message::tool(
             "call_1",
-            "echo",
-            json!({"message": "approved-run"}),
-        )],
-    ))
-    .with_message(Message::tool(
-        "call_1",
-        "Tool 'echo' is awaiting approval. Execution paused.",
-    ));
+            "Tool 'echo' is awaiting approval. Execution paused.",
+        ));
 
     let tools = tool_map([EchoTool]);
     let (events, final_thread) = run_mock_stream_with_final_thread(
@@ -3705,6 +3716,8 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
 
 #[tokio::test]
 async fn test_run_loop_permission_approval_replays_tool_and_updates_lifecycle_state() {
+    use crate::contracts::Suspension;
+
     struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
@@ -3727,23 +3740,31 @@ async fn test_run_loop_permission_approval_replays_tool_and_updates_lifecycle_st
             "unused",
         ))])) as Arc<dyn LlmExecutor>);
 
-    let thread = Thread::with_initial_state(
-        "test",
-        json!({
-        }),
+    // Seed state with a pre-existing suspended interaction for the pending tool call.
+    let base_state = json!({});
+    let echo_args = json!({"message": "approved-run"});
+    let pending_patch = set_single_suspended_call(
+        &base_state,
+        Suspension::new("call_1", "tool:echo")
+            .with_message("awaiting approval")
+            .with_parameters(echo_args.clone()),
+        None,
     )
-    .with_message(Message::assistant_with_tool_calls(
-        "need permission",
-        vec![crate::contracts::thread::ToolCall::new(
+    .expect("failed to seed suspended interaction");
+    let thread = Thread::with_initial_state("test", base_state)
+        .with_patch(pending_patch)
+        .with_message(Message::assistant_with_tool_calls(
+            "need permission",
+            vec![crate::contracts::thread::ToolCall::new(
+                "call_1",
+                "echo",
+                echo_args,
+            )],
+        ))
+        .with_message(Message::tool(
             "call_1",
-            "echo",
-            json!({"message": "approved-run"}),
-        )],
-    ))
-    .with_message(Message::tool(
-        "call_1",
-        "Tool 'echo' is awaiting approval. Execution paused.",
-    ));
+            "Tool 'echo' is awaiting approval. Execution paused.",
+        ));
 
     let tools = tool_map([EchoTool]);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
@@ -3788,6 +3809,8 @@ async fn test_run_loop_permission_approval_replays_tool_and_updates_lifecycle_st
 
 #[tokio::test]
 async fn test_stream_permission_approval_replay_commits_before_and_after_replay() {
+    use crate::contracts::Suspension;
+
     struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
@@ -3811,23 +3834,32 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
             Arc::new(MockStreamProvider::new(vec![MockResponse::text("unused")]))
                 as Arc<dyn LlmExecutor>,
         );
-    let thread = Thread::with_initial_state(
-        "test",
-        json!({
-        }),
+
+    // Seed state with a pre-existing suspended interaction for the pending tool call.
+    let base_state = json!({});
+    let echo_args = json!({"message": "approved-run"});
+    let pending_patch = set_single_suspended_call(
+        &base_state,
+        Suspension::new("call_1", "tool:echo")
+            .with_message("awaiting approval")
+            .with_parameters(echo_args.clone()),
+        None,
     )
-    .with_message(Message::assistant_with_tool_calls(
-        "need permission",
-        vec![crate::contracts::thread::ToolCall::new(
+    .expect("failed to seed suspended interaction");
+    let thread = Thread::with_initial_state("test", base_state)
+        .with_patch(pending_patch)
+        .with_message(Message::assistant_with_tool_calls(
+            "need permission",
+            vec![crate::contracts::thread::ToolCall::new(
+                "call_1",
+                "echo",
+                echo_args,
+            )],
+        ))
+        .with_message(Message::tool(
             "call_1",
-            "echo",
-            json!({"message": "approved-run"}),
-        )],
-    ))
-    .with_message(Message::tool(
-        "call_1",
-        "Tool 'echo' is awaiting approval. Execution paused.",
-    ));
+            "Tool 'echo' is awaiting approval. Execution paused.",
+        ));
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let events = collect_stream_events(run_loop_stream(
@@ -6074,6 +6106,8 @@ async fn test_golden_run_loop_and_stream_no_plugins_pending_state_alignment() {
 
 #[tokio::test]
 async fn test_stream_replay_is_idempotent_across_reruns() {
+    use crate::contracts::Suspension;
+
     struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
@@ -6101,23 +6135,28 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
     });
     let tools = tool_map_from_arc([counting_tool]);
 
-    let thread = Thread::with_initial_state(
-        "idempotent-replay",
-        json!({
-        }),
+    // Seed state with a pre-existing suspended interaction for the pending tool call.
+    let base_state = json!({});
+    let pending_patch = set_single_suspended_call(
+        &base_state,
+        Suspension::new("call_1", "tool:counting_echo").with_message("awaiting approval"),
+        None,
     )
-    .with_message(Message::assistant_with_tool_calls(
-        "need permission",
-        vec![crate::contracts::thread::ToolCall::new(
+    .expect("failed to seed suspended interaction");
+    let thread = Thread::with_initial_state("idempotent-replay", base_state)
+        .with_patch(pending_patch)
+        .with_message(Message::assistant_with_tool_calls(
+            "need permission",
+            vec![crate::contracts::thread::ToolCall::new(
+                "call_1",
+                "counting_echo",
+                json!({"message": "approved-run"}),
+            )],
+        ))
+        .with_message(Message::tool(
             "call_1",
-            "counting_echo",
-            json!({"message": "approved-run"}),
-        )],
-    ))
-    .with_message(Message::tool(
-        "call_1",
-        "Tool 'counting_echo' is awaiting approval. Execution paused.",
-    ));
+            "Tool 'counting_echo' is awaiting approval. Execution paused.",
+        ));
 
     let (first_events, first_thread) = run_mock_stream_with_final_thread(
         MockStreamProvider::new(vec![MockResponse::text("unused")]),
@@ -6168,6 +6207,8 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
 
 #[tokio::test]
 async fn test_nonstream_replay_is_idempotent_across_reruns() {
+    use crate::contracts::Suspension;
+
     struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
@@ -6197,23 +6238,28 @@ async fn test_nonstream_replay_is_idempotent_across_reruns() {
     });
     let tools = tool_map_from_arc([counting_tool]);
 
-    let seed_thread = Thread::with_initial_state(
-        "idempotent-replay-nonstream",
-        json!({
-        }),
+    // Seed state with a pre-existing suspended interaction for the pending tool call.
+    let base_state = json!({});
+    let pending_patch = set_single_suspended_call(
+        &base_state,
+        Suspension::new("call_1", "tool:counting_echo").with_message("awaiting approval"),
+        None,
     )
-    .with_message(Message::assistant_with_tool_calls(
-        "need permission",
-        vec![crate::contracts::thread::ToolCall::new(
+    .expect("failed to seed suspended interaction");
+    let seed_thread = Thread::with_initial_state("idempotent-replay-nonstream", base_state)
+        .with_patch(pending_patch)
+        .with_message(Message::assistant_with_tool_calls(
+            "need permission",
+            vec![crate::contracts::thread::ToolCall::new(
+                "call_1",
+                "counting_echo",
+                json!({"message": "approved-run"}),
+            )],
+        ))
+        .with_message(Message::tool(
             "call_1",
-            "counting_echo",
-            json!({"message": "approved-run"}),
-        )],
-    ))
-    .with_message(Message::tool(
-        "call_1",
-        "Tool 'counting_echo' is awaiting approval. Execution paused.",
-    ));
+            "Tool 'counting_echo' is awaiting approval. Execution paused.",
+        ));
 
     let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
     let state_committer: Arc<dyn StateCommitter> =
@@ -10706,12 +10752,19 @@ async fn test_stream_run_start_added_pending_emits_and_pauses_before_inference()
 
 #[tokio::test]
 async fn test_nonstream_completed_tool_round_does_not_clear_existing_suspended_calls() {
-    let thread = Thread::with_initial_state(
-        "test",
-        json!({
-        }),
+    use crate::contracts::Suspension;
+
+    // Seed state with a pre-existing suspended interaction.
+    let base_state = json!({});
+    let pending_patch = set_single_suspended_call(
+        &base_state,
+        Suspension::new("leftover_confirm", "confirm").with_message("stale pending"),
+        None,
     )
-    .with_message(Message::user("run"));
+    .expect("failed to seed suspended interaction");
+    let thread = Thread::with_initial_state("test", base_state)
+        .with_patch(pending_patch)
+        .with_message(Message::user("run"));
     let provider = Arc::new(MockChatProvider::new(vec![
         Ok(tool_call_chat_response_object_args(
             "call_1",
@@ -10736,12 +10789,19 @@ async fn test_nonstream_completed_tool_round_does_not_clear_existing_suspended_c
 
 #[tokio::test]
 async fn test_stream_completed_tool_round_does_not_clear_existing_suspended_calls() {
-    let thread = Thread::with_initial_state(
-        "test",
-        json!({
-        }),
+    use crate::contracts::Suspension;
+
+    // Seed state with a pre-existing suspended interaction.
+    let base_state = json!({});
+    let pending_patch = set_single_suspended_call(
+        &base_state,
+        Suspension::new("leftover_confirm", "confirm").with_message("stale pending"),
+        None,
     )
-    .with_message(Message::user("run"));
+    .expect("failed to seed suspended interaction");
+    let thread = Thread::with_initial_state("test", base_state)
+        .with_patch(pending_patch)
+        .with_message(Message::user("run"));
     let (events, final_thread) = run_mock_stream_with_final_thread(
         MockStreamProvider::new(vec![
             MockResponse::text("").with_tool_call("call_1", "echo", json!({"message": "ok"})),
