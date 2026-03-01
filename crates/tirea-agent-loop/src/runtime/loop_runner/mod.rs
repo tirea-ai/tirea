@@ -949,31 +949,6 @@ async fn drain_resuming_tool_calls_and_replay(
                     state_changed = true;
                     run_ctx.add_thread_patches(replay_result.pending_patches.clone());
                 }
-                if !replay_result.commutative_state_actions.is_empty() {
-                    let state = run_ctx
-                        .snapshot()
-                        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-                    let commutative_patches = reduce_state_actions(
-                        replay_result
-                            .commutative_state_actions
-                            .iter()
-                            .cloned()
-                            .map(AnyStateAction::Commutative)
-                            .collect(),
-                        &state,
-                        "agent_loop",
-                    )
-                    .map_err(|e| {
-                        AgentLoopError::StateError(format!(
-                            "failed to reduce replay commutative state actions: {e}"
-                        ))
-                    })?;
-                    if !commutative_patches.is_empty() {
-                        state_changed = true;
-                        run_ctx.add_thread_patches(commutative_patches);
-                    }
-                }
-
                 events.push(AgentEvent::ToolCallDone {
                     id: tool_call.id.clone(),
                     result: replay_result.execution.result,

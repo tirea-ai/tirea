@@ -9,9 +9,7 @@ use super::{
     TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use crate::contracts::runtime::behavior::AgentBehavior;
-use crate::contracts::runtime::state::{
-    reduce_state_actions, AnyStateAction, CommutativeAction,
-};
+use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction};
 use crate::contracts::runtime::inference::MessagingContext;
 use crate::contracts::runtime::tool_call::ToolGate;
 use crate::contracts::runtime::phase::{Phase, StepContext};
@@ -341,8 +339,12 @@ pub(super) fn apply_tool_results_impl(
     let base_snapshot = run_ctx
         .snapshot()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let patches =
-        merge_parallel_state_patches(&base_snapshot, results, check_parallel_patch_conflicts)?;
+    let patches = merge_parallel_state_patches(
+        &base_snapshot,
+        results,
+        check_parallel_patch_conflicts,
+        run_ctx.lattice_registry(),
+    )?;
     let mut state_changed = !patches.is_empty();
     run_ctx.add_thread_patches(patches);
 
@@ -748,7 +750,6 @@ pub(super) async fn execute_tools_parallel_with_phases(
                     thread_messages: thread_messages.as_slice(),
                     cancellation_token: None,
                 },
-                true,
             )
             .await
         }
@@ -797,7 +798,6 @@ pub(super) async fn execute_tools_sequential_with_phases(
                 call,
                 &state,
                 &call_phase_ctx,
-                true,
             ),
         )
         .await
@@ -824,18 +824,6 @@ pub(super) async fn execute_tools_sequential_with_phases(
                 ))
             })?;
         }
-        if let Some(commutative_patch) = reduce_commutative_state_actions(
-            &state,
-            &result.commutative_state_actions,
-            &format!("tool:{}", result.execution.call.name),
-        )? {
-            state = apply_patch(&state, commutative_patch.patch()).map_err(|e| {
-                AgentLoopError::StateError(format!(
-                    "failed to apply commutative patch for call '{}': {}",
-                    result.execution.call.id, e
-                ))
-            })?;
-        }
 
         results.push(result);
 
@@ -858,7 +846,7 @@ pub(super) async fn execute_single_tool_with_phases(
     state: &Value,
     phase_ctx: &ToolPhaseContext<'_>,
 ) -> Result<ToolExecutionResult, AgentLoopError> {
-    execute_single_tool_with_phases_impl(tool, call, state, phase_ctx, false).await
+    execute_single_tool_with_phases_impl(tool, call, state, phase_ctx).await
 }
 
 pub(super) async fn execute_single_tool_with_phases_deferred(
@@ -867,7 +855,7 @@ pub(super) async fn execute_single_tool_with_phases_deferred(
     state: &Value,
     phase_ctx: &ToolPhaseContext<'_>,
 ) -> Result<ToolExecutionResult, AgentLoopError> {
-    execute_single_tool_with_phases_impl(tool, call, state, phase_ctx, true).await
+    execute_single_tool_with_phases_impl(tool, call, state, phase_ctx).await
 }
 
 async fn execute_single_tool_with_phases_impl(
@@ -875,7 +863,6 @@ async fn execute_single_tool_with_phases_impl(
     call: &crate::contracts::thread::ToolCall,
     state: &Value,
     phase_ctx: &ToolPhaseContext<'_>,
-    defer_commutative_state_actions: bool,
 ) -> Result<ToolExecutionResult, AgentLoopError> {
     // Create ToolCallContext for plugin phases
     let doc = tirea_state::DocCell::new(state.clone());
@@ -909,7 +896,6 @@ async fn execute_single_tool_with_phases_impl(
         &mut step,
         phase_ctx.agent_behavior,
         &doc,
-        defer_commutative_state_actions,
     )
     .await?;
 
@@ -1064,7 +1050,6 @@ async fn execute_single_tool_with_phases_impl(
         &mut step,
         phase_ctx.agent_behavior,
         &doc,
-        defer_commutative_state_actions,
     )
     .await?;
 
@@ -1094,14 +1079,10 @@ async fn execute_single_tool_with_phases_impl(
     let phase_patch_actions = std::mem::take(&mut step.pending_patches)
         .into_iter()
         .map(AnyStateAction::Patch);
-    let mut commutative_state_actions = std::mem::take(&mut step.pending_commutative_actions);
 
-    let (tool_commutative_actions, reducible_state_actions) =
-        partition_tool_state_actions(tool_state_actions, defer_commutative_state_actions);
-    commutative_state_actions.extend(tool_commutative_actions);
     let execution_patch_parts = reduce_tool_state_actions(
         state,
-        reducible_state_actions,
+        tool_state_actions,
         &format!("tool:{}", call.name),
     )?;
     execution.patch = merge_tracked_patches(&execution_patch_parts, &format!("tool:{}", call.name));
@@ -1137,27 +1118,7 @@ async fn execute_single_tool_with_phases_impl(
         reminders,
         user_messages,
         pending_patches,
-        commutative_state_actions,
     })
-}
-
-fn partition_tool_state_actions(
-    actions: Vec<AnyStateAction>,
-    defer_commutative_state_actions: bool,
-) -> (Vec<CommutativeAction>, Vec<AnyStateAction>) {
-    if !defer_commutative_state_actions {
-        return (Vec::new(), actions);
-    }
-
-    let mut commutative_actions = Vec::new();
-    let mut reducible_actions = Vec::new();
-    for action in actions {
-        match action {
-            AnyStateAction::Commutative(commutative) => commutative_actions.push(commutative),
-            other => reducible_actions.push(other),
-        }
-    }
-    (commutative_actions, reducible_actions)
 }
 
 fn reduce_tool_state_actions(
@@ -1168,27 +1129,6 @@ fn reduce_tool_state_actions(
     reduce_state_actions(actions, base_state, source).map_err(|e| {
         AgentLoopError::StateError(format!("failed to reduce tool state actions: {e}"))
     })
-}
-
-fn reduce_commutative_state_actions(
-    base_state: &Value,
-    actions: &[CommutativeAction],
-    source: &str,
-) -> Result<Option<TrackedPatch>, AgentLoopError> {
-    if actions.is_empty() {
-        return Ok(None);
-    }
-
-    let tracked = reduce_tool_state_actions(
-        base_state,
-        actions
-            .iter()
-            .cloned()
-            .map(AnyStateAction::Commutative)
-            .collect(),
-        source,
-    )?;
-    Ok(merge_tracked_patches(&tracked, source))
 }
 
 fn merge_tracked_patches(patches: &[TrackedPatch], source: &str) -> Option<TrackedPatch> {

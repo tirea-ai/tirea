@@ -9,7 +9,8 @@ use crate::RunConfig;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
-use tirea_state::{get_at_path, parse_path, DocCell, State, TireaResult};
+use crate::runtime::state::StateScopeRegistry;
+use tirea_state::{get_at_path, parse_path, DocCell, LatticeRegistry, State, TireaResult};
 
 /// Immutable snapshot of step context passed to [`AgentBehavior`] phase hooks.
 ///
@@ -159,6 +160,20 @@ pub trait AgentBehavior: Send + Sync {
     fn behavior_ids(&self) -> Vec<&str> {
         vec![self.id()]
     }
+
+    /// Register lattice (CRDT) paths with the registry.
+    ///
+    /// Called once at agent construction before any run starts.
+    /// Plugins override this to call `registry.register::<T>(path)` for
+    /// each CRDT field so that `LatticeMerge` ops are resolved correctly.
+    fn register_lattice_paths(&self, _registry: &mut LatticeRegistry) {}
+
+    /// Register state scopes with the registry.
+    ///
+    /// Called once at agent construction alongside `register_lattice_paths`.
+    /// Plugins override this to call `registry.register::<S>()` for each
+    /// `StateSpec` type they own, so the framework knows their declared scope.
+    fn register_state_scopes(&self, _registry: &mut StateScopeRegistry) {}
 
     async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
         vec![]

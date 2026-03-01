@@ -160,8 +160,12 @@ impl AgentOs {
             }
         }
 
-        let run_ctx = RunContext::from_thread(&thread, resolved.run_config)
-            .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;
+        let run_ctx = RunContext::from_thread_with_registry(
+            &thread,
+            resolved.run_config,
+            resolved.agent.lattice_registry.clone(),
+        )
+        .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;
         let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
         for decision in initial_decisions {
             decision_tx
@@ -260,8 +264,12 @@ impl AgentOs {
         state_committer: Option<Arc<dyn StateCommitter>>,
     ) -> Result<impl futures::Stream<Item = AgentEvent> + Send, AgentOsRunError> {
         let resolved = self.resolve(agent_id)?;
-        let run_ctx = RunContext::from_thread(&thread, resolved.run_config)
-            .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;
+        let run_ctx = RunContext::from_thread_with_registry(
+            &thread,
+            resolved.run_config,
+            resolved.agent.lattice_registry.clone(),
+        )
+        .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;
         Ok(run_loop_stream(
             Arc::new(resolved.agent),
             resolved.tools,

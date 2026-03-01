@@ -99,9 +99,9 @@ pub use io::{
 pub use runtime::{
     build_read_only_context_from_step, reduce_state_actions, Action, ActivityContext,
     ActivityManager, AfterInferenceContext, AfterToolExecuteContext, AgentBehavior, AnyStateAction,
-    BeforeInferenceContext, BeforeToolExecuteContext, CommutativeAction, DecisionReplayPolicy,
+    BeforeInferenceContext, BeforeToolExecuteContext, DecisionReplayPolicy,
     Extensions, NoOpBehavior, Phase, PhaseContext, PhasePolicy, ReadOnlyContext, RunAction,
-    RunContext, RunDelta, RunEndContext, RunStartContext, StateScope, StateSpec, StepContext,
+    RunContext, RunDelta, RunEndContext, RunStartContext, StateScope, StateScopeRegistry, StateSpec, StepContext,
     StepEndContext, StepOutcome, StepStartContext, StoppedReason, StreamResult, SuspendTicket,
     Suspension, SuspensionResponse, TerminationReason, TokenUsage, ToolCallAction, ToolCallContext,
     ToolCallOutcome, ToolExecution, ToolExecutionEffect, ToolExecutionRequest, ToolExecutionResult,

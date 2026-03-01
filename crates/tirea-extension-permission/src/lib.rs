@@ -11,15 +11,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use tirea_contract::io::ResumeDecisionAction;
-use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
 use tirea_contract::runtime::action::Action;
+use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
 use tirea_contract::runtime::inference::InferenceContext;
-use tirea_contract::runtime::tool_call::ToolGate;
-use tirea_contract::runtime::state::{AnyStateAction, StateSpec};
 use tirea_contract::runtime::phase::step::StepContext;
 use tirea_contract::runtime::phase::{Phase, SuspendTicket};
+use tirea_contract::runtime::state::{AnyStateAction, StateSpec};
+use tirea_contract::runtime::tool_call::ToolGate;
 use tirea_contract::runtime::{PendingToolCall, ToolCallResumeMode};
-use tirea_state::State;
+use tirea_state::{GSet, LatticeRegistry, State};
 
 /// Tool permission behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -56,10 +56,21 @@ pub const PERMISSION_PLUGIN_ID: &str = "permission";
 
 /// Public helper to wrap a `PermissionAction` into an `AnyStateAction`.
 ///
-/// This avoids exposing `PermissionState` publicly while letting external
-/// callers (e.g. `SkillActivateTool`) emit permission state mutations.
+/// `SetTool { Allow/Deny }` are routed through the CRDT-based
+/// [`PermissionPolicy`] for conflict-free parallel merges.
+/// Other actions go through the sequential [`PermissionState`] reducer.
 pub fn permission_state_action(action: PermissionAction) -> AnyStateAction {
-    AnyStateAction::new::<PermissionState>(action)
+    match action {
+        PermissionAction::SetTool {
+            tool_id,
+            behavior: ToolPermissionBehavior::Allow,
+        } => AnyStateAction::new::<PermissionPolicy>(PermissionPolicyAction::AllowTool { tool_id }),
+        PermissionAction::SetTool {
+            tool_id,
+            behavior: ToolPermissionBehavior::Deny,
+        } => AnyStateAction::new::<PermissionPolicy>(PermissionPolicyAction::DenyTool { tool_id }),
+        other => AnyStateAction::new::<PermissionState>(other),
+    }
 }
 
 /// Persisted permission state (internal).
@@ -94,27 +105,104 @@ impl StateSpec for PermissionState {
     }
 }
 
+/// Run-scoped CRDT permission policy.
+///
+/// `allowed_tools` and `denied_tools` are `GSet<String>` fields that merge
+/// automatically during parallel execution (no false conflicts).
+/// `default_behavior` remains sequential (`Op::Set`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[serde(default)]
+#[tirea(path = "permission_policy")]
+pub struct PermissionPolicy {
+    /// Default behavior for tools not in either set.
+    pub default_behavior: ToolPermissionBehavior,
+    /// Monotonically growing set of auto-approved tool IDs.
+    #[tirea(lattice)]
+    pub allowed_tools: GSet<String>,
+    /// Monotonically growing set of auto-denied tool IDs.
+    #[tirea(lattice)]
+    pub denied_tools: GSet<String>,
+}
+
+/// Action type for the [`PermissionPolicy`] reducer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PermissionPolicyAction {
+    /// Set default behavior for tools with no override.
+    SetDefault { behavior: ToolPermissionBehavior },
+    /// Add a tool to the allowed set (lattice merge).
+    AllowTool { tool_id: String },
+    /// Add a tool to the denied set (lattice merge).
+    DenyTool { tool_id: String },
+}
+
+impl StateSpec for PermissionPolicy {
+    type Action = PermissionPolicyAction;
+
+    fn reduce(&mut self, action: Self::Action) {
+        match action {
+            PermissionPolicyAction::SetDefault { behavior } => {
+                self.default_behavior = behavior;
+            }
+            PermissionPolicyAction::AllowTool { tool_id } => {
+                self.allowed_tools.insert(tool_id);
+            }
+            PermissionPolicyAction::DenyTool { tool_id } => {
+                self.denied_tools.insert(tool_id);
+            }
+        }
+    }
+}
+
 /// Frontend tool name for permission confirmation prompts.
 pub const PERMISSION_CONFIRM_TOOL_NAME: &str = "PermissionConfirm";
 
 /// Resolve effective permission behavior from a state snapshot.
+///
+/// Resolution order:
+/// 1. Check CRDT policy (`permission_policy`): denied_tools → allowed_tools
+/// 2. Fall back to legacy per-tool overrides (`permissions.tools`)
+/// 3. Use `permission_policy.default_behavior` if set, else `permissions.default_behavior`
+/// 4. Default: `Ask`
 #[must_use]
 pub fn resolve_permission_behavior(
     snapshot: &serde_json::Value,
     tool_id: &str,
 ) -> ToolPermissionBehavior {
-    let perms_value = snapshot.get(PermissionState::PATH);
-
-    // Happy path: full struct deserializes cleanly.
-    if let Some(perms) = perms_value.and_then(|v| PermissionState::from_value(v).ok()) {
-        return perms
-            .tools
-            .get(tool_id)
-            .copied()
-            .unwrap_or(perms.default_behavior);
+    // 1. Check CRDT policy first.
+    if let Some(policy) = snapshot
+        .get(PermissionPolicy::PATH)
+        .and_then(|v| PermissionPolicy::from_value(v).ok())
+    {
+        let tool_id_owned = tool_id.to_string();
+        if policy.denied_tools.contains(&tool_id_owned) {
+            return ToolPermissionBehavior::Deny;
+        }
+        if policy.allowed_tools.contains(&tool_id_owned) {
+            return ToolPermissionBehavior::Allow;
+        }
+        // Policy has a default_behavior; use it unless it's the struct-default Ask
+        // and legacy state has an explicit override.
     }
 
-    // Fallback for corrupted tools map: honor default_behavior if parseable.
+    // 2. Fall back to legacy PermissionState.
+    let perms_value = snapshot.get(PermissionState::PATH);
+    if let Some(perms) = perms_value.and_then(|v| PermissionState::from_value(v).ok()) {
+        if let Some(&behavior) = perms.tools.get(tool_id) {
+            return behavior;
+        }
+        return perms.default_behavior;
+    }
+
+    // 3. Try CRDT policy default.
+    if let Some(policy) = snapshot
+        .get(PermissionPolicy::PATH)
+        .and_then(|v| PermissionPolicy::from_value(v).ok())
+    {
+        return policy.default_behavior;
+    }
+
+    // 4. Fallback for corrupted legacy state: honor default_behavior if parseable.
     perms_value
         .and_then(|v| v.get("default_behavior"))
         .and_then(|v| serde_json::from_value::<ToolPermissionBehavior>(v.clone()).ok())
@@ -255,6 +343,11 @@ pub struct PermissionPlugin;
 impl AgentBehavior for PermissionPlugin {
     fn id(&self) -> &str {
         PERMISSION_PLUGIN_ID
+    }
+
+    fn register_lattice_paths(&self, registry: &mut LatticeRegistry) {
+        registry.register::<GSet<String>>(tirea_state::parse_path("permission_policy.allowed_tools"));
+        registry.register::<GSet<String>>(tirea_state::parse_path("permission_policy.denied_tools"));
     }
 
     async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
@@ -755,6 +848,119 @@ mod tests {
 
         let actions = AgentBehavior::before_tool_execute(&ToolPolicyPlugin, &ctx).await;
         assert!(has_block(&actions), "excluded tool should be blocked");
+    }
+
+    // ========================================================================
+    // PermissionPolicy (CRDT) tests
+    // ========================================================================
+
+    #[test]
+    fn test_permission_policy_denied_tools_wins() {
+        let snapshot = json!({
+            "permission_policy": {
+                "default_behavior": "allow",
+                "allowed_tools": [],
+                "denied_tools": ["bad_tool"]
+            }
+        });
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "bad_tool"),
+            ToolPermissionBehavior::Deny
+        );
+    }
+
+    #[test]
+    fn test_permission_policy_allowed_tools() {
+        let snapshot = json!({
+            "permission_policy": {
+                "default_behavior": "deny",
+                "allowed_tools": ["good_tool"],
+                "denied_tools": []
+            }
+        });
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "good_tool"),
+            ToolPermissionBehavior::Allow
+        );
+    }
+
+    #[test]
+    fn test_permission_policy_falls_back_to_legacy() {
+        let snapshot = json!({
+            "permission_policy": {
+                "default_behavior": "ask",
+                "allowed_tools": [],
+                "denied_tools": []
+            },
+            "permissions": {
+                "default_behavior": "allow",
+                "tools": { "legacy_tool": "deny" }
+            }
+        });
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "legacy_tool"),
+            ToolPermissionBehavior::Deny,
+            "should fall back to legacy per-tool override"
+        );
+    }
+
+    #[test]
+    fn test_permission_policy_denied_overrides_legacy_allow() {
+        let snapshot = json!({
+            "permission_policy": {
+                "default_behavior": "ask",
+                "allowed_tools": [],
+                "denied_tools": ["tool_x"]
+            },
+            "permissions": {
+                "default_behavior": "allow",
+                "tools": { "tool_x": "allow" }
+            }
+        });
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "tool_x"),
+            ToolPermissionBehavior::Deny,
+            "CRDT deny should override legacy allow"
+        );
+    }
+
+    #[test]
+    fn test_permission_state_action_routes_allow_to_policy() {
+        let action = PermissionAction::SetTool {
+            tool_id: "my_tool".to_string(),
+            behavior: ToolPermissionBehavior::Allow,
+        };
+        let state_action = permission_state_action(action);
+        // Should be a typed action targeting PermissionPolicy, not PermissionState
+        assert!(!matches!(state_action, AnyStateAction::Patch(_)));
+    }
+
+    #[test]
+    fn test_permission_state_action_routes_deny_to_policy() {
+        let action = PermissionAction::SetTool {
+            tool_id: "my_tool".to_string(),
+            behavior: ToolPermissionBehavior::Deny,
+        };
+        let state_action = permission_state_action(action);
+        assert!(!matches!(state_action, AnyStateAction::Patch(_)));
+    }
+
+    #[test]
+    fn test_permission_plugin_registers_lattice_paths() {
+        let mut registry = LatticeRegistry::new();
+        PermissionPlugin.register_lattice_paths(&mut registry);
+        assert!(
+            registry
+                .get(&tirea_state::parse_path("permission_policy.allowed_tools"))
+                .is_some(),
+            "allowed_tools should be registered"
+        );
+        assert!(
+            registry
+                .get(&tirea_state::parse_path("permission_policy.denied_tools"))
+                .is_some(),
+            "denied_tools should be registered"
+        );
     }
 
     #[tokio::test]

@@ -96,6 +96,22 @@ pub fn apply_patches<'a>(
     Ok(result)
 }
 
+/// Apply multiple patches to a JSON document using a `LatticeRegistry` for proper merges.
+///
+/// `LatticeMerge` ops whose path is registered will perform a real lattice merge;
+/// unregistered paths fall back to `Op::Set` semantics.
+pub fn apply_patches_with_registry<'a>(
+    doc: &Value,
+    patches: impl IntoIterator<Item = &'a Patch>,
+    registry: &LatticeRegistry,
+) -> TireaResult<Value> {
+    let mut result = doc.clone();
+    for patch in patches {
+        apply_patch_in_place_with_registry(&mut result, patch, registry)?;
+    }
+    Ok(result)
+}
+
 /// Apply a patch to a JSON document using a `LatticeRegistry` for proper merges.
 ///
 /// `LatticeMerge` ops whose path is registered will perform a real lattice merge;

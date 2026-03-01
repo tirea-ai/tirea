@@ -1,12 +1,9 @@
 use super::AgentLoopError;
-use crate::contracts::runtime::state::{
-    reduce_state_actions, AnyStateAction, CommutativeAction,
-};
 use crate::contracts::runtime::ToolExecutionResult;
 use serde_json::Value;
-use tirea_state::{apply_patch, Patch, PatchExt, TrackedPatch};
-
-const COMMUTATIVE_PATCH_SOURCE: &str = "agent_loop:commutative";
+use tirea_state::{
+    apply_patch_with_registry, conflicts_with_registry, LatticeRegistry, Patch, TrackedPatch,
+};
 
 struct ToolPatchBatch<'a> {
     call_id: &'a str,
@@ -34,120 +31,9 @@ impl<'a> ToolPatchBatch<'a> {
     }
 }
 
-struct CommutativeActionItem<'a> {
-    call_id: &'a str,
-    action: &'a CommutativeAction,
-}
-
-fn commutative_action_path(action: &CommutativeAction) -> &str {
-    match action {
-        CommutativeAction::CounterAdd { path, .. }
-        | CommutativeAction::SetUnion { path, .. }
-        | CommutativeAction::MaxI64 { path, .. }
-        | CommutativeAction::EnableFlag { path, .. }
-        | CommutativeAction::SetRemove { path, .. }
-        | CommutativeAction::MapPut { path, .. }
-        | CommutativeAction::MapRemove { path, .. }
-        | CommutativeAction::MinI64 { path, .. } => path,
-    }
-}
-
-fn actions_share_path_and_scope(left: &CommutativeAction, right: &CommutativeAction) -> bool {
-    commutative_action_path(left) == commutative_action_path(right) && left.scope() == right.scope()
-}
-
-fn collect_commutative_action_items(
-    results: &[ToolExecutionResult],
-) -> Vec<CommutativeActionItem<'_>> {
-    results
-        .iter()
-        .flat_map(|result| {
-            result
-                .commutative_state_actions
-                .iter()
-                .map(move |action| CommutativeActionItem {
-                    call_id: &result.execution.call.id,
-                    action,
-                })
-        })
-        .collect()
-}
-
-fn merge_commutative_actions(
-    actions: &[CommutativeActionItem<'_>],
-    check_conflicts: bool,
-) -> Result<Vec<CommutativeAction>, AgentLoopError> {
-    let mut merged: Vec<(CommutativeAction, &str)> = Vec::new();
-
-    for item in actions {
-        if let Some((existing, _)) = merged
-            .iter_mut()
-            .find(|(existing, _)| existing.merge(item.action).is_some())
-        {
-            *existing = existing
-                .merge(item.action)
-                .expect("merge compatibility checked before update");
-            continue;
-        }
-
-        if check_conflicts {
-            if let Some((existing, existing_call_id)) = merged
-                .iter()
-                .find(|(existing, _)| actions_share_path_and_scope(existing, item.action))
-            {
-                return Err(AgentLoopError::StateError(format!(
-                    "incompatible commutative actions between '{}' ({}) and '{}' ({}) at {}",
-                    existing_call_id,
-                    existing.label(),
-                    item.call_id,
-                    item.action.label(),
-                    commutative_action_path(item.action)
-                )));
-            }
-        }
-
-        merged.push((item.action.clone(), item.call_id));
-    }
-
-    Ok(merged.into_iter().map(|(action, _)| action).collect())
-}
-
-fn reduce_commutative_actions_to_patch(
-    base_snapshot: &Value,
-    actions: Vec<CommutativeAction>,
-) -> Result<Option<TrackedPatch>, AgentLoopError> {
-    if actions.is_empty() {
-        return Ok(None);
-    }
-
-    let tracked = reduce_state_actions(
-        actions
-            .into_iter()
-            .map(AnyStateAction::Commutative)
-            .collect(),
-        base_snapshot,
-        COMMUTATIVE_PATCH_SOURCE,
-    )
-    .map_err(|e| {
-        AgentLoopError::StateError(format!("failed to reduce commutative state actions: {e}"))
-    })?;
-
-    let mut merged_patch = Patch::new();
-    for tracked in tracked {
-        merged_patch.extend(tracked.patch().clone());
-    }
-
-    if merged_patch.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(
-            TrackedPatch::new(merged_patch).with_source(COMMUTATIVE_PATCH_SOURCE),
-        ))
-    }
-}
-
 fn validate_parallel_state_patch_conflicts(
     batches: &[ToolPatchBatch<'_>],
+    registry: &LatticeRegistry,
 ) -> Result<(), AgentLoopError> {
     for (left_idx, left) in batches.iter().enumerate() {
         if left.is_empty() {
@@ -159,7 +45,11 @@ fn validate_parallel_state_patch_conflicts(
             }
             for left_patch in left.patches() {
                 for right_patch in right.patches() {
-                    let conflicts = left_patch.patch().conflicts_with(right_patch.patch());
+                    let conflicts = conflicts_with_registry(
+                        left_patch.patch(),
+                        right_patch.patch(),
+                        registry,
+                    );
                     if let Some(conflict) = conflicts.first() {
                         return Err(AgentLoopError::StateError(format!(
                             "conflicting parallel state patches between '{}' and '{}' at {}",
@@ -167,24 +57,6 @@ fn validate_parallel_state_patch_conflicts(
                         )));
                     }
                 }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_commutative_patch_conflicts(
-    batches: &[ToolPatchBatch<'_>],
-    commutative_patch: &TrackedPatch,
-) -> Result<(), AgentLoopError> {
-    for batch in batches {
-        for patch in batch.patches() {
-            let conflicts = patch.patch().conflicts_with(commutative_patch.patch());
-            if let Some(conflict) = conflicts.first() {
-                return Err(AgentLoopError::StateError(format!(
-                    "conflicting parallel state patches between '{}' and 'commutative_actions' at {}",
-                    batch.call_id, conflict.path
-                )));
             }
         }
     }
@@ -215,41 +87,35 @@ fn merge_pending_patches(results: &[ToolExecutionResult]) -> Option<TrackedPatch
 fn merge_sequential_state_patches(
     base_snapshot: &Value,
     results: &[ToolExecutionResult],
+    registry: &LatticeRegistry,
 ) -> Result<Vec<TrackedPatch>, AgentLoopError> {
     let mut rolling = base_snapshot.clone();
     let mut patches = Vec::new();
 
     for result in results {
         if let Some(execution_patch) = result.execution.patch.clone() {
-            rolling = apply_patch(&rolling, execution_patch.patch()).map_err(|e| {
-                AgentLoopError::StateError(format!(
-                    "failed to apply execution patch for call '{}': {}",
-                    result.execution.call.id, e
-                ))
-            })?;
+            rolling =
+                apply_patch_with_registry(&rolling, execution_patch.patch(), registry).map_err(
+                    |e| {
+                        AgentLoopError::StateError(format!(
+                            "failed to apply execution patch for call '{}': {}",
+                            result.execution.call.id, e
+                        ))
+                    },
+                )?;
             patches.push(execution_patch);
         }
 
         for pending in &result.pending_patches {
-            rolling = apply_patch(&rolling, pending.patch()).map_err(|e| {
-                AgentLoopError::StateError(format!(
-                    "failed to apply pending patch for call '{}': {}",
-                    result.execution.call.id, e
-                ))
-            })?;
+            rolling = apply_patch_with_registry(&rolling, pending.patch(), registry).map_err(
+                |e| {
+                    AgentLoopError::StateError(format!(
+                        "failed to apply pending patch for call '{}': {}",
+                        result.execution.call.id, e
+                    ))
+                },
+            )?;
             patches.push(pending.clone());
-        }
-
-        if let Some(commutative_patch) =
-            reduce_commutative_actions_to_patch(&rolling, result.commutative_state_actions.clone())?
-        {
-            rolling = apply_patch(&rolling, commutative_patch.patch()).map_err(|e| {
-                AgentLoopError::StateError(format!(
-                    "failed to apply commutative patch for call '{}': {}",
-                    result.execution.call.id, e
-                ))
-            })?;
-            patches.push(commutative_patch);
         }
     }
 
@@ -260,34 +126,23 @@ fn merge_sequential_state_patches(
 ///
 /// - execution patches are preserved as independent tracked patches
 /// - pending plugin patches are flattened into one tracked patch
-/// - deferred commutative actions are merged/reduced into one tracked patch
 /// - optional cross-call conflict detection runs before merge
 pub(super) fn merge_parallel_state_patches(
     base_snapshot: &Value,
     results: &[ToolExecutionResult],
     check_conflicts: bool,
+    registry: &LatticeRegistry,
 ) -> Result<Vec<TrackedPatch>, AgentLoopError> {
     if !check_conflicts {
-        return merge_sequential_state_patches(base_snapshot, results);
+        return merge_sequential_state_patches(base_snapshot, results, registry);
     }
 
     let batches: Vec<ToolPatchBatch<'_>> = results.iter().map(ToolPatchBatch::new).collect();
-    let commutative_actions =
-        merge_commutative_actions(&collect_commutative_action_items(results), check_conflicts)?;
-    let commutative_patch =
-        reduce_commutative_actions_to_patch(base_snapshot, commutative_actions)?;
-
-    validate_parallel_state_patch_conflicts(&batches)?;
-    if let Some(ref patch) = commutative_patch {
-        validate_commutative_patch_conflicts(&batches, patch)?;
-    }
+    validate_parallel_state_patch_conflicts(&batches, registry)?;
 
     let mut patches = collect_execution_patches(results);
     if let Some(pending_patch) = merge_pending_patches(results) {
         patches.push(pending_patch);
-    }
-    if let Some(commutative_patch) = commutative_patch {
-        patches.push(commutative_patch);
     }
 
     Ok(patches)
@@ -296,18 +151,16 @@ pub(super) fn merge_parallel_state_patches(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::runtime::state::CommutativeAction;
     use crate::contracts::runtime::tool_call::ToolResult;
     use crate::contracts::runtime::{ToolCallOutcome, ToolExecution, ToolExecutionResult};
     use crate::contracts::thread::ToolCall;
     use serde_json::json;
-    use tirea_state::{apply_patch, Op, Patch};
+    use tirea_state::{apply_patch, LatticeRegistry, Op, Patch};
 
     fn result_with(
         call_id: &str,
         execution_patch: Option<TrackedPatch>,
         pending_patches: Vec<TrackedPatch>,
-        commutative_state_actions: Vec<CommutativeAction>,
     ) -> ToolExecutionResult {
         ToolExecutionResult {
             execution: ToolExecution {
@@ -320,10 +173,14 @@ mod tests {
             reminders: Vec::new(),
             user_messages: Vec::new(),
             pending_patches,
-            commutative_state_actions,
         }
     }
 
+    fn empty_registry() -> LatticeRegistry {
+        LatticeRegistry::new()
+    }
+
+    #[allow(dead_code)]
     fn apply_all(base: &Value, patches: &[TrackedPatch]) -> Value {
         let mut state = base.clone();
         for patch in patches {
@@ -352,20 +209,11 @@ mod tests {
         let patches = merge_parallel_state_patches(
             &json!({}),
             &[
-                result_with(
-                    "call_left",
-                    Some(left_exec.clone()),
-                    vec![pending_left],
-                    Vec::new(),
-                ),
-                result_with(
-                    "call_right",
-                    Some(right_exec.clone()),
-                    vec![pending_right],
-                    Vec::new(),
-                ),
+                result_with("call_left", Some(left_exec.clone()), vec![pending_left]),
+                result_with("call_right", Some(right_exec.clone()), vec![pending_right]),
             ],
             true,
+            &empty_registry(),
         )
         .expect("merge should succeed");
 
@@ -383,7 +231,6 @@ mod tests {
                 Patch::new().with_op(Op::set(tirea_state::path!("shared"), json!(1))),
             )),
             Vec::new(),
-            Vec::new(),
         );
         let right = result_with(
             "call_right",
@@ -391,11 +238,11 @@ mod tests {
                 Patch::new().with_op(Op::set(tirea_state::path!("shared"), json!(2))),
             )),
             Vec::new(),
-            Vec::new(),
         );
 
-        let err = merge_parallel_state_patches(&json!({}), &[left, right], true)
-            .expect_err("must conflict");
+        let err =
+            merge_parallel_state_patches(&json!({}), &[left, right], true, &empty_registry())
+                .expect_err("must conflict");
         match err {
             AgentLoopError::StateError(message) => {
                 assert!(message.contains("call_left"));
@@ -414,7 +261,6 @@ mod tests {
                 Patch::new().with_op(Op::set(tirea_state::path!("shared"), json!(1))),
             )),
             Vec::new(),
-            Vec::new(),
         );
         let right = result_with(
             "call_right",
@@ -422,270 +268,11 @@ mod tests {
                 Patch::new().with_op(Op::set(tirea_state::path!("shared"), json!(2))),
             )),
             Vec::new(),
-            Vec::new(),
         );
 
-        let patches = merge_parallel_state_patches(&json!({}), &[left, right], false)
-            .expect("merge should succeed");
+        let patches =
+            merge_parallel_state_patches(&json!({}), &[left, right], false, &empty_registry())
+                .expect("merge should succeed");
         assert_eq!(patches.len(), 2);
-    }
-
-    #[test]
-    fn merge_parallel_state_patches_sequential_mode_preserves_result_order_for_commutative() {
-        let left = result_with(
-            "call_left",
-            Some(TrackedPatch::new(
-                Patch::new().with_op(Op::set(tirea_state::path!("counter"), json!(10))),
-            )),
-            Vec::new(),
-            vec![CommutativeAction::CounterAdd {
-                path: "counter".to_string(),
-                delta: 1,
-                scope: crate::contracts::runtime::state::StateScope::Run,
-            }],
-        );
-        let right = result_with(
-            "call_right",
-            Some(TrackedPatch::new(
-                Patch::new().with_op(Op::set(tirea_state::path!("counter"), json!(100))),
-            )),
-            Vec::new(),
-            Vec::new(),
-        );
-
-        let patches = merge_parallel_state_patches(&json!({"counter": 0}), &[left, right], false)
-            .expect("merge should succeed");
-        let merged = apply_all(&json!({"counter": 0}), &patches);
-        assert_eq!(merged["counter"], json!(100));
-    }
-
-    #[test]
-    fn merge_parallel_state_patches_merges_commutative_actions() {
-        let base = json!({"metrics": {"tokens": 10}});
-        let left = result_with(
-            "call_left",
-            None,
-            Vec::new(),
-            vec![CommutativeAction::CounterAdd {
-                path: "metrics.tokens".to_string(),
-                delta: 2,
-                scope: crate::contracts::runtime::state::StateScope::Run,
-            }],
-        );
-        let right = result_with(
-            "call_right",
-            None,
-            Vec::new(),
-            vec![CommutativeAction::CounterAdd {
-                path: "metrics.tokens".to_string(),
-                delta: 3,
-                scope: crate::contracts::runtime::state::StateScope::Run,
-            }],
-        );
-
-        let patches = merge_parallel_state_patches(&base, &[left, right], true)
-            .expect("merge should succeed");
-        assert_eq!(patches.len(), 1);
-        assert_eq!(patches[0].source.as_deref(), Some(COMMUTATIVE_PATCH_SOURCE));
-
-        let merged = apply_all(&base, &patches);
-        assert_eq!(merged["metrics"]["tokens"], json!(15));
-    }
-
-    #[test]
-    fn merge_parallel_state_patches_rejects_incompatible_commutative_actions_when_enabled() {
-        let left = result_with(
-            "call_left",
-            None,
-            Vec::new(),
-            vec![CommutativeAction::CounterAdd {
-                path: "shared.metric".to_string(),
-                delta: 1,
-                scope: crate::contracts::runtime::state::StateScope::Run,
-            }],
-        );
-        let right = result_with(
-            "call_right",
-            None,
-            Vec::new(),
-            vec![CommutativeAction::MaxI64 {
-                path: "shared.metric".to_string(),
-                value: 5,
-                scope: crate::contracts::runtime::state::StateScope::Run,
-            }],
-        );
-
-        let err = merge_parallel_state_patches(&json!({}), &[left, right], true)
-            .expect_err("must reject incompatible commutative actions");
-        match err {
-            AgentLoopError::StateError(message) => {
-                assert!(message.contains("call_left"));
-                assert!(message.contains("call_right"));
-                assert!(message.contains("shared.metric"));
-            }
-            other => panic!("expected state error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn merge_parallel_state_patches_rejects_conflict_between_patch_and_commutative_action() {
-        let left = result_with(
-            "call_left",
-            Some(TrackedPatch::new(Patch::new().with_op(Op::set(
-                tirea_state::path!("shared", "counter"),
-                json!(1),
-            )))),
-            Vec::new(),
-            Vec::new(),
-        );
-        let right = result_with(
-            "call_right",
-            None,
-            Vec::new(),
-            vec![CommutativeAction::CounterAdd {
-                path: "shared.counter".to_string(),
-                delta: 1,
-                scope: crate::contracts::runtime::state::StateScope::Run,
-            }],
-        );
-
-        let err =
-            merge_parallel_state_patches(&json!({"shared": {"counter": 0}}), &[left, right], true)
-                .expect_err("must reject strict-vs-commutative conflict");
-        match err {
-            AgentLoopError::StateError(message) => {
-                assert!(message.contains("call_left"));
-                assert!(message.contains("commutative_actions"));
-                assert!(message.contains("shared.counter"));
-            }
-            other => panic!("expected state error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn merge_parallel_set_remove_actions() {
-        let base = json!({"tags": ["a", "b", "c", "d"]});
-        let left = result_with(
-            "call_left",
-            None,
-            Vec::new(),
-            vec![CommutativeAction::SetRemove {
-                path: "tags".to_string(),
-                values: vec![json!("a")],
-                scope: crate::contracts::runtime::state::StateScope::Run,
-            }],
-        );
-        let right = result_with(
-            "call_right",
-            None,
-            Vec::new(),
-            vec![CommutativeAction::SetRemove {
-                path: "tags".to_string(),
-                values: vec![json!("c")],
-                scope: crate::contracts::runtime::state::StateScope::Run,
-            }],
-        );
-
-        let patches = merge_parallel_state_patches(&base, &[left, right], true)
-            .expect("merge should succeed");
-        assert_eq!(patches.len(), 1);
-
-        let merged = apply_all(&base, &patches);
-        assert_eq!(merged["tags"], json!(["b", "d"]));
-    }
-
-    #[test]
-    fn merge_parallel_map_put_disjoint_keys() {
-        let base = json!({"data": {}});
-        let left = result_with(
-            "call_left",
-            None,
-            Vec::new(),
-            vec![CommutativeAction::MapPut {
-                path: "data".to_string(),
-                entries: json!({"key_a": 1}),
-                scope: crate::contracts::runtime::state::StateScope::Run,
-            }],
-        );
-        let right = result_with(
-            "call_right",
-            None,
-            Vec::new(),
-            vec![CommutativeAction::MapPut {
-                path: "data".to_string(),
-                entries: json!({"key_b": 2}),
-                scope: crate::contracts::runtime::state::StateScope::Run,
-            }],
-        );
-
-        let patches = merge_parallel_state_patches(&base, &[left, right], true)
-            .expect("merge should succeed");
-        let merged = apply_all(&base, &patches);
-        assert_eq!(merged["data"]["key_a"], 1);
-        assert_eq!(merged["data"]["key_b"], 2);
-    }
-
-    #[test]
-    fn merge_parallel_map_put_same_key_different_value_conflicts() {
-        let base = json!({"data": {}});
-        let left = result_with(
-            "call_left",
-            None,
-            Vec::new(),
-            vec![CommutativeAction::MapPut {
-                path: "data".to_string(),
-                entries: json!({"key": 1}),
-                scope: crate::contracts::runtime::state::StateScope::Run,
-            }],
-        );
-        let right = result_with(
-            "call_right",
-            None,
-            Vec::new(),
-            vec![CommutativeAction::MapPut {
-                path: "data".to_string(),
-                entries: json!({"key": 2}),
-                scope: crate::contracts::runtime::state::StateScope::Run,
-            }],
-        );
-
-        let err = merge_parallel_state_patches(&base, &[left, right], true)
-            .expect_err("must reject conflicting MapPut");
-        match err {
-            AgentLoopError::StateError(message) => {
-                assert!(message.contains("data"));
-            }
-            other => panic!("expected state error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn merge_parallel_min_i64_actions() {
-        let base = json!({"score": 100});
-        let left = result_with(
-            "call_left",
-            None,
-            Vec::new(),
-            vec![CommutativeAction::MinI64 {
-                path: "score".to_string(),
-                value: 50,
-                scope: crate::contracts::runtime::state::StateScope::Run,
-            }],
-        );
-        let right = result_with(
-            "call_right",
-            None,
-            Vec::new(),
-            vec![CommutativeAction::MinI64 {
-                path: "score".to_string(),
-                value: 25,
-                scope: crate::contracts::runtime::state::StateScope::Run,
-            }],
-        );
-
-        let patches = merge_parallel_state_patches(&base, &[left, right], true)
-            .expect("merge should succeed");
-        let merged = apply_all(&base, &patches);
-        assert_eq!(merged["score"], json!(25));
     }
 }

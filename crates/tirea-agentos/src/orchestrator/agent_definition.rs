@@ -7,6 +7,8 @@ use crate::runtime::loop_runner::{
 };
 use genai::chat::ChatOptions;
 use std::sync::Arc;
+use tirea_contract::runtime::state::StateScopeRegistry;
+use tirea_state::LatticeRegistry;
 
 /// Tool execution strategy mode exposed by AgentDefinition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,6 +212,21 @@ impl AgentDefinition {
             }
             ToolExecutionMode::ParallelStreaming => Arc::new(ParallelToolExecutor::streaming()),
         };
+
+        // Collect lattice registrations from all behaviors.
+        let mut registry = LatticeRegistry::new();
+        for b in &behaviors {
+            b.register_lattice_paths(&mut registry);
+        }
+        let lattice_registry = Arc::new(registry);
+
+        // Collect state scope registrations from all behaviors.
+        let mut scope_registry = StateScopeRegistry::new();
+        for b in &behaviors {
+            b.register_state_scopes(&mut scope_registry);
+        }
+        let state_scope_registry = Arc::new(scope_registry);
+
         let behavior: Arc<dyn AgentBehavior> = if behaviors.is_empty() {
             Arc::new(NoOpBehavior)
         } else {
@@ -225,6 +242,8 @@ impl AgentDefinition {
             fallback_models: self.fallback_models,
             llm_retry_policy: self.llm_retry_policy,
             behavior,
+            lattice_registry,
+            state_scope_registry,
             step_tool_provider: None,
             llm_executor: None,
         }

@@ -112,8 +112,12 @@ pub use lattice::{
 };
 
 // Core types
-pub use apply::{apply_patch, apply_patch_with_registry, apply_patches, get_at_path};
-pub use conflict::{compute_touched, detect_conflicts, Conflict, ConflictKind, PatchExt};
+pub use apply::{
+    apply_patch, apply_patch_with_registry, apply_patches, apply_patches_with_registry, get_at_path,
+};
+pub use conflict::{
+    compute_touched, conflicts_with_registry, detect_conflicts, Conflict, ConflictKind, PatchExt,
+};
 pub use delta_tracked::DeltaTracked;
 pub use doc_cell::DocCell;
 pub use error::{value_type_name, TireaError, TireaResult};

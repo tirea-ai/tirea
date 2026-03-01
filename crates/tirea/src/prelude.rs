@@ -68,7 +68,9 @@ pub use crate::extensions::permission::{
 };
 
 #[cfg(feature = "core")]
-pub use crate::extensions::reminder::{ReminderAction, ReminderPlugin, SystemReminder};
+pub use crate::extensions::reminder::{
+    AddReminderItem, ReminderAction, ReminderPlugin, SystemReminder,
+};
 
 // ── Skills extension (require "skills" feature) ──────────────────────────
 

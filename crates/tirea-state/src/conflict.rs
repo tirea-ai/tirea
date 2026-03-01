@@ -3,7 +3,7 @@
 //! This module provides utilities for analyzing patches to determine
 //! which paths are modified and detecting conflicts between patches.
 
-use crate::{Patch, Path};
+use crate::{LatticeRegistry, Op, Patch, Path};
 use std::collections::BTreeSet;
 
 /// Conflict information between two patches.
@@ -127,6 +127,37 @@ pub fn detect_conflicts(a: &BTreeSet<Path>, b: &BTreeSet<Path>) -> Vec<Conflict>
     conflicts
 }
 
+/// Check whether all ops in `patch` that touch `path` are `LatticeMerge`.
+fn is_lattice_only_at(patch: &Patch, path: &Path) -> bool {
+    patch
+        .ops()
+        .iter()
+        .filter(|op| op.path() == path)
+        .all(|op| matches!(op, Op::LatticeMerge { .. }))
+}
+
+/// Registry-aware conflict detection between two patches.
+///
+/// Behaves like [`PatchExt::conflicts_with`], but suppresses conflicts
+/// at paths where both patches use only `LatticeMerge` ops AND the
+/// path is registered in the [`LatticeRegistry`].
+pub fn conflicts_with_registry(
+    a: &Patch,
+    b: &Patch,
+    registry: &LatticeRegistry,
+) -> Vec<Conflict> {
+    let touched_a = compute_touched(a, false);
+    let touched_b = compute_touched(b, false);
+    detect_conflicts(&touched_a, &touched_b)
+        .into_iter()
+        .filter(|conflict| {
+            !(registry.get(&conflict.path).is_some()
+                && is_lattice_only_at(a, &conflict.path)
+                && is_lattice_only_at(b, &conflict.path))
+        })
+        .collect()
+}
+
 /// Extension trait for Patch to compute touched paths.
 pub trait PatchExt {
     /// Compute the paths touched by this patch.
@@ -151,7 +182,7 @@ impl PatchExt for Patch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{path, Op};
+    use crate::{path, GSet, Op};
     use serde_json::json;
 
     #[test]
@@ -231,5 +262,76 @@ mod tests {
         let conflicts = patch_a.conflicts_with(&patch_b);
 
         assert!(!conflicts.is_empty());
+    }
+
+    #[test]
+    fn test_conflicts_with_registry_suppresses_lattice_only() {
+        let mut registry = LatticeRegistry::new();
+        registry.register::<GSet<String>>(path!("tags"));
+
+        let patch_a = Patch::new().with_op(Op::lattice_merge(
+            path!("tags"),
+            json!(["a"]),
+        ));
+        let patch_b = Patch::new().with_op(Op::lattice_merge(
+            path!("tags"),
+            json!(["b"]),
+        ));
+
+        // Without registry: conflict detected
+        let conflicts = patch_a.conflicts_with(&patch_b);
+        assert!(!conflicts.is_empty());
+
+        // With registry: conflict suppressed
+        let conflicts = conflicts_with_registry(&patch_a, &patch_b, &registry);
+        assert!(conflicts.is_empty());
+    }
+
+    #[test]
+    fn test_conflicts_with_registry_mixed_ops_still_conflict() {
+        let mut registry = LatticeRegistry::new();
+        registry.register::<GSet<String>>(path!("tags"));
+
+        let patch_a = Patch::new()
+            .with_op(Op::lattice_merge(path!("tags"), json!(["a"])))
+            .with_op(Op::set(path!("tags"), json!(["override"])));
+        let patch_b = Patch::new().with_op(Op::lattice_merge(
+            path!("tags"),
+            json!(["b"]),
+        ));
+
+        let conflicts = conflicts_with_registry(&patch_a, &patch_b, &registry);
+        assert!(!conflicts.is_empty(), "mixed ops should still conflict");
+    }
+
+    #[test]
+    fn test_conflicts_with_registry_unregistered_path_still_conflicts() {
+        let registry = LatticeRegistry::new(); // empty registry
+
+        let patch_a = Patch::new().with_op(Op::lattice_merge(
+            path!("tags"),
+            json!(["a"]),
+        ));
+        let patch_b = Patch::new().with_op(Op::lattice_merge(
+            path!("tags"),
+            json!(["b"]),
+        ));
+
+        let conflicts = conflicts_with_registry(&patch_a, &patch_b, &registry);
+        assert!(
+            !conflicts.is_empty(),
+            "unregistered path should still conflict"
+        );
+    }
+
+    #[test]
+    fn test_conflicts_with_registry_disjoint_paths_no_conflict() {
+        let registry = LatticeRegistry::new();
+
+        let patch_a = Patch::new().with_op(Op::set(path!("alpha"), json!(1)));
+        let patch_b = Patch::new().with_op(Op::set(path!("beta"), json!(2)));
+
+        let conflicts = conflicts_with_registry(&patch_a, &patch_b, &registry);
+        assert!(conflicts.is_empty());
     }
 }

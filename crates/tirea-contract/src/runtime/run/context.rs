@@ -7,8 +7,8 @@ use crate::RunConfig;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use tirea_state::{
-    apply_patches, get_at_path, parse_path, DeltaTracked, DocCell, Op, State, TireaResult,
-    TrackedPatch,
+    apply_patches_with_registry, get_at_path, parse_path, DeltaTracked, DocCell, LatticeRegistry,
+    Op, State, TireaResult, TrackedPatch,
 };
 
 /// Run-scoped workspace that holds mutable state for a single agent run.
@@ -29,6 +29,7 @@ pub struct RunContext {
     doc: DocCell,
     version: Option<u64>,
     version_timestamp: Option<u64>,
+    lattice_registry: Arc<LatticeRegistry>,
 }
 
 impl RunContext {
@@ -44,6 +45,23 @@ impl RunContext {
         messages: Vec<Arc<Message>>,
         run_config: RunConfig,
     ) -> Self {
+        Self::with_registry(
+            thread_id,
+            state,
+            messages,
+            run_config,
+            Arc::new(LatticeRegistry::new()),
+        )
+    }
+
+    /// Build a run workspace with a pre-populated lattice registry.
+    pub fn with_registry(
+        thread_id: impl Into<String>,
+        state: Value,
+        messages: Vec<Arc<Message>>,
+        run_config: RunConfig,
+        lattice_registry: Arc<LatticeRegistry>,
+    ) -> Self {
         let doc = DocCell::new(state.clone());
         Self {
             thread_id: thread_id.into(),
@@ -54,6 +72,7 @@ impl RunContext {
             doc,
             version: None,
             version_timestamp: None,
+            lattice_registry,
         }
     }
 
@@ -155,7 +174,11 @@ impl RunContext {
         if patches.is_empty() {
             Ok(self.thread_base.clone())
         } else {
-            apply_patches(&self.thread_base, patches.iter().map(|p| p.patch()))
+            apply_patches_with_registry(
+                &self.thread_base,
+                patches.iter().map(|p| p.patch()),
+                &self.lattice_registry,
+            )
         }
     }
 
@@ -230,13 +253,32 @@ impl RunContext {
         thread: &crate::thread::Thread,
         run_config: RunConfig,
     ) -> Result<Self, tirea_state::TireaError> {
+        Self::from_thread_with_registry(
+            thread,
+            run_config,
+            Arc::new(LatticeRegistry::new()),
+        )
+    }
+
+    /// Convenience constructor from a `Thread` with a lattice registry.
+    pub fn from_thread_with_registry(
+        thread: &crate::thread::Thread,
+        run_config: RunConfig,
+        lattice_registry: Arc<LatticeRegistry>,
+    ) -> Result<Self, tirea_state::TireaError> {
         let state = thread.rebuild_state()?;
         let messages: Vec<Arc<Message>> = thread.messages.clone();
-        let mut ctx = Self::new(thread.id.clone(), state, messages, run_config);
+        let mut ctx =
+            Self::with_registry(thread.id.clone(), state, messages, run_config, lattice_registry);
         if let Some(v) = thread.metadata.version {
             ctx.set_version(v, thread.metadata.version_timestamp);
         }
         Ok(ctx)
+    }
+
+    /// The lattice registry used by this context for CRDT-aware operations.
+    pub fn lattice_registry(&self) -> &Arc<LatticeRegistry> {
+        &self.lattice_registry
     }
 }
 

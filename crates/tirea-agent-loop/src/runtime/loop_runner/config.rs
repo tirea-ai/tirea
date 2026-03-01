@@ -273,6 +273,10 @@ pub struct BaseAgent {
     pub llm_retry_policy: LlmRetryPolicy,
     /// Agent behavior (declarative model).
     pub behavior: Arc<dyn AgentBehavior>,
+    /// Lattice registry for CRDT-aware conflict resolution.
+    pub lattice_registry: Arc<tirea_state::LatticeRegistry>,
+    /// State scope registry mapping `StateSpec` types to their declared scopes.
+    pub state_scope_registry: Arc<tirea_contract::runtime::state::StateScopeRegistry>,
     /// Optional per-step tool provider.
     pub step_tool_provider: Option<Arc<dyn StepToolProvider>>,
     /// Optional LLM executor override.
@@ -296,6 +300,8 @@ impl Default for BaseAgent {
             fallback_models: Vec::new(),
             llm_retry_policy: LlmRetryPolicy::default(),
             behavior: Arc::new(NoOpBehavior),
+            lattice_registry: Arc::new(tirea_state::LatticeRegistry::new()),
+            state_scope_registry: Arc::new(tirea_contract::runtime::state::StateScopeRegistry::new()),
             step_tool_provider: None,
             llm_executor: None,
         }

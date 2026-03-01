@@ -1,7 +1,7 @@
 use crate::runtime::extensions::Extensions;
 use crate::runtime::inference::{InferenceContext, LLMResponse};
 use crate::runtime::run::FlowControl;
-use crate::runtime::state::{AnyStateAction, CommutativeAction};
+use crate::runtime::state::AnyStateAction;
 use crate::runtime::tool_call::gate::ToolGate;
 use crate::runtime::tool_call::{ToolCallContext, ToolDescriptor, ToolResult};
 use crate::thread::Message;
@@ -30,7 +30,6 @@ pub struct StepContext<'a> {
 
     // === Pending State Changes ===
     pub pending_patches: Vec<TrackedPatch>,
-    pub pending_commutative_actions: Vec<CommutativeAction>,
     pub pending_state_actions: Vec<AnyStateAction>,
 
     // === Extensions ===
@@ -57,7 +56,6 @@ impl<'a> StepContext<'a> {
             thread_id,
             messages,
             pending_patches: Vec::new(),
-            pending_commutative_actions: Vec::new(),
             pending_state_actions: Vec::new(),
             extensions,
         }
@@ -122,7 +120,6 @@ impl<'a> StepContext<'a> {
             ..Default::default()
         });
         self.pending_patches.clear();
-        self.pending_commutative_actions.clear();
         self.pending_state_actions.clear();
     }
 
@@ -171,11 +168,6 @@ impl<'a> StepContext<'a> {
     /// Emit a state patch side effect.
     pub fn emit_patch(&mut self, patch: TrackedPatch) {
         self.pending_patches.push(patch);
-    }
-
-    /// Emit a commutative state action side effect.
-    pub fn emit_commutative_action(&mut self, action: CommutativeAction) {
-        self.pending_commutative_actions.push(action);
     }
 
     /// Emit a state action to be reduced into a patch after the phase completes.

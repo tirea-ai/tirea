@@ -2,7 +2,6 @@
 #![allow(missing_docs)]
 
 use tirea_state::{Flag, GCounter, GSet, Lattice, MaxReg, ORMap, ORSet};
-use tirea_state_derive::Lattice;
 
 // ============================================================================
 // derive(Lattice) — simple struct

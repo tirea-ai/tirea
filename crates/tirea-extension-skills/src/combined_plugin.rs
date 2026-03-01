@@ -1,8 +1,9 @@
 use crate::{SkillDiscoveryPlugin, SkillRuntimePlugin, SKILLS_PLUGIN_ID};
 use async_trait::async_trait;
 use std::sync::Arc;
-use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
 use tirea_contract::runtime::action::Action;
+use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
+use tirea_state::{GSet, LatticeRegistry};
 
 /// Single plugin wrapper that injects both:
 /// - the skills catalog (discovery)
@@ -41,6 +42,10 @@ impl SkillPlugin {
 impl AgentBehavior for SkillPlugin {
     fn id(&self) -> &str {
         SKILLS_PLUGIN_ID
+    }
+
+    fn register_lattice_paths(&self, registry: &mut LatticeRegistry) {
+        registry.register::<GSet<String>>(tirea_state::parse_path("skills.active"));
     }
 
     async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {

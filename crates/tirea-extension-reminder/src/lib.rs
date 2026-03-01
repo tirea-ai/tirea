@@ -5,8 +5,8 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
 use tirea_contract::runtime::action::Action;
+use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
 use tirea_contract::runtime::inference::InferenceContext;
 use tirea_contract::runtime::state::{AnyStateAction, StateSpec};
 use tirea_contract::runtime::phase::step::StepContext;
@@ -29,7 +29,7 @@ struct ReminderState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ReminderAction {
-    /// Add one reminder item.
+    /// Add a reminder item (deduplicated).
     Add { text: String },
     /// Remove one reminder item.
     Remove { text: String },
@@ -45,7 +45,11 @@ impl StateSpec for ReminderState {
 
     fn reduce(&mut self, action: ReminderAction) {
         match action {
-            ReminderAction::Add { text } => self.items.push(text),
+            ReminderAction::Add { text } => {
+                if !self.items.contains(&text) {
+                    self.items.push(text);
+                }
+            }
             ReminderAction::Remove { text } => self.items.retain(|item| item != &text),
             ReminderAction::Clear => self.items.clear(),
         }
@@ -55,6 +59,21 @@ impl StateSpec for ReminderState {
 // =============================================================================
 // Reminder-domain Actions
 // =============================================================================
+
+/// Add a reminder item via typed state action.
+pub struct AddReminderItem(pub String);
+
+impl Action for AddReminderItem {
+    fn label(&self) -> &'static str {
+        "emit_state_action"
+    }
+
+    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
+        step.emit_state_action(AnyStateAction::new::<ReminderState>(ReminderAction::Add {
+            text: self.0,
+        }));
+    }
+}
 
 /// Inject reminder texts into session context.
 pub struct InjectReminders(pub Vec<String>);
@@ -264,5 +283,46 @@ mod tests {
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
         let actions = AgentBehavior::before_inference(&plugin, &ctx).await;
         assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn add_reminder_item_emits_state_action() {
+        let action = AddReminderItem("check logs".into());
+        assert_eq!(action.label(), "emit_state_action");
+    }
+
+    #[test]
+    fn reminder_reducer_add() {
+        let mut state = ReminderState::default();
+        state.reduce(ReminderAction::Add {
+            text: "a".into(),
+        });
+        state.reduce(ReminderAction::Add {
+            text: "b".into(),
+        });
+        state.reduce(ReminderAction::Add {
+            text: "a".into(),
+        });
+        assert_eq!(state.items, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn reminder_reducer_remove() {
+        let mut state = ReminderState {
+            items: vec!["a".into(), "b".into(), "c".into()],
+        };
+        state.reduce(ReminderAction::Remove {
+            text: "b".into(),
+        });
+        assert_eq!(state.items, vec!["a", "c"]);
+    }
+
+    #[test]
+    fn reminder_reducer_clear() {
+        let mut state = ReminderState {
+            items: vec!["a".into(), "b".into()],
+        };
+        state.reduce(ReminderAction::Clear);
+        assert!(state.items.is_empty());
     }
 }

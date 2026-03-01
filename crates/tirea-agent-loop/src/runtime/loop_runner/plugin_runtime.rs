@@ -5,15 +5,12 @@ use crate::contracts::runtime::behavior::{
 use crate::contracts::runtime::action::Action;
 use crate::contracts::runtime::inference::{InferenceError, LLMResponse};
 use crate::contracts::runtime::phase::{Phase, StepContext};
-use crate::contracts::runtime::state::{
-    reduce_state_actions, AnyStateAction, CommutativeAction,
-};
+use crate::contracts::runtime::state::reduce_state_actions;
 use crate::contracts::runtime::tool_call::ToolDescriptor;
 use crate::contracts::RunContext;
 use crate::contracts::ToolCallContext;
-use serde_json::Value;
 use std::sync::Mutex;
-use tirea_state::{DocCell, Patch, PatchExt, TrackedPatch};
+use tirea_state::{DocCell, TrackedPatch};
 
 // =========================================================================
 // Agent-based dispatch (declarative model: ReadOnlyContext → Vec<Action>)
@@ -49,16 +46,6 @@ pub(super) async fn emit_agent_phase(
     agent: &dyn AgentBehavior,
     doc: &DocCell,
 ) -> Result<(), AgentLoopError> {
-    emit_agent_phase_with_options(phase, step, agent, doc, false).await
-}
-
-async fn emit_agent_phase_with_options(
-    phase: Phase,
-    step: &mut StepContext<'_>,
-    agent: &dyn AgentBehavior,
-    doc: &DocCell,
-    _defer_commutative_state_actions: bool,
-) -> Result<(), AgentLoopError> {
     let ctx = build_read_only_context_from_step(phase, step, doc);
     let actions = dispatch_agent_phase(agent, phase, &ctx).await;
     for action in &actions {
@@ -91,76 +78,6 @@ async fn emit_agent_phase_with_options(
 
 fn take_step_pending_patches(step: &mut StepContext<'_>) -> Vec<TrackedPatch> {
     std::mem::take(&mut step.pending_patches)
-}
-
-fn take_step_pending_commutative_actions(step: &mut StepContext<'_>) -> Vec<CommutativeAction> {
-    std::mem::take(&mut step.pending_commutative_actions)
-}
-
-fn merge_tracked_patches(patches: &[TrackedPatch], source: &str) -> Option<TrackedPatch> {
-    let mut merged = Patch::new();
-    for tracked in patches {
-        merged.extend(tracked.patch().clone());
-    }
-    if merged.is_empty() {
-        None
-    } else {
-        Some(TrackedPatch::new(merged).with_source(source.to_string()))
-    }
-}
-
-fn reduce_commutative_actions_to_patch(
-    base_snapshot: &Value,
-    actions: Vec<CommutativeAction>,
-    source: &str,
-) -> Result<Option<TrackedPatch>, AgentLoopError> {
-    if actions.is_empty() {
-        return Ok(None);
-    }
-
-    let tracked = reduce_state_actions(
-        actions
-            .into_iter()
-            .map(AnyStateAction::Commutative)
-            .collect(),
-        base_snapshot,
-        source,
-    )
-    .map_err(|e| {
-        AgentLoopError::StateError(format!("failed to reduce commutative state actions: {e}"))
-    })?;
-    Ok(merge_tracked_patches(&tracked, source))
-}
-
-fn finalize_step_pending_outputs(
-    step: &mut StepContext<'_>,
-    base_snapshot: &Value,
-    defer_commutative_state_actions: bool,
-) -> Result<Vec<TrackedPatch>, AgentLoopError> {
-    let mut pending = take_step_pending_patches(step);
-    let commutative_actions = take_step_pending_commutative_actions(step);
-
-    if !defer_commutative_state_actions || commutative_actions.is_empty() {
-        return Ok(pending);
-    }
-
-    if let Some(commutative_patch) =
-        reduce_commutative_actions_to_patch(base_snapshot, commutative_actions, "agent_loop")?
-    {
-        for patch in &pending {
-            let conflicts = patch.patch().conflicts_with(commutative_patch.patch());
-            if let Some(conflict) = conflicts.first() {
-                return Err(AgentLoopError::StateError(format!(
-                    "conflicting phase state patches between '{}' and 'commutative_actions' at {}",
-                    patch.source.as_deref().unwrap_or("agent"),
-                    conflict.path
-                )));
-            }
-        }
-        pending.push(commutative_patch);
-    }
-
-    Ok(pending)
 }
 
 /// Multi-phase block dispatch.
@@ -199,14 +116,14 @@ where
     );
     setup(&mut step);
     for phase in phases {
-        emit_agent_phase_with_options(*phase, &mut step, agent.behavior(), &doc, true).await?;
+        emit_agent_phase(*phase, &mut step, agent.behavior(), &doc).await?;
     }
     let ctx_patch = step.ctx().take_patch();
     if !ctx_patch.patch().is_empty() {
         step.emit_patch(ctx_patch);
     }
     let output = extract(&mut step);
-    let pending = finalize_step_pending_outputs(&mut step, &doc.snapshot(), true)?;
+    let pending = take_step_pending_patches(&mut step);
     Ok((output, pending))
 }
 
@@ -289,23 +206,14 @@ pub(super) async fn emit_run_end_phase(
             run_ctx.messages(),
             tool_descriptors.to_vec(),
         );
-        if let Err(e) =
-            emit_agent_phase_with_options(Phase::RunEnd, &mut step, agent.behavior(), &doc, true)
-                .await
-        {
+        if let Err(e) = emit_agent_phase(Phase::RunEnd, &mut step, agent.behavior(), &doc).await {
             tracing::warn!(error = %e, "RunEnd phase validation failed");
         }
         let ctx_patch = step.ctx().take_patch();
         if !ctx_patch.patch().is_empty() {
             step.emit_patch(ctx_patch);
         }
-        match finalize_step_pending_outputs(&mut step, &doc.snapshot(), true) {
-            Ok(pending) => pending,
-            Err(e) => {
-                tracing::warn!(error = %e, "RunEnd phase commutative reduce failed");
-                Vec::new()
-            }
-        }
+        take_step_pending_patches(&mut step)
     };
     run_ctx.add_thread_patches(pending);
 }
@@ -316,14 +224,9 @@ pub(super) async fn emit_tool_phase(
     step: &mut StepContext<'_>,
     agent: Option<&dyn AgentBehavior>,
     doc: &DocCell,
-    defer_commutative_state_actions: bool,
 ) -> Result<(), AgentLoopError> {
     if let Some(agent) = agent {
-        if defer_commutative_state_actions {
-            emit_agent_phase_with_options(phase, step, agent, doc, true).await
-        } else {
-            emit_agent_phase(phase, step, agent, doc).await
-        }
+        emit_agent_phase(phase, step, agent, doc).await
     } else {
         Ok(())
     }
@@ -368,14 +271,14 @@ where
     );
     setup(&mut step);
     for phase in phases {
-        emit_agent_phase_with_options(*phase, &mut step, behavior, &doc, true).await?;
+        emit_agent_phase(*phase, &mut step, behavior, &doc).await?;
     }
     let ctx_patch = step.ctx().take_patch();
     if !ctx_patch.patch().is_empty() {
         step.emit_patch(ctx_patch);
     }
     let output = extract(&mut step);
-    let pending = finalize_step_pending_outputs(&mut step, &doc.snapshot(), true)?;
+    let pending = take_step_pending_patches(&mut step);
     Ok((output, pending))
 }
 

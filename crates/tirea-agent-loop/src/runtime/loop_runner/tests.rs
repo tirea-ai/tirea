@@ -752,41 +752,6 @@ impl Tool for ActionStateTool {
     }
 }
 
-struct CommutativeCounterTool {
-    id: &'static str,
-    delta: i64,
-}
-
-#[async_trait]
-impl Tool for CommutativeCounterTool {
-    fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new(
-            self.id,
-            "Commutative Counter Tool",
-            "Adds to counter via state action",
-        )
-    }
-
-    async fn execute(
-        &self,
-        _args: Value,
-        _ctx: &ToolCallContext<'_>,
-    ) -> Result<ToolResult, ToolError> {
-        Ok(ToolResult::success(self.id, json!({"ok": true})))
-    }
-
-    async fn execute_effect(
-        &self,
-        _args: Value,
-        _ctx: &ToolCallContext<'_>,
-    ) -> Result<ToolExecutionEffect, ToolError> {
-        Ok(
-            ToolExecutionEffect::new(ToolResult::success(self.id, json!({"ok": true})))
-                .with_state_action(AnyStateAction::counter_add("counter", self.delta)),
-        )
-    }
-}
-
 struct ActivityGateTool {
     id: String,
     stream_id: String,
@@ -827,7 +792,6 @@ fn tool_execution_result(call_id: &str, patch: Option<TrackedPatch>) -> ToolExec
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
-        commutative_state_actions: Vec::new(),
     }
 }
 
@@ -856,7 +820,6 @@ fn skill_activation_result(
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
-        commutative_state_actions: Vec::new(),
     }
 }
 
@@ -2227,126 +2190,6 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
 }
 
 #[tokio::test]
-async fn test_run_phase_block_commutative_actions_commit_to_pending_patches() {
-    struct RunPhaseCommutativePlugin;
-
-    #[async_trait]
-    impl AgentBehavior for RunPhaseCommutativePlugin {
-        fn id(&self) -> &str {
-            "run_phase_commutative"
-        }
-
-        async fn step_start(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            self.phase_actions(Phase::StepStart, ctx).await
-        }
-
-        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            self.phase_actions(Phase::BeforeInference, ctx).await
-        }
-    }
-
-    impl RunPhaseCommutativePlugin {
-
-        async fn phase_actions(
-            &self,
-            phase: Phase,
-            _ctx: &ReadOnlyContext<'_>,
-        ) -> Vec<Box<dyn Action>> {
-            match phase {
-                Phase::StepStart => vec![Box::new(EmitStatePatch(
-                    AnyStateAction::counter_add("counter", 1),
-                ))],
-                Phase::BeforeInference => vec![Box::new(EmitStatePatch(
-                    AnyStateAction::counter_add("counter", 2),
-                ))],
-                _ => Vec::new(),
-            }
-        }
-    }
-
-    let agent = BaseAgent::new("mock").with_behavior(Arc::new(RunPhaseCommutativePlugin));
-    let thread = Thread::with_initial_state("test", json!({"counter": 0}))
-        .with_message(Message::user("run"));
-    let mut run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-
-    let (_, pending) = super::plugin_runtime::run_phase_block(
-        &run_ctx,
-        &[],
-        &agent,
-        &[Phase::StepStart, Phase::BeforeInference],
-        |_| {},
-        |_| (),
-    )
-    .await
-    .expect("run phase block should succeed");
-
-    run_ctx.add_thread_patches(pending);
-    let state = run_ctx.snapshot().expect("snapshot");
-    assert_eq!(state["counter"], json!(2));
-}
-
-#[tokio::test]
-async fn test_run_phase_block_rejects_conflicting_commutative_and_patch_outputs() {
-    struct RunPhaseConflictPlugin;
-
-    #[async_trait]
-    impl AgentBehavior for RunPhaseConflictPlugin {
-        fn id(&self) -> &str {
-            "run_phase_conflict"
-        }
-
-        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            self.phase_actions(Phase::BeforeInference, ctx).await
-        }
-    }
-
-    impl RunPhaseConflictPlugin {
-
-        async fn phase_actions(
-            &self,
-            phase: Phase,
-            _ctx: &ReadOnlyContext<'_>,
-        ) -> Vec<Box<dyn Action>> {
-            if phase != Phase::BeforeInference {
-                return Vec::new();
-            }
-            let patch = TrackedPatch::new(
-                Patch::new().with_op(Op::set(tirea_state::path!("counter"), json!(10))),
-            )
-            .with_source("test:run_phase_conflict");
-            vec![
-                Box::new(EmitStatePatch(AnyStateAction::Patch(patch))),
-                Box::new(EmitStatePatch(AnyStateAction::counter_add("counter", 1))),
-            ]
-        }
-    }
-
-    let agent = BaseAgent::new("mock").with_behavior(Arc::new(RunPhaseConflictPlugin));
-    let thread = Thread::with_initial_state("test", json!({"counter": 0}))
-        .with_message(Message::user("run"));
-    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-
-    let (_, pending) = super::plugin_runtime::run_phase_block(
-        &run_ctx,
-        &[],
-        &agent,
-        &[Phase::BeforeInference],
-        |_| {},
-        |_| (),
-    )
-    .await
-    .expect("plugin actions are reduced in order within the same phase");
-
-    let next = tirea_state::apply_patches(
-        &run_ctx.snapshot().expect("snapshot"),
-        pending.iter().map(|p| p.patch()),
-    )
-    .expect("pending patches should apply");
-    assert_eq!(next["counter"], json!(11));
-}
-
-#[tokio::test]
 async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() {
     struct CleanupBehavior {
         phases: Arc<Mutex<Vec<Phase>>>,
@@ -2828,7 +2671,6 @@ fn test_apply_tool_results_appends_user_messages_from_effect() {
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
-        commutative_state_actions: Vec::new(),
     };
 
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
@@ -2867,7 +2709,6 @@ fn test_apply_tool_results_ignores_blank_user_messages() {
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
-        commutative_state_actions: Vec::new(),
     };
 
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
@@ -8605,99 +8446,6 @@ fn test_parallel_tools_conflicting_state_actions_return_error() {
             matches!(err, AgentLoopError::StateError(ref msg) if msg.contains("conflict")),
             "expected conflict state error, got: {err:?}"
         );
-    });
-}
-
-#[test]
-fn test_parallel_tools_commutative_state_actions_merge_without_conflict() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        let thread = Thread::with_initial_state("test", json!({"counter": 0}));
-        let result = StreamResult {
-            text: "commutative action calls".to_string(),
-            tool_calls: vec![
-                crate::contracts::thread::ToolCall::new("call_1", "comm_add_a", json!({})),
-                crate::contracts::thread::ToolCall::new("call_2", "comm_add_b", json!({})),
-            ],
-            usage: None,
-        };
-
-        let mut tools = HashMap::new();
-        tools.insert(
-            "comm_add_a".to_string(),
-            Arc::new(CommutativeCounterTool {
-                id: "comm_add_a",
-                delta: 1,
-            }) as Arc<dyn Tool>,
-        );
-        tools.insert(
-            "comm_add_b".to_string(),
-            Arc::new(CommutativeCounterTool {
-                id: "comm_add_b",
-                delta: 2,
-            }) as Arc<dyn Tool>,
-        );
-
-        let thread = execute_tools(thread, &result, &tools, true)
-            .await
-            .expect("parallel commutative actions should merge")
-            .into_thread();
-
-        let state = thread.rebuild_state().expect("state should rebuild");
-        assert_eq!(state["counter"], json!(3));
-        assert_eq!(thread.message_count(), 2);
-    });
-}
-
-#[test]
-fn test_parallel_plugin_commutative_state_actions_merge_without_conflict() {
-    struct ParallelCommutativePlugin;
-
-    #[async_trait]
-    impl AgentBehavior for ParallelCommutativePlugin {
-        fn id(&self) -> &str {
-            "parallel_commutative_plugin"
-        }
-
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            self.phase_actions(Phase::BeforeToolExecute, ctx).await
-        }
-    }
-
-    impl ParallelCommutativePlugin {
-
-        async fn phase_actions(
-            &self,
-            phase: Phase,
-            _ctx: &ReadOnlyContext<'_>,
-        ) -> Vec<Box<dyn Action>> {
-            if phase != Phase::BeforeToolExecute {
-                return Vec::new();
-            }
-            vec![Box::new(EmitStatePatch(
-                AnyStateAction::counter_add("counter", 1),
-            ))]
-        }
-    }
-
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        let thread = Thread::with_initial_state("test", json!({"counter": 0}));
-        let result = StreamResult {
-            text: "plugin commutative action calls".to_string(),
-            tool_calls: vec![
-                crate::contracts::thread::ToolCall::new("call_1", "echo", json!({"message": "a"})),
-                crate::contracts::thread::ToolCall::new("call_2", "echo", json!({"message": "b"})),
-            ],
-            usage: None,
-        };
-        let tools = tool_map([EchoTool]);
-        let agent = BaseAgent::default().with_behavior(Arc::new(ParallelCommutativePlugin));
-
-        let err = execute_tools_with_config(thread, &result, &tools, &agent)
-            .await
-            .expect_err("parallel plugin patches on same path should conflict");
-        assert!(matches!(err, AgentLoopError::StateError(message) if message.contains("conflicting parallel state patches")));
     });
 }
 
