@@ -97,6 +97,7 @@ mod conflict;
 mod delta_tracked;
 mod doc_cell;
 mod error;
+pub mod lattice;
 mod manager;
 mod op;
 mod patch;
@@ -104,6 +105,9 @@ mod path;
 pub mod runtime;
 mod state;
 mod writer;
+
+// Lattice / CRDT primitives
+pub use lattice::{Flag, GCounter, GSet, LWWReg, Lattice, MaxReg, MinReg, ORMap, ORSet};
 
 // Core types
 pub use apply::{apply_patch, apply_patches, get_at_path};
