@@ -2,7 +2,7 @@ use super::*;
 use crate::contracts::runtime::behavior::ReadOnlyContext;
 use crate::contracts::runtime::action::Action;
 use crate::contracts::runtime::phase::{Phase, StepContext};
-use crate::contracts::runtime::state::reduce_state_actions;
+use crate::contracts::runtime::state::{reduce_state_actions, ScopeContext};
 use crate::contracts::runtime::tool_call::ToolStatus;
 use crate::contracts::thread::Thread;
 use crate::contracts::AgentBehavior;
@@ -55,8 +55,9 @@ where
         if !step.pending_state_actions.is_empty() {
             let state_actions = std::mem::take(&mut step.pending_state_actions);
             let snapshot = step.snapshot();
-            let patches = reduce_state_actions(state_actions, &snapshot, "test")
-                .expect("state actions should reduce");
+            let patches =
+                reduce_state_actions(state_actions, &snapshot, "test", &ScopeContext::run())
+                    .expect("state actions should reduce");
             for patch in patches {
                 let doc = step.ctx().doc();
                 for op in patch.patch().ops() {
@@ -1250,11 +1251,11 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
 
     let updated = fixture.updated_state();
     assert_eq!(
-        updated["__tool_call_states"]["calls"]["agent_recovery_run-1"]["status"],
+        updated["__tool_call_scope"]["agent_recovery_run-1"]["tool_call_state"]["status"],
         json!("resuming")
     );
     assert_eq!(
-        updated["__tool_call_states"]["calls"]["agent_recovery_run-1"]["resume"]["action"],
+        updated["__tool_call_scope"]["agent_recovery_run-1"]["tool_call_state"]["resume"]["action"],
         json!("resume")
     );
     assert_eq!(
@@ -1306,9 +1307,9 @@ async fn recovery_plugin_auto_deny_when_permission_deny() {
     let updated = fixture.updated_state();
     assert!(
         updated
-            .get("__tool_call_states")
-            .and_then(|v| v.get("calls"))
-            .and_then(|calls| calls.get("agent_recovery_run-1"))
+            .get("__tool_call_scope")
+            .and_then(|scopes| scopes.get("agent_recovery_run-1"))
+            .and_then(|scope| scope.get("tool_call_state"))
             .is_none(),
         "deny should not set recovery tool-call resume state"
     );
@@ -1354,11 +1355,11 @@ async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
 
     let updated = fixture.updated_state();
     assert_eq!(
-        updated["__tool_call_states"]["calls"]["agent_recovery_run-1"]["status"],
+        updated["__tool_call_scope"]["agent_recovery_run-1"]["tool_call_state"]["status"],
         json!("resuming")
     );
     assert_eq!(
-        updated["__tool_call_states"]["calls"]["agent_recovery_run-1"]["resume"]["action"],
+        updated["__tool_call_scope"]["agent_recovery_run-1"]["tool_call_state"]["resume"]["action"],
         json!("resume")
     );
     assert_eq!(
@@ -1399,9 +1400,9 @@ async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
     let updated = fixture.updated_state();
     assert!(
         updated
-            .get("__tool_call_states")
-            .and_then(|v| v.get("calls"))
-            .and_then(|calls| calls.get("agent_recovery_run-1"))
+            .get("__tool_call_scope")
+            .and_then(|scopes| scopes.get("agent_recovery_run-1"))
+            .and_then(|scope| scope.get("tool_call_state"))
             .is_none(),
         "deny should not set recovery tool-call resume state"
     );
@@ -1446,9 +1447,9 @@ async fn recovery_plugin_tool_rule_overrides_default_behavior() {
     let updated = fixture.updated_state();
     assert!(
         updated
-            .get("__tool_call_states")
-            .and_then(|v| v.get("calls"))
-            .and_then(|calls| calls.get("agent_recovery_run-1"))
+            .get("__tool_call_scope")
+            .and_then(|scopes| scopes.get("agent_recovery_run-1"))
+            .and_then(|scope| scope.get("tool_call_state"))
             .is_none(),
         "tool-level ask should not set recovery tool-call resume state"
     );

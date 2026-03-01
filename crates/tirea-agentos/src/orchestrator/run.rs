@@ -1,5 +1,5 @@
 use super::*;
-use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction};
+use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction, ScopeContext};
 use crate::contracts::runtime::{RunLifecycleAction, RunLifecycleState, RunStatus};
 use crate::contracts::storage::VersionPrecondition;
 use crate::runtime::loop_runner::run_loop_stream;
@@ -24,8 +24,13 @@ fn run_lifecycle_running_patch(
             updated_at,
         },
     )];
-    let mut patches = reduce_state_actions(actions, base_state, "agentos_prepare_run")
-        .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;
+    let mut patches = reduce_state_actions(
+        actions,
+        base_state,
+        "agentos_prepare_run",
+        &ScopeContext::run(),
+    )
+    .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;
     let Some(patch) = patches.pop() else {
         return Err(AgentOsRunError::Loop(AgentLoopError::StateError(
             "failed to emit run lifecycle running patch: reducer produced no patch".to_string(),

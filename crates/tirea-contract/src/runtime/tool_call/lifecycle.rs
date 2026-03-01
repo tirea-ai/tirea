@@ -1,4 +1,4 @@
-use crate::runtime::state::StateSpec;
+use crate::runtime::state::{StateScope, StateSpec};
 use crate::runtime::phase::SuspendTicket;
 use crate::thread::ToolCall;
 use serde::{Deserialize, Serialize};
@@ -106,10 +106,10 @@ impl StateSpec for SuspendedToolCallsState {
     }
 }
 
-/// Action type for `ToolCallStatesMap` reducer.
-pub enum ToolCallStatesAction {
-    /// Insert or replace a tool call state entry.
-    InsertState { state: ToolCallState },
+/// Action type for `ToolCallState` reducer.
+pub enum ToolCallStateAction {
+    /// Set the full tool call state (used by recovery and normal updates).
+    Set(ToolCallState),
 }
 
 /// Tool call lifecycle status for suspend/resume capable execution.
@@ -205,7 +205,10 @@ pub struct ToolCallResume {
 }
 
 /// Durable per-tool-call runtime state.
+///
+/// Stored under `__tool_call_scope.<call_id>.tool_call_state` (ToolCall-scoped).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, State)]
+#[tirea(path = "tool_call_state")]
 pub struct ToolCallState {
     /// Stable tool call id.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -233,24 +236,13 @@ pub struct ToolCallState {
     pub updated_at: u64,
 }
 
-/// Durable per-call runtime map persisted at `state["__tool_call_states"]`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-#[tirea(path = "__tool_call_states")]
-pub struct ToolCallStatesMap {
-    /// Runtime state keyed by `tool_call_id`.
-    #[serde(default)]
-    #[tirea(default = "HashMap::new()")]
-    pub calls: HashMap<String, ToolCallState>,
-}
+impl StateSpec for ToolCallState {
+    type Action = ToolCallStateAction;
+    const SCOPE: StateScope = StateScope::ToolCall;
 
-impl StateSpec for ToolCallStatesMap {
-    type Action = ToolCallStatesAction;
-
-    fn reduce(&mut self, action: ToolCallStatesAction) {
+    fn reduce(&mut self, action: ToolCallStateAction) {
         match action {
-            ToolCallStatesAction::InsertState { state } => {
-                self.calls.insert(state.call_id.clone(), state);
-            }
+            ToolCallStateAction::Set(s) => *self = s,
         }
     }
 }
@@ -265,12 +257,21 @@ pub fn suspended_calls_from_state(state: &Value) -> HashMap<String, SuspendedCal
 }
 
 /// Parse persisted tool call runtime states from a rebuilt state snapshot.
+///
+/// Iterates `__tool_call_scope.*["tool_call_state"]` to enumerate all call states.
 pub fn tool_call_states_from_state(state: &Value) -> HashMap<String, ToolCallState> {
-    state
-        .get(ToolCallStatesMap::PATH)
-        .and_then(|v| ToolCallStatesMap::from_value(v).ok())
-        .map(|s| s.calls)
-        .unwrap_or_default()
+    let Some(Value::Object(scopes)) = state.get("__tool_call_scope") else {
+        return HashMap::new();
+    };
+    scopes
+        .iter()
+        .filter_map(|(call_id, scope_val)| {
+            scope_val
+                .get("tool_call_state")
+                .and_then(|v| ToolCallState::from_value(v).ok())
+                .map(|s| (call_id.clone(), s))
+        })
+        .collect()
 }
 
 #[cfg(test)]

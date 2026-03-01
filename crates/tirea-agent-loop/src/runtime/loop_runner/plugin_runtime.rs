@@ -5,7 +5,7 @@ use crate::contracts::runtime::behavior::{
 use crate::contracts::runtime::action::Action;
 use crate::contracts::runtime::inference::{InferenceError, LLMResponse};
 use crate::contracts::runtime::phase::{Phase, StepContext};
-use crate::contracts::runtime::state::reduce_state_actions;
+use crate::contracts::runtime::state::{reduce_state_actions, ScopeContext};
 use crate::contracts::runtime::tool_call::ToolDescriptor;
 use crate::contracts::RunContext;
 use crate::contracts::ToolCallContext;
@@ -59,12 +59,21 @@ pub(super) async fn emit_agent_phase(
     // Reduce any pending_state_actions that were added by EmitStatePatch actions.
     let state_actions = std::mem::take(&mut step.pending_state_actions);
     if !state_actions.is_empty() {
-        let patches = reduce_state_actions(state_actions, &doc.snapshot(), "agent:phase")
-            .map_err(|e| {
-                AgentLoopError::StateError(format!(
-                    "failed to reduce pending state actions: {e}"
-                ))
-            })?;
+        // Tool phases carry a call_id for ToolCall-scoped routing.
+        let scope_ctx = match phase {
+            Phase::BeforeToolExecute | Phase::AfterToolExecute => step
+                .tool_call_id()
+                .map(ScopeContext::for_call)
+                .unwrap_or_else(ScopeContext::run),
+            _ => ScopeContext::run(),
+        };
+        let patches =
+            reduce_state_actions(state_actions, &doc.snapshot(), "agent:phase", &scope_ctx)
+                .map_err(|e| {
+                    AgentLoopError::StateError(format!(
+                        "failed to reduce pending state actions: {e}"
+                    ))
+                })?;
         for p in patches {
             step.emit_patch(p);
         }

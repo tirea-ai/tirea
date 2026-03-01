@@ -641,9 +641,9 @@ mod tests {
         let plugin =
             FrontendToolPendingPlugin::new(["copyToClipboard".to_string()].into_iter().collect());
         let fixture = TestFixture::new_with_state(json!({
-            "__tool_call_states": {
-                "calls": {
-                    "call_1": {
+            "__tool_call_scope": {
+                "call_1": {
+                    "tool_call_state": {
                         "call_id": "call_1",
                         "tool_name": "copyToClipboard",
                         "arguments": { "text": "hello" },
@@ -686,9 +686,9 @@ mod tests {
         let plugin =
             FrontendToolPendingPlugin::new(["copyToClipboard".to_string()].into_iter().collect());
         let fixture = TestFixture::new_with_state(json!({
-            "__tool_call_states": {
-                "calls": {
-                    "call_1": {
+            "__tool_call_scope": {
+                "call_1": {
+                    "tool_call_state": {
                         "call_id": "call_1",
                         "tool_name": "copyToClipboard",
                         "arguments": { "text": "hello" },

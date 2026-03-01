@@ -179,7 +179,7 @@ pub fn run_lifecycle_from_state(state: &Value) -> Option<RunLifecycleState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::state::{reduce_state_actions, AnyStateAction};
+    use crate::runtime::state::{reduce_state_actions, AnyStateAction, ScopeContext};
     use tirea_state::apply_patch;
 
     #[test]
@@ -276,7 +276,9 @@ mod tests {
             },
         )];
 
-        let patches = reduce_state_actions(actions, &base, "agent_loop").expect("reduce");
+        let patches =
+            reduce_state_actions(actions, &base, "agent_loop", &ScopeContext::run())
+                .expect("reduce");
         assert_eq!(patches.len(), 1);
 
         let merged = apply_patch(&base, patches[0].patch()).expect("apply");

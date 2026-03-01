@@ -1,3 +1,4 @@
+use super::scope_context::ScopeContext;
 use serde_json::Value;
 use std::any::TypeId;
 use std::fmt;
@@ -5,7 +6,7 @@ use tirea_state::{
     apply_patch, get_at_path, parse_path, Op, Patch, Path, State, TireaResult, TrackedPatch,
 };
 
-type ApplyFn = Box<dyn FnOnce(&Value) -> TireaResult<Patch> + Send>;
+type ReduceFn = Box<dyn FnOnce(&Value, &str) -> TireaResult<Patch> + Send>;
 
 /// Runtime scope where a state is valid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,7 +61,12 @@ pub enum AnyStateAction {
         state_type_id: TypeId,
         state_type_name: &'static str,
         scope: StateScope,
-        apply_fn: ApplyFn,
+        base_path: &'static str,
+        /// When set, overrides the `ScopeContext` call_id for path resolution.
+        /// Used by recovery/framework-internal scenarios that must target a
+        /// specific call_id without a live `ScopeContext`.
+        call_id_override: Option<String>,
+        reduce_fn: ReduceFn,
     },
     /// Pre-built tracked patch emitted directly as a state effect.
     Patch(TrackedPatch),
@@ -82,28 +88,58 @@ impl AnyStateAction {
             state_type_id: TypeId::of::<S>(),
             state_type_name: std::any::type_name::<S>(),
             scope: S::SCOPE,
-            apply_fn: Box::new(move |doc: &Value| {
-                let path = parse_path(S::PATH);
-                let sub_doc = get_at_path(doc, &path).cloned().unwrap_or(Value::Null);
-                // When the path doesn't exist (Null) and from_value fails,
-                // fall back to an empty object. This handles derive(State) structs
-                // whose #[serde(default)] fields can deserialize from `{}` but not
-                // from `null` (serde_json rejects null for struct types).
-                let mut state = S::from_value(&sub_doc).or_else(|first_err| {
-                    if sub_doc.is_null() {
-                        S::from_value(&Value::Object(Default::default())).map_err(|_| first_err)
-                    } else {
-                        Err(first_err)
-                    }
-                })?;
-                state.reduce(action);
-                let new_value = state.to_value()?;
-                Ok(Patch::with_ops(vec![Op::set(
-                    path_from_str(S::PATH),
-                    new_value,
-                )]))
-            }),
+            base_path: S::PATH,
+            call_id_override: None,
+            reduce_fn: Self::make_reduce_fn::<S>(action),
         }
+    }
+
+    /// Create a type-erased action with an explicit call_id override.
+    ///
+    /// Used for recovery/framework-internal scenarios where the action must
+    /// target a specific tool call id without relying on the ambient `ScopeContext`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `S::PATH` is empty.
+    pub fn new_for_call<S: StateSpec>(action: S::Action, call_id: impl Into<String>) -> Self {
+        assert!(
+            !S::PATH.is_empty(),
+            "StateSpec type has no bound path; cannot create AnyStateAction"
+        );
+
+        Self::Typed {
+            state_type_id: TypeId::of::<S>(),
+            state_type_name: std::any::type_name::<S>(),
+            scope: S::SCOPE,
+            base_path: S::PATH,
+            call_id_override: Some(call_id.into()),
+            reduce_fn: Self::make_reduce_fn::<S>(action),
+        }
+    }
+
+    fn make_reduce_fn<S: StateSpec>(action: S::Action) -> ReduceFn {
+        Box::new(move |doc: &Value, actual_path: &str| {
+            let path = parse_path(actual_path);
+            let sub_doc = get_at_path(doc, &path).cloned().unwrap_or(Value::Null);
+            // When the path doesn't exist (Null) and from_value fails,
+            // fall back to an empty object. This handles derive(State) structs
+            // whose #[serde(default)] fields can deserialize from `{}` but not
+            // from `null` (serde_json rejects null for struct types).
+            let mut state = S::from_value(&sub_doc).or_else(|first_err| {
+                if sub_doc.is_null() {
+                    S::from_value(&Value::Object(Default::default())).map_err(|_| first_err)
+                } else {
+                    Err(first_err)
+                }
+            })?;
+            state.reduce(action);
+            let new_value = state.to_value()?;
+            Ok(Patch::with_ops(vec![Op::set(
+                path_from_str(actual_path),
+                new_value,
+            )]))
+        })
     }
 
     /// The [`TypeId`] of the state type this action targets.
@@ -134,18 +170,6 @@ impl AnyStateAction {
         }
     }
 
-    /// Apply this action to a JSON document, producing a patch.
-    ///
-    /// Consumes `self` since the inner closure is `FnOnce`.
-    ///
-    /// For `Patch` variants, the document is ignored and the inner patch is returned.
-    pub fn apply(self, doc: &Value) -> TireaResult<Patch> {
-        match self {
-            Self::Typed { apply_fn, .. } => apply_fn(doc),
-            Self::Patch(tracked) => Ok(tracked.patch),
-        }
-    }
-
     /// If this is a raw `Patch` action, return the tracked patch directly.
     ///
     /// Used by the effect applicator to preserve source metadata.
@@ -162,10 +186,14 @@ impl AnyStateAction {
 /// Typed actions are reduced against a snapshot that is updated after each action,
 /// so sequential actions in one batch compose deterministically.
 /// Raw patch actions preserve the tracked patch metadata as-is.
+///
+/// `scope_ctx` controls how `ToolCall`-scoped actions are routed to per-call
+/// namespaces. For non-tool phases, pass `ScopeContext::run()`.
 pub fn reduce_state_actions(
     actions: Vec<AnyStateAction>,
     base_snapshot: &Value,
     default_source: &str,
+    scope_ctx: &ScopeContext,
 ) -> TireaResult<Vec<TrackedPatch>> {
     let mut rolling_snapshot = base_snapshot.clone();
     let mut tracked_patches = Vec::new();
@@ -179,8 +207,22 @@ pub fn reduce_state_actions(
                 rolling_snapshot = apply_patch(&rolling_snapshot, tracked.patch())?;
                 tracked_patches.push(tracked);
             }
-            typed_action => {
-                let patch = typed_action.apply(&rolling_snapshot)?;
+            AnyStateAction::Typed {
+                scope,
+                base_path,
+                call_id_override,
+                reduce_fn,
+                ..
+            } => {
+                // Resolve actual storage path: call_id_override takes priority,
+                // then fall back to the ambient scope_ctx.
+                let actual_path = if let Some(ref cid) = call_id_override {
+                    let override_ctx = ScopeContext::for_call(cid.as_str());
+                    override_ctx.resolve_path(scope, base_path)
+                } else {
+                    scope_ctx.resolve_path(scope, base_path)
+                };
+                let patch = reduce_fn(&rolling_snapshot, &actual_path)?;
                 if patch.is_empty() {
                     continue;
                 }
@@ -325,7 +367,7 @@ mod tests {
 
     impl State for ToolScopedCounter {
         type Ref<'a> = ToolScopedCounterRef;
-        const PATH: &'static str = "__tool_call_states.counter";
+        const PATH: &'static str = "tool_counter";
 
         fn state_ref<'a>(_: &'a DocCell, _: TPath, _: PatchSink<'a>) -> Self::Ref<'a> {
             ToolScopedCounterRef
@@ -361,9 +403,14 @@ mod tests {
     fn any_state_action_increment() {
         let doc = json!({"counters": {"main": {"value": 5}}});
         let action = AnyStateAction::new::<Counter>(CounterAction::Increment(3));
-        let patch = action.apply(&doc).unwrap();
-
-        let result = apply_patch(&doc, &patch).unwrap();
+        let patch = reduce_state_actions(
+            vec![action],
+            &doc,
+            "test",
+            &ScopeContext::run(),
+        )
+        .unwrap();
+        let result = apply_patch(&doc, patch[0].patch()).unwrap();
         assert_eq!(result["counters"]["main"]["value"], 8);
     }
 
@@ -371,9 +418,14 @@ mod tests {
     fn any_state_action_reset() {
         let doc = json!({"counters": {"main": {"value": 42}}});
         let action = AnyStateAction::new::<Counter>(CounterAction::Reset);
-        let patch = action.apply(&doc).unwrap();
-
-        let result = apply_patch(&doc, &patch).unwrap();
+        let patch = reduce_state_actions(
+            vec![action],
+            &doc,
+            "test",
+            &ScopeContext::run(),
+        )
+        .unwrap();
+        let result = apply_patch(&doc, patch[0].patch()).unwrap();
         assert_eq!(result["counters"]["main"]["value"], 0);
     }
 
@@ -381,9 +433,14 @@ mod tests {
     fn any_state_action_missing_path_defaults() {
         let doc = json!({});
         let action = AnyStateAction::new::<Counter>(CounterAction::Increment(1));
-        let patch = action.apply(&doc).unwrap();
-
-        let result = apply_patch(&doc, &patch).unwrap();
+        let patch = reduce_state_actions(
+            vec![action],
+            &doc,
+            "test",
+            &ScopeContext::run(),
+        )
+        .unwrap();
+        let result = apply_patch(&doc, patch[0].patch()).unwrap();
         assert_eq!(result["counters"]["main"]["value"], 1);
     }
 
@@ -426,7 +483,8 @@ mod tests {
             AnyStateAction::new::<Counter>(CounterAction::Increment(1)),
             AnyStateAction::new::<Counter>(CounterAction::Increment(1)),
         ];
-        let tracked = reduce_state_actions(actions, &base, "agent").unwrap();
+        let tracked =
+            reduce_state_actions(actions, &base, "agent", &ScopeContext::run()).unwrap();
         assert_eq!(tracked.len(), 2);
 
         let mut state = base.clone();
@@ -445,8 +503,13 @@ mod tests {
         )]))
         .with_source("plugin:test");
 
-        let tracked =
-            reduce_state_actions(vec![AnyStateAction::Patch(raw)], &base, "agent").unwrap();
+        let tracked = reduce_state_actions(
+            vec![AnyStateAction::Patch(raw)],
+            &base,
+            "agent",
+            &ScopeContext::run(),
+        )
+        .unwrap();
         assert_eq!(tracked.len(), 1);
         assert_eq!(tracked[0].source.as_deref(), Some("plugin:test"));
     }
@@ -455,5 +518,62 @@ mod tests {
     #[should_panic(expected = "no bound path")]
     fn any_state_action_panics_on_empty_path() {
         let _ = AnyStateAction::new::<Unbound>(());
+    }
+
+    #[test]
+    fn reduce_tool_call_scoped_action_routes_to_call_namespace() {
+        let base = json!({});
+        let scope_ctx = ScopeContext::for_call("call_42");
+        let actions = vec![AnyStateAction::new::<ToolScopedCounter>(
+            CounterAction::Increment(5),
+        )];
+        let tracked =
+            reduce_state_actions(actions, &base, "test", &scope_ctx).unwrap();
+        assert_eq!(tracked.len(), 1);
+
+        let result = apply_patch(&base, tracked[0].patch()).unwrap();
+        assert_eq!(
+            result["__tool_call_scope"]["call_42"]["tool_counter"]["value"],
+            5
+        );
+    }
+
+    #[test]
+    fn reduce_run_scoped_action_ignores_call_context() {
+        let base = json!({});
+        let scope_ctx = ScopeContext::for_call("call_42");
+        let actions = vec![AnyStateAction::new::<Counter>(CounterAction::Increment(7))];
+        let tracked =
+            reduce_state_actions(actions, &base, "test", &scope_ctx).unwrap();
+
+        let result = apply_patch(&base, tracked[0].patch()).unwrap();
+        assert_eq!(result["counters"]["main"]["value"], 7);
+        assert!(result.get("__tool_call_scope").is_none());
+    }
+
+    #[test]
+    fn new_for_call_overrides_scope_ctx() {
+        let base = json!({});
+        let scope_ctx = ScopeContext::for_call("ambient_call");
+        let actions = vec![AnyStateAction::new_for_call::<ToolScopedCounter>(
+            CounterAction::Increment(3),
+            "override_call",
+        )];
+        let tracked =
+            reduce_state_actions(actions, &base, "test", &scope_ctx).unwrap();
+
+        let result = apply_patch(&base, tracked[0].patch()).unwrap();
+        // Should use the override call_id, not the ambient one
+        assert_eq!(
+            result["__tool_call_scope"]["override_call"]["tool_counter"]["value"],
+            3
+        );
+        assert!(result["__tool_call_scope"].get("ambient_call").is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "no bound path")]
+    fn new_for_call_panics_on_empty_path() {
+        let _ = AnyStateAction::new_for_call::<Unbound>((), "call_1");
     }
 }

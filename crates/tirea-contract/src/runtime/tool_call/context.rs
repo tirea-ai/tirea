@@ -5,7 +5,7 @@
 //! entity (`Thread`) invisible to tools and plugins.
 
 use crate::runtime::activity::ActivityManager;
-use crate::runtime::{ToolCallResume, ToolCallState, ToolCallStatesMap};
+use crate::runtime::{ToolCallResume, ToolCallState};
 use crate::thread::Message;
 use crate::RunConfig;
 use futures::future::pending;
@@ -55,9 +55,9 @@ pub struct ToolCallContext<'a> {
 impl<'a> ToolCallContext<'a> {
     fn tool_call_state_path(call_id: &str) -> Path {
         Path::root()
-            .key(ToolCallStatesMap::PATH)
-            .key("calls")
+            .key("__tool_call_scope")
             .key(call_id)
+            .key("tool_call_state")
     }
 
     fn apply_op(&self, op: Op) -> TireaResult<()> {
@@ -199,9 +199,16 @@ impl<'a> ToolCallContext<'a> {
         if call_id.trim().is_empty() {
             return Ok(None);
         }
-        let runtime = self.state_of::<ToolCallStatesMap>();
-        let calls = runtime.calls()?;
-        Ok(calls.get(call_id).cloned())
+        let val = self.doc.snapshot();
+        let path = Self::tool_call_state_path(call_id);
+        let at = get_at_path(&val, &path);
+        match at {
+            Some(v) if !v.is_null() => {
+                let state = ToolCallState::from_value(v)?;
+                Ok(Some(state))
+            }
+            _ => Ok(None),
+        }
     }
 
     /// Read persisted runtime state for current `call_id`.

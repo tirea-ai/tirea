@@ -1,6 +1,6 @@
 use super::AgentLoopError;
 use crate::contracts::runtime::phase::StepContext;
-use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction};
+use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction, ScopeContext};
 use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::runtime::SuspendedCall;
 use crate::contracts::thread::{Message, Role};
@@ -8,8 +8,9 @@ use crate::contracts::RunAction;
 use crate::contracts::RunContext;
 use crate::runtime::control::{
     SuspendedToolCallsState, ToolCallResume, ToolCallState,
-    ToolCallStatesMap, ToolCallStatus,
+    ToolCallStatus,
 };
+use crate::contracts::runtime::tool_call::tool_call_states_from_state;
 use tirea_state::{DocCell, Op, Patch, Path, State, StateContext, TrackedPatch};
 
 use serde_json::Value;
@@ -179,8 +180,8 @@ pub(super) fn suspended_calls_from_ctx(run_ctx: &RunContext) -> HashMap<String, 
 
 pub(super) fn tool_call_states_from_ctx(run_ctx: &RunContext) -> HashMap<String, ToolCallState> {
     run_ctx
-        .snapshot_of::<ToolCallStatesMap>()
-        .map(|s| s.calls)
+        .snapshot()
+        .map(|s| tool_call_states_from_state(&s))
         .unwrap_or_default()
 }
 
@@ -241,9 +242,9 @@ pub(super) fn upsert_tool_call_state(
     }
 
     let path = Path::root()
-        .key(ToolCallStatesMap::PATH)
-        .key("calls")
-        .key(call_id);
+        .key("__tool_call_scope")
+        .key(call_id)
+        .key("tool_call_state");
     let value = serde_json::to_value(tool_state).map_err(|e| {
         AgentLoopError::StateError(format!(
             "failed to serialize tool call state for '{call_id}': {e}"
@@ -251,9 +252,13 @@ pub(super) fn upsert_tool_call_state(
     })?;
     let raw = TrackedPatch::new(tirea_state::Patch::with_ops(vec![Op::set(path, value)]))
         .with_source("agent_loop");
-    let mut reduced =
-        reduce_state_actions(vec![AnyStateAction::Patch(raw)], base_state, "agent_loop")
-            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    let mut reduced = reduce_state_actions(
+        vec![AnyStateAction::Patch(raw)],
+        base_state,
+        "agent_loop",
+        &ScopeContext::run(),
+    )
+    .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     match reduced.pop() {
         Some(patch) => Ok(patch),
         None => Ok(TrackedPatch::new(Patch::new()).with_source("agent_loop")),
@@ -283,10 +288,12 @@ mod tests {
     #[test]
     fn upsert_tool_call_state_generates_single_call_scoped_patch() {
         let state = json!({
-            "__tool_call_states": {
-                "calls": {
-                    "call_a": sample_state("call_a", ToolCallStatus::Suspended),
-                    "call_b": sample_state("call_b", ToolCallStatus::Suspended)
+            "__tool_call_scope": {
+                "call_a": {
+                    "tool_call_state": sample_state("call_a", ToolCallStatus::Suspended)
+                },
+                "call_b": {
+                    "tool_call_state": sample_state("call_b", ToolCallStatus::Suspended)
                 }
             }
         });
@@ -297,16 +304,16 @@ mod tests {
         assert_eq!(ops.len(), 1);
         assert_eq!(
             ops[0].path().to_string(),
-            "$.__tool_call_states.calls.call_a"
+            "$.__tool_call_scope.call_a.tool_call_state"
         );
 
         let merged = apply_patch(&state, patch.patch()).expect("patch should apply");
         assert_eq!(
-            merged["__tool_call_states"]["calls"]["call_a"]["status"],
+            merged["__tool_call_scope"]["call_a"]["tool_call_state"]["status"],
             json!("resuming")
         );
         assert_eq!(
-            merged["__tool_call_states"]["calls"]["call_b"]["status"],
+            merged["__tool_call_scope"]["call_b"]["tool_call_state"]["status"],
             json!("suspended")
         );
     }

@@ -96,7 +96,7 @@ impl AgentBehavior for AgentRecoveryPlugin {
     async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
         use crate::contracts::runtime::{
             PendingToolCall, SuspendedCall, SuspendedToolCallsAction, SuspendedToolCallsState,
-            ToolCallResumeMode, ToolCallState, ToolCallStatesAction, ToolCallStatesMap,
+            ToolCallResumeMode, ToolCallState, ToolCallStateAction,
         };
 
         let state = ctx.snapshot();
@@ -172,25 +172,24 @@ impl AgentBehavior for AgentRecoveryPlugin {
                     ),
                 )));
                 actions.push(Box::new(EmitRecoveryPatch(
-                    AnyStateAction::new::<ToolCallStatesMap>(
-                        ToolCallStatesAction::InsertState {
-                            state: ToolCallState {
-                                call_id,
-                                tool_name: AGENT_RUN_TOOL_ID.to_string(),
-                                arguments,
-                                status: crate::contracts::runtime::ToolCallStatus::Resuming,
-                                resume_token: Some(resume_token),
-                                resume: Some(crate::contracts::runtime::ToolCallResume {
-                                    decision_id: recovery_target_id(&run_id),
-                                    action: crate::contracts::io::ResumeDecisionAction::Resume,
-                                    result: serde_json::Value::Bool(true),
-                                    reason: None,
-                                    updated_at: current_unix_millis(),
-                                }),
-                                scratch: serde_json::Value::Null,
+                    AnyStateAction::new_for_call::<ToolCallState>(
+                        ToolCallStateAction::Set(ToolCallState {
+                            call_id: call_id.clone(),
+                            tool_name: AGENT_RUN_TOOL_ID.to_string(),
+                            arguments,
+                            status: crate::contracts::runtime::ToolCallStatus::Resuming,
+                            resume_token: Some(resume_token),
+                            resume: Some(crate::contracts::runtime::ToolCallResume {
+                                decision_id: recovery_target_id(&run_id),
+                                action: crate::contracts::io::ResumeDecisionAction::Resume,
+                                result: serde_json::Value::Bool(true),
+                                reason: None,
                                 updated_at: current_unix_millis(),
-                            },
-                        },
+                            }),
+                            scratch: serde_json::Value::Null,
+                            updated_at: current_unix_millis(),
+                        }),
+                        call_id,
                     ),
                 )));
             }

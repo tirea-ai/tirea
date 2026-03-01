@@ -2,6 +2,8 @@ use crate::runtime::action::Action;
 use crate::runtime::inference::response::{InferenceError, LLMResponse, StreamResult};
 use crate::runtime::phase::step::StepContext;
 use crate::runtime::phase::Phase;
+use crate::runtime::state::{ScopeContext, StateSpec};
+use crate::runtime::state::StateScopeRegistry;
 use crate::runtime::tool_call::gate::ToolGate;
 use crate::runtime::tool_call::{ToolCallResume, ToolResult};
 use crate::thread::Message;
@@ -9,7 +11,6 @@ use crate::RunConfig;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
-use crate::runtime::state::StateScopeRegistry;
 use tirea_state::{get_at_path, parse_path, DocCell, LatticeRegistry, State, TireaResult};
 
 /// Immutable snapshot of step context passed to [`AgentBehavior`] phase hooks.
@@ -29,6 +30,7 @@ pub struct ReadOnlyContext<'a> {
     tool_args: Option<&'a Value>,
     tool_result: Option<&'a ToolResult>,
     resume_input: Option<ToolCallResume>,
+    scope_ctx: ScopeContext,
 }
 
 impl<'a> ReadOnlyContext<'a> {
@@ -51,6 +53,7 @@ impl<'a> ReadOnlyContext<'a> {
             tool_args: None,
             tool_result: None,
             resume_input: None,
+            scope_ctx: ScopeContext::run(),
         }
     }
 
@@ -82,6 +85,12 @@ impl<'a> ReadOnlyContext<'a> {
     #[must_use]
     pub fn with_resume_input(mut self, resume: ToolCallResume) -> Self {
         self.resume_input = Some(resume);
+        self
+    }
+
+    #[must_use]
+    pub fn with_scope_ctx(mut self, scope_ctx: ScopeContext) -> Self {
+        self.scope_ctx = scope_ctx;
         self
     }
 
@@ -145,6 +154,29 @@ impl<'a> ReadOnlyContext<'a> {
         let val = self.doc.snapshot();
         let at = get_at_path(&val, &parse_path(T::PATH)).unwrap_or(&Value::Null);
         T::from_value(at)
+    }
+
+    /// Scope-aware state read for `StateSpec` types.
+    ///
+    /// For `ToolCall`-scoped state, resolves to
+    /// `__tool_call_scope.<call_id>.<S::PATH>` when a call id is present.
+    /// For `Run`-scoped state, reads from `S::PATH` directly.
+    pub fn scoped_state_of<T: StateSpec>(&self) -> TireaResult<T> {
+        let path = self.scope_ctx.resolve_path(T::SCOPE, T::PATH);
+        let val = self.doc.snapshot();
+        let at = get_at_path(&val, &parse_path(&path)).unwrap_or(&Value::Null);
+        T::from_value(at).or_else(|e| {
+            if at.is_null() {
+                T::from_value(&Value::Object(Default::default())).map_err(|_| e)
+            } else {
+                Err(e)
+            }
+        })
+    }
+
+    /// The scope context for this snapshot.
+    pub fn scope_ctx(&self) -> &ScopeContext {
+        &self.scope_ctx
     }
 }
 
@@ -240,6 +272,10 @@ pub fn build_read_only_context_from_step<'a>(
         ctx = ctx.with_tool_info(&gate.name, &gate.id, Some(&gate.args));
         if let Some(result) = gate.result.as_ref() {
             ctx = ctx.with_tool_result(result);
+        }
+        // Inject scope context for tool phases
+        if matches!(phase, Phase::BeforeToolExecute | Phase::AfterToolExecute) {
+            ctx = ctx.with_scope_ctx(ScopeContext::for_call(&gate.id));
         }
     }
     if phase == Phase::BeforeToolExecute {

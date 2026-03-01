@@ -508,10 +508,8 @@ impl AgentBehavior for TestInteractionPlugin {
             return vec![];
         }
 
-        let existing_states = ctx
-            .snapshot_of::<crate::contracts::runtime::ToolCallStatesMap>()
-            .unwrap_or_default();
-        let mut states = existing_states.calls;
+        let mut states =
+            crate::contracts::runtime::tool_call_states_from_state(&ctx.snapshot());
         let mut actions: Vec<Box<dyn Action>> = Vec::new();
         for (call_id, suspended_call) in suspended_calls {
             if states.get(&call_id).is_some_and(|state| {
@@ -547,8 +545,9 @@ impl AgentBehavior for TestInteractionPlugin {
             state.resume = Some(resume);
             state.updated_at = updated_at;
             actions.push(Box::new(EmitStatePatch(
-                AnyStateAction::new::<crate::contracts::runtime::ToolCallStatesMap>(
-                    crate::contracts::runtime::ToolCallStatesAction::InsertState { state },
+                AnyStateAction::new_for_call::<crate::contracts::runtime::ToolCallState>(
+                    crate::contracts::runtime::ToolCallStateAction::Set(state),
+                    call_id.clone(),
                 ),
             )));
         }
@@ -1298,7 +1297,7 @@ fn test_execute_tools_with_state_changes() {
         let state = thread.rebuild_state().unwrap();
         assert_eq!(state["counter"], 5);
         assert_eq!(
-            state["__tool_call_states"]["calls"]["call_1"]["status"],
+            state["__tool_call_scope"]["call_1"]["tool_call_state"]["status"],
             json!("succeeded")
         );
     });
@@ -2990,7 +2989,7 @@ fn test_execute_tools_with_config_denied_response_is_applied_via_tool_call_state
         );
 
         assert_eq!(
-            final_state["__tool_call_states"]["calls"]["call_1"]["status"],
+            final_state["__tool_call_scope"]["call_1"]["tool_call_state"]["status"],
             json!("cancelled"),
             "denied replay should persist cancelled lifecycle state"
         );
@@ -3004,9 +3003,9 @@ fn test_execute_tools_with_config_rejects_illegal_terminal_to_running_transition
         let thread = Thread::with_initial_state(
             "test",
             json!({
-                "__tool_call_states": {
-                    "calls": {
-                        "call_1": {
+                "__tool_call_scope": {
+                    "call_1": {
+                        "tool_call_state": {
                             "call_id": "call_1",
                             "tool_name": "echo",
                             "arguments": { "message": "already-done" },
@@ -3435,9 +3434,9 @@ async fn test_stream_run_start_resume_replay_emits_after_run_start() {
                     }
                 }
             },
-            "__tool_call_states": {
-                "calls": {
-                    "call_1": {
+            "__tool_call_scope": {
+                "call_1": {
+                    "tool_call_state": {
                         "call_id": "call_1",
                         "tool_name": "echo",
                         "arguments": {},
@@ -3928,7 +3927,7 @@ async fn test_run_loop_permission_approval_replays_tool_and_updates_lifecycle_st
     assert!(suspended.map_or(true, |calls| calls.is_empty()));
 
     assert_eq!(
-        state["__tool_call_states"]["calls"]["call_1"]["status"],
+        state["__tool_call_scope"]["call_1"]["tool_call_state"]["status"],
         json!("succeeded"),
         "run-start replay should end in succeeded lifecycle state"
     );
@@ -4082,9 +4081,9 @@ async fn test_run_loop_run_start_replay_uses_tool_call_resume_state_without_mail
                     }
                 }
             },
-            "__tool_call_states": {
-                "calls": {
-                    "call_1": {
+            "__tool_call_scope": {
+                "call_1": {
+                    "tool_call_state": {
                         "call_id": "call_1",
                         "tool_name": "echo",
                         "arguments": { "message": "approved-run" },
@@ -4139,7 +4138,7 @@ async fn test_run_loop_run_start_replay_uses_tool_call_resume_state_without_mail
         "replayed call should clear suspended queue"
     );
     assert_eq!(
-        final_state["__tool_call_states"]["calls"]["call_1"]["status"],
+        final_state["__tool_call_scope"]["call_1"]["tool_call_state"]["status"],
         json!("succeeded")
     );
 }
@@ -4164,9 +4163,9 @@ async fn test_run_loop_run_start_settles_orphan_resuming_state_without_suspended
     let thread = Thread::with_initial_state(
         "test",
         json!({
-            "__tool_call_states": {
-                "calls": {
-                    "call_orphan": {
+            "__tool_call_scope": {
+                "call_orphan": {
+                    "tool_call_state": {
                         "call_id": "call_orphan",
                         "tool_name": "echo",
                         "arguments": { "message": "late decision" },
@@ -4193,15 +4192,15 @@ async fn test_run_loop_run_start_settles_orphan_resuming_state_without_suspended
     assert_eq!(outcome.stats.llm_calls, 0, "inference should not run");
     let final_state = outcome.run_ctx.snapshot().expect("snapshot");
     assert_eq!(
-        final_state["__tool_call_states"]["calls"]["call_orphan"]["status"],
+        final_state["__tool_call_scope"]["call_orphan"]["tool_call_state"]["status"],
         json!("cancelled")
     );
     assert_eq!(
-        final_state["__tool_call_states"]["calls"]["call_orphan"]["resume"]["action"],
+        final_state["__tool_call_scope"]["call_orphan"]["tool_call_state"]["resume"]["action"],
         json!("cancel")
     );
     assert_eq!(
-        final_state["__tool_call_states"]["calls"]["call_orphan"]["resume_token"],
+        final_state["__tool_call_scope"]["call_orphan"]["tool_call_state"]["resume_token"],
         json!("call_orphan")
     );
 }
@@ -11624,9 +11623,9 @@ async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
     );
     assert!(
         final_state
-            .get("__tool_call_states")
-            .and_then(|states| states.get("calls"))
-            .and_then(|calls| calls.get("unknown_call"))
+            .get("__tool_call_scope")
+            .and_then(|scopes| scopes.get("unknown_call"))
+            .and_then(|scope| scope.get("tool_call_state"))
             .is_none(),
         "unknown decision must not create runtime lifecycle state"
     );
@@ -11672,9 +11671,9 @@ async fn test_run_loop_decision_channel_rejects_illegal_terminal_to_resuming_tra
                     }
                 }
             },
-            "__tool_call_states": {
-                "calls": {
-                    "call_pending": {
+            "__tool_call_scope": {
+                "call_pending": {
+                    "tool_call_state": {
                         "call_id": "call_pending",
                         "tool_name": "echo",
                         "arguments": { "message": "already-finished" },
@@ -11737,7 +11736,7 @@ async fn test_run_loop_decision_channel_rejects_illegal_terminal_to_resuming_tra
         "illegal transition must keep suspended call pending"
     );
     assert_eq!(
-        final_state["__tool_call_states"]["calls"]["call_pending"]["status"],
+        final_state["__tool_call_scope"]["call_pending"]["tool_call_state"]["status"],
         json!("succeeded"),
         "terminal lifecycle state must remain unchanged"
     );
@@ -11874,9 +11873,9 @@ async fn test_stream_decision_channel_rejects_illegal_terminal_to_resuming_trans
                     }
                 }
             },
-            "__tool_call_states": {
-                "calls": {
-                    "call_pending": {
+            "__tool_call_scope": {
+                "call_pending": {
+                    "tool_call_state": {
                         "call_id": "call_pending",
                         "tool_name": "echo",
                         "arguments": { "message": "already-finished" },
@@ -11957,12 +11956,12 @@ async fn test_stream_decision_channel_rejects_illegal_terminal_to_resuming_trans
         "illegal transition must keep suspended call pending"
     );
     assert_eq!(
-        final_state["__tool_call_states"]["calls"]["call_pending"]["status"],
+        final_state["__tool_call_scope"]["call_pending"]["tool_call_state"]["status"],
         json!("succeeded"),
         "terminal lifecycle state must remain unchanged"
     );
     assert!(
-        final_state["__tool_call_states"]["calls"]["call_pending"]
+        final_state["__tool_call_scope"]["call_pending"]["tool_call_state"]
             .get("resume")
             .is_none(),
         "illegal transition must not inject resume payload into terminal state"
@@ -12113,11 +12112,11 @@ async fn test_run_loop_decision_channel_resolves_suspended_call() {
     );
     let final_state = outcome.run_ctx.snapshot().expect("snapshot");
     assert_eq!(
-        final_state["__tool_call_states"]["calls"]["call_pending"]["status"],
+        final_state["__tool_call_scope"]["call_pending"]["tool_call_state"]["status"],
         json!("succeeded")
     );
     assert_eq!(
-        final_state["__tool_call_states"]["calls"]["call_pending"]["resume"]["action"],
+        final_state["__tool_call_scope"]["call_pending"]["tool_call_state"]["resume"]["action"],
         json!("resume")
     );
 }
@@ -12228,11 +12227,11 @@ async fn test_run_loop_decision_channel_cancel_emits_single_tool_result_message(
         .and_then(|v| v.as_object());
     assert!(suspended.map_or(true, |calls| calls.is_empty()));
     assert_eq!(
-        final_state["__tool_call_states"]["calls"]["call_pending"]["status"],
+        final_state["__tool_call_scope"]["call_pending"]["tool_call_state"]["status"],
         json!("cancelled")
     );
     assert_eq!(
-        final_state["__tool_call_states"]["calls"]["call_pending"]["resume"]["action"],
+        final_state["__tool_call_scope"]["call_pending"]["tool_call_state"]["resume"]["action"],
         json!("cancel")
     );
 }
@@ -12865,11 +12864,11 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_tool_call_resu
 
     let final_state = outcome.run_ctx.snapshot().expect("snapshot");
     assert_eq!(
-        final_state["__tool_call_states"]["calls"]["call_write"]["status"],
+        final_state["__tool_call_scope"]["call_write"]["tool_call_state"]["status"],
         json!("succeeded")
     );
     assert_eq!(
-        final_state["__tool_call_states"]["calls"]["call_write"]["resume"]["action"],
+        final_state["__tool_call_scope"]["call_write"]["tool_call_state"]["resume"]["action"],
         json!("resume")
     );
 }

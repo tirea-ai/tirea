@@ -52,7 +52,7 @@ mod tool_exec;
 
 use crate::contracts::io::ResumeDecisionAction;
 use crate::contracts::runtime::phase::Phase;
-use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction};
+use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction, ScopeContext};
 use crate::contracts::runtime::tool_call::{Tool, ToolResult};
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
@@ -193,8 +193,9 @@ pub(super) fn sync_run_lifecycle_for_termination(
             updated_at: current_unix_millis(),
         },
     )];
-    let patches = reduce_state_actions(actions, &base_state, "agent_loop")
-        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    let patches =
+        reduce_state_actions(actions, &base_state, "agent_loop", &ScopeContext::run())
+            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     run_ctx.add_thread_patches(patches);
     Ok(())
 }

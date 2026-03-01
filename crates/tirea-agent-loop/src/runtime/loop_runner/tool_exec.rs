@@ -9,7 +9,7 @@ use super::{
     TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use crate::contracts::runtime::behavior::AgentBehavior;
-use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction};
+use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction, ScopeContext};
 use crate::contracts::runtime::inference::MessagingContext;
 use crate::contracts::runtime::tool_call::ToolGate;
 use crate::contracts::runtime::phase::{Phase, StepContext};
@@ -1070,6 +1070,18 @@ async fn execute_single_tool_with_phases_impl(
         }
     }
 
+    // Conditional cleanup: terminal outcomes delete the entire scoped subtree.
+    // Suspended outcomes preserve it so tool_call_state survives for resume.
+    if !matches!(outcome, ToolCallOutcome::Suspended) {
+        let cleanup_path = format!("__tool_call_scope.{}", call.id);
+        let cleanup_patch = Patch::with_ops(vec![tirea_state::Op::delete(
+            tirea_state::parse_path(&cleanup_path),
+        )]);
+        let tracked =
+            TrackedPatch::new(cleanup_patch).with_source("framework:scope_cleanup");
+        step.emit_patch(tracked);
+    }
+
     // Flush plugin state ops into pending patches
     let plugin_patch = step.ctx().take_patch();
     if !plugin_patch.patch().is_empty() {
@@ -1080,10 +1092,12 @@ async fn execute_single_tool_with_phases_impl(
         .into_iter()
         .map(AnyStateAction::Patch);
 
+    let tool_scope_ctx = ScopeContext::for_call(&call.id);
     let execution_patch_parts = reduce_tool_state_actions(
         state,
         tool_state_actions,
         &format!("tool:{}", call.name),
+        &tool_scope_ctx,
     )?;
     execution.patch = merge_tracked_patches(&execution_patch_parts, &format!("tool:{}", call.name));
 
@@ -1097,8 +1111,12 @@ async fn execute_single_tool_with_phases_impl(
     } else {
         state.clone()
     };
-    let pending_patches =
-        reduce_tool_state_actions(&phase_base_state, phase_patch_actions.collect(), "agent")?;
+    let pending_patches = reduce_tool_state_actions(
+        &phase_base_state,
+        phase_patch_actions.collect(),
+        "agent",
+        &tool_scope_ctx,
+    )?;
 
     let reminders = step
         .extensions
@@ -1125,8 +1143,9 @@ fn reduce_tool_state_actions(
     base_state: &Value,
     actions: Vec<AnyStateAction>,
     source: &str,
+    scope_ctx: &ScopeContext,
 ) -> Result<Vec<TrackedPatch>, AgentLoopError> {
-    reduce_state_actions(actions, base_state, source).map_err(|e| {
+    reduce_state_actions(actions, base_state, source, scope_ctx).map_err(|e| {
         AgentLoopError::StateError(format!("failed to reduce tool state actions: {e}"))
     })
 }

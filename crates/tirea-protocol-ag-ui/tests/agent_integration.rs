@@ -4587,7 +4587,7 @@ use tirea_agentos::contracts::runtime::tool_call::ToolGate;
 use tirea_agentos::contracts::runtime::AgentBehavior;
 use tirea_agentos::contracts::runtime::{
     AnyStateAction, SuspendedCall, SuspendedToolCallsState, ToolCallResume,
-    ToolCallState, ToolCallStatesAction, ToolCallStatesMap, ToolCallStatus,
+    ToolCallState, ToolCallStateAction, ToolCallStatus,
 };
 use tirea_agentos::contracts::thread::ToolCall;
 use tirea_protocol_ag_ui::RunAgentInput;
@@ -4807,8 +4807,8 @@ impl AgentBehavior for InteractionPlugin {
             return vec![];
         }
 
-        let existing_states = ctx.snapshot_of::<ToolCallStatesMap>().unwrap_or_default();
-        let mut states = existing_states.calls;
+        let mut states =
+            tirea_agentos::contracts::runtime::tool_call_states_from_state(&ctx.snapshot());
         let mut actions: Vec<Box<dyn Action>> = Vec::new();
         for (call_id, suspended_call) in suspended_calls {
             if states
@@ -4840,8 +4840,9 @@ impl AgentBehavior for InteractionPlugin {
             state.resume = Some(resume);
             state.updated_at = updated_at;
             actions.push(Box::new(EmitStatePatch(
-                AnyStateAction::new::<ToolCallStatesMap>(
-                    ToolCallStatesAction::InsertState { state },
+                AnyStateAction::new_for_call::<ToolCallState>(
+                    ToolCallStateAction::Set(state),
+                    call_id.clone(),
                 ),
             )));
         }
@@ -12644,12 +12645,7 @@ fn replay_calls_from_state(state: &Value) -> Vec<ToolCall> {
 }
 
 fn resume_inputs_from_state(state: &Value) -> HashMap<String, ToolCallResume> {
-    state
-        .get("__tool_call_states")
-        .and_then(|agent| agent.get("calls"))
-        .cloned()
-        .and_then(|v| serde_json::from_value::<HashMap<String, ToolCallState>>(v).ok())
-        .unwrap_or_default()
+    tirea_agentos::contracts::runtime::tool_call_states_from_state(state)
         .into_iter()
         .filter_map(|(call_id, tool_state)| {
             if !matches!(tool_state.status, ToolCallStatus::Resuming) {
