@@ -16,7 +16,7 @@ use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
 use tirea_contract::runtime::inference::InferenceContext;
 use tirea_contract::runtime::phase::step::StepContext;
 use tirea_contract::runtime::phase::{Phase, SuspendTicket};
-use tirea_contract::runtime::state::{AnyStateAction, StateSpec};
+use tirea_contract::runtime::state::AnyStateAction;
 use tirea_contract::runtime::tool_call::ToolGate;
 use tirea_contract::runtime::{PendingToolCall, ToolCallResumeMode};
 use tirea_state::{GSet, State};
@@ -76,7 +76,7 @@ pub fn permission_state_action(action: PermissionAction) -> AnyStateAction {
 /// Persisted permission state (internal).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 #[serde(default)]
-#[tirea(path = "permissions")]
+#[tirea(path = "permissions", action = "PermissionAction")]
 struct PermissionOverrides {
     /// Default behavior for tools not explicitly configured.
     pub default_behavior: ToolPermissionBehavior,
@@ -84,10 +84,8 @@ struct PermissionOverrides {
     pub tools: HashMap<String, ToolPermissionBehavior>,
 }
 
-impl StateSpec for PermissionOverrides {
-    type Action = PermissionAction;
-
-    fn reduce(&mut self, action: Self::Action) {
+impl PermissionOverrides {
+    fn reduce(&mut self, action: PermissionAction) {
         match action {
             PermissionAction::SetDefault { behavior } => {
                 self.default_behavior = behavior;
@@ -112,7 +110,7 @@ impl StateSpec for PermissionOverrides {
 /// `default_behavior` remains sequential (`Op::Set`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 #[serde(default)]
-#[tirea(path = "permission_policy")]
+#[tirea(path = "permission_policy", action = "PermissionPolicyAction")]
 pub struct PermissionPolicy {
     /// Default behavior for tools not in either set.
     pub default_behavior: ToolPermissionBehavior,
@@ -136,10 +134,8 @@ pub enum PermissionPolicyAction {
     DenyTool { tool_id: String },
 }
 
-impl StateSpec for PermissionPolicy {
-    type Action = PermissionPolicyAction;
-
-    fn reduce(&mut self, action: Self::Action) {
+impl PermissionPolicy {
+    fn reduce(&mut self, action: PermissionPolicyAction) {
         match action {
             PermissionPolicyAction::SetDefault { behavior } => {
                 self.default_behavior = behavior;

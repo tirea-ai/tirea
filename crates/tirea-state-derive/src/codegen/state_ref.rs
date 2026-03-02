@@ -30,6 +30,7 @@ pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
     let register_lattice_body = generate_register_lattice(path_value, &fields);
     let lattice_keys_body = generate_lattice_keys(&fields);
     let diff_ops_body = generate_diff_ops(&fields);
+    let state_spec_impl = generate_state_spec(input)?;
 
     Ok(quote! {
         /// Typed state reference for reading and writing state.
@@ -90,6 +91,8 @@ pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
 
             #diff_ops_body
         }
+
+        #state_spec_impl
     })
 }
 
@@ -718,4 +721,36 @@ fn generate_diff_ops(fields: &[&FieldInput]) -> TokenStream {
             Ok(ops)
         }
     }
+}
+
+/// Generate `impl StateSpec` when `#[tirea(action = "...")]` is present.
+///
+/// The generated impl delegates `reduce` to an inherent method on the struct,
+/// so the user writes business logic as `impl MyState { fn reduce(...) { ... } }`.
+fn generate_state_spec(input: &ViewModelInput) -> syn::Result<TokenStream> {
+    let action_str = match &input.action {
+        Some(a) => a,
+        None => return Ok(TokenStream::new()),
+    };
+
+    let struct_name = &input.ident;
+    let action_ty: syn::Type = syn::parse_str(action_str).map_err(|e| {
+        syn::Error::new_spanned(
+            &input.ident,
+            format!(
+                "invalid action type in #[tirea(action = \"{}\")]: {}",
+                action_str, e
+            ),
+        )
+    })?;
+
+    Ok(quote! {
+        impl ::tirea_state::StateSpec for #struct_name {
+            type Action = #action_ty;
+
+            fn reduce(&mut self, action: Self::Action) {
+                #struct_name::reduce(self, action)
+            }
+        }
+    })
 }

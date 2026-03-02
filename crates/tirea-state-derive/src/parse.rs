@@ -23,6 +23,11 @@ pub struct ViewModelInput {
     /// Canonical JSON path for this state type (e.g., `#[tirea(path = "reminders")]`).
     #[darling(default)]
     pub path: Option<String>,
+
+    /// Action type for `StateSpec` (e.g., `#[tirea(action = "ReminderAction")]`).
+    /// When present, the derive macro generates `impl StateSpec for {Name}`.
+    #[darling(default)]
+    pub action: Option<String>,
 }
 
 impl ViewModelInput {
@@ -136,6 +141,19 @@ mod tests {
         assert_eq!(fields.len(), 2);
         assert_eq!(fields[0].ident().to_string(), "name");
         assert_eq!(fields[1].ident().to_string(), "age");
+    }
+
+    #[test]
+    fn test_parse_action_attribute() {
+        let input: syn::DeriveInput = parse_quote! {
+            #[tirea(path = "reminders", action = "ReminderAction")]
+            struct ReminderState {
+                items: Vec<String>,
+            }
+        };
+
+        let parsed = ViewModelInput::from_derive_input(&input).unwrap();
+        assert_eq!(parsed.action, Some("ReminderAction".to_string()));
     }
 
     #[test]

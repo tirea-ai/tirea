@@ -95,7 +95,7 @@ macro_rules! declare_plugin_states {
             &self,
             registry: &mut $crate::runtime::state::StateScopeRegistry,
         ) {
-            $(registry.register::<$state>();)+
+            $(registry.register::<$state>($crate::runtime::state::StateScope::Run);)+
         }
     };
 }

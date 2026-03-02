@@ -70,6 +70,6 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
         }
     }
 
-    // Generate only the StateRef struct and State trait impl
+    // Generate StateRef struct, State trait impl, and optional StateSpec impl
     state_ref::generate(&parsed)
 }

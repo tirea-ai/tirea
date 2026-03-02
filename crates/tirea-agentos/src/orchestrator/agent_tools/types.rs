@@ -3,7 +3,6 @@
 //! These types model the persisted state of delegated agent runs
 //! (created by `agent_run` / `agent_stop` tools).
 
-use crate::contracts::runtime::state::StateSpec;
 use crate::contracts::thread::Thread;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -55,7 +54,7 @@ pub struct DelegationRecord {
 
 /// Persisted sub-agent delegation state at `state["agent_runs"]`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-#[tirea(path = "agent_runs")]
+#[tirea(path = "agent_runs", action = "DelegationAction")]
 pub struct DelegationState {
     /// Delegated runs keyed by `run_id`.
     #[tirea(default = "HashMap::new()")]
@@ -68,9 +67,7 @@ pub enum DelegationAction {
     SetRuns(HashMap<String, DelegationRecord>),
 }
 
-impl StateSpec for DelegationState {
-    type Action = DelegationAction;
-
+impl DelegationState {
     fn reduce(&mut self, action: DelegationAction) {
         match action {
             DelegationAction::SetRuns(runs) => self.runs = runs,

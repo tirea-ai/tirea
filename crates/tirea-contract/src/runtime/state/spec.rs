@@ -3,13 +3,21 @@ use serde_json::Value;
 use std::any::TypeId;
 use std::fmt;
 use tirea_state::{
-    apply_patch_with_registry, get_at_path, parse_path, LatticeRegistry, Patch, Path, State,
-    TireaResult, TrackedPatch,
+    apply_patch_with_registry, get_at_path, parse_path, LatticeRegistry, Patch, Path, TireaResult,
+    TrackedPatch,
 };
 
-type ReduceFn = Box<dyn FnOnce(&Value, &str) -> TireaResult<Patch> + Send>;
+// Re-export from tirea-state so downstream `use tirea_contract::runtime::state::StateSpec` still works.
+pub use tirea_state::StateSpec;
 
 /// Runtime scope where a state is valid.
+///
+/// Determines the namespace under which the state is stored in the document.
+/// `Run`-scoped state lives at the top level; `ToolCall`-scoped state is
+/// nested under `__tool_call_scope.<call_id>`.
+///
+/// Scope is implicit in the construction path: [`AnyStateAction::new`] always
+/// targets `Run`, while [`AnyStateAction::new_for_call`] always targets `ToolCall`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateScope {
     /// State that lives for the entire run.
@@ -18,35 +26,7 @@ pub enum StateScope {
     ToolCall,
 }
 
-/// Extends [`State`] with a typed action and a pure reducer.
-///
-/// Implementors define what actions their state accepts and how the state
-/// transitions in response. The kernel applies actions via [`AnyStateAction`]
-/// without knowing the concrete types.
-///
-/// # Example
-///
-/// ```ignore
-/// impl StateSpec for Counter {
-///     type Action = CounterAction;
-///     fn reduce(&mut self, action: CounterAction) {
-///         match action {
-///             CounterAction::Increment(n) => self.value += n,
-///             CounterAction::Reset => self.value = 0,
-///         }
-///     }
-/// }
-/// ```
-pub trait StateSpec: State + Clone + Sized + Send + 'static {
-    /// The action type accepted by this state.
-    type Action: Send + 'static;
-
-    /// Runtime scope for this state.
-    const SCOPE: StateScope = StateScope::Run;
-
-    /// Pure reducer: apply an action to produce the next state.
-    fn reduce(&mut self, action: Self::Action);
-}
+type ReduceFn = Box<dyn FnOnce(&Value, &str) -> TireaResult<Patch> + Send>;
 
 
 /// Type-erased state action that can be applied to a JSON document.
@@ -78,7 +58,10 @@ pub enum AnyStateAction {
 }
 
 impl AnyStateAction {
-    /// Create a type-erased action targeting state `S`.
+    /// Create a type-erased action targeting run-scoped state `S`.
+    ///
+    /// Always sets scope to `Run`. For tool-call-scoped state, use
+    /// [`new_for_call`](Self::new_for_call) instead.
     ///
     /// # Panics
     ///
@@ -92,7 +75,7 @@ impl AnyStateAction {
         Self::Typed {
             state_type_id: TypeId::of::<S>(),
             state_type_name: std::any::type_name::<S>(),
-            scope: S::SCOPE,
+            scope: StateScope::Run,
             base_path: S::PATH,
             call_id_override: None,
             reduce_fn: Self::make_reduce_fn::<S>(action),
@@ -100,10 +83,11 @@ impl AnyStateAction {
         }
     }
 
-    /// Create a type-erased action with an explicit call_id override.
+    /// Create a type-erased action targeting a specific tool call scope.
     ///
-    /// Used for recovery/framework-internal scenarios where the action must
-    /// target a specific tool call id without relying on the ambient `ScopeContext`.
+    /// Sets `scope = ToolCall` implicitly — `new_for_call` is exclusively for
+    /// call-scoped state. The `call_id` determines which `__tool_call_scope.<id>`
+    /// namespace the action is routed to.
     ///
     /// # Panics
     ///
@@ -117,7 +101,7 @@ impl AnyStateAction {
         Self::Typed {
             state_type_id: TypeId::of::<S>(),
             state_type_name: std::any::type_name::<S>(),
-            scope: S::SCOPE,
+            scope: StateScope::ToolCall,
             base_path: S::PATH,
             call_id_override: Some(call_id.into()),
             reduce_fn: Self::make_reduce_fn::<S>(action),
@@ -328,7 +312,7 @@ mod tests {
     use serde_json::json;
     use tirea_state::{
         apply_patch, conflicts_with_registry, DocCell, GCounter, LatticeRegistry, Op, PatchSink,
-        Path as TPath,
+        Path as TPath, State,
     };
 
     // -- Manual State + StateSpec impl for testing --
@@ -443,7 +427,6 @@ mod tests {
 
     impl StateSpec for ToolScopedCounter {
         type Action = CounterAction;
-        const SCOPE: StateScope = StateScope::ToolCall;
 
         fn reduce(&mut self, action: Self::Action) {
             match action {
@@ -528,7 +511,10 @@ mod tests {
 
     #[test]
     fn any_state_action_scope_tool_call() {
-        let action = AnyStateAction::new::<ToolScopedCounter>(CounterAction::Increment(1));
+        let action = AnyStateAction::new_for_call::<ToolScopedCounter>(
+            CounterAction::Increment(1),
+            "call_1",
+        );
         assert_eq!(action.scope(), StateScope::ToolCall);
     }
 
@@ -579,12 +565,12 @@ mod tests {
     #[test]
     fn reduce_tool_call_scoped_action_routes_to_call_namespace() {
         let base = json!({});
-        let scope_ctx = ScopeContext::for_call("call_42");
-        let actions = vec![AnyStateAction::new::<ToolScopedCounter>(
+        let actions = vec![AnyStateAction::new_for_call::<ToolScopedCounter>(
             CounterAction::Increment(5),
+            "call_42",
         )];
         let tracked =
-            reduce_state_actions(actions, &base, "test", &scope_ctx).unwrap();
+            reduce_state_actions(actions, &base, "test", &ScopeContext::run()).unwrap();
         assert_eq!(tracked.len(), 1);
 
         let result = apply_patch(&base, tracked[0].patch()).unwrap();

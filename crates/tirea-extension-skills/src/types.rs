@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tirea_contract::runtime::state::StateSpec;
 use tirea_state::{GSet, State};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,7 +75,7 @@ pub struct LoadedAsset {
 /// inline via `ToolResult` / `with_user_message` and never stored in state,
 /// avoiding parallel-branch conflicts on HashMap writes.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-#[tirea(path = "skills")]
+#[tirea(path = "skills", action = "SkillStateAction")]
 pub struct SkillState {
     /// Activated skill IDs (grow-only set for conflict-free parallel merges).
     #[serde(default)]
@@ -90,10 +89,8 @@ pub enum SkillStateAction {
     Activate(String),
 }
 
-impl StateSpec for SkillState {
-    type Action = SkillStateAction;
-
-    fn reduce(&mut self, action: Self::Action) {
+impl SkillState {
+    fn reduce(&mut self, action: SkillStateAction) {
         match action {
             SkillStateAction::Activate(id) => {
                 self.active.insert(id);

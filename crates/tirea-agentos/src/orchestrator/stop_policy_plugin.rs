@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::contracts::runtime::behavior::{AgentBehavior, ReadOnlyContext};
 use crate::contracts::runtime::action::Action;
 use crate::contracts::runtime::run::FlowControl;
-use crate::contracts::runtime::state::{AnyStateAction, StateSpec};
+use crate::contracts::runtime::state::AnyStateAction;
 use crate::contracts::runtime::phase::step::StepContext;
 use crate::contracts::runtime::phase::Phase;
 use crate::contracts::runtime::RunAction;
@@ -39,7 +39,7 @@ pub enum StopConditionSpec {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-#[tirea(path = "__kernel.stop_policy_runtime")]
+#[tirea(path = "__kernel.stop_policy_runtime", action = "StopPolicyRuntimeAction")]
 struct StopPolicyRuntimeState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at_ms: Option<u64>,
@@ -62,9 +62,7 @@ pub(crate) enum StopPolicyRuntimeAction {
 }
 
 
-impl StateSpec for StopPolicyRuntimeState {
-    type Action = StopPolicyRuntimeAction;
-
+impl StopPolicyRuntimeState {
     fn reduce(&mut self, action: StopPolicyRuntimeAction) {
         match action {
             StopPolicyRuntimeAction::RecordTokens {

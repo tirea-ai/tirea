@@ -129,7 +129,7 @@ pub use writer::JsonWriter;
 // State types
 pub use manager::{ApplyResult, StateError, StateManager};
 pub use runtime::{SealedState, SealedStateError};
-pub use state::{parse_path, PatchSink, State, StateContext, StateExt};
+pub use state::{parse_path, PatchSink, State, StateContext, StateExt, StateSpec};
 
 // Re-export derive macros when feature is enabled
 #[cfg(feature = "derive")]

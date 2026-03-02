@@ -1,4 +1,5 @@
-use super::spec::{AnyStateAction, StateScope, StateSpec};
+use super::spec::{AnyStateAction, StateScope};
+use tirea_state::StateSpec;
 use std::any::TypeId;
 use std::collections::HashMap;
 
@@ -18,12 +19,10 @@ impl StateScopeRegistry {
         Self::default()
     }
 
-    /// Register a [`StateSpec`] type, recording its `TypeId` and `SCOPE`.
-    pub fn register<S: StateSpec>(&mut self) {
-        self.typed.insert(
-            TypeId::of::<S>(),
-            (std::any::type_name::<S>(), S::SCOPE),
-        );
+    /// Register a [`StateSpec`] type with an explicit [`StateScope`].
+    pub fn register<S: StateSpec>(&mut self, scope: StateScope) {
+        self.typed
+            .insert(TypeId::of::<S>(), (std::any::type_name::<S>(), scope));
     }
 
     /// Look up the scope of a registered type.
@@ -109,15 +108,14 @@ mod tests {
 
     impl StateSpec for ToolScoped {
         type Action = ();
-        const SCOPE: StateScope = StateScope::ToolCall;
         fn reduce(&mut self, _: ()) {}
     }
 
     #[test]
     fn register_and_lookup() {
         let mut reg = StateScopeRegistry::new();
-        reg.register::<RunScoped>();
-        reg.register::<ToolScoped>();
+        reg.register::<RunScoped>(StateScope::Run);
+        reg.register::<ToolScoped>(StateScope::ToolCall);
 
         assert_eq!(
             reg.typed_scope(TypeId::of::<RunScoped>()),
@@ -145,7 +143,7 @@ mod tests {
     #[test]
     fn resolve_uses_registered_scope() {
         let mut reg = StateScopeRegistry::new();
-        reg.register::<ToolScoped>();
+        reg.register::<ToolScoped>(StateScope::ToolCall);
         let action = AnyStateAction::new::<ToolScoped>(());
         assert_eq!(reg.resolve(&action), StateScope::ToolCall);
     }

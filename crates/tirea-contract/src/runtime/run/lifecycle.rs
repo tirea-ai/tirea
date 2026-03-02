@@ -1,4 +1,3 @@
-use crate::runtime::state::StateSpec;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tirea_state::State;
@@ -122,7 +121,7 @@ waiting -------> done
 
 /// Minimal durable run lifecycle envelope stored at `state["__run"]`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State, PartialEq, Eq)]
-#[tirea(path = "__run")]
+#[tirea(path = "__run", action = "RunLifecycleAction")]
 pub struct RunLifecycleState {
     /// Current run id associated with this lifecycle record.
     #[serde(default)]
@@ -149,10 +148,8 @@ pub enum RunLifecycleAction {
     },
 }
 
-impl StateSpec for RunLifecycleState {
-    type Action = RunLifecycleAction;
-
-    fn reduce(&mut self, action: Self::Action) {
+impl RunLifecycleState {
+    fn reduce(&mut self, action: RunLifecycleAction) {
         match action {
             RunLifecycleAction::Set {
                 id,

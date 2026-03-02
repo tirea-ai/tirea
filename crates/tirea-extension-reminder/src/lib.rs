@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tirea_contract::runtime::action::Action;
 use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
 use tirea_contract::runtime::inference::InferenceContext;
-use tirea_contract::runtime::state::{AnyStateAction, StateSpec};
+use tirea_contract::runtime::state::AnyStateAction;
 use tirea_contract::runtime::phase::step::StepContext;
 use tirea_contract::runtime::phase::Phase;
 use tirea_state::State;
@@ -18,7 +18,7 @@ pub use system_reminder::SystemReminder;
 
 /// Reminder state stored in session state.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-#[tirea(path = "reminders")]
+#[tirea(path = "reminders", action = "ReminderAction")]
 struct ReminderState {
     /// List of reminder texts.
     #[serde(default)]
@@ -40,9 +40,7 @@ pub enum ReminderAction {
 /// Stable plugin id for reminder actions.
 pub const REMINDER_PLUGIN_ID: &str = "reminder";
 
-impl StateSpec for ReminderState {
-    type Action = ReminderAction;
-
+impl ReminderState {
     fn reduce(&mut self, action: ReminderAction) {
         match action {
             ReminderAction::Add { text } => {

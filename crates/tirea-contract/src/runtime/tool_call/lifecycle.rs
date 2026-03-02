@@ -1,4 +1,3 @@
-use crate::runtime::state::{StateScope, StateSpec};
 use crate::runtime::phase::SuspendTicket;
 use crate::thread::ToolCall;
 use serde::{Deserialize, Serialize};
@@ -99,7 +98,7 @@ impl SuspendedCall {
 /// interaction payload, and resume strategy. It is automatically deleted when the
 /// tool call reaches a terminal outcome (Succeeded/Failed/Cancelled).
 #[derive(Debug, Clone, Serialize, Deserialize, State)]
-#[tirea(path = "suspended_call")]
+#[tirea(path = "suspended_call", action = "SuspendedCallAction")]
 pub struct SuspendedCallState {
     /// The suspended call data (flattened for serialization).
     #[serde(flatten)]
@@ -120,10 +119,7 @@ pub enum SuspendedCallAction {
     Set(SuspendedCall),
 }
 
-impl StateSpec for SuspendedCallState {
-    type Action = SuspendedCallAction;
-    const SCOPE: crate::runtime::state::StateScope = crate::runtime::state::StateScope::ToolCall;
-
+impl SuspendedCallState {
     fn reduce(&mut self, action: SuspendedCallAction) {
         match action {
             SuspendedCallAction::Set(call) => {
@@ -235,7 +231,7 @@ pub struct ToolCallResume {
 ///
 /// Stored under `__tool_call_scope.<call_id>.tool_call_state` (ToolCall-scoped).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, State)]
-#[tirea(path = "tool_call_state")]
+#[tirea(path = "tool_call_state", action = "ToolCallStateAction")]
 pub struct ToolCallState {
     /// Stable tool call id.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -277,10 +273,7 @@ impl ToolCallState {
     }
 }
 
-impl StateSpec for ToolCallState {
-    type Action = ToolCallStateAction;
-    const SCOPE: StateScope = StateScope::ToolCall;
-
+impl ToolCallState {
     fn reduce(&mut self, action: ToolCallStateAction) {
         match action {
             ToolCallStateAction::Set(s) => *self = s,

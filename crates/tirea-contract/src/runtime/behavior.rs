@@ -2,7 +2,7 @@ use crate::runtime::action::Action;
 use crate::runtime::inference::response::{InferenceError, LLMResponse, StreamResult};
 use crate::runtime::phase::step::StepContext;
 use crate::runtime::phase::Phase;
-use crate::runtime::state::{ScopeContext, StateSpec};
+use crate::runtime::state::{ScopeContext, StateScope, StateSpec};
 use crate::runtime::state::StateScopeRegistry;
 use crate::runtime::tool_call::gate::ToolGate;
 use crate::runtime::tool_call::{ToolCallResume, ToolResult};
@@ -161,8 +161,8 @@ impl<'a> ReadOnlyContext<'a> {
     /// For `ToolCall`-scoped state, resolves to
     /// `__tool_call_scope.<call_id>.<S::PATH>` when a call id is present.
     /// For `Run`-scoped state, reads from `S::PATH` directly.
-    pub fn scoped_state_of<T: StateSpec>(&self) -> TireaResult<T> {
-        let path = self.scope_ctx.resolve_path(T::SCOPE, T::PATH);
+    pub fn scoped_state_of<T: StateSpec>(&self, scope: StateScope) -> TireaResult<T> {
+        let path = self.scope_ctx.resolve_path(scope, T::PATH);
         let val = self.doc.snapshot();
         let at = get_at_path(&val, &parse_path(&path)).unwrap_or(&Value::Null);
         T::from_value(at).or_else(|e| {
