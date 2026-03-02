@@ -337,7 +337,7 @@ impl<T: State> StateExt for T {}
 /// ```
 pub trait StateSpec: State + Clone + Sized + Send + 'static {
     /// The action type accepted by this state.
-    type Action: Send + 'static;
+    type Action: serde::Serialize + serde::de::DeserializeOwned + Send + 'static;
 
     /// Pure reducer: apply an action to produce the next state.
     fn reduce(&mut self, action: Self::Action);

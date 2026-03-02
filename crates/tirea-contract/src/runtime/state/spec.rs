@@ -1,4 +1,5 @@
 use super::scope_context::ScopeContext;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::any::TypeId;
 use std::fmt;
@@ -18,7 +19,8 @@ pub use tirea_state::StateSpec;
 ///
 /// Scope is implicit in the construction path: [`AnyStateAction::new`] always
 /// targets `Run`, while [`AnyStateAction::new_for_call`] always targets `ToolCall`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum StateScope {
     /// State that lives for the entire run.
     Run,
@@ -52,6 +54,10 @@ pub enum AnyStateAction {
         /// Enables `reduce_state_actions` to build a local registry for
         /// CRDT-aware rolling snapshot application.
         register_lattice: fn(&mut LatticeRegistry),
+        /// Serialized action payload captured before the action is moved into
+        /// `reduce_fn`. Enables pending-write persistence for crash recovery
+        /// without requiring access to the concrete action type.
+        serialized_payload: Value,
     },
     /// Pre-built tracked patch emitted directly as a state effect.
     Patch(TrackedPatch),
@@ -72,6 +78,9 @@ impl AnyStateAction {
             "StateSpec type has no bound path; cannot create AnyStateAction"
         );
 
+        let serialized_payload = serde_json::to_value(&action)
+            .expect("StateSpec::Action must be serializable");
+
         Self::Typed {
             state_type_id: TypeId::of::<S>(),
             state_type_name: std::any::type_name::<S>(),
@@ -80,6 +89,7 @@ impl AnyStateAction {
             call_id_override: None,
             reduce_fn: Self::make_reduce_fn::<S>(action),
             register_lattice: S::register_lattice,
+            serialized_payload,
         }
     }
 
@@ -98,6 +108,9 @@ impl AnyStateAction {
             "StateSpec type has no bound path; cannot create AnyStateAction"
         );
 
+        let serialized_payload = serde_json::to_value(&action)
+            .expect("StateSpec::Action must be serializable");
+
         Self::Typed {
             state_type_id: TypeId::of::<S>(),
             state_type_name: std::any::type_name::<S>(),
@@ -106,6 +119,7 @@ impl AnyStateAction {
             call_id_override: Some(call_id.into()),
             reduce_fn: Self::make_reduce_fn::<S>(action),
             register_lattice: S::register_lattice,
+            serialized_payload,
         }
     }
 
@@ -186,6 +200,19 @@ impl AnyStateAction {
         }
     }
 
+    /// The serialized action payload, if this is a `Typed` action.
+    ///
+    /// Returns `None` for raw `Patch` actions. The payload is captured at
+    /// construction time before the action is moved into the reduce closure.
+    pub fn serialized_payload(&self) -> Option<&Value> {
+        match self {
+            Self::Typed {
+                serialized_payload, ..
+            } => Some(serialized_payload),
+            Self::Patch(_) => None,
+        }
+    }
+
     /// If this is a raw `Patch` action, return the tracked patch directly.
     ///
     /// Used by the effect applicator to preserve source metadata.
@@ -245,6 +272,7 @@ pub fn reduce_state_actions(
                 base_path,
                 call_id_override,
                 reduce_fn,
+                serialized_payload: _,
                 ..
             } => {
                 // Resolve actual storage path: call_id_override takes priority,
@@ -279,12 +307,14 @@ impl fmt::Debug for AnyStateAction {
                 state_type_name,
                 state_type_id,
                 scope,
+                serialized_payload,
                 ..
             } => f
                 .debug_struct("AnyStateAction::Typed")
                 .field("state", state_type_name)
                 .field("type_id", state_type_id)
                 .field("scope", scope)
+                .field("payload", serialized_payload)
                 .finish(),
             Self::Patch(tracked) => f
                 .debug_struct("AnyStateAction::Patch")
@@ -350,7 +380,7 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Serialize, Deserialize)]
     enum CounterAction {
         Increment(i64),
         Reset,
@@ -662,6 +692,7 @@ mod tests {
         }
     }
 
+    #[derive(Serialize, Deserialize)]
     #[allow(dead_code)]
     enum TokenStatsAction {
         AddInput(u64),
@@ -775,6 +806,7 @@ mod tests {
             }
         }
 
+        #[derive(Serialize, Deserialize)]
         enum MixedAction {
             IncrementAndRename(u64, String),
         }
@@ -913,5 +945,26 @@ mod tests {
             patches.is_empty(),
             "no-op reduce should produce no patches, got: {patches:?}"
         );
+    }
+
+    #[test]
+    fn serialized_payload_is_captured() {
+        let action = AnyStateAction::new::<Counter>(CounterAction::Increment(42));
+        let payload = action.serialized_payload().expect("Typed action should have payload");
+        assert_eq!(*payload, json!({"Increment": 42}));
+
+        // Patch variant returns None
+        let raw = AnyStateAction::Patch(TrackedPatch::new(Patch::default()));
+        assert!(raw.serialized_payload().is_none());
+    }
+
+    #[test]
+    fn serialized_payload_captured_for_call_scoped() {
+        let action = AnyStateAction::new_for_call::<ToolScopedCounter>(
+            CounterAction::Reset,
+            "call_1",
+        );
+        let payload = action.serialized_payload().expect("Typed action should have payload");
+        assert_eq!(*payload, json!("Reset"));
     }
 }

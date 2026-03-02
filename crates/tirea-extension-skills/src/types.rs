@@ -84,6 +84,7 @@ pub struct SkillState {
 }
 
 /// Action type for [`SkillState`] reducer.
+#[derive(Serialize, Deserialize)]
 pub enum SkillStateAction {
     /// Mark a skill as activated (insert into the grow-only set).
     Activate(String),

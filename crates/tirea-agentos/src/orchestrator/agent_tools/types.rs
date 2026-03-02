@@ -62,6 +62,7 @@ pub struct DelegationState {
 }
 
 /// Action type for `DelegationState` reducer.
+#[derive(Serialize, Deserialize)]
 pub enum DelegationAction {
     /// Replace the entire runs map.
     SetRuns(HashMap<String, DelegationRecord>),

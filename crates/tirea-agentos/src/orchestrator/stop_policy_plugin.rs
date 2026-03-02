@@ -52,6 +52,7 @@ struct StopPolicyRuntimeState {
 }
 
 /// Action type for `StopPolicyRuntimeState` reducer.
+#[derive(Serialize, Deserialize)]
 pub(crate) enum StopPolicyRuntimeAction {
     /// Record token usage from a single inference call.
     RecordTokens {

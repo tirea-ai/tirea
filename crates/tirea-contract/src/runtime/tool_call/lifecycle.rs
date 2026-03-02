@@ -114,6 +114,7 @@ impl Default for SuspendedCallState {
 }
 
 /// Action type for `SuspendedCallState` reducer.
+#[derive(Serialize, Deserialize)]
 pub enum SuspendedCallAction {
     /// Set the suspended call state.
     Set(SuspendedCall),
@@ -130,6 +131,7 @@ impl SuspendedCallState {
 }
 
 /// Action type for `ToolCallState` reducer.
+#[derive(Serialize, Deserialize)]
 pub enum ToolCallStateAction {
     /// Set the full tool call state (used by recovery and normal updates).
     Set(ToolCallState),

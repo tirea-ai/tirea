@@ -182,7 +182,7 @@ impl State for DebugFlags {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 enum DebugFlagAction {
     SetRunStartSideEffect,
     SetBeforeInferenceEffect,

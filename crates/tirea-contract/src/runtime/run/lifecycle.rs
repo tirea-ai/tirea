@@ -138,6 +138,7 @@ pub struct RunLifecycleState {
 }
 
 /// Action type for [`RunLifecycleState`] reducer.
+#[derive(Serialize, Deserialize)]
 pub enum RunLifecycleAction {
     /// Set the entire run lifecycle envelope in one reducer step.
     Set {
