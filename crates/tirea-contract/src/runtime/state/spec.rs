@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::any::TypeId;
 use std::fmt;
 use tirea_state::{
-    apply_patch_with_registry, get_at_path, parse_path, LatticeRegistry, Op, Patch, Path, State,
+    apply_patch_with_registry, get_at_path, parse_path, LatticeRegistry, Patch, Path, State,
     TireaResult, TrackedPatch,
 };
 
@@ -37,7 +37,7 @@ pub enum StateScope {
 ///     }
 /// }
 /// ```
-pub trait StateSpec: State + Sized + Send + 'static {
+pub trait StateSpec: State + Clone + Sized + Send + 'static {
     /// The action type accepted by this state.
     type Action: Send + 'static;
 
@@ -129,6 +129,13 @@ impl AnyStateAction {
         Box::new(move |doc: &Value, actual_path: &str| {
             let path = parse_path(actual_path);
             let sub_doc = get_at_path(doc, &path).cloned().unwrap_or(Value::Null);
+            // Track whether the state is being created for the first time.
+            // When true, we must emit a whole-state Op::set rather than a
+            // per-field diff, because diff_ops would skip fields that match
+            // the default (e.g., status=Running when default is Running).
+            let is_creation = sub_doc.is_null()
+                || sub_doc == Value::Object(Default::default());
+
             // When the path doesn't exist (Null) and from_value fails,
             // fall back to an empty object. This handles derive(State) structs
             // whose #[serde(default)] fields can deserialize from `{}` but not
@@ -141,24 +148,28 @@ impl AnyStateAction {
                 }
             })?;
 
-            let lattice_keys = S::lattice_keys();
-            if lattice_keys.is_empty() {
-                // No lattice fields: single Op::set (fast path, no extra serialization)
+            if is_creation && S::lattice_keys().is_empty() {
+                // First-time creation of non-CRDT state: emit whole-state
+                // Op::set so all fields (including those matching defaults)
+                // are materialised in the document.
                 state.reduce(action);
                 let new_value = state.to_value()?;
-                return Ok(Patch::with_ops(vec![Op::set(
-                    path_from_str(actual_path),
-                    new_value,
+                let base_path = path_from_str(actual_path);
+                return Ok(Patch::with_ops(vec![tirea_state::Op::set(
+                    base_path, new_value,
                 )]));
             }
 
-            // Has lattice fields: diff before/after and emit per-field ops
-            let old_value = state.to_value()?;
+            // For CRDT types (or updates to existing state): use diff_ops
+            // so lattice fields correctly emit Op::LatticeMerge.
+            let old = state.clone();
             state.reduce(action);
-            let new_value = state.to_value()?;
 
             let base_path = path_from_str(actual_path);
-            let ops = diff_state_fields(&old_value, &new_value, &base_path, lattice_keys);
+            let ops = S::diff_ops(&old, &state, &base_path)?;
+            if ops.is_empty() {
+                return Ok(Patch::default());
+            }
             Ok(Patch::with_ops(ops))
         })
     }
@@ -299,42 +310,6 @@ impl fmt::Debug for AnyStateAction {
     }
 }
 
-/// Diff two JSON objects and emit per-field ops, using `Op::LatticeMerge` for
-/// lattice-annotated fields and `Op::set` / `Op::delete` for the rest.
-fn diff_state_fields(
-    old_value: &Value,
-    new_value: &Value,
-    base_path: &Path,
-    lattice_keys: &[&str],
-) -> Vec<Op> {
-    let empty_obj = serde_json::Map::new();
-    let old_obj = old_value.as_object().unwrap_or(&empty_obj);
-    let new_obj = new_value.as_object().unwrap_or(&empty_obj);
-
-    let mut ops = Vec::new();
-
-    for (key, new_val) in new_obj {
-        let old_val = old_obj.get(key);
-        if old_val == Some(new_val) {
-            continue; // unchanged
-        }
-        let field_path = base_path.clone().key(key);
-        if lattice_keys.contains(&key.as_str()) {
-            ops.push(Op::lattice_merge(field_path, new_val.clone()));
-        } else {
-            ops.push(Op::set(field_path, new_val.clone()));
-        }
-    }
-
-    for key in old_obj.keys() {
-        if !new_obj.contains_key(key) {
-            ops.push(Op::delete(base_path.clone().key(key)));
-        }
-    }
-
-    ops
-}
-
 /// Convert a dot-separated path string to a `Path` for use in `Op::set`.
 fn path_from_str(s: &str) -> Path {
     let mut path = Path::root();
@@ -352,7 +327,7 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use serde_json::json;
     use tirea_state::{
-        apply_patch, conflicts_with_registry, DocCell, GCounter, LatticeRegistry, PatchSink,
+        apply_patch, conflicts_with_registry, DocCell, GCounter, LatticeRegistry, Op, PatchSink,
         Path as TPath,
     };
 
@@ -911,6 +886,46 @@ mod tests {
             total.value(),
             20,
             "rolling snapshot should apply lattice merge correctly"
+        );
+    }
+
+    #[test]
+    fn diff_ops_skips_unchanged_fields() {
+        // Only modify one CRDT field; the other fields should not appear in ops.
+        let base = json!({"token_stats": {"total_input": {}, "total_output": {}, "label": ""}});
+        let patches = reduce_state_actions(
+            vec![AnyStateAction::new::<TokenStats>(TokenStatsAction::AddInput(42))],
+            &base,
+            "test",
+            &ScopeContext::run(),
+        )
+        .unwrap();
+
+        let ops = patches[0].patch().ops();
+        // Only total_input changed → exactly one op
+        assert_eq!(ops.len(), 1, "should only emit op for the changed field, got: {ops:?}");
+        assert!(
+            matches!(&ops[0], Op::LatticeMerge { .. }),
+            "changed CRDT field should use LatticeMerge"
+        );
+    }
+
+    #[test]
+    fn diff_ops_empty_when_no_changes() {
+        // A reset on an already-zero counter produces no state change.
+        let base = json!({"counters": {"main": {"value": 0}}});
+        let patches = reduce_state_actions(
+            vec![AnyStateAction::new::<Counter>(CounterAction::Reset)],
+            &base,
+            "test",
+            &ScopeContext::run(),
+        )
+        .unwrap();
+
+        // No change → no patches emitted
+        assert!(
+            patches.is_empty(),
+            "no-op reduce should produce no patches, got: {patches:?}"
         );
     }
 }

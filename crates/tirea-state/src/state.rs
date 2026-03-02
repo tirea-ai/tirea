@@ -227,6 +227,29 @@ pub trait State: Sized {
         &[]
     }
 
+    /// Compare two instances and emit minimal ops for changed fields.
+    ///
+    /// The derive macro generates an optimized version that does typed
+    /// per-field comparison and only serializes changed fields. Lattice
+    /// fields emit `Op::LatticeMerge`; regular fields emit `Op::Set`.
+    ///
+    /// The default implementation serializes both values and diffs at JSON
+    /// level. When `lattice_keys()` is non-empty, changed lattice fields
+    /// emit `Op::LatticeMerge`; all others emit `Op::Set`.
+    fn diff_ops(old: &Self, new: &Self, base_path: &Path) -> TireaResult<Vec<Op>> {
+        let old_val = old.to_value()?;
+        let new_val = new.to_value()?;
+        if old_val == new_val {
+            return Ok(Vec::new());
+        }
+        let lattice_keys = Self::lattice_keys();
+        if lattice_keys.is_empty() {
+            return Ok(vec![Op::set(base_path.clone(), new_val)]);
+        }
+        // Per-field diff with LatticeMerge for lattice fields
+        Ok(diff_state_fields(&old_val, &new_val, base_path, lattice_keys))
+    }
+
     /// Create a patch that sets this value at the root.
     fn to_patch(&self) -> TireaResult<Patch> {
         Ok(Patch::with_ops(vec![Op::set(
@@ -234,6 +257,45 @@ pub trait State: Sized {
             self.to_value()?,
         )]))
     }
+}
+
+/// Diff two JSON objects field-by-field, emitting `Op::LatticeMerge` for
+/// lattice-annotated fields and `Op::Set` / `Op::Delete` for the rest.
+///
+/// Used by the default `State::diff_ops` implementation for manual impls
+/// that declare `lattice_keys()`.
+fn diff_state_fields(
+    old_value: &Value,
+    new_value: &Value,
+    base_path: &Path,
+    lattice_keys: &[&str],
+) -> Vec<Op> {
+    let empty_obj = serde_json::Map::new();
+    let old_obj = old_value.as_object().unwrap_or(&empty_obj);
+    let new_obj = new_value.as_object().unwrap_or(&empty_obj);
+
+    let mut ops = Vec::new();
+
+    for (key, new_val) in new_obj {
+        let old_val = old_obj.get(key);
+        if old_val == Some(new_val) {
+            continue;
+        }
+        let field_path = base_path.clone().key(key);
+        if lattice_keys.contains(&key.as_str()) {
+            ops.push(Op::lattice_merge(field_path, new_val.clone()));
+        } else {
+            ops.push(Op::set(field_path, new_val.clone()));
+        }
+    }
+
+    for key in old_obj.keys() {
+        if !new_obj.contains_key(key) {
+            ops.push(Op::delete(base_path.clone().key(key)));
+        }
+    }
+
+    ops
 }
 
 /// Extension trait providing convenience methods for State types.

@@ -1,7 +1,7 @@
 //! Parsing logic for State derive macro.
 
 use darling::{ast, FromDeriveInput, FromField};
-use syn::{Generics, Ident, Type, Visibility};
+use syn::{Attribute, Generics, Ident, Type, Visibility};
 
 /// Parsed struct-level options.
 #[derive(Debug, FromDeriveInput)]
@@ -38,7 +38,7 @@ impl ViewModelInput {
 
 /// Parsed field-level options.
 #[derive(Debug, FromField)]
-#[darling(attributes(tirea))]
+#[darling(attributes(tirea), forward_attrs(serde))]
 pub struct FieldInput {
     /// Field identifier.
     pub ident: Option<Ident>,
@@ -49,6 +49,9 @@ pub struct FieldInput {
 
     /// Field type.
     pub ty: Type,
+
+    /// Raw attributes forwarded from the field (filtered to `#[serde(...)]`).
+    pub attrs: Vec<Attribute>,
 
     /// Rename the field in JSON.
     #[darling(default)]
@@ -91,6 +94,23 @@ impl FieldInput {
     /// Check if this field should be included in reader/writer.
     pub fn is_included(&self) -> bool {
         !self.skip
+    }
+
+    /// Check if this field has `#[serde(flatten)]`.
+    pub fn has_serde_flatten(&self) -> bool {
+        self.attrs.iter().any(|attr| {
+            if !attr.path().is_ident("serde") {
+                return false;
+            }
+            let mut found = false;
+            let _ = attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("flatten") {
+                    found = true;
+                }
+                Ok(())
+            });
+            found
+        })
     }
 }
 

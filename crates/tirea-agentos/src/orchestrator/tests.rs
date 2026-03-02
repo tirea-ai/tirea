@@ -184,7 +184,7 @@ impl crate::contracts::storage::ThreadWriter for FailOnNthAppendStorage {
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct RunEndMarkerState(bool);
 
 impl tirea_state::State for RunEndMarkerState {

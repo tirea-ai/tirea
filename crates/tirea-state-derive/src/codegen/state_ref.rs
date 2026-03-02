@@ -29,6 +29,7 @@ pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
     let increment_methods = generate_increment_methods(&fields)?;
     let register_lattice_body = generate_register_lattice(path_value, &fields);
     let lattice_keys_body = generate_lattice_keys(&fields);
+    let diff_ops_body = generate_diff_ops(&fields);
 
     Ok(quote! {
         /// Typed state reference for reading and writing state.
@@ -86,6 +87,8 @@ pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
             #register_lattice_body
 
             #lattice_keys_body
+
+            #diff_ops_body
         }
     })
 }
@@ -590,6 +593,129 @@ fn generate_lattice_keys(fields: &[&FieldInput]) -> TokenStream {
     quote! {
         fn lattice_keys() -> &'static [&'static str] {
             &[#(#keys),*]
+        }
+    }
+}
+
+/// Generate `diff_ops` override that does per-field comparison.
+///
+/// For each included field:
+/// - **Lattice** fields: `PartialEq` comparison, emit `Op::LatticeMerge` when changed
+/// - **Nested** (non-flatten) fields: recursively call `T::diff_ops`
+/// - **Flatten** fields: recursively call `T::diff_ops` at the same base path
+/// - **All others** (Primitive, Vec, Map, Option): serialize both values and compare
+///   at the `serde_json::Value` level, emit `Op::Set` when changed
+///
+/// Lattice types all derive `PartialEq`, so they can use direct comparison to
+/// avoid serialization when unchanged. Non-lattice fields may not implement
+/// `PartialEq` (e.g., containing `Thread`), so we compare serialized values.
+fn generate_diff_ops(fields: &[&FieldInput]) -> TokenStream {
+    let mut field_checks = Vec::new();
+
+    for field in fields {
+        let field_name = field.ident();
+        let field_ty = &field.ty;
+        let json_key = field.json_key();
+        let kind = FieldKind::from_type(field_ty, field.flatten || field.nested, field.lattice);
+
+        // #[serde(flatten)] fields have their keys merged into the parent
+        // object, so we diff each merged key at the base_path level.
+        if field.has_serde_flatten() {
+            field_checks.push(quote! {
+                {
+                    let old_flat = ::serde_json::to_value(&old.#field_name)
+                        .map_err(::tirea_state::TireaError::from)?;
+                    let new_flat = ::serde_json::to_value(&new.#field_name)
+                        .map_err(::tirea_state::TireaError::from)?;
+                    if old_flat != new_flat {
+                        let empty = ::serde_json::Map::new();
+                        let old_obj = old_flat.as_object().unwrap_or(&empty);
+                        let new_obj = new_flat.as_object().unwrap_or(&empty);
+                        for (key, new_val) in new_obj {
+                            if old_obj.get(key) != Some(new_val) {
+                                ops.push(::tirea_state::Op::set(
+                                    base_path.clone().key(key),
+                                    new_val.clone(),
+                                ));
+                            }
+                        }
+                        for key in old_obj.keys() {
+                            if !new_obj.contains_key(key) {
+                                ops.push(::tirea_state::Op::delete(base_path.clone().key(key)));
+                            }
+                        }
+                    }
+                }
+            });
+            continue;
+        }
+
+        let check = match &kind {
+            FieldKind::Nested if field.flatten => {
+                // #[tirea(flatten)]: delegate to inner type's diff_ops at the same base path
+                quote! {
+                    ops.extend(
+                        <#field_ty as ::tirea_state::State>::diff_ops(
+                            &old.#field_name, &new.#field_name, base_path,
+                        )?
+                    );
+                }
+            }
+            FieldKind::Nested => {
+                // Nested: delegate to inner type's diff_ops at sub-path
+                quote! {
+                    {
+                        let sub_path = base_path.clone().key(#json_key);
+                        ops.extend(
+                            <#field_ty as ::tirea_state::State>::diff_ops(
+                                &old.#field_name, &new.#field_name, &sub_path,
+                            )?
+                        );
+                    }
+                }
+            }
+            FieldKind::Lattice => {
+                // Lattice CRDT field: PartialEq + LatticeMerge
+                // All lattice types (GCounter, GSet, ORSet, etc.) derive PartialEq.
+                quote! {
+                    if old.#field_name != new.#field_name {
+                        let field_path = base_path.clone().key(#json_key);
+                        let value = ::serde_json::to_value(&new.#field_name)
+                            .map_err(::tirea_state::TireaError::from)?;
+                        ops.push(::tirea_state::Op::lattice_merge(field_path, value));
+                    }
+                }
+            }
+            _ => {
+                // Primitive, Option, Vec, Map: serialize and compare Values.
+                // We serialize both sides because field types may not impl PartialEq.
+                quote! {
+                    {
+                        let old_val = ::serde_json::to_value(&old.#field_name)
+                            .map_err(::tirea_state::TireaError::from)?;
+                        let new_val = ::serde_json::to_value(&new.#field_name)
+                            .map_err(::tirea_state::TireaError::from)?;
+                        if old_val != new_val {
+                            let field_path = base_path.clone().key(#json_key);
+                            ops.push(::tirea_state::Op::set(field_path, new_val));
+                        }
+                    }
+                }
+            }
+        };
+
+        field_checks.push(check);
+    }
+
+    quote! {
+        fn diff_ops(
+            old: &Self,
+            new: &Self,
+            base_path: &::tirea_state::Path,
+        ) -> ::tirea_state::TireaResult<Vec<::tirea_state::Op>> {
+            let mut ops = Vec::new();
+            #(#field_checks)*
+            Ok(ops)
         }
     }
 }
