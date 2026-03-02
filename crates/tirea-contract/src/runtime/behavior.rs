@@ -2,7 +2,7 @@ use crate::runtime::action::Action;
 use crate::runtime::inference::response::{InferenceError, LLMResponse, StreamResult};
 use crate::runtime::phase::step::StepContext;
 use crate::runtime::phase::Phase;
-use crate::runtime::state::{ScopeContext, StateScope, StateSpec};
+use crate::runtime::state::{ActionDeserializerRegistry, ScopeContext, StateScope, StateSpec};
 use crate::runtime::state::StateScopeRegistry;
 use crate::runtime::tool_call::gate::ToolGate;
 use crate::runtime::tool_call::{ToolCallResume, ToolResult};
@@ -206,6 +206,13 @@ pub trait AgentBehavior: Send + Sync {
     /// Plugins override this to call `registry.register::<S>()` for each
     /// `StateSpec` type they own, so the framework knows their declared scope.
     fn register_state_scopes(&self, _registry: &mut StateScopeRegistry) {}
+
+    /// Register action deserializers for crash-recovery pending writes.
+    ///
+    /// Called once at agent construction. Plugins override this to call
+    /// `registry.register::<S>()` for each `StateSpec` type, enabling
+    /// pending-write entries to be deserialized back into `AnyStateAction`.
+    fn register_action_deserializers(&self, _registry: &mut ActionDeserializerRegistry) {}
 
     async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
         vec![]

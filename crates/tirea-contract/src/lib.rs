@@ -97,6 +97,13 @@ macro_rules! declare_plugin_states {
         ) {
             $(registry.register::<$state>($crate::runtime::state::StateScope::Run);)+
         }
+
+        fn register_action_deserializers(
+            &self,
+            registry: &mut $crate::runtime::state::ActionDeserializerRegistry,
+        ) {
+            $(registry.register::<$state>();)+
+        }
     };
 }
 
@@ -128,13 +135,15 @@ pub use io::{
 
 // runtime plugin/tool-call/lifecycle
 pub use runtime::{
-    build_read_only_context_from_step, reduce_state_actions, Action, ActivityContext,
-    ActivityManager, AfterInferenceContext, AfterToolExecuteContext, AgentBehavior, AnyStateAction,
-    BeforeInferenceContext, BeforeToolExecuteContext, DecisionReplayPolicy,
-    Extensions, NoOpBehavior, Phase, PhaseContext, PhasePolicy, ReadOnlyContext, RunAction,
-    RunContext, RunDelta, RunEndContext, RunStartContext, ScopeContext, StateScope, StateScopeRegistry, StateSpec, StepContext,
-    StepEndContext, StepOutcome, StepStartContext, StoppedReason, StreamResult, SuspendTicket,
-    Suspension, SuspensionResponse, TerminationReason, TokenUsage, ToolCallAction, ToolCallContext,
+    build_read_only_context_from_step, reduce_state_actions, Action, ActionDeserializerRegistry,
+    ActivityContext, ActivityManager, AfterInferenceContext, AfterToolExecuteContext,
+    AgentBehavior, AnyStateAction, BeforeInferenceContext, BeforeToolExecuteContext,
+    DecisionReplayPolicy, Extensions, InMemoryPendingWriteStore, NoOpBehavior, PendingWriteEntry,
+    PendingWriteError, PendingWriteStore, Phase, PhaseContext, PhasePolicy, ReadOnlyContext,
+    RunAction, RunContext, RunDelta, RunEndContext, RunStartContext, ScopeContext,
+    SerializedAction, StateScope, StateScopeRegistry, StateSpec, StepContext, StepEndContext,
+    StepOutcome, StepStartContext, StoppedReason, StreamResult, SuspendTicket, Suspension,
+    SuspensionResponse, TerminationReason, TokenUsage, ToolCallAction, ToolCallContext,
     ToolCallOutcome, ToolExecution, ToolExecutionEffect, ToolExecutionRequest, ToolExecutionResult,
     ToolExecutor, ToolExecutorError, ToolGate, ToolProgressState, TOOL_PROGRESS_ACTIVITY_TYPE,
 };
