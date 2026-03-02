@@ -3,7 +3,8 @@ use serde_json::Value;
 use std::any::TypeId;
 use std::fmt;
 use tirea_state::{
-    apply_patch, get_at_path, parse_path, Op, Patch, Path, State, TireaResult, TrackedPatch,
+    apply_patch_with_registry, get_at_path, parse_path, LatticeRegistry, Op, Patch, Path, State,
+    TireaResult, TrackedPatch,
 };
 
 type ReduceFn = Box<dyn FnOnce(&Value, &str) -> TireaResult<Patch> + Send>;
@@ -67,6 +68,10 @@ pub enum AnyStateAction {
         /// specific call_id without a live `ScopeContext`.
         call_id_override: Option<String>,
         reduce_fn: ReduceFn,
+        /// Type-erased lattice registration function captured from `S::register_lattice`.
+        /// Enables `reduce_state_actions` to build a local registry for
+        /// CRDT-aware rolling snapshot application.
+        register_lattice: fn(&mut LatticeRegistry),
     },
     /// Pre-built tracked patch emitted directly as a state effect.
     Patch(TrackedPatch),
@@ -91,6 +96,7 @@ impl AnyStateAction {
             base_path: S::PATH,
             call_id_override: None,
             reduce_fn: Self::make_reduce_fn::<S>(action),
+            register_lattice: S::register_lattice,
         }
     }
 
@@ -115,6 +121,7 @@ impl AnyStateAction {
             base_path: S::PATH,
             call_id_override: Some(call_id.into()),
             reduce_fn: Self::make_reduce_fn::<S>(action),
+            register_lattice: S::register_lattice,
         }
     }
 
@@ -209,6 +216,19 @@ pub fn reduce_state_actions(
     default_source: &str,
     scope_ctx: &ScopeContext,
 ) -> TireaResult<Vec<TrackedPatch>> {
+    // Build a local lattice registry from Typed actions so that the rolling
+    // snapshot correctly handles Op::LatticeMerge ops (rather than falling back
+    // to Op::Set semantics).
+    let mut local_registry = LatticeRegistry::new();
+    for action in &actions {
+        if let AnyStateAction::Typed {
+            register_lattice, ..
+        } = action
+        {
+            register_lattice(&mut local_registry);
+        }
+    }
+
     let mut rolling_snapshot = base_snapshot.clone();
     let mut tracked_patches = Vec::new();
 
@@ -218,7 +238,11 @@ pub fn reduce_state_actions(
                 if tracked.patch().is_empty() {
                     continue;
                 }
-                rolling_snapshot = apply_patch(&rolling_snapshot, tracked.patch())?;
+                rolling_snapshot = apply_patch_with_registry(
+                    &rolling_snapshot,
+                    tracked.patch(),
+                    &local_registry,
+                )?;
                 tracked_patches.push(tracked);
             }
             AnyStateAction::Typed {
@@ -240,7 +264,11 @@ pub fn reduce_state_actions(
                 if patch.is_empty() {
                     continue;
                 }
-                rolling_snapshot = apply_patch(&rolling_snapshot, &patch)?;
+                rolling_snapshot = apply_patch_with_registry(
+                    &rolling_snapshot,
+                    &patch,
+                    &local_registry,
+                )?;
                 tracked_patches.push(TrackedPatch::new(patch).with_source(default_source));
             }
         }
@@ -666,6 +694,11 @@ mod tests {
         fn lattice_keys() -> &'static [&'static str] {
             &["total_input", "total_output"]
         }
+
+        fn register_lattice(registry: &mut LatticeRegistry) {
+            registry.register::<GCounter>(parse_path("token_stats.total_input"));
+            registry.register::<GCounter>(parse_path("token_stats.total_output"));
+        }
     }
 
     #[allow(dead_code)]
@@ -826,6 +859,58 @@ mod tests {
         assert!(
             !set_ops.is_empty(),
             "should have Op::set for non-CRDT field 'name'"
+        );
+    }
+
+    #[test]
+    fn reduce_state_actions_rolling_snapshot_uses_lattice_merge() {
+        // When a raw Patch with Op::LatticeMerge is followed by a Typed action
+        // that reads from the rolling snapshot, the lattice merge must be applied
+        // correctly (not as a plain set) so the subsequent reducer sees the merged value.
+        let mut c = GCounter::new();
+        c.increment("a", 10);
+        let base = json!({"token_stats": {"total_input": c, "total_output": {}, "label": ""}});
+
+        // Raw patch with a LatticeMerge delta from a different node
+        let mut delta = GCounter::new();
+        delta.increment("b", 7);
+        let raw_patch = TrackedPatch::new(Patch::with_ops(vec![Op::lattice_merge(
+            parse_path("token_stats.total_input"),
+            serde_json::to_value(&delta).unwrap(),
+        )]));
+
+        // Typed action that adds more input tokens
+        let typed_action =
+            AnyStateAction::new::<TokenStats>(TokenStatsAction::AddInput(3));
+
+        let tracked = reduce_state_actions(
+            vec![AnyStateAction::Patch(raw_patch), typed_action],
+            &base,
+            "test",
+            &ScopeContext::run(),
+        )
+        .unwrap();
+
+        // Apply all patches to get final state
+        let mut state = base.clone();
+        for tp in &tracked {
+            state = apply_patch_with_registry(
+                &state,
+                tp.patch(),
+                &LatticeRegistry::new(), // empty: tests the ops themselves
+            )
+            .unwrap();
+        }
+
+        // total_input should be max(a=10, b=7) from merge + 3 from typed action
+        // GCounter.value() = sum of all nodes
+        let total: GCounter =
+            serde_json::from_value(state["token_stats"]["total_input"].clone()).unwrap();
+        // a=10+3=13, b=7 → value = 20
+        assert_eq!(
+            total.value(),
+            20,
+            "rolling snapshot should apply lattice merge correctly"
         );
     }
 }
