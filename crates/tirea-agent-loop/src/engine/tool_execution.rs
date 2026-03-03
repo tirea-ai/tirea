@@ -117,7 +117,7 @@ pub async fn execute_single_tool_with_scope_and_behavior(
             patch: None,
         };
     }
-    let (result, state_actions, _user_messages) = effect.into_parts();
+    let (result, state_actions, _user_messages, _actions) = effect.into_parts();
 
     let tool_scope_ctx = ScopeContext::for_call(&call.id);
     let action_patches = match reduce_state_actions(

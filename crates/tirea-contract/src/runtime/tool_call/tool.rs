@@ -3,6 +3,7 @@
 //! Tools execute actions and can modify state through `Thread`.
 
 use super::ToolCallContext;
+use crate::runtime::action::Action;
 use crate::runtime::phase::SuspendTicket;
 use crate::runtime::state::AnyStateAction;
 use async_trait::async_trait;
@@ -194,12 +195,14 @@ impl ToolResult {
 /// Structured tool effect used by the action/reducer pipeline.
 ///
 /// Tools return a normal [`ToolResult`] plus optional state actions that the
-/// runtime reduces into patches after execution.
-#[derive(Debug)]
+/// runtime reduces into patches after execution, and optional phase actions
+/// applied during `AfterToolExecute` before plugin hooks run.
 pub struct ToolExecutionEffect {
     pub result: ToolResult,
     state_actions: Vec<AnyStateAction>,
     user_messages: Vec<String>,
+    /// Phase actions emitted by the tool, validated against `AfterToolExecute`.
+    actions: Vec<Box<dyn Action>>,
 }
 
 impl ToolExecutionEffect {
@@ -209,6 +212,7 @@ impl ToolExecutionEffect {
             result,
             state_actions: Vec::new(),
             user_messages: Vec::new(),
+            actions: Vec::new(),
         }
     }
 
@@ -229,8 +233,30 @@ impl ToolExecutionEffect {
         self
     }
 
-    pub fn into_parts(self) -> (ToolResult, Vec<AnyStateAction>, Vec<String>) {
-        (self.result, self.state_actions, self.user_messages)
+    /// Add a phase action applied during `AfterToolExecute` before plugin hooks.
+    ///
+    /// Only `AfterToolExecute`-compatible actions are accepted; others will be
+    /// rejected at runtime by phase validation.
+    #[must_use]
+    pub fn with_action(mut self, action: Box<dyn Action>) -> Self {
+        self.actions.push(action);
+        self
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        ToolResult,
+        Vec<AnyStateAction>,
+        Vec<String>,
+        Vec<Box<dyn Action>>,
+    ) {
+        (
+            self.result,
+            self.state_actions,
+            self.user_messages,
+            self.actions,
+        )
     }
 }
 

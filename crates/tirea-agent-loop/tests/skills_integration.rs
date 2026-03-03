@@ -173,7 +173,7 @@ async fn test_skill_activation_delivers_instructions_via_user_messages_on_effect
         .execute_effect(json!({"skill": "docx"}), &ctx)
         .await
         .expect("execute_effect should succeed");
-    let (result, _state_actions, user_messages) = effect.into_parts();
+    let (result, _state_actions, user_messages, _actions) = effect.into_parts();
     assert!(result.is_success(), "result={result:?}");
     assert_eq!(result.message.as_deref(), Some("Launching skill: docx"));
     assert_eq!(user_messages.len(), 1);
@@ -495,7 +495,7 @@ async fn test_skill_activation_user_messages_contain_skill_instructions() {
         .execute_effect(json!({"skill": "docx"}), &ctx)
         .await
         .expect("execute_effect should succeed");
-    let (result, _state_actions, user_messages) = effect.into_parts();
+    let (result, _state_actions, user_messages, _actions) = effect.into_parts();
     assert!(result.is_success());
     assert_eq!(user_messages.len(), 1);
     assert!(

@@ -7,6 +7,7 @@ use super::{
 };
 use crate::contracts::runtime::behavior::AgentBehavior;
 use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction, ScopeContext};
+use crate::contracts::runtime::action::Action;
 use crate::contracts::runtime::inference::MessagingContext;
 use crate::contracts::runtime::tool_call::ToolGate;
 use crate::contracts::runtime::phase::{Phase, StepContext};
@@ -922,6 +923,7 @@ async fn execute_single_tool_with_phases_impl(
         suspended_call,
         tool_state_actions,
         tool_user_messages,
+        tool_actions,
     ) = if step.tool_blocked() {
         let reason = step
             .extensions
@@ -936,8 +938,9 @@ async fn execute_single_tool_with_phases_impl(
             },
             ToolCallOutcome::Failed,
             None,
-            Vec::new(),
-            Vec::new(),
+            Vec::<AnyStateAction>::new(),
+            Vec::<String>::new(),
+            Vec::<Box<dyn Action>>::new(),
         )
     } else if let Some(plugin_result) = step.tool_result().cloned() {
         let outcome = ToolCallOutcome::from_tool_result(&plugin_result);
@@ -949,8 +952,9 @@ async fn execute_single_tool_with_phases_impl(
             },
             outcome,
             None,
-            Vec::new(),
-            Vec::new(),
+            Vec::<AnyStateAction>::new(),
+            Vec::<String>::new(),
+            Vec::<Box<dyn Action>>::new(),
         )
     } else if tool.is_none() {
         (
@@ -961,8 +965,9 @@ async fn execute_single_tool_with_phases_impl(
             },
             ToolCallOutcome::Failed,
             None,
-            Vec::new(),
-            Vec::new(),
+            Vec::<AnyStateAction>::new(),
+            Vec::<String>::new(),
+            Vec::<Box<dyn Action>>::new(),
         )
     } else if let Err(e) = tool.unwrap().validate_args(&call.arguments) {
         // Argument validation failed — return error to the LLM
@@ -974,8 +979,9 @@ async fn execute_single_tool_with_phases_impl(
             },
             ToolCallOutcome::Failed,
             None,
-            Vec::new(),
-            Vec::new(),
+            Vec::<AnyStateAction>::new(),
+            Vec::<String>::new(),
+            Vec::<Box<dyn Action>>::new(),
         )
     } else if step.tool_pending() {
         let Some(suspend_ticket) = step.extensions.get::<ToolGate>().and_then(|g| g.suspend_ticket.clone()) else {
@@ -994,8 +1000,9 @@ async fn execute_single_tool_with_phases_impl(
             },
             ToolCallOutcome::Suspended,
             Some(SuspendedCall::new(call, suspend_ticket)),
-            Vec::new(),
-            Vec::new(),
+            Vec::<AnyStateAction>::new(),
+            Vec::<String>::new(),
+            Vec::<Box<dyn Action>>::new(),
         )
     } else {
         persist_tool_call_status(&step, call, ToolCallStatus::Running, None)?;
@@ -1028,7 +1035,7 @@ async fn execute_single_tool_with_phases_impl(
         if let Err(result) = merge_context_patch_into_effect(call, &mut effect, context_patch) {
             effect = ToolExecutionEffect::from(result);
         }
-        let (result, state_actions, user_messages) = effect.into_parts();
+        let (result, state_actions, user_messages, actions) = effect.into_parts();
         let outcome = ToolCallOutcome::from_tool_result(&result);
 
         let suspended_call = if matches!(outcome, ToolCallOutcome::Suspended) {
@@ -1047,6 +1054,7 @@ async fn execute_single_tool_with_phases_impl(
             suspended_call,
             state_actions,
             user_messages,
+            actions,
         )
     };
 
@@ -1059,6 +1067,16 @@ async fn execute_single_tool_with_phases_impl(
     step.extensions
         .get_or_default::<MessagingContext>()
         .user_messages = tool_user_messages;
+
+    // Apply tool-emitted actions (validated against AfterToolExecute) before plugin hooks.
+    for action in &tool_actions {
+        action
+            .validate(Phase::AfterToolExecute)
+            .map_err(AgentLoopError::StateError)?;
+    }
+    for action in tool_actions {
+        action.apply(&mut step);
+    }
 
     // Phase: AfterToolExecute
     emit_tool_phase(
