@@ -1,14 +1,33 @@
 use super::*;
-use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction, ScopeContext};
+use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction, ScopeContext, StateScopeRegistry};
 use crate::contracts::runtime::{RunLifecycleAction, RunLifecycleState, RunStatus};
 use crate::contracts::storage::VersionPrecondition;
 use crate::runtime::loop_runner::run_loop_stream;
-use tirea_state::TrackedPatch;
+use tirea_state::{Op, Patch, TrackedPatch};
 
 fn now_unix_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64)
+}
+
+/// Generate delete patches for all Run-scoped state paths that exist in the
+/// current state. This ensures stale run-scoped state from a previous run is
+/// cleaned up before the new run begins.
+fn run_scope_cleanup_patches(
+    base_state: &serde_json::Value,
+    scope_registry: &StateScopeRegistry,
+) -> Vec<TrackedPatch> {
+    let paths = scope_registry.run_scoped_paths();
+    let mut patches = Vec::new();
+    for path in paths {
+        let parsed = tirea_state::parse_path(path);
+        if tirea_state::get_at_path(base_state, &parsed).is_some() {
+            let patch = Patch::with_ops(vec![Op::delete(parsed)]);
+            patches.push(TrackedPatch::new(patch).with_source("prepare_run:scope_cleanup"));
+        }
+    }
+    patches
 }
 
 fn run_lifecycle_running_patch(
@@ -128,7 +147,16 @@ impl AgentOs {
         // 4. Persist run-start changes (user messages + frontend state snapshot + run state)
         let delta_messages: Vec<Arc<Message>> =
             deduped_messages.into_iter().map(Arc::new).collect();
-        let delta_patches = vec![run_lifecycle_running_patch(&thread.state, &run_id)?];
+        // 4a. Clean up stale Run-scoped state from any previous run.
+        let mut delta_patches =
+            run_scope_cleanup_patches(&thread.state, &resolved.agent.state_scope_registry);
+        // 4b. Apply cleanup patches to in-memory thread state so the lifecycle
+        //     patch reducer sees a clean base.
+        for cp in &delta_patches {
+            thread.state = tirea_state::apply_patch(&thread.state, cp.patch())
+                .unwrap_or_else(|_| thread.state.clone());
+        }
+        delta_patches.push(run_lifecycle_running_patch(&thread.state, &run_id)?);
         let changeset = crate::contracts::ThreadChangeSet::from_parts(
             run_id.clone(),
             parent_run_id.clone(),
