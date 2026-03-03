@@ -208,6 +208,7 @@ Rules:\n\
             thread_id: Some("real-weather-smoke".to_string()),
             run_id: None,
             parent_run_id: None,
+            parent_thread_id: None,
             resource_id: None,
             state: None,
             messages: vec![Message::user(

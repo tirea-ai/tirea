@@ -313,6 +313,7 @@ impl RunAgentInput {
             thread_id: Some(self.thread_id),
             run_id: Some(self.run_id),
             parent_run_id: self.parent_run_id,
+            parent_thread_id: None,
             resource_id: None,
             state: self.state,
             messages: convert_agui_messages(&self.messages),

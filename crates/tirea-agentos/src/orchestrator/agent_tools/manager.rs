@@ -1,33 +1,32 @@
 use super::*;
+
 #[derive(Debug, Clone)]
-pub struct AgentRunSummary {
+pub struct SubAgentSummary {
     pub run_id: String,
-    pub target_agent_id: String,
-    pub status: DelegationStatus,
-    pub assistant: Option<String>,
+    pub agent_id: String,
+    pub status: SubAgentStatus,
     pub error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct AgentRunRecord {
+pub(super) struct SubAgentHandle {
     pub(super) epoch: u64,
     pub(super) owner_thread_id: String,
-    pub(super) target_agent_id: String,
+    pub(super) child_thread_id: String,
+    pub(super) agent_id: String,
     pub(super) parent_run_id: Option<String>,
-    pub(super) status: DelegationStatus,
-    pub(super) thread: crate::contracts::thread::Thread,
-    pub(super) assistant: Option<String>,
+    pub(super) status: SubAgentStatus,
     pub(super) error: Option<String>,
-    pub(super) run_cancellation_requested: bool,
     pub(super) cancellation_token: Option<RunCancellationToken>,
+    pub(super) run_cancellation_requested: bool,
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct AgentRunManager {
-    runs: Arc<Mutex<HashMap<String, AgentRunRecord>>>,
+pub struct SubAgentHandleTable {
+    handles: Arc<Mutex<HashMap<String, SubAgentHandle>>>,
 }
 
-impl AgentRunManager {
+impl SubAgentHandleTable {
     pub fn new() -> Self {
         Self::default()
     }
@@ -36,42 +35,38 @@ impl AgentRunManager {
         &self,
         owner_thread_id: &str,
         run_id: &str,
-    ) -> Option<AgentRunSummary> {
-        let runs = self.runs.lock().await;
-        let rec = runs.get(run_id)?;
-        if rec.owner_thread_id != owner_thread_id {
+    ) -> Option<SubAgentSummary> {
+        let handles = self.handles.lock().await;
+        let handle = handles.get(run_id)?;
+        if handle.owner_thread_id != owner_thread_id {
             return None;
         }
-        Some(AgentRunSummary {
+        Some(SubAgentSummary {
             run_id: run_id.to_string(),
-            target_agent_id: rec.target_agent_id.clone(),
-            status: rec.status,
-            assistant: rec.assistant.clone(),
-            error: rec.error.clone(),
+            agent_id: handle.agent_id.clone(),
+            status: handle.status,
+            error: handle.error.clone(),
         })
     }
 
     pub async fn running_or_stopped_for_owner(
         &self,
         owner_thread_id: &str,
-    ) -> Vec<AgentRunSummary> {
-        let runs = self.runs.lock().await;
-        let mut out: Vec<AgentRunSummary> = runs
+    ) -> Vec<SubAgentSummary> {
+        let handles = self.handles.lock().await;
+        let mut out: Vec<SubAgentSummary> = handles
             .iter()
-            .filter_map(|(run_id, rec)| {
-                if rec.owner_thread_id != owner_thread_id {
+            .filter_map(|(run_id, handle)| {
+                if handle.owner_thread_id != owner_thread_id {
                     return None;
                 }
-                match rec.status {
-                    DelegationStatus::Running | DelegationStatus::Stopped => {
-                        Some(AgentRunSummary {
-                            run_id: run_id.clone(),
-                            target_agent_id: rec.target_agent_id.clone(),
-                            status: rec.status,
-                            assistant: rec.assistant.clone(),
-                            error: rec.error.clone(),
-                        })
-                    }
+                match handle.status {
+                    SubAgentStatus::Running | SubAgentStatus::Stopped => Some(SubAgentSummary {
+                        run_id: run_id.clone(),
+                        agent_id: handle.agent_id.clone(),
+                        status: handle.status,
+                        error: handle.error.clone(),
+                    }),
                     _ => None,
                 }
             })
@@ -80,57 +75,28 @@ impl AgentRunManager {
         out
     }
 
-    pub async fn all_for_owner(&self, owner_thread_id: &str) -> Vec<AgentRunSummary> {
-        let runs = self.runs.lock().await;
-        let mut out: Vec<AgentRunSummary> = runs
-            .iter()
-            .filter_map(|(run_id, rec)| {
-                if rec.owner_thread_id != owner_thread_id {
-                    return None;
-                }
-                Some(AgentRunSummary {
-                    run_id: run_id.clone(),
-                    target_agent_id: rec.target_agent_id.clone(),
-                    status: rec.status,
-                    assistant: rec.assistant.clone(),
-                    error: rec.error.clone(),
-                })
-            })
-            .collect();
-        out.sort_by(|a, b| a.run_id.cmp(&b.run_id));
-        out
-    }
-
-    pub(super) async fn owned_record(
-        &self,
-        owner_thread_id: &str,
-        run_id: &str,
-    ) -> Option<crate::contracts::thread::Thread> {
-        let runs = self.runs.lock().await;
-        let rec = runs.get(run_id)?;
-        if rec.owner_thread_id != owner_thread_id {
-            return None;
-        }
-        Some(rec.thread.clone())
+    pub async fn contains(&self, run_id: &str) -> bool {
+        self.handles.lock().await.contains_key(run_id)
     }
 
     pub async fn stop_owned_tree(
         &self,
         owner_thread_id: &str,
         run_id: &str,
-    ) -> Result<Vec<AgentRunSummary>, String> {
-        let mut runs = self.runs.lock().await;
-        let Some(root_status) = runs.get(run_id).map(|r| r.status) else {
+    ) -> Result<Vec<SubAgentSummary>, String> {
+        let mut handles = self.handles.lock().await;
+        let Some(root_status) = handles.get(run_id).map(|h| h.status) else {
             return Err(format!("Unknown run_id: {run_id}"));
         };
-        if runs
+        if handles
             .get(run_id)
-            .is_some_and(|r| r.owner_thread_id != owner_thread_id)
+            .is_some_and(|h| h.owner_thread_id != owner_thread_id)
         {
             return Err(format!("Unknown run_id: {run_id}"));
         }
 
-        let run_ids = collect_descendant_run_ids_by_parent(&runs, owner_thread_id, run_id, true);
+        let run_ids =
+            collect_descendant_run_ids_by_parent(&handles, owner_thread_id, run_id, true);
         if run_ids.is_empty() {
             return Err(format!(
                 "Run '{run_id}' is not running (current status: {})",
@@ -141,21 +107,20 @@ impl AgentRunManager {
         let mut stopped = false;
         let mut out = Vec::with_capacity(run_ids.len());
         for id in run_ids {
-            if let Some(rec) = runs.get_mut(&id) {
-                if rec.status == DelegationStatus::Running {
-                    rec.run_cancellation_requested = true;
-                    rec.status = DelegationStatus::Stopped;
+            if let Some(handle) = handles.get_mut(&id) {
+                if handle.status == SubAgentStatus::Running {
+                    handle.run_cancellation_requested = true;
+                    handle.status = SubAgentStatus::Stopped;
                     stopped = true;
-                    if let Some(token) = rec.cancellation_token.take() {
+                    if let Some(token) = handle.cancellation_token.take() {
                         token.cancel();
                     }
                 }
-                out.push(AgentRunSummary {
+                out.push(SubAgentSummary {
                     run_id: id,
-                    target_agent_id: rec.target_agent_id.clone(),
-                    status: rec.status,
-                    assistant: rec.assistant.clone(),
-                    error: rec.error.clone(),
+                    agent_id: handle.agent_id.clone(),
+                    status: handle.status,
+                    error: handle.error.clone(),
                 });
             }
         }
@@ -174,23 +139,22 @@ impl AgentRunManager {
         &self,
         run_id: &str,
         owner_thread_id: String,
-        target_agent_id: String,
+        child_thread_id: String,
+        agent_id: String,
         parent_run_id: Option<String>,
-        thread: crate::contracts::thread::Thread,
         cancellation_token: Option<RunCancellationToken>,
     ) -> u64 {
-        let mut runs = self.runs.lock().await;
-        let epoch = runs.get(run_id).map(|r| r.epoch + 1).unwrap_or(1);
-        runs.insert(
+        let mut handles = self.handles.lock().await;
+        let epoch = handles.get(run_id).map(|h| h.epoch + 1).unwrap_or(1);
+        handles.insert(
             run_id.to_string(),
-            AgentRunRecord {
+            SubAgentHandle {
                 epoch,
                 owner_thread_id,
-                target_agent_id,
+                child_thread_id,
+                agent_id,
                 parent_run_id,
-                status: DelegationStatus::Running,
-                thread,
-                assistant: None,
+                status: SubAgentStatus::Running,
                 error: None,
                 run_cancellation_requested: false,
                 cancellation_token,
@@ -203,98 +167,111 @@ impl AgentRunManager {
         &self,
         run_id: &str,
         epoch: u64,
-        completion: AgentRunCompletion,
-    ) -> Option<AgentRunSummary> {
-        let mut runs = self.runs.lock().await;
-        let rec = runs.get_mut(run_id)?;
-        if rec.epoch != epoch {
-            // Stale completion from a previous generation (e.g. stopped run that was resumed).
+        completion: SubAgentCompletion,
+    ) -> Option<SubAgentSummary> {
+        let mut handles = self.handles.lock().await;
+        let handle = handles.get_mut(run_id)?;
+        if handle.epoch != epoch {
             return None;
         }
-        rec.thread = completion.thread;
-        rec.assistant = completion.assistant;
-        rec.error = completion.error;
-
-        // Explicit run-cancellation request wins over terminal status from executor.
-        rec.status = if rec.run_cancellation_requested {
-            DelegationStatus::Stopped
+        handle.error = completion.error;
+        handle.status = if handle.run_cancellation_requested {
+            SubAgentStatus::Stopped
         } else {
             completion.status
         };
-        rec.cancellation_token = None;
+        handle.cancellation_token = None;
 
-        Some(AgentRunSummary {
+        Some(SubAgentSummary {
             run_id: run_id.to_string(),
-            target_agent_id: rec.target_agent_id.clone(),
-            status: rec.status,
-            assistant: rec.assistant.clone(),
-            error: rec.error.clone(),
+            agent_id: handle.agent_id.clone(),
+            status: handle.status,
+            error: handle.error.clone(),
         })
     }
 
-    pub(super) async fn record_for_resume(
+    pub(super) async fn handle_for_resume(
         &self,
         owner_thread_id: &str,
         run_id: &str,
-    ) -> Result<AgentRunRecord, String> {
-        let runs = self.runs.lock().await;
-        let Some(rec) = runs.get(run_id) else {
+    ) -> Result<SubAgentHandle, String> {
+        let handles = self.handles.lock().await;
+        let Some(handle) = handles.get(run_id) else {
             return Err(format!("Unknown run_id: {run_id}"));
         };
-        if rec.owner_thread_id != owner_thread_id {
+        if handle.owner_thread_id != owner_thread_id {
             return Err(format!("Unknown run_id: {run_id}"));
         }
-        Ok(rec.clone())
+        Ok(handle.clone())
     }
 }
 
 #[derive(Debug)]
-pub(super) struct AgentRunCompletion {
-    pub(super) thread: crate::contracts::thread::Thread,
-    pub(super) status: DelegationStatus,
-    pub(super) assistant: Option<String>,
+pub(super) struct SubAgentCompletion {
+    pub(super) status: SubAgentStatus,
     pub(super) error: Option<String>,
 }
 
-fn last_assistant_message(thread: &crate::contracts::thread::Thread) -> Option<String> {
-    thread
-        .messages
-        .iter()
-        .rev()
-        .find(|m| m.role == Role::Assistant)
-        .map(|m| m.content.clone())
-}
-
-pub(super) async fn execute_target_agent(
+pub(super) async fn execute_sub_agent(
     os: AgentOs,
-    target_agent_id: String,
-    thread: crate::contracts::thread::Thread,
+    agent_id: String,
+    child_thread_id: String,
+    run_id: String,
+    parent_run_id: Option<String>,
+    parent_thread_id: String,
+    messages: Vec<crate::contracts::thread::Message>,
+    initial_state: Option<serde_json::Value>,
     cancellation_token: Option<RunCancellationToken>,
-) -> AgentRunCompletion {
-    let (checkpoint_tx, mut checkpoints) = tokio::sync::mpsc::unbounded_channel();
-    let state_committer: Option<Arc<dyn crate::runtime::loop_runner::StateCommitter>> =
-        Some(Arc::new(ChannelStateCommitter::new(checkpoint_tx)));
-    let mut events = match os.run_stream_with_context(
-        &target_agent_id,
-        thread.clone(),
-        cancellation_token,
-        state_committer,
-    ) {
-        Ok(stream) => stream,
+) -> SubAgentCompletion {
+    let request = crate::contracts::io::RunRequest {
+        agent_id,
+        thread_id: Some(child_thread_id),
+        run_id: Some(run_id),
+        parent_run_id,
+        parent_thread_id: Some(parent_thread_id),
+        resource_id: None,
+        state: initial_state,
+        messages,
+        initial_decisions: Vec::new(),
+    };
+
+    let resolved = match os.resolve(&request.agent_id) {
+        Ok(r) => r,
         Err(e) => {
-            return AgentRunCompletion {
-                thread,
-                status: DelegationStatus::Failed,
-                assistant: None,
+            return SubAgentCompletion {
+                status: SubAgentStatus::Failed,
                 error: Some(e.to_string()),
             };
         }
     };
 
+    let mut prepared = match os.prepare_run(request, resolved).await {
+        Ok(p) => p,
+        Err(e) => {
+            return SubAgentCompletion {
+                status: SubAgentStatus::Failed,
+                error: Some(e.to_string()),
+            };
+        }
+    };
+
+    if let Some(token) = cancellation_token {
+        prepared.cancellation_token = Some(token);
+    }
+
+    let run_stream = match AgentOs::execute_prepared(prepared) {
+        Ok(s) => s,
+        Err(e) => {
+            return SubAgentCompletion {
+                status: SubAgentStatus::Failed,
+                error: Some(e.to_string()),
+            };
+        }
+    };
+
+    let mut events = run_stream.events;
     let mut saw_error: Option<String> = None;
     let mut termination: Option<crate::contracts::TerminationReason> = None;
-    let mut final_thread = thread.clone();
-    let mut checkpoints_open = true;
 
     while let Some(ev) = events.next().await {
         match ev {
@@ -311,62 +288,45 @@ pub(super) async fn execute_target_agent(
             }
             _ => {}
         }
-
-        while let Ok(changeset) = checkpoints.try_recv() {
-            changeset.apply_to(&mut final_thread);
-        }
     }
-
-    while checkpoints_open {
-        match checkpoints.recv().await {
-            Some(changeset) => changeset.apply_to(&mut final_thread),
-            None => checkpoints_open = false,
-        }
-    }
-
-    let assistant = last_assistant_message(&final_thread);
 
     if saw_error.is_some() {
-        return AgentRunCompletion {
-            thread: final_thread,
-            status: DelegationStatus::Failed,
-            assistant,
+        return SubAgentCompletion {
+            status: SubAgentStatus::Failed,
             error: saw_error,
         };
     }
 
     let status = match termination {
-        Some(crate::contracts::TerminationReason::Cancelled) => DelegationStatus::Stopped,
-        _ => DelegationStatus::Completed,
+        Some(crate::contracts::TerminationReason::Cancelled) => SubAgentStatus::Stopped,
+        _ => SubAgentStatus::Completed,
     };
 
-    AgentRunCompletion {
-        thread: final_thread,
+    SubAgentCompletion {
         status,
-        assistant,
         error: None,
     }
 }
 
 pub(super) fn collect_descendant_run_ids_by_parent(
-    runs: &HashMap<String, AgentRunRecord>,
+    handles: &HashMap<String, SubAgentHandle>,
     owner_thread_id: &str,
     root_run_id: &str,
     include_root: bool,
 ) -> Vec<String> {
-    if runs
+    if handles
         .get(root_run_id)
-        .is_none_or(|rec| rec.owner_thread_id != owner_thread_id)
+        .is_none_or(|h| h.owner_thread_id != owner_thread_id)
     {
         return Vec::new();
     }
 
     let mut children_by_parent: HashMap<String, Vec<String>> = HashMap::new();
-    for (run_id, rec) in runs.iter() {
-        if rec.owner_thread_id != owner_thread_id {
+    for (run_id, handle) in handles.iter() {
+        if handle.owner_thread_id != owner_thread_id {
             continue;
         }
-        if let Some(parent_run_id) = &rec.parent_run_id {
+        if let Some(parent_run_id) = &handle.parent_run_id {
             children_by_parent
                 .entry(parent_run_id.clone())
                 .or_default()

@@ -14,6 +14,8 @@ pub struct RunRequest {
     pub run_id: Option<String>,
     /// Parent run ID for nested/delegated execution.
     pub parent_run_id: Option<String>,
+    /// Parent thread ID — set when a sub-agent is spawned by a parent agent.
+    pub parent_thread_id: Option<String>,
     /// Resource this thread belongs to (for listing/querying).
     pub resource_id: Option<String>,
     /// Frontend state snapshot.

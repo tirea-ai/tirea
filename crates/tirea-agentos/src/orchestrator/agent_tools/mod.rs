@@ -6,8 +6,8 @@ use crate::contracts::{AgentEvent, Suspension};
 use crate::extensions::permission::ToolPermissionBehavior;
 pub(super) use crate::runtime::loop_runner::TOOL_SCOPE_CALLER_AGENT_ID_KEY as SCOPE_CALLER_AGENT_ID_KEY;
 use crate::runtime::loop_runner::{
-    ChannelStateCommitter, RunCancellationToken, TOOL_SCOPE_CALLER_MESSAGES_KEY,
-    TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
+    RunCancellationToken, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
+    TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use types::{DelegationAction, DelegationRecord, DelegationState, DelegationStatus};
+use types::{SubAgent, SubAgentAction, SubAgentState, SubAgentStatus};
 
 const SCOPE_CALLER_SESSION_ID_KEY: &str = TOOL_SCOPE_CALLER_THREAD_ID_KEY;
 const SCOPE_CALLER_STATE_KEY: &str = TOOL_SCOPE_CALLER_STATE_KEY;
@@ -25,6 +25,7 @@ pub(crate) const AGENT_TOOLS_PLUGIN_ID: &str = "agent_tools";
 pub(crate) const AGENT_RECOVERY_PLUGIN_ID: &str = "agent_recovery";
 pub(crate) const AGENT_RUN_TOOL_ID: &str = "agent_run";
 pub(crate) const AGENT_STOP_TOOL_ID: &str = "agent_stop";
+pub(crate) const AGENT_OUTPUT_TOOL_ID: &str = "agent_output";
 pub(crate) const AGENT_RECOVERY_INTERACTION_ACTION: &str = "recover_agent_run";
 pub(crate) const AGENT_RECOVERY_INTERACTION_PREFIX: &str = "agent_recovery_";
 
@@ -58,13 +59,13 @@ mod state;
 mod tools;
 mod types;
 
-use manager::execute_target_agent;
+use manager::execute_sub_agent;
 #[cfg(test)]
-use manager::AgentRunCompletion;
-pub(super) use manager::{AgentRunManager, AgentRunSummary};
+use manager::SubAgentCompletion;
+pub(super) use manager::{SubAgentHandleTable, SubAgentSummary};
 pub(super) use plugins::{AgentRecoveryPlugin, AgentToolsPlugin};
 use state::*;
-pub(super) use tools::{AgentRunTool, AgentStopTool};
+pub(super) use tools::{AgentOutputTool, AgentRunTool, AgentStopTool};
 
 #[cfg(test)]
 mod tests;

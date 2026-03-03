@@ -1,24 +1,23 @@
-//! Delegation types for sub-agent run orchestration.
+//! Sub-agent types for agent run orchestration.
 //!
-//! These types model the persisted state of delegated agent runs
-//! (created by `agent_run` / `agent_stop` tools).
+//! These types model the persisted state of sub-agent runs
+//! (created by `agent_run` / `agent_stop` / `agent_output` tools).
 
-use crate::contracts::thread::Thread;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tirea_state::State;
 
-/// Status of a delegated agent run.
+/// Status of a sub-agent run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum DelegationStatus {
+pub enum SubAgentStatus {
     Running,
     Completed,
     Failed,
     Stopped,
 }
 
-impl DelegationStatus {
+impl SubAgentStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",
@@ -29,49 +28,56 @@ impl DelegationStatus {
     }
 }
 
-/// Persisted record for a delegated sub-agent run.
+/// Lightweight sub-agent metadata — no embedded Thread, no cached output.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DelegationRecord {
-    /// Stable run id returned to the caller.
-    pub run_id: String,
+pub struct SubAgent {
+    /// Thread ID for the sub-agent's independent thread in ThreadStore.
+    pub thread_id: String,
     /// Parent caller run id (from caller runtime `run_id`), if available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_run_id: Option<String>,
-    /// Target agent id delegated by `agent_run`.
-    pub target_agent_id: String,
+    /// Target agent id.
+    pub agent_id: String,
     /// Current run status.
-    pub status: DelegationStatus,
-    /// Last assistant message from the child agent (if available).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub assistant: Option<String>,
+    pub status: SubAgentStatus,
     /// Error message (if the run failed or was force-stopped).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// Last known child session snapshot for resume/recovery.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread: Option<Thread>,
 }
 
-/// Persisted sub-agent delegation state at `state["agent_runs"]`.
+/// Persisted sub-agent state at `state["sub_agents"]`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-#[tirea(path = "agent_runs", action = "DelegationAction", scope = "thread")]
-pub struct DelegationState {
-    /// Delegated runs keyed by `run_id`.
+#[tirea(path = "sub_agents", action = "SubAgentAction", scope = "thread")]
+pub struct SubAgentState {
+    /// Sub-agent runs keyed by `run_id`.
     #[tirea(default = "HashMap::new()")]
-    pub runs: HashMap<String, DelegationRecord>,
+    pub runs: HashMap<String, SubAgent>,
 }
 
-/// Action type for `DelegationState` reducer.
+/// Internal lifecycle action for `SubAgentState` reducer.
 #[derive(Serialize, Deserialize)]
-pub enum DelegationAction {
-    /// Replace the entire runs map.
-    SetRuns(HashMap<String, DelegationRecord>),
+pub enum SubAgentAction {
+    /// Set status of a sub-agent run (used by recovery plugin).
+    SetStatus {
+        run_id: String,
+        status: SubAgentStatus,
+        error: Option<String>,
+    },
 }
 
-impl DelegationState {
-    fn reduce(&mut self, action: DelegationAction) {
+impl SubAgentState {
+    fn reduce(&mut self, action: SubAgentAction) {
         match action {
-            DelegationAction::SetRuns(runs) => self.runs = runs,
+            SubAgentAction::SetStatus {
+                run_id,
+                status,
+                error,
+            } => {
+                if let Some(sub) = self.runs.get_mut(&run_id) {
+                    sub.status = status;
+                    sub.error = error;
+                }
+            }
         }
     }
 }

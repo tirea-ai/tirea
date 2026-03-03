@@ -38,7 +38,8 @@ mod tests;
 
 pub use agent_definition::{AgentDefinition, ToolExecutionMode};
 use agent_tools::{
-    AgentRecoveryPlugin, AgentRunManager, AgentRunTool, AgentStopTool, AgentToolsPlugin,
+    AgentOutputTool, AgentRecoveryPlugin, AgentRunTool, AgentStopTool, AgentToolsPlugin,
+    SubAgentHandleTable,
 };
 pub use composite_behavior::compose_behaviors;
 pub use composition::{
@@ -360,7 +361,7 @@ pub struct AgentOs {
     stop_policies: Arc<dyn StopPolicyRegistry>,
     skills_registry: Option<Arc<dyn SkillRegistry>>,
     skills_config: SkillsConfig,
-    agent_runs: Arc<AgentRunManager>,
+    sub_agent_handles: Arc<SubAgentHandleTable>,
     agent_tools: AgentToolsConfig,
     agent_state_store: Option<Arc<dyn ThreadStore>>,
 }

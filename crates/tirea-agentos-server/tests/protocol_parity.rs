@@ -60,6 +60,7 @@ fn collect_kinds(events: &[AgentEvent]) -> Vec<&'static str> {
 fn normalize(run: RunRequest) -> RunRequest {
     RunRequest {
         parent_run_id: None,
+        parent_thread_id: None,
         resource_id: None,
         state: None,
         ..run

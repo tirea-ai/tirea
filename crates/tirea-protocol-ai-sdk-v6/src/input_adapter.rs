@@ -174,6 +174,7 @@ impl AiSdkV6RunRequest {
             },
             run_id: self.run_id,
             parent_run_id: None,
+            parent_thread_id: None,
             resource_id: None,
             state: None,
             messages,

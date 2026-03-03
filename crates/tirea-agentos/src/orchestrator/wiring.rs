@@ -256,20 +256,23 @@ impl AgentOs {
         let pinned_os = self.with_registry_overrides(agents_registry.clone(), skills_registry);
 
         let run_tool: Arc<dyn Tool> =
-            Arc::new(AgentRunTool::new(pinned_os, self.agent_runs.clone()));
-        let stop_tool: Arc<dyn Tool> = Arc::new(AgentStopTool::new(self.agent_runs.clone()));
+            Arc::new(AgentRunTool::new(pinned_os.clone(), self.sub_agent_handles.clone()));
+        let stop_tool: Arc<dyn Tool> =
+            Arc::new(AgentStopTool::new(self.sub_agent_handles.clone()));
+        let output_tool: Arc<dyn Tool> = Arc::new(AgentOutputTool::new(pinned_os));
 
-        let tools_plugin = AgentToolsPlugin::new(agents_registry, self.agent_runs.clone())
-            .with_limits(
+        let tools_plugin =
+            AgentToolsPlugin::new(agents_registry, self.sub_agent_handles.clone()).with_limits(
                 self.agent_tools.discovery_max_entries,
                 self.agent_tools.discovery_max_chars,
             );
-        let recovery_plugin = AgentRecoveryPlugin::new(self.agent_runs.clone());
+        let recovery_plugin = AgentRecoveryPlugin::new(self.sub_agent_handles.clone());
 
         let tools_bundle: Arc<dyn RegistryBundle> = Arc::new(
             ToolBehaviorBundle::new(AGENT_TOOLS_PLUGIN_ID)
                 .with_tool(run_tool)
                 .with_tool(stop_tool)
+                .with_tool(output_tool)
                 .with_behavior(Arc::new(tools_plugin)),
         );
         let recovery_bundle: Arc<dyn RegistryBundle> = Arc::new(

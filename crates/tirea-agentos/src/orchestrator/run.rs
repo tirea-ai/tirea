@@ -104,6 +104,7 @@ impl AgentOs {
         let thread_id = request.thread_id.unwrap_or_else(Self::generate_id);
         let run_id = request.run_id.unwrap_or_else(Self::generate_id);
         let parent_run_id = request.parent_run_id.clone();
+        let parent_thread_id = request.parent_thread_id.clone();
         let initial_decisions = std::mem::take(&mut request.initial_decisions);
 
         // 1. Load or create thread
@@ -123,11 +124,14 @@ impl AgentOs {
                 (t, head.version)
             }
             None => {
-                let thread = if let Some(state) = frontend_state {
+                let mut thread = if let Some(state) = frontend_state {
                     Thread::with_initial_state(thread_id.clone(), state)
                 } else {
                     Thread::new(thread_id.clone())
                 };
+                if let Some(ref ptid) = parent_thread_id {
+                    thread.parent_thread_id = Some(ptid.clone());
+                }
                 let committed = agent_state_store.create(&thread).await?;
                 (thread, committed.version)
             }
@@ -288,8 +292,10 @@ impl AgentOs {
             .collect()
     }
 
-    // --- Internal low-level helper (used by agent tools) ---
+    // --- Internal low-level helper (legacy) ---
 
+    #[deprecated(note = "Use prepare_run + execute_prepared instead")]
+    #[allow(dead_code)]
     pub(crate) fn run_stream_with_context(
         &self,
         agent_id: &str,

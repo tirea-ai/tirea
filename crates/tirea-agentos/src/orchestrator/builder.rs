@@ -424,7 +424,7 @@ impl AgentOsBuilder {
             stop_policies,
             skills_registry,
             skills_config,
-            agent_runs: Arc::new(AgentRunManager::new()),
+            sub_agent_handles: Arc::new(SubAgentHandleTable::new()),
             agent_tools,
             agent_state_store,
         })

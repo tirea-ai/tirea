@@ -1,14 +1,13 @@
 use super::*;
 use crate::contracts::ToolCallContext;
 
-fn to_tool_result(tool_name: &str, summary: AgentRunSummary) -> ToolResult {
+fn to_tool_result(tool_name: &str, summary: SubAgentSummary) -> ToolResult {
     ToolResult::success(
         tool_name,
         json!({
             "run_id": summary.run_id,
-            "agent_id": summary.target_agent_id,
+            "agent_id": summary.agent_id,
             "status": summary.status.as_str(),
-            "assistant": summary.assistant,
             "error": summary.error,
         }),
     )
@@ -41,7 +40,7 @@ fn state_write_failed(tool_name: &str, err: impl std::fmt::Display) -> ToolResul
     tool_error(
         tool_name,
         "state_error",
-        format!("failed to persist delegation state: {err}"),
+        format!("failed to persist sub-agent state: {err}"),
     )
 }
 
@@ -54,16 +53,6 @@ fn scope_string(scope: Option<&tirea_contract::RunConfig>, key: &str) -> Option<
 
 fn scope_run_id(scope: Option<&tirea_contract::RunConfig>) -> Option<String> {
     scope_string(scope, SCOPE_RUN_ID_KEY)
-}
-
-fn bind_child_lineage(
-    mut thread: crate::contracts::thread::Thread,
-    parent_thread_id: Option<&str>,
-) -> crate::contracts::thread::Thread {
-    if thread.parent_thread_id.is_none() {
-        thread.parent_thread_id = parent_thread_id.map(str::to_string);
-    }
-    thread
 }
 
 fn required_bool(args: &Value, key: &str, default: bool) -> bool {
@@ -170,24 +159,23 @@ fn is_target_agent_visible(
     registry.get(target).is_some()
 }
 
+pub(super) fn sub_agent_thread_id(run_id: &str) -> String {
+    format!("sub-agent-{run_id}")
+}
+
+// ---------------------------------------------------------------------------
+// AgentRunTool
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Clone)]
 pub struct AgentRunTool {
     os: AgentOs,
-    manager: Arc<AgentRunManager>,
-}
-
-#[derive(Debug, Clone)]
-struct RunLaunch {
-    run_id: String,
-    owner_thread_id: String,
-    target_agent_id: String,
-    parent_run_id: Option<String>,
-    thread: crate::contracts::thread::Thread,
+    handles: Arc<SubAgentHandleTable>,
 }
 
 impl AgentRunTool {
-    pub fn new(os: AgentOs, manager: Arc<AgentRunManager>) -> Self {
-        Self { os, manager }
+    pub fn new(os: AgentOs, handles: Arc<SubAgentHandleTable>) -> Self {
+        Self { os, handles }
     }
 
     fn ensure_target_visible(
@@ -211,116 +199,157 @@ impl AgentRunTool {
         ))
     }
 
-    async fn persist_existing_live_summary(
+    async fn persist_live_summary(
         &self,
         ctx: &ToolCallContext<'_>,
-        owner_thread_id: &str,
         run_id: &str,
+        child_thread_id: &str,
         parent_run_id: Option<String>,
-        summary: AgentRunSummary,
+        summary: &SubAgentSummary,
         tool_name: &str,
     ) -> ToolResult {
-        let thread = self.manager.owned_record(owner_thread_id, run_id).await;
-        let agent = ctx.state_of::<DelegationState>();
-        if let Err(err) = agent.runs_insert(
-            run_id.to_string(),
-            as_delegation_record(&summary, parent_run_id, thread),
-        ) {
+        let sub = SubAgent {
+            thread_id: child_thread_id.to_string(),
+            parent_run_id,
+            agent_id: summary.agent_id.clone(),
+            status: summary.status,
+            error: summary.error.clone(),
+        };
+        if let Err(err) = ctx
+            .state_of::<SubAgentState>()
+            .runs_insert(run_id.to_string(), sub)
+        {
             return state_write_failed(tool_name, err);
         }
-        to_tool_result(tool_name, summary)
+        to_tool_result(tool_name, summary.clone())
     }
 
-    async fn launch_run(
+    async fn launch_new_run(
         &self,
         ctx: &ToolCallContext<'_>,
-        launch: RunLaunch,
+        run_id: String,
+        owner_thread_id: String,
+        agent_id: String,
+        parent_run_id: Option<String>,
+        child_thread_id: String,
+        messages: Vec<Message>,
+        initial_state: Option<Value>,
         background: bool,
         tool_name: &str,
     ) -> ToolResult {
-        let RunLaunch {
-            run_id,
-            owner_thread_id,
-            target_agent_id,
-            parent_run_id,
-            thread,
-        } = launch;
+        let sub = SubAgent {
+            thread_id: child_thread_id.clone(),
+            parent_run_id: parent_run_id.clone(),
+            agent_id: agent_id.clone(),
+            status: SubAgentStatus::Running,
+            error: None,
+        };
 
         if background {
             let token = RunCancellationToken::new();
             let epoch = self
-                .manager
+                .handles
                 .put_running(
                     &run_id,
-                    owner_thread_id,
-                    target_agent_id.clone(),
-                    parent_run_id.clone(),
-                    thread.clone(),
+                    owner_thread_id.clone(),
+                    child_thread_id.clone(),
+                    agent_id.clone(),
+                    parent_run_id,
                     Some(token.clone()),
                 )
                 .await;
-            let manager = self.manager.clone();
+
+            // Persist Running record immediately.
+            if let Err(err) = ctx
+                .state_of::<SubAgentState>()
+                .runs_insert(run_id.to_string(), sub)
+            {
+                return state_write_failed(tool_name, err);
+            }
+
+            let handles = self.handles.clone();
             let os = self.os.clone();
             let run_id_bg = run_id.clone();
-            let target_agent_id_bg = target_agent_id.clone();
-            let child_thread_bg = thread.clone();
+            let agent_id_bg = agent_id.clone();
+            let child_thread_id_bg = child_thread_id;
+            let parent_thread_id_bg = owner_thread_id;
             tokio::spawn(async move {
-                let completion =
-                    execute_target_agent(os, target_agent_id_bg, child_thread_bg, Some(token))
-                        .await;
-                let _ = manager
+                let completion = execute_sub_agent(
+                    os,
+                    agent_id_bg,
+                    child_thread_id_bg,
+                    run_id_bg.clone(),
+                    None, // parent_run_id already set in RunRequest
+                    parent_thread_id_bg,
+                    messages,
+                    initial_state,
+                    Some(token),
+                )
+                .await;
+                let _ = handles
                     .update_after_completion(&run_id_bg, epoch, completion)
                     .await;
             });
 
-            let running = DelegationRecord {
-                run_id: run_id.clone(),
-                parent_run_id,
-                target_agent_id,
-                status: DelegationStatus::Running,
-                assistant: None,
-                error: None,
-                thread: Some(thread),
-            };
-            if let Err(err) = ctx
-                .state_of::<DelegationState>()
-                .runs_insert(run_id.to_string(), running.clone())
-            {
-                return state_write_failed(tool_name, err);
-            }
-            return to_tool_result(tool_name, as_agent_run_summary(&run_id, &running));
+            return to_tool_result(
+                tool_name,
+                SubAgentSummary {
+                    run_id,
+                    agent_id,
+                    status: SubAgentStatus::Running,
+                    error: None,
+                },
+            );
         }
 
+        // Foreground run.
         let epoch = self
-            .manager
+            .handles
             .put_running(
                 &run_id,
-                owner_thread_id,
-                target_agent_id.clone(),
+                owner_thread_id.clone(),
+                child_thread_id.clone(),
+                agent_id.clone(),
                 parent_run_id.clone(),
-                thread.clone(),
                 None,
             )
             .await;
-        let completion =
-            execute_target_agent(self.os.clone(), target_agent_id.clone(), thread, None).await;
-        let completion_state = DelegationRecord {
-            run_id: run_id.clone(),
+
+        let completion = execute_sub_agent(
+            self.os.clone(),
+            agent_id.clone(),
+            child_thread_id.clone(),
+            run_id.clone(),
+            parent_run_id.clone(),
+            owner_thread_id,
+            messages,
+            initial_state,
+            None,
+        )
+        .await;
+
+        let completed_sub = SubAgent {
+            thread_id: child_thread_id,
             parent_run_id,
-            target_agent_id,
+            agent_id: agent_id.clone(),
             status: completion.status,
-            assistant: completion.assistant.clone(),
             error: completion.error.clone(),
-            thread: Some(completion.thread.clone()),
         };
+
         let summary = self
-            .manager
+            .handles
             .update_after_completion(&run_id, epoch, completion)
             .await
-            .unwrap_or_else(|| as_agent_run_summary(&run_id, &completion_state));
+            .unwrap_or_else(|| SubAgentSummary {
+                run_id: run_id.clone(),
+                agent_id,
+                status: completed_sub.status,
+                error: completed_sub.error.clone(),
+            });
+
         if let Err(err) = ctx
-            .state_of::<DelegationState>()
-            .runs_insert(run_id.to_string(), completion_state)
+            .state_of::<SubAgentState>()
+            .runs_insert(run_id.to_string(), completed_sub)
         {
             return state_write_failed(tool_name, err);
         }
@@ -370,32 +399,36 @@ impl Tool for AgentRunTool {
         let caller_agent_id = scope_string(Some(scope), SCOPE_CALLER_AGENT_ID_KEY);
         let caller_run_id = scope_run_id(Some(scope));
 
+        // ── Resume existing run by ID ──────────────────────────────
         if let Some(run_id) = run_id {
+            // 1. Check live handle first.
             if let Some(existing) = self
-                .manager
+                .handles
                 .get_owned_summary(&owner_thread_id, &run_id)
                 .await
             {
                 match existing.status {
-                    DelegationStatus::Running
-                    | DelegationStatus::Completed
-                    | DelegationStatus::Failed => {
+                    SubAgentStatus::Running
+                    | SubAgentStatus::Completed
+                    | SubAgentStatus::Failed => {
+                        let child_thread_id = sub_agent_thread_id(&run_id);
                         let result = self
-                            .persist_existing_live_summary(
+                            .persist_live_summary(
                                 ctx,
-                                &owner_thread_id,
                                 &run_id,
+                                &child_thread_id,
                                 caller_run_id.clone(),
-                                existing,
+                                &existing,
                                 tool_name,
                             )
                             .await;
                         return Ok(result);
                     }
-                    DelegationStatus::Stopped => {
-                        let record = match self
-                            .manager
-                            .record_for_resume(&owner_thread_id, &run_id)
+                    SubAgentStatus::Stopped => {
+                        // Resume from live handle.
+                        let handle = match self
+                            .handles
+                            .handle_for_resume(&owner_thread_id, &run_id)
                             .await
                         {
                             Ok(v) => v,
@@ -403,38 +436,45 @@ impl Tool for AgentRunTool {
                         };
 
                         if let Err(error) = self.ensure_target_visible(
-                            &record.target_agent_id,
+                            &handle.agent_id,
                             caller_agent_id.as_deref(),
                             Some(scope),
                         ) {
                             return Ok(error.into_tool_result(tool_name));
                         }
 
-                        let mut child_thread =
-                            bind_child_lineage(record.thread, Some(&owner_thread_id));
+                        let mut messages = Vec::new();
                         if let Some(prompt) = optional_string(&args, "prompt") {
-                            child_thread = child_thread.with_message(Message::user(prompt));
+                            messages.push(Message::user(prompt));
                         }
 
-                        let launch = RunLaunch {
-                            run_id,
-                            owner_thread_id,
-                            target_agent_id: record.target_agent_id,
-                            parent_run_id: caller_run_id,
-                            thread: child_thread,
-                        };
-                        return Ok(self.launch_run(ctx, launch, background, tool_name).await);
+                        return Ok(self
+                            .launch_new_run(
+                                ctx,
+                                run_id,
+                                owner_thread_id,
+                                handle.agent_id,
+                                caller_run_id,
+                                handle.child_thread_id,
+                                messages,
+                                None,
+                                background,
+                                tool_name,
+                            )
+                            .await);
                     }
                 }
             }
 
-            let Some(mut persisted) = ctx
-                .state_of::<DelegationState>()
+            // 2. Check persisted state.
+            let persisted_opt = ctx
+                .state_of::<SubAgentState>()
                 .runs()
                 .ok()
                 .unwrap_or_default()
-                .remove(&run_id)
-            else {
+                .remove(&run_id);
+
+            let Some(persisted) = persisted_opt else {
                 return Ok(tool_error(
                     tool_name,
                     "unknown_run",
@@ -442,69 +482,78 @@ impl Tool for AgentRunTool {
                 ));
             };
 
-            let orphaned_running = persisted.status == DelegationStatus::Running;
-            if orphaned_running {
-                persisted = make_orphaned_running_state(&persisted);
+            // Orphaned running → mark stopped.
+            if persisted.status == SubAgentStatus::Running {
+                let stopped = SubAgent {
+                    status: SubAgentStatus::Stopped,
+                    error: Some(
+                        "No live executor found in current process; marked stopped".to_string(),
+                    ),
+                    ..persisted.clone()
+                };
                 if let Err(err) = ctx
-                    .state_of::<DelegationState>()
-                    .runs_insert(run_id.to_string(), persisted.clone())
+                    .state_of::<SubAgentState>()
+                    .runs_insert(run_id.to_string(), stopped.clone())
                 {
                     return Ok(state_write_failed(tool_name, err));
                 }
                 return Ok(to_tool_result(
                     tool_name,
-                    as_agent_run_summary(&run_id, &persisted),
+                    SubAgentSummary {
+                        run_id,
+                        agent_id: stopped.agent_id,
+                        status: SubAgentStatus::Stopped,
+                        error: stopped.error,
+                    },
                 ));
             }
 
             match persisted.status {
-                DelegationStatus::Running
-                | DelegationStatus::Completed
-                | DelegationStatus::Failed => {
+                SubAgentStatus::Completed | SubAgentStatus::Failed => {
                     return Ok(to_tool_result(
                         tool_name,
-                        as_agent_run_summary(&run_id, &persisted),
+                        SubAgentSummary {
+                            run_id,
+                            agent_id: persisted.agent_id,
+                            status: persisted.status,
+                            error: persisted.error,
+                        },
                     ));
                 }
-                DelegationStatus::Stopped => {
+                SubAgentStatus::Stopped => {
                     if let Err(error) = self.ensure_target_visible(
-                        &persisted.target_agent_id,
+                        &persisted.agent_id,
                         caller_agent_id.as_deref(),
                         Some(scope),
                     ) {
                         return Ok(error.into_tool_result(tool_name));
                     }
 
-                    let mut child_thread = match persisted.thread {
-                        Some(s) => s,
-                        None => {
-                            return Ok(tool_error(
-                                tool_name,
-                                "invalid_state",
-                                format!(
-                                    "Run '{run_id}' cannot be resumed: missing child agent state"
-                                ),
-                            ))
-                        }
-                    };
-                    child_thread = bind_child_lineage(child_thread, Some(&owner_thread_id));
-
+                    let mut messages = Vec::new();
                     if let Some(prompt) = optional_string(&args, "prompt") {
-                        child_thread = child_thread.with_message(Message::user(prompt));
+                        messages.push(Message::user(prompt));
                     }
 
-                    let launch = RunLaunch {
-                        run_id,
-                        owner_thread_id,
-                        target_agent_id: persisted.target_agent_id,
-                        parent_run_id: caller_run_id,
-                        thread: child_thread,
-                    };
-                    return Ok(self.launch_run(ctx, launch, background, tool_name).await);
+                    return Ok(self
+                        .launch_new_run(
+                            ctx,
+                            run_id,
+                            owner_thread_id,
+                            persisted.agent_id,
+                            caller_run_id,
+                            persisted.thread_id,
+                            messages,
+                            None,
+                            background,
+                            tool_name,
+                        )
+                        .await);
                 }
+                SubAgentStatus::Running => unreachable!("handled above"),
             }
         }
 
+        // ── New run ────────────────────────────────────────────────
         let target_agent_id = match required_string(&args, "agent_id") {
             Ok(v) => v,
             Err(err) => return Ok(err.into_tool_result(tool_name)),
@@ -521,44 +570,53 @@ impl Tool for AgentRunTool {
         }
 
         let run_id = uuid::Uuid::now_v7().to_string();
-        let thread_id = format!("agent-run-{run_id}");
+        let child_thread_id = sub_agent_thread_id(&run_id);
 
-        let mut child_thread = if fork_context {
+        let (messages, initial_state) = if fork_context {
             let fork_state = scope
                 .value(SCOPE_CALLER_STATE_KEY)
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            let mut forked =
-                crate::contracts::thread::Thread::with_initial_state(thread_id, fork_state);
-            if let Some(messages) = parse_caller_messages(Some(scope)) {
-                forked = forked.with_messages(filtered_fork_messages(messages));
-            }
-            forked
+            let mut msgs = if let Some(caller_msgs) = parse_caller_messages(Some(scope)) {
+                filtered_fork_messages(caller_msgs)
+            } else {
+                Vec::new()
+            };
+            msgs.push(Message::user(prompt));
+            (msgs, Some(fork_state))
         } else {
-            crate::contracts::thread::Thread::new(thread_id)
+            (vec![Message::user(prompt)], None)
         };
-        child_thread = child_thread.with_message(Message::user(prompt));
-        child_thread = bind_child_lineage(child_thread, Some(&owner_thread_id));
 
-        let launch = RunLaunch {
-            run_id,
-            owner_thread_id,
-            target_agent_id,
-            parent_run_id: caller_run_id,
-            thread: child_thread,
-        };
-        Ok(self.launch_run(ctx, launch, background, tool_name).await)
+        Ok(self
+            .launch_new_run(
+                ctx,
+                run_id,
+                owner_thread_id,
+                target_agent_id,
+                caller_run_id,
+                child_thread_id,
+                messages,
+                initial_state,
+                background,
+                tool_name,
+            )
+            .await)
     }
 }
 
+// ---------------------------------------------------------------------------
+// AgentStopTool
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Clone)]
 pub struct AgentStopTool {
-    manager: Arc<AgentRunManager>,
+    handles: Arc<SubAgentHandleTable>,
 }
 
 impl AgentStopTool {
-    pub fn new(manager: Arc<AgentRunManager>) -> Self {
-        Self { manager }
+    pub fn new(handles: Arc<SubAgentHandleTable>) -> Self {
+        Self { handles }
     }
 }
 
@@ -603,7 +661,7 @@ impl Tool for AgentStopTool {
         };
 
         let mut persisted_runs = ctx
-            .state_of::<DelegationState>()
+            .state_of::<SubAgentState>()
             .runs()
             .ok()
             .unwrap_or_default();
@@ -612,11 +670,11 @@ impl Tool for AgentStopTool {
             tree_ids.push(run_id.clone());
         }
 
-        let mut summaries: HashMap<String, AgentRunSummary> = HashMap::new();
+        let mut summaries: HashMap<String, SubAgentSummary> = HashMap::new();
         let mut manager_error = None;
 
         match self
-            .manager
+            .handles
             .stop_owned_tree(&owner_thread_id, &run_id)
             .await
         {
@@ -635,21 +693,22 @@ impl Tool for AgentStopTool {
             let Some(run) = persisted_runs.get_mut(id) else {
                 continue;
             };
-            if run.status != DelegationStatus::Running {
+            if run.status != SubAgentStatus::Running {
                 continue;
             }
 
             if let Some(summary) = summaries.remove(id) {
                 run.status = summary.status;
-                run.assistant = summary.assistant;
                 run.error = summary.error;
             } else {
-                let stopped = make_orphaned_running_state(run);
-                *run = stopped;
+                run.status = SubAgentStatus::Stopped;
+                run.error = Some(
+                    "No live executor found in current process; marked stopped".to_string(),
+                );
             }
             stopped_any = true;
             if let Err(err) = ctx
-                .state_of::<DelegationState>()
+                .state_of::<SubAgentState>()
                 .runs_insert(id.to_string(), run.clone())
             {
                 return Ok(state_write_failed(tool_name, err));
@@ -671,9 +730,12 @@ impl Tool for AgentStopTool {
             if let Some(summary) = summaries.remove(&run_id) {
                 Some(summary)
             } else {
-                persisted_runs
-                    .get(&run_id)
-                    .map(|run| as_agent_run_summary(&run_id, run))
+                persisted_runs.get(&run_id).map(|run| SubAgentSummary {
+                    run_id: run_id.clone(),
+                    agent_id: run.agent_id.clone(),
+                    status: run.status,
+                    error: run.error.clone(),
+                })
             }
         } {
             return Ok(to_tool_result(tool_name, summary));
@@ -683,7 +745,12 @@ impl Tool for AgentStopTool {
         if let Some(run) = fallback_target {
             return Ok(to_tool_result(
                 tool_name,
-                as_agent_run_summary(&run_id, &run),
+                SubAgentSummary {
+                    run_id,
+                    agent_id: run.agent_id,
+                    status: run.status,
+                    error: run.error,
+                },
             ));
         }
 
@@ -691,6 +758,93 @@ impl Tool for AgentStopTool {
             tool_name,
             "invalid_state",
             "No matching run state for stopped run",
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AgentOutputTool
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct AgentOutputTool {
+    os: AgentOs,
+}
+
+impl AgentOutputTool {
+    pub fn new(os: AgentOs) -> Self {
+        Self { os }
+    }
+}
+
+#[async_trait]
+impl Tool for AgentOutputTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new(
+            AGENT_OUTPUT_TOOL_ID,
+            "Agent Output",
+            "Retrieve the latest output from a sub-agent run",
+        )
+        .with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "run_id": { "type": "string", "description": "Run id returned by agent_run" }
+            },
+            "required": ["run_id"]
+        }))
+    }
+
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, crate::contracts::runtime::tool_call::ToolError> {
+        let tool_name = AGENT_OUTPUT_TOOL_ID;
+        let run_id = match required_string(&args, "run_id") {
+            Ok(v) => v,
+            Err(err) => return Ok(err.into_tool_result(tool_name)),
+        };
+
+        let persisted = ctx
+            .state_of::<SubAgentState>()
+            .runs()
+            .ok()
+            .unwrap_or_default();
+
+        let Some(sub) = persisted.get(&run_id) else {
+            return Ok(tool_error(
+                tool_name,
+                "unknown_run",
+                format!("Unknown run_id: {run_id}"),
+            ));
+        };
+
+        let output = match self.os.load_thread(&sub.thread_id).await {
+            Ok(Some(head)) => head
+                .thread
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == Role::Assistant)
+                .map(|m| m.content.clone()),
+            Ok(None) => None,
+            Err(e) => {
+                return Ok(tool_error(
+                    tool_name,
+                    "store_error",
+                    format!("failed to load sub-agent thread: {e}"),
+                ));
+            }
+        };
+
+        Ok(ToolResult::success(
+            tool_name,
+            json!({
+                "run_id": run_id,
+                "agent_id": sub.agent_id,
+                "status": sub.status.as_str(),
+                "output": output,
+            }),
         ))
     }
 }
