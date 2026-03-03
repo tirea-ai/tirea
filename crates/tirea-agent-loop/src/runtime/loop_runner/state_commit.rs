@@ -4,16 +4,21 @@ use crate::contracts::thread::CheckpointReason;
 use crate::contracts::RunContext;
 use crate::contracts::ThreadChangeSet;
 use async_trait::async_trait;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct ChannelStateCommitter {
     tx: tokio::sync::mpsc::UnboundedSender<ThreadChangeSet>,
+    version: Arc<AtomicU64>,
 }
 
 impl ChannelStateCommitter {
     pub fn new(tx: tokio::sync::mpsc::UnboundedSender<ThreadChangeSet>) -> Self {
-        Self { tx }
+        Self {
+            tx,
+            version: Arc::new(AtomicU64::new(0)),
+        }
     }
 }
 
@@ -23,12 +28,9 @@ impl StateCommitter for ChannelStateCommitter {
         &self,
         _thread_id: &str,
         changeset: ThreadChangeSet,
-        precondition: VersionPrecondition,
+        _precondition: VersionPrecondition,
     ) -> Result<u64, StateCommitError> {
-        let next_version = match precondition {
-            VersionPrecondition::Any => 1,
-            VersionPrecondition::Exact(version) => version.saturating_add(1),
-        };
+        let next_version = self.version.fetch_add(1, Ordering::SeqCst) + 1;
         self.tx
             .send(changeset)
             .map_err(|e| StateCommitError::new(format!("channel state commit failed: {e}")))?;

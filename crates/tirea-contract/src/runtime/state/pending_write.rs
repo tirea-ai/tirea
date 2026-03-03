@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
-use tirea_state::{StateSpec, TrackedPatch};
+use tirea_state::{StateSpec, TrackedPatch, Patch};
 
 /// Serialized state action, sufficient to reconstruct an [`AnyStateAction::Typed`].
 ///
@@ -187,14 +187,13 @@ pub trait PendingWriteStore: Send + Sync {
     /// Read all pending writes for a thread, across all runs.
     ///
     /// Used during recovery to find pending writes from previously crashed
-    /// runs when the new run has a different `run_id`.
+    /// runs when the new run has a different `run_id`. Implementations must
+    /// return entries ordered by `created_at` ascending, or leave ordering
+    /// to the caller (recovery sorts before replay).
     async fn read_by_thread(
         &self,
         thread_id: &str,
-    ) -> Result<Vec<PendingWriteEntry>, PendingWriteError> {
-        let _ = thread_id;
-        Ok(Vec::new())
-    }
+    ) -> Result<Vec<PendingWriteEntry>, PendingWriteError>;
 
     /// Acknowledge (delete) all pending writes for a run after successful batch commit.
     async fn acknowledge(
@@ -299,12 +298,27 @@ pub fn recover_pending_writes_from_entries(
         return Ok((Vec::new(), HashSet::new()));
     }
 
-    let completed_call_ids: HashSet<String> = entries.iter().map(|e| e.call_id.clone()).collect();
+    // Sort by creation time so sequential tool calls replay in execution order.
+    let mut sorted: Vec<&PendingWriteEntry> = entries.iter().collect();
+    sorted.sort_by_key(|e| e.created_at);
 
+    let completed_call_ids: HashSet<String> = sorted.iter().map(|e| e.call_id.clone()).collect();
+
+    // Build action sequence: per-entry state actions followed by scope cleanup
+    // for any entry that wrote ToolCall-scoped state (mirrors tool_exec cleanup).
     let mut all_actions = Vec::new();
-    for entry in entries {
+    for entry in &sorted {
         for sa in &entry.actions {
             all_actions.push(registry.deserialize(sa)?);
+        }
+        if entry.actions.iter().any(|sa| sa.scope == StateScope::ToolCall) {
+            let cleanup_path = format!("__tool_call_scope.{}", entry.call_id);
+            let cleanup_patch = Patch::with_ops(vec![tirea_state::Op::delete(
+                tirea_state::parse_path(&cleanup_path),
+            )]);
+            all_actions.push(AnyStateAction::Patch(
+                TrackedPatch::new(cleanup_patch).with_source("recovery:scope_cleanup"),
+            ));
         }
     }
 
@@ -836,5 +850,114 @@ mod tests {
             recover_pending_writes_from_entries(&[], &registry, &json!({})).unwrap();
         assert!(patches.is_empty());
         assert!(completed.is_empty());
+    }
+
+    // -- Ordering tests --
+
+    #[test]
+    fn recover_from_entries_replays_in_created_at_order() {
+        // Entries arrive in reverse order (call_b created first has higher index).
+        // Recovery must sort by created_at so the result equals sequential execution.
+        let mut registry = ActionDeserializerRegistry::new();
+        registry.register::<TestCounter>();
+
+        // call_b is listed first in the slice but has a later timestamp.
+        let entries = vec![
+            PendingWriteEntry {
+                run_id: "run_1".into(),
+                thread_id: "t1".into(),
+                call_id: "call_b".into(),
+                tool_name: "tool".into(),
+                actions: vec![AnyStateAction::new::<TestCounter>(TestCounterAction::Reset)
+                    .to_serialized_action()
+                    .unwrap()],
+                created_at: 200, // happened second
+            },
+            PendingWriteEntry {
+                run_id: "run_1".into(),
+                thread_id: "t1".into(),
+                call_id: "call_a".into(),
+                tool_name: "tool".into(),
+                actions: vec![
+                    AnyStateAction::new::<TestCounter>(TestCounterAction::Increment(42))
+                        .to_serialized_action()
+                        .unwrap(),
+                ],
+                created_at: 100, // happened first
+            },
+        ];
+
+        let base = json!({});
+        let (patches, _) =
+            recover_pending_writes_from_entries(&entries, &registry, &base).unwrap();
+
+        let mut state = base;
+        for p in &patches {
+            state = apply_patch(&state, p.patch()).unwrap();
+        }
+        // Correct order: Increment(42) then Reset → value == 0.
+        // Wrong order: Reset then Increment(42) → value == 42.
+        assert_eq!(state["test_counter"]["value"], 0);
+    }
+
+    // -- Scope cleanup tests --
+
+    #[test]
+    fn recover_emits_scope_cleanup_for_tool_call_scoped_entries() {
+        let mut registry = ActionDeserializerRegistry::new();
+        registry.register::<TestCounter>();
+
+        // Simulate a tool that wrote ToolCall-scoped state.
+        let action = AnyStateAction::new_for_call::<TestCounter>(
+            TestCounterAction::Increment(5),
+            "call_x",
+        );
+        let entries = vec![PendingWriteEntry {
+            run_id: "run_1".into(),
+            thread_id: "t1".into(),
+            call_id: "call_x".into(),
+            tool_name: "tool".into(),
+            actions: vec![action.to_serialized_action().unwrap()],
+            created_at: 100,
+        }];
+
+        let base = json!({});
+        let (patches, _) =
+            recover_pending_writes_from_entries(&entries, &registry, &base).unwrap();
+
+        // Apply all patches and verify scope is cleaned up.
+        let mut state = base;
+        for p in &patches {
+            state = apply_patch(&state, p.patch()).unwrap();
+        }
+        assert!(
+            state.get("__tool_call_scope").is_none()
+                || state["__tool_call_scope"].get("call_x").is_none(),
+            "scope cleanup patch must remove __tool_call_scope.call_x"
+        );
+    }
+
+    #[test]
+    fn recover_no_scope_cleanup_for_run_scoped_entries() {
+        let mut registry = ActionDeserializerRegistry::new();
+        registry.register::<TestCounter>();
+
+        // Run-scoped action — no cleanup patch should be emitted.
+        let action = AnyStateAction::new::<TestCounter>(TestCounterAction::Increment(1));
+        let entries = vec![PendingWriteEntry {
+            run_id: "run_1".into(),
+            thread_id: "t1".into(),
+            call_id: "call_y".into(),
+            tool_name: "tool".into(),
+            actions: vec![action.to_serialized_action().unwrap()],
+            created_at: 100,
+        }];
+
+        let base = json!({});
+        let (patches, _) =
+            recover_pending_writes_from_entries(&entries, &registry, &base).unwrap();
+
+        // Only one patch (the state patch), no scope cleanup patch.
+        assert_eq!(patches.len(), 1);
     }
 }

@@ -339,7 +339,15 @@ pub(super) fn run_stream(
                                         );
                                     }
                                     for rid in &stale_run_ids {
-                                        let _ = store.acknowledge(run_ctx.thread_id(), rid).await;
+                                        if let Err(e) =
+                                            store.acknowledge(run_ctx.thread_id(), rid).await
+                                        {
+                                            tracing::warn!(
+                                                error = %e,
+                                                run_id = %rid,
+                                                "failed to acknowledge pending write; entries may replay on next crash"
+                                            );
+                                        }
                                     }
                                 }
                                 Err(e) => {
