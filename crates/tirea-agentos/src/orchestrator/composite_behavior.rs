@@ -27,11 +27,11 @@ pub fn compose_behaviors(
 
 /// An [`AgentBehavior`] that composes multiple sub-behaviors.
 ///
-/// Each phase hook iterates all sub-behaviors in order, concatenating their
-/// action sets into a single result. All sub-behaviors receive the same
+/// Each phase hook executes all sub-behaviors concurrently, merging their
+/// action sets in registration order. All sub-behaviors receive the same
 /// [`ReadOnlyContext`] snapshot — they do not see each other's effects
 /// within the same phase. The loop validates and applies all collected
-/// actions sequentially after the composite hook returns.
+/// actions after the composite hook returns.
 pub(crate) struct CompositeBehavior {
     id: String,
     behaviors: Vec<Arc<dyn AgentBehavior>>,
@@ -60,79 +60,79 @@ impl AgentBehavior for CompositeBehavior {
     }
 
     async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
-        let mut merged = ActionSet::empty();
-        for b in &self.behaviors {
-            merged = merged.and(b.run_start(ctx).await);
-        }
-        merged
+        let futs: Vec<_> = self.behaviors.iter().map(|b| b.run_start(ctx)).collect();
+        futures::future::join_all(futs)
+            .await
+            .into_iter()
+            .fold(ActionSet::empty(), |acc, a| acc.and(a))
     }
 
     async fn step_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
-        let mut merged = ActionSet::empty();
-        for b in &self.behaviors {
-            merged = merged.and(b.step_start(ctx).await);
-        }
-        merged
+        let futs: Vec<_> = self.behaviors.iter().map(|b| b.step_start(ctx)).collect();
+        futures::future::join_all(futs)
+            .await
+            .into_iter()
+            .fold(ActionSet::empty(), |acc, a| acc.and(a))
     }
 
     async fn before_inference(
         &self,
         ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<BeforeInferenceAction> {
-        let mut merged = ActionSet::empty();
-        for b in &self.behaviors {
-            merged = merged.and(b.before_inference(ctx).await);
-        }
-        merged
+        let futs: Vec<_> = self.behaviors.iter().map(|b| b.before_inference(ctx)).collect();
+        futures::future::join_all(futs)
+            .await
+            .into_iter()
+            .fold(ActionSet::empty(), |acc, a| acc.and(a))
     }
 
     async fn after_inference(
         &self,
         ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<AfterInferenceAction> {
-        let mut merged = ActionSet::empty();
-        for b in &self.behaviors {
-            merged = merged.and(b.after_inference(ctx).await);
-        }
-        merged
+        let futs: Vec<_> = self.behaviors.iter().map(|b| b.after_inference(ctx)).collect();
+        futures::future::join_all(futs)
+            .await
+            .into_iter()
+            .fold(ActionSet::empty(), |acc, a| acc.and(a))
     }
 
     async fn before_tool_execute(
         &self,
         ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<BeforeToolExecuteAction> {
-        let mut merged = ActionSet::empty();
-        for b in &self.behaviors {
-            merged = merged.and(b.before_tool_execute(ctx).await);
-        }
-        merged
+        let futs: Vec<_> = self.behaviors.iter().map(|b| b.before_tool_execute(ctx)).collect();
+        futures::future::join_all(futs)
+            .await
+            .into_iter()
+            .fold(ActionSet::empty(), |acc, a| acc.and(a))
     }
 
     async fn after_tool_execute(
         &self,
         ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<AfterToolExecuteAction> {
-        let mut merged = ActionSet::empty();
-        for b in &self.behaviors {
-            merged = merged.and(b.after_tool_execute(ctx).await);
-        }
-        merged
+        let futs: Vec<_> = self.behaviors.iter().map(|b| b.after_tool_execute(ctx)).collect();
+        futures::future::join_all(futs)
+            .await
+            .into_iter()
+            .fold(ActionSet::empty(), |acc, a| acc.and(a))
     }
 
     async fn step_end(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
-        let mut merged = ActionSet::empty();
-        for b in &self.behaviors {
-            merged = merged.and(b.step_end(ctx).await);
-        }
-        merged
+        let futs: Vec<_> = self.behaviors.iter().map(|b| b.step_end(ctx)).collect();
+        futures::future::join_all(futs)
+            .await
+            .into_iter()
+            .fold(ActionSet::empty(), |acc, a| acc.and(a))
     }
 
     async fn run_end(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
-        let mut merged = ActionSet::empty();
-        for b in &self.behaviors {
-            merged = merged.and(b.run_end(ctx).await);
-        }
-        merged
+        let futs: Vec<_> = self.behaviors.iter().map(|b| b.run_end(ctx)).collect();
+        futures::future::join_all(futs)
+            .await
+            .into_iter()
+            .fold(ActionSet::empty(), |acc, a| acc.and(a))
     }
 }
 

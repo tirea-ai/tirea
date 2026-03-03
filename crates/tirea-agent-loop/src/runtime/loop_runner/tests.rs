@@ -63,60 +63,60 @@ fn compose_test_behaviors(behaviors: Vec<Arc<dyn AgentBehavior>>) -> Arc<dyn Age
                 .collect()
         }
         async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
-            let mut actions = ActionSet::empty();
-            for b in &self.behaviors {
-                actions = actions.and(b.run_start(ctx).await);
-            }
-            actions
+            let futs: Vec<_> = self.behaviors.iter().map(|b| b.run_start(ctx)).collect();
+            futures::future::join_all(futs)
+                .await
+                .into_iter()
+                .fold(ActionSet::empty(), |acc, a| acc.and(a))
         }
         async fn step_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
-            let mut actions = ActionSet::empty();
-            for b in &self.behaviors {
-                actions = actions.and(b.step_start(ctx).await);
-            }
-            actions
+            let futs: Vec<_> = self.behaviors.iter().map(|b| b.step_start(ctx)).collect();
+            futures::future::join_all(futs)
+                .await
+                .into_iter()
+                .fold(ActionSet::empty(), |acc, a| acc.and(a))
         }
         async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            let mut actions = ActionSet::empty();
-            for b in &self.behaviors {
-                actions = actions.and(b.before_inference(ctx).await);
-            }
-            actions
+            let futs: Vec<_> = self.behaviors.iter().map(|b| b.before_inference(ctx)).collect();
+            futures::future::join_all(futs)
+                .await
+                .into_iter()
+                .fold(ActionSet::empty(), |acc, a| acc.and(a))
         }
         async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterInferenceAction> {
-            let mut actions = ActionSet::empty();
-            for b in &self.behaviors {
-                actions = actions.and(b.after_inference(ctx).await);
-            }
-            actions
+            let futs: Vec<_> = self.behaviors.iter().map(|b| b.after_inference(ctx)).collect();
+            futures::future::join_all(futs)
+                .await
+                .into_iter()
+                .fold(ActionSet::empty(), |acc, a| acc.and(a))
         }
         async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
-            let mut actions = ActionSet::empty();
-            for b in &self.behaviors {
-                actions = actions.and(b.before_tool_execute(ctx).await);
-            }
-            actions
+            let futs: Vec<_> = self.behaviors.iter().map(|b| b.before_tool_execute(ctx)).collect();
+            futures::future::join_all(futs)
+                .await
+                .into_iter()
+                .fold(ActionSet::empty(), |acc, a| acc.and(a))
         }
         async fn after_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
-            let mut actions = ActionSet::empty();
-            for b in &self.behaviors {
-                actions = actions.and(b.after_tool_execute(ctx).await);
-            }
-            actions
+            let futs: Vec<_> = self.behaviors.iter().map(|b| b.after_tool_execute(ctx)).collect();
+            futures::future::join_all(futs)
+                .await
+                .into_iter()
+                .fold(ActionSet::empty(), |acc, a| acc.and(a))
         }
         async fn step_end(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
-            let mut actions = ActionSet::empty();
-            for b in &self.behaviors {
-                actions = actions.and(b.step_end(ctx).await);
-            }
-            actions
+            let futs: Vec<_> = self.behaviors.iter().map(|b| b.step_end(ctx)).collect();
+            futures::future::join_all(futs)
+                .await
+                .into_iter()
+                .fold(ActionSet::empty(), |acc, a| acc.and(a))
         }
         async fn run_end(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
-            let mut actions = ActionSet::empty();
-            for b in &self.behaviors {
-                actions = actions.and(b.run_end(ctx).await);
-            }
-            actions
+            let futs: Vec<_> = self.behaviors.iter().map(|b| b.run_end(ctx)).collect();
+            futures::future::join_all(futs)
+                .await
+                .into_iter()
+                .fold(ActionSet::empty(), |acc, a| acc.and(a))
         }
     }
 
