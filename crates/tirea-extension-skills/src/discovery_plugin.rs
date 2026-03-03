@@ -4,10 +4,7 @@ use async_trait::async_trait;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
-use tirea_contract::runtime::action::Action;
-use tirea_contract::runtime::inference::InferenceContext;
-use tirea_contract::runtime::phase::step::StepContext;
-use tirea_contract::runtime::phase::Phase;
+use tirea_contract::runtime::phase::{ActionSet, BeforeInferenceAction};
 
 /// Injects a skills catalog into the LLM context so the model can discover and activate skills.
 ///
@@ -134,7 +131,10 @@ impl AgentBehavior for SkillDiscoveryPlugin {
         SKILLS_DISCOVERY_PLUGIN_ID
     }
 
-    async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn before_inference(
+        &self,
+        ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeInferenceAction> {
         let active: HashSet<String> = ctx
             .snapshot_of::<SkillState>()
             .ok()
@@ -143,36 +143,10 @@ impl AgentBehavior for SkillDiscoveryPlugin {
 
         let rendered = self.render_catalog(&active, Some(ctx.run_config()));
         if rendered.is_empty() {
-            return vec![];
+            return ActionSet::empty();
         }
 
-        vec![Box::new(InjectSkillCatalog(rendered))]
-    }
-}
-
-/// Inject the skill catalog into the system prompt context.
-pub struct InjectSkillCatalog(pub String);
-
-impl Action for InjectSkillCatalog {
-    fn label(&self) -> &'static str {
-        "add_system_context"
-    }
-
-    fn validate(&self, phase: Phase) -> Result<(), String> {
-        if phase == Phase::BeforeInference {
-            Ok(())
-        } else {
-            Err(format!(
-                "InjectSkillCatalog is only allowed in BeforeInference, got {phase}"
-            ))
-        }
-    }
-
-    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        step.extensions
-            .get_or_default::<InferenceContext>()
-            .system_context
-            .push(self.0);
+        ActionSet::single(BeforeInferenceAction::AddSystemContext(rendered))
     }
 }
 
@@ -211,29 +185,23 @@ mod tests {
         (td, skills)
     }
 
-    fn count_system_context_actions(actions: &[Box<dyn Action>]) -> usize {
+    fn count_system_context_actions(actions: &ActionSet<BeforeInferenceAction>) -> usize {
         actions
+            .as_slice()
             .iter()
-            .filter(|a| a.label() == "add_system_context")
+            .filter(|a| matches!(a, BeforeInferenceAction::AddSystemContext(_)))
             .count()
     }
 
-    /// Apply AddSystemContext actions to collect their string values for assertion.
-    fn apply_and_extract_system_contexts(actions: Vec<Box<dyn Action>>) -> Vec<String> {
-        use tirea_contract::runtime::inference::InferenceContext;
-        use tirea_contract::testing::TestFixture;
-
-        let fix = TestFixture::new();
-        let mut step = fix.step(vec![]);
-        for action in actions {
-            if action.label() == "add_system_context" {
-                action.apply(&mut step);
-            }
-        }
-        step.extensions
-            .get::<InferenceContext>()
-            .map(|inf| inf.system_context.clone())
-            .unwrap_or_default()
+    /// Extract system context strings from AddSystemContext actions.
+    fn apply_and_extract_system_contexts(actions: ActionSet<BeforeInferenceAction>) -> Vec<String> {
+        actions
+            .into_iter()
+            .filter_map(|a| match a {
+                BeforeInferenceAction::AddSystemContext(s) => Some(s),
+                _ => None,
+            })
+            .collect()
     }
 
     #[tokio::test]

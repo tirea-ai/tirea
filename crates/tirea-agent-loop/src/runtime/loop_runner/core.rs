@@ -25,13 +25,10 @@ fn is_pending_approval_placeholder(msg: &Message) -> bool {
 }
 
 pub(super) fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec<Message> {
-    use crate::contracts::runtime::inference::InferenceContext;
-
     let mut messages = Vec::new();
 
-    let inf = step.extensions.get::<InferenceContext>();
-    let system_ctx = inf.map(|i| &i.system_context[..]).unwrap_or(&[]);
-    let session_ctx = inf.map(|i| &i.session_context[..]).unwrap_or(&[]);
+    let system_ctx = &step.inference.system_context[..];
+    let session_ctx = &step.inference.session_context[..];
 
     let system = if system_ctx.is_empty() {
         system_prompt.to_string()
@@ -106,11 +103,8 @@ pub(super) fn inference_inputs_from_step(
     step: &mut StepContext<'_>,
     system_prompt: &str,
 ) -> InferenceInputs {
-    use crate::contracts::runtime::inference::InferenceContext;
-
     let messages = build_messages(step, system_prompt);
-    let inf = step.extensions.get::<InferenceContext>();
-    let tools = inf.map(|i| &i.tools[..]).unwrap_or(&[]);
+    let tools = &step.inference.tools[..];
     let filtered_tools = tools.iter().map(|td| td.id.clone()).collect::<Vec<_>>();
     let run_action = step.run_action();
     (messages, filtered_tools, run_action)

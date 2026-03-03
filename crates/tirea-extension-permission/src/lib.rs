@@ -8,7 +8,7 @@ mod plugin;
 mod state;
 pub mod scope;
 
-pub use actions::{ApplyToolPolicy, DenyTool, RejectPolicyViolation, RequestPermission};
+pub use actions::{apply_tool_policy, deny, deny_missing_call_id, deny_tool, reject_out_of_scope, request_permission};
 pub use plugin::{PERMISSION_CONFIRM_TOOL_NAME, PERMISSION_PLUGIN_ID, PermissionPlugin, ToolPolicyPlugin};
 pub use scope::*;
 pub use state::{
@@ -21,20 +21,20 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tirea_contract::io::ResumeDecisionAction;
-    use tirea_contract::runtime::action::Action;
     use tirea_contract::runtime::behavior::AgentBehavior;
+    use tirea_contract::runtime::phase::{ActionSet, BeforeToolExecuteAction};
     use tirea_contract::runtime::phase::Phase;
     use tirea_contract::runtime::state::AnyStateAction;
     use tirea_contract::runtime::tool_call::ToolCallResume;
     use tirea_contract::RunConfig;
     use tirea_state::{DocCell, LatticeRegistry};
 
-    fn has_block(actions: &[Box<dyn Action>]) -> bool {
-        actions.iter().any(|a| a.label() == "block_tool")
+    fn has_block(actions: &ActionSet<BeforeToolExecuteAction>) -> bool {
+        actions.as_slice().iter().any(|a| matches!(a, BeforeToolExecuteAction::Block(_)))
     }
 
-    fn has_suspend(actions: &[Box<dyn Action>]) -> bool {
-        actions.iter().any(|a| a.label() == "suspend_tool")
+    fn has_suspend(actions: &ActionSet<BeforeToolExecuteAction>) -> bool {
+        actions.as_slice().iter().any(|a| matches!(a, BeforeToolExecuteAction::Suspend(_)))
     }
 
     #[test]

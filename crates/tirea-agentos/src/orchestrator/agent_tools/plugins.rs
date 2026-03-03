@@ -1,81 +1,11 @@
 use super::state::current_unix_millis;
 use super::*;
 use crate::contracts::runtime::behavior::{AgentBehavior, ReadOnlyContext};
-use crate::contracts::runtime::action::Action;
-use crate::contracts::runtime::inference::{InferenceContext, MessagingContext};
+use crate::contracts::runtime::phase::{
+    ActionSet, AfterToolExecuteAction, BeforeInferenceAction, LifecycleAction,
+};
 use crate::contracts::runtime::state::AnyStateAction;
-use crate::contracts::runtime::phase::step::StepContext;
-use crate::contracts::runtime::phase::Phase;
 use tirea_extension_permission::resolve_permission_behavior;
-
-// =============================================================================
-// Agent-tools-domain Actions
-// =============================================================================
-
-/// Inject the agent catalog into the system prompt context.
-struct InjectAgentCatalog(String);
-
-impl Action for InjectAgentCatalog {
-    fn label(&self) -> &'static str {
-        "add_system_context"
-    }
-
-    fn validate(&self, phase: Phase) -> Result<(), String> {
-        if phase == Phase::BeforeInference {
-            Ok(())
-        } else {
-            Err(format!(
-                "InjectAgentCatalog is only allowed in BeforeInference, got {phase}"
-            ))
-        }
-    }
-
-    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        step.extensions
-            .get_or_default::<InferenceContext>()
-            .system_context
-            .push(self.0);
-    }
-}
-
-/// Inject agent run status as a system reminder.
-struct InjectAgentRunStatus(String);
-
-impl Action for InjectAgentRunStatus {
-    fn label(&self) -> &'static str {
-        "add_system_reminder"
-    }
-
-    fn validate(&self, phase: Phase) -> Result<(), String> {
-        if phase == Phase::AfterToolExecute {
-            Ok(())
-        } else {
-            Err(format!(
-                "InjectAgentRunStatus is only allowed in AfterToolExecute, got {phase}"
-            ))
-        }
-    }
-
-    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        step.extensions
-            .get_or_default::<MessagingContext>()
-            .reminders
-            .push(self.0);
-    }
-}
-
-/// Emit a recovery-related state patch.
-struct EmitRecoveryPatch(AnyStateAction);
-
-impl Action for EmitRecoveryPatch {
-    fn label(&self) -> &'static str {
-        "emit_state_patch"
-    }
-
-    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        step.emit_state_action(self.0);
-    }
-}
 
 pub struct AgentRecoveryPlugin {
     manager: Arc<AgentRunManager>,
@@ -93,7 +23,7 @@ impl AgentBehavior for AgentRecoveryPlugin {
         AGENT_RECOVERY_PLUGIN_ID
     }
 
-    async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
         use crate::contracts::runtime::{
             PendingToolCall, SuspendedCall, ToolCallResumeMode, ToolCallState,
         };
@@ -101,7 +31,7 @@ impl AgentBehavior for AgentRecoveryPlugin {
         let state = ctx.snapshot();
         let mut runs = parse_persisted_runs_from_doc(&state);
         if runs.is_empty() {
-            return vec![];
+            return ActionSet::empty();
         }
 
         let has_suspended_recovery = has_suspended_recovery_interaction(&state);
@@ -109,14 +39,12 @@ impl AgentBehavior for AgentRecoveryPlugin {
         let outcome =
             reconcile_persisted_runs(self.manager.as_ref(), ctx.thread_id(), &mut runs).await;
 
-        let mut actions: Vec<Box<dyn Action>> = Vec::new();
+        let mut actions: ActionSet<LifecycleAction> = ActionSet::empty();
 
         if outcome.changed {
-            actions.push(Box::new(EmitRecoveryPatch(AnyStateAction::new::<
-                DelegationState,
-            >(
+            actions = actions.and(LifecycleAction::State(AnyStateAction::new::<DelegationState>(
                 DelegationAction::SetRuns(runs.clone()),
-            ))));
+            )));
         }
 
         if has_suspended_recovery || outcome.orphaned_run_ids.is_empty() {
@@ -158,10 +86,8 @@ impl AgentBehavior for AgentRecoveryPlugin {
                 let resume_token = suspended_call.ticket.pending.id.clone();
                 let arguments = suspended_call.arguments.clone();
 
-                actions.push(Box::new(EmitRecoveryPatch(
-                    suspended_call.clone().into_state_action(),
-                )));
-                actions.push(Box::new(EmitRecoveryPatch(
+                actions = actions.and(LifecycleAction::State(suspended_call.clone().into_state_action()));
+                actions = actions.and(LifecycleAction::State(
                     ToolCallState {
                         call_id: call_id.clone(),
                         tool_name: AGENT_RUN_TOOL_ID.to_string(),
@@ -179,15 +105,13 @@ impl AgentBehavior for AgentRecoveryPlugin {
                         updated_at: current_unix_millis(),
                     }
                     .into_state_action(),
-                )));
+                ));
             }
             ToolPermissionBehavior::Deny => {}
             ToolPermissionBehavior::Ask => {
                 let interaction = build_recovery_interaction(&run_id, run);
                 let suspended_call = make_suspended_call(&interaction);
-                actions.push(Box::new(EmitRecoveryPatch(
-                    suspended_call.into_state_action(),
-                )));
+                actions = actions.and(LifecycleAction::State(suspended_call.into_state_action()));
             }
         }
         actions
@@ -324,23 +248,29 @@ impl AgentBehavior for AgentToolsPlugin {
         AGENT_TOOLS_PLUGIN_ID
     }
 
-    async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn before_inference(
+        &self,
+        ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeInferenceAction> {
         let caller_agent = ctx
             .run_config()
             .value(SCOPE_CALLER_AGENT_ID_KEY)
             .and_then(|v| v.as_str());
         let rendered = self.render_available_agents(caller_agent, Some(ctx.run_config()));
         if rendered.is_empty() {
-            vec![]
+            ActionSet::empty()
         } else {
-            vec![Box::new(InjectAgentCatalog(rendered))]
+            ActionSet::single(BeforeInferenceAction::AddSystemContext(rendered))
         }
     }
 
-    async fn after_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn after_tool_execute(
+        &self,
+        ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<AfterToolExecuteAction> {
         match self.render_reminder(ctx.thread_id()).await {
-            Some(s) => vec![Box::new(InjectAgentRunStatus(s))],
-            None => vec![],
+            Some(s) => ActionSet::single(AfterToolExecuteAction::AddSystemReminder(s)),
+            None => ActionSet::empty(),
         }
     }
 }

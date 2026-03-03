@@ -175,14 +175,13 @@ async fn test_skills_plugin_injection_is_in_system_context_before_inference() {
         step.run_config(),
         step.ctx().doc(),
     );
+    use tirea_agentos::contracts::runtime::phase::BeforeInferenceAction;
     let actions = plugin.before_inference(&ctx).await;
     for action in actions {
-        action.apply(&mut step);
+        if let BeforeInferenceAction::AddSystemContext(s) = action {
+            step.inference.system_context.push(s);
+        }
     }
-    let inf = step
-        .extensions
-        .get::<tirea_contract::runtime::inference::InferenceContext>()
-        .expect("InferenceContext should be set");
-    assert_eq!(inf.system_context.len(), 1);
-    assert!(inf.system_context[0].contains("<available_skills>"));
+    assert_eq!(step.inference.system_context.len(), 1);
+    assert!(step.inference.system_context[0].contains("<available_skills>"));
 }

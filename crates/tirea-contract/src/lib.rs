@@ -137,8 +137,7 @@ pub use io::{
 pub use runtime::{
     build_read_only_context_from_step, recover_pending_writes,
     recover_pending_writes_from_entries, reduce_state_actions, Action,
-    ActionDeserializerRegistry, ActivityContext, ActivityManager, AddUserMessage,
-    AfterInferenceContext,
+    ActionDeserializerRegistry, ActivityContext, ActivityManager, AfterInferenceContext,
     AfterToolExecuteContext, AgentBehavior, AnyStateAction, BeforeInferenceContext,
     BeforeToolExecuteContext, DecisionReplayPolicy, Extensions, InMemoryPendingWriteStore,
     NoOpBehavior, PendingWriteEntry, PendingWriteError, PendingWriteStore, Phase, PhaseContext,

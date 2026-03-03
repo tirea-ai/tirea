@@ -350,9 +350,11 @@ mod tests {
         );
         let actions = plugin.before_inference(&ctx).await;
 
+        use tirea_contract::runtime::phase::BeforeInferenceAction;
         let system_context_count = actions
+            .as_slice()
             .iter()
-            .filter(|a| a.label() == "add_system_context")
+            .filter(|a| matches!(a, BeforeInferenceAction::AddSystemContext(_)))
             .count();
         assert_eq!(system_context_count, 1);
     }

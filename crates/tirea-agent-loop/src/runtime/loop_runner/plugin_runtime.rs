@@ -1,10 +1,11 @@
 use super::AgentLoopError;
-use crate::contracts::runtime::behavior::{
-    build_read_only_context_from_step, AgentBehavior, ReadOnlyContext,
-};
-use crate::contracts::runtime::action::Action;
+use crate::contracts::runtime::behavior::{build_read_only_context_from_step, AgentBehavior};
 use crate::contracts::runtime::inference::{InferenceError, LLMResponse};
-use crate::contracts::runtime::phase::{Phase, StepContext};
+use crate::contracts::runtime::phase::{
+    ActionSet, AfterInferenceAction, AfterToolExecuteAction, BeforeInferenceAction,
+    BeforeToolExecuteAction, LifecycleAction, Phase, StepContext,
+};
+use crate::contracts::runtime::run::RunAction;
 use crate::contracts::runtime::state::{reduce_state_actions, ScopeContext};
 use crate::contracts::runtime::tool_call::ToolDescriptor;
 use crate::contracts::RunContext;
@@ -13,33 +14,146 @@ use std::sync::Mutex;
 use tirea_state::{DocCell, TrackedPatch};
 
 // =========================================================================
-// Agent-based dispatch (declarative model: ReadOnlyContext → Vec<Action>)
+// Action application — typed dispatch, no dynamic dispatch
 // =========================================================================
 
-/// Dispatch a single phase hook on an [`AgentBehavior`].
-///
-/// Returns the actions emitted by the behavior for the given phase.
-async fn dispatch_agent_phase<'a>(
-    agent: &dyn AgentBehavior,
-    phase: Phase,
-    ctx: &ReadOnlyContext<'a>,
-) -> Vec<Box<dyn Action>> {
-    match phase {
-        Phase::RunStart => agent.run_start(ctx).await,
-        Phase::StepStart => agent.step_start(ctx).await,
-        Phase::BeforeInference => agent.before_inference(ctx).await,
-        Phase::AfterInference => agent.after_inference(ctx).await,
-        Phase::BeforeToolExecute => agent.before_tool_execute(ctx).await,
-        Phase::AfterToolExecute => agent.after_tool_execute(ctx).await,
-        Phase::StepEnd => agent.step_end(ctx).await,
-        Phase::RunEnd => agent.run_end(ctx).await,
+fn apply_lifecycle_actions(step: &mut StepContext<'_>, actions: ActionSet<LifecycleAction>) {
+    for action in actions {
+        match action {
+            LifecycleAction::State(sa) => step.emit_state_action(sa),
+        }
     }
 }
 
+fn apply_before_inference_actions(
+    step: &mut StepContext<'_>,
+    actions: ActionSet<BeforeInferenceAction>,
+) {
+    for action in actions {
+        match action {
+            BeforeInferenceAction::AddSystemContext(text) => {
+                step.inference.system_context.push(text);
+            }
+            BeforeInferenceAction::AddSessionContext(text) => {
+                step.inference.session_context.push(text);
+            }
+            BeforeInferenceAction::ExcludeTool(id) => {
+                step.inference.tools.retain(|t| t.id != id);
+            }
+            BeforeInferenceAction::IncludeOnlyTools(ids) => {
+                step.inference.tools.retain(|t| ids.contains(&t.id));
+            }
+            BeforeInferenceAction::Terminate(reason) => {
+                step.flow.run_action =
+                    Some(RunAction::Terminate(reason));
+            }
+            BeforeInferenceAction::State(sa) => step.emit_state_action(sa),
+        }
+    }
+}
+
+fn apply_after_inference_actions(
+    step: &mut StepContext<'_>,
+    actions: ActionSet<AfterInferenceAction>,
+) {
+    for action in actions {
+        match action {
+            AfterInferenceAction::Terminate(reason) => {
+                step.flow.run_action =
+                    Some(RunAction::Terminate(reason));
+            }
+            AfterInferenceAction::State(sa) => step.emit_state_action(sa),
+        }
+    }
+}
+
+fn apply_before_tool_actions(
+    step: &mut StepContext<'_>,
+    actions: ActionSet<BeforeToolExecuteAction>,
+) {
+    for action in actions {
+        match action {
+            BeforeToolExecuteAction::Block(reason) => {
+                if let Some(gate) = step.gate.as_mut() {
+                    gate.blocked = true;
+                    gate.block_reason = Some(reason);
+                    gate.pending = false;
+                    gate.suspend_ticket = None;
+                }
+            }
+            BeforeToolExecuteAction::Suspend(ticket) => {
+                if let Some(gate) = step.gate.as_mut() {
+                    gate.blocked = false;
+                    gate.block_reason = None;
+                    gate.pending = true;
+                    gate.suspend_ticket = Some(ticket);
+                }
+            }
+            BeforeToolExecuteAction::SetToolResult(result) => {
+                if let Some(gate) = step.gate.as_mut() {
+                    gate.result = Some(result);
+                }
+            }
+            BeforeToolExecuteAction::State(sa) => step.emit_state_action(sa),
+        }
+    }
+}
+
+fn apply_after_tool_actions(
+    step: &mut StepContext<'_>,
+    actions: ActionSet<AfterToolExecuteAction>,
+) {
+    for action in actions {
+        match action {
+            AfterToolExecuteAction::AddSystemReminder(text) => {
+                step.messaging.reminders.push(text);
+            }
+            AfterToolExecuteAction::AddUserMessage(text) => {
+                step.messaging.user_messages.push(text);
+            }
+            AfterToolExecuteAction::State(sa) => step.emit_state_action(sa),
+        }
+    }
+}
+
+// =========================================================================
+// State reduction helper
+// =========================================================================
+
+async fn reduce_and_emit(
+    step: &mut StepContext<'_>,
+    phase: Phase,
+    doc: &DocCell,
+) -> Result<(), AgentLoopError> {
+    let state_actions = std::mem::take(&mut step.pending_state_actions);
+    if state_actions.is_empty() {
+        return Ok(());
+    }
+    let scope_ctx = match phase {
+        Phase::BeforeToolExecute | Phase::AfterToolExecute => step
+            .tool_call_id()
+            .map(ScopeContext::for_call)
+            .unwrap_or_else(ScopeContext::run),
+        _ => ScopeContext::run(),
+    };
+    let patches =
+        reduce_state_actions(state_actions, &doc.snapshot(), "agent:phase", &scope_ctx)
+            .map_err(|e| {
+                AgentLoopError::StateError(format!(
+                    "failed to reduce pending state actions: {e}"
+                ))
+            })?;
+    for p in patches {
+        step.emit_patch(p);
+    }
+    Ok(())
+}
+
+// =========================================================================
+// Phase dispatch
+// =========================================================================
+
 /// Emit a single phase using the [`AgentBehavior`] declarative model.
-///
-/// Builds a [`ReadOnlyContext`], calls the agent hook, validates and applies
-/// the returned actions to the mutable `StepContext`.
 pub(super) async fn emit_agent_phase(
     phase: Phase,
     step: &mut StepContext<'_>,
@@ -47,38 +161,41 @@ pub(super) async fn emit_agent_phase(
     doc: &DocCell,
 ) -> Result<(), AgentLoopError> {
     let ctx = build_read_only_context_from_step(phase, step, doc);
-    let actions = dispatch_agent_phase(agent, phase, &ctx).await;
-    for action in &actions {
-        action
-            .validate(phase)
-            .map_err(AgentLoopError::StateError)?;
-    }
-    for action in actions {
-        action.apply(step);
-    }
-    // Reduce any pending_state_actions that were added by EmitStatePatch actions.
-    let state_actions = std::mem::take(&mut step.pending_state_actions);
-    if !state_actions.is_empty() {
-        // Tool phases carry a call_id for ToolCall-scoped routing.
-        let scope_ctx = match phase {
-            Phase::BeforeToolExecute | Phase::AfterToolExecute => step
-                .tool_call_id()
-                .map(ScopeContext::for_call)
-                .unwrap_or_else(ScopeContext::run),
-            _ => ScopeContext::run(),
-        };
-        let patches =
-            reduce_state_actions(state_actions, &doc.snapshot(), "agent:phase", &scope_ctx)
-                .map_err(|e| {
-                    AgentLoopError::StateError(format!(
-                        "failed to reduce pending state actions: {e}"
-                    ))
-                })?;
-        for p in patches {
-            step.emit_patch(p);
+    match phase {
+        Phase::RunStart => {
+            let actions = agent.run_start(&ctx).await;
+            apply_lifecycle_actions(step, actions);
+        }
+        Phase::StepStart => {
+            let actions = agent.step_start(&ctx).await;
+            apply_lifecycle_actions(step, actions);
+        }
+        Phase::BeforeInference => {
+            let actions = agent.before_inference(&ctx).await;
+            apply_before_inference_actions(step, actions);
+        }
+        Phase::AfterInference => {
+            let actions = agent.after_inference(&ctx).await;
+            apply_after_inference_actions(step, actions);
+        }
+        Phase::BeforeToolExecute => {
+            let actions = agent.before_tool_execute(&ctx).await;
+            apply_before_tool_actions(step, actions);
+        }
+        Phase::AfterToolExecute => {
+            let actions = agent.after_tool_execute(&ctx).await;
+            apply_after_tool_actions(step, actions);
+        }
+        Phase::StepEnd => {
+            let actions = agent.step_end(&ctx).await;
+            apply_lifecycle_actions(step, actions);
+        }
+        Phase::RunEnd => {
+            let actions = agent.run_end(&ctx).await;
+            apply_lifecycle_actions(step, actions);
         }
     }
-    Ok(())
+    reduce_and_emit(step, phase, doc).await
 }
 
 // =========================================================================
@@ -171,7 +288,7 @@ pub(super) async fn emit_cleanup_phases(
         tool_descriptors,
         agent,
         |step| {
-            step.extensions.insert(LLMResponse::error(error));
+            step.llm_response = Some(LLMResponse::error(error));
         },
     )
     .await?;
@@ -294,10 +411,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::runtime::behavior::NoOpBehavior;
-    use tirea_contract::testing::TestSystemContext as AddSystemContext;
+    use crate::contracts::runtime::behavior::{NoOpBehavior, ReadOnlyContext};
     use crate::contracts::testing::TestFixture;
     use async_trait::async_trait;
+    use tirea_contract::runtime::phase::{ActionSet, BeforeInferenceAction};
     use tirea_state::DocCell;
 
     struct TestActionBehavior;
@@ -311,25 +428,27 @@ mod tests {
         async fn before_inference(
             &self,
             _ctx: &ReadOnlyContext<'_>,
-        ) -> Vec<Box<dyn Action>> {
-            vec![Box::new(AddSystemContext("injected by action".into()))]
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::AddSystemContext(
+                "injected by action".into(),
+            ))
         }
     }
 
     #[tokio::test]
     async fn emit_agent_phase_validates_and_applies_actions() {
-        use crate::contracts::runtime::inference::InferenceContext;
-
         let fix = TestFixture::new();
         let mut step = fix.step(vec![]);
         let doc = DocCell::new(serde_json::json!({}));
 
         emit_agent_phase(Phase::BeforeInference, &mut step, &TestActionBehavior, &doc)
             .await
-            .expect("actions should be validated and applied");
+            .expect("actions should be applied");
 
-        let inf = step.extensions.get::<InferenceContext>().unwrap();
-        assert_eq!(inf.system_context, vec!["injected by action"]);
+        assert_eq!(
+            step.inference.system_context,
+            vec!["injected by action"]
+        );
     }
 
     #[tokio::test]

@@ -7,7 +7,6 @@ use std::io::Write;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tirea_agent_loop::contracts::runtime::behavior::AgentBehavior;
-use tirea_agent_loop::contracts::runtime::inference::MessagingContext;
 use tirea_agent_loop::contracts::runtime::tool_call::{Tool, ToolResult};
 use tirea_agent_loop::contracts::thread::Thread;
 use tirea_agent_loop::contracts::thread::{Message, ToolCall};
@@ -185,11 +184,7 @@ async fn test_skill_activation_delivers_instructions_via_user_messages_on_effect
             action.apply(&mut step);
         }
     }
-    let user_messages = step
-        .extensions
-        .get::<MessagingContext>()
-        .map(|m| m.user_messages.clone())
-        .unwrap_or_default();
+    let user_messages = step.messaging.user_messages.clone();
     assert_eq!(user_messages.len(), 1);
     assert!(user_messages[0].contains("Use docx-js for new documents"));
 }
@@ -518,11 +513,7 @@ async fn test_skill_activation_user_messages_contain_skill_instructions() {
             action.apply(&mut step);
         }
     }
-    let user_messages = step
-        .extensions
-        .get::<MessagingContext>()
-        .map(|m| m.user_messages.clone())
-        .unwrap_or_default();
+    let user_messages = step.messaging.user_messages.clone();
     assert_eq!(user_messages.len(), 1);
     assert!(
         user_messages[0].contains("# DOCX Processing"),

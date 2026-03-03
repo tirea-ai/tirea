@@ -6,8 +6,11 @@ use genai::chat::ChatOptions;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tirea_contract::runtime::action::Action;
 use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
+use tirea_contract::runtime::phase::{
+    ActionSet, AfterInferenceAction, AfterToolExecuteAction, BeforeInferenceAction,
+    BeforeToolExecuteAction, LifecycleAction,
+};
 use tirea_contract::runtime::tool_call::ToolStatus;
 use tirea_contract::TokenUsage;
 
@@ -98,12 +101,12 @@ impl AgentBehavior for LLMMetryPlugin {
         "llmmetry"
     }
 
-    async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
         *lock_unpoison(&self.run_start) = Some(Instant::now());
-        vec![]
+        ActionSet::empty()
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
         *lock_unpoison(&self.inference_start) = Some(Instant::now());
         let model = lock_unpoison(&self.model).clone();
         let provider = lock_unpoison(&self.provider).clone();
@@ -149,10 +152,10 @@ impl AgentBehavior for LLMMetryPlugin {
             }
         }
         *lock_unpoison(&self.inference_tracing_span) = Some(span);
-        vec![]
+        ActionSet::empty()
     }
 
-    async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterInferenceAction> {
         let duration_ms = self
             .inference_start
             .lock()
@@ -224,10 +227,10 @@ impl AgentBehavior for LLMMetryPlugin {
 
         self.sink.on_inference(&span);
         lock_unpoison(&self.metrics).inferences.push(span);
-        vec![]
+        ActionSet::empty()
     }
 
-    async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
         let tool_name = ctx.tool_name().unwrap_or_default().to_string();
         let call_id = ctx.tool_call_id().unwrap_or_default().to_string();
         if !call_id.is_empty() {
@@ -254,10 +257,10 @@ impl AgentBehavior for LLMMetryPlugin {
         if !call_id.is_empty() {
             lock_unpoison(&self.tool_tracing_span).insert(call_id, span);
         }
-        vec![]
+        ActionSet::empty()
     }
 
-    async fn after_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn after_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
         let call_id_for_span = ctx.tool_call_id().unwrap_or_default().to_string();
         let duration_ms = self
             .tool_start
@@ -268,7 +271,7 @@ impl AgentBehavior for LLMMetryPlugin {
             .unwrap_or(0);
 
         let Some(result) = ctx.tool_result() else {
-            return vec![];
+            return ActionSet::empty();
         };
         let error_type = if result.status == ToolStatus::Error {
             Some("tool_error".to_string())
@@ -302,10 +305,10 @@ impl AgentBehavior for LLMMetryPlugin {
 
         self.sink.on_tool(&span);
         lock_unpoison(&self.metrics).tools.push(span);
-        vec![]
+        ActionSet::empty()
     }
 
-    async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
         let session_duration_ms = self
             .run_start
             .lock()
@@ -321,6 +324,6 @@ impl AgentBehavior for LLMMetryPlugin {
         let mut metrics = lock_unpoison(&self.metrics).clone();
         metrics.session_duration_ms = session_duration_ms;
         self.sink.on_run_end(&metrics);
-        vec![]
+        ActionSet::empty()
     }
 }

@@ -9,7 +9,8 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
 use std::sync::Arc;
-use tirea_contract::runtime::inference::AddUserMessage;
+use tirea_contract::runtime::action::Action;
+use tirea_contract::runtime::phase::step::StepContext;
 use tirea_contract::runtime::state::AnyStateAction;
 use tirea_contract::runtime::tool_call::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult, ToolStatus,
@@ -18,6 +19,19 @@ use tirea_extension_permission::{
     permission_state_action, PermissionAction, ToolPermissionBehavior,
 };
 use tracing::{debug, warn};
+
+/// Action that appends a user-role message after tool execution.
+struct AddUserMessage(String);
+
+impl Action for AddUserMessage {
+    fn label(&self) -> &'static str {
+        "add_user_message"
+    }
+
+    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
+        step.messaging.user_messages.push(self.0);
+    }
+}
 
 #[derive(Debug)]
 struct ToolArgError {

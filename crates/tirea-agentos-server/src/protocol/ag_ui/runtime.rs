@@ -13,11 +13,9 @@ use tirea_agentos::runtime::loop_runner::{
     BaseAgent, ParallelToolExecutor, ResolvedRun, SequentialToolExecutor,
 };
 use tirea_contract::runtime::behavior::ReadOnlyContext;
-use tirea_contract::runtime::action::Action;
-use tirea_contract::runtime::inference::InferenceContext;
-use tirea_contract::runtime::phase::step::StepContext;
-use tirea_contract::runtime::phase::{Phase, SuspendTicket};
-use tirea_contract::runtime::tool_call::ToolGate;
+use tirea_contract::runtime::phase::{
+    ActionSet, BeforeInferenceAction, BeforeToolExecuteAction, SuspendTicket,
+};
 use tirea_contract::runtime::AgentBehavior;
 use tirea_contract::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_contract::runtime::{PendingToolCall, ToolCallResumeMode};
@@ -204,94 +202,6 @@ impl Tool for FrontendToolStub {
     }
 }
 
-// =============================================================================
-// AG-UI-domain Actions
-// =============================================================================
-
-/// Inject AG-UI context into the system prompt.
-struct InjectAgUiContext(String);
-
-impl Action for InjectAgUiContext {
-    fn label(&self) -> &'static str {
-        "add_system_context"
-    }
-
-    fn validate(&self, phase: Phase) -> Result<(), String> {
-        if phase == Phase::BeforeInference {
-            Ok(())
-        } else {
-            Err(format!(
-                "InjectAgUiContext is only allowed in BeforeInference, got {phase}"
-            ))
-        }
-    }
-
-    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        step.extensions
-            .get_or_default::<InferenceContext>()
-            .system_context
-            .push(self.0);
-    }
-}
-
-/// Suspend tool execution for frontend interaction.
-struct SuspendForFrontend(SuspendTicket);
-
-impl Action for SuspendForFrontend {
-    fn label(&self) -> &'static str {
-        "suspend_tool"
-    }
-
-    fn validate(&self, phase: Phase) -> Result<(), String> {
-        if phase == Phase::BeforeToolExecute {
-            Ok(())
-        } else {
-            Err(format!(
-                "SuspendForFrontend is only allowed in BeforeToolExecute, got {phase}"
-            ))
-        }
-    }
-
-    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        if let Some(gate) = step.extensions.get_mut::<ToolGate>() {
-            gate.blocked = false;
-            gate.block_reason = None;
-            gate.pending = true;
-            gate.suspend_ticket = Some(self.0);
-        }
-    }
-}
-
-/// Resolve a frontend decision by setting the tool result and clearing block/suspend state.
-struct ResolveFrontendDecision {
-    result: ToolResult,
-}
-
-impl Action for ResolveFrontendDecision {
-    fn label(&self) -> &'static str {
-        "resolve_frontend"
-    }
-
-    fn validate(&self, phase: Phase) -> Result<(), String> {
-        if phase == Phase::BeforeToolExecute {
-            Ok(())
-        } else {
-            Err(format!(
-                "ResolveFrontendDecision is only allowed in BeforeToolExecute, got {phase}"
-            ))
-        }
-    }
-
-    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        if let Some(gate) = step.extensions.get_mut::<ToolGate>() {
-            gate.result = Some(self.result);
-            gate.blocked = false;
-            gate.block_reason = None;
-            gate.pending = false;
-            gate.suspend_ticket = None;
-        }
-    }
-}
 
 /// Run-scoped plugin that injects AG-UI context (from `useCopilotReadable`)
 /// into the agent's system prompt before inference.
@@ -311,8 +221,13 @@ impl AgentBehavior for ContextInjectionPlugin {
         "agui_context_injection"
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        vec![Box::new(InjectAgUiContext(self.addendum.clone()))]
+    async fn before_inference(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeInferenceAction> {
+        ActionSet::single(BeforeInferenceAction::AddSystemContext(
+            self.addendum.clone(),
+        ))
     }
 }
 
@@ -333,12 +248,15 @@ impl AgentBehavior for FrontendToolPendingPlugin {
         "agui_frontend_tools"
     }
 
-    async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn before_tool_execute(
+        &self,
+        ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeToolExecuteAction> {
         let Some(tool_name) = ctx.tool_name() else {
-            return vec![];
+            return ActionSet::empty();
         };
         if !self.frontend_tools.contains(tool_name) {
-            return vec![];
+            return ActionSet::empty();
         }
 
         if let Some(resume) = ctx.resume_input() {
@@ -355,20 +273,20 @@ impl AgentBehavior for FrontendToolPendingPlugin {
                         .unwrap_or_else(|| "User denied the action".to_string()),
                 ),
             };
-            return vec![Box::new(ResolveFrontendDecision { result })];
+            return ActionSet::single(BeforeToolExecuteAction::SetToolResult(result));
         }
         let Some(call_id) = ctx.tool_call_id().map(str::to_string) else {
-            return vec![];
+            return ActionSet::empty();
         };
 
         let args = ctx.tool_args().cloned().unwrap_or_default();
         let suspension = tirea_contract::Suspension::new(&call_id, format!("tool:{tool_name}"))
             .with_parameters(args.clone());
-        vec![Box::new(SuspendForFrontend(SuspendTicket::new(
+        ActionSet::single(BeforeToolExecuteAction::Suspend(SuspendTicket::new(
             suspension,
             PendingToolCall::new(call_id, tool_name.to_string(), args),
             ToolCallResumeMode::UseDecisionAsToolResult,
-        )))]
+        )))
     }
 }
 
@@ -402,7 +320,7 @@ mod tests {
             step.run_config(),
             step.ctx().doc(),
         );
-        if let Some(gate) = step.extensions.get::<ToolGate>() {
+        if let Some(gate) = step.gate.as_ref() {
             ctx = ctx.with_tool_info(&gate.name, &gate.id, Some(&gate.args));
             if let Some(result) = gate.result.as_ref() {
                 ctx = ctx.with_tool_result(result);
@@ -617,13 +535,13 @@ mod tests {
         let fixture = TestFixture::new();
         let mut step = fixture.step(vec![]);
         let call = ToolCall::new("call_1", "copyToClipboard", json!({"text":"hello"}));
-        step.extensions.insert(ToolGate::from_tool_call(&call));
+        step.gate = Some(ToolGate::from_tool_call(&call));
 
         let ctx = build_read_only_ctx(Phase::BeforeToolExecute, &step);
         let actions = plugin.before_tool_execute(&ctx).await;
-        tirea_contract::testing::apply_actions_for_test(Phase::BeforeToolExecute, &mut step, actions).unwrap();
+        tirea_contract::testing::apply_before_tool_for_test(&mut step, actions);
 
-        let gate = step.extensions.get::<ToolGate>().expect("ToolGate should exist");
+        let gate = step.gate.as_ref().expect("ToolGate should exist");
         assert!(gate.pending, "should be pending (suspended)");
         let ticket = gate.suspend_ticket.as_ref().expect("should have SuspendTool ticket");
         assert_eq!(ticket.suspension.action, "tool:copyToClipboard");
@@ -663,13 +581,13 @@ mod tests {
         }));
         let mut step = fixture.step(vec![]);
         let call = ToolCall::new("call_1", "copyToClipboard", json!({"text":"hello"}));
-        step.extensions.insert(ToolGate::from_tool_call(&call));
+        step.gate = Some(ToolGate::from_tool_call(&call));
 
         let ctx = build_read_only_ctx(Phase::BeforeToolExecute, &step);
         let actions = plugin.before_tool_execute(&ctx).await;
-        tirea_contract::testing::apply_actions_for_test(Phase::BeforeToolExecute, &mut step, actions).unwrap();
+        tirea_contract::testing::apply_before_tool_for_test(&mut step, actions);
 
-        let gate = step.extensions.get::<ToolGate>().expect("ToolGate should exist");
+        let gate = step.gate.as_ref().expect("ToolGate should exist");
         assert!(!gate.blocked, "should not be blocked");
         assert!(!gate.pending, "should not be pending");
         let result = gate.result.as_ref().expect("resume should produce OverrideToolResult");
@@ -709,13 +627,13 @@ mod tests {
         }));
         let mut step = fixture.step(vec![]);
         let call = ToolCall::new("call_1", "copyToClipboard", json!({"text":"hello"}));
-        step.extensions.insert(ToolGate::from_tool_call(&call));
+        step.gate = Some(ToolGate::from_tool_call(&call));
 
         let ctx = build_read_only_ctx(Phase::BeforeToolExecute, &step);
         let actions = plugin.before_tool_execute(&ctx).await;
-        tirea_contract::testing::apply_actions_for_test(Phase::BeforeToolExecute, &mut step, actions).unwrap();
+        tirea_contract::testing::apply_before_tool_for_test(&mut step, actions);
 
-        let gate = step.extensions.get::<ToolGate>().expect("ToolGate should exist");
+        let gate = step.gate.as_ref().expect("ToolGate should exist");
         assert!(!gate.blocked, "should not be blocked");
         assert!(!gate.pending, "should not be pending");
         let result = gate.result.as_ref().expect("cancel should produce OverrideToolResult");
@@ -782,11 +700,10 @@ mod tests {
         let ctx = build_read_only_ctx(Phase::BeforeInference, &step);
 
         let actions = behavior.before_inference(&ctx).await;
-        tirea_contract::testing::apply_actions_for_test(Phase::BeforeInference, &mut step, actions).unwrap();
+        tirea_contract::testing::apply_before_inference_for_test(&mut step, actions);
 
-        let inf = step.extensions.get::<tirea_contract::runtime::inference::InferenceContext>().unwrap();
-        assert!(!inf.system_context.is_empty());
-        let merged = inf.system_context.join("\n");
+        assert!(!step.inference.system_context.is_empty());
+        let merged = step.inference.system_context.join("\n");
         assert!(
             merged.contains("Task list"),
             "should contain context description"

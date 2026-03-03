@@ -1,3 +1,4 @@
+mod action_set;
 mod contexts;
 pub mod step;
 pub mod types;
@@ -5,6 +6,10 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
+pub use action_set::{
+    ActionSet, AfterInferenceAction, AfterToolExecuteAction, BeforeInferenceAction,
+    BeforeToolExecuteAction, LifecycleAction,
+};
 pub use contexts::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
     BeforeToolExecuteContext, PhaseContext, RunEndContext, RunStartContext, StepEndContext,

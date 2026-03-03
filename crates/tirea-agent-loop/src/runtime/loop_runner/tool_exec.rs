@@ -8,7 +8,6 @@ use super::{
 use crate::contracts::runtime::behavior::AgentBehavior;
 use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction, ScopeContext};
 use crate::contracts::runtime::action::Action;
-use crate::contracts::runtime::inference::MessagingContext;
 use crate::contracts::runtime::tool_call::ToolGate;
 use crate::contracts::runtime::phase::{Phase, StepContext};
 use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
@@ -906,7 +905,7 @@ async fn execute_single_tool_with_phases_impl(
         phase_ctx.thread_messages,
         phase_ctx.tool_descriptors.to_vec(),
     );
-    step.extensions.insert(ToolGate::from_tool_call(call));
+    step.gate = Some(ToolGate::from_tool_call(call));
     // Phase: BeforeToolExecute
     emit_tool_phase(
         Phase::BeforeToolExecute,
@@ -924,8 +923,8 @@ async fn execute_single_tool_with_phases_impl(
         tool_actions,
     ) = if step.tool_blocked() {
         let reason = step
-            .extensions
-            .get::<ToolGate>()
+            .gate
+            .as_ref()
             .and_then(|g| g.block_reason.clone())
             .unwrap_or_else(|| "Blocked by plugin".to_string());
         (
@@ -974,7 +973,7 @@ async fn execute_single_tool_with_phases_impl(
             Vec::<Box<dyn Action>>::new(),
         )
     } else if step.tool_pending() {
-        let Some(suspend_ticket) = step.extensions.get::<ToolGate>().and_then(|g| g.suspend_ticket.clone()) else {
+        let Some(suspend_ticket) = step.gate.as_ref().and_then(|g| g.suspend_ticket.clone()) else {
             return Err(AgentLoopError::StateError(
                 "tool is pending but suspend ticket is missing".to_string(),
             ));
@@ -1045,7 +1044,7 @@ async fn execute_single_tool_with_phases_impl(
     };
 
     // Set tool result in context
-    if let Some(gate) = step.extensions.get_mut::<ToolGate>() {
+    if let Some(gate) = step.gate.as_mut() {
         gate.result = Some(execution.result.clone());
     }
 
@@ -1174,16 +1173,8 @@ async fn execute_single_tool_with_phases_impl(
         &tool_scope_ctx,
     )?;
 
-    let reminders = step
-        .extensions
-        .get::<MessagingContext>()
-        .map(|m| m.reminders.clone())
-        .unwrap_or_default();
-    let user_messages = step
-        .extensions
-        .get_mut::<MessagingContext>()
-        .map(|m| std::mem::take(&mut m.user_messages))
-        .unwrap_or_default();
+    let reminders = step.messaging.reminders.clone();
+    let user_messages = std::mem::take(&mut step.messaging.user_messages);
 
     Ok(ToolExecutionResult {
         execution,

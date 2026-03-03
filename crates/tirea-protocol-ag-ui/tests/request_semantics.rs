@@ -147,9 +147,9 @@ fn suspension_decisions_preserve_last_write_order() {
 fn interaction_responses_filter_to_pending_ids_when_state_exists() {
     let request = RunAgentInput::new("thread_1", "run_1")
         .with_state(json!({
-            "__suspended_tool_calls": {
-                "calls": {
-                    "call_pending": {
+            "__tool_call_scope": {
+                "call_pending": {
+                    "suspended_call": {
                         "call_id": "call_pending",
                         "tool_name": "confirm",
                         "suspension": { "id": "call_pending", "action": "confirm" },

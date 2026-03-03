@@ -1,6 +1,5 @@
-use crate::runtime::extensions::Extensions;
-use crate::runtime::inference::{InferenceContext, LLMResponse};
-use crate::runtime::run::FlowControl;
+use crate::runtime::inference::{InferenceContext, LLMResponse, MessagingContext};
+use crate::runtime::run::{FlowControl, RunAction};
 use crate::runtime::state::AnyStateAction;
 use crate::runtime::tool_call::gate::ToolGate;
 use crate::runtime::tool_call::{ToolCallContext, ToolDescriptor, ToolResult};
@@ -10,14 +9,19 @@ use serde_json::Value;
 use std::sync::Arc;
 use tirea_state::{State, TireaResult, TrackedPatch};
 
-use super::types::{RunAction, StepOutcome, ToolCallAction};
+use super::types::{StepOutcome, ToolCallAction};
 
-/// Step context - mutable state passed through all phases.
+/// Step context — mutable state passed through all phases.
 ///
-/// This is the primary interface for plugins to interact with the agent loop.
-/// All phase-specific data lives in the [`Extensions`] type map. Core extension
-/// types (`InferenceContext`, `ToolGate`, `MessagingContext`, `FlowControl`,
-/// `LLMResponse`) are defined in dedicated domain modules.
+/// This is the primary interface for the runtime to maintain per-step state.
+/// Unlike the old `Extensions`-based design, all phase-relevant data lives
+/// in explicit typed fields, making every read and write site visible at the
+/// type level.
+///
+/// The loop sets `gate` before each tool phase and `llm_response` after each
+/// inference call. Plugins do not write to `StepContext` directly; they return
+/// typed [`ActionSet`](super::action_set::ActionSet) values that the loop
+/// applies via `match`.
 pub struct StepContext<'a> {
     // === Execution Context ===
     ctx: ToolCallContext<'a>,
@@ -28,36 +32,58 @@ pub struct StepContext<'a> {
     // === Thread Messages ===
     messages: &'a [Arc<Message>],
 
-    // === Pending State Changes ===
-    pub pending_patches: Vec<TrackedPatch>,
+    // === Step scope: inference ===
+    /// Tools and prompt context for the current inference call.
+    /// Persists across reset (tools are carried over).
+    pub inference: InferenceContext,
+
+    // === Step scope: LLM response ===
+    /// Set by the loop after each inference call. `None` before inference.
+    pub llm_response: Option<LLMResponse>,
+
+    // === ToolCall scope ===
+    /// Set by the loop before `BeforeToolExecute`; `None` outside tool phases.
+    pub gate: Option<ToolGate>,
+
+    // === AfterToolExecute accumulation ===
+    /// Reminders and user messages produced during tool execution.
+    pub messaging: MessagingContext,
+
+    // === Run scope: flow control ===
+    /// Set by plugins to request run termination.
+    pub flow: FlowControl,
+
+    // === Pending state changes ===
+    /// State actions accumulated during a phase; reduced to patches by the loop.
     pub pending_state_actions: Vec<AnyStateAction>,
 
-    // === Extensions ===
-    pub extensions: Extensions,
+    // === Pending patches (output) ===
+    /// Reduced patches ready for the thread store.
+    pub pending_patches: Vec<TrackedPatch>,
 }
 
 impl<'a> StepContext<'a> {
     /// Create a new step context.
-    ///
-    /// `tools` are stored in the `InferenceContext` extension.
     pub fn new(
         ctx: ToolCallContext<'a>,
         thread_id: &'a str,
         messages: &'a [Arc<Message>],
         tools: Vec<ToolDescriptor>,
     ) -> Self {
-        let mut extensions = Extensions::new();
-        extensions.insert(InferenceContext {
-            tools,
-            ..Default::default()
-        });
         Self {
             ctx,
             thread_id,
             messages,
-            pending_patches: Vec::new(),
+            inference: InferenceContext {
+                tools,
+                ..Default::default()
+            },
+            llm_response: None,
+            gate: None,
+            messaging: MessagingContext::default(),
+            flow: FlowControl::default(),
             pending_state_actions: Vec::new(),
-            extensions,
+            pending_patches: Vec::new(),
         }
     }
 
@@ -107,34 +133,31 @@ impl<'a> StepContext<'a> {
 
     /// Reset step-specific state for a new step.
     ///
-    /// Preserves `InferenceContext.tools` across resets.
+    /// Preserves `inference.tools` across resets.
     pub fn reset(&mut self) {
-        let tools = self
-            .extensions
-            .get::<InferenceContext>()
-            .map(|inf| inf.tools.clone())
-            .unwrap_or_default();
-        self.extensions.clear();
-        self.extensions.insert(InferenceContext {
+        let tools = std::mem::take(&mut self.inference.tools);
+        self.inference = InferenceContext {
             tools,
             ..Default::default()
-        });
-        self.pending_patches.clear();
+        };
+        self.llm_response = None;
+        self.gate = None;
+        self.messaging = MessagingContext::default();
+        self.flow = FlowControl::default();
         self.pending_state_actions.clear();
+        self.pending_patches.clear();
     }
 
     // =========================================================================
-    // Tool Control — read-only accessors for ToolGate extension
+    // Tool gate read-only accessors
     // =========================================================================
 
     pub fn tool_name(&self) -> Option<&str> {
-        self.extensions
-            .get::<ToolGate>()
-            .map(|g| g.name.as_str())
+        self.gate.as_ref().map(|g| g.name.as_str())
     }
 
     pub fn tool_call_id(&self) -> Option<&str> {
-        self.extensions.get::<ToolGate>().map(|g| g.id.as_str())
+        self.gate.as_ref().map(|g| g.id.as_str())
     }
 
     pub fn tool_idempotency_key(&self) -> Option<&str> {
@@ -142,50 +165,47 @@ impl<'a> StepContext<'a> {
     }
 
     pub fn tool_args(&self) -> Option<&Value> {
-        self.extensions.get::<ToolGate>().map(|g| &g.args)
+        self.gate.as_ref().map(|g| &g.args)
     }
 
     pub fn tool_result(&self) -> Option<&ToolResult> {
-        self.extensions
-            .get::<ToolGate>()
-            .and_then(|g| g.result.as_ref())
+        self.gate.as_ref().and_then(|g| g.result.as_ref())
     }
 
     pub fn tool_blocked(&self) -> bool {
-        self.extensions
-            .get::<ToolGate>()
-            .map(|g| g.blocked)
-            .unwrap_or(false)
+        self.gate.as_ref().map(|g| g.blocked).unwrap_or(false)
     }
 
     pub fn tool_pending(&self) -> bool {
-        self.extensions
-            .get::<ToolGate>()
-            .map(|g| g.pending)
-            .unwrap_or(false)
+        self.gate.as_ref().map(|g| g.pending).unwrap_or(false)
     }
 
-    /// Emit a state patch side effect.
+    // =========================================================================
+    // State output
+    // =========================================================================
+
+    /// Push a reduced patch to the output queue.
     pub fn emit_patch(&mut self, patch: TrackedPatch) {
         self.pending_patches.push(patch);
     }
 
-    /// Emit a state action to be reduced into a patch after the phase completes.
+    /// Push a state action for deferred reduction.
     pub fn emit_state_action(&mut self, action: AnyStateAction) {
         self.pending_state_actions.push(action);
     }
 
+    // =========================================================================
+    // Flow control read
+    // =========================================================================
+
     /// Effective run-level action for current step.
     pub fn run_action(&self) -> RunAction {
-        self.extensions
-            .get::<FlowControl>()
-            .and_then(|fc| fc.run_action.clone())
-            .unwrap_or(RunAction::Continue)
+        self.flow.run_action.clone().unwrap_or(RunAction::Continue)
     }
 
-    /// Current tool action derived from tool gate state.
+    /// Current tool action derived from gate state.
     pub fn tool_action(&self) -> ToolCallAction {
-        if let Some(gate) = self.extensions.get::<ToolGate>() {
+        if let Some(gate) = &self.gate {
             if gate.blocked {
                 return ToolCallAction::Block {
                     reason: gate.block_reason.clone().unwrap_or_default(),
@@ -209,7 +229,7 @@ impl<'a> StepContext<'a> {
 
     /// Get the step outcome based on current state.
     pub fn result(&self) -> StepOutcome {
-        if let Some(gate) = self.extensions.get::<ToolGate>() {
+        if let Some(gate) = &self.gate {
             if gate.pending {
                 if let Some(ticket) = gate.suspend_ticket.as_ref() {
                     return StepOutcome::Pending(ticket.clone());
@@ -218,7 +238,7 @@ impl<'a> StepContext<'a> {
             }
         }
 
-        if let Some(llm) = self.extensions.get::<LLMResponse>() {
+        if let Some(llm) = &self.llm_response {
             if let Ok(result) = &llm.outcome {
                 if result.tool_calls.is_empty() && !result.text.is_empty() {
                     return StepOutcome::Complete;

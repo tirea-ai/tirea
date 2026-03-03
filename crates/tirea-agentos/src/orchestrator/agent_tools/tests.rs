@@ -1,7 +1,7 @@
 use super::*;
 use crate::contracts::runtime::behavior::ReadOnlyContext;
-use crate::contracts::runtime::action::Action;
 use crate::contracts::runtime::phase::{Phase, StepContext};
+use crate::contracts::runtime::phase::{BeforeInferenceAction, ActionSet};
 use crate::contracts::runtime::state::{reduce_state_actions, ScopeContext};
 use crate::contracts::runtime::tool_call::ToolStatus;
 use crate::contracts::thread::Thread;
@@ -14,7 +14,10 @@ use crate::runtime::loop_runner::{
 use async_trait::async_trait;
 use serde_json::json;
 use std::time::Duration;
-use tirea_contract::testing::TestFixture;
+use tirea_contract::testing::{
+    apply_after_inference_for_test, apply_after_tool_for_test, apply_before_inference_for_test,
+    apply_before_tool_for_test, apply_lifecycle_for_test, TestFixture,
+};
 use tirea_state::apply_patches;
 
 #[async_trait]
@@ -35,23 +38,25 @@ where
             step.run_config(),
             step.ctx().doc(),
         );
-        let actions = match phase {
-            Phase::RunStart => self.run_start(&ctx).await,
-            Phase::StepStart => self.step_start(&ctx).await,
-            Phase::BeforeInference => self.before_inference(&ctx).await,
-            Phase::AfterInference => self.after_inference(&ctx).await,
-            Phase::BeforeToolExecute => self.before_tool_execute(&ctx).await,
-            Phase::AfterToolExecute => self.after_tool_execute(&ctx).await,
-            Phase::StepEnd => self.step_end(&ctx).await,
-            Phase::RunEnd => self.run_end(&ctx).await,
-        };
-        for action in &actions {
-            action.validate(phase).expect("action should validate");
+        match phase {
+            Phase::RunStart => apply_lifecycle_for_test(step, self.run_start(&ctx).await),
+            Phase::StepStart => apply_lifecycle_for_test(step, self.step_start(&ctx).await),
+            Phase::BeforeInference => {
+                apply_before_inference_for_test(step, self.before_inference(&ctx).await)
+            }
+            Phase::AfterInference => {
+                apply_after_inference_for_test(step, self.after_inference(&ctx).await)
+            }
+            Phase::BeforeToolExecute => {
+                apply_before_tool_for_test(step, self.before_tool_execute(&ctx).await)
+            }
+            Phase::AfterToolExecute => {
+                apply_after_tool_for_test(step, self.after_tool_execute(&ctx).await)
+            }
+            Phase::StepEnd => apply_lifecycle_for_test(step, self.step_end(&ctx).await),
+            Phase::RunEnd => apply_lifecycle_for_test(step, self.run_end(&ctx).await),
         }
-        for action in actions {
-            action.apply(step);
-        }
-        // Reduce any pending state actions emitted by EmitStatePatch
+        // Reduce any pending state actions
         if !step.pending_state_actions.is_empty() {
             let state_actions = std::mem::take(&mut step.pending_state_actions);
             let snapshot = step.snapshot();
@@ -118,10 +123,7 @@ async fn plugin_adds_reminder_for_running_and_stopped_runs() {
     let fixture = TestFixture::new();
     let mut step = StepContext::new(fixture.ctx(), "owner-1", &fixture.messages, vec![]);
     plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
-    let reminder = step
-        .extensions
-        .get::<tirea_contract::runtime::inference::MessagingContext>()
-        .and_then(|m| m.reminders.first())
+    let reminder = step.messaging.reminders.first()
         .expect("running reminder should be present");
     assert!(reminder.contains("status=\"running\""));
 
@@ -129,10 +131,7 @@ async fn plugin_adds_reminder_for_running_and_stopped_runs() {
     let fixture2 = TestFixture::new();
     let mut step2 = StepContext::new(fixture2.ctx(), "owner-1", &fixture2.messages, vec![]);
     plugin.run_phase(Phase::AfterToolExecute, &mut step2).await;
-    let reminder2 = step2
-        .extensions
-        .get::<tirea_contract::runtime::inference::MessagingContext>()
-        .and_then(|m| m.reminders.first())
+    let reminder2 = step2.messaging.reminders.first()
         .expect("stopped reminder should be present");
     assert!(reminder2.contains("status=\"stopped\""));
 }
@@ -298,13 +297,11 @@ impl AgentBehavior for SlowTerminatePlugin {
         "slow_terminate_behavior_requested"
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
         tokio::time::sleep(Duration::from_millis(120)).await;
-        vec![Box::new(
-            tirea_contract::testing::TestRequestTermination(
-                crate::contracts::TerminationReason::BehaviorRequested,
-            ),
-        )]
+        ActionSet::single(BeforeInferenceAction::Terminate(
+            crate::contracts::TerminationReason::BehaviorRequested,
+        ))
     }
 }
 

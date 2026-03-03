@@ -1,10 +1,12 @@
-use crate::runtime::action::Action;
 use crate::runtime::inference::response::{InferenceError, LLMResponse, StreamResult};
+use crate::runtime::phase::{
+    ActionSet, AfterInferenceAction, AfterToolExecuteAction, BeforeInferenceAction,
+    BeforeToolExecuteAction, LifecycleAction,
+};
 use crate::runtime::phase::step::StepContext;
 use crate::runtime::phase::Phase;
 use crate::runtime::state::{ActionDeserializerRegistry, ScopeContext, StateScope, StateSpec};
 use crate::runtime::state::StateScopeRegistry;
-use crate::runtime::tool_call::gate::ToolGate;
 use crate::runtime::tool_call::{ToolCallResume, ToolResult};
 use crate::thread::Message;
 use crate::RunConfig;
@@ -16,8 +18,8 @@ use tirea_state::{get_at_path, parse_path, DocCell, LatticeRegistry, State, Tire
 /// Immutable snapshot of step context passed to [`AgentBehavior`] phase hooks.
 ///
 /// The loop builds a `ReadOnlyContext` from the current `StepContext` before
-/// each phase hook and passes it by shared reference. Agents read data from
-/// this snapshot and return a `Vec<Box<dyn Action>>` describing effects to apply.
+/// each phase hook and passes it by shared reference. Plugins read data from
+/// this snapshot and return a typed `ActionSet` describing effects to apply.
 pub struct ReadOnlyContext<'a> {
     phase: Phase,
     thread_id: &'a str,
@@ -157,10 +159,6 @@ impl<'a> ReadOnlyContext<'a> {
     }
 
     /// Scope-aware state read for `StateSpec` types.
-    ///
-    /// For `ToolCall`-scoped state, resolves to
-    /// `__tool_call_scope.<call_id>.<S::PATH>` when a call id is present.
-    /// For `Run`-scoped state, reads from `S::PATH` directly.
     pub fn scoped_state_of<T: StateSpec>(&self, scope: StateScope) -> TireaResult<T> {
         let path = self.scope_ctx.resolve_path(scope, T::PATH);
         let val = self.doc.snapshot();
@@ -174,7 +172,6 @@ impl<'a> ReadOnlyContext<'a> {
         })
     }
 
-    /// The scope context for this snapshot.
     pub fn scope_ctx(&self) -> &ScopeContext {
         &self.scope_ctx
     }
@@ -182,9 +179,12 @@ impl<'a> ReadOnlyContext<'a> {
 
 /// Behavioral abstraction for agent phase hooks.
 ///
-/// Hooks receive an immutable [`ReadOnlyContext`] snapshot and return a
-/// `Vec<Box<dyn Action>>` describing effects to apply. The loop engine
-/// validates and applies these actions after each hook returns.
+/// Each hook receives an immutable [`ReadOnlyContext`] snapshot and returns a
+/// typed [`ActionSet`] describing effects to apply. The loop applies these
+/// actions via `match` — no dynamic dispatch, no runtime validation.
+///
+/// All hook methods have default no-op implementations; plugins only override
+/// the phases they care about.
 #[async_trait]
 pub trait AgentBehavior: Send + Sync {
     fn id(&self) -> &str;
@@ -194,60 +194,60 @@ pub trait AgentBehavior: Send + Sync {
     }
 
     /// Register lattice (CRDT) paths with the registry.
-    ///
-    /// Called once at agent construction before any run starts.
-    /// Plugins override this to call `registry.register::<T>(path)` for
-    /// each CRDT field so that `LatticeMerge` ops are resolved correctly.
     fn register_lattice_paths(&self, _registry: &mut LatticeRegistry) {}
 
     /// Register state scopes with the registry.
-    ///
-    /// Called once at agent construction alongside `register_lattice_paths`.
-    /// Plugins override this to call `registry.register::<S>()` for each
-    /// `StateSpec` type they own, so the framework knows their declared scope.
     fn register_state_scopes(&self, _registry: &mut StateScopeRegistry) {}
 
     /// Register action deserializers for crash-recovery pending writes.
-    ///
-    /// Called once at agent construction. Plugins override this to call
-    /// `registry.register::<S>()` for each `StateSpec` type, enabling
-    /// pending-write entries to be deserialized back into `AnyStateAction`.
     fn register_action_deserializers(&self, _registry: &mut ActionDeserializerRegistry) {}
 
-    async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        vec![]
+    async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
+        ActionSet::empty()
     }
 
-    async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        vec![]
+    async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
+        ActionSet::empty()
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        vec![]
+    async fn before_inference(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeInferenceAction> {
+        ActionSet::empty()
     }
 
-    async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        vec![]
+    async fn after_inference(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<AfterInferenceAction> {
+        ActionSet::empty()
     }
 
-    async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        vec![]
+    async fn before_tool_execute(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeToolExecuteAction> {
+        ActionSet::empty()
     }
 
-    async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        vec![]
+    async fn after_tool_execute(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<AfterToolExecuteAction> {
+        ActionSet::empty()
     }
 
-    async fn step_end(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        vec![]
+    async fn step_end(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
+        ActionSet::empty()
     }
 
-    async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        vec![]
+    async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
+        ActionSet::empty()
     }
 }
 
-/// A no-op behavior that returns empty action lists for all hooks.
+/// A no-op behavior that returns empty action sets for all hooks.
 pub struct NoOpBehavior;
 
 #[async_trait]
@@ -257,9 +257,7 @@ impl AgentBehavior for NoOpBehavior {
     }
 }
 
-/// Build a [`ReadOnlyContext`] from step Extensions and doc state.
-///
-/// Extracts response, tool info, and resume_input from the step's Extensions.
+/// Build a [`ReadOnlyContext`] from typed step fields and doc state.
 pub fn build_read_only_context_from_step<'a>(
     phase: Phase,
     step: &'a StepContext<'a>,
@@ -272,15 +270,14 @@ pub fn build_read_only_context_from_step<'a>(
         step.run_config(),
         doc,
     );
-    if let Some(llm) = step.extensions.get::<LLMResponse>() {
+    if let Some(llm) = step.llm_response.as_ref() {
         ctx = ctx.with_llm_response(llm);
     }
-    if let Some(gate) = step.extensions.get::<ToolGate>() {
+    if let Some(gate) = step.gate.as_ref() {
         ctx = ctx.with_tool_info(&gate.name, &gate.id, Some(&gate.args));
         if let Some(result) = gate.result.as_ref() {
             ctx = ctx.with_tool_result(result);
         }
-        // Inject scope context for tool phases
         if matches!(phase, Phase::BeforeToolExecute | Phase::AfterToolExecute) {
             ctx = ctx.with_scope_ctx(ScopeContext::for_call(&gate.id));
         }
@@ -298,7 +295,6 @@ pub fn build_read_only_context_from_step<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::TestSystemContext as AddSystemContext;
     use serde_json::json;
 
     #[tokio::test]
@@ -325,8 +321,13 @@ mod tests {
             fn id(&self) -> &str {
                 "ctx"
             }
-            async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-                vec![Box::new(AddSystemContext("from agent".into()))]
+            async fn before_inference(
+                &self,
+                _ctx: &ReadOnlyContext<'_>,
+            ) -> ActionSet<BeforeInferenceAction> {
+                ActionSet::single(BeforeInferenceAction::AddSystemContext(
+                    "from agent".into(),
+                ))
             }
         }
 
@@ -337,7 +338,6 @@ mod tests {
 
         let actions = agent.before_inference(&ctx).await;
         assert_eq!(actions.len(), 1);
-        assert_eq!(actions[0].label(), "add_system_context");
     }
 
     #[tokio::test]

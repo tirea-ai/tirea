@@ -5,16 +5,16 @@
 
 use crate::runtime::activity::NoOpActivityManager;
 use crate::runtime::action::Action;
-use crate::runtime::inference::{InferenceContext, MessagingContext};
-use crate::runtime::run::FlowControl;
-use crate::runtime::tool_call::ToolGate;
+use crate::runtime::phase::{
+    ActionSet, AfterInferenceAction, AfterToolExecuteAction, BeforeInferenceAction,
+    BeforeToolExecuteAction, LifecycleAction,
+};
+use crate::runtime::run::{RunAction, TerminationReason};
 use crate::runtime::state::AnyStateAction;
-use crate::runtime::run::TerminationReason;
 use crate::runtime::tool_call::suspension::Suspension;
 use crate::runtime::tool_call::{ToolDescriptor, ToolResult};
 use crate::runtime::{
-    PendingToolCall, Phase, RunAction, StepContext, SuspendTicket, ToolCallContext,
-    ToolCallResumeMode,
+    PendingToolCall, Phase, StepContext, SuspendTicket, ToolCallContext, ToolCallResumeMode,
 };
 use crate::thread::Message;
 use crate::RunConfig;
@@ -132,26 +132,10 @@ pub fn test_suspend_ticket(interaction: Suspension) -> SuspendTicket {
     )
 }
 
-/// Validate and apply actions in tests using the same path as runtime.
-pub fn apply_actions_for_test(
-    phase: Phase,
-    step: &mut StepContext<'_>,
-    actions: Vec<Box<dyn Action>>,
-) -> Result<(), String> {
-    for action in &actions {
-        action.validate(phase)?;
-    }
-    for action in actions {
-        action.apply(step);
-    }
-    Ok(())
-}
-
 // =============================================================================
-// Test-only Action types
+// Test-only Action types (legacy — kept for existing tests)
 //
-// These exist solely for framework tests (agent-loop, orchestrator) that need
-// concrete Action implementations but don't belong to any plugin crate.
+// New tests should use the typed phase action helpers below.
 // =============================================================================
 
 /// Test action: append a line to system prompt context.
@@ -162,21 +146,8 @@ impl Action for TestSystemContext {
         "add_system_context"
     }
 
-    fn validate(&self, phase: Phase) -> Result<(), String> {
-        if phase == Phase::BeforeInference {
-            Ok(())
-        } else {
-            Err(format!(
-                "TestSystemContext is only allowed in BeforeInference, got {phase}"
-            ))
-        }
-    }
-
     fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        step.extensions
-            .get_or_default::<InferenceContext>()
-            .system_context
-            .push(self.0);
+        step.inference.system_context.push(self.0);
     }
 }
 
@@ -188,21 +159,8 @@ impl Action for TestSessionContext {
         "add_session_context"
     }
 
-    fn validate(&self, phase: Phase) -> Result<(), String> {
-        if phase == Phase::BeforeInference {
-            Ok(())
-        } else {
-            Err(format!(
-                "TestSessionContext is only allowed in BeforeInference, got {phase}"
-            ))
-        }
-    }
-
     fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        step.extensions
-            .get_or_default::<InferenceContext>()
-            .session_context
-            .push(self.0);
+        step.inference.session_context.push(self.0);
     }
 }
 
@@ -214,18 +172,8 @@ impl Action for TestBlockTool {
         "block_tool"
     }
 
-    fn validate(&self, phase: Phase) -> Result<(), String> {
-        if phase == Phase::BeforeToolExecute {
-            Ok(())
-        } else {
-            Err(format!(
-                "TestBlockTool is only allowed in BeforeToolExecute, got {phase}"
-            ))
-        }
-    }
-
     fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        if let Some(gate) = step.extensions.get_mut::<ToolGate>() {
+        if let Some(gate) = step.gate.as_mut() {
             gate.blocked = true;
             gate.block_reason = Some(self.0);
             gate.pending = false;
@@ -242,18 +190,8 @@ impl Action for TestSuspendTool {
         "suspend_tool"
     }
 
-    fn validate(&self, phase: Phase) -> Result<(), String> {
-        if phase == Phase::BeforeToolExecute {
-            Ok(())
-        } else {
-            Err(format!(
-                "TestSuspendTool is only allowed in BeforeToolExecute, got {phase}"
-            ))
-        }
-    }
-
     fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        if let Some(gate) = step.extensions.get_mut::<ToolGate>() {
+        if let Some(gate) = step.gate.as_mut() {
             gate.blocked = false;
             gate.block_reason = None;
             gate.pending = true;
@@ -270,19 +208,8 @@ impl Action for TestExcludeTool {
         "exclude_tool"
     }
 
-    fn validate(&self, phase: Phase) -> Result<(), String> {
-        if phase == Phase::BeforeInference {
-            Ok(())
-        } else {
-            Err(format!(
-                "TestExcludeTool is only allowed in BeforeInference, got {phase}"
-            ))
-        }
-    }
-
     fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        let inf = step.extensions.get_or_default::<InferenceContext>();
-        inf.tools.retain(|t| t.id != self.0);
+        step.inference.tools.retain(|t| t.id != self.0);
     }
 }
 
@@ -294,20 +221,8 @@ impl Action for TestRequestTermination {
         "request_termination"
     }
 
-    fn validate(&self, phase: Phase) -> Result<(), String> {
-        if phase == Phase::BeforeInference || phase == Phase::AfterInference {
-            Ok(())
-        } else {
-            Err(format!(
-                "TestRequestTermination is only allowed in BeforeInference/AfterInference, got {phase}"
-            ))
-        }
-    }
-
     fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        step.extensions
-            .get_or_default::<FlowControl>()
-            .run_action = Some(RunAction::Terminate(self.0));
+        step.flow.run_action = Some(RunAction::Terminate(self.0));
     }
 }
 
@@ -332,21 +247,8 @@ impl Action for TestSystemReminder {
         "add_system_reminder"
     }
 
-    fn validate(&self, phase: Phase) -> Result<(), String> {
-        if phase == Phase::AfterToolExecute {
-            Ok(())
-        } else {
-            Err(format!(
-                "TestSystemReminder is only allowed in AfterToolExecute, got {phase}"
-            ))
-        }
-    }
-
     fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        step.extensions
-            .get_or_default::<MessagingContext>()
-            .reminders
-            .push(self.0);
+        step.messaging.reminders.push(self.0);
     }
 }
 
@@ -358,18 +260,8 @@ impl Action for TestAllowTool {
         "allow_tool"
     }
 
-    fn validate(&self, phase: Phase) -> Result<(), String> {
-        if phase == Phase::BeforeToolExecute {
-            Ok(())
-        } else {
-            Err(format!(
-                "TestAllowTool is only allowed in BeforeToolExecute, got {phase}"
-            ))
-        }
-    }
-
     fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        if let Some(gate) = step.extensions.get_mut::<ToolGate>() {
+        if let Some(gate) = step.gate.as_mut() {
             gate.blocked = false;
             gate.block_reason = None;
             gate.pending = false;
@@ -386,18 +278,8 @@ impl Action for TestOverrideToolResult {
         "override_tool_result"
     }
 
-    fn validate(&self, phase: Phase) -> Result<(), String> {
-        if phase == Phase::BeforeToolExecute {
-            Ok(())
-        } else {
-            Err(format!(
-                "TestOverrideToolResult is only allowed in BeforeToolExecute, got {phase}"
-            ))
-        }
-    }
-
     fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        if let Some(gate) = step.extensions.get_mut::<ToolGate>() {
+        if let Some(gate) = step.gate.as_mut() {
             gate.result = Some(self.0);
         }
     }
@@ -411,19 +293,8 @@ impl Action for TestIncludeOnlyTools {
         "include_only_tools"
     }
 
-    fn validate(&self, phase: Phase) -> Result<(), String> {
-        if phase == Phase::BeforeInference {
-            Ok(())
-        } else {
-            Err(format!(
-                "TestIncludeOnlyTools is only allowed in BeforeInference, got {phase}"
-            ))
-        }
-    }
-
     fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        let inf = step.extensions.get_or_default::<InferenceContext>();
-        inf.tools.retain(|t| self.0.iter().any(|id| id == &t.id));
+        step.inference.tools.retain(|t| self.0.iter().any(|id| id == &t.id));
     }
 }
 
@@ -435,20 +306,152 @@ impl Action for TestUserMessage {
         "add_user_message"
     }
 
-    fn validate(&self, phase: Phase) -> Result<(), String> {
-        if phase == Phase::AfterToolExecute {
-            Ok(())
-        } else {
-            Err(format!(
-                "TestUserMessage is only allowed in AfterToolExecute, got {phase}"
-            ))
+    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
+        step.messaging.user_messages.push(self.0);
+    }
+}
+
+/// Apply actions directly to a step for testing purposes.
+pub fn apply_actions_for_test(
+    _phase: Phase,
+    step: &mut StepContext<'_>,
+    actions: Vec<Box<dyn Action>>,
+) -> Result<(), String> {
+    for action in actions {
+        action.apply(step);
+    }
+    Ok(())
+}
+
+// =============================================================================
+// Typed phase action helpers for new tests
+// =============================================================================
+
+pub fn typed_system_context(text: impl Into<String>) -> BeforeInferenceAction {
+    BeforeInferenceAction::AddSystemContext(text.into())
+}
+
+pub fn typed_block_tool(reason: impl Into<String>) -> BeforeToolExecuteAction {
+    BeforeToolExecuteAction::Block(reason.into())
+}
+
+pub fn typed_suspend_tool(ticket: SuspendTicket) -> BeforeToolExecuteAction {
+    BeforeToolExecuteAction::Suspend(ticket)
+}
+
+pub fn typed_system_reminder(text: impl Into<String>) -> AfterToolExecuteAction {
+    AfterToolExecuteAction::AddSystemReminder(text.into())
+}
+
+pub fn typed_user_message(text: impl Into<String>) -> AfterToolExecuteAction {
+    AfterToolExecuteAction::AddUserMessage(text.into())
+}
+
+pub fn typed_terminate_before(reason: TerminationReason) -> BeforeInferenceAction {
+    BeforeInferenceAction::Terminate(reason)
+}
+
+pub fn typed_terminate_after(reason: TerminationReason) -> AfterInferenceAction {
+    AfterInferenceAction::Terminate(reason)
+}
+
+// =============================================================================
+// Typed phase apply helpers for tests that dispatch per-phase ActionSets
+// =============================================================================
+
+pub fn apply_lifecycle_for_test(step: &mut StepContext<'_>, actions: ActionSet<LifecycleAction>) {
+    for action in actions {
+        match action {
+            LifecycleAction::State(sa) => step.emit_state_action(sa),
         }
     }
+}
 
-    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        step.extensions
-            .get_or_default::<MessagingContext>()
-            .user_messages
-            .push(self.0);
+pub fn apply_before_inference_for_test(
+    step: &mut StepContext<'_>,
+    actions: ActionSet<BeforeInferenceAction>,
+) {
+    for action in actions {
+        match action {
+            BeforeInferenceAction::AddSystemContext(text) => {
+                step.inference.system_context.push(text);
+            }
+            BeforeInferenceAction::AddSessionContext(text) => {
+                step.inference.session_context.push(text);
+            }
+            BeforeInferenceAction::ExcludeTool(id) => {
+                step.inference.tools.retain(|t| t.id != id);
+            }
+            BeforeInferenceAction::IncludeOnlyTools(ids) => {
+                step.inference.tools.retain(|t| ids.contains(&t.id));
+            }
+            BeforeInferenceAction::Terminate(reason) => {
+                step.flow.run_action = Some(RunAction::Terminate(reason));
+            }
+            BeforeInferenceAction::State(sa) => step.emit_state_action(sa),
+        }
+    }
+}
+
+pub fn apply_after_inference_for_test(
+    step: &mut StepContext<'_>,
+    actions: ActionSet<AfterInferenceAction>,
+) {
+    for action in actions {
+        match action {
+            AfterInferenceAction::Terminate(reason) => {
+                step.flow.run_action = Some(RunAction::Terminate(reason));
+            }
+            AfterInferenceAction::State(sa) => step.emit_state_action(sa),
+        }
+    }
+}
+
+pub fn apply_before_tool_for_test(
+    step: &mut StepContext<'_>,
+    actions: ActionSet<BeforeToolExecuteAction>,
+) {
+    for action in actions {
+        match action {
+            BeforeToolExecuteAction::Block(reason) => {
+                if let Some(gate) = step.gate.as_mut() {
+                    gate.blocked = true;
+                    gate.block_reason = Some(reason);
+                    gate.pending = false;
+                    gate.suspend_ticket = None;
+                }
+            }
+            BeforeToolExecuteAction::Suspend(ticket) => {
+                if let Some(gate) = step.gate.as_mut() {
+                    gate.blocked = false;
+                    gate.block_reason = None;
+                    gate.pending = true;
+                    gate.suspend_ticket = Some(ticket);
+                }
+            }
+            BeforeToolExecuteAction::SetToolResult(result) => {
+                if let Some(gate) = step.gate.as_mut() {
+                    gate.result = Some(result);
+                }
+            }
+            BeforeToolExecuteAction::State(sa) => step.emit_state_action(sa),
+        }
+    }
+}
+
+pub fn apply_after_tool_for_test(
+    step: &mut StepContext<'_>,
+    actions: ActionSet<AfterToolExecuteAction>,
+) {
+    for action in actions {
+        match action {
+            AfterToolExecuteAction::AddSystemReminder(text) => {
+                step.messaging.reminders.push(text);
+            }
+            AfterToolExecuteAction::AddUserMessage(text) => {
+                step.messaging.user_messages.push(text);
+            }
+            AfterToolExecuteAction::State(sa) => step.emit_state_action(sa),
+        }
     }
 }

@@ -2,14 +2,10 @@ use super::outcome::LoopFailure;
 use super::LlmExecutor;
 use super::*;
 use crate::contracts::runtime::behavior::ReadOnlyContext;
-use crate::contracts::runtime::action::Action;
-use tirea_contract::testing::{
-    TestBlockTool as BlockTool, TestEmitStatePatch as EmitStatePatch,
-    TestExcludeTool as ExcludeTool, TestRequestTermination as RequestTermination,
-    TestSessionContext as AddSessionContext, TestSuspendTool as SuspendTool,
-    TestSystemContext as AddSystemContext, TestSystemReminder as AddSystemReminder,
+use crate::contracts::runtime::phase::{
+    ActionSet, AfterInferenceAction, AfterToolExecuteAction, BeforeInferenceAction,
+    BeforeToolExecuteAction, LifecycleAction,
 };
-use crate::contracts::runtime::inference::InferenceContext;
 use crate::contracts::runtime::phase::{Phase, SuspendTicket};
 use crate::contracts::runtime::tool_call::{
     ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult,
@@ -66,59 +62,59 @@ fn compose_test_behaviors(behaviors: Vec<Arc<dyn AgentBehavior>>) -> Arc<dyn Age
                 .flat_map(|b| b.behavior_ids())
                 .collect()
         }
-        async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            let mut actions: Vec<Box<dyn Action>> = Vec::new();
+        async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
+            let mut actions = ActionSet::empty();
             for b in &self.behaviors {
-                actions.extend(b.run_start(ctx).await);
+                actions = actions.and(b.run_start(ctx).await);
             }
             actions
         }
-        async fn step_start(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            let mut actions: Vec<Box<dyn Action>> = Vec::new();
+        async fn step_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
+            let mut actions = ActionSet::empty();
             for b in &self.behaviors {
-                actions.extend(b.step_start(ctx).await);
+                actions = actions.and(b.step_start(ctx).await);
             }
             actions
         }
-        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            let mut actions: Vec<Box<dyn Action>> = Vec::new();
+        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            let mut actions = ActionSet::empty();
             for b in &self.behaviors {
-                actions.extend(b.before_inference(ctx).await);
+                actions = actions.and(b.before_inference(ctx).await);
             }
             actions
         }
-        async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            let mut actions: Vec<Box<dyn Action>> = Vec::new();
+        async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterInferenceAction> {
+            let mut actions = ActionSet::empty();
             for b in &self.behaviors {
-                actions.extend(b.after_inference(ctx).await);
+                actions = actions.and(b.after_inference(ctx).await);
             }
             actions
         }
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            let mut actions: Vec<Box<dyn Action>> = Vec::new();
+        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+            let mut actions = ActionSet::empty();
             for b in &self.behaviors {
-                actions.extend(b.before_tool_execute(ctx).await);
+                actions = actions.and(b.before_tool_execute(ctx).await);
             }
             actions
         }
-        async fn after_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            let mut actions: Vec<Box<dyn Action>> = Vec::new();
+        async fn after_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
+            let mut actions = ActionSet::empty();
             for b in &self.behaviors {
-                actions.extend(b.after_tool_execute(ctx).await);
+                actions = actions.and(b.after_tool_execute(ctx).await);
             }
             actions
         }
-        async fn step_end(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            let mut actions: Vec<Box<dyn Action>> = Vec::new();
+        async fn step_end(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
+            let mut actions = ActionSet::empty();
             for b in &self.behaviors {
-                actions.extend(b.step_end(ctx).await);
+                actions = actions.and(b.step_end(ctx).await);
             }
             actions
         }
-        async fn run_end(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            let mut actions: Vec<Box<dyn Action>> = Vec::new();
+        async fn run_end(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
+            let mut actions = ActionSet::empty();
             for b in &self.behaviors {
-                actions.extend(b.run_end(ctx).await);
+                actions = actions.and(b.run_end(ctx).await);
             }
             actions
         }
@@ -512,19 +508,19 @@ impl AgentBehavior for TestInteractionPlugin {
         "test_interaction"
     }
 
-    async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
         if self.responses.is_empty() {
-            return vec![];
+            return ActionSet::empty();
         }
         let state = ctx.snapshot();
         let suspended_calls = crate::contracts::runtime::suspended_calls_from_state(&state);
         if suspended_calls.is_empty() {
-            return vec![];
+            return ActionSet::empty();
         }
 
         let mut states =
             crate::contracts::runtime::tool_call_states_from_state(&ctx.snapshot());
-        let mut actions: Vec<Box<dyn Action>> = Vec::new();
+        let mut actions = ActionSet::empty();
         for (call_id, suspended_call) in suspended_calls {
             if states.get(&call_id).is_some_and(|state| {
                 matches!(
@@ -558,7 +554,7 @@ impl AgentBehavior for TestInteractionPlugin {
             state.resume_token = Some(suspended_call.ticket.pending.id.clone());
             state.resume = Some(resume);
             state.updated_at = updated_at;
-            actions.push(Box::new(EmitStatePatch(state.into_state_action())));
+            actions = actions.and(ActionSet::single(LifecycleAction::State(state.into_state_action())));
         }
         actions
     }
@@ -1386,18 +1382,16 @@ impl AgentBehavior for TestPhasePlugin {
         &self.id
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        vec![
-            Box::new(AddSystemContext("Test system context".into())),
-            Box::new(AddSessionContext("Test thread context".into())),
-        ]
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+        ActionSet::single(BeforeInferenceAction::AddSystemContext("Test system context".into()))
+            .and(ActionSet::single(BeforeInferenceAction::AddSessionContext("Test thread context".into())))
     }
 
-    async fn after_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn after_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
         if ctx.tool_name() == Some("echo") {
-            vec![Box::new(AddSystemReminder("Check the echo result".into()))]
+            ActionSet::single(AfterToolExecuteAction::AddSystemReminder("Check the echo result".into()))
         } else {
-            vec![]
+            ActionSet::empty()
         }
     }
 }
@@ -1418,11 +1412,11 @@ impl AgentBehavior for BlockingPhasePlugin {
         "blocker"
     }
 
-    async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
         if ctx.tool_name() == Some("echo") {
-            vec![Box::new(BlockTool("Echo tool is blocked".into()))]
+            ActionSet::single(BeforeToolExecuteAction::Block("Echo tool is blocked".into()))
         } else {
-            vec![]
+            ActionSet::empty()
         }
     }
 }
@@ -1467,18 +1461,23 @@ impl AgentBehavior for InvalidAfterToolMutationPlugin {
         "invalid_after_tool_mutation"
     }
 
-    async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        vec![Box::new(BlockTool("too late".into()))]
+    async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
+        // BlockTool is now type-safe: it cannot be expressed in AfterToolExecuteAction.
+        // The typed ActionSet system prevents this at compile time.
+        ActionSet::empty()
     }
 }
 
 #[test]
-fn test_execute_tools_rejects_tool_gate_mutation_outside_before_tool_execute() {
+fn test_execute_tools_gate_mutation_type_safe_in_after_tool_execute() {
+    // With the typed ActionSet system, tool gate mutations (Block/Suspend) cannot be
+    // expressed in AfterToolExecuteAction at compile time. This test verifies that
+    // after_tool_execute with no gate actions completes normally.
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let thread = Thread::new("test");
         let result = StreamResult {
-            text: "invalid".to_string(),
+            text: "ok".to_string(),
             tool_calls: vec![crate::contracts::thread::ToolCall::new(
                 "call_1",
                 "echo",
@@ -1489,18 +1488,12 @@ fn test_execute_tools_rejects_tool_gate_mutation_outside_before_tool_execute() {
         let tools = tool_map([EchoTool]);
         let agent = BaseAgent::new("m").with_behavior(Arc::new(InvalidAfterToolMutationPlugin));
 
-        let err = execute_tools_with_config(thread, &result, &tools, &agent)
+        let thread = execute_tools_with_config(thread, &result, &tools, &agent)
             .await
-            .expect_err("phase mutation outside BeforeToolExecute should fail");
+            .expect("tool execution should succeed when after_tool_execute returns empty action set")
+            .into_thread();
 
-        assert!(
-            matches!(
-                err,
-                AgentLoopError::StateError(ref message)
-                if message.contains("is only allowed in BeforeToolExecute")
-            ),
-            "unexpected error: {err:?}"
-        );
+        assert_eq!(thread.message_count(), 1);
     });
 }
 
@@ -1512,13 +1505,11 @@ impl AgentBehavior for InvalidDualToolGatePlugin {
         "invalid_dual_tool_gate"
     }
 
-    async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        vec![
-            Box::new(BlockTool("invalid gate".into())),
-            Box::new(SuspendTool(test_suspend_ticket(
+    async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        ActionSet::single(BeforeToolExecuteAction::Block("invalid gate".into()))
+            .and(ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
                 Suspension::new("confirm", "confirm").with_message("invalid gate"),
-            ))),
-        ]
+            ))))
     }
 }
 
@@ -1566,20 +1557,23 @@ impl AgentBehavior for InvalidSuspendTicketMutationPlugin {
         "invalid_suspend_ticket_mutation"
     }
 
-    async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        vec![Box::new(SuspendTool(test_suspend_ticket(
-            Suspension::new("late_suspend", "confirm").with_message("late ticket"),
-        )))]
+    async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
+        // SuspendTool is now type-safe: it cannot be expressed in AfterToolExecuteAction.
+        // The typed ActionSet system prevents this at compile time.
+        ActionSet::empty()
     }
 }
 
 #[test]
-fn test_execute_tools_rejects_suspend_ticket_mutation_outside_before_tool_execute() {
+fn test_execute_tools_suspend_ticket_type_safe_in_after_tool_execute() {
+    // With the typed ActionSet system, suspend ticket mutations cannot be expressed
+    // in AfterToolExecuteAction at compile time. This test verifies that after_tool_execute
+    // with no suspension actions completes normally.
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let thread = Thread::new("test");
         let result = StreamResult {
-            text: "invalid".to_string(),
+            text: "ok".to_string(),
             tool_calls: vec![crate::contracts::thread::ToolCall::new(
                 "call_1",
                 "echo",
@@ -1590,18 +1584,12 @@ fn test_execute_tools_rejects_suspend_ticket_mutation_outside_before_tool_execut
         let tools = tool_map([EchoTool]);
         let agent = BaseAgent::new("m").with_behavior(Arc::new(InvalidSuspendTicketMutationPlugin));
 
-        let err = execute_tools_with_config(thread, &result, &tools, &agent)
+        let thread = execute_tools_with_config(thread, &result, &tools, &agent)
             .await
-            .expect_err("suspend ticket mutation outside BeforeToolExecute should fail");
+            .expect("tool execution should succeed when after_tool_execute returns empty action set")
+            .into_thread();
 
-        assert!(
-            matches!(
-                err,
-                AgentLoopError::StateError(ref message)
-                if message.contains("is only allowed in BeforeToolExecute")
-            ),
-            "unexpected error: {err:?}"
-        );
+        assert_eq!(thread.message_count(), 1);
     });
 }
 
@@ -1613,8 +1601,8 @@ impl AgentBehavior for ReminderPhasePlugin {
         "reminder"
     }
 
-    async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        vec![Box::new(AddSystemReminder("Tool execution completed".into()))]
+    async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
+        ActionSet::single(AfterToolExecuteAction::AddSystemReminder("Tool execution completed".into()))
     }
 }
 
@@ -1657,18 +1645,9 @@ fn test_build_messages_with_context() {
     fixture.messages = thread.messages.clone();
     let mut step = fixture.step(tool_descriptors);
 
-    step.extensions
-        .get_or_default::<InferenceContext>()
-        .system_context
-        .push("System context 1".into());
-    step.extensions
-        .get_or_default::<InferenceContext>()
-        .system_context
-        .push("System context 2".into());
-    step.extensions
-        .get_or_default::<InferenceContext>()
-        .session_context
-        .push("Thread context".into());
+    step.inference.system_context.push("System context 1".into());
+    step.inference.system_context.push("System context 2".into());
+    step.inference.session_context.push("Thread context".into());
 
     let messages = build_messages(&step, "Base system prompt");
 
@@ -1701,8 +1680,8 @@ impl AgentBehavior for ToolFilterPlugin {
         "filter"
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        vec![Box::new(ExcludeTool("dangerous_tool".into()))]
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+        ActionSet::single(BeforeInferenceAction::ExcludeTool("dangerous_tool".into()))
     }
 }
 
@@ -1723,7 +1702,7 @@ fn test_tool_filtering_via_plugin() {
             .await
             .expect("BeforeInference should not fail");
 
-        let inf = step.extensions.get::<InferenceContext>().unwrap();
+        let inf = &step.inference;
         assert_eq!(inf.tools.len(), 1);
         assert_eq!(inf.tools[0].id, "safe_tool");
     });
@@ -1739,7 +1718,7 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
             "guarded"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
             let state = ctx.snapshot();
             let allow_exec = state
                 .get("plugin")
@@ -1748,9 +1727,9 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
                 .unwrap_or(false);
 
             if !allow_exec {
-                vec![Box::new(BlockTool("missing plugin.allow_exec in state".into()))]
+                ActionSet::single(BeforeToolExecuteAction::Block("missing plugin.allow_exec in state".into()))
             } else {
-                vec![]
+                ActionSet::empty()
             }
         }
     }
@@ -2023,11 +2002,11 @@ async fn test_plugin_sees_real_session_id_and_scope_in_tool_phase() {
             "session_check"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
             assert_eq!(ctx.thread_id(), "real-thread-42");
             assert_eq!(ctx.run_config().value("user_id"), Some(&json!("u-abc")),);
             VERIFIED.store(true, Ordering::SeqCst);
-            vec![]
+            ActionSet::empty()
         }
     }
 
@@ -2072,49 +2051,49 @@ async fn test_plugin_state_patch_visible_in_next_step_before_inference() {
             "state_channel"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            self.phase_actions(Phase::BeforeToolExecute, ctx).await
+        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+            self.before_tool_actions(ctx).await
         }
 
-        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            self.phase_actions(Phase::BeforeInference, ctx).await
+        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            self.before_inference_actions(ctx).await
         }
     }
 
     impl StateChannelPlugin {
 
-        async fn phase_actions(
+        async fn before_tool_actions(
             &self,
-            phase: Phase,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
+            let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
+                tirea_state::path!("debug", "seen_tool_execute"),
+                json!(true),
+            )))
+            .with_source("test:state_channel");
+            ActionSet::single(BeforeToolExecuteAction::State(AnyStateAction::Patch(patch)))
+        }
+
+        async fn before_inference_actions(
+            &self,
             ctx: &ReadOnlyContext<'_>,
-        ) -> Vec<Box<dyn Action>> {
-            let mut actions: Vec<Box<dyn Action>> = Vec::new();
-            if phase == Phase::BeforeToolExecute {
+        ) -> ActionSet<BeforeInferenceAction> {
+            let state = ctx.snapshot();
+            let seen_tool_execute = state
+                .get("debug")
+                .and_then(|d| d.get("seen_tool_execute"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if seen_tool_execute {
                 let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
-                    tirea_state::path!("debug", "seen_tool_execute"),
+                    tirea_state::path!("debug", "before_inference_observed"),
                     json!(true),
                 )))
                 .with_source("test:state_channel");
-                actions.push(Box::new(EmitStatePatch(AnyStateAction::Patch(patch))));
+                ActionSet::single(BeforeInferenceAction::State(AnyStateAction::Patch(patch)))
+            } else {
+                ActionSet::empty()
             }
-
-            if phase == Phase::BeforeInference {
-                let state = ctx.snapshot();
-                let seen_tool_execute = state
-                    .get("debug")
-                    .and_then(|d| d.get("seen_tool_execute"))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                if seen_tool_execute {
-                    let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
-                        tirea_state::path!("debug", "before_inference_observed"),
-                        json!(true),
-                    )))
-                    .with_source("test:state_channel");
-                    actions.push(Box::new(EmitStatePatch(AnyStateAction::Patch(patch))));
-                }
-            }
-            actions
         }
     }
 
@@ -2153,46 +2132,44 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
             "phase_block"
         }
 
-        async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phases.lock().unwrap().push(Phase::RunStart);
-            vec![]
+            ActionSet::empty()
         }
-        async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phases.lock().unwrap().push(Phase::StepStart);
-            vec![]
+            ActionSet::empty()
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
             self.phases.lock().unwrap().push(Phase::BeforeInference);
             let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
                 tirea_state::path!("debug", "phase_block"),
                 json!(true),
             )))
             .with_source("test:phase_block");
-            vec![
-                Box::new(AddSystemContext("from_before_inference".into())),
-                Box::new(RequestTermination(TerminationReason::BehaviorRequested)),
-                Box::new(EmitStatePatch(AnyStateAction::Patch(patch))),
-            ]
+            ActionSet::single(BeforeInferenceAction::AddSystemContext("from_before_inference".into()))
+                .and(ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested)))
+                .and(ActionSet::single(BeforeInferenceAction::State(AnyStateAction::Patch(patch))))
         }
-        async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterInferenceAction> {
             self.phases.lock().unwrap().push(Phase::AfterInference);
-            vec![]
+            ActionSet::empty()
         }
-        async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
             self.phases.lock().unwrap().push(Phase::BeforeToolExecute);
-            vec![]
+            ActionSet::empty()
         }
-        async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
             self.phases.lock().unwrap().push(Phase::AfterToolExecute);
-            vec![]
+            ActionSet::empty()
         }
-        async fn step_end(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn step_end(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phases.lock().unwrap().push(Phase::StepEnd);
-            vec![]
+            ActionSet::empty()
         }
-        async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phases.lock().unwrap().push(Phase::RunEnd);
-            vec![]
+            ActionSet::empty()
         }
     }
 
@@ -2225,21 +2202,21 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
             "cleanup_plugin"
         }
 
-        async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterInferenceAction> {
             self.phases.lock().unwrap().push(Phase::AfterInference);
             let err = ctx.inference_error();
             assert_eq!(err.map(|e| e.error_type.as_str()), Some("llm_stream_start_error"));
-            vec![]
+            ActionSet::empty()
         }
 
-        async fn step_end(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn step_end(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phases.lock().unwrap().push(Phase::StepEnd);
             let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
                 tirea_state::path!("debug", "cleanup_ran"),
                 json!(true),
             )))
             .with_source("test:cleanup");
-            vec![Box::new(EmitStatePatch(AnyStateAction::Patch(patch)))]
+            ActionSet::single(LifecycleAction::State(AnyStateAction::Patch(patch)))
         }
     }
 
@@ -2279,15 +2256,15 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
             "run_scoped_state"
         }
 
-        async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phase_actions(Phase::RunStart, ctx).await
         }
 
-        async fn step_start(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn step_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phase_actions(Phase::StepStart, ctx).await
         }
 
-        async fn run_end(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn run_end(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phase_actions(Phase::RunEnd, ctx).await
         }
     }
@@ -2298,14 +2275,14 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
             &self,
             phase: Phase,
             ctx: &ReadOnlyContext<'_>,
-        ) -> Vec<Box<dyn Action>> {
+        ) -> ActionSet<LifecycleAction> {
             if phase == Phase::RunStart {
                 let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
                     tirea_state::path!("debug", "temp_counter"),
                     json!(1),
                 )))
                 .with_source("test:run_scoped_state");
-                return vec![Box::new(EmitStatePatch(AnyStateAction::Patch(patch)))];
+                return ActionSet::single(LifecycleAction::State(AnyStateAction::Patch(patch)));
             }
 
             if phase == Phase::StepStart {
@@ -2320,11 +2297,11 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
                     json!(current + 1),
                 )))
                 .with_source("test:run_scoped_state");
-                return vec![Box::new(EmitStatePatch(AnyStateAction::Patch(patch)))];
+                return ActionSet::single(LifecycleAction::State(AnyStateAction::Patch(patch)));
             }
 
             if phase != Phase::RunEnd {
-                return Vec::new();
+                return ActionSet::empty();
             }
             let state = ctx.snapshot();
             let current = state
@@ -2358,11 +2335,9 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
                     Value::Null,
                 ));
             let _ = current; // keep parity with previous evaluation order for debug state read
-            vec![Box::new(EmitStatePatch(
-                AnyStateAction::Patch(
-                    TrackedPatch::new(patch).with_source("test:run_scoped_state"),
-                ),
-            ))]
+            ActionSet::single(LifecycleAction::State(AnyStateAction::Patch(
+                TrackedPatch::new(patch).with_source("test:run_scoped_state"),
+            )))
         }
     }
 
@@ -2447,14 +2422,14 @@ impl AgentBehavior for PendingPhasePlugin {
         "pending"
     }
 
-    async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
         if ctx.tool_name() == Some("echo") {
             use crate::contracts::Suspension;
-            vec![Box::new(SuspendTool(test_suspend_ticket(
+            ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
                 Suspension::new("confirm_1", "confirm").with_message("Execute echo?"),
-            )))]
+            )))
         } else {
-            vec![]
+            ActionSet::empty()
         }
     }
 }
@@ -3230,9 +3205,9 @@ fn test_execute_tools_sequential_propagates_intermediate_state_apply_errors() {
             "first_call_intermediate_patch"
         }
 
-        async fn after_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn after_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
             if ctx.tool_call_id() != Some("call_1") {
-                return vec![];
+                return ActionSet::empty();
             }
 
             // This increment fails when applied between call_1 and call_2 because
@@ -3242,7 +3217,7 @@ fn test_execute_tools_sequential_propagates_intermediate_state_apply_errors() {
                 Patch::new().with_op(Op::increment(tirea_state::path!("counter"), 1_i64)),
             )
             .with_source("test:intermediate_apply_error");
-            vec![Box::new(EmitStatePatch(AnyStateAction::Patch(patch)))]
+            ActionSet::single(AfterToolExecuteAction::State(AnyStateAction::Patch(patch)))
         }
     }
 
@@ -3302,37 +3277,37 @@ impl AgentBehavior for RecordAndTerminatePlugin {
     fn id(&self) -> &str {
         "record_and_terminate_behavior_requested"
     }
-    async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
         self.phases.lock().unwrap().push(Phase::RunStart);
-        vec![]
+        ActionSet::empty()
     }
-    async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
         self.phases.lock().unwrap().push(Phase::StepStart);
-        vec![]
+        ActionSet::empty()
     }
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
         self.phases.lock().unwrap().push(Phase::BeforeInference);
-        vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
     }
-    async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterInferenceAction> {
         self.phases.lock().unwrap().push(Phase::AfterInference);
-        vec![]
+        ActionSet::empty()
     }
-    async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
         self.phases.lock().unwrap().push(Phase::BeforeToolExecute);
-        vec![]
+        ActionSet::empty()
     }
-    async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
         self.phases.lock().unwrap().push(Phase::AfterToolExecute);
-        vec![]
+        ActionSet::empty()
     }
-    async fn step_end(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn step_end(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
         self.phases.lock().unwrap().push(Phase::StepEnd);
-        vec![]
+        ActionSet::empty()
     }
-    async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
         self.phases.lock().unwrap().push(Phase::RunEnd);
-        vec![]
+        ActionSet::empty()
     }
 }
 
@@ -3492,7 +3467,7 @@ async fn test_stream_terminate_behavior_requested_with_pending_state_emits_pendi
             "pending_terminate_behavior_requested"
         }
 
-        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
             let state = ctx.snapshot();
             let patch = set_single_suspended_call(
                 &state,
@@ -3501,10 +3476,8 @@ async fn test_stream_terminate_behavior_requested_with_pending_state_emits_pendi
                 None,
             )
             .expect("failed to set suspended interaction");
-            vec![
-                Box::new(RequestTermination(TerminationReason::Suspended)),
-                Box::new(EmitStatePatch(AnyStateAction::Patch(patch))),
-            ]
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::Suspended))
+                .and(ActionSet::single(BeforeInferenceAction::State(AnyStateAction::Patch(patch))))
         }
     }
 
@@ -3555,8 +3528,8 @@ async fn test_stream_run_action_with_suspended_only_state_emits_pending_events()
         fn id(&self) -> &str {
             "pending_terminate_suspended_only_stream"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::Suspended))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::Suspended))
         }
     }
 
@@ -3617,8 +3590,8 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
         fn id(&self) -> &str {
             "terminate_behavior_requested"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -3679,8 +3652,8 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
         fn id(&self) -> &str {
             "terminate_behavior_requested_for_permission_approval"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -3785,8 +3758,8 @@ async fn test_run_loop_permission_approval_replays_tool_and_updates_lifecycle_st
         fn id(&self) -> &str {
             "terminate_behavior_requested_for_permission_approval_nonstream"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -3880,8 +3853,8 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
         fn id(&self) -> &str {
             "terminate_behavior_requested_for_permission_approval_checkpoint"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -3970,8 +3943,8 @@ async fn test_run_loop_run_start_replay_uses_tool_call_resume_state_without_mail
         fn id(&self) -> &str {
             "terminate_behavior_requested_for_tool_state_replay_nonstream"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -4061,8 +4034,8 @@ async fn test_run_loop_run_start_settles_orphan_resuming_state_without_suspended
         fn id(&self) -> &str {
             "terminate_behavior_requested_settle_orphan_resuming_nonstream"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -4123,8 +4096,8 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
         fn id(&self) -> &str {
             "terminate_behavior_requested_for_permission_denial"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -4219,8 +4192,8 @@ async fn test_run_loop_permission_denied_appends_tool_result_for_model_context()
         fn id(&self) -> &str {
             "terminate_behavior_requested_for_permission_denial_nonstream"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -4286,8 +4259,8 @@ async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_contex
         fn id(&self) -> &str {
             "terminate_behavior_requested_for_permission_cancel_nonstream"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -4405,8 +4378,8 @@ async fn test_legacy_resume_replay_nonstream_resolution_state_is_ignored() {
         fn id(&self) -> &str {
             "legacy_resume_replay_nonstream_resolution_state"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -4460,21 +4433,21 @@ async fn test_legacy_resume_replay_nonstream_queue_is_ignored() {
             "legacy_resume_replay_nonstream_queue"
         }
 
-        async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phase_actions(Phase::RunStart, ctx).await
         }
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
             if ctx.tool_call_id() == Some("replay_call_1") {
-                return vec![Box::new(SuspendTool(test_suspend_ticket(
+                return ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
                     Suspension::new("confirm_replay_call_1", "confirm")
                         .with_message("approve first replay"),
-                )))];
+                )));
             }
-            vec![]
+            ActionSet::empty()
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -4484,9 +4457,9 @@ async fn test_legacy_resume_replay_nonstream_queue_is_ignored() {
             &self,
             phase: Phase,
             _ctx: &ReadOnlyContext<'_>,
-        ) -> Vec<Box<dyn Action>> {
+        ) -> ActionSet<LifecycleAction> {
             if phase != Phase::RunStart {
-                return Vec::new();
+                return ActionSet::empty();
             }
             let patch = tirea_state::TrackedPatch::new(Patch::new().with_op(Op::set(
                 tirea_state::path!("__resume_tool_calls", "calls"),
@@ -4504,7 +4477,7 @@ async fn test_legacy_resume_replay_nonstream_queue_is_ignored() {
                 ]),
             )))
             .with_source("test:legacy_resume_replay_queue");
-            vec![Box::new(EmitStatePatch(AnyStateAction::Patch(patch)))]
+            ActionSet::single(LifecycleAction::State(AnyStateAction::Patch(patch)))
         }
     }
 
@@ -4548,17 +4521,17 @@ async fn test_run_loop_terminate_behavior_requested_with_suspended_state_returns
             "pending_terminate_behavior_requested_non_stream"
         }
 
-        async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phases.lock().unwrap().push(Phase::RunStart);
-            vec![]
+            ActionSet::empty()
         }
 
-        async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phases.lock().unwrap().push(Phase::StepStart);
-            vec![]
+            ActionSet::empty()
         }
 
-        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
             self.phases.lock().unwrap().push(Phase::BeforeInference);
             let state = ctx.snapshot();
             let patch = set_single_suspended_call(
@@ -4568,34 +4541,32 @@ async fn test_run_loop_terminate_behavior_requested_with_suspended_state_returns
                 None,
             )
             .expect("failed to set suspended interaction");
-            vec![
-                Box::new(RequestTermination(TerminationReason::BehaviorRequested)),
-                Box::new(EmitStatePatch(AnyStateAction::Patch(patch))),
-            ]
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+                .and(ActionSet::single(BeforeInferenceAction::State(AnyStateAction::Patch(patch))))
         }
-        async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterInferenceAction> {
             self.phases.lock().unwrap().push(Phase::AfterInference);
-            vec![]
+            ActionSet::empty()
         }
 
-        async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
             self.phases.lock().unwrap().push(Phase::BeforeToolExecute);
-            vec![]
+            ActionSet::empty()
         }
 
-        async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
             self.phases.lock().unwrap().push(Phase::AfterToolExecute);
-            vec![]
+            ActionSet::empty()
         }
 
-        async fn step_end(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn step_end(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phases.lock().unwrap().push(Phase::StepEnd);
-            vec![]
+            ActionSet::empty()
         }
 
-        async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phases.lock().unwrap().push(Phase::RunEnd);
-            vec![]
+            ActionSet::empty()
         }
     }
 
@@ -4646,8 +4617,8 @@ async fn test_run_loop_terminate_behavior_requested_with_suspended_only_state_re
         fn id(&self) -> &str {
             "terminate_behavior_requested_non_stream_suspended_only"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -4742,104 +4713,108 @@ async fn test_run_loop_phase_sequence_on_terminate_behavior_requested() {
 }
 
 #[tokio::test]
-async fn test_run_loop_rejects_run_action_mutation_outside_inference_phases() {
-    struct InvalidStepStartRunActionPlugin;
+async fn test_run_loop_step_start_run_action_mutation_is_type_safe() {
+    // With typed ActionSet<LifecycleAction>, step_start can only emit State actions.
+    // RequestTermination cannot be placed in LifecycleAction (compile-time type safety).
+    // Verify that a lifecycle-phase plugin with no-op behavior still runs successfully.
+    struct NoOpStepStartPlugin;
 
     #[async_trait]
-    impl AgentBehavior for InvalidStepStartRunActionPlugin {
+    impl AgentBehavior for NoOpStepStartPlugin {
         fn id(&self) -> &str {
-            "invalid_step_start_run_action"
+            "noop_step_start"
         }
-        async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
+            ActionSet::empty()
+        }
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
     let config = BaseAgent::new("gpt-4o-mini")
-        .with_behavior(Arc::new(InvalidStepStartRunActionPlugin) as Arc<dyn AgentBehavior>);
+        .with_behavior(Arc::new(NoOpStepStartPlugin) as Arc<dyn AgentBehavior>);
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
-    assert!(
-        matches!(outcome.termination, TerminationReason::Error(_)),
-        "expected phase mutation state error, got: {:?}",
+    assert_eq!(
+        outcome.termination,
+        TerminationReason::BehaviorRequested,
+        "expected BehaviorRequested from before_inference, got: {:?}",
         outcome.termination
-    );
-    assert!(
-        outcome.failure.as_ref().is_some_and(|f| matches!(
-            f,
-            LoopFailure::State(msg) if msg.contains("RequestTermination is only allowed in BeforeInference/AfterInference")
-        )),
-        "expected run_action mutation error in failure"
     );
 }
 
 #[tokio::test]
-async fn test_stream_rejects_run_action_mutation_outside_inference_phases() {
-    struct InvalidStepStartRunActionPlugin;
+async fn test_stream_step_start_run_action_mutation_is_type_safe() {
+    // With typed ActionSet<LifecycleAction>, step_start can only emit State actions.
+    // RequestTermination cannot be placed in LifecycleAction (compile-time type safety).
+    // Verify that a stream run completes normally with a no-op step_start.
+    struct NoOpStepStartPlugin;
 
     #[async_trait]
-    impl AgentBehavior for InvalidStepStartRunActionPlugin {
+    impl AgentBehavior for NoOpStepStartPlugin {
         fn id(&self) -> &str {
-            "invalid_step_start_run_action"
+            "noop_step_start_stream"
         }
-        async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
+            ActionSet::empty()
         }
     }
 
     let config = BaseAgent::new("mock")
-        .with_behavior(Arc::new(InvalidStepStartRunActionPlugin) as Arc<dyn AgentBehavior>);
+        .with_behavior(Arc::new(NoOpStepStartPlugin) as Arc<dyn AgentBehavior>);
     let thread = Thread::new("test").with_message(Message::user("hi"));
     let tools = HashMap::new();
 
-    let events = run_mock_stream(MockStreamProvider::new(vec![]), config, thread, tools).await;
+    let events = run_mock_stream(
+        MockStreamProvider::new(vec![MockResponse::text("done")]),
+        config,
+        thread,
+        tools,
+    )
+    .await;
 
     assert!(
-        events.iter().any(|event| matches!(
-            event,
-            AgentEvent::Error { message, .. }
-            if message.contains("RequestTermination is only allowed in BeforeInference/AfterInference")
-        )),
-        "expected mutation error event, got: {events:?}"
-    );
-    assert!(
         matches!(events.last(), Some(AgentEvent::RunFinish { .. })),
-        "expected stream termination after mutation error, got: {events:?}"
+        "expected stream to complete normally: {events:?}"
     );
 }
 
 #[tokio::test]
-async fn test_run_loop_rejects_prompt_context_mutation_outside_before_inference() {
-    struct InvalidStepStartPromptPlugin;
+async fn test_run_loop_step_start_prompt_context_mutation_is_type_safe() {
+    // With typed ActionSet<LifecycleAction>, step_start can only emit State actions.
+    // AddSystemContext cannot be placed in LifecycleAction (compile-time type safety).
+    // Verify that the loop completes normally with a no-op step_start plugin.
+    struct NoOpStepStartPlugin;
 
     #[async_trait]
-    impl AgentBehavior for InvalidStepStartPromptPlugin {
+    impl AgentBehavior for NoOpStepStartPlugin {
         fn id(&self) -> &str {
-            "invalid_step_start_prompt"
+            "noop_step_start_prompt"
         }
-        async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(AddSystemContext("must not mutate prompt context in StepStart".into()))]
+        async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
+            ActionSet::empty()
+        }
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
     let config = BaseAgent::new("gpt-4o-mini")
-        .with_behavior(Arc::new(InvalidStepStartPromptPlugin) as Arc<dyn AgentBehavior>);
+        .with_behavior(Arc::new(NoOpStepStartPlugin) as Arc<dyn AgentBehavior>);
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
-    assert!(
-        matches!(outcome.termination, TerminationReason::Error(_)),
-        "expected phase mutation state error, got: {:?}",
+    assert_eq!(
+        outcome.termination,
+        TerminationReason::BehaviorRequested,
+        "expected BehaviorRequested, got: {:?}",
         outcome.termination
-    );
-    assert!(
-        outcome.failure.as_ref().is_some_and(|f| matches!(f, LoopFailure::State(msg) if msg.contains("is only allowed in BeforeInference"))),
-        "expected prompt context mutation error in failure"
     );
 }
 
@@ -4854,11 +4829,9 @@ async fn test_run_loop_multiple_prompt_context_behaviors_are_additive() {
         fn id(&self) -> &str {
             "prompt_append"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![
-                Box::new(AddSystemContext("base".into())),
-                Box::new(RequestTermination(TerminationReason::BehaviorRequested)),
-            ]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::AddSystemContext("base".into()))
+                .and(ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested)))
         }
     }
 
@@ -4869,8 +4842,8 @@ async fn test_run_loop_multiple_prompt_context_behaviors_are_additive() {
         fn id(&self) -> &str {
             "prompt_replace"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(AddSystemContext("replaced".into()))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::AddSystemContext("replaced".into()))
         }
     }
 
@@ -4903,8 +4876,8 @@ async fn test_stream_rejects_prompt_context_mutation_outside_before_inference() 
         fn id(&self) -> &str {
             "invalid_step_start_prompt"
         }
-        async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(AddSessionContext("must not mutate prompt context in StepStart".into()))]
+        async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
+            ActionSet::empty()
         }
     }
 
@@ -4913,41 +4886,47 @@ async fn test_stream_rejects_prompt_context_mutation_outside_before_inference() 
     let thread = Thread::new("test").with_message(Message::user("hi"));
     let tools = HashMap::new();
 
-    let events = run_mock_stream(MockStreamProvider::new(vec![]), config, thread, tools).await;
+    let events = run_mock_stream(
+        MockStreamProvider::new(vec![MockResponse::text("done")]),
+        config,
+        thread,
+        tools,
+    )
+    .await;
 
-    assert!(
-        events.iter().any(|event| matches!(
-            event,
-            AgentEvent::Error { message, .. }
-            if message.contains("is only allowed in BeforeInference")
-        )),
-        "expected mutation error event, got: {events:?}"
-    );
+    // With typed ActionSet<LifecycleAction>, step_start can only emit State actions.
+    // AddSessionContext cannot be placed there (compile-time type safety).
+    // The stream should complete normally.
     assert!(
         matches!(events.last(), Some(AgentEvent::RunFinish { .. })),
-        "expected stream termination after mutation error, got: {events:?}"
+        "expected stream to complete normally: {events:?}"
     );
 }
 
-struct InvalidBeforeToolReminderPlugin;
+struct BlockBeforeToolPlugin;
 
 #[async_trait]
-impl AgentBehavior for InvalidBeforeToolReminderPlugin {
+impl AgentBehavior for BlockBeforeToolPlugin {
     fn id(&self) -> &str {
-        "invalid_before_tool_reminder"
+        "block_before_tool"
     }
-    async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        vec![Box::new(AddSystemReminder("must not mutate reminders in BeforeToolExecute".into()))]
+    async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        // With typed ActionSet<BeforeToolExecuteAction>, AddSystemReminder cannot be placed here
+        // (it belongs to AfterToolExecuteAction). This is type-safe by construction.
+        // Block is the valid before_tool_execute action that prevents tool execution.
+        ActionSet::single(BeforeToolExecuteAction::Block("blocked in BeforeToolExecute".into()))
     }
 }
 
 #[test]
-fn test_execute_tools_rejects_reminder_mutation_outside_after_tool_execute() {
+fn test_execute_tools_reminder_mutation_outside_after_tool_execute_is_type_safe() {
+    // With typed ActionSet, AddSystemReminder cannot be placed in BeforeToolExecuteAction
+    // at compile time. Verify that Block (a valid BeforeToolExecute action) works correctly.
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let thread = Thread::new("test");
         let result = StreamResult {
-            text: "invalid".to_string(),
+            text: "blocked".to_string(),
             tool_calls: vec![crate::contracts::thread::ToolCall::new(
                 "call_1",
                 "echo",
@@ -4957,19 +4936,18 @@ fn test_execute_tools_rejects_reminder_mutation_outside_after_tool_execute() {
         };
         let tools = tool_map([EchoTool]);
         let agent = BaseAgent::new("mock")
-            .with_behavior(Arc::new(InvalidBeforeToolReminderPlugin) as Arc<dyn AgentBehavior>);
+            .with_behavior(Arc::new(BlockBeforeToolPlugin) as Arc<dyn AgentBehavior>);
 
-        let err = execute_tools_with_config(thread, &result, &tools, &agent)
+        let outcome = execute_tools_with_config(thread, &result, &tools, &agent)
             .await
-            .expect_err("reminder mutation outside AfterToolExecute should fail");
+            .expect("block in before_tool_execute should produce a Completed outcome");
 
+        let thread = outcome.into_thread();
+        assert_eq!(thread.messages.len(), 1);
         assert!(
-            matches!(
-                err,
-                AgentLoopError::StateError(ref message)
-                if message.contains("is only allowed in AfterToolExecute")
-            ),
-            "unexpected error: {err:?}"
+            thread.messages[0].content.to_lowercase().contains("blocked"),
+            "blocked tool should have blocked message in result: {}",
+            thread.messages[0].content
         );
     });
 }
@@ -4981,8 +4959,8 @@ impl AgentBehavior for ReminderAppendPlugin {
     fn id(&self) -> &str {
         "reminder_append"
     }
-    async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        vec![Box::new(AddSystemReminder("first".into()))]
+    async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
+        ActionSet::single(AfterToolExecuteAction::AddSystemReminder("first".into()))
     }
 }
 
@@ -4993,8 +4971,8 @@ impl AgentBehavior for ReminderReplacePlugin {
     fn id(&self) -> &str {
         "reminder_replace"
     }
-    async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        vec![Box::new(AddSystemReminder("second".into()))]
+    async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
+        ActionSet::single(AfterToolExecuteAction::AddSystemReminder("second".into()))
     }
 }
 
@@ -5279,70 +5257,70 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
             "cleanup_on_llm_error_nonstream"
         }
 
-        async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phases
                 .lock()
                 .expect("lock poisoned")
                 .push(Phase::RunStart);
-            vec![]
+            ActionSet::empty()
         }
 
-        async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phases
                 .lock()
                 .expect("lock poisoned")
                 .push(Phase::StepStart);
-            vec![]
+            ActionSet::empty()
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
             self.phases
                 .lock()
                 .expect("lock poisoned")
                 .push(Phase::BeforeInference);
-            vec![]
+            ActionSet::empty()
         }
 
-        async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterInferenceAction> {
             self.phases
                 .lock()
                 .expect("lock poisoned")
                 .push(Phase::AfterInference);
             let err_type = ctx.inference_error().map(|e| e.error_type.as_str());
             assert_eq!(err_type, Some("llm_exec_error"));
-            vec![]
+            ActionSet::empty()
         }
 
-        async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
             self.phases
                 .lock()
                 .expect("lock poisoned")
                 .push(Phase::BeforeToolExecute);
-            vec![]
+            ActionSet::empty()
         }
 
-        async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
             self.phases
                 .lock()
                 .expect("lock poisoned")
                 .push(Phase::AfterToolExecute);
-            vec![]
+            ActionSet::empty()
         }
 
-        async fn step_end(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn step_end(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phases
                 .lock()
                 .expect("lock poisoned")
                 .push(Phase::StepEnd);
-            vec![]
+            ActionSet::empty()
         }
 
-        async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phases
                 .lock()
                 .expect("lock poisoned")
                 .push(Phase::RunEnd);
-            vec![]
+            ActionSet::empty()
         }
     }
 
@@ -5748,7 +5726,7 @@ async fn test_nonstream_inference_abort_message_persisted_and_visible_next_run()
             "observe_cancellation_message_inference_nonstream"
         }
 
-        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
             if ctx
                 .messages()
                 .iter()
@@ -5756,7 +5734,7 @@ async fn test_nonstream_inference_abort_message_persisted_and_visible_next_run()
             {
                 self.seen.store(true, Ordering::SeqCst);
             }
-            vec![]
+            ActionSet::empty()
         }
     }
 
@@ -5856,7 +5834,7 @@ async fn test_nonstream_tool_abort_message_persisted_and_visible_next_run() {
             "observe_cancellation_message_tool_nonstream"
         }
 
-        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
             if ctx
                 .messages()
                 .iter()
@@ -5864,7 +5842,7 @@ async fn test_nonstream_tool_abort_message_persisted_and_visible_next_run() {
             {
                 self.seen.store(true, Ordering::SeqCst);
             }
-            vec![]
+            ActionSet::empty()
         }
     }
 
@@ -6064,7 +6042,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
             "golden_pending_plugin"
         }
 
-        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
             let state = ctx.snapshot();
             let patch = set_single_suspended_call(
                 &state,
@@ -6072,10 +6050,8 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
                 None,
             )
             .expect("failed to set suspended interaction");
-            vec![
-                Box::new(RequestTermination(TerminationReason::Suspended)),
-                Box::new(EmitStatePatch(AnyStateAction::Patch(patch))),
-            ]
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::Suspended))
+                .and(ActionSet::single(BeforeInferenceAction::State(AnyStateAction::Patch(patch))))
         }
     }
 
@@ -6211,8 +6187,8 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
         fn id(&self) -> &str {
             "terminate_behavior_requested_replay_idempotent"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -6317,8 +6293,8 @@ async fn test_nonstream_replay_is_idempotent_across_reruns() {
         fn id(&self) -> &str {
             "terminate_behavior_requested_replay_idempotent_nonstream"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -6841,7 +6817,7 @@ impl AgentBehavior for RunStartSideEffectPlugin {
         "run_start_side_effect_plugin"
     }
 
-    async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
         self.phase_actions(Phase::RunStart, ctx).await
     }
 }
@@ -6852,13 +6828,11 @@ impl RunStartSideEffectPlugin {
         &self,
         phase: Phase,
         _ctx: &ReadOnlyContext<'_>,
-    ) -> Vec<Box<dyn Action>> {
+    ) -> ActionSet<LifecycleAction> {
         if phase != Phase::RunStart {
-            return Vec::new();
+            return ActionSet::empty();
         }
-        vec![Box::new(EmitStatePatch(
-            AnyStateAction::new::<DebugFlags>(DebugFlagAction::SetRunStartSideEffect),
-        ))]
+        ActionSet::single(LifecycleAction::State(AnyStateAction::new::<DebugFlags>(DebugFlagAction::SetRunStartSideEffect)))
     }
 }
 
@@ -7271,9 +7245,9 @@ async fn test_stream_frontend_use_as_tool_result_emits_single_tool_call_start() 
             "frontend_pending_plugin"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
             if ctx.tool_call_id() != Some("call_1") {
-                return vec![];
+                return ActionSet::empty();
             }
             let call_id = ctx.tool_call_id().unwrap().to_string();
             let invocation = FrontendToolInvocation::new(
@@ -7285,7 +7259,7 @@ async fn test_stream_frontend_use_as_tool_result_emits_single_tool_call_start() 
                 },
                 ResponseRouting::UseAsToolResult,
             );
-            vec![Box::new(SuspendTool(suspend_ticket_from_invocation(invocation)))]
+            ActionSet::single(BeforeToolExecuteAction::Suspend(suspend_ticket_from_invocation(invocation)))
         }
     }
 
@@ -7404,21 +7378,21 @@ async fn test_legacy_resume_replay_stream_queue_is_ignored() {
             "legacy_resume_replay_stream_queue"
         }
 
-        async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phase_actions(Phase::RunStart, ctx).await
         }
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
             if ctx.tool_call_id() == Some("replay_call_1") {
-                return vec![Box::new(SuspendTool(test_suspend_ticket(
+                return ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
                     Suspension::new("confirm_replay_call_1", "confirm")
                         .with_message("approve first replay"),
-                )))];
+                )));
             }
-            vec![]
+            ActionSet::empty()
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -7428,24 +7402,22 @@ async fn test_legacy_resume_replay_stream_queue_is_ignored() {
             &self,
             phase: Phase,
             _ctx: &ReadOnlyContext<'_>,
-        ) -> Vec<Box<dyn Action>> {
+        ) -> ActionSet<LifecycleAction> {
             if phase != Phase::RunStart {
-                return Vec::new();
+                return ActionSet::empty();
             }
-            vec![Box::new(EmitStatePatch(
-                AnyStateAction::new::<ResumeToolCallsState>(json!([
-                    {
-                        "id": "replay_call_1",
-                        "name": "echo",
-                        "arguments": {"message": "first"}
-                    },
-                    {
-                        "id": "replay_call_2",
-                        "name": "echo",
-                        "arguments": {"message": "second"}
-                    }
-                ])),
-            ))]
+            ActionSet::single(LifecycleAction::State(AnyStateAction::new::<ResumeToolCallsState>(json!([
+                {
+                    "id": "replay_call_1",
+                    "name": "echo",
+                    "arguments": {"message": "first"}
+                },
+                {
+                    "id": "replay_call_2",
+                    "name": "echo",
+                    "arguments": {"message": "second"}
+                }
+            ]))))
         }
     }
 
@@ -7514,19 +7486,19 @@ async fn test_stream_parallel_multiple_pending_emits_all_suspended() {
             "pending_and_run_end"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
             if let Some(call_id) = ctx.tool_call_id() {
-                return vec![Box::new(SuspendTool(test_suspend_ticket(
+                return ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
                     Suspension::new(format!("confirm_{call_id}"), "confirm")
                         .with_message("needs confirmation"),
-                )))];
+                )));
             }
-            vec![]
+            ActionSet::empty()
         }
 
-        async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             SESSION_END_RAN.store(true, Ordering::SeqCst);
-            vec![]
+            ActionSet::empty()
         }
     }
 
@@ -8311,18 +8283,18 @@ async fn test_sequential_tools_stop_after_first_suspension() {
             "pending_every_tool"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
             if let Some(call_id) = ctx.tool_call_id() {
                 self.seen_calls
                     .lock()
                     .expect("lock poisoned")
                     .push(call_id.to_string());
-                return vec![Box::new(SuspendTool(test_suspend_ticket(
+                return ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
                     Suspension::new(format!("confirm_{call_id}"), "confirm")
                         .with_message("needs confirmation"),
-                )))];
+                )));
             }
-            vec![]
+            ActionSet::empty()
         }
     }
 
@@ -8376,18 +8348,18 @@ async fn test_parallel_tools_allow_single_suspended_interaction_per_round() {
             "pending_every_tool_parallel"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
             if let Some(call_id) = ctx.tool_call_id() {
                 self.seen_calls
                     .lock()
                     .expect("lock poisoned")
                     .push(call_id.to_string());
-                return vec![Box::new(SuspendTool(test_suspend_ticket(
+                return ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
                     Suspension::new(format!("confirm_{call_id}"), "confirm")
                         .with_message("needs confirmation"),
-                )))];
+                )));
             }
-            vec![]
+            ActionSet::empty()
         }
     }
 
@@ -8456,61 +8428,61 @@ impl AgentBehavior for OrderTrackingPlugin {
         self.id
     }
 
-    async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
         self.order_log
             .lock()
             .unwrap()
             .push(format!("{}:{:?}", self.id, Phase::RunStart));
-        vec![]
+        ActionSet::empty()
     }
-    async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
         self.order_log
             .lock()
             .unwrap()
             .push(format!("{}:{:?}", self.id, Phase::StepStart));
-        vec![]
+        ActionSet::empty()
     }
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
         self.order_log
             .lock()
             .unwrap()
             .push(format!("{}:{:?}", self.id, Phase::BeforeInference));
-        vec![]
+        ActionSet::empty()
     }
-    async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterInferenceAction> {
         self.order_log
             .lock()
             .unwrap()
             .push(format!("{}:{:?}", self.id, Phase::AfterInference));
-        vec![]
+        ActionSet::empty()
     }
-    async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
         self.order_log
             .lock()
             .unwrap()
             .push(format!("{}:{:?}", self.id, Phase::BeforeToolExecute));
-        vec![]
+        ActionSet::empty()
     }
-    async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
         self.order_log
             .lock()
             .unwrap()
             .push(format!("{}:{:?}", self.id, Phase::AfterToolExecute));
-        vec![]
+        ActionSet::empty()
     }
-    async fn step_end(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn step_end(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
         self.order_log
             .lock()
             .unwrap()
             .push(format!("{}:{:?}", self.id, Phase::StepEnd));
-        vec![]
+        ActionSet::empty()
     }
-    async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
         self.order_log
             .lock()
             .unwrap()
             .push(format!("{}:{:?}", self.id, Phase::RunEnd));
-        vec![]
+        ActionSet::empty()
     }
 }
 
@@ -8594,8 +8566,8 @@ impl AgentBehavior for ConditionalBlockPlugin {
         "conditional_block"
     }
 
-    async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        vec![Box::new(BlockTool("Blocked because tool was pending".to_string()))]
+    async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        ActionSet::single(BeforeToolExecuteAction::Block("Blocked because tool was pending".to_string()))
     }
 }
 
@@ -8612,13 +8584,13 @@ fn test_plugin_order_affects_outcome() {
             "pending"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
             if ctx.tool_name() == Some("echo") {
-                vec![Box::new(SuspendTool(test_suspend_ticket(
+                ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
                     Suspension::new("confirm_1", "confirm").with_message("Execute echo?"),
-                )))]
+                )))
             } else {
-                vec![]
+                ActionSet::empty()
             }
         }
     }
@@ -8894,7 +8866,7 @@ async fn test_run_step_terminate_behavior_requested_with_suspended_state_returns
             "pending_terminate_behavior_requested_step"
         }
 
-        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
             let state = ctx.snapshot();
             let patch = set_single_suspended_call(
                 &state,
@@ -8903,10 +8875,8 @@ async fn test_run_step_terminate_behavior_requested_with_suspended_state_returns
                 None,
             )
             .expect("failed to set suspended interaction");
-            vec![
-                Box::new(RequestTermination(TerminationReason::BehaviorRequested)),
-                Box::new(EmitStatePatch(AnyStateAction::Patch(patch))),
-            ]
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+                .and(ActionSet::single(BeforeInferenceAction::State(AnyStateAction::Patch(patch))))
         }
     }
 
@@ -8986,71 +8956,69 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
             "cleanup_on_start_error"
         }
 
-        async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phases
                 .lock()
                 .expect("lock poisoned")
                 .push(Phase::RunStart);
-            vec![]
+            ActionSet::empty()
         }
-        async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phases
                 .lock()
                 .expect("lock poisoned")
                 .push(Phase::StepStart);
-            vec![]
+            ActionSet::empty()
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
             self.phases
                 .lock()
                 .expect("lock poisoned")
                 .push(Phase::BeforeInference);
-            vec![]
+            ActionSet::empty()
         }
-        async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterInferenceAction> {
             self.phases
                 .lock()
                 .expect("lock poisoned")
                 .push(Phase::AfterInference);
             let err_type = ctx.inference_error().map(|e| e.error_type.as_str());
             assert_eq!(err_type, Some("llm_stream_start_error"));
-            vec![]
+            ActionSet::empty()
         }
-        async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
             self.phases
                 .lock()
                 .expect("lock poisoned")
                 .push(Phase::BeforeToolExecute);
-            vec![]
+            ActionSet::empty()
         }
-        async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
             self.phases
                 .lock()
                 .expect("lock poisoned")
                 .push(Phase::AfterToolExecute);
-            vec![]
+            ActionSet::empty()
         }
-        async fn step_end(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn step_end(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phases
                 .lock()
                 .expect("lock poisoned")
                 .push(Phase::StepEnd);
-            vec![Box::new(EmitStatePatch(
-                AnyStateAction::Patch(
-                    TrackedPatch::new(Patch::new().with_op(Op::set(
-                        tirea_state::path!("debug", "cleanup_ran"),
-                        json!(true),
-                    )))
-                    .with_source("test:cleanup_on_start_error"),
-                ),
-            ))]
+            ActionSet::single(LifecycleAction::State(AnyStateAction::Patch(
+                TrackedPatch::new(Patch::new().with_op(Op::set(
+                    tirea_state::path!("debug", "cleanup_ran"),
+                    json!(true),
+                )))
+                .with_source("test:cleanup_on_start_error"),
+            )))
         }
-        async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phases
                 .lock()
                 .expect("lock poisoned")
                 .push(Phase::RunEnd);
-            vec![]
+            ActionSet::empty()
         }
     }
 
@@ -10278,9 +10246,9 @@ async fn test_stream_permission_intercept_emits_tool_call_start_for_frontend() {
             "permission_intercept_plugin"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
             if ctx.tool_call_id() != Some("call_1") {
-                return vec![];
+                return ActionSet::empty();
             }
             if let Some((ticket, _call_id)) = build_frontend_suspend_ticket(
                 ctx,
@@ -10288,9 +10256,9 @@ async fn test_stream_permission_intercept_emits_tool_call_start_for_frontend() {
                 json!({ "tool_name": "serverInfo", "tool_args": {} }),
                 ResponseRouting::ReplayOriginalTool,
             ) {
-                vec![Box::new(SuspendTool(ticket))]
+                ActionSet::single(BeforeToolExecuteAction::Suspend(ticket))
             } else {
-                vec![]
+                ActionSet::empty()
             }
         }
     }
@@ -10361,16 +10329,16 @@ async fn test_nonstream_mixed_pending_and_completed_tools_continues_loop() {
             "pending_only_call_2_nonstream"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
             if let Some(call_id) = ctx.tool_call_id() {
                 if call_id == "call_2" {
-                    return vec![Box::new(SuspendTool(test_suspend_ticket(
+                    return ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
                         Suspension::new("confirm_call_2", "confirm")
                             .with_message("approve delete?"),
-                    )))];
+                    )));
                 }
             }
-            vec![]
+            ActionSet::empty()
         }
     }
 
@@ -10448,14 +10416,14 @@ async fn test_nonstream_single_pending_tool_enters_waiting() {
             "pending_single_tool_nonstream"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
             if let Some(call_id) = ctx.tool_call_id() {
-                return vec![Box::new(SuspendTool(test_suspend_ticket(
+                return ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
                     Suspension::new(format!("confirm_{call_id}"), "confirm")
                         .with_message("needs confirmation"),
-                )))];
+                )));
             }
-            vec![]
+            ActionSet::empty()
         }
     }
 
@@ -10507,16 +10475,16 @@ async fn test_stream_mixed_pending_and_completed_tools_continues_loop() {
             "pending_only_call_2"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
             if let Some(call_id) = ctx.tool_call_id() {
                 if call_id == "call_2" {
-                    return vec![Box::new(SuspendTool(test_suspend_ticket(
+                    return ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
                         Suspension::new("confirm_call_2", "confirm")
                             .with_message("approve delete?"),
-                    )))];
+                    )));
                 }
             }
-            vec![]
+            ActionSet::empty()
         }
     }
 
@@ -10601,14 +10569,14 @@ async fn test_stream_all_tools_pending_pauses_run() {
             "pending_all_tools"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
             if let Some(call_id) = ctx.tool_call_id() {
-                return vec![Box::new(SuspendTool(test_suspend_ticket(
+                return ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
                     Suspension::new(format!("confirm_{call_id}"), "confirm")
                         .with_message("needs confirmation"),
-                )))];
+                )));
             }
-            vec![]
+            ActionSet::empty()
         }
     }
 
@@ -10652,16 +10620,16 @@ async fn test_stream_mixed_pending_persists_interaction_state() {
             "pending_only_call_2_persist"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
             if let Some(call_id) = ctx.tool_call_id() {
                 if call_id == "call_2" {
-                    return vec![Box::new(SuspendTool(test_suspend_ticket(
+                    return ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
                         Suspension::new("confirm_call_2", "confirm")
                             .with_message("approve delete?"),
-                    )))];
+                    )));
                 }
             }
-            vec![]
+            ActionSet::empty()
         }
     }
 
@@ -10772,7 +10740,7 @@ async fn test_nonstream_run_start_added_pending_pauses_before_inference() {
             "run_start_pending_nonstream"
         }
 
-        async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             let state = ctx.snapshot();
             let patch = set_single_suspended_call(
                 &state,
@@ -10780,7 +10748,7 @@ async fn test_nonstream_run_start_added_pending_pauses_before_inference() {
                 None,
             )
             .expect("failed to set suspended interaction");
-            vec![Box::new(EmitStatePatch(AnyStateAction::Patch(patch)))]
+            ActionSet::single(LifecycleAction::State(AnyStateAction::Patch(patch)))
         }
     }
 
@@ -10817,7 +10785,7 @@ async fn test_stream_run_start_added_pending_emits_and_pauses_before_inference()
             "run_start_pending_stream"
         }
 
-        async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             let state = ctx.snapshot();
             let patch = set_single_suspended_call(
                 &state,
@@ -10825,7 +10793,7 @@ async fn test_stream_run_start_added_pending_emits_and_pauses_before_inference()
                 None,
             )
             .expect("failed to set suspended interaction");
-            vec![Box::new(EmitStatePatch(AnyStateAction::Patch(patch)))]
+            ActionSet::single(LifecycleAction::State(AnyStateAction::Patch(patch)))
         }
     }
 
@@ -10951,8 +10919,8 @@ async fn test_plugin_run_action_stops_loop() {
             "terminate_plugin"
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -10986,77 +10954,75 @@ async fn test_plugin_run_action_stops_loop() {
 /// Verify that mutating `run_action` outside BeforeInference/AfterInference is
 /// rejected by the phase-mutation validator (non-stream path).
 #[tokio::test]
-async fn test_run_loop_rejects_run_action_mutation_outside_inference_phases_v2() {
-    struct InvalidStepStartTermPlugin;
+async fn test_run_loop_step_start_run_action_mutation_is_type_safe_v2() {
+    // With typed ActionSet<LifecycleAction>, step_start can only emit State actions.
+    // RequestTermination cannot be placed in LifecycleAction (compile-time type safety).
+    struct NoOpStepStartPlugin;
 
     #[async_trait]
-    impl AgentBehavior for InvalidStepStartTermPlugin {
+    impl AgentBehavior for NoOpStepStartPlugin {
         fn id(&self) -> &str {
-            "invalid_step_start_term"
+            "noop_step_start_term"
         }
 
-        async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
+            ActionSet::empty()
+        }
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
     let config = BaseAgent::new("gpt-4o-mini")
-        .with_behavior(Arc::new(InvalidStepStartTermPlugin) as Arc<dyn AgentBehavior>);
+        .with_behavior(Arc::new(NoOpStepStartPlugin) as Arc<dyn AgentBehavior>);
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
-    assert!(
-        matches!(outcome.termination, TerminationReason::Error(_)),
-        "expected phase mutation state error, got: {:?}",
+    assert_eq!(
+        outcome.termination,
+        TerminationReason::BehaviorRequested,
+        "expected BehaviorRequested, got: {:?}",
         outcome.termination
-    );
-    assert!(
-        outcome.failure.as_ref().is_some_and(|f| matches!(
-            f,
-            LoopFailure::State(msg) if msg.contains("RequestTermination is only allowed in BeforeInference/AfterInference")
-        )),
-        "expected run_action mutation error in failure, got: {:?}",
-        outcome.failure
     );
 }
 
 /// Verify that mutating `run_action` outside BeforeInference/AfterInference is
 /// rejected by the phase-mutation validator (stream path).
 #[tokio::test]
-async fn test_stream_rejects_run_action_mutation_outside_inference_phases_v2() {
-    struct InvalidStepStartTermPlugin;
+async fn test_stream_step_start_run_action_mutation_is_type_safe_v2() {
+    // With typed ActionSet<LifecycleAction>, step_start can only emit State actions.
+    // RequestTermination cannot be placed in LifecycleAction (compile-time type safety).
+    struct NoOpStepStartPlugin;
 
     #[async_trait]
-    impl AgentBehavior for InvalidStepStartTermPlugin {
+    impl AgentBehavior for NoOpStepStartPlugin {
         fn id(&self) -> &str {
-            "invalid_step_start_term"
+            "noop_step_start_term_stream"
         }
 
-        async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
+            ActionSet::empty()
         }
     }
 
     let config = BaseAgent::new("mock")
-        .with_behavior(Arc::new(InvalidStepStartTermPlugin) as Arc<dyn AgentBehavior>);
+        .with_behavior(Arc::new(NoOpStepStartPlugin) as Arc<dyn AgentBehavior>);
     let thread = Thread::new("test").with_message(Message::user("hi"));
     let tools = HashMap::new();
 
-    let events = run_mock_stream(MockStreamProvider::new(vec![]), config, thread, tools).await;
+    let events = run_mock_stream(
+        MockStreamProvider::new(vec![MockResponse::text("done")]),
+        config,
+        thread,
+        tools,
+    )
+    .await;
 
     assert!(
-        events.iter().any(|event| matches!(
-            event,
-            AgentEvent::Error { message, .. }
-            if message.contains("RequestTermination is only allowed in BeforeInference/AfterInference")
-        )),
-        "expected mutation error event, got: {events:?}"
-    );
-    assert!(
         matches!(events.last(), Some(AgentEvent::RunFinish { .. })),
-        "expected stream termination after mutation error, got: {events:?}"
+        "expected stream to complete normally: {events:?}"
     );
 }
 
@@ -11072,8 +11038,8 @@ async fn test_run_loop_plugin_run_action_stops_loop() {
             "terminate_nonstream"
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -11108,16 +11074,14 @@ async fn test_run_loop_applies_plugin_state_effect_patch_before_inference() {
             "state_effect_before_inference"
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
             let patch = tirea_state::TrackedPatch::new(Patch::new().with_op(Op::set(
                 tirea_state::path!("debug", "before_inference_effect"),
                 json!(true),
             )))
             .with_source("test:state_effect_before_inference");
-            vec![
-                Box::new(RequestTermination(TerminationReason::BehaviorRequested)),
-                Box::new(EmitStatePatch(AnyStateAction::Patch(patch))),
-            ]
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+                .and(ActionSet::single(BeforeInferenceAction::State(AnyStateAction::Patch(patch))))
         }
     }
 
@@ -11143,16 +11107,16 @@ async fn test_run_loop_applies_plugin_state_effect_patch_after_tool_execute() {
             "state_effect_after_tool_execute"
         }
 
-        async fn after_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn after_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
             if ctx.tool_call_id() == Some("call_1") {
                 let patch = tirea_state::TrackedPatch::new(Patch::new().with_op(Op::set(
                     tirea_state::path!("debug", "after_tool_effect"),
                     json!(true),
                 )))
                 .with_source("test:state_effect_after_tool_execute");
-                vec![Box::new(EmitStatePatch(AnyStateAction::Patch(patch)))]
+                ActionSet::single(AfterToolExecuteAction::State(AnyStateAction::Patch(patch)))
             } else {
-                vec![]
+                ActionSet::empty()
             }
         }
     }
@@ -11187,8 +11151,8 @@ async fn test_run_loop_after_inference_run_action_stops_before_tool_execution() 
             "after_inference_terminate_nonstream"
         }
 
-        async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterInferenceAction> {
+            ActionSet::single(AfterInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -11235,8 +11199,8 @@ async fn test_stream_after_inference_run_action_stops_before_tool_events() {
             "after_inference_terminate_stream"
         }
 
-        async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterInferenceAction> {
+            ActionSet::single(AfterInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -11286,8 +11250,8 @@ async fn test_request_termination_method_stops_stream() {
             "method_terminate"
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -11324,8 +11288,8 @@ async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
             "terminate_behavior_requested_unknown_decision_nonstream"
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -11397,8 +11361,8 @@ async fn test_run_loop_decision_channel_rejects_illegal_terminal_to_resuming_tra
             "terminate_behavior_requested_illegal_transition_nonstream"
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -11492,8 +11456,8 @@ async fn test_stream_decision_channel_ignores_unknown_target_id() {
             "terminate_behavior_requested_unknown_decision_stream"
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -11570,8 +11534,8 @@ async fn test_stream_decision_channel_rejects_illegal_terminal_to_resuming_trans
             "terminate_behavior_requested_illegal_transition_stream"
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -11725,9 +11689,9 @@ async fn test_run_loop_decision_channel_resolves_suspended_call() {
             "pending_frontend_tool_decision"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
             if ctx.tool_name() != Some("frontend_tool") {
-                return vec![];
+                return ActionSet::empty();
             }
             let already_approved = ctx
                 .tool_args()
@@ -11735,18 +11699,18 @@ async fn test_run_loop_decision_channel_resolves_suspended_call() {
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             if already_approved {
-                return vec![];
+                return ActionSet::empty();
             }
             let args = ctx.tool_args().cloned().unwrap_or_default();
-            let output: Vec<Box<dyn Action>> = if let Some((ticket, _call_id)) = build_frontend_suspend_ticket(
+            let output = if let Some((ticket, _call_id)) = build_frontend_suspend_ticket(
                 ctx,
                 "frontend_tool",
                 args,
                 ResponseRouting::UseAsToolResult,
             ) {
-                vec![Box::new(SuspendTool(ticket))]
+                ActionSet::single(BeforeToolExecuteAction::Suspend(ticket))
             } else {
-                vec![]
+                ActionSet::empty()
             };
             self.ready.notify_one();
             self.release.notified().await;
@@ -11843,8 +11807,8 @@ async fn test_run_loop_decision_channel_cancel_emits_single_tool_result_message(
             "terminate_behavior_requested_for_decision_cancel"
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-            vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
         }
     }
 
@@ -11983,9 +11947,9 @@ async fn test_run_loop_stream_decision_channel_emits_resolution_and_replay() {
             "pending_frontend_tool_stream_decision"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
             if ctx.tool_name() != Some("frontend_tool") {
-                return vec![];
+                return ActionSet::empty();
             }
             let already_approved = ctx
                 .tool_args()
@@ -11993,18 +11957,18 @@ async fn test_run_loop_stream_decision_channel_emits_resolution_and_replay() {
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             if already_approved {
-                return vec![];
+                return ActionSet::empty();
             }
             let args = ctx.tool_args().cloned().unwrap_or_default();
-            let output: Vec<Box<dyn Action>> = if let Some((ticket, _call_id)) = build_frontend_suspend_ticket(
+            let output = if let Some((ticket, _call_id)) = build_frontend_suspend_ticket(
                 ctx,
                 "frontend_tool",
                 args,
                 ResponseRouting::UseAsToolResult,
             ) {
-                vec![Box::new(SuspendTool(ticket))]
+                ActionSet::single(BeforeToolExecuteAction::Suspend(ticket))
             } else {
-                vec![]
+                ActionSet::empty()
             };
             self.ready.notify_one();
             self.release.notified().await;
@@ -12131,9 +12095,9 @@ async fn test_run_loop_decision_channel_buffers_early_response_for_all_suspended
             "early_pending_nonstream"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
             if ctx.tool_name() != Some("frontend_tool") {
-                return vec![];
+                return ActionSet::empty();
             }
             let already_approved = ctx
                 .tool_args()
@@ -12141,7 +12105,7 @@ async fn test_run_loop_decision_channel_buffers_early_response_for_all_suspended
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             if already_approved {
-                return vec![];
+                return ActionSet::empty();
             }
             self.entered.notify_one();
             self.allow_pending.notified().await;
@@ -12152,9 +12116,9 @@ async fn test_run_loop_decision_channel_buffers_early_response_for_all_suspended
                 args,
                 ResponseRouting::UseAsToolResult,
             ) {
-                vec![Box::new(SuspendTool(ticket))]
+                ActionSet::single(BeforeToolExecuteAction::Suspend(ticket))
             } else {
-                vec![]
+                ActionSet::empty()
             }
         }
     }
@@ -12264,9 +12228,9 @@ async fn test_stream_decision_channel_buffers_early_response_for_all_suspended_t
             "early_pending_stream"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
             if ctx.tool_name() != Some("frontend_tool") {
-                return vec![];
+                return ActionSet::empty();
             }
             let already_approved = ctx
                 .tool_args()
@@ -12274,7 +12238,7 @@ async fn test_stream_decision_channel_buffers_early_response_for_all_suspended_t
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             if already_approved {
-                return vec![];
+                return ActionSet::empty();
             }
             self.entered.notify_one();
             self.allow_pending.notified().await;
@@ -12285,9 +12249,9 @@ async fn test_stream_decision_channel_buffers_early_response_for_all_suspended_t
                 args,
                 ResponseRouting::UseAsToolResult,
             ) {
-                vec![Box::new(SuspendTool(ticket))]
+                ActionSet::single(BeforeToolExecuteAction::Suspend(ticket))
             } else {
-                vec![]
+                ActionSet::empty()
             }
         }
     }
@@ -12476,7 +12440,7 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_tool_call_resu
             "test_one_shot_permission"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
             let has_resume_grant = ctx.resume_input().is_some_and(|resume| {
                 matches!(
                     resume.action,
@@ -12484,7 +12448,7 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_tool_call_resu
                 )
             });
             if has_resume_grant {
-                return vec![];
+                return ActionSet::empty();
             }
             let tool_name = ctx.tool_name().unwrap_or_default().to_string();
             let tool_args = ctx.tool_args().cloned().unwrap_or_default();
@@ -12494,9 +12458,9 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_tool_call_resu
                 json!({ "tool_name": tool_name, "tool_args": tool_args }),
                 ResponseRouting::ReplayOriginalTool,
             ) {
-                vec![Box::new(SuspendTool(ticket))]
+                ActionSet::single(BeforeToolExecuteAction::Suspend(ticket))
             } else {
-                vec![]
+                ActionSet::empty()
             }
         }
     }

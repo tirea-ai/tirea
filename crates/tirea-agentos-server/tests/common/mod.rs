@@ -4,8 +4,7 @@ use axum::http::{Request, StatusCode};
 use serde_json::{json, Value};
 use std::time::Duration;
 use tirea_agentos::contracts::runtime::behavior::ReadOnlyContext;
-use tirea_agentos::contracts::runtime::action::Action;
-use tirea_contract::testing::TestRequestTermination as RequestTermination;
+use tirea_agentos::contracts::runtime::phase::{ActionSet, BeforeInferenceAction};
 use tirea_agentos::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_agentos::contracts::AgentBehavior;
 use tirea_agentos::contracts::TerminationReason;
@@ -33,8 +32,8 @@ impl AgentBehavior for TerminatePlugin {
         &self.id
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+        ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
     }
 }
 
@@ -59,9 +58,9 @@ impl AgentBehavior for SlowTerminatePlugin {
         &self.id
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
         tokio::time::sleep(self.delay).await;
-        vec![Box::new(RequestTermination(TerminationReason::BehaviorRequested))]
+        ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
     }
 }
 

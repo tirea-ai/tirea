@@ -16,7 +16,7 @@ pub use behavior::{
     build_read_only_context_from_step, AgentBehavior, NoOpBehavior, ReadOnlyContext,
 };
 pub use extensions::Extensions;
-pub use inference::{AddUserMessage, StreamResult, TokenUsage};
+pub use inference::{StreamResult, TokenUsage};
 pub use phase::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
     BeforeToolExecuteContext, Phase, PhaseContext, PhasePolicy, RunAction, RunEndContext,

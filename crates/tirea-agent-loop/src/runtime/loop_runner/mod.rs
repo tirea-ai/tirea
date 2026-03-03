@@ -490,7 +490,7 @@ pub(super) async fn complete_step_after_inference(
         &[Phase::AfterInference],
         |step| {
             use crate::contracts::runtime::inference::LLMResponse;
-            step.extensions.insert(LLMResponse::success(result.clone()));
+            step.llm_response = Some(LLMResponse::success(result.clone()));
         },
         |step| step.run_action(),
     )

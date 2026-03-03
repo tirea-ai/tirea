@@ -4580,13 +4580,14 @@ fn test_scenario_various_interaction_types() {
 use std::collections::{HashMap, HashSet};
 use tirea_agentos::contracts::io::ResumeDecisionAction;
 use tirea_agentos::contracts::runtime::behavior::ReadOnlyContext;
-use tirea_agentos::contracts::runtime::action::Action;
-use tirea_contract::testing::{TestEmitStatePatch as EmitStatePatch, TestSuspendTool as SuspendTool};
-use tirea_agentos::contracts::runtime::phase::{Phase, StepContext};
+use tirea_agentos::contracts::runtime::phase::{
+    ActionSet, BeforeToolExecuteAction, LifecycleAction, Phase, StepContext,
+};
+use tirea_agentos::contracts::runtime::state::{reduce_state_actions, ScopeContext};
 use tirea_agentos::contracts::runtime::tool_call::ToolGate;
 use tirea_agentos::contracts::runtime::AgentBehavior;
 use tirea_agentos::contracts::runtime::{
-    SuspendedCall, SuspendedToolCallsState, ToolCallResume, ToolCallState, ToolCallStatus,
+    suspended_calls_from_state, SuspendedCall, ToolCallResume, ToolCallState, ToolCallStatus,
 };
 use tirea_agentos::contracts::thread::ToolCall;
 use tirea_protocol_ag_ui::RunAgentInput;
@@ -4681,19 +4682,53 @@ where
     T: AgentBehavior + ?Sized,
 {
     async fn run_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        let ctx = build_read_only_ctx_for_dispatch(phase, step);
-        let actions = match phase {
-            Phase::RunStart => self.run_start(&ctx).await,
-            Phase::StepStart => self.step_start(&ctx).await,
-            Phase::BeforeInference => self.before_inference(&ctx).await,
-            Phase::AfterInference => self.after_inference(&ctx).await,
-            Phase::BeforeToolExecute => self.before_tool_execute(&ctx).await,
-            Phase::AfterToolExecute => self.after_tool_execute(&ctx).await,
-            Phase::StepEnd => self.step_end(&ctx).await,
-            Phase::RunEnd => self.run_end(&ctx).await,
+        use tirea_contract::testing::{
+            apply_after_inference_for_test, apply_after_tool_for_test,
+            apply_before_inference_for_test, apply_before_tool_for_test,
+            apply_lifecycle_for_test,
         };
-        tirea_contract::testing::apply_actions_for_test(phase, step, actions)
-            .expect("actions apply should succeed");
+        let ctx = build_read_only_ctx_for_dispatch(phase, step);
+        match phase {
+            Phase::RunStart => apply_lifecycle_for_test(step, self.run_start(&ctx).await),
+            Phase::StepStart => apply_lifecycle_for_test(step, self.step_start(&ctx).await),
+            Phase::BeforeInference => {
+                apply_before_inference_for_test(step, self.before_inference(&ctx).await)
+            }
+            Phase::AfterInference => {
+                apply_after_inference_for_test(step, self.after_inference(&ctx).await)
+            }
+            Phase::BeforeToolExecute => {
+                apply_before_tool_for_test(step, self.before_tool_execute(&ctx).await)
+            }
+            Phase::AfterToolExecute => {
+                apply_after_tool_for_test(step, self.after_tool_execute(&ctx).await)
+            }
+            Phase::StepEnd => apply_lifecycle_for_test(step, self.step_end(&ctx).await),
+            Phase::RunEnd => apply_lifecycle_for_test(step, self.run_end(&ctx).await),
+        }
+        // Reduce pending state actions and apply them to the doc so tests can
+        // read updated state via fix.updated_state().
+        if !step.pending_state_actions.is_empty() {
+            let state_actions = std::mem::take(&mut step.pending_state_actions);
+            let snapshot = step.snapshot();
+            let scope_ctx = match phase {
+                Phase::BeforeToolExecute | Phase::AfterToolExecute => step
+                    .tool_call_id()
+                    .map(ScopeContext::for_call)
+                    .unwrap_or_else(ScopeContext::run),
+                _ => ScopeContext::run(),
+            };
+            let patches =
+                reduce_state_actions(state_actions, &snapshot, "test", &scope_ctx)
+                    .expect("state actions should reduce");
+            for patch in patches {
+                let doc = step.ctx().doc();
+                for op in patch.patch().ops() {
+                    doc.apply(op).expect("state action patch op should apply");
+                }
+                step.emit_patch(patch);
+            }
+        }
     }
 }
 
@@ -4793,25 +4828,22 @@ impl AgentBehavior for InteractionPlugin {
         "test_interaction"
     }
 
-    async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
         if self.responses.is_empty() {
-            return vec![];
+            return ActionSet::empty();
         }
 
-        let suspended_state = ctx
-            .snapshot_of::<SuspendedToolCallsState>()
-            .unwrap_or_default();
-        let suspended_calls = suspended_state.calls;
+        let suspended_calls = suspended_calls_from_state(&ctx.snapshot());
         if suspended_calls.is_empty() {
-            return vec![];
+            return ActionSet::empty();
         }
 
         let mut states =
             tirea_agentos::contracts::runtime::tool_call_states_from_state(&ctx.snapshot());
-        let mut actions: Vec<Box<dyn Action>> = Vec::new();
+        let mut actions = ActionSet::empty();
         for (call_id, suspended_call) in suspended_calls {
             if states
-                .get(&call_id)
+                .get(call_id.as_str())
                 .is_some_and(|state| matches!(state.status, ToolCallStatus::Resuming))
             {
                 continue;
@@ -4819,9 +4851,9 @@ impl AgentBehavior for InteractionPlugin {
             let Some(result) = self.response_for_call(&suspended_call) else {
                 continue;
             };
-            let resume = Self::to_tool_call_resume(&call_id, result);
+            let resume = Self::to_tool_call_resume(call_id.as_str(), result);
             let updated_at = resume.updated_at;
-            let mut state = states.remove(&call_id).unwrap_or_else(|| ToolCallState {
+            let mut state = states.remove(call_id.as_str()).unwrap_or_else(|| ToolCallState {
                 call_id: call_id.clone(),
                 tool_name: suspended_call.tool_name.clone(),
                 arguments: suspended_call.arguments.clone(),
@@ -4838,7 +4870,9 @@ impl AgentBehavior for InteractionPlugin {
             state.resume_token = Some(suspended_call.ticket.pending.id.clone());
             state.resume = Some(resume);
             state.updated_at = updated_at;
-            actions.push(Box::new(EmitStatePatch(state.into_state_action())));
+            actions = actions.and(ActionSet::single(LifecycleAction::State(
+                state.into_state_action(),
+            )));
         }
         actions
     }
@@ -4868,17 +4902,20 @@ impl AgentBehavior for TestFrontendToolPlugin {
         "test_frontend_tools"
     }
 
-    async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn before_tool_execute(
+        &self,
+        ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeToolExecuteAction> {
         let Some(tool_name) = ctx.tool_name() else {
-            return vec![];
+            return ActionSet::empty();
         };
 
         if !self.frontend_tools.contains(tool_name) {
-            return vec![];
+            return ActionSet::empty();
         }
 
         let Some(tool_call_id) = ctx.tool_call_id() else {
-            return vec![];
+            return ActionSet::empty();
         };
 
         let args = ctx.tool_args().cloned().unwrap_or_default();
@@ -4893,7 +4930,9 @@ impl AgentBehavior for TestFrontendToolPlugin {
             },
             ResponseRouting::ReplayOriginalTool,
         );
-        vec![Box::new(SuspendTool(suspend_ticket_from_invocation(invocation)))]
+        ActionSet::single(BeforeToolExecuteAction::Suspend(
+            suspend_ticket_from_invocation(invocation),
+        ))
     }
 }
 
@@ -4908,14 +4947,14 @@ fn frontend_plugin_from_request(request: &RunAgentInput) -> TestFrontendToolPlug
 }
 
 fn suspended_interaction(step: &StepContext<'_>) -> Option<Suspension> {
-    step.extensions
-        .get::<ToolGate>()
+    step.gate
+        .as_ref()
         .and_then(|gate| gate.suspend_ticket.as_ref())
         .map(|ticket| ticket.suspension.clone())
 }
 
 fn suspended_invocation(step: &StepContext<'_>) -> Option<FrontendToolInvocation> {
-    let gate = step.extensions.get::<ToolGate>()?;
+    let gate = step.gate.as_ref()?;
     let backend = Some((gate.id.clone(), gate.name.clone(), gate.args.clone()));
     gate.suspend_ticket.as_ref()
         .map(|ticket| FrontendToolInvocation {
@@ -4991,7 +5030,7 @@ async fn test_scenario_frontend_tool_request_to_agui() {
             "format": "plain"
         }),
     );
-    step.extensions.insert(ToolGate::from_tool_call(&tool_call));
+    step.gate = Some(ToolGate::from_tool_call(&tool_call));
 
     // 4. Plugin intercepts in BeforeToolExecute phase
     plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
@@ -5058,7 +5097,7 @@ async fn test_scenario_multiple_frontend_tools_sequence() {
         let ctx_step = fix.ctx();
         let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
         let tool_call = ToolCall::new(call_id, tool_name, args.clone());
-        step.extensions.insert(ToolGate::from_tool_call(&tool_call));
+        step.gate = Some(ToolGate::from_tool_call(&tool_call));
 
         plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
 
@@ -5107,7 +5146,7 @@ async fn test_scenario_frontend_tool_complex_args() {
     });
 
     let tool_call = ToolCall::new("call_complex", "fileDialog", complex_args.clone());
-    step.extensions.insert(ToolGate::from_tool_call(&tool_call));
+    step.gate = Some(ToolGate::from_tool_call(&tool_call));
 
     plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
 
@@ -5142,7 +5181,7 @@ async fn test_scenario_frontend_tool_empty_args() {
         let ctx_step = fix.ctx();
         let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
         let tool_call = ToolCall::new("call_empty", "getClipboard", json!({}));
-        step.extensions.insert(ToolGate::from_tool_call(&tool_call));
+        step.gate = Some(ToolGate::from_tool_call(&tool_call));
 
         plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
 
@@ -5157,7 +5196,7 @@ async fn test_scenario_frontend_tool_empty_args() {
         let ctx_step = fix.ctx();
         let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
         let tool_call = ToolCall::new("call_null", "getClipboard", Value::Null);
-        step.extensions.insert(ToolGate::from_tool_call(&tool_call));
+        step.gate = Some(ToolGate::from_tool_call(&tool_call));
 
         plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
 
@@ -5190,7 +5229,7 @@ async fn test_scenario_frontend_tool_special_names() {
         let ctx_step = fix.ctx();
         let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
         let tool_call = ToolCall::new("call_1", tool_name, json!({}));
-        step.extensions.insert(ToolGate::from_tool_call(&tool_call));
+        step.gate = Some(ToolGate::from_tool_call(&tool_call));
 
         plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
 
@@ -5234,7 +5273,7 @@ async fn test_scenario_frontend_tool_case_sensitivity() {
         let ctx_step = fix.ctx();
         let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
         let tool_call = ToolCall::new("call_1", tool_name, json!({}));
-        step.extensions.insert(ToolGate::from_tool_call(&tool_call));
+        step.gate = Some(ToolGate::from_tool_call(&tool_call));
 
         plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
 
@@ -5315,7 +5354,7 @@ async fn test_scenario_frontend_tool_full_event_pipeline() {
             "buttons": ["Yes", "No"]
         }),
     );
-    step.extensions.insert(ToolGate::from_tool_call(&tool_call));
+    step.gate = Some(ToolGate::from_tool_call(&tool_call));
 
     // 1. Plugin creates pending state with interaction
     plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
@@ -5362,7 +5401,7 @@ async fn test_scenario_backend_tool_passthrough() {
             "limit": 10
         }),
     );
-    step.extensions.insert(ToolGate::from_tool_call(&tool_call));
+    step.gate = Some(ToolGate::from_tool_call(&tool_call));
 
     // Plugin should not interfere
     plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
@@ -5432,7 +5471,7 @@ async fn test_scenario_permission_approved_complete_flow() {
         "write_file",
         json!({"path": "/etc/config"}),
     );
-    step.extensions.insert(ToolGate::from_tool_call(&tool_call));
+    step.gate = Some(ToolGate::from_tool_call(&tool_call));
 
     // PermissionPlugin creates suspended interaction
     let plugin = PermissionPlugin;
@@ -5483,7 +5522,7 @@ async fn test_scenario_permission_denied_complete_flow() {
         "delete_file",
         json!({"path": "/important.txt"}),
     );
-    step.extensions.insert(ToolGate::from_tool_call(&tool_call));
+    step.gate = Some(ToolGate::from_tool_call(&tool_call));
 
     let plugin = PermissionPlugin;
     plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
@@ -5535,7 +5574,7 @@ async fn test_scenario_frontend_tool_execution_complete_flow() {
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
 
     let tool_call = ToolCall::new("call_copy_1", "copyToClipboard", json!({"text": "Hello!"}));
-    step.extensions.insert(ToolGate::from_tool_call(&tool_call));
+    step.gate = Some(ToolGate::from_tool_call(&tool_call));
 
     plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
 
@@ -5578,7 +5617,7 @@ async fn test_scenario_multiple_interactions_sequence() {
     let ctx_step1 = fix1.ctx();
     let mut step1 = StepContext::new(ctx_step1, &thread.id, &thread.messages, vec![]);
     let call1 = ToolCall::new("call_1", "write_file", json!({}));
-    step1.extensions.insert(ToolGate::from_tool_call(&call1));
+    step1.gate = Some(ToolGate::from_tool_call(&call1));
 
     plugin.run_phase(Phase::BeforeToolExecute, &mut step1).await;
     let interaction1 = suspended_interaction(&step1).expect("suspended interaction should exist");
@@ -5588,7 +5627,7 @@ async fn test_scenario_multiple_interactions_sequence() {
     let ctx_step2 = fix2.ctx();
     let mut step2 = StepContext::new(ctx_step2, &thread.id, &thread.messages, vec![]);
     let call2 = ToolCall::new("call_2", "read_file", json!({}));
-    step2.extensions.insert(ToolGate::from_tool_call(&call2));
+    step2.gate = Some(ToolGate::from_tool_call(&call2));
 
     plugin.run_phase(Phase::BeforeToolExecute, &mut step2).await;
     let interaction2 = suspended_interaction(&step2).expect("suspended interaction should exist");
@@ -5796,7 +5835,7 @@ async fn test_scenario_interaction_response_plugin_blocks_denied() {
 
     // Suspension plugin no longer applies gate decisions in BeforeToolExecute.
     let call = ToolCall::new("call_write", "write_file", json!({"path": "/etc/config"}));
-    step.extensions.insert(ToolGate::from_tool_call(&call));
+    step.gate = Some(ToolGate::from_tool_call(&call));
     plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
     assert!(!step.tool_blocked(), "gate application is loop-owned");
 }
@@ -5832,7 +5871,7 @@ async fn test_scenario_interaction_response_plugin_allows_approved() {
         "read_file",
         json!({"path": "/home/user/doc.txt"}),
     );
-    step.extensions.insert(ToolGate::from_tool_call(&call));
+    step.gate = Some(ToolGate::from_tool_call(&call));
 
     plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
 
@@ -5850,7 +5889,7 @@ async fn test_scenario_e2e_permission_to_response_flow() {
     let ctx_step1 = fix1.ctx();
     let mut step1 = StepContext::new(ctx_step1, &thread.id, &thread.messages, vec![]);
     let call = ToolCall::new("call_exec", "execute_command", json!({"cmd": "ls"}));
-    step1.extensions.insert(ToolGate::from_tool_call(&call));
+    step1.gate = Some(ToolGate::from_tool_call(&call));
 
     permission_plugin
         .run_phase(Phase::BeforeToolExecute, &mut step1)
@@ -5894,7 +5933,7 @@ async fn test_scenario_e2e_permission_to_response_flow() {
     let ctx_step2 = fix2.ctx();
     let mut step2 = StepContext::new(ctx_step2, &session2.id, &session2.messages, vec![]);
     let call2 = ToolCall::new(&interaction.id, "execute_command", json!({"cmd": "ls"}));
-    step2.extensions.insert(ToolGate::from_tool_call(&call2));
+    step2.gate = Some(ToolGate::from_tool_call(&call2));
 
     // InteractionPlugin runs first
     response_plugin
@@ -5940,7 +5979,7 @@ async fn test_scenario_frontend_tool_with_response_plugin() {
     let ctx_step1 = fix1.ctx();
     let mut step1 = StepContext::new(ctx_step1, &thread.id, &thread.messages, vec![]);
     let call = ToolCall::new("call_dialog_1", "showDialog", json!({"title": "Confirm"}));
-    step1.extensions.insert(ToolGate::from_tool_call(&call));
+    step1.gate = Some(ToolGate::from_tool_call(&call));
 
     frontend_plugin
         .run_phase(Phase::BeforeToolExecute, &mut step1)
@@ -6255,7 +6294,7 @@ async fn test_permission_flow_approval_e2e() {
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
 
     let tool_call = ToolCall::new("call_write", "write_file", json!({"path": "/etc/config"}));
-    step.extensions.insert(ToolGate::from_tool_call(&tool_call));
+    step.gate = Some(ToolGate::from_tool_call(&tool_call));
 
     // PermissionPlugin creates pending
     let plugin = PermissionPlugin;
@@ -6301,7 +6340,7 @@ async fn test_permission_flow_approval_e2e() {
         "write_file",
         json!({"path": "/etc/config"}),
     );
-    step2.extensions.insert(ToolGate::from_tool_call(&tool_call2));
+    step2.gate = Some(ToolGate::from_tool_call(&tool_call2));
 
     response_plugin
         .run_phase(Phase::BeforeToolExecute, &mut step2)
@@ -6320,7 +6359,7 @@ async fn test_permission_flow_denial_e2e() {
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
 
     let tool_call = ToolCall::new("call_delete", "delete_all", json!({}));
-    step.extensions.insert(ToolGate::from_tool_call(&tool_call));
+    step.gate = Some(ToolGate::from_tool_call(&tool_call));
 
     let plugin = PermissionPlugin;
     plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
@@ -6372,7 +6411,7 @@ async fn test_permission_flow_multiple_tools_mixed() {
     let ctx_step1 = fix1.ctx();
     let mut step1 = StepContext::new(ctx_step1, &thread.id, &thread.messages, vec![]);
     let call1 = ToolCall::new("call_1", "read_file", json!({}));
-    step1.extensions.insert(ToolGate::from_tool_call(&call1));
+    step1.gate = Some(ToolGate::from_tool_call(&call1));
 
     let plugin = PermissionPlugin;
     plugin.run_phase(Phase::BeforeToolExecute, &mut step1).await;
@@ -6383,7 +6422,7 @@ async fn test_permission_flow_multiple_tools_mixed() {
     let ctx_step2 = fix2.ctx();
     let mut step2 = StepContext::new(ctx_step2, &thread.id, &thread.messages, vec![]);
     let call2 = ToolCall::new("call_2", "write_file", json!({}));
-    step2.extensions.insert(ToolGate::from_tool_call(&call2));
+    step2.gate = Some(ToolGate::from_tool_call(&call2));
     plugin.run_phase(Phase::BeforeToolExecute, &mut step2).await;
     let int2 = suspended_interaction(&step2).expect("suspended interaction should exist");
 
@@ -6507,18 +6546,18 @@ async fn test_e2e_permission_suspend_with_real_tool() {
         "Placeholder should mention awaiting approval"
     );
 
-    // suspended_interaction persisted in session state
+    // suspended_interaction persisted in session state (new per-call-scoped schema)
     let state = suspended_thread.rebuild_state().unwrap();
-    let pending = state["__suspended_tool_calls"]["calls"]
-        .as_object()
-        .and_then(|calls| calls.values().next())
-        .and_then(|entry| entry.get("suspension"))
+    let suspended_calls = suspended_calls_from_state(&state);
+    let suspended = suspended_calls
+        .values()
+        .next()
         .expect("suspended interaction should be persisted");
     assert!(
-        pending["id"].as_str().unwrap().starts_with("fc_"),
+        suspended.ticket.suspension.id.starts_with("fc_"),
         "Persisted interaction should use frontend call_id"
     );
-    assert_eq!(pending["action"], "tool:PermissionConfirm");
+    assert_eq!(suspended.ticket.suspension.action, "tool:PermissionConfirm");
 
     // Counter should NOT have been modified
     assert!(
@@ -6754,7 +6793,7 @@ async fn test_frontend_tool_flow_creates_pending() {
         "copyToClipboard",
         json!({"text": "Hello World"}),
     );
-    step.extensions.insert(ToolGate::from_tool_call(&call));
+    step.gate = Some(ToolGate::from_tool_call(&call));
 
     plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
 
@@ -6804,7 +6843,7 @@ async fn test_frontend_tool_flow_mixed_with_backend() {
     let ctx_step_backend = fix_backend.ctx();
     let mut step_backend = StepContext::new(ctx_step_backend, &thread.id, &thread.messages, vec![]);
     let call_backend = ToolCall::new("call_search", "search", json!({"query": "test"}));
-    step_backend.extensions.insert(ToolGate::from_tool_call(&call_backend));
+    step_backend.gate = Some(ToolGate::from_tool_call(&call_backend));
     plugin
         .run_phase(Phase::BeforeToolExecute, &mut step_backend)
         .await;
@@ -6819,7 +6858,7 @@ async fn test_frontend_tool_flow_mixed_with_backend() {
     let mut step_frontend =
         StepContext::new(ctx_step_frontend, &thread.id, &thread.messages, vec![]);
     let call_frontend = ToolCall::new("call_dialog", "showDialog", json!({"title": "Confirm"}));
-    step_frontend.extensions.insert(ToolGate::from_tool_call(&call_frontend));
+    step_frontend.gate = Some(ToolGate::from_tool_call(&call_frontend));
     plugin
         .run_phase(Phase::BeforeToolExecute, &mut step_frontend)
         .await;
@@ -7042,7 +7081,7 @@ async fn test_resume_flow_with_approval() {
     let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
     let call = ToolCall::new(target_id, "tool_x", json!({}));
-    step.extensions.insert(ToolGate::from_tool_call(&call));
+    step.gate = Some(ToolGate::from_tool_call(&call));
 
     plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
     assert!(!step.tool_blocked());
@@ -7156,7 +7195,7 @@ async fn test_resume_flow_partial_responses() {
     let ctx_step1 = fix1.ctx();
     let mut step1 = StepContext::new(ctx_step1, &session1.id, &session1.messages, vec![]);
     let call1 = ToolCall::new("perm_1", "tool_1", json!({}));
-    step1.extensions.insert(ToolGate::from_tool_call(&call1));
+    step1.gate = Some(ToolGate::from_tool_call(&call1));
     plugin.run_phase(Phase::BeforeToolExecute, &mut step1).await;
     assert!(!step1.tool_blocked());
 
@@ -7166,7 +7205,7 @@ async fn test_resume_flow_partial_responses() {
     let ctx_step2 = fix2.ctx();
     let mut step2 = StepContext::new(ctx_step2, &session2.id, &session2.messages, vec![]);
     let call2 = ToolCall::new("perm_2", "tool_2", json!({}));
-    step2.extensions.insert(ToolGate::from_tool_call(&call2));
+    step2.gate = Some(ToolGate::from_tool_call(&call2));
     plugin.run_phase(Phase::BeforeToolExecute, &mut step2).await;
     assert!(!step2.tool_blocked()); // Not blocked by response plugin (no response)
 }
@@ -7198,7 +7237,7 @@ async fn test_plugin_interaction_frontend_and_response() {
     let ctx_step1 = fix1.ctx();
     let mut step1 = StepContext::new(ctx_step1, &thread.id, &thread.messages, vec![]);
     let call1 = ToolCall::new("call_new", "showNotification", json!({}));
-    step1.extensions.insert(ToolGate::from_tool_call(&call1));
+    step1.gate = Some(ToolGate::from_tool_call(&call1));
 
     response_plugin
         .run_phase(Phase::BeforeToolExecute, &mut step1)
@@ -7225,7 +7264,7 @@ async fn test_plugin_interaction_frontend_and_response() {
     let ctx_step2 = fix2.ctx();
     let mut step2 = StepContext::new(ctx_step2, &session2.id, &session2.messages, vec![]);
     let call2 = ToolCall::new("call_prev", "some_tool", json!({}));
-    step2.extensions.insert(ToolGate::from_tool_call(&call2));
+    step2.gate = Some(ToolGate::from_tool_call(&call2));
 
     response_plugin
         .run_phase(Phase::BeforeToolExecute, &mut step2)
@@ -7267,7 +7306,7 @@ async fn test_plugin_interaction_execution_order() {
     let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
     let call = ToolCall::new("call_danger", "dangerousAction", json!({}));
-    step.extensions.insert(ToolGate::from_tool_call(&call));
+    step.gate = Some(ToolGate::from_tool_call(&call));
 
     // Response plugin run_start persists cancel decision.
     response_plugin.run_phase(Phase::RunStart, &mut step).await;
@@ -7312,7 +7351,7 @@ async fn test_plugin_interaction_permission_and_frontend() {
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
 
     let call = ToolCall::new("call_modify", "modifySettings", json!({}));
-    step.extensions.insert(ToolGate::from_tool_call(&call));
+    step.gate = Some(ToolGate::from_tool_call(&call));
 
     // Permission plugin runs first - creates pending for "ask"
     permission_plugin
@@ -12460,7 +12499,7 @@ mod llmmetry_tracing {
 
         plugin.run_phase(Phase::BeforeInference, &mut step).await;
 
-        step.extensions.insert(LLMResponse::success(StreamResult {
+        step.llm_response = Some(LLMResponse::success(StreamResult {
             text: "hello".into(),
             tool_calls: vec![],
             usage: Some(usage(100, 50, 150)),
@@ -12504,11 +12543,11 @@ mod llmmetry_tracing {
         let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
 
         let call = ToolCall::new("tc1", "search", json!({}));
-        step.extensions.insert(ToolGate::from_tool_call(&call));
+        step.gate = Some(ToolGate::from_tool_call(&call));
 
         plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
 
-        step.extensions.get_mut::<ToolGate>().unwrap().result =
+        step.gate.as_mut().unwrap().result =
             Some(ToolResult::success("search", json!({"found": true})));
 
         plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
@@ -12551,7 +12590,7 @@ mod llmmetry_tracing {
 
         // Inference
         plugin.run_phase(Phase::BeforeInference, &mut step).await;
-        step.extensions.insert(LLMResponse::success(StreamResult {
+        step.llm_response = Some(LLMResponse::success(StreamResult {
             text: "use search tool".into(),
             tool_calls: vec![],
             usage: Some(usage(50, 25, 75)),
@@ -12560,9 +12599,9 @@ mod llmmetry_tracing {
 
         // Tool execution
         let call = ToolCall::new("c1", "search", json!({"q": "test"}));
-        step.extensions.insert(ToolGate::from_tool_call(&call));
+        step.gate = Some(ToolGate::from_tool_call(&call));
         plugin.run_phase(Phase::BeforeToolExecute, &mut step).await;
-        step.extensions.get_mut::<ToolGate>().unwrap().result =
+        step.gate.as_mut().unwrap().result =
             Some(ToolResult::success("search", json!({"results": []})));
         plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
 
@@ -12600,12 +12639,7 @@ fn replay_calls_from_state(state: &Value) -> Vec<ToolCall> {
         return Vec::new();
     }
 
-    let suspended = state
-        .get("__suspended_tool_calls")
-        .and_then(|agent| agent.get("calls"))
-        .cloned()
-        .and_then(|v| serde_json::from_value::<HashMap<String, SuspendedCall>>(v).ok())
-        .unwrap_or_default();
+    let suspended = suspended_calls_from_state(state);
 
     let mut call_ids: Vec<String> = decisions.keys().cloned().collect();
     call_ids.sort();
@@ -12699,7 +12733,9 @@ fn state_with_suspended_call(
         Some("pass_to_llm") => "pass_decision_to_tool",
         _ => "replay_tool_call",
     };
-    let entry = json!({
+    // SuspendedCall is flattened into SuspendedCallState, which is stored at
+    // __tool_call_scope.<call_id>.suspended_call per the new per-call-scoped schema.
+    let suspended_call = json!({
         "call_id": call_id,
         "tool_name": tool_name,
         "arguments": backend_arguments,
@@ -12708,9 +12744,9 @@ fn state_with_suspended_call(
         "resume_mode": resume_mode,
     });
     json!({
-        "__suspended_tool_calls": {
-            "calls": {
-                call_id: entry
+        "__tool_call_scope": {
+            call_id: {
+                "suspended_call": suspended_call
             }
         }
     })
@@ -12964,7 +13000,7 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
     let ctx_step1 = fix1.ctx();
     let mut step1 = StepContext::new(ctx_step1, &thread.id, &thread.messages, vec![]);
     let call = ToolCall::new("call_add", "add_trips", json!({"destination": "Beijing"}));
-    step1.extensions.insert(ToolGate::from_tool_call(&call));
+    step1.gate = Some(ToolGate::from_tool_call(&call));
 
     permission_plugin
         .run_phase(Phase::BeforeToolExecute, &mut step1)
@@ -13216,7 +13252,7 @@ async fn test_hitl_replay_run_start_does_not_affect_before_tool_execute() {
     let ctx_step2 = fix2.ctx();
     let mut step2 = StepContext::new(ctx_step2, &thread.id, &thread.messages, vec![]);
     let call = ToolCall::new(pending_id, "some_tool", json!({}));
-    step2.extensions.insert(ToolGate::from_tool_call(&call));
+    step2.gate = Some(ToolGate::from_tool_call(&call));
     response_plugin
         .run_phase(Phase::BeforeToolExecute, &mut step2)
         .await;

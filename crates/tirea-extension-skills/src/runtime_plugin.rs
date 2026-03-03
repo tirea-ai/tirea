@@ -1,7 +1,7 @@
 use crate::SKILLS_RUNTIME_PLUGIN_ID;
 use async_trait::async_trait;
 use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
-use tirea_contract::runtime::action::Action;
+use tirea_contract::runtime::phase::{ActionSet, BeforeInferenceAction};
 
 /// Placeholder plugin for activated skill state.
 ///
@@ -24,9 +24,12 @@ impl AgentBehavior for SkillRuntimePlugin {
         SKILLS_RUNTIME_PLUGIN_ID
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
+    async fn before_inference(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeInferenceAction> {
         // No-op: skill content is delivered via ToolExecutionEffect user messages and tool results.
-        vec![]
+        ActionSet::empty()
     }
 }
 

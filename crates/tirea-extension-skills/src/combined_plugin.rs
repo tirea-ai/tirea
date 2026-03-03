@@ -1,8 +1,8 @@
 use crate::{SkillDiscoveryPlugin, SkillRuntimePlugin, SKILLS_PLUGIN_ID};
 use async_trait::async_trait;
 use std::sync::Arc;
-use tirea_contract::runtime::action::Action;
 use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
+use tirea_contract::runtime::phase::{ActionSet, BeforeInferenceAction};
 use crate::types::SkillState;
 
 /// Single plugin wrapper that injects both:
@@ -46,10 +46,13 @@ impl AgentBehavior for SkillPlugin {
 
     tirea_contract::declare_plugin_states!(SkillState);
 
-    async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        let mut merged = AgentBehavior::before_inference(&self.discovery, ctx).await;
-        merged.extend(AgentBehavior::before_inference(&self.runtime, ctx).await);
-        merged
+    async fn before_inference(
+        &self,
+        ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeInferenceAction> {
+        AgentBehavior::before_inference(&self.discovery, ctx)
+            .await
+            .and(AgentBehavior::before_inference(&self.runtime, ctx).await)
     }
 }
 
@@ -104,8 +107,9 @@ mod tests {
 
         // Only discovery catalog is injected; runtime plugin no longer injects system context.
         let system_context_count = actions
+            .as_slice()
             .iter()
-            .filter(|a| a.label() == "add_system_context")
+            .filter(|a| matches!(a, BeforeInferenceAction::AddSystemContext(_)))
             .count();
         assert_eq!(system_context_count, 1);
     }

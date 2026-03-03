@@ -1,8 +1,6 @@
-use crate::runtime::inference::{
-    InferenceContext, InferenceError, LLMResponse, MessagingContext, StreamResult,
-};
-use crate::runtime::run::{FlowControl, RunAction, TerminationReason};
-use crate::runtime::tool_call::gate::{SuspendTicket, ToolCallAction, ToolGate};
+use crate::runtime::inference::{InferenceError, StreamResult};
+use crate::runtime::run::{RunAction, TerminationReason};
+use crate::runtime::tool_call::gate::{SuspendTicket, ToolCallAction};
 use crate::runtime::tool_call::{ToolCallResume, ToolResult};
 use crate::thread::Message;
 use crate::RunConfig;
@@ -85,50 +83,36 @@ impl_phase_context!(BeforeInferenceContext, Phase::BeforeInference);
 impl<'s, 'a> BeforeInferenceContext<'s, 'a> {
     /// Append a system context line.
     pub fn add_system_context(&mut self, text: impl Into<String>) {
-        self.step
-            .extensions
-            .get_or_default::<InferenceContext>()
-            .system_context
-            .push(text.into());
+        self.step.inference.system_context.push(text.into());
     }
 
     /// Append a session message.
     pub fn add_session_message(&mut self, text: impl Into<String>) {
-        self.step
-            .extensions
-            .get_or_default::<InferenceContext>()
-            .session_context
-            .push(text.into());
+        self.step.inference.session_context.push(text.into());
     }
 
     /// Exclude tool by id.
     pub fn exclude_tool(&mut self, tool_id: &str) {
-        if let Some(inf) = self.step.extensions.get_mut::<InferenceContext>() {
-            inf.tools.retain(|t| t.id != tool_id);
-        }
+        self.step.inference.tools.retain(|t| t.id != tool_id);
     }
 
     /// Keep only listed tools.
     pub fn include_only(&mut self, tool_ids: &[&str]) {
-        if let Some(inf) = self.step.extensions.get_mut::<InferenceContext>() {
-            inf.tools.retain(|t| tool_ids.contains(&t.id.as_str()));
-        }
+        self.step
+            .inference
+            .tools
+            .retain(|t| tool_ids.contains(&t.id.as_str()));
     }
 
     /// Terminate current run as behavior-requested before inference.
     pub fn terminate_behavior_requested(&mut self) {
-        self.step
-            .extensions
-            .get_or_default::<FlowControl>()
-            .run_action = Some(RunAction::Terminate(TerminationReason::BehaviorRequested));
+        self.step.flow.run_action =
+            Some(RunAction::Terminate(TerminationReason::BehaviorRequested));
     }
 
     /// Request run termination with a specific reason.
     pub fn request_termination(&mut self, reason: TerminationReason) {
-        self.step
-            .extensions
-            .get_or_default::<FlowControl>()
-            .run_action = Some(RunAction::Terminate(reason));
+        self.step.flow.run_action = Some(RunAction::Terminate(reason));
     }
 }
 
@@ -140,15 +124,15 @@ impl_phase_context!(AfterInferenceContext, Phase::AfterInference);
 impl<'s, 'a> AfterInferenceContext<'s, 'a> {
     pub fn response_opt(&self) -> Option<&StreamResult> {
         self.step
-            .extensions
-            .get::<LLMResponse>()
+            .llm_response
+            .as_ref()
             .and_then(|r| r.outcome.as_ref().ok())
     }
 
     pub fn response(&self) -> &StreamResult {
         self.step
-            .extensions
-            .get::<LLMResponse>()
+            .llm_response
+            .as_ref()
             .expect("AfterInferenceContext.response() requires LLMResponse to be set")
             .outcome
             .as_ref()
@@ -157,17 +141,14 @@ impl<'s, 'a> AfterInferenceContext<'s, 'a> {
 
     pub fn inference_error(&self) -> Option<&InferenceError> {
         self.step
-            .extensions
-            .get::<LLMResponse>()
+            .llm_response
+            .as_ref()
             .and_then(|r| r.outcome.as_ref().err())
     }
 
     /// Request run termination with a specific reason after inference has completed.
     pub fn request_termination(&mut self, reason: TerminationReason) {
-        self.step
-            .extensions
-            .get_or_default::<FlowControl>()
-            .run_action = Some(RunAction::Terminate(reason));
+        self.step.flow.run_action = Some(RunAction::Terminate(reason));
     }
 }
 
@@ -191,7 +172,7 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
 
     /// Resume payload attached to current tool call, if present.
     pub fn resume_input(&self) -> Option<ToolCallResume> {
-        let gate = self.step.extensions.get::<ToolGate>()?;
+        let gate = self.step.gate.as_ref()?;
         self.step.ctx().resume_input_for(&gate.id).ok().flatten()
     }
 
@@ -200,7 +181,7 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
     }
 
     pub fn set_decision(&mut self, decision: ToolCallAction) {
-        if let Some(gate) = self.step.extensions.get_mut::<ToolGate>() {
+        if let Some(gate) = self.step.gate.as_mut() {
             match decision {
                 ToolCallAction::Proceed => {
                     gate.blocked = false;
@@ -225,7 +206,7 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
     }
 
     pub fn block(&mut self, reason: impl Into<String>) {
-        if let Some(gate) = self.step.extensions.get_mut::<ToolGate>() {
+        if let Some(gate) = self.step.gate.as_mut() {
             gate.blocked = true;
             gate.block_reason = Some(reason.into());
             gate.pending = false;
@@ -237,7 +218,7 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
     ///
     /// This clears any previous block/suspend state set by earlier plugins.
     pub fn allow(&mut self) {
-        if let Some(gate) = self.step.extensions.get_mut::<ToolGate>() {
+        if let Some(gate) = self.step.gate.as_mut() {
             gate.blocked = false;
             gate.block_reason = None;
             gate.pending = false;
@@ -250,13 +231,13 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
     /// Useful for resumed frontend interactions where the external payload
     /// should become the tool result without executing a backend tool.
     pub fn set_tool_result(&mut self, result: ToolResult) {
-        if let Some(gate) = self.step.extensions.get_mut::<ToolGate>() {
+        if let Some(gate) = self.step.gate.as_mut() {
             gate.result = Some(result);
         }
     }
 
     pub fn suspend(&mut self, ticket: SuspendTicket) {
-        if let Some(gate) = self.step.extensions.get_mut::<ToolGate>() {
+        if let Some(gate) = self.step.gate.as_mut() {
             gate.blocked = false;
             gate.block_reason = None;
             gate.pending = true;
@@ -281,18 +262,14 @@ impl<'s, 'a> AfterToolExecuteContext<'s, 'a> {
 
     pub fn tool_result(&self) -> &ToolResult {
         self.step
-            .extensions
-            .get::<ToolGate>()
+            .gate
+            .as_ref()
             .and_then(|g| g.result.as_ref())
             .expect("AfterToolExecuteContext.tool_result() requires tool result")
     }
 
     pub fn add_system_reminder(&mut self, text: impl Into<String>) {
-        self.step
-            .extensions
-            .get_or_default::<MessagingContext>()
-            .reminders
-            .push(text.into());
+        self.step.messaging.reminders.push(text.into());
     }
 }
 
