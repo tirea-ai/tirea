@@ -99,16 +99,22 @@ async fn run(
     let suspension_decisions = req.suspension_decisions();
     let decision_only = !req.has_user_input() && !suspension_decisions.is_empty();
     if decision_only {
-        let key = active_run_key("ai_sdk", &agent_id, &req.thread_id);
-        if try_forward_decisions_to_active_run(&key, suspension_decisions).await {
-            return Ok((
-                StatusCode::ACCEPTED,
-                Json(serde_json::json!({
-                    "status": "decision_forwarded",
-                    "threadId": req.thread_id,
-                })),
-            )
-                .into_response());
+        if let Some(run_id) = req
+            .run_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            let key = active_run_key("ai_sdk", &agent_id, &req.thread_id, run_id);
+            if try_forward_decisions_to_active_run(&key, suspension_decisions).await {
+                return Ok((
+                    StatusCode::ACCEPTED,
+                    Json(serde_json::json!({
+                        "status": "decision_forwarded",
+                        "threadId": req.thread_id,
+                    })),
+                )
+                    .into_response());
+            }
         }
     }
 

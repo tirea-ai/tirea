@@ -2970,6 +2970,7 @@ async fn test_ai_sdk_decision_only_request_forwards_to_active_run() {
 
     let first_payload = json!({
         "id": "decision-forward-ai-sdk",
+        "runId": "decision-only",
         "messages": [{ "role": "user", "content": "start" }]
     });
     let first_response = app
@@ -3021,6 +3022,7 @@ async fn test_ai_sdk_decision_only_batch_request_forwards_to_active_run() {
 
     let first_payload = json!({
         "id": "decision-forward-ai-sdk-batch",
+        "runId": "decision-only-batch",
         "messages": [{ "role": "user", "content": "start" }]
     });
     let first_response = app
@@ -3065,6 +3067,64 @@ async fn test_ai_sdk_decision_only_batch_request_forwards_to_active_run() {
     assert_eq!(status, StatusCode::ACCEPTED);
     assert_eq!(body["status"], "decision_forwarded");
     assert_eq!(body["threadId"], "decision-forward-ai-sdk-batch");
+
+    drop(first_response);
+}
+
+#[tokio::test]
+async fn test_ai_sdk_decision_only_with_mismatched_run_id_does_not_forward() {
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_slow_terminate_behavior_requested_plugin(
+        storage.clone(),
+    ));
+    let app = make_app(os, storage);
+
+    let first_payload = json!({
+        "id": "decision-forward-ai-sdk-mismatch",
+        "runId": "run-active",
+        "messages": [{ "role": "user", "content": "start" }]
+    });
+    let first_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ai-sdk/agents/test/runs")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(first_payload.to_string()))
+                .expect("request should build"),
+        )
+        .await
+        .expect("request should succeed");
+    assert_eq!(first_response.status(), StatusCode::OK);
+
+    let decision_only_payload = json!({
+        "id": "decision-forward-ai-sdk-mismatch",
+        "runId": "run-mismatch",
+        "messages": [{
+            "role": "assistant",
+            "parts": [{
+                "type": "tool-approval-response",
+                "approvalId": "fc_perm_1",
+                "approved": true
+            }]
+        }]
+    });
+    let (status, body) = post_sse_text(
+        app.clone(),
+        "/v1/ai-sdk/agents/test/runs",
+        decision_only_payload,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains(r#""type":"finish""#),
+        "mismatched run id should execute a new run instead of forwarding: {body}"
+    );
+    assert!(
+        !body.contains("decision_forwarded"),
+        "mismatched run id must not use decision-forward fast path: {body}"
+    );
 
     drop(first_response);
 }
@@ -3168,7 +3228,7 @@ async fn test_ag_ui_decision_only_request_forwards_to_active_run() {
 
     let first_payload = json!({
         "threadId": "decision-forward-ag-ui",
-        "runId": "run-active",
+        "runId": "run-decision-only",
         "messages": [{ "role": "user", "content": "start" }],
         "tools": []
     });
@@ -3220,7 +3280,7 @@ async fn test_ag_ui_decision_only_batch_request_forwards_to_active_run() {
 
     let first_payload = json!({
         "threadId": "decision-forward-ag-ui-batch",
-        "runId": "run-active",
+        "runId": "run-decision-only-batch",
         "messages": [{ "role": "user", "content": "start" }],
         "tools": []
     });
@@ -3265,6 +3325,63 @@ async fn test_ag_ui_decision_only_batch_request_forwards_to_active_run() {
     assert_eq!(body["status"], "decision_forwarded");
     assert_eq!(body["threadId"], "decision-forward-ag-ui-batch");
     assert_eq!(body["runId"], "run-decision-only-batch");
+
+    drop(first_response);
+}
+
+#[tokio::test]
+async fn test_ag_ui_decision_only_with_mismatched_run_id_does_not_forward() {
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_slow_terminate_behavior_requested_plugin(
+        storage.clone(),
+    ));
+    let app = make_app(os, storage);
+
+    let first_payload = json!({
+        "threadId": "decision-forward-ag-ui-mismatch",
+        "runId": "run-active",
+        "messages": [{ "role": "user", "content": "start" }],
+        "tools": []
+    });
+    let first_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ag-ui/agents/test/runs")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(first_payload.to_string()))
+                .expect("request should build"),
+        )
+        .await
+        .expect("request should succeed");
+    assert_eq!(first_response.status(), StatusCode::OK);
+
+    let decision_only_payload = json!({
+        "threadId": "decision-forward-ag-ui-mismatch",
+        "runId": "run-mismatch",
+        "messages": [{
+            "role": "tool",
+            "toolCallId": "fc_perm_1",
+            "content": "true"
+        }],
+        "tools": []
+    });
+    let (status, body) = post_sse_text(
+        app.clone(),
+        "/v1/ag-ui/agents/test/runs",
+        decision_only_payload,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("RUN_FINISHED"),
+        "mismatched run id should execute a new AG-UI run: {body}"
+    );
+    assert!(
+        !body.contains("decision_forwarded"),
+        "mismatched run id must not use decision-forward fast path: {body}"
+    );
 
     drop(first_response);
 }

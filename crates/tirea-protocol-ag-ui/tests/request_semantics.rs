@@ -212,6 +212,21 @@ fn run_request_deserializes_forwarded_props_aliases() {
 }
 
 #[test]
+fn run_request_forwards_parent_thread_id_into_runtime_request() {
+    let req: RunAgentInput = serde_json::from_value(json!({
+        "threadId": "t1",
+        "runId": "r1",
+        "parentThreadId": "parent-thread-1",
+        "messages": [{ "role": "user", "content": "hi" }],
+        "tools": []
+    }))
+    .unwrap();
+
+    let runtime = req.into_runtime_run_request("agent".to_string());
+    assert_eq!(runtime.parent_thread_id.as_deref(), Some("parent-thread-1"));
+}
+
+#[test]
 fn convert_agui_messages_filters_activity_and_reasoning() {
     let input = vec![
         Message::user("hello"),

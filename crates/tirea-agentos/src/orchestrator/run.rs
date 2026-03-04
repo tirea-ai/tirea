@@ -1,5 +1,7 @@
 use super::*;
-use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction, ScopeContext, StateScopeRegistry};
+use crate::contracts::runtime::state::{
+    reduce_state_actions, AnyStateAction, ScopeContext, StateScopeRegistry,
+};
 use crate::contracts::runtime::{RunLifecycleAction, RunLifecycleState, RunStatus};
 use crate::contracts::storage::VersionPrecondition;
 use crate::runtime::loop_runner::run_loop_stream;
@@ -56,6 +58,31 @@ fn run_lifecycle_running_patch(
         )));
     };
     Ok(patch)
+}
+
+fn set_or_validate_parent_thread_id(
+    thread: &mut Thread,
+    thread_id: &str,
+    requested_parent_thread_id: Option<&str>,
+) -> Result<bool, AgentOsRunError> {
+    let Some(requested_parent_thread_id) = requested_parent_thread_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(false);
+    };
+
+    if let Some(existing) = thread.parent_thread_id.as_deref() {
+        if existing != requested_parent_thread_id {
+            return Err(AgentOsRunError::Loop(AgentLoopError::StateError(format!(
+                "parent_thread_id mismatch for thread '{thread_id}': existing='{existing}', requested='{requested_parent_thread_id}'",
+            ))));
+        }
+        return Ok(false);
+    }
+
+    thread.parent_thread_id = Some(requested_parent_thread_id.to_string());
+    Ok(true)
 }
 
 impl AgentOs {
@@ -124,18 +151,27 @@ impl AgentOs {
                 (t, head.version)
             }
             None => {
-                let mut thread = if let Some(state) = frontend_state {
+                let thread = if let Some(state) = frontend_state {
                     Thread::with_initial_state(thread_id.clone(), state)
                 } else {
                     Thread::new(thread_id.clone())
                 };
-                if let Some(ref ptid) = parent_thread_id {
-                    thread.parent_thread_id = Some(ptid.clone());
-                }
                 let committed = agent_state_store.create(&thread).await?;
                 (thread, committed.version)
             }
         };
+        let parent_thread_id_updated =
+            set_or_validate_parent_thread_id(&mut thread, &thread_id, parent_thread_id.as_deref())?;
+        if parent_thread_id_updated {
+            agent_state_store.save(&thread).await?;
+            let refreshed = agent_state_store.load(&thread_id).await?.ok_or_else(|| {
+                AgentOsRunError::Loop(AgentLoopError::StateError(format!(
+                    "thread '{thread_id}' disappeared after parent_thread_id update",
+                )))
+            })?;
+            thread = refreshed.thread;
+            version = refreshed.version;
+        }
 
         // 2. Set resource_id on thread if provided
         if let Some(ref resource_id) = request.resource_id {
@@ -157,8 +193,12 @@ impl AgentOs {
         // 4b. Apply cleanup patches to in-memory thread state so the lifecycle
         //     patch reducer sees a clean base.
         for cp in &delta_patches {
-            thread.state = tirea_state::apply_patch(&thread.state, cp.patch())
-                .unwrap_or_else(|_| thread.state.clone());
+            thread.state =
+                tirea_state::apply_patch(&thread.state, cp.patch()).map_err(|error| {
+                    AgentOsRunError::Loop(AgentLoopError::StateError(format!(
+                        "failed to apply run-scope cleanup patch for thread '{thread_id}': {error}"
+                    )))
+                })?;
         }
         delta_patches.push(run_lifecycle_running_patch(&thread.state, &run_id)?);
         let changeset = crate::contracts::ThreadChangeSet::from_parts(

@@ -194,6 +194,13 @@ pub struct RunAgentInput {
     /// Parent run ID (for sub-runs).
     #[serde(rename = "parentRunId", skip_serializing_if = "Option::is_none")]
     pub parent_run_id: Option<String>,
+    /// Parent thread ID (for delegated/sub-agent lineage).
+    #[serde(
+        rename = "parentThreadId",
+        alias = "parent_thread_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_thread_id: Option<String>,
     /// Model to use.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -223,6 +230,7 @@ impl RunAgentInput {
             context: Vec::new(),
             state: None,
             parent_run_id: None,
+            parent_thread_id: None,
             model: None,
             system_prompt: None,
             config: None,
@@ -245,6 +253,12 @@ impl RunAgentInput {
     /// Set initial state.
     pub fn with_state(mut self, state: Value) -> Self {
         self.state = Some(state);
+        self
+    }
+
+    /// Set parent thread ID.
+    pub fn with_parent_thread_id(mut self, parent_thread_id: impl Into<String>) -> Self {
+        self.parent_thread_id = Some(parent_thread_id.into());
         self
     }
 
@@ -313,7 +327,7 @@ impl RunAgentInput {
             thread_id: Some(self.thread_id),
             run_id: Some(self.run_id),
             parent_run_id: self.parent_run_id,
-            parent_thread_id: None,
+            parent_thread_id: self.parent_thread_id,
             resource_id: None,
             state: self.state,
             messages: convert_agui_messages(&self.messages),

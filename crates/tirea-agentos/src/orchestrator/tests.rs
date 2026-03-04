@@ -1822,6 +1822,88 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
 }
 
 #[tokio::test]
+async fn prepare_run_sets_parent_thread_id_for_existing_thread_without_lineage() {
+    use tirea_store_adapters::MemoryStore;
+
+    let storage = Arc::new(MemoryStore::new());
+    storage.create(&Thread::new("t-parent-upsert")).await.unwrap();
+
+    let os = AgentOs::builder()
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
+        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .build()
+        .unwrap();
+
+    let resolved = os.resolve("a1").unwrap();
+    os.prepare_run(
+        RunRequest {
+            agent_id: "a1".to_string(),
+            thread_id: Some("t-parent-upsert".to_string()),
+            run_id: Some("run-parent-upsert".to_string()),
+            parent_run_id: None,
+            parent_thread_id: Some("parent-thread-a".to_string()),
+            resource_id: None,
+            state: None,
+            messages: vec![crate::contracts::thread::Message::user("hello")],
+            initial_decisions: vec![],
+        },
+        resolved,
+    )
+    .await
+    .unwrap();
+
+    let head = storage.load("t-parent-upsert").await.unwrap().unwrap();
+    assert_eq!(
+        head.thread.parent_thread_id.as_deref(),
+        Some("parent-thread-a")
+    );
+}
+
+#[tokio::test]
+async fn prepare_run_rejects_parent_thread_id_mismatch_for_existing_thread() {
+    use tirea_store_adapters::MemoryStore;
+
+    let storage = Arc::new(MemoryStore::new());
+    storage
+        .create(&Thread::new("t-parent-conflict").with_parent_thread_id("parent-thread-a"))
+        .await
+        .unwrap();
+
+    let os = AgentOs::builder()
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
+        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .build()
+        .unwrap();
+
+    let resolved = os.resolve("a1").unwrap();
+    let err = match os
+        .prepare_run(
+            RunRequest {
+                agent_id: "a1".to_string(),
+                thread_id: Some("t-parent-conflict".to_string()),
+                run_id: Some("run-parent-conflict".to_string()),
+                parent_run_id: None,
+                parent_thread_id: Some("parent-thread-b".to_string()),
+                resource_id: None,
+                state: None,
+                messages: vec![crate::contracts::thread::Message::user("hello")],
+                initial_decisions: vec![],
+            },
+            resolved,
+        )
+        .await
+    {
+        Ok(_) => panic!("mismatched parent_thread_id must fail"),
+        Err(err) => err,
+    };
+
+    assert!(
+        err.to_string().contains("parent_thread_id mismatch"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
 async fn execute_prepared_runs_stream() {
     use futures::StreamExt;
     use tirea_store_adapters::MemoryStore;

@@ -94,8 +94,8 @@ fn active_run_registry() -> &'static ActiveRunRegistry {
     ACTIVE_RUN_REGISTRY.get_or_init(ActiveRunRegistry::default)
 }
 
-pub fn active_run_key(protocol: &str, agent_id: &str, thread_id: &str) -> String {
-    format!("{protocol}:{agent_id}:{thread_id}")
+pub fn active_run_key(protocol: &str, agent_id: &str, thread_id: &str, run_id: &str) -> String {
+    format!("{protocol}:{agent_id}:{thread_id}:{run_id}")
 }
 
 pub async fn register_active_run(
@@ -235,6 +235,7 @@ pub async fn prepare_http_run(
     let cancellation_token = RunCancellationToken::new();
     let prepared = os.prepare_run(run_request.clone(), resolved).await?;
     let thread_id = prepared.thread_id.clone();
+    let run_id = prepared.run_id.clone();
 
     let token_for_starter = cancellation_token.clone();
     let starter: RunStarter = Box::new(move |_request| {
@@ -247,7 +248,7 @@ pub async fn prepare_http_run(
         })
     });
 
-    let active_key = active_run_key(protocol_label, agent_id, &thread_id);
+    let active_key = active_run_key(protocol_label, agent_id, &thread_id, &run_id);
     let (ingress_tx, ingress_rx) = mpsc::unbounded_channel::<RuntimeInput>();
     ingress_tx
         .send(RuntimeInput::Run(run_request))
@@ -295,10 +296,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn active_run_key_includes_protocol_agent_thread() {
+    fn active_run_key_includes_protocol_agent_thread_run() {
         assert_eq!(
-            active_run_key("ag_ui", "assistant", "thread-1"),
-            "ag_ui:assistant:thread-1"
+            active_run_key("ag_ui", "assistant", "thread-1", "run-1"),
+            "ag_ui:assistant:thread-1:run-1"
         );
     }
 

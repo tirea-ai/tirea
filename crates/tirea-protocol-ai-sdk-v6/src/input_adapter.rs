@@ -13,6 +13,7 @@ pub struct AiSdkV6RunRequest {
     pub thread_id: String,
     pub input: String,
     pub run_id: Option<String>,
+    pub parent_thread_id: Option<String>,
     pub trigger: Option<AiSdkTrigger>,
     pub message_id: Option<String>,
     interaction_responses: Vec<SuspensionResponse>,
@@ -38,6 +39,8 @@ struct AiSdkV6MessagesRunRequest {
     messages: Vec<Value>,
     #[serde(rename = "runId")]
     run_id: Option<String>,
+    #[serde(rename = "parentThreadId", alias = "parent_thread_id", default)]
+    parent_thread_id: Option<String>,
     #[serde(default)]
     trigger: Option<AiSdkTrigger>,
     #[serde(default)]
@@ -72,6 +75,7 @@ impl TryFrom<AiSdkV6MessagesRunRequest> for AiSdkV6RunRequest {
             thread_id,
             input,
             run_id: req.run_id,
+            parent_thread_id: req.parent_thread_id,
             trigger: req.trigger,
             message_id: req.message_id,
             interaction_responses,
@@ -90,6 +94,7 @@ impl AiSdkV6RunRequest {
             thread_id: thread_id.into(),
             input: input.into(),
             run_id,
+            parent_thread_id: None,
             trigger: Some(AiSdkTrigger::SubmitMessage),
             message_id: None,
             interaction_responses: Vec::new(),
@@ -174,7 +179,7 @@ impl AiSdkV6RunRequest {
             },
             run_id: self.run_id,
             parent_run_id: None,
-            parent_thread_id: None,
+            parent_thread_id: self.parent_thread_id,
             resource_id: None,
             state: None,
             messages,
@@ -495,6 +500,7 @@ mod tests {
             "id": "thread-from-id",
             "trigger": "submit-message",
             "messageId": "msg_user_2",
+            "parentThreadId": "parent-thread-1",
             "messages": [
                 { "id": "msg_user_1", "role": "user", "parts": [{ "type": "text", "text": "first" }] },
                 { "role": "assistant", "parts": [{ "type": "text", "text": "ignored" }] },
@@ -507,8 +513,23 @@ mod tests {
         assert_eq!(req.thread_id, "thread-from-id");
         assert_eq!(req.input, "final");
         assert_eq!(req.run_id.as_deref(), Some("run-2"));
+        assert_eq!(req.parent_thread_id.as_deref(), Some("parent-thread-1"));
         assert_eq!(req.trigger, Some(AiSdkTrigger::SubmitMessage));
         assert_eq!(req.message_id.as_deref(), Some("msg_user_2"));
+    }
+
+    #[test]
+    fn into_runtime_run_request_forwards_parent_thread_id() {
+        let req: AiSdkV6RunRequest = serde_json::from_value(json!({
+            "id": "thread-forward-parent",
+            "runId": "run-forward-parent",
+            "parentThreadId": "p-thread",
+            "messages": [{ "role": "user", "content": "hello" }]
+        }))
+        .expect("messages payload should deserialize");
+
+        let run_request = req.into_runtime_run_request("agent".to_string());
+        assert_eq!(run_request.parent_thread_id.as_deref(), Some("p-thread"));
     }
 
     #[test]

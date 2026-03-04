@@ -47,7 +47,7 @@ async fn run(
     let suspension_decisions = req.suspension_decisions();
     let decision_only = !req.has_user_input() && !suspension_decisions.is_empty();
     if decision_only {
-        let key = active_run_key("ag_ui", &agent_id, &req.thread_id);
+        let key = active_run_key("ag_ui", &agent_id, &req.thread_id, &req.run_id);
         if try_forward_decisions_to_active_run(&key, suspension_decisions).await {
             return Ok((
                 axum::http::StatusCode::ACCEPTED,
