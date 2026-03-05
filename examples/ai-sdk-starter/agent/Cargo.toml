@@ -5,21 +5,9 @@ edition = "2021"
 publish = false
 
 [dependencies]
-tirea-agentos = { version = "0.2.0", path = "../../../crates/tirea-agentos" }
-tirea-agentos-server = { version = "0.2.0", path = "../../../crates/tirea-agentos-server" }
-tirea-store-adapters = { version = "0.2.0", path = "../../../crates/tirea-store-adapters" }
-tirea-state = { version = "0.2.0", path = "../../../crates/tirea-state" }
-tirea-state-derive = { version = "0.2.0", path = "../../../crates/tirea-state-derive" }
-tirea-extension-mcp = { version = "0.2.0", path = "../../../crates/tirea-extension-mcp" }
-mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-async-trait = "0.1"
+tirea-examples = { version = "0.2.0", path = "../../../examples" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 clap = { version = "4", features = ["derive", "env"] }
-axum = { version = "0.7", default-features = false, features = ["http1", "json", "query", "tokio"] }
-tower-http = { version = "0.6", features = ["cors"] }
-genai = "0.5"
 
 [[bin]]
 name = "ai-sdk-starter-agent"

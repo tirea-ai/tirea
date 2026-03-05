@@ -70,6 +70,7 @@ export function ChatPanel({
               <button
                 key={action.id}
                 type="button"
+                data-testid={`scenario-action-${action.scenarioId}`}
                 disabled={isLoading}
                 onClick={() => sendMessage({ text: action.prompt })}
                 className={
@@ -81,6 +82,9 @@ export function ChatPanel({
                 <span>{action.title}</span>
                 <span className={themeMode === "dark" ? "ml-1 text-[10px] text-slate-400" : "ml-1 text-[10px] text-slate-500"}>
                   {action.capability}
+                </span>
+                <span className={themeMode === "dark" ? "ml-1 text-[10px] text-cyan-300" : "ml-1 text-[10px] text-cyan-700"}>
+                  {action.scenarioId}
                 </span>
               </button>
             ))}

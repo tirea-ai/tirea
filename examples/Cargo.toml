@@ -7,6 +7,8 @@ publish = false
 [dependencies]
 tirea-agentos = { version = "0.2.0", path = "../crates/tirea-agentos" }
 tirea-agentos-server = { version = "0.2.0", path = "../crates/tirea-agentos-server" }
+tirea-extension-permission = { version = "0.2.0", path = "../crates/tirea-extension-permission" }
+tirea-extension-mcp = { version = "0.2.0", path = "../crates/tirea-extension-mcp" }
 tirea-store-adapters = { version = "0.2.0", path = "../crates/tirea-store-adapters" }
 tirea-state = { version = "0.2.0", path = "../crates/tirea-state" }
 tirea-state-derive = { version = "0.2.0", path = "../crates/tirea-state-derive" }
@@ -18,6 +20,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 clap = { version = "4", features = ["derive", "env"] }
 genai = "0.5"
 axum = { version = "0.7", default-features = false, features = ["http1", "json", "query", "tokio"] }
+mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"] }
+tower-http = { version = "0.6", features = ["cors"] }
 uuid = { version = "1", features = ["v4"] }
 
 [[bin]]

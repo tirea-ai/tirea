@@ -56,11 +56,9 @@ impl AgentBehavior for FrontendToolPlugin {
             return ActionSet::empty();
         };
         let args = ctx.tool_args().cloned().unwrap_or_default();
-        let suspension = tirea_agentos::contracts::Suspension::new(
-            &call_id,
-            format!("tool:{tool_name}"),
-        )
-        .with_parameters(args.clone());
+        let suspension =
+            tirea_agentos::contracts::Suspension::new(&call_id, format!("tool:{tool_name}"))
+                .with_parameters(args.clone());
 
         ActionSet::single(BeforeToolExecuteAction::Suspend(SuspendTicket::new(
             suspension,

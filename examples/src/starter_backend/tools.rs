@@ -5,7 +5,7 @@ use tirea_agentos::contracts::runtime::tool_call::{
     ToolError, ToolResult,
 };
 
-use crate::state::StarterState;
+use crate::starter_backend::state::StarterState;
 
 pub struct GetWeatherTool;
 
@@ -145,7 +145,17 @@ impl Tool for AppendNoteTool {
     }
 }
 
-pub struct ServerInfoTool;
+pub struct ServerInfoTool {
+    service_name: String,
+}
+
+impl ServerInfoTool {
+    pub fn new(service_name: impl Into<String>) -> Self {
+        Self {
+            service_name: service_name.into(),
+        }
+    }
+}
 
 #[async_trait]
 impl Tool for ServerInfoTool {
@@ -174,7 +184,7 @@ impl Tool for ServerInfoTool {
             .as_secs();
         Ok(ToolResult::success(
             "serverInfo",
-            json!({ "name": "ai-sdk-starter-agent", "timestamp": ts }),
+            json!({ "name": self.service_name, "timestamp": ts }),
         ))
     }
 }

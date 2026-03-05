@@ -22,6 +22,7 @@ import { useMainThreadId } from "@/lib/starter-thread";
 import { StarterSplitScreen } from "@/components/starter-split-screen";
 import { SharedStatePanel } from "@/components/shared-state-panel";
 import { getMcpUiContent, McpAppFrame } from "@/components/mcp-app-frame";
+import { useStarterAgentId } from "@/lib/agent-id";
 
 type TodoStatus = "pending" | "completed";
 
@@ -405,7 +406,7 @@ function TodoBoard({
   );
 }
 
-function CanvasV2Demo() {
+function CanvasV2Demo({ agentId }: { agentId: "default" | "permission" | "stopper" }) {
   const [themeMode, setThemeMode] = useState<"light" | "dark">("light");
   const { agent } = useAgent({
     agentId: "default",
@@ -550,6 +551,9 @@ function CanvasV2Demo() {
       <p className={`mt-2 max-w-[760px] text-sm md:text-base ${subtitleClass}`}>
         v2 canvas demo with shared-state board, structured HITL, and tool-rendered UI.
       </p>
+      <p data-testid="active-agent" className={`mt-1 text-xs font-semibold ${subtitleClass}`}>
+        Active agent: {agentId}
+      </p>
       <StarterNavTabs mode="v2" />
       <RecommendedActions title="Recommended Actions" actions={RECOMMENDED_ACTIONS} defaultStack="v2" />
       <section className="mt-4 grid gap-3 rounded-2xl border border-white/60 bg-white/80 p-5 text-slate-900 shadow-[0_20px_45px_rgba(15,23,42,0.14)] backdrop-blur">
@@ -621,10 +625,11 @@ function CanvasV2Demo() {
 
 export default function CanvasPage() {
   const { threadId } = useMainThreadId();
+  const agentId = useStarterAgentId();
 
   return (
-    <CopilotKit runtimeUrl="/api/copilotkit" agent="default" threadId={threadId}>
-      <CanvasV2Demo />
+    <CopilotKit runtimeUrl="/api/copilotkit" agent={agentId} threadId={threadId}>
+      <CanvasV2Demo agentId={agentId} />
     </CopilotKit>
   );
 }

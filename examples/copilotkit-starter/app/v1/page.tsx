@@ -22,6 +22,7 @@ import { useMainThreadId } from "@/lib/starter-thread";
 import { StarterSplitScreen } from "@/components/starter-split-screen";
 import { SharedStatePanel } from "@/components/shared-state-panel";
 import { McpAppFrame } from "@/components/mcp-app-frame";
+import { useStarterAgentId } from "@/lib/agent-id";
 
 type DemoState = {
   todos: string[];
@@ -108,7 +109,7 @@ function ReleaseChecklistCard({
   );
 }
 
-function BaseStarterDemo() {
+function BaseStarterDemo({ agentId }: { agentId: "default" | "permission" | "stopper" }) {
   const [themeColor, setThemeColor] = useState("#3b82f6");
   const [lastFrontendAction, setLastFrontendAction] = useState("none");
   const [hitlStatus, setHitlStatus] = useState("pending");
@@ -262,6 +263,9 @@ function BaseStarterDemo() {
       </h1>
       <p className="mt-2 max-w-[760px] text-sm text-slate-100/95 md:text-base">
         CopilotKit starter for tirea (AG-UI endpoint).
+      </p>
+      <p data-testid="active-agent" className="mt-1 text-xs font-semibold text-slate-100/90">
+        Active agent: {agentId}
       </p>
       <StarterNavTabs mode="v1" />
       <RecommendedActions title="Recommended Actions" actions={RECOMMENDED_ACTIONS} defaultStack="v1" />
@@ -446,10 +450,11 @@ function BaseStarterDemo() {
 
 export default function HomePage() {
   const { threadId } = useMainThreadId();
+  const agentId = useStarterAgentId();
 
   return (
-    <CopilotKit runtimeUrl="/api/copilotkit" agent="default" threadId={threadId}>
-      <BaseStarterDemo />
+    <CopilotKit runtimeUrl="/api/copilotkit" agent={agentId} threadId={threadId}>
+      <BaseStarterDemo agentId={agentId} />
     </CopilotKit>
   );
 }

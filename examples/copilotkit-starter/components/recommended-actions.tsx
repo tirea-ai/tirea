@@ -80,6 +80,12 @@ export function RecommendedActions({
                     {action.stack}
                   </span>
                   <span className="text-xs text-cyan-800">{action.capability}</span>
+                  <span
+                    className="rounded-full border border-cyan-200 bg-cyan-50 px-2 py-0.5 text-[10px] font-semibold text-cyan-700"
+                    data-testid={`scenario-id-${action.scenarioId}`}
+                  >
+                    {action.scenarioId}
+                  </span>
                 </div>
                 <p className="mt-1 text-sm font-semibold text-slate-900">{action.title}</p>
                 <p className="mt-1 text-sm text-slate-700">"{action.prompt}"</p>

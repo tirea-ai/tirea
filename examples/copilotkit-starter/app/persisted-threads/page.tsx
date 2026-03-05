@@ -10,6 +10,7 @@ import {
   V1_RECOMMENDED_SUGGESTIONS,
 } from "@/lib/recommended-actions";
 import { StarterSplitScreen } from "@/components/starter-split-screen";
+import { useStarterAgentId } from "@/lib/agent-id";
 
 type DemoState = {
   todos: string[];
@@ -23,11 +24,13 @@ type Thread = {
 const FALLBACK_THREAD_ID = "local-fallback";
 
 function ThreadChat({
+  agentId,
   threads,
   activeThreadId,
   onCreateThread,
   onSelectThread,
 }: {
+  agentId: "default" | "permission" | "stopper";
   threads: Thread[];
   activeThreadId: string;
   onCreateThread: () => void;
@@ -71,6 +74,9 @@ function ThreadChat({
       </h1>
       <p className="mt-2 max-w-[760px] text-sm text-slate-100/95 md:text-base">
         Backend-persisted thread demo: switch thread, keep history and state.
+      </p>
+      <p data-testid="active-agent" className="mt-1 text-xs font-semibold text-slate-100/90">
+        Active agent: {agentId}
       </p>
       <StarterNavTabs mode="threads" />
       <RecommendedActions title="Recommended Actions" actions={RECOMMENDED_ACTIONS} defaultStack="v1" />
@@ -177,6 +183,7 @@ function ThreadChat({
 }
 
 export default function PersistedThreadsPage() {
+  const agentId = useStarterAgentId();
   const [threads, setThreads] = useState<Thread[]>([{ id: FALLBACK_THREAD_ID, title: "Thread 1" }]);
   const [activeThreadId, setActiveThreadId] = useState(() => threads[0].id);
 
@@ -215,8 +222,9 @@ export default function PersistedThreadsPage() {
   };
 
   return (
-    <CopilotKit runtimeUrl="/api/copilotkit" agent="default" threadId={activeThreadId}>
+    <CopilotKit runtimeUrl="/api/copilotkit" agent={agentId} threadId={activeThreadId}>
       <ThreadChat
+        agentId={agentId}
         threads={threads}
         activeThreadId={activeThreadId}
         onCreateThread={createThread}

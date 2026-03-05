@@ -20,7 +20,7 @@ export default defineConfig({
     },
     {
       name: "copilotkit",
-      testMatch: "copilotkit-chat.spec.ts",
+      testMatch: /copilotkit-.*\.spec\.ts/,
       use: { baseURL: `http://localhost:${COPILOTKIT_PORT}` },
     },
     {

@@ -8,6 +8,8 @@ pub mod research {
     pub mod tools;
 }
 
+pub mod starter_backend;
+
 use clap::Parser;
 use std::collections::HashMap;
 use std::path::PathBuf;

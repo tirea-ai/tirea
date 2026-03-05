@@ -31,7 +31,7 @@ test.describe("AI SDK Backend Capabilities", () => {
     await openChat(page, "default");
     await sendPrompt(
       page,
-      "RUN_WEATHER_TOOL and RUN_STOCK_TOOL in one answer. Use both tools.",
+      "Use get_weather for Tokyo and get_stock_price for AAPL in one answer. Call both tools before replying.",
     );
     await waitForRunComplete(page);
 
@@ -46,7 +46,7 @@ test.describe("AI SDK Backend Capabilities", () => {
     await openChat(page, "default");
     await sendPrompt(
       page,
-      "RUN_APPEND_NOTE Please append a note saying: backend-e2e-note",
+      "Use append_note and append exactly this note: backend-e2e-note",
     );
     await waitForRunComplete(page);
     await expect(page.locator("main")).toContainText("Tool: append_note", {
@@ -56,7 +56,10 @@ test.describe("AI SDK Backend Capabilities", () => {
 
   test("permission flow approval executes backend tool", async ({ page }) => {
     await openChat(page, "permission");
-    await sendPrompt(page, "RUN_SERVER_INFO");
+    await sendPrompt(
+      page,
+      "Use the serverInfo tool to return server name and timestamp.",
+    );
 
     const dialog = page.getByTestId("permission-dialog");
     await expect(dialog).toBeVisible({ timeout: 60_000 });
@@ -70,7 +73,10 @@ test.describe("AI SDK Backend Capabilities", () => {
 
   test("permission flow deny blocks backend tool", async ({ page }) => {
     await openChat(page, "permission");
-    await sendPrompt(page, "RUN_SERVER_INFO");
+    await sendPrompt(
+      page,
+      "Use the serverInfo tool to return server name and timestamp.",
+    );
 
     const dialog = page.getByTestId("permission-dialog");
     await expect(dialog).toBeVisible({ timeout: 60_000 });
@@ -84,7 +90,10 @@ test.describe("AI SDK Backend Capabilities", () => {
 
   test("askUserQuestion frontend resume roundtrip works", async ({ page }) => {
     await openChat(page, "default");
-    await sendPrompt(page, "RUN_ASK_USER_TOOL");
+    await sendPrompt(
+      page,
+      "Use askUserQuestion and ask me a short question.",
+    );
 
     const dialog = page.getByTestId("ask-dialog");
     await expect(dialog).toBeVisible({ timeout: 60_000 });
@@ -104,7 +113,10 @@ test.describe("AI SDK Backend Capabilities", () => {
     page,
   }) => {
     await openChat(page, "default");
-    await sendPrompt(page, "RUN_BG_TOOL");
+    await sendPrompt(
+      page,
+      "Use set_background_color (not agent_run) and offer colors #dbeafe and #dcfce7.",
+    );
 
     const dialog = page.getByTestId("set-background-color-dialog");
     await expect(dialog).toBeVisible({ timeout: 60_000 });
@@ -121,7 +133,10 @@ test.describe("AI SDK Backend Capabilities", () => {
     page,
   }) => {
     await openChat(page, "default");
-    await sendPrompt(page, "RUN_PROGRESS_DEMO");
+    await sendPrompt(
+      page,
+      "Use the progress_demo tool now so I can verify progress events.",
+    );
     await waitForRunComplete(page);
     await expect(page.getByTestId("tool-progress-panel")).toBeVisible({
       timeout: 30_000,
@@ -130,7 +145,10 @@ test.describe("AI SDK Backend Capabilities", () => {
       timeout: 30_000,
     });
 
-    await sendPrompt(page, "RUN_FAILING_TOOL");
+    await sendPrompt(
+      page,
+      "Intentionally call failingTool to demonstrate an error path.",
+    );
     await waitForRunComplete(page);
     await expect(page.locator("main")).toContainText("failingTool", {
       timeout: 30_000,
@@ -140,7 +158,10 @@ test.describe("AI SDK Backend Capabilities", () => {
     });
 
     await openChat(page, "stopper");
-    await sendPrompt(page, "RUN_FINISH_TOOL");
+    await sendPrompt(
+      page,
+      "Use finish with summary 'done' so the run stops immediately.",
+    );
     await waitForRunComplete(page);
     await expect(page.locator("main")).toContainText("Tool: finish", {
       timeout: 30_000,
