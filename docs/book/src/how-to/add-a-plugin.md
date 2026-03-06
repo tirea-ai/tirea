@@ -1,50 +1,56 @@
 # Add a Plugin
 
-Use this for cross-cutting behavior such as policy checks, approval gates, and observability.
+Use this for cross-cutting behavior such as policy checks, approval gates, reminders, and observability.
 
 ## Prerequisites
 
-- You know the phase where behavior should happen (`BeforeInference`, `BeforeToolExecute`, `AfterToolExecute`).
+- You know which phase should emit behavior (`RunStart`, `BeforeInference`, `BeforeToolExecute`, `AfterToolExecute`, `RunEnd`, etc.).
 - Plugin side effects are explicit and bounded.
 
 ## Steps
 
-1. Implement `AgentPlugin` and give it a unique `id()`.
-2. Handle only the phases relevant to your concern.
-3. Register plugin via `AgentOsBuilder::with_registered_plugin("id", plugin)`.
-4. Attach plugin id in `AgentDefinition::with_plugin_id(...)` or `plugin_ids`.
+1. Implement `AgentBehavior` and assign a stable `id()`.
+2. Return phase actions with `ActionSet<...>` from the phase hooks you need.
+3. Register behavior in `AgentOsBuilder::with_registered_behavior("id", plugin)`.
+4. Attach behavior id in `AgentDefinition.behavior_ids` or `with_behavior_id(...)`.
 
 ## Minimal Pattern
 
 ```rust,ignore
 use async_trait::async_trait;
-use tirea::contracts::{AgentPlugin, BeforeInferenceContext};
+use tirea::contracts::runtime::phase::{ActionSet, BeforeInferenceAction};
+use tirea::contracts::{AgentBehavior, ReadOnlyContext};
 
-struct AuditPlugin;
+struct AuditBehavior;
 
 #[async_trait]
-impl AgentPlugin for AuditPlugin {
+impl AgentBehavior for AuditBehavior {
     fn id(&self) -> &str {
         "audit"
     }
 
-    async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
-        ctx.add_system_context("Audit: request entering inference".to_string());
+    async fn before_inference(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeInferenceAction> {
+        ActionSet::single(BeforeInferenceAction::AddSystemContext(
+            "Audit: request entering inference".to_string(),
+        ))
     }
 }
 ```
 
 ## Verify
 
-- Plugin hook runs at intended phase.
-- Event/thread output contains expected plugin side effects.
-- Normal runs are unchanged when plugin condition is not met.
+- Behavior hook runs at the intended phase.
+- Event/thread output contains expected behavior side effects.
+- Runs are unchanged when behavior preconditions are not met.
 
 ## Common Errors
 
-- Using wrong phase causes missing or late behavior.
-- Plugin id not registered or not attached to the agent.
-- Plugin mutates too much state, making runs hard to reason about.
+- Registering behavior but forgetting to include its id in `AgentDefinition.behavior_ids`.
+- Using the wrong phase (effect appears too early or too late).
+- Unbounded mutations in a behavior, making runs hard to reason about.
 
 ## Related
 
