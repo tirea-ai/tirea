@@ -213,8 +213,8 @@ async fn test_llmmetry_exports_tool_spans_to_phoenix_via_otlp() {
             ToolCall::new("phoenix_call_2", "phoenix_t2", json!({})),
         ],
         usage: None,
+        stop_reason: None,
     };
-
     let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
     tools.insert(
         "phoenix_t1".to_string(),
@@ -352,8 +352,8 @@ async fn test_llmmetry_exports_tool_error_span_to_phoenix_via_otlp() {
         text: "tools".into(),
         tool_calls: vec![ToolCall::new("phoenix_err_call", "phoenix_bad", json!({}))],
         usage: None,
+        stop_reason: None,
     };
-
     let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
     tools.insert(
         "phoenix_bad".to_string(),

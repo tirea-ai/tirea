@@ -942,6 +942,7 @@ fn test_execute_tools_empty() {
             text: "Hello".to_string(),
             tool_calls: vec![],
             usage: None,
+            stop_reason: None,
         };
         let tools = HashMap::new();
 
@@ -966,6 +967,7 @@ fn test_execute_tools_with_calls() {
                 json!({"message": "hello"}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([EchoTool]);
 
@@ -995,6 +997,7 @@ fn test_execute_tools_tool_can_suspend_itself() {
                 json!({"message": "need approval"}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([SelfSuspendTool]);
 
@@ -1040,6 +1043,7 @@ fn test_execute_tools_injects_caller_scope_context_for_tools() {
                 json!({}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([ScopeSnapshotTool]);
 
@@ -1319,6 +1323,7 @@ fn test_execute_tools_with_state_changes() {
                 json!({"amount": 5}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([CounterTool]);
 
@@ -1374,6 +1379,7 @@ fn test_execute_tools_with_failing_tool() {
                 json!({}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([FailingTool]);
 
@@ -1477,6 +1483,7 @@ fn test_execute_tools_with_blocking_phase_plugin() {
                 json!({"message": "test"}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([EchoTool]);
         let agent = BaseAgent::new("m").with_behavior(Arc::new(BlockingPhasePlugin));
@@ -1530,6 +1537,7 @@ fn test_execute_tools_gate_mutation_type_safe_in_after_tool_execute() {
                 json!({"message": "test"}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([EchoTool]);
         let agent = BaseAgent::new("m").with_behavior(Arc::new(InvalidAfterToolMutationPlugin));
@@ -1581,6 +1589,7 @@ fn test_execute_tools_rejects_non_orthogonal_tool_gate_state() {
                 json!({"message": "test"}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([EchoTool]);
         let agent = BaseAgent::new("m").with_behavior(Arc::new(InvalidDualToolGatePlugin));
@@ -1635,6 +1644,7 @@ fn test_execute_tools_suspend_ticket_type_safe_in_after_tool_execute() {
                 json!({"message": "test"}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([EchoTool]);
         let agent = BaseAgent::new("m").with_behavior(Arc::new(InvalidSuspendTicketMutationPlugin));
@@ -1681,6 +1691,7 @@ fn test_execute_tools_with_reminder_phase_plugin() {
                 json!({"message": "test"}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([EchoTool]);
         let agent = BaseAgent::new("m").with_behavior(Arc::new(ReminderPhasePlugin));
@@ -2545,6 +2556,7 @@ fn test_execute_tools_with_pending_phase_plugin() {
                 json!({"message": "test"}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([EchoTool]);
         let agent = BaseAgent::new("m")
@@ -2593,6 +2605,7 @@ fn test_invalid_args_are_returned_as_tool_error_before_pending_confirmation() {
                 json!({}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([EchoTool]);
         let agent = BaseAgent::new("m")
@@ -2869,6 +2882,7 @@ fn test_execute_tools_missing_tool() {
                 json!({}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new(); // Empty tools
 
@@ -2896,6 +2910,7 @@ fn test_execute_tools_with_config_empty_calls() {
             text: "No tools".to_string(),
             tool_calls: vec![],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([EchoTool]);
         let config = BaseAgent::new("gpt-4");
@@ -2923,6 +2938,7 @@ fn test_execute_tools_with_config_basic() {
                 json!({"message": "test"}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([EchoTool]);
         let config = BaseAgent::new("gpt-4");
@@ -2972,6 +2988,7 @@ fn test_execute_tools_with_config_attaches_scope_run_metadata() {
                 json!({"message": "test"}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([EchoTool]);
         let config = BaseAgent::new("gpt-4");
@@ -3006,6 +3023,7 @@ fn test_execute_tools_with_config_with_blocking_plugin() {
                 json!({"message": "test"}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([EchoTool]);
         let config = BaseAgent::new("gpt-4")
@@ -3048,6 +3066,7 @@ fn test_execute_tools_with_config_denied_response_is_applied_via_tool_call_state
                 json!({"message": "test"}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([EchoTool]);
         let interaction =
@@ -3112,6 +3131,7 @@ fn test_execute_tools_with_config_rejects_illegal_terminal_to_running_transition
                 json!({"message": "should-fail"}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([EchoTool]);
         let config = BaseAgent::new("gpt-4");
@@ -3146,6 +3166,7 @@ fn test_execute_tools_with_config_with_pending_plugin() {
                 json!({"message": "test"}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([EchoTool]);
         let config = BaseAgent::new("gpt-4")
@@ -3195,6 +3216,7 @@ fn test_execute_tools_with_config_with_reminder_plugin() {
                 json!({"message": "test"}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([EchoTool]);
         let config = BaseAgent::new("gpt-4")
@@ -3233,6 +3255,7 @@ fn test_execute_tools_with_config_preserves_unresolved_suspended_calls_on_succes
                 json!({"message": "test"}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([EchoTool]);
         let config = BaseAgent::new("gpt-4");
@@ -3343,6 +3366,7 @@ fn test_execute_tools_sequential_propagates_intermediate_state_apply_errors() {
                 crate::contracts::thread::ToolCall::new("call_2", "counter", json!({"amount": 5})),
             ],
             usage: None,
+            stop_reason: None,
         };
 
         let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
@@ -5152,6 +5176,7 @@ fn test_execute_tools_reminder_mutation_outside_after_tool_execute_is_type_safe(
                 json!({"message": "test"}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([EchoTool]);
         let agent = BaseAgent::new("mock")
@@ -5217,6 +5242,7 @@ fn test_execute_tools_multiple_reminder_behaviors_are_additive() {
                 json!({"message": "test"}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([EchoTool]);
         let agent = BaseAgent::new("mock").with_behavior(compose_test_behaviors(vec![
@@ -8349,6 +8375,7 @@ async fn test_run_state_tracks_token_usage() {
             total_tokens: Some(150),
             ..Default::default()
         }),
+        stop_reason: None,
     };
     state.update_from_response(&result);
     assert_eq!(state.total_input_tokens, 100);
@@ -8395,6 +8422,7 @@ fn test_parallel_tools_partial_failure() {
                 crate::contracts::thread::ToolCall::new("call_fail", "failing", json!({})),
             ],
             usage: None,
+            stop_reason: None,
         };
 
         let mut tools = HashMap::new();
@@ -8443,6 +8471,7 @@ fn test_parallel_tools_conflicting_state_patches_return_error() {
                 crate::contracts::thread::ToolCall::new("call_2", "counter", json!({"amount": 2})),
             ],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([CounterTool]);
 
@@ -8468,6 +8497,7 @@ fn test_parallel_tools_conflicting_state_actions_return_error() {
                 crate::contracts::thread::ToolCall::new("call_2", "action_b", json!({})),
             ],
             usage: None,
+            stop_reason: None,
         };
 
         let mut tools = HashMap::new();
@@ -8513,6 +8543,7 @@ fn test_sequential_tools_partial_failure() {
                 crate::contracts::thread::ToolCall::new("call_fail", "failing", json!({})),
             ],
             usage: None,
+            stop_reason: None,
         };
 
         let mut tools = HashMap::new();
@@ -8591,6 +8622,7 @@ async fn test_sequential_tools_stop_after_first_suspension() {
             crate::contracts::thread::ToolCall::new("call_2", "echo", json!({"message":"b"})),
         ],
         usage: None,
+        stop_reason: None,
     };
     let tools = tool_map([EchoTool]);
 
@@ -8657,6 +8689,7 @@ async fn test_parallel_tools_allow_single_suspended_interaction_per_round() {
             crate::contracts::thread::ToolCall::new("call_2", "echo", json!({"message":"b"})),
         ],
         usage: None,
+        stop_reason: None,
     };
     let tools = tool_map([EchoTool]);
 
@@ -8801,6 +8834,7 @@ fn test_plugin_execution_order_preserved() {
                 json!({"message": "test"}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([EchoTool]);
         let agent = BaseAgent::new("m")
@@ -8904,6 +8938,7 @@ fn test_plugin_order_affects_outcome() {
                 json!({"message": "test"}),
             )],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([EchoTool]);
 
@@ -9683,6 +9718,7 @@ fn test_sequential_tools_see_accumulated_state() {
                 crate::contracts::thread::ToolCall::new("call_2", "counter", json!({"amount": 7})),
             ],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([CounterTool]);
 
@@ -9716,6 +9752,7 @@ fn test_parallel_tools_see_frozen_snapshot_not_accumulated() {
                 crate::contracts::thread::ToolCall::new("call_2", "counter", json!({"amount": 7})),
             ],
             usage: None,
+            stop_reason: None,
         };
         let tools = tool_map([CounterTool]);
 
@@ -9782,6 +9819,7 @@ fn test_parallel_tools_disjoint_paths_both_visible() {
                 crate::contracts::thread::ToolCall::new("call_b", "beta", json!({})),
             ],
             usage: None,
+            stop_reason: None,
         };
         let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
         tools.insert("alpha".to_string(), Arc::new(AlphaTool));

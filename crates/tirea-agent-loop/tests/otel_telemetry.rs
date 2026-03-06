@@ -165,8 +165,8 @@ async fn test_execute_tools_parallel_exports_distinct_otel_tool_spans() {
             ToolCall::new("c3", "t3", json!({})),
         ],
         usage: None,
+        stop_reason: None,
     };
-
     let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
     tools.insert("t1".into(), Arc::new(NoopTool { id: "t1" }));
     tools.insert("t2".into(), Arc::new(NoopTool { id: "t2" }));
@@ -583,8 +583,8 @@ async fn test_execute_tool_error_exports_otel_error_span() {
         text: "calling tool".into(),
         tool_calls: vec![ToolCall::new("c1", "bad_tool", json!({}))],
         usage: None,
+        stop_reason: None,
     };
-
     let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
     tools.insert("bad_tool".into(), Arc::new(ErrorTool { id: "bad_tool" }));
 

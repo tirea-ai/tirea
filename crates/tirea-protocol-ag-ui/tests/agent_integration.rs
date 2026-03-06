@@ -582,6 +582,7 @@ async fn test_session_with_tool_workflow() {
             json!({"path": "counter"}),
         )],
         usage: None,
+        stop_reason: None,
     };
 
     // Add assistant message
@@ -609,6 +610,7 @@ async fn test_session_with_tool_workflow() {
             json!({"path": "counter"}),
         )],
         usage: None,
+        stop_reason: None,
     };
 
     let thread = thread.with_message(tirea_agentos::engine::convert::assistant_tool_calls(
@@ -820,6 +822,7 @@ async fn test_parallel_tool_execution_order() {
             ),
         ],
         usage: None,
+        stop_reason: None,
     };
 
     let tools = tool_map([AddTaskTool]);
@@ -1555,7 +1558,7 @@ fn test_stream_collector_partial_text() {
     }));
 
     // Stream "interrupted" - finish early
-    let result = collector.finish();
+    let result = collector.finish(None);
 
     assert_eq!(result.text, "Hello world");
     assert!(result.tool_calls.is_empty());
@@ -1593,7 +1596,7 @@ fn test_stream_collector_interrupted_tool_call() {
     }));
 
     // Stream "interrupted" - finish without complete tool call
-    let result = collector.finish();
+    let result = collector.finish(None);
 
     assert_eq!(result.text, "I'll help you");
     // Tool call should still be captured (even if incomplete)
@@ -1612,7 +1615,7 @@ fn test_stream_collector_multiple_interruptions() {
         content: "Part 1".to_string(),
     }));
 
-    let result1 = collector1.finish();
+    let result1 = collector1.finish(None);
     assert_eq!(result1.text, "Part 1");
 
     // New collector for "retry"
@@ -1622,7 +1625,7 @@ fn test_stream_collector_multiple_interruptions() {
         content: "Complete response".to_string(),
     }));
 
-    let result2 = collector2.finish();
+    let result2 = collector2.finish(None);
     assert_eq!(result2.text, "Complete response");
 }
 
@@ -1633,6 +1636,7 @@ fn test_stream_result_from_partial_response() {
         text: "Partial...".to_string(),
         tool_calls: vec![],
         usage: None,
+        stop_reason: None,
     };
 
     assert!(!result.needs_tools());
@@ -1919,7 +1923,7 @@ fn test_stream_collector_end_event_with_tool_calls() {
     let output = collector.process(ChatStreamEvent::End(end));
     assert!(output.is_none()); // End event returns None
 
-    let result = collector.finish();
+    let result = collector.finish(None);
     assert_eq!(result.text, "Processing your request...");
 }
 
@@ -2017,6 +2021,7 @@ fn test_stream_result_needs_tools_variants() {
         text: "Just text".to_string(),
         tool_calls: vec![],
         usage: None,
+        stop_reason: None,
     };
     assert!(!result_no_tools.needs_tools());
 
@@ -2029,6 +2034,7 @@ fn test_stream_result_needs_tools_variants() {
             json!({}),
         )],
         usage: None,
+        stop_reason: None,
     };
     assert!(result_with_tools.needs_tools());
 
@@ -2040,6 +2046,7 @@ fn test_stream_result_needs_tools_variants() {
             tirea_agentos::contracts::thread::ToolCall::new("id2", "calculate", json!({})),
         ],
         usage: None,
+        stop_reason: None,
     };
     assert!(result_both.needs_tools());
 }
@@ -2053,6 +2060,7 @@ async fn test_execute_tools_empty_result() {
         text: "No tools needed".to_string(),
         tool_calls: vec![],
         usage: None,
+        stop_reason: None,
     };
 
     let tools: std::collections::HashMap<String, Arc<dyn Tool>> = std::collections::HashMap::new();
@@ -2638,6 +2646,7 @@ async fn test_parallel_execution_patch_conflict() {
             ),
         ],
         usage: None,
+        stop_reason: None,
     };
 
     let tools = tool_map([IncrementTool]);
@@ -2691,6 +2700,7 @@ async fn test_parallel_execution_different_fields() {
             ),
         ],
         usage: None,
+        stop_reason: None,
     };
 
     let tools = tool_map([IncrementTool]);
@@ -2781,7 +2791,7 @@ fn test_stream_collector_with_tool_call_via_chunk_then_end() {
     assert!(output.is_none());
 
     // Finish and verify results
-    let result = collector.finish();
+    let result = collector.finish(None);
     assert_eq!(result.text, "Let me search for that.");
     assert_eq!(result.tool_calls.len(), 1);
     assert_eq!(result.tool_calls[0].name, "web_search");
@@ -2819,7 +2829,7 @@ fn test_stream_collector_multiple_tool_calls_and_end() {
     // End event (tool calls already captured via ToolCallChunk)
     collector.process(ChatStreamEvent::End(StreamEnd::default()));
 
-    let result = collector.finish();
+    let result = collector.finish(None);
     assert_eq!(result.tool_calls.len(), 2);
 }
 
@@ -2837,7 +2847,7 @@ fn test_stream_collector_text_only_then_end() {
     // End event with no captured tool calls
     collector.process(ChatStreamEvent::End(StreamEnd::default()));
 
-    let result = collector.finish();
+    let result = collector.finish(None);
     assert_eq!(result.text, "Here is your answer: 42");
     assert!(result.tool_calls.is_empty());
     assert!(!result.needs_tools());
@@ -2856,7 +2866,7 @@ fn test_stream_collector_unknown_event_handling() {
     // ReasoningDelta event (if exists, should be ignored)
     // The _ match arm handles unknown events
 
-    let result = collector.finish();
+    let result = collector.finish(None);
     assert!(result.text.is_empty());
     assert!(result.tool_calls.is_empty());
 }
@@ -2990,6 +3000,7 @@ async fn test_e2e_tool_execution_flow() {
             json!({"path": "counter"}),
         )],
         usage: None,
+        stop_reason: None,
     };
 
     // 3. Add assistant message with tool calls
@@ -3043,6 +3054,7 @@ async fn test_e2e_parallel_tool_calls() {
             ),
         ],
         usage: None,
+        stop_reason: None,
     };
 
     let thread = thread.with_message(tirea_agentos::engine::convert::assistant_tool_calls(
@@ -3085,6 +3097,7 @@ async fn test_e2e_multi_step_with_state() {
             json!({"path": "counter"}),
         )],
         usage: None,
+        stop_reason: None,
     };
     thread = thread.with_message(tirea_agentos::engine::convert::assistant_tool_calls(
         &response1.text,
@@ -3105,6 +3118,7 @@ async fn test_e2e_multi_step_with_state() {
             json!({"path": "counter"}),
         )],
         usage: None,
+        stop_reason: None,
     };
     thread = thread.with_message(tirea_agentos::engine::convert::assistant_tool_calls(
         &response2.text,
@@ -3125,6 +3139,7 @@ async fn test_e2e_multi_step_with_state() {
             json!({"path": "counter"}),
         )],
         usage: None,
+        stop_reason: None,
     };
     thread = thread.with_message(tirea_agentos::engine::convert::assistant_tool_calls(
         &response3.text,
@@ -3155,6 +3170,7 @@ async fn test_e2e_tool_failure_handling() {
             json!({}),
         )],
         usage: None,
+        stop_reason: None,
     };
 
     let thread = thread.with_message(tirea_agentos::engine::convert::assistant_tool_calls(
@@ -3196,6 +3212,7 @@ async fn test_e2e_session_persistence_restore() {
             json!({"path": "counter"}),
         )],
         usage: None,
+        stop_reason: None,
     };
     thread = thread.with_message(tirea_agentos::engine::convert::assistant_tool_calls(
         &response.text,
@@ -3228,6 +3245,7 @@ async fn test_e2e_session_persistence_restore() {
             json!({"path": "counter"}),
         )],
         usage: None,
+        stop_reason: None,
     };
     loaded = loaded.with_message(tirea_agentos::engine::convert::assistant_tool_calls(
         &response2.text,
@@ -3262,6 +3280,7 @@ async fn test_e2e_snapshot_and_continue() {
                 json!({"path": "counter"}),
             )],
             usage: None,
+            stop_reason: None,
         };
         thread = loop_execute_tools(thread, &response, &tools, true)
             .await
@@ -3286,6 +3305,7 @@ async fn test_e2e_snapshot_and_continue() {
             json!({"path": "counter"}),
         )],
         usage: None,
+        stop_reason: None,
     };
     let thread = loop_execute_tools(thread, &response, &tools, true)
         .await
@@ -3314,6 +3334,7 @@ async fn test_e2e_state_replay() {
                 json!({"path": "counter"}),
             )],
             usage: None,
+            stop_reason: None,
         };
         thread = loop_execute_tools(thread, &response, &tools, true)
             .await
@@ -3382,6 +3403,7 @@ async fn test_e2e_sequential_tool_execution() {
             ),
         ],
         usage: None,
+        stop_reason: None,
     };
 
     let tools = tool_map([IncrementTool]);
@@ -3617,6 +3639,7 @@ async fn test_e2e_pending_tool_in_session_flow() {
             json!({}),
         )],
         usage: None,
+        stop_reason: None,
     };
 
     let thread = thread.with_message(tirea_agentos::engine::convert::assistant_tool_calls(
@@ -3649,7 +3672,7 @@ async fn test_e2e_pending_tool_in_session_flow() {
 #[test]
 fn test_stream_collector_empty_stream() {
     let collector = StreamCollector::new();
-    let result = collector.finish();
+    let result = collector.finish(None);
 
     assert!(result.text.is_empty());
     assert!(result.tool_calls.is_empty());
@@ -3669,7 +3692,7 @@ fn test_stream_collector_only_whitespace() {
         content: "\n\n".to_string(),
     }));
 
-    let result = collector.finish();
+    let result = collector.finish(None);
     assert_eq!(result.text, "   \n\n");
 }
 
@@ -3707,7 +3730,7 @@ fn test_stream_collector_interleaved_text_and_tools() {
     };
     collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc2 }));
 
-    let result = collector.finish();
+    let result = collector.finish(None);
 
     assert_eq!(result.text, "Let me help you.");
     assert_eq!(result.tool_calls.len(), 2);
@@ -3719,6 +3742,7 @@ fn test_stream_result_with_empty_tool_calls() {
         text: "Hello".to_string(),
         tool_calls: vec![],
         usage: None,
+        stop_reason: None,
     };
 
     assert!(!result.needs_tools());
@@ -3838,6 +3862,7 @@ async fn test_concurrent_tool_executions_isolated() {
                     json!({"path": "counter"}),
                 )],
                 usage: None,
+                stop_reason: None,
             };
 
             let tools = tool_map([IncrementTool]);
@@ -4158,6 +4183,7 @@ async fn test_e2e_empty_user_message() {
         text: "I notice you sent an empty message. How can I help you?".to_string(),
         tool_calls: vec![],
         usage: None,
+        stop_reason: None,
     };
 
     let thread = thread.with_message(Message::assistant(&llm_response.text));
@@ -4258,7 +4284,7 @@ fn test_stream_collector_end_event_with_captured_tool_calls() {
     assert!(output.is_none()); // End event always returns None
 
     // Verify the captured tool calls are in the result
-    let result = collector.finish();
+    let result = collector.finish(None);
     assert_eq!(result.tool_calls.len(), 1);
     assert_eq!(result.tool_calls[0].name, "captured_search");
     assert_eq!(result.tool_calls[0].id, "captured_call_1");
@@ -4291,7 +4317,7 @@ fn test_stream_collector_end_event_with_multiple_captured_tool_calls() {
     };
 
     collector.process(ChatStreamEvent::End(end));
-    let result = collector.finish();
+    let result = collector.finish(None);
 
     assert_eq!(result.tool_calls.len(), 2);
     let names: Vec<&str> = result
@@ -4339,7 +4365,7 @@ fn test_stream_collector_end_merges_chunk_and_captured_tool_calls() {
     };
 
     collector.process(ChatStreamEvent::End(end));
-    let result = collector.finish();
+    let result = collector.finish(None);
 
     assert_eq!(result.text, "Processing...");
     assert_eq!(result.tool_calls.len(), 2);
@@ -4374,7 +4400,7 @@ fn test_stream_collector_tool_chunk_with_null_arguments() {
     // Should return None because args_str == "null"
     assert!(output.is_none());
 
-    let result = collector.finish();
+    let result = collector.finish(None);
     assert_eq!(result.tool_calls.len(), 1);
     assert_eq!(result.tool_calls[0].name, "my_tool");
 }
@@ -6508,6 +6534,7 @@ async fn test_e2e_permission_suspend_with_real_tool() {
             json!({"path": "counter"}),
         )],
         usage: None,
+        stop_reason: None,
     };
 
     let tools = tool_map([IncrementTool]);
@@ -6590,6 +6617,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
             json!({"path": "counter"}),
         )],
         usage: None,
+        stop_reason: None,
     };
 
     let tools = tool_map([IncrementTool]);
@@ -6631,6 +6659,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
             json!({"path": "counter"}),
         )],
         usage: None,
+        stop_reason: None,
     };
 
     let resumed_thread = execute_tools_with_behaviors(
@@ -6689,6 +6718,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
             json!({"path": "counter"}),
         )],
         usage: None,
+        stop_reason: None,
     };
 
     let tools = tool_map([IncrementTool]);
@@ -6729,6 +6759,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
             json!({"path": "counter"}),
         )],
         usage: None,
+        stop_reason: None,
     };
 
     let resumed_thread = execute_tools_with_behaviors(
@@ -12505,6 +12536,7 @@ mod llmmetry_tracing {
             text: "hello".into(),
             tool_calls: vec![],
             usage: Some(usage(100, 50, 150)),
+            stop_reason: None,
         }));
 
         plugin.run_phase(Phase::AfterInference, &mut step).await;
@@ -12596,6 +12628,7 @@ mod llmmetry_tracing {
             text: "use search tool".into(),
             tool_calls: vec![],
             usage: Some(usage(50, 25, 75)),
+            stop_reason: None,
         }));
         plugin.run_phase(Phase::AfterInference, &mut step).await;
 

@@ -2,6 +2,23 @@ pub use crate::runtime::tool_call::{ToolResult, ToolStatus};
 use crate::thread::ToolCall;
 use serde::{Deserialize, Serialize};
 
+/// Why the LLM stopped generating output.
+///
+/// Mapped from provider-specific stop reasons (Anthropic `stop_reason`,
+/// OpenAI `finish_reason`). Used by plugins to detect truncation and
+/// trigger recovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum StopReason {
+    /// Model finished naturally (Anthropic `end_turn`, OpenAI `stop`).
+    EndTurn,
+    /// Output hit the `max_tokens` limit — response may be truncated.
+    MaxTokens,
+    /// Model emitted one or more tool-use calls.
+    ToolUse,
+    /// A stop sequence was matched.
+    StopSequence,
+}
+
 /// Provider-neutral token usage.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenUsage {
@@ -26,6 +43,9 @@ pub struct StreamResult {
     pub tool_calls: Vec<ToolCall>,
     /// Token usage from the LLM response.
     pub usage: Option<TokenUsage>,
+    /// Why the model stopped generating. `None` when the backend cannot
+    /// determine the reason (e.g. genai which discards stop_reason).
+    pub stop_reason: Option<StopReason>,
 }
 
 impl StreamResult {

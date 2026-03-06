@@ -63,6 +63,9 @@ fn apply_after_inference_actions(
             AfterInferenceAction::Terminate(reason) => {
                 step.flow.run_action = Some(RunAction::Terminate(reason));
             }
+            AfterInferenceAction::RetryInference { messages } => {
+                step.flow.run_action = Some(RunAction::RetryInference { messages });
+            }
             AfterInferenceAction::State(sa) => step.emit_state_action(sa),
         }
     }

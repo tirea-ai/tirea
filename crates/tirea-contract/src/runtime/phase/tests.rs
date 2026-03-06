@@ -105,10 +105,10 @@ fn test_after_inference_request_termination_sets_run_action() {
         let mut ctx = AfterInferenceContext::new(&mut step);
         ctx.request_termination(TerminationReason::BehaviorRequested);
     }
-    assert_eq!(
+    assert!(matches!(
         step.flow.run_action,
         Some(RunAction::Terminate(TerminationReason::BehaviorRequested))
-    );
+    ));
 }
 
 // =========================================================================
@@ -471,8 +471,8 @@ fn test_step_result_complete() {
         text: "Done!".to_string(),
         tool_calls: vec![],
         usage: None,
+        stop_reason: None,
     }));
-
     assert_eq!(ctx.result(), StepOutcome::Complete);
 }
 
@@ -715,8 +715,8 @@ fn test_step_result_with_tool_calls() {
         text: "Calling tools".to_string(),
         tool_calls: vec![ToolCall::new("call_1", "test", json!({}))],
         usage: None,
+        stop_reason: None,
     }));
-
     assert_eq!(ctx.result(), StepOutcome::Continue);
 }
 
@@ -729,8 +729,8 @@ fn test_step_result_empty_text_no_tools() {
         text: String::new(),
         tool_calls: vec![],
         usage: None,
+        stop_reason: None,
     }));
-
     assert_eq!(ctx.result(), StepOutcome::Continue);
 }
 

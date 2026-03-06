@@ -243,6 +243,7 @@ mod tests {
             text: "hello".into(),
             tool_calls: vec![],
             usage: Some(usage(100, 50, 150)),
+            stop_reason: None,
         }));
 
         run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
@@ -273,6 +274,7 @@ mod tests {
             text: "hello".into(),
             tool_calls: vec![],
             usage: Some(usage_with_cache(100, 50, 150, 30)),
+            stop_reason: None,
         }));
 
         run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
@@ -363,6 +365,7 @@ mod tests {
             text: "hi".into(),
             tool_calls: vec![],
             usage: None,
+            stop_reason: None,
         }));
         run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
@@ -386,6 +389,7 @@ mod tests {
                 text: format!("r{i}"),
                 tool_calls: vec![],
                 usage: Some(usage(10 * (i + 1), 5 * (i + 1), 15 * (i + 1))),
+                stop_reason: None,
             }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
         }
@@ -772,6 +776,7 @@ mod tests {
             text: "hi".into(),
             tool_calls: vec![],
             usage: Some(usage(10, 20, 30)),
+            stop_reason: None,
         }));
         run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
@@ -866,6 +871,7 @@ mod tests {
                 text: "hello".into(),
                 tool_calls: vec![],
                 usage: Some(usage(100, 50, 150)),
+                stop_reason: None,
             }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
@@ -970,6 +976,7 @@ mod tests {
                 text: "hello".into(),
                 tool_calls: vec![],
                 usage: Some(usage(100, 50, 150)),
+                stop_reason: None,
             }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
@@ -1067,6 +1074,7 @@ mod tests {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
+                stop_reason: None,
             }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
@@ -1102,6 +1110,7 @@ mod tests {
                     text: "hi".into(),
                     tool_calls: vec![],
                     usage: None,
+                    stop_reason: None,
                 }));
                 run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
             }
@@ -1147,6 +1156,7 @@ mod tests {
                     text: "calling tool".into(),
                     tool_calls: vec![ToolCall::new("c1", "search", json!({}))],
                     usage: Some(usage(10, 5, 15)),
+                    stop_reason: None,
                 }));
                 run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
             }
@@ -1274,6 +1284,7 @@ mod tests {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
+                stop_reason: None,
             }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
@@ -1341,6 +1352,7 @@ mod tests {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
+                stop_reason: None,
             }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
@@ -1485,6 +1497,7 @@ mod tests {
                 text: "ok".into(),
                 tool_calls: vec![],
                 usage: Some(usage(10, 5, 15)),
+                stop_reason: None,
             }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
@@ -1523,6 +1536,7 @@ mod tests {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: Some(usage(100, 50, 150)),
+                stop_reason: None,
             }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
@@ -1581,6 +1595,7 @@ mod tests {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
+                stop_reason: None,
             }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
@@ -1619,6 +1634,7 @@ mod tests {
                     text: "hi".into(),
                     tool_calls: vec![],
                     usage: Some(usage_with_cache(100, 50, 150, 30)),
+                    stop_reason: None,
                 }));
                 run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
             }
@@ -1668,6 +1684,7 @@ mod tests {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: Some(usage(10, 5, 15)),
+                stop_reason: None,
             }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
@@ -1701,6 +1718,7 @@ mod tests {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
+                stop_reason: None,
             }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 
@@ -1742,6 +1760,7 @@ mod tests {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
+                stop_reason: None,
             }));
             run_phase(&plugin, Phase::AfterInference, &step, &fix).await;
 

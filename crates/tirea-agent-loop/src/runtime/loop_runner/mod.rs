@@ -497,7 +497,7 @@ pub(super) async fn complete_step_after_inference(
     assistant_message_id: Option<String>,
     tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
     agent: &dyn Agent,
-) -> Result<Option<TerminationReason>, AgentLoopError> {
+) -> Result<RunAction, AgentLoopError> {
     let (run_action, pending, actions) = plugin_runtime::run_phase_block(
         run_ctx,
         tool_descriptors,
@@ -521,10 +521,7 @@ pub(super) async fn complete_step_after_inference(
             .await?;
     run_ctx.add_thread_patches(pending);
     run_ctx.add_serialized_actions(actions);
-    Ok(match run_action {
-        RunAction::Terminate(reason) => Some(reason),
-        RunAction::Continue => None,
-    })
+    Ok(run_action)
 }
 
 /// Emit events for a pending tool-call projection.
@@ -679,12 +676,20 @@ fn stream_result_from_chat_response(response: &genai::chat::ChatResponse) -> Str
         })
         .collect();
 
+    let usage = Some(crate::runtime::streaming::token_usage_from_genai(
+        &response.usage,
+    ));
+    // genai does not expose stop_reason; infer from tool calls.
+    let stop_reason = if !tool_calls.is_empty() {
+        Some(tirea_contract::runtime::inference::StopReason::ToolUse)
+    } else {
+        Some(tirea_contract::runtime::inference::StopReason::EndTurn)
+    };
     StreamResult {
         text,
         tool_calls,
-        usage: Some(crate::runtime::streaming::token_usage_from_genai(
-            &response.usage,
-        )),
+        usage,
+        stop_reason,
     }
 }
 
@@ -1568,7 +1573,7 @@ pub async fn run_loop(
         run_ctx.add_thread_patches(prepared.pending_patches);
 
         match prepared.run_action {
-            RunAction::Continue => {}
+            RunAction::Continue | RunAction::RetryInference { .. } => {}
             RunAction::Terminate(reason) => {
                 let response = if matches!(reason, TerminationReason::BehaviorRequested) {
                     Some(last_text.clone())
@@ -1650,7 +1655,7 @@ pub async fn run_loop(
         // Add assistant message
         let assistant_msg_id = gen_message_id();
         let step_meta = step_metadata(Some(run_id.clone()), run_state.completed_steps as u32);
-        let post_inference_termination = match complete_step_after_inference(
+        let post_inference_action = match complete_step_after_inference(
             &mut run_ctx,
             &result,
             step_meta.clone(),
@@ -1660,7 +1665,7 @@ pub async fn run_loop(
         )
         .await
         {
-            Ok(reason) => reason,
+            Ok(action) => action,
             Err(e) => {
                 let msg = e.to_string();
                 terminate_run!(
@@ -1687,6 +1692,19 @@ pub async fn run_loop(
         }
 
         mark_step_completed(&mut run_state);
+
+        // Handle RetryInference: append messages and re-enter the loop.
+        if let RunAction::RetryInference { messages } = &post_inference_action {
+            for msg in messages {
+                run_ctx.add_message(std::sync::Arc::new(msg.clone()));
+            }
+            continue;
+        }
+
+        let post_inference_termination = match &post_inference_action {
+            RunAction::Terminate(reason) => Some(reason.clone()),
+            _ => None,
+        };
 
         // Only `Stopped` termination is deferred past tool execution so the
         // current round's tools complete (e.g. MaxRounds lets tools finish).

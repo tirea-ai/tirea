@@ -372,7 +372,7 @@ pub(super) fn run_stream(
             let request_transforms = prepared.request_transforms;
 
             match prepared.run_action {
-                RunAction::Continue => {}
+                RunAction::Continue | RunAction::RetryInference { .. } => {}
                 RunAction::Terminate(reason) => {
                     if matches!(reason, TerminationReason::Suspended) {
                         for event in suspended_call_pending_events(&run_ctx) {
@@ -577,7 +577,8 @@ pub(super) fn run_stream(
                 }
             }
 
-            let result = collector.finish();
+            let max_output_tokens = chat_options.as_ref().and_then(|o| o.max_tokens);
+            let result = collector.finish(max_output_tokens);
             last_text = result.text.clone();
             run_state.update_from_response(&result);
             let inference_duration_ms = inference_start.elapsed().as_millis() as u64;
@@ -589,7 +590,7 @@ pub(super) fn run_stream(
             });
 
             let step_meta = step_metadata(Some(run_id.clone()), run_state.completed_steps as u32);
-            let post_inference_termination = match complete_step_after_inference(
+            let post_inference_action = match complete_step_after_inference(
                 &mut run_ctx,
                 &result,
                 step_meta.clone(),
@@ -599,7 +600,7 @@ pub(super) fn run_stream(
             )
             .await
             {
-                Ok(reason) => reason,
+                Ok(action) => action,
                 Err(e) => {
                     let message = e.to_string();
                     terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
@@ -618,6 +619,20 @@ pub(super) fn run_stream(
             yield emitter.step_end();
 
             mark_step_completed(&mut run_state);
+
+            // Handle RetryInference: append messages and re-enter the loop.
+            if let RunAction::RetryInference { messages } = &post_inference_action {
+                for msg in messages {
+                    run_ctx.add_message(std::sync::Arc::new(msg.clone()));
+                }
+                continue;
+            }
+
+            // Extract termination reason for deferred handling.
+            let post_inference_termination = match &post_inference_action {
+                RunAction::Terminate(reason) => Some(reason.clone()),
+                _ => None,
+            };
 
             // Only `Stopped` termination is deferred past tool execution so
             // the current round's tools complete (e.g. MaxRounds lets tools

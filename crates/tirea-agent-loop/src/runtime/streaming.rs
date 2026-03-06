@@ -13,6 +13,7 @@ use genai::chat::{ChatStreamEvent, Usage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use tirea_contract::runtime::inference::StopReason;
 use tirea_contract::{StreamResult, TokenUsage};
 
 pub(crate) fn token_usage_from_genai(u: &Usage) -> TokenUsage {
@@ -183,7 +184,12 @@ impl StreamCollector {
     }
 
     /// Finish collecting and return the final result.
-    pub fn finish(self) -> StreamResult {
+    ///
+    /// `max_output_tokens` is used to infer `StopReason::MaxTokens` when the
+    /// backend does not provide an explicit stop reason (e.g. genai). Pass
+    /// `None` to skip inference; the `stop_reason` field will be set based
+    /// on tool call presence only.
+    pub fn finish(self, max_output_tokens: Option<u32>) -> StreamResult {
         let mut remaining = self.tool_calls;
         let mut tool_calls: Vec<ToolCall> = Vec::with_capacity(self.tool_call_order.len());
 
@@ -195,14 +201,44 @@ impl StreamCollector {
                 continue;
             }
             let arguments = serde_json::from_str(&p.arguments).unwrap_or(Value::Null);
+            // Drop tool calls with unparseable arguments (truncated JSON).
+            if arguments.is_null() && !p.arguments.is_empty() {
+                continue;
+            }
             tool_calls.push(ToolCall::new(p.id, p.name, arguments));
         }
+
+        let usage = self.usage.as_ref().map(token_usage_from_genai);
+        let stop_reason = Self::infer_stop_reason(&tool_calls, &usage, max_output_tokens);
 
         StreamResult {
             text: self.text,
             tool_calls,
-            usage: self.usage.as_ref().map(token_usage_from_genai),
+            usage,
+            stop_reason,
         }
+    }
+
+    /// Infer `StopReason` from response metadata.
+    ///
+    /// When the backend does not provide an explicit stop reason, we use:
+    /// - `ToolUse` if any complete tool calls are present
+    /// - `MaxTokens` if `completion_tokens == max_output_tokens` (near-deterministic)
+    /// - `EndTurn` otherwise
+    fn infer_stop_reason(
+        tool_calls: &[ToolCall],
+        usage: &Option<TokenUsage>,
+        max_output_tokens: Option<u32>,
+    ) -> Option<StopReason> {
+        if !tool_calls.is_empty() {
+            return Some(StopReason::ToolUse);
+        }
+        if let (Some(u), Some(max)) = (usage, max_output_tokens) {
+            if u.completion_tokens == Some(max as i32) {
+                return Some(StopReason::MaxTokens);
+            }
+        }
+        Some(StopReason::EndTurn)
     }
 
     /// Get the current accumulated text.
@@ -273,7 +309,7 @@ mod tests {
     #[test]
     fn test_stream_collector_finish_empty() {
         let collector = StreamCollector::new();
-        let result = collector.finish();
+        let result = collector.finish(None);
 
         assert!(result.text.is_empty());
         assert!(result.tool_calls.is_empty());
@@ -286,6 +322,7 @@ mod tests {
             text: "Hello".to_string(),
             tool_calls: vec![],
             usage: None,
+            stop_reason: None,
         };
         assert!(!result.needs_tools());
 
@@ -293,6 +330,7 @@ mod tests {
             text: String::new(),
             tool_calls: vec![ToolCall::new("id", "name", serde_json::json!({}))],
             usage: None,
+            stop_reason: None,
         };
         assert!(result_with_tools.needs_tools());
     }
@@ -468,6 +506,7 @@ mod tests {
                 ToolCall::new("call_3", "format", json!({"text": "hello"})),
             ],
             usage: None,
+            stop_reason: None,
         };
 
         assert!(result.needs_tools());
@@ -484,6 +523,7 @@ mod tests {
                 .to_string(),
             tool_calls: vec![],
             usage: None,
+            stop_reason: None,
         };
 
         assert!(!result.needs_tools());
@@ -565,6 +605,7 @@ mod tests {
             text: "Hello".to_string(),
             tool_calls: vec![ToolCall::new("1", "test", json!({}))],
             usage: None,
+            stop_reason: None,
         };
 
         let cloned = result.clone();
@@ -642,7 +683,7 @@ mod tests {
 
         assert_eq!(collector.text(), "Hello world!");
 
-        let result = collector.finish();
+        let result = collector.finish(None);
         assert_eq!(result.text, "Hello world!");
         assert!(!result.needs_tools());
     }
@@ -717,7 +758,7 @@ mod tests {
             assert!(args_delta.contains("expr"));
         }
 
-        let result = collector.finish();
+        let result = collector.finish(None);
         assert!(result.needs_tools());
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].name, "calculator");
@@ -740,7 +781,7 @@ mod tests {
             "tool start should not be lost when name+args arrive in one chunk; got: {output:?}"
         );
 
-        let result = collector.finish();
+        let result = collector.finish(None);
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].id, "call_single");
         assert_eq!(result.tool_calls[0].name, "search");
@@ -764,7 +805,7 @@ mod tests {
             let _ = collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call }));
         }
 
-        let result = collector.finish();
+        let result = collector.finish(None);
         let got: Vec<String> = result.tool_calls.into_iter().map(|c| c.id).collect();
         let expected: Vec<String> = call_ids.into_iter().map(str::to_string).collect();
 
@@ -796,7 +837,7 @@ mod tests {
         };
         collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc2 }));
 
-        let result = collector.finish();
+        let result = collector.finish(None);
         assert_eq!(result.tool_calls.len(), 2);
     }
 
@@ -818,7 +859,7 @@ mod tests {
         };
         collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc }));
 
-        let result = collector.finish();
+        let result = collector.finish(None);
         assert_eq!(result.text, "I'll search for that. ");
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].name, "web_search");
@@ -848,7 +889,7 @@ mod tests {
 
         assert!(output.is_none());
 
-        let result = collector.finish();
+        let result = collector.finish(None);
         assert_eq!(result.text, "Hello");
     }
 
@@ -915,7 +956,7 @@ mod tests {
         };
         collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc3 }));
 
-        let result = collector.finish();
+        let result = collector.finish(None);
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].name, "api");
         assert_eq!(
@@ -967,7 +1008,7 @@ mod tests {
             Some(StreamOutput::ToolCallDelta { ref args_delta, .. }) if args_delta == " \"San Francisco\"}"
         ));
 
-        let result = collector.finish();
+        let result = collector.finish(None);
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].name, "get_weather");
         assert_eq!(
@@ -984,7 +1025,7 @@ mod tests {
             content: "Test".to_string(),
         }));
 
-        let result1 = collector.finish();
+        let result1 = collector.finish(None);
         assert_eq!(result1.text, "Test");
 
         // After finish, the collector is consumed, so we can't use it again
@@ -1190,14 +1231,14 @@ mod tests {
             tool_call: real,
         }));
 
-        let result = collector.finish();
+        let result = collector.finish(None);
         // Ghost call should be filtered out (empty name)
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].name, "search");
     }
 
     #[test]
-    fn test_stream_collector_invalid_json_arguments_fallback() {
+    fn test_stream_collector_invalid_json_arguments_dropped() {
         let mut collector = StreamCollector::new();
 
         let tc = genai::chat::ToolCall {
@@ -1208,11 +1249,9 @@ mod tests {
         };
         collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc }));
 
-        let result = collector.finish();
-        assert_eq!(result.tool_calls.len(), 1);
-        assert_eq!(result.tool_calls[0].name, "test");
-        // Invalid JSON falls back to Value::Null
-        assert_eq!(result.tool_calls[0].arguments, Value::Null);
+        let result = collector.finish(None);
+        // Unparseable arguments are dropped (truncated tool calls)
+        assert_eq!(result.tool_calls.len(), 0);
     }
 
     #[test]
@@ -1263,7 +1302,7 @@ mod tests {
         };
         collector.process(ChatStreamEvent::End(end));
 
-        let result = collector.finish();
+        let result = collector.finish(None);
         assert!(result.usage.is_some());
         let usage = result.usage.unwrap();
         assert_eq!(usage.prompt_tokens, Some(10));
@@ -1290,7 +1329,7 @@ mod tests {
         };
         collector.process(ChatStreamEvent::End(end));
 
-        let result = collector.finish();
+        let result = collector.finish(None);
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].id, "end_call");
         assert_eq!(result.tool_calls[0].name, "finalize");
@@ -1326,7 +1365,7 @@ mod tests {
         };
         collector.process(ChatStreamEvent::End(end));
 
-        let result = collector.finish();
+        let result = collector.finish(None);
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].name, "api");
         // End event's arguments should override the incomplete streaming args
@@ -1353,7 +1392,7 @@ mod tests {
         // Let's just check the final result.
         assert!(output.is_some());
 
-        let result = collector.finish();
+        let result = collector.finish(None);
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].arguments, json!({"key": "val"}));
     }
@@ -1379,11 +1418,9 @@ mod tests {
         };
         collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc }));
 
-        let result = collector.finish();
-        assert_eq!(result.tool_calls.len(), 1);
-        assert_eq!(result.tool_calls[0].name, "search");
-        // Truncated JSON → Value::Null (graceful degradation)
-        assert_eq!(result.tool_calls[0].arguments, Value::Null);
+        let result = collector.finish(None);
+        // Truncated JSON tool calls are dropped
+        assert_eq!(result.tool_calls.len(), 0);
     }
 
     #[test]
@@ -1399,17 +1436,16 @@ mod tests {
         };
         collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc }));
 
-        let result = collector.finish();
+        let result = collector.finish(None);
+        // Empty arguments parse to Null and are treated as "no args" (kept)
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].name, "noop");
-        // Empty string → Value::Null
         assert_eq!(result.tool_calls[0].arguments, Value::Null);
     }
 
     #[test]
     fn test_stream_collector_partial_nested_json() {
         // Complex nested JSON truncated mid-array.
-        // Reference: Mastra tests large payload cutoff at position 871.
         let mut collector = StreamCollector::new();
 
         let tc = genai::chat::ToolCall {
@@ -1422,11 +1458,9 @@ mod tests {
         };
         collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc }));
 
-        let result = collector.finish();
-        assert_eq!(result.tool_calls.len(), 1);
-        assert_eq!(result.tool_calls[0].name, "complex_tool");
-        // Truncated nested JSON → Value::Null
-        assert_eq!(result.tool_calls[0].arguments, Value::Null);
+        let result = collector.finish(None);
+        // Truncated JSON tool calls are dropped
+        assert_eq!(result.tool_calls.len(), 0);
     }
 
     #[test]
@@ -1461,7 +1495,7 @@ mod tests {
         };
         collector.process(ChatStreamEvent::End(end));
 
-        let result = collector.finish();
+        let result = collector.finish(None);
         assert_eq!(result.tool_calls.len(), 1);
         // End event recovered the complete, valid JSON
         assert_eq!(
@@ -1485,7 +1519,7 @@ mod tests {
         };
         collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc }));
 
-        let result = collector.finish();
+        let result = collector.finish(None);
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(
             result.tool_calls[0].arguments,
@@ -1525,7 +1559,7 @@ mod tests {
         };
         collector.process(ChatStreamEvent::End(end));
 
-        let result = collector.finish();
+        let result = collector.finish(None);
         assert_eq!(
             result.tool_calls.len(),
             1,
@@ -1564,7 +1598,7 @@ mod tests {
         };
         collector.process(ChatStreamEvent::End(end));
 
-        let result = collector.finish();
+        let result = collector.finish(None);
         assert_eq!(result.tool_calls.len(), 1);
         // Current behavior: name only overridden if empty (line 136: `if partial.name.is_empty()`)
         // So the original streaming name should be preserved.
@@ -1584,7 +1618,7 @@ mod tests {
         };
         collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc }));
 
-        let result = collector.finish();
+        let result = collector.finish(None);
         // finish() filters by `!p.name.is_empty()` — whitespace-only name is NOT empty.
         // This documents current behavior (whitespace names are kept).
         // If this is a bug, fix the filter to use `.trim().is_empty()`.
@@ -1619,7 +1653,7 @@ mod tests {
         collector.process(tc_chunk("tc_1", "search", r#"{"q":"foo"}"#));
         collector.process(tc_chunk("tc_2", "fetch", r#"{"url":"https://x.com"}"#));
 
-        let result = collector.finish();
+        let result = collector.finish(None);
         assert_eq!(result.tool_calls.len(), 2);
 
         let names: Vec<&str> = result
@@ -1668,7 +1702,7 @@ mod tests {
         collector.process(tc_chunk("tc_a", "search", r#"{"q":"a"}"#));
         collector.process(tc_chunk("tc_b", "fetch", r#"{"url":"b"}"#));
 
-        let result = collector.finish();
+        let result = collector.finish(None);
         assert_eq!(result.tool_calls.len(), 2);
 
         let search = result
@@ -1703,7 +1737,7 @@ mod tests {
             content: "for you.".to_string(),
         }));
 
-        let result = collector.finish();
+        let result = collector.finish(None);
         // Text should be accumulated
         assert_eq!(result.text, "I will search for you.");
         // Tool call should be present

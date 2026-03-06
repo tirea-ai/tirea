@@ -3,6 +3,7 @@ use crate::runtime::run::TerminationReason;
 use crate::runtime::state::AnyStateAction;
 use crate::runtime::tool_call::gate::{SuspendTicket, ToolCallAction};
 use crate::runtime::tool_call::ToolResult;
+use crate::thread::Message;
 use std::sync::Arc;
 
 /// A typed collection of actions for a specific phase.
@@ -149,6 +150,15 @@ impl From<AnyStateAction> for ActionSet<BeforeInferenceAction> {
 pub enum AfterInferenceAction {
     /// Request run termination after seeing the LLM response.
     Terminate(TerminationReason),
+    /// Re-run inference after appending messages to the thread.
+    ///
+    /// Used by truncation recovery: the plugin appends the truncated
+    /// assistant response and a continuation prompt, then signals the
+    /// loop to re-enter inference without tool execution.
+    RetryInference {
+        /// Messages to append before retrying (e.g. truncated response + continuation prompt).
+        messages: Vec<Message>,
+    },
     /// Emit a persistent state change.
     State(AnyStateAction),
 }
