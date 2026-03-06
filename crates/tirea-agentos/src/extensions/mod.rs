@@ -8,4 +8,5 @@ pub mod observability;
 pub mod permission;
 #[cfg(feature = "reminder")]
 pub mod reminder;
+#[cfg(feature = "skills")]
 pub mod skills;

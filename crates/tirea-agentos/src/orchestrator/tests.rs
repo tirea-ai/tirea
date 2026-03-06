@@ -8,6 +8,7 @@ use crate::contracts::storage::{ThreadReader, ThreadWriter};
 use crate::contracts::thread::Thread;
 use crate::contracts::AgentBehavior;
 use crate::contracts::ToolCallContext;
+#[cfg(feature = "skills")]
 use crate::extensions::skills::{
     FsSkill, FsSkillRegistryManager, InMemorySkillRegistry, ScriptResult, Skill, SkillError,
     SkillMeta, SkillRegistry, SkillRegistryError, SkillResource, SkillResourceKind,
@@ -18,10 +19,14 @@ use crate::runtime::loop_runner::{
 };
 use async_trait::async_trait;
 use serde_json::{json, Value};
+#[cfg(feature = "skills")]
 use std::fs;
+#[cfg(feature = "skills")]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(feature = "skills")]
 use std::time::Duration;
+#[cfg(feature = "skills")]
 use tempfile::TempDir;
 use tirea_contract::testing::{
     apply_before_inference_for_test, apply_lifecycle_for_test, TestFixture,
@@ -59,6 +64,7 @@ fn assert_run_lifecycle_state(
     }
 }
 
+#[cfg(feature = "skills")]
 fn make_skills_root() -> (TempDir, PathBuf) {
     let td = TempDir::new().unwrap();
     let root = td.path().join("skills");
@@ -246,6 +252,7 @@ impl AgentBehavior for TerminateWithRunEndPatchPlugin {
     }
 }
 
+#[cfg(feature = "skills")]
 #[tokio::test]
 async fn wire_skills_inserts_tools_and_plugin() {
     let (_td, root) = make_skills_root();
@@ -303,6 +310,7 @@ async fn wire_skills_inserts_tools_and_plugin() {
     );
 }
 
+#[cfg(feature = "skills")]
 #[tokio::test]
 async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
     let (_td, root) = make_skills_root();
@@ -333,6 +341,7 @@ async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
     assert!(tools.contains_key("skill_script"));
 }
 
+#[cfg(feature = "skills")]
 #[test]
 fn wire_skills_disabled_is_noop() {
     let (_td, root) = make_skills_root();
@@ -414,9 +423,11 @@ fn wire_behaviors_into_rejects_duplicate_behavior_ids_after_assembly() {
     assert!(matches!(err, AgentOsWiringError::BehaviorAlreadyInstalled(id) if id == "p1"));
 }
 
+#[cfg(feature = "skills")]
 #[derive(Debug)]
 struct FakeSkillsPlugin;
 
+#[cfg(feature = "skills")]
 #[async_trait::async_trait]
 impl AgentBehavior for FakeSkillsPlugin {
     fn id(&self) -> &str {
@@ -424,6 +435,7 @@ impl AgentBehavior for FakeSkillsPlugin {
     }
 }
 
+#[cfg(feature = "skills")]
 #[test]
 fn build_errors_if_agent_references_reserved_skills_plugin_id() {
     let (_td, root) = make_skills_root();
@@ -513,6 +525,7 @@ fn resolve_errors_if_agent_missing() {
     assert!(matches!(err, AgentOsResolveError::AgentNotFound(_)));
 }
 
+#[cfg(feature = "skills")]
 #[tokio::test]
 async fn resolve_wires_skills_and_preserves_base_tools() {
     #[derive(Debug)]
@@ -775,6 +788,7 @@ async fn resolve_freezes_agent_snapshot_per_run_boundary() {
         .contains("Unknown or unavailable agent_id"));
 }
 
+#[cfg(feature = "skills")]
 #[tokio::test]
 async fn resolve_freezes_skill_snapshot_per_run_boundary() {
     #[derive(Debug)]
@@ -926,6 +940,7 @@ async fn resolve_freezes_skill_snapshot_per_run_boundary() {
         .contains("Unknown skill"));
 }
 
+#[cfg(feature = "skills")]
 #[test]
 fn build_skill_registry_refresh_interval_starts_periodic_refresh() {
     let td = TempDir::new().unwrap();
@@ -1166,6 +1181,7 @@ fn resolve_sets_runtime_caller_agent_id() {
     );
 }
 
+#[cfg(feature = "skills")]
 #[tokio::test]
 async fn resolve_errors_on_skills_tool_id_conflict() {
     #[derive(Debug)]
@@ -1263,6 +1279,7 @@ async fn resolve_errors_on_agent_tools_tool_id_conflict() {
     ));
 }
 
+#[cfg(feature = "skills")]
 #[test]
 fn build_errors_if_skills_enabled_without_root() {
     let err = AgentOs::builder()
@@ -1275,6 +1292,7 @@ fn build_errors_if_skills_enabled_without_root() {
     assert!(matches!(err, AgentOsBuildError::SkillsNotConfigured));
 }
 
+#[cfg(feature = "skills")]
 #[test]
 fn build_errors_on_duplicate_skill_id_across_skill_registries() {
     let (_td, root) = make_skills_root();
@@ -1412,6 +1430,7 @@ async fn resolve_wires_plugins_in_order() {
     assert_eq!(behavior_ids[3], "p1");
 }
 
+#[cfg(feature = "skills")]
 #[tokio::test]
 async fn resolve_wires_skills_before_plugins() {
     let (_td, root) = make_skills_root();
@@ -1504,9 +1523,18 @@ fn build_errors_on_duplicate_plugin_ref_in_builder_agent() {
     ));
 }
 
+#[cfg(feature = "skills")]
 #[test]
 fn build_errors_on_reserved_plugin_id_in_builder_agent() {
+    let (_td, root) = make_skills_root();
     let err = AgentOs::builder()
+        .with_skills(FsSkill::into_arc_skills(
+            FsSkill::discover(root).unwrap().skills,
+        ))
+        .with_skills_config(SkillsConfig {
+            enabled: true,
+            ..SkillsConfig::default()
+        })
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_behavior_id("skills"),
@@ -1520,9 +1548,18 @@ fn build_errors_on_reserved_plugin_id_in_builder_agent() {
     ));
 }
 
+#[cfg(feature = "skills")]
 #[test]
 fn resolve_errors_on_reserved_plugin_id() {
+    let (_td, root) = make_skills_root();
     let os = AgentOs::builder()
+        .with_skills(FsSkill::into_arc_skills(
+            FsSkill::discover(&root).unwrap().skills,
+        ))
+        .with_skills_config(SkillsConfig {
+            enabled: true,
+            ..SkillsConfig::default()
+        })
         .with_agent_registry(Arc::new({
             let mut reg = InMemoryAgentRegistry::new();
             reg.upsert(

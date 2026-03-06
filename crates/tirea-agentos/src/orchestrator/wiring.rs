@@ -3,12 +3,106 @@ use super::agent_tools::{
 };
 use super::policy::{filter_tools_in_place, set_scope_filters_from_definition_if_absent};
 use super::stop_policy_plugin::{StopConditionSpec, StopPolicyPlugin, STOP_POLICY_PLUGIN_ID};
+use super::system_wiring::WiringContext;
 use super::*;
+#[cfg(feature = "skills")]
 use crate::extensions::skills::{
-    InMemorySkillRegistry, Skill, SkillRegistry, SKILLS_BUNDLE_ID, SKILLS_DISCOVERY_PLUGIN_ID,
-    SKILLS_PLUGIN_ID,
+    InMemorySkillRegistry, Skill, SkillDiscoveryPlugin, SkillRegistry, SkillSubsystem,
+    SkillSubsystemError, SKILLS_BUNDLE_ID, SKILLS_DISCOVERY_PLUGIN_ID, SKILLS_PLUGIN_ID,
 };
 use crate::runtime::loop_runner::GenaiLlmExecutor;
+
+// ---------------------------------------------------------------------------
+// SkillsSystemWiring — feature-gated SystemWiring impl for the skills subsystem
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "skills")]
+pub(crate) struct SkillsSystemWiring {
+    registry: Arc<dyn SkillRegistry>,
+    config: SkillsConfig,
+}
+
+#[cfg(feature = "skills")]
+impl SkillsSystemWiring {
+    pub(crate) fn new(registry: Arc<dyn SkillRegistry>, config: SkillsConfig) -> Self {
+        Self { registry, config }
+    }
+
+    fn freeze_registry(&self) -> Arc<dyn SkillRegistry> {
+        let mut frozen = InMemorySkillRegistry::new();
+        frozen.extend_upsert(self.registry.snapshot().into_values().collect());
+        Arc::new(frozen) as Arc<dyn SkillRegistry>
+    }
+
+    fn build_plugins(&self, registry: Arc<dyn SkillRegistry>) -> Vec<Arc<dyn AgentBehavior>> {
+        if !self.config.advertise_catalog {
+            return Vec::new();
+        }
+        let discovery = SkillDiscoveryPlugin::new(registry).with_limits(
+            self.config.discovery_max_entries,
+            self.config.discovery_max_chars,
+        );
+        vec![Arc::new(discovery)]
+    }
+}
+
+#[cfg(feature = "skills")]
+impl SystemWiring for SkillsSystemWiring {
+    fn id(&self) -> &str {
+        "skills"
+    }
+
+    fn reserved_behavior_ids(&self) -> &[&'static str] {
+        &[SKILLS_PLUGIN_ID, SKILLS_DISCOVERY_PLUGIN_ID]
+    }
+
+    fn wire(
+        &self,
+        ctx: &WiringContext<'_>,
+    ) -> Result<Vec<Arc<dyn RegistryBundle>>, AgentOsWiringError> {
+        // Ensure no user-installed behavior collides with reserved skills IDs.
+        let reserved = self.reserved_behavior_ids();
+        if let Some(existing) = ctx
+            .resolved_behaviors
+            .iter()
+            .map(|p| p.id())
+            .find(|id| reserved.contains(id))
+        {
+            return Err(AgentOsWiringError::SkillsBehaviorAlreadyInstalled(
+                existing.to_string(),
+            ));
+        }
+
+        let frozen = self.freeze_registry();
+
+        let subsystem = SkillSubsystem::new(frozen.clone());
+        let mut tool_defs = HashMap::new();
+        subsystem
+            .extend_tools(&mut tool_defs)
+            .map_err(|e| match e {
+                SkillSubsystemError::ToolIdConflict(id) => {
+                    AgentOsWiringError::SkillsToolIdConflict(id)
+                }
+            })?;
+
+        // Check tool conflicts with existing tools.
+        for id in tool_defs.keys() {
+            if ctx.existing_tools.contains_key(id) {
+                return Err(AgentOsWiringError::SkillsToolIdConflict(id.clone()));
+            }
+        }
+
+        let mut bundle = ToolBehaviorBundle::new(SKILLS_BUNDLE_ID).with_tools(tool_defs);
+        for plugin in self.build_plugins(frozen) {
+            bundle = bundle.with_behavior(plugin);
+        }
+        Ok(vec![Arc::new(bundle)])
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ResolvedBehaviors — behavior composition helper
+// ---------------------------------------------------------------------------
 
 #[derive(Default)]
 struct ResolvedBehaviors {
@@ -36,6 +130,10 @@ impl ResolvedBehaviors {
     }
 }
 
+// ---------------------------------------------------------------------------
+// AgentOs wiring implementation
+// ---------------------------------------------------------------------------
+
 impl AgentOs {
     pub fn builder() -> AgentOsBuilder {
         AgentOsBuilder::new()
@@ -45,6 +143,7 @@ impl AgentOs {
         self.default_client.clone()
     }
 
+    #[cfg(feature = "skills")]
     pub fn skill_list(&self) -> Option<Vec<Arc<dyn Skill>>> {
         self.skills_registry.as_ref().map(|registry| {
             let mut skills: Vec<Arc<dyn Skill>> = registry.snapshot().into_values().collect();
@@ -72,25 +171,26 @@ impl AgentOs {
         self.base_tools.snapshot()
     }
 
-    pub(super) fn reserved_behavior_ids() -> &'static [&'static str] {
-        &[
-            SKILLS_PLUGIN_ID,
-            SKILLS_DISCOVERY_PLUGIN_ID,
+    /// Collect reserved behavior IDs from all system wirings + internal IDs.
+    pub(super) fn reserved_behavior_ids(
+        system_wirings: &[Arc<dyn SystemWiring>],
+    ) -> Vec<&'static str> {
+        let mut ids = vec![
             AGENT_TOOLS_PLUGIN_ID,
             AGENT_RECOVERY_PLUGIN_ID,
             STOP_POLICY_PLUGIN_ID,
-        ]
-    }
-
-    fn reserved_skills_behavior_ids() -> &'static [&'static str] {
-        &[SKILLS_PLUGIN_ID, SKILLS_DISCOVERY_PLUGIN_ID]
+        ];
+        for wiring in system_wirings {
+            ids.extend_from_slice(wiring.reserved_behavior_ids());
+        }
+        ids
     }
 
     fn resolve_behavior_id_list(
         &self,
         behavior_ids: &[String],
     ) -> Result<Vec<Arc<dyn AgentBehavior>>, AgentOsWiringError> {
-        let reserved = Self::reserved_behavior_ids();
+        let reserved = Self::reserved_behavior_ids(&self.system_wirings);
         let mut out: Vec<Arc<dyn AgentBehavior>> = Vec::new();
         for id in behavior_ids {
             let id = id.trim();
@@ -125,29 +225,12 @@ impl AgentOs {
     pub(super) fn ensure_unique_behavior_ids(
         plugins: &[Arc<dyn AgentBehavior>],
     ) -> Result<(), AgentOsWiringError> {
-        // Fail-fast: plugins are keyed by `AgentBehavior::id()`. Duplicates are almost always a bug.
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         for p in plugins {
             let id = p.id().to_string();
             if !seen.insert(id.clone()) {
                 return Err(AgentOsWiringError::BehaviorAlreadyInstalled(id));
             }
-        }
-        Ok(())
-    }
-
-    fn ensure_skills_plugin_not_installed(
-        plugins: &[Arc<dyn AgentBehavior>],
-    ) -> Result<(), AgentOsWiringError> {
-        let reserved = Self::reserved_skills_behavior_ids();
-        if let Some(existing) = plugins
-            .iter()
-            .map(|p| p.id())
-            .find(|id| reserved.contains(id))
-        {
-            return Err(AgentOsWiringError::SkillsBehaviorAlreadyInstalled(
-                existing.to_string(),
-            ));
         }
         Ok(())
     }
@@ -170,26 +253,13 @@ impl AgentOs {
         Ok(())
     }
 
-    fn build_skills_plugins(
-        &self,
-        registry: Arc<dyn SkillRegistry>,
-    ) -> Vec<Arc<dyn AgentBehavior>> {
-        if !self.skills_config.enabled || !self.skills_config.advertise_catalog {
-            return Vec::new();
-        }
-        let discovery = SkillDiscoveryPlugin::new(registry).with_limits(
-            self.skills_config.discovery_max_entries,
-            self.skills_config.discovery_max_chars,
-        );
-        vec![Arc::new(discovery)]
-    }
-
     fn freeze_agent_registry(&self) -> Arc<dyn AgentRegistry> {
         let mut frozen = InMemoryAgentRegistry::new();
         frozen.extend_upsert(self.agents.snapshot());
         Arc::new(frozen)
     }
 
+    #[cfg(feature = "skills")]
     fn freeze_skill_registry(&self) -> Option<Arc<dyn SkillRegistry>> {
         self.skills_registry.as_ref().map(|registry| {
             let mut frozen = InMemorySkillRegistry::new();
@@ -201,51 +271,31 @@ impl AgentOs {
     fn with_registry_overrides(
         &self,
         agents: Arc<dyn AgentRegistry>,
-        skills_registry: Option<Arc<dyn SkillRegistry>>,
+        #[cfg(feature = "skills")] skills_registry: Option<Arc<dyn SkillRegistry>>,
     ) -> Self {
         let mut cloned = self.clone();
         cloned.agents = agents;
-        cloned.skills_registry = skills_registry;
+        #[cfg(feature = "skills")]
+        {
+            cloned.skills_registry = skills_registry;
+        }
         cloned
-    }
-
-    fn build_skills_wiring_bundles(
-        &self,
-        resolved_plugins: &[Arc<dyn AgentBehavior>],
-        skills_registry: Option<Arc<dyn SkillRegistry>>,
-    ) -> Result<Vec<Arc<dyn RegistryBundle>>, AgentOsWiringError> {
-        if !self.skills_config.enabled {
-            return Ok(Vec::new());
-        }
-
-        Self::ensure_skills_plugin_not_installed(resolved_plugins)?;
-        let registry = skills_registry.ok_or(AgentOsWiringError::SkillsNotConfigured)?;
-
-        let subsystem = SkillSubsystem::new(registry.clone());
-        let mut tool_defs = HashMap::new();
-        subsystem
-            .extend_tools(&mut tool_defs)
-            .map_err(|e| match e {
-                SkillSubsystemError::ToolIdConflict(id) => {
-                    AgentOsWiringError::SkillsToolIdConflict(id)
-                }
-            })?;
-
-        let mut bundle = ToolBehaviorBundle::new(SKILLS_BUNDLE_ID).with_tools(tool_defs);
-        for plugin in self.build_skills_plugins(registry) {
-            bundle = bundle.with_behavior(plugin);
-        }
-        Ok(vec![Arc::new(bundle)])
     }
 
     fn build_agent_tool_wiring_bundles(
         &self,
         resolved_plugins: &[Arc<dyn AgentBehavior>],
         agents_registry: Arc<dyn AgentRegistry>,
-        skills_registry: Option<Arc<dyn SkillRegistry>>,
     ) -> Result<Vec<Arc<dyn RegistryBundle>>, AgentOsWiringError> {
         Self::ensure_agent_tools_plugin_not_installed(resolved_plugins)?;
-        let pinned_os = self.with_registry_overrides(agents_registry.clone(), skills_registry);
+
+        #[cfg(feature = "skills")]
+        let pinned_os = {
+            let frozen_skills = self.freeze_skill_registry();
+            self.with_registry_overrides(agents_registry.clone(), frozen_skills)
+        };
+        #[cfg(not(feature = "skills"))]
+        let pinned_os = self.with_registry_overrides(agents_registry.clone());
 
         let run_tool: Arc<dyn Tool> = Arc::new(AgentRunTool::new(
             pinned_os.clone(),
@@ -400,6 +450,7 @@ impl AgentOs {
     }
 
     fn wiring_tool_conflict(bundle_id: &str, id: String) -> AgentOsWiringError {
+        #[cfg(feature = "skills")]
         if bundle_id == SKILLS_BUNDLE_ID {
             return AgentOsWiringError::SkillsToolIdConflict(id);
         }
@@ -432,18 +483,26 @@ impl AgentOs {
         definition: AgentDefinition,
         tools: &mut HashMap<String, Arc<dyn Tool>>,
     ) -> Result<BaseAgent, AgentOsWiringError> {
-        // Resolve plugins: system bundles (skills, agent_tools, agent_recovery) -> behavior_ids
         let resolved_plugins = self.resolve_behavior_id_list(&definition.behavior_ids)?;
         let frozen_agents = self.freeze_agent_registry();
-        let frozen_skills = self.freeze_skill_registry();
 
-        let mut system_bundles =
-            self.build_skills_wiring_bundles(&resolved_plugins, frozen_skills.clone())?;
-        system_bundles.extend(self.build_agent_tool_wiring_bundles(
-            &resolved_plugins,
-            frozen_agents,
-            frozen_skills,
-        )?);
+        // Run all system wirings generically.
+        let wiring_ctx = WiringContext {
+            resolved_behaviors: &resolved_plugins,
+            existing_tools: tools,
+            agent_definition: &definition,
+        };
+        let mut system_bundles = Vec::new();
+        for wiring in &self.system_wirings {
+            let bundles = wiring.wire(&wiring_ctx)?;
+            system_bundles.extend(bundles);
+        }
+
+        // Agent tools stay hardcoded (internal, needs &self/AgentOs access).
+        system_bundles.extend(
+            self.build_agent_tool_wiring_bundles(&resolved_plugins, frozen_agents)?,
+        );
+
         let system_plugins = self.merge_wiring_bundles(&system_bundles, tools)?;
         let mut all_plugins = ResolvedBehaviors::default()
             .with_global(system_plugins)
@@ -488,15 +547,26 @@ impl AgentOs {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "skills"))]
     pub(crate) fn wire_skills_into(
         &self,
         definition: AgentDefinition,
         tools: &mut HashMap<String, Arc<dyn Tool>>,
     ) -> Result<BaseAgent, AgentOsWiringError> {
         let resolved_plugins = self.resolve_behavior_id_list(&definition.behavior_ids)?;
-        let skills_bundles =
-            self.build_skills_wiring_bundles(&resolved_plugins, self.freeze_skill_registry())?;
+
+        // Build skills wiring via SystemWiring iteration (only skills wirings apply).
+        let wiring_ctx = WiringContext {
+            resolved_behaviors: &resolved_plugins,
+            existing_tools: tools,
+            agent_definition: &definition,
+        };
+        let mut skills_bundles = Vec::new();
+        for wiring in &self.system_wirings {
+            let bundles = wiring.wire(&wiring_ctx)?;
+            skills_bundles.extend(bundles);
+        }
+
         let skills_plugins = self.merge_wiring_bundles(&skills_bundles, tools)?;
         let mut all_plugins = ResolvedBehaviors::default()
             .with_global(skills_plugins)
@@ -525,10 +595,6 @@ impl AgentOs {
     }
 
     /// Resolve an agent's static wiring: config, tools, and run config.
-    ///
-    /// This performs all one-time resolution (tool filtering, model lookup,
-    /// plugin wiring) and returns a [`ResolvedRun`] that can be inspected
-    /// or mutated before execution.
     pub fn resolve(&self, agent_id: &str) -> Result<ResolvedRun, AgentOsResolveError> {
         let definition = self
             .agents

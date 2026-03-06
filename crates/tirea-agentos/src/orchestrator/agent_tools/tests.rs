@@ -1154,6 +1154,7 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
     );
 }
 
+#[cfg(feature = "permission")]
 #[tokio::test]
 async fn recovery_plugin_auto_deny_when_permission_deny() {
     let plugin = AgentRecoveryPlugin::new(Arc::new(SubAgentHandleTable::new()));
@@ -1243,6 +1244,7 @@ async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
     );
 }
 
+#[cfg(feature = "permission")]
 #[tokio::test]
 async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
     let plugin = AgentRecoveryPlugin::new(Arc::new(SubAgentHandleTable::new()));
@@ -1285,6 +1287,7 @@ async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
         .map_or(true, |calls| calls.is_empty()));
 }
 
+#[cfg(feature = "permission")]
 #[tokio::test]
 async fn recovery_plugin_tool_rule_overrides_default_behavior() {
     let plugin = AgentRecoveryPlugin::new(Arc::new(SubAgentHandleTable::new()));

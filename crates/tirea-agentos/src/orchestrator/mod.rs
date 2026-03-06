@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
+#[cfg(feature = "skills")]
 use std::time::Duration;
 
 use futures::Stream;
@@ -14,10 +15,10 @@ use crate::contracts::thread::Message;
 use crate::contracts::thread::Thread;
 use crate::contracts::RunContext;
 use crate::contracts::{AgentEvent, RunRequest, ToolCallDecision};
+#[cfg(feature = "skills")]
 use crate::extensions::skills::{
-    CompositeSkillRegistry, InMemorySkillRegistry, Skill, SkillDiscoveryPlugin, SkillError,
-    SkillRegistry, SkillRegistryError, SkillRegistryManagerError, SkillSubsystem,
-    SkillSubsystemError,
+    CompositeSkillRegistry, InMemorySkillRegistry, Skill, SkillError, SkillRegistry,
+    SkillRegistryError, SkillRegistryManagerError,
 };
 use crate::runtime::loop_runner::{
     Agent, AgentLoopError, BaseAgent, RunCancellationToken, StateCommitError, StateCommitter,
@@ -31,6 +32,7 @@ mod composition;
 mod policy;
 mod run;
 mod stop_policy_plugin;
+pub(crate) mod system_wiring;
 mod wiring;
 
 #[cfg(test)]
@@ -57,6 +59,8 @@ pub use stop_policy_plugin::{
     ConsecutiveErrors, ContentMatch, LoopDetection, MaxRounds, StopConditionSpec, StopOnTool,
     StopPolicy, StopPolicyInput, StopPolicyStats, Timeout, TokenBudget,
 };
+
+pub use system_wiring::{SystemWiring, WiringContext};
 
 pub use crate::runtime::loop_runner::ResolvedRun;
 
@@ -94,6 +98,7 @@ impl StateCommitter for AgentStateStoreStateCommitter {
 ///   before inference so the model knows which skills are available.
 /// - `enabled: true, advertise_catalog: false` → tools are registered but the catalog
 ///   is not injected (the model must be told about skills through other means).
+#[cfg(feature = "skills")]
 #[derive(Debug, Clone)]
 pub struct SkillsConfig {
     pub enabled: bool,
@@ -102,6 +107,7 @@ pub struct SkillsConfig {
     pub discovery_max_chars: usize,
 }
 
+#[cfg(feature = "skills")]
 impl Default for SkillsConfig {
     fn default() -> Self {
         Self {
@@ -143,12 +149,15 @@ pub enum AgentOsWiringError {
     #[error("behavior id already installed: {0}")]
     BehaviorAlreadyInstalled(String),
 
+    #[cfg(feature = "skills")]
     #[error("skills tool id already registered: {0}")]
     SkillsToolIdConflict(String),
 
+    #[cfg(feature = "skills")]
     #[error("skills behavior already installed: {0}")]
     SkillsBehaviorAlreadyInstalled(String),
 
+    #[cfg(feature = "skills")]
     #[error("skills enabled but no skills configured")]
     SkillsNotConfigured,
 
@@ -195,12 +204,15 @@ pub enum AgentOsBuildError {
     #[error(transparent)]
     Models(#[from] ModelRegistryError),
 
+    #[cfg(feature = "skills")]
     #[error(transparent)]
     Skills(#[from] SkillError),
 
+    #[cfg(feature = "skills")]
     #[error(transparent)]
     SkillRegistry(#[from] SkillRegistryError),
 
+    #[cfg(feature = "skills")]
     #[error(transparent)]
     SkillRegistryManager(#[from] SkillRegistryManagerError),
 
@@ -252,6 +264,7 @@ pub enum AgentOsBuildError {
         model_id: String,
     },
 
+    #[cfg(feature = "skills")]
     #[error("skills enabled but no skills configured")]
     SkillsNotConfigured,
 }
@@ -365,14 +378,14 @@ pub struct AgentOs {
     providers: Arc<dyn ProviderRegistry>,
     models: Arc<dyn ModelRegistry>,
     stop_policies: Arc<dyn StopPolicyRegistry>,
+    #[cfg(feature = "skills")]
     skills_registry: Option<Arc<dyn SkillRegistry>>,
-    skills_config: SkillsConfig,
+    system_wirings: Vec<Arc<dyn SystemWiring>>,
     sub_agent_handles: Arc<SubAgentHandleTable>,
     agent_tools: AgentToolsConfig,
     agent_state_store: Option<Arc<dyn ThreadStore>>,
 }
 
-#[derive(Clone)]
 pub struct AgentOsBuilder {
     client: Option<Client>,
     bundles: Vec<Arc<dyn RegistryBundle>>,
@@ -388,10 +401,15 @@ pub struct AgentOsBuilder {
     provider_registries: Vec<Arc<dyn ProviderRegistry>>,
     models: HashMap<String, ModelDefinition>,
     model_registries: Vec<Arc<dyn ModelRegistry>>,
+    #[cfg(feature = "skills")]
     skills: Vec<Arc<dyn Skill>>,
+    #[cfg(feature = "skills")]
     skill_registries: Vec<Arc<dyn SkillRegistry>>,
+    #[cfg(feature = "skills")]
     skills_refresh_interval: Option<Duration>,
+    #[cfg(feature = "skills")]
     skills_config: SkillsConfig,
+    system_wirings: Vec<Arc<dyn SystemWiring>>,
     agent_tools: AgentToolsConfig,
     agent_state_store: Option<Arc<dyn ThreadStore>>,
 }
