@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::io::decision_translation;
+
 /// Generic suspension request for client-side actions.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Suspension {
@@ -63,20 +65,7 @@ pub struct SuspensionResponse {
 
 impl SuspensionResponse {
     fn deny_string_token(value: &str) -> bool {
-        matches!(
-            value,
-            "false"
-                | "no"
-                | "denied"
-                | "deny"
-                | "reject"
-                | "rejected"
-                | "cancel"
-                | "canceled"
-                | "cancelled"
-                | "abort"
-                | "aborted"
-        )
+        decision_translation::is_denied_token(value)
     }
 
     fn object_deny_flag(obj: &serde_json::Map<String, Value>) -> bool {
@@ -95,7 +84,7 @@ impl SuspensionResponse {
             || ["status", "decision", "action"].iter().any(|key| {
                 obj.get(*key)
                     .and_then(Value::as_str)
-                    .map(|v| Self::deny_string_token(&v.trim().to_lowercase()))
+                    .map(decision_translation::is_denied_token)
                     .unwrap_or(false)
             })
     }
