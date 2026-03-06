@@ -209,7 +209,26 @@ impl StreamCollector {
         }
 
         let usage = self.usage.as_ref().map(token_usage_from_genai);
-        let stop_reason = Self::infer_stop_reason(&tool_calls, &usage, max_output_tokens);
+        let mut stop_reason = Self::infer_stop_reason(&tool_calls, &usage, max_output_tokens);
+
+        // When hitting max_tokens, the last tool call may have been
+        // truncated mid-name or have empty arguments. Drop it — the model
+        // will re-issue on the next turn after seeing the other results.
+        if matches!(stop_reason, Some(StopReason::MaxTokens) | Some(StopReason::ToolUse)) {
+            if let (Some(u), Some(max)) = (&usage, max_output_tokens) {
+                if u.completion_tokens == Some(max as i32) {
+                    if let Some(last) = tool_calls.last() {
+                        if last.arguments.is_null() {
+                            tool_calls.pop();
+                            // Re-infer: may switch from ToolUse → MaxTokens
+                            // if this was the only tool call.
+                            stop_reason =
+                                Self::infer_stop_reason(&tool_calls, &usage, max_output_tokens);
+                        }
+                    }
+                }
+            }
+        }
 
         StreamResult {
             text: self.text,
@@ -1743,5 +1762,102 @@ mod tests {
         // Tool call should be present
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].arguments, json!({"q": "test"}));
+    }
+
+    #[test]
+    fn test_last_tool_call_with_null_args_dropped_at_max_tokens() {
+        // Scenario C/D: tool call truncated mid-name or with empty arguments
+        // at max_tokens boundary. The last incomplete call should be dropped.
+        let mut collector = StreamCollector::new();
+
+        // Complete tool call
+        let tc1 = genai::chat::ToolCall {
+            call_id: "c1".to_string(),
+            fn_name: "search".to_string(),
+            fn_arguments: Value::String(r#"{"q":"rust"}"#.to_string()),
+            thought_signatures: None,
+        };
+        collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc1 }));
+
+        // Truncated tool call — name present but no arguments
+        let tc2 = genai::chat::ToolCall {
+            call_id: "c2".to_string(),
+            fn_name: "calcu".to_string(), // truncated name
+            fn_arguments: Value::String(String::new()),
+            thought_signatures: None,
+        };
+        collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc2 }));
+
+        // Simulate max_tokens: completion_tokens == max_output_tokens
+        collector.usage = Some(genai::chat::Usage {
+            prompt_tokens: Some(100),
+            completion_tokens: Some(4096),
+            ..Default::default()
+        });
+
+        let result = collector.finish(Some(4096));
+        // Only the complete tool call survives
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].name, "search");
+        // stop_reason remains ToolUse because there's still a complete call
+        assert_eq!(result.stop_reason, Some(StopReason::ToolUse));
+    }
+
+    #[test]
+    fn test_single_tool_call_with_null_args_at_max_tokens_triggers_max_tokens() {
+        // Scenario: only one tool call and it's truncated (empty args).
+        // After dropping it, tool_calls is empty → stop_reason = MaxTokens.
+        let mut collector = StreamCollector::new();
+
+        collector.process(ChatStreamEvent::Chunk(StreamChunk {
+            content: "Let me search".to_string(),
+        }));
+
+        let tc = genai::chat::ToolCall {
+            call_id: "c1".to_string(),
+            fn_name: "sear".to_string(), // truncated
+            fn_arguments: Value::String(String::new()),
+            thought_signatures: None,
+        };
+        collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc }));
+
+        collector.usage = Some(genai::chat::Usage {
+            prompt_tokens: Some(100),
+            completion_tokens: Some(4096),
+            ..Default::default()
+        });
+
+        let result = collector.finish(Some(4096));
+        // Truncated tool call dropped, no tool calls remain
+        assert_eq!(result.tool_calls.len(), 0);
+        // Re-inferred as MaxTokens → plugin can trigger recovery
+        assert_eq!(result.stop_reason, Some(StopReason::MaxTokens));
+        assert_eq!(result.text, "Let me search");
+    }
+
+    #[test]
+    fn test_complete_tool_calls_not_dropped_at_max_tokens() {
+        // All tool calls have valid arguments — nothing should be dropped
+        // even when hitting max_tokens.
+        let mut collector = StreamCollector::new();
+
+        let tc = genai::chat::ToolCall {
+            call_id: "c1".to_string(),
+            fn_name: "search".to_string(),
+            fn_arguments: Value::String(r#"{"q":"test"}"#.to_string()),
+            thought_signatures: None,
+        };
+        collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc }));
+
+        collector.usage = Some(genai::chat::Usage {
+            prompt_tokens: Some(100),
+            completion_tokens: Some(4096),
+            ..Default::default()
+        });
+
+        let result = collector.finish(Some(4096));
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].name, "search");
+        assert_eq!(result.stop_reason, Some(StopReason::ToolUse));
     }
 }
