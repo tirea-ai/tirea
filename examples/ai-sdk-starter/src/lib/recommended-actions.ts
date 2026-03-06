@@ -47,10 +47,46 @@ export const RECOMMENDED_ACTIONS: StarterAction[] = [
   {
     id: "demo-progress",
     scenarioId: "backend.progress_demo",
-    title: "Progress Demo",
+    title: "Progress (Default)",
     capability: "Tool Progress",
     prompt:
-      "Use the progress_demo tool now so I can observe tool progress events.",
+      "Use the progress_demo tool with scenario 'default' so I can observe tool progress events.",
+    agentId: "default",
+  },
+  {
+    id: "demo-progress-pipeline",
+    scenarioId: "backend.progress_demo.pipeline",
+    title: "Progress (Data Pipeline)",
+    capability: "Tool Progress",
+    prompt:
+      "Use the progress_demo tool with scenario 'data_pipeline' to simulate an ETL data pipeline.",
+    agentId: "default",
+  },
+  {
+    id: "demo-progress-deploy",
+    scenarioId: "backend.progress_demo.deploy",
+    title: "Progress (Deploy)",
+    capability: "Tool Progress",
+    prompt:
+      "Use the progress_demo tool with scenario 'deploy' to simulate a deployment pipeline.",
+    agentId: "default",
+  },
+  {
+    id: "demo-progress-build",
+    scenarioId: "backend.progress_demo.build",
+    title: "Progress (Slow Build)",
+    capability: "Tool Progress",
+    prompt:
+      "Use the progress_demo tool with scenario 'slow_build' to simulate a long compilation.",
+    agentId: "default",
+  },
+  {
+    id: "demo-progress-multi",
+    scenarioId: "backend.progress_demo.multi_phase",
+    title: "Progress (Multi-Phase)",
+    capability: "Tool Progress",
+    prompt:
+      "Use the progress_demo tool with scenario 'multi_phase' to simulate a multi-phase workflow.",
     agentId: "default",
   },
   {

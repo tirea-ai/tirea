@@ -261,44 +261,202 @@ impl Tool for ProgressDemoTool {
         ToolDescriptor::new(
             "progress_demo",
             "Progress Demo",
-            "Emit tool-call progress events then return completion result.",
+            "Run a long-running task with real-time progress updates. \
+             Use the 'scenario' parameter to pick a demo pattern.",
         )
         .with_parameters(json!({
             "type": "object",
-            "properties": {},
-            "required": [],
-            "additionalProperties": false
+            "properties": {
+                "scenario": {
+                    "type": "string",
+                    "description": "Progress scenario to demonstrate",
+                    "enum": ["default", "data_pipeline", "deploy", "slow_build", "multi_phase"],
+                    "default": "default"
+                }
+            },
+            "required": []
         }))
     }
 
     async fn execute(
         &self,
-        _args: Value,
+        args: Value,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
-        let updates = [
-            (0.1_f64, "queued"),
-            (0.45_f64, "running"),
-            (0.8_f64, "finishing"),
-            (1.0_f64, "completed"),
-        ];
-
-        for (progress, message) in updates {
+        let scenario = args["scenario"].as_str().unwrap_or("default");
+        let report = |status: ToolCallProgressStatus,
+                      progress: f64,
+                      loaded: f64,
+                      total: f64,
+                      message: &str|
+         -> Result<(), ToolError> {
             ctx.report_tool_call_progress(ToolCallProgressUpdate {
-                status: ToolCallProgressStatus::Running,
+                status,
                 progress: Some(progress),
-                loaded: Some(progress * 100.0),
-                total: Some(100.0),
+                loaded: Some(loaded),
+                total: Some(total),
                 message: Some(message.to_string()),
             })
-            .map_err(|err| ToolError::Internal(format!("progress emit failed: {err}")))?;
-            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-        }
+            .map_err(|err| ToolError::Internal(format!("progress emit failed: {err}")))
+        };
 
-        Ok(ToolResult::success(
-            "progress_demo",
-            json!({ "status": "ok", "progress": 1.0 }),
-        ))
+        match scenario {
+            "data_pipeline" => {
+                // Simulates an ETL pipeline: extract → transform → load
+                let phases = [
+                    (0.0, "Connecting to data source..."),
+                    (0.05, "Extracting records (0/500)..."),
+                    (0.15, "Extracting records (100/500)..."),
+                    (0.25, "Extracting records (250/500)..."),
+                    (0.35, "Extraction complete (500 records)"),
+                    (0.40, "Transforming: schema validation..."),
+                    (0.50, "Transforming: field mapping..."),
+                    (0.60, "Transforming: deduplication..."),
+                    (0.65, "Transform complete"),
+                    (0.70, "Loading: batch 1/3..."),
+                    (0.80, "Loading: batch 2/3..."),
+                    (0.90, "Loading: batch 3/3..."),
+                    (0.95, "Verifying data integrity..."),
+                    (1.0, "Pipeline complete: 500 records processed"),
+                ];
+                for (progress, message) in phases {
+                    let status = if progress < 1.0 {
+                        ToolCallProgressStatus::Running
+                    } else {
+                        ToolCallProgressStatus::Done
+                    };
+                    report(status, progress, progress * 500.0, 500.0, message)?;
+                    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                }
+                Ok(ToolResult::success(
+                    "progress_demo",
+                    json!({ "scenario": "data_pipeline", "records_processed": 500, "status": "ok" }),
+                ))
+            }
+            "deploy" => {
+                // Simulates a deployment pipeline
+                let phases = [
+                    (ToolCallProgressStatus::Pending, 0.0, "Queued for deployment..."),
+                    (ToolCallProgressStatus::Running, 0.10, "Building container image..."),
+                    (ToolCallProgressStatus::Running, 0.25, "Pushing image to registry..."),
+                    (ToolCallProgressStatus::Running, 0.35, "Running pre-deploy checks..."),
+                    (ToolCallProgressStatus::Running, 0.45, "Rolling update: 0/3 pods ready"),
+                    (ToolCallProgressStatus::Running, 0.60, "Rolling update: 1/3 pods ready"),
+                    (ToolCallProgressStatus::Running, 0.75, "Rolling update: 2/3 pods ready"),
+                    (ToolCallProgressStatus::Running, 0.85, "Rolling update: 3/3 pods ready"),
+                    (ToolCallProgressStatus::Running, 0.92, "Running health checks..."),
+                    (ToolCallProgressStatus::Running, 0.97, "Switching traffic..."),
+                    (ToolCallProgressStatus::Done, 1.0, "Deployment successful (v2.4.1)"),
+                ];
+                for (status, progress, message) in phases {
+                    report(status, progress, progress * 100.0, 100.0, message)?;
+                    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                }
+                Ok(ToolResult::success(
+                    "progress_demo",
+                    json!({ "scenario": "deploy", "version": "v2.4.1", "pods": 3, "status": "ok" }),
+                ))
+            }
+            "slow_build" => {
+                // Simulates a long compile/build with fine-grained percentage ticks
+                let total_steps = 20u32;
+                report(
+                    ToolCallProgressStatus::Pending,
+                    0.0, 0.0, total_steps as f64,
+                    "Build queued...",
+                )?;
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                for step in 1..=total_steps {
+                    let progress = step as f64 / total_steps as f64;
+                    let message = match step {
+                        1 => "Resolving dependencies...".to_string(),
+                        2..=4 => format!("Compiling crate {}/{total_steps}...", step),
+                        5 => "Linking stage 1...".to_string(),
+                        6..=15 => format!("Compiling crate {}/{total_steps}...", step),
+                        16 => "Linking stage 2...".to_string(),
+                        17..=19 => format!("Running tests {}/3...", step - 16),
+                        _ => "Build successful".to_string(),
+                    };
+                    let status = if step == total_steps {
+                        ToolCallProgressStatus::Done
+                    } else {
+                        ToolCallProgressStatus::Running
+                    };
+                    report(status, progress, step as f64, total_steps as f64, &message)?;
+                    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                }
+                Ok(ToolResult::success(
+                    "progress_demo",
+                    json!({ "scenario": "slow_build", "crates_compiled": total_steps, "status": "ok" }),
+                ))
+            }
+            "multi_phase" => {
+                // Three distinct phases with phase labels
+                let phases: &[(&str, &[(f64, &str)])] = &[
+                    ("Phase 1: Analysis", &[
+                        (0.0, "Scanning codebase..."),
+                        (0.08, "Parsing AST (125 files)..."),
+                        (0.15, "Building dependency graph..."),
+                        (0.22, "Analysis complete"),
+                    ]),
+                    ("Phase 2: Processing", &[
+                        (0.25, "Applying transformations..."),
+                        (0.35, "Optimizing hot paths..."),
+                        (0.45, "Generating intermediate output..."),
+                        (0.55, "Processing complete"),
+                    ]),
+                    ("Phase 3: Finalization", &[
+                        (0.60, "Writing output artifacts..."),
+                        (0.70, "Computing checksums..."),
+                        (0.80, "Uploading to artifact store..."),
+                        (0.90, "Cleaning up temp files..."),
+                        (1.0, "All phases complete"),
+                    ]),
+                ];
+                for (phase_name, steps) in phases {
+                    for (progress, step_msg) in *steps {
+                        let msg = format!("[{phase_name}] {step_msg}");
+                        let status = if *progress >= 1.0 {
+                            ToolCallProgressStatus::Done
+                        } else {
+                            ToolCallProgressStatus::Running
+                        };
+                        report(status, *progress, progress * 100.0, 100.0, &msg)?;
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    }
+                }
+                Ok(ToolResult::success(
+                    "progress_demo",
+                    json!({ "scenario": "multi_phase", "phases": 3, "status": "ok" }),
+                ))
+            }
+            _ => {
+                // Default: steady 10-step progress over ~5 seconds
+                let steps = 10u32;
+                for step in 0..=steps {
+                    let progress = step as f64 / steps as f64;
+                    let status = if step == steps {
+                        ToolCallProgressStatus::Done
+                    } else if step == 0 {
+                        ToolCallProgressStatus::Pending
+                    } else {
+                        ToolCallProgressStatus::Running
+                    };
+                    let message = match step {
+                        0 => "Initializing...".to_string(),
+                        s if s == steps => "Complete".to_string(),
+                        s => format!("Processing step {s}/{steps}..."),
+                    };
+                    report(status, progress, step as f64, steps as f64, &message)?;
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                Ok(ToolResult::success(
+                    "progress_demo",
+                    json!({ "scenario": "default", "steps": steps, "status": "ok" }),
+                ))
+            }
+        }
     }
 }
 
