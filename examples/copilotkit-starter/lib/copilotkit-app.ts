@@ -8,7 +8,13 @@ import { PersistedThreadHttpAgent } from "@/lib/persisted-http-agent";
 import { loadThreadSnapshotFromBackend } from "@/lib/tirea-backend";
 
 const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:38080";
-const AGENT_IDS = ["default", "permission", "stopper"] as const;
+const AGENT_IDS = [
+  "default",
+  "permission",
+  "stopper",
+  "travel",
+  "research",
+] as const;
 
 const agents = Object.fromEntries(
   AGENT_IDS.map((agentId) => [

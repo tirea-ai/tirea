@@ -22,10 +22,16 @@ use tirea_extension_mcp::McpToolRegistryManager;
 use tirea_store_adapters::{FileRunStore, FileStore};
 use tower_http::cors::{Any, CorsLayer};
 
+use crate::research::tools::{
+    DeleteResourcesTool, ExtractResourcesTool, SearchTool, SetQuestionTool, WriteReportTool,
+};
 use crate::starter_backend::frontend_tools::FrontendToolPlugin;
 use crate::starter_backend::tools::{
     AppendNoteTool, AskUserQuestionTool, FailingTool, FinishTool, GetStockPriceTool,
     GetWeatherTool, ProgressDemoTool, ServerInfoTool, SetBackgroundColorTool,
+};
+use crate::travel::tools::{
+    AddTripTool, DeleteTripTool, SearchPlacesTool, SelectTripTool, UpdateTripTool,
 };
 
 #[derive(Debug, Clone, Parser)]
@@ -130,6 +136,40 @@ Deterministic compatibility directives:\n\
         tool_execution_mode: ToolExecutionMode::ParallelStreaming,
         ..Default::default()
     };
+    let travel_agent = AgentDefinition {
+        id: "travel".to_string(),
+        model: args.model.clone(),
+        system_prompt: concat!(
+            "You are a travel planning assistant. Help users plan trips by adding, ",
+            "updating, and searching for places of interest. Use the provided tools ",
+            "to manage trips and find destinations.\n\n",
+            "When the user asks to plan a trip, create it with add_trips, then ",
+            "search_for_places to find interesting locations. Always select the ",
+            "active trip with select_trip after creating it."
+        )
+        .into(),
+        max_rounds: args.max_rounds,
+        behavior_ids: vec!["permission".to_string()],
+        ..Default::default()
+    };
+    let research_agent = AgentDefinition {
+        id: "research".to_string(),
+        model: args.model.clone(),
+        system_prompt: concat!(
+            "You are a research assistant. Help users research topics by searching ",
+            "the web, extracting resources, and writing comprehensive reports.\n\n",
+            "Workflow:\n",
+            "1. Set the research question with set_research_question\n",
+            "2. Search for information with search\n",
+            "3. Extract useful resources with extract_resources\n",
+            "4. Write a report with write_report\n\n",
+            "Always keep the user informed of your progress."
+        )
+        .into(),
+        max_rounds: args.max_rounds,
+        behavior_ids: vec!["permission".to_string()],
+        ..Default::default()
+    };
 
     let tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(GetWeatherTool),
@@ -141,6 +181,16 @@ Deterministic compatibility directives:\n\
         Arc::new(ProgressDemoTool),
         Arc::new(AskUserQuestionTool),
         Arc::new(SetBackgroundColorTool),
+        Arc::new(AddTripTool),
+        Arc::new(UpdateTripTool),
+        Arc::new(DeleteTripTool),
+        Arc::new(SelectTripTool),
+        Arc::new(SearchPlacesTool),
+        Arc::new(SearchTool),
+        Arc::new(WriteReportTool),
+        Arc::new(SetQuestionTool),
+        Arc::new(DeleteResourcesTool),
+        Arc::new(ExtractResourcesTool),
     ];
     let mut tool_map: HashMap<String, Arc<dyn Tool>> = tool_map_from_arc(tools);
 
@@ -184,6 +234,12 @@ Deterministic compatibility directives:\n\
     }
     if default_id != "stopper" {
         builder = builder.with_agent("stopper", stopper_agent);
+    }
+    if default_id != "travel" {
+        builder = builder.with_agent("travel", travel_agent);
+    }
+    if default_id != "research" {
+        builder = builder.with_agent("research", research_agent);
     }
 
     let plugins: Vec<(String, Arc<dyn AgentBehavior>)> = vec![

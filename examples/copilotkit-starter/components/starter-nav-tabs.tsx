@@ -3,8 +3,9 @@
 import Link from "next/link";
 
 type StarterMode = "v1" | "v2" | "threads";
+type ExtendedStarterMode = StarterMode | "travel" | "research";
 
-export function StarterNavTabs({ mode }: { mode: StarterMode }) {
+export function StarterNavTabs({ mode }: { mode: ExtendedStarterMode }) {
   const tabClass = (active: boolean) =>
     active
       ? "rounded-full border border-cyan-700 bg-cyan-700 px-3 py-1.5 text-sm font-semibold text-cyan-50 shadow-[0_10px_24px_rgba(14,116,144,0.24)]"
@@ -35,6 +36,20 @@ export function StarterNavTabs({ mode }: { mode: StarterMode }) {
         className={tabClass(mode === "threads")}
       >
         Persisted Threads
+      </Link>
+      <Link
+        href="/travel"
+        data-testid="travel-link"
+        className={tabClass(mode === "travel")}
+      >
+        Travel
+      </Link>
+      <Link
+        href="/research"
+        data-testid="research-link"
+        className={tabClass(mode === "research")}
+      >
+        Research
       </Link>
     </nav>
   );

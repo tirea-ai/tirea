@@ -20,6 +20,7 @@
     "@copilotkit/react-ui": "1.51.4",
     "@copilotkit/runtime": "1.51.4",
     "@copilotkitnext/runtime": "^1.51.4",
+    "leaflet": "^1.9.4",
     "next": "15",
     "react": "19",
     "react-dom": "19",
@@ -27,6 +28,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.52.0",
+    "@types/leaflet": "^1.9.21",
     "@types/node": "^22",
     "@types/react": "^19",
     "autoprefixer": "^10.4.24",
