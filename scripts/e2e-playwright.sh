@@ -40,14 +40,13 @@ cleanup() {
 trap cleanup EXIT
 
 # Build backends.
-echo "Building tirea-agentos-server, tirea-examples, and copilotkit-starter-agent..."
-cargo build --package tirea-agentos-server --package tirea-examples --package copilotkit-starter-agent
+echo "Building ai-sdk-starter-agent, tirea-examples, and copilotkit-starter-agent..."
+cargo build --package ai-sdk-starter-agent --package tirea-examples --package copilotkit-starter-agent
 
 # Start backend for ai-sdk.
 echo "Starting backend on :$BACKEND_PORT..."
-cargo run --package tirea-agentos-server -- \
-    --http-addr "127.0.0.1:$BACKEND_PORT" \
-    --config examples/ai-sdk-starter/agent-config.json &
+cargo run --package ai-sdk-starter-agent -- \
+    --http-addr "127.0.0.1:$BACKEND_PORT" &
 PIDS+=($!)
 
 # Start copilotkit backend (copilotkit-starter has its own agent binary).

@@ -24,4 +24,4 @@ cleanup() {
 trap cleanup EXIT
 
 echo "Running E2E tests via TensorZero..."
-cargo test --package carve-agentos-server --test e2e_tensorzero -- --ignored --nocapture
+cargo test --package tirea-agentos-server --test e2e_tensorzero -- --ignored --nocapture

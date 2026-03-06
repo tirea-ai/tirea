@@ -3,13 +3,18 @@ set -euo pipefail
 
 WORKSPACE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-echo "==> Building cargo doc..."
-cargo doc --workspace --no-deps --manifest-path "$WORKSPACE_ROOT/Cargo.toml"
-
-if ! command -v mdbook-mermaid >/dev/null 2>&1; then
-    echo "error: mdbook-mermaid is required. Install with: cargo install mdbook-mermaid"
+if ! command -v mdbook >/dev/null 2>&1; then
+    echo "error: mdbook is required. Install with: cargo install mdbook --locked --version 0.5.2"
     exit 1
 fi
+
+if ! command -v mdbook-mermaid >/dev/null 2>&1; then
+    echo "error: mdbook-mermaid is required. Install with: cargo install mdbook-mermaid --locked"
+    exit 1
+fi
+
+echo "==> Building cargo doc..."
+cargo doc --workspace --no-deps --manifest-path "$WORKSPACE_ROOT/Cargo.toml"
 
 echo "==> Installing Mermaid support..."
 mdbook-mermaid install "$WORKSPACE_ROOT/docs/book"

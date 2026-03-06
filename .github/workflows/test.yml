@@ -26,3 +26,49 @@ jobs:
 
       - name: Run workspace tests
         run: cargo test --workspace
+
+  ai-sdk-starter-build:
+    name: AI SDK Starter Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/ai-sdk-starter
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: examples/ai-sdk-starter/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build starter
+        run: npm run build
+
+  copilotkit-starter-build:
+    name: CopilotKit Starter Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/copilotkit-starter
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: examples/copilotkit-starter/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build starter
+        run: npm run build

@@ -3,7 +3,35 @@
 Tirea is an immutable state-driven agent framework in Rust.
 It combines typed JSON state management, deterministic patch application, and an agent runtime/orchestration stack.
 
-## Workspace crates
+## Start here
+
+Choose the path that matches what you want to do first:
+
+- **Run a full-stack demo quickly**
+  - [AI SDK starter](./examples/ai-sdk-starter/README.md) — Vite + React + AI SDK v6
+  - [CopilotKit starter](./examples/copilotkit-starter/README.md) — Next.js + AG-UI + CopilotKit
+- **Learn the core runtime APIs**
+  - [First Agent tutorial](./docs/book/src/tutorials/first-agent.md)
+  - [First Tool tutorial](./docs/book/src/tutorials/first-tool.md)
+- **Integrate the Rust crates into your own app**
+  - [Build an Agent](./docs/book/src/how-to/build-an-agent.md)
+  - [Expose HTTP SSE](./docs/book/src/how-to/expose-http-sse.md)
+- **Contribute to the framework itself**
+  - [Contributing guide](./CONTRIBUTING.md)
+  - [Capability matrix](./docs/book/src/reference/capability-matrix.md)
+
+## Recommended newcomer paths
+
+| Goal | Start with | Then go to |
+|---|---|---|
+| Build your first backend agent | [`docs/book/src/tutorials/first-agent.md`](./docs/book/src/tutorials/first-agent.md) | [`docs/book/src/how-to/build-an-agent.md`](./docs/book/src/how-to/build-an-agent.md) |
+| See a working frontend + backend app | [`examples/ai-sdk-starter/README.md`](./examples/ai-sdk-starter/README.md) | [`examples/copilotkit-starter/README.md`](./examples/copilotkit-starter/README.md) |
+| Understand the public API surface | [`docs/book/src/reference/api.md`](./docs/book/src/reference/api.md) | `cargo doc --workspace --no-deps --open` |
+| Work on core runtime/orchestration code | [`CONTRIBUTING.md`](./CONTRIBUTING.md) | [`docs/book/src/reference/capability-matrix.md`](./docs/book/src/reference/capability-matrix.md) |
+
+## Repository map
+
+### Core workspace crates
 
 - `tirea-state`: typed state + JSON patch apply/conflict detection
 - `tirea-state-derive`: `#[derive(State)]` proc macro
@@ -14,33 +42,85 @@ It combines typed JSON state management, deterministic patch application, and an
 - `tirea-agentos-server`: HTTP/SSE/NATS gateway
 - `tirea`: umbrella re-export crate
 
+### Examples and integration surfaces
+
+- `examples/ai-sdk-starter/`: AI SDK v6 starter, fastest browser-based demo path
+- `examples/copilotkit-starter/`: CopilotKit + AG-UI starter
+- `examples/travel-ui/`: travel planning UI example
+- `examples/research-ui/`: research workflow UI example
+- `examples/src/`: shared Rust example backends and tools
+- `e2e/`: Playwright, Phoenix, and TensorZero integration tests
+
 ## Quick start
 
 ### Prerequisites
 
-- Rust toolchain (see `rust-toolchain.toml`)
-- One model provider key (`OPENAI_API_KEY` or `DEEPSEEK_API_KEY`)
+- Rust toolchain from [`rust-toolchain.toml`](./rust-toolchain.toml)
+- For frontend starters: Node.js 20+ and npm
+- One model provider key for the path you are running
 
-### Build and test
+### Build and test the Rust workspace
 
 ```bash
 cargo build --workspace
 cargo test --workspace
+cargo clippy --workspace --lib --bins --examples -- -D clippy::correctness
 ```
 
-### Run server
+### Run the default server configuration
+
+The default `tirea-agentos-server` model is `gpt-4o-mini`, so the simplest matching quick start is:
 
 ```bash
-DEEPSEEK_API_KEY=<your-key> cargo run --package tirea-agentos-server -- \
-  --http-addr 127.0.0.1:8080
+export OPENAI_API_KEY=<your-key>
+cargo run --package tirea-agentos-server -- --http-addr 127.0.0.1:8080
 ```
+
+If you want a DeepSeek-first local demo instead, use one of the starters below. Their backend defaults are already aligned to `deepseek-chat`:
+
+- [`examples/ai-sdk-starter/README.md`](./examples/ai-sdk-starter/README.md)
+- [`examples/copilotkit-starter/README.md`](./examples/copilotkit-starter/README.md)
+
+## Examples
+
+### AI SDK starter
+
+Use this when you want the shortest path to a browser demo with a Rust backend.
+
+```bash
+cd examples/ai-sdk-starter
+npm install
+DEEPSEEK_API_KEY=<your-key> npm run dev
+```
+
+See: [`examples/ai-sdk-starter/README.md`](./examples/ai-sdk-starter/README.md)
+
+### CopilotKit starter
+
+Use this when you want AG-UI + CopilotKit integration with persisted threads and canvas flows.
+
+```bash
+cd examples/copilotkit-starter
+npm install
+cp .env.example .env.local
+export DEEPSEEK_API_KEY=<your-key>
+npm run setup:agent
+npm run dev
+```
+
+See: [`examples/copilotkit-starter/README.md`](./examples/copilotkit-starter/README.md)
 
 ## Documentation
 
 - Book source: `docs/book/src/`
-- Build docs locally:
+- Book entrypoint: [`docs/book/src/introduction.md`](./docs/book/src/introduction.md)
+- API reference guide: [`docs/book/src/reference/api.md`](./docs/book/src/reference/api.md)
+
+Build docs locally:
 
 ```bash
+cargo install mdbook --locked --version 0.5.2
+cargo install mdbook-mermaid --locked
 bash scripts/build-docs.sh
 ```
 
