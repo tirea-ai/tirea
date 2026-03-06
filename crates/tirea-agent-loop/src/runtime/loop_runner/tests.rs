@@ -13048,3 +13048,283 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_tool_call_resu
         json!("resume")
     );
 }
+
+// ========================================================================
+// Truncation recovery integration tests (stream path)
+// ========================================================================
+
+/// Helper: build a BaseAgent configured for truncation recovery testing.
+///
+/// Sets `max_tokens = 4096` so that `infer_stop_reason` can detect MaxTokens
+/// when `completion_tokens == 4096`.
+fn truncation_test_agent(provider: MockStreamProvider) -> BaseAgent {
+    let mut config = BaseAgent::new("mock")
+        .with_llm_executor(Arc::new(provider) as Arc<dyn LlmExecutor>);
+    config.chat_options = Some(
+        ChatOptions::default()
+            .with_capture_usage(true)
+            .with_capture_reasoning_content(true)
+            .with_capture_tool_calls(true)
+            .with_max_tokens(4096),
+    );
+    config
+}
+
+/// Helper: create a MockResponse that simulates MaxTokens truncation.
+///
+/// The response has `completion_tokens == 4096` matching the agent's
+/// `max_tokens`, so `StreamCollector.finish()` infers `StopReason::MaxTokens`.
+fn truncated_response(text: &str) -> MockResponse {
+    MockResponse::text(text).with_usage(1000, 4096)
+}
+
+/// Helper: create a MockResponse that simulates a normal completion.
+fn normal_response(text: &str) -> MockResponse {
+    MockResponse::text(text).with_usage(1000, 100)
+}
+
+#[tokio::test]
+async fn test_stream_truncation_recovery_retries_then_succeeds() {
+    // First response: truncated (MaxTokens, no tools)
+    // Second response: normal completion
+    let provider = MockStreamProvider::new(vec![
+        truncated_response("partial output..."),
+        normal_response("complete response"),
+    ]);
+    let config = truncation_test_agent(provider);
+
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let stream = run_loop_stream(Arc::new(config), HashMap::new(), run_ctx, None, None, None);
+    let events = collect_stream_events(stream).await;
+
+    // Should terminate normally (not with error)
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::NaturalEnd),
+        "should recover and complete normally"
+    );
+
+    // The final response text should be from the second call
+    let response = extract_run_finish_response(&events);
+    assert_eq!(response.as_deref(), Some("complete response"));
+}
+
+#[tokio::test]
+async fn test_stream_truncation_recovery_with_tool_calls_no_retry() {
+    // Response has MaxTokens but includes tool calls → no retry, tools execute
+    let provider = MockStreamProvider::new(vec![
+        MockResponse::text("I'll search for that")
+            .with_tool_call("c1", "echo", json!({"input": "test"}))
+            .with_usage(1000, 4096),
+        normal_response("done after tools"),
+    ]);
+    let config = truncation_test_agent(provider);
+
+    // Register a simple echo tool
+    let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+    tools.insert("echo".to_string(), Arc::new(EchoTool));
+
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
+    let events = collect_stream_events(stream).await;
+
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::NaturalEnd),
+    );
+
+    // Verify that tool execution happened (ToolCallDone event present)
+    let tool_done_count = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::ToolCallDone { .. }))
+        .count();
+    assert!(
+        tool_done_count > 0,
+        "tool calls should execute when present, even with MaxTokens"
+    );
+}
+
+#[tokio::test]
+async fn test_stream_truncation_recovery_exhausts_retries() {
+    // Four consecutive truncated responses: 3 retries + 1 that exceeds limit.
+    // After exhausting retries, the 4th truncation should end the run normally
+    // (NaturalEnd with the truncated text) since no tools are needed.
+    let provider = MockStreamProvider::new(vec![
+        truncated_response("partial 1"),
+        truncated_response("partial 2"),
+        truncated_response("partial 3"),
+        truncated_response("partial 4 - no more retries"),
+    ]);
+    let config = truncation_test_agent(provider);
+
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let stream = run_loop_stream(Arc::new(config), HashMap::new(), run_ctx, None, None, None);
+    let events = collect_stream_events(stream).await;
+
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::NaturalEnd),
+        "should terminate normally after exhausting retries"
+    );
+
+    // Verify we got 4 inference_complete events (1 original + 3 retries)
+    let inference_count = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::InferenceComplete { .. }))
+        .count();
+    assert_eq!(
+        inference_count, 4,
+        "should have 4 inference calls: original + 3 retries"
+    );
+}
+
+#[tokio::test]
+async fn test_stream_truncation_recovery_injects_internal_continuation_message() {
+    // Truncated then succeeded. Verify the continuation message is Internal.
+    let provider = MockStreamProvider::new(vec![
+        truncated_response("partial"),
+        normal_response("complete"),
+    ]);
+    let config = truncation_test_agent(provider);
+
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let stream = run_loop_stream(Arc::new(config), HashMap::new(), run_ctx, None, None, None);
+    let events = collect_stream_events(stream).await;
+
+    // Extract the RunFinish to get the final RunContext
+    let run_finish = events
+        .iter()
+        .find(|e| matches!(e, AgentEvent::RunFinish { .. }));
+    assert!(run_finish.is_some());
+
+    // The continuation message should NOT appear in TextDelta events
+    // (it's Internal visibility, only for LLM)
+    let text_deltas: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::TextDelta { delta } => Some(delta.as_str()),
+            _ => None,
+        })
+        .collect();
+    for delta in &text_deltas {
+        assert!(
+            !delta.contains("output token limit"),
+            "continuation prompt should not appear in user-facing text deltas"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_stream_truncation_recovery_preserves_truncated_assistant_text() {
+    // After truncation + retry, the truncated assistant text should appear
+    // in the event stream (TextDelta events from the first inference call),
+    // followed by the recovery's final response text.
+    let provider = MockStreamProvider::new(vec![
+        truncated_response("I was writing about Rust and then I got cut off because"),
+        normal_response("Continuing: Rust is a systems programming language."),
+    ]);
+    let config = truncation_test_agent(provider);
+
+    let thread = Thread::new("test").with_message(Message::user("Tell me about Rust"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let stream = run_loop_stream(Arc::new(config), HashMap::new(), run_ctx, None, None, None);
+    let events = collect_stream_events(stream).await;
+
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::NaturalEnd)
+    );
+
+    // Two inference calls: truncated + recovery
+    let inference_count = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::InferenceComplete { .. }))
+        .count();
+    assert_eq!(inference_count, 2, "should have 2 inference calls");
+
+    // Both the truncated text and recovery text should appear in TextDelta events
+    let all_text: String = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::TextDelta { delta } => Some(delta.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        all_text.contains("cut off"),
+        "truncated text should appear in text deltas"
+    );
+    assert!(
+        all_text.contains("Continuing"),
+        "recovery text should appear in text deltas"
+    );
+}
+
+#[tokio::test]
+async fn test_stream_no_truncation_recovery_on_normal_end() {
+    // Normal response (not truncated) should not trigger any recovery.
+    let provider = MockStreamProvider::new(vec![normal_response("all good")]);
+    let config = truncation_test_agent(provider);
+
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let stream = run_loop_stream(Arc::new(config), HashMap::new(), run_ctx, None, None, None);
+    let events = collect_stream_events(stream).await;
+
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::NaturalEnd)
+    );
+
+    // Only 1 inference call
+    let inference_count = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::InferenceComplete { .. }))
+        .count();
+    assert_eq!(inference_count, 1, "no retries for normal completion");
+}
+
+#[tokio::test]
+async fn test_stream_multiple_truncation_retries_then_tool_call() {
+    // Two truncations, then a response with tools, then final text.
+    let provider = MockStreamProvider::new(vec![
+        truncated_response("partial 1"),
+        truncated_response("partial 2"),
+        MockResponse::text("now with tool")
+            .with_tool_call("c1", "echo", json!({"input": "hi"}))
+            .with_usage(1000, 100),
+        normal_response("done"),
+    ]);
+    let config = truncation_test_agent(provider);
+
+    let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+    tools.insert("echo".to_string(), Arc::new(EchoTool));
+
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
+    let events = collect_stream_events(stream).await;
+
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::NaturalEnd)
+    );
+
+    // 4 total inference calls: 2 truncated + 1 tool + 1 final
+    let inference_count = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::InferenceComplete { .. }))
+        .count();
+    assert_eq!(inference_count, 4);
+
+    // Tool execution should have occurred
+    let tool_done_count = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::ToolCallDone { .. }))
+        .count();
+    assert_eq!(tool_done_count, 1);
+}
