@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tirea_contract::runtime::behavior::ReadOnlyContext;
 use tirea_contract::runtime::inference::StopReason;
 use tirea_contract::runtime::phase::{ActionSet, AfterInferenceAction};
-use tirea_contract::thread::Message;
+use tirea_contract::thread::{Message, Visibility};
 
 /// Behavior ID used for registration.
 pub const TRUNCATION_RECOVERY_PLUGIN_ID: &str = "truncation_recovery";
@@ -81,10 +81,13 @@ impl tirea_contract::runtime::AgentBehavior for TruncationRecoveryPlugin {
 
             // Include the truncated assistant response so the model sees
             // its own context, then add the continuation prompt.
-            let messages = vec![
-                Message::assistant(&result.text),
-                Message::user(&self.continuation_prompt),
-            ];
+            // Both messages are Internal — visible to the LLM only,
+            // hidden from the user-facing event stream / API.
+            let mut assistant_msg = Message::assistant(&result.text);
+            assistant_msg.visibility = Visibility::Internal;
+            let mut prompt_msg = Message::user(&self.continuation_prompt);
+            prompt_msg.visibility = Visibility::Internal;
+            let messages = vec![assistant_msg, prompt_msg];
 
             ActionSet::single(AfterInferenceAction::RetryInference { messages })
         } else {
@@ -213,11 +216,13 @@ mod tests {
                     messages[0].role,
                     tirea_contract::thread::Role::Assistant
                 );
+                assert_eq!(messages[0].visibility, Visibility::Internal);
                 assert_eq!(messages[1].content, "Please continue.");
                 assert_eq!(
                     messages[1].role,
                     tirea_contract::thread::Role::User
                 );
+                assert_eq!(messages[1].visibility, Visibility::Internal);
             }
             _ => panic!("expected RetryInference"),
         }
