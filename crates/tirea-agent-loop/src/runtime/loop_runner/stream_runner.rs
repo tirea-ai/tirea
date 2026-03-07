@@ -320,7 +320,7 @@ pub(super) fn run_stream(
             finish_run!(TerminationReason::Suspended, None);
         }
 
-        loop {
+        'step: loop {
             let decision_events = match apply_decisions_and_replay(
                 &mut run_ctx,
                 &mut decision_rx,
@@ -556,12 +556,44 @@ pub(super) fn run_stream(
                         }
                     }
                     Err(e) => {
+                        let error_message = e.to_string();
+                        // Check if we can recover via continuation retry.
+                        if is_retryable_llm_error(&error_message)
+                            && truncation_recovery::should_retry_stream_error(&mut run_state)
+                        {
+                            tracing::warn!(
+                                error = %error_message,
+                                retry = run_state.stream_event_retries,
+                                "mid-stream error, recovering with continuation"
+                            );
+                            // Save partial text as assistant message (discard incomplete tool calls).
+                            let partial_text = collector.into_partial_text();
+                            if !partial_text.is_empty() {
+                                let msg = assistant_message(&partial_text);
+                                run_ctx.add_message(Arc::new(msg));
+                                last_text = partial_text;
+                            }
+                            // Inject continuation prompt.
+                            let continuation = truncation_recovery::stream_error_continuation_message();
+                            run_ctx.add_message(Arc::new(continuation));
+                            // Close the failed step and re-enter the outer loop.
+                            yield emitter.step_end();
+                            mark_step_completed(&mut run_state);
+                            // Backoff before retrying.
+                            let _ = wait_retry_backoff(
+                                agent.as_ref(),
+                                run_state.stream_event_retries.saturating_sub(1),
+                                run_cancellation_token.as_ref(),
+                            ).await;
+                            continue 'step;
+                        }
+                        // Non-retryable or retries exhausted: terminate the run.
                         match apply_llm_error_cleanup(
                             &mut run_ctx,
                             &active_tool_descriptors,
                             agent.as_ref(),
                             "llm_stream_event_error",
-                            e.to_string(),
+                            error_message.clone(),
                         )
                         .await
                         {
@@ -571,8 +603,7 @@ pub(super) fn run_stream(
                                 terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
                             }
                         }
-                        let message = e.to_string();
-                        terminate_stream_error!(outcome::LoopFailure::Llm(message.clone()), message);
+                        terminate_stream_error!(outcome::LoopFailure::Llm(error_message.clone()), error_message);
                     }
                 }
             }

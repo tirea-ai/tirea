@@ -11,10 +11,17 @@ use crate::contracts::thread::{Message, Visibility};
 /// Maximum number of truncation recovery retries per run.
 const MAX_RETRIES: usize = 3;
 
+/// Maximum number of mid-stream error recovery retries per run.
+const MAX_STREAM_EVENT_RETRIES: usize = 2;
+
 /// Continuation prompt sent to the model after truncation.
 const CONTINUATION_PROMPT: &str =
     "Your response was cut off because it exceeded the output token limit. \
      Please break your work into smaller pieces. Continue from where you left off.";
+
+/// Continuation prompt sent to the model after a mid-stream error.
+const STREAM_ERROR_CONTINUATION_PROMPT: &str =
+    "Your previous response was interrupted due to a network error. Please continue.";
 
 /// Check if truncation recovery should retry inference.
 ///
@@ -38,6 +45,26 @@ pub(super) fn should_retry(result: &StreamResult, run_state: &mut LoopRunState) 
 /// Build the continuation prompt message (Internal visibility).
 pub(super) fn continuation_message() -> Message {
     let mut msg = Message::user(CONTINUATION_PROMPT);
+    msg.visibility = Visibility::Internal;
+    msg
+}
+
+/// Check if stream error recovery should retry inference.
+///
+/// Returns `true` (and increments the retry counter) when:
+/// 1. Haven't exceeded max stream event retries
+pub(super) fn should_retry_stream_error(run_state: &mut LoopRunState) -> bool {
+    if run_state.stream_event_retries < MAX_STREAM_EVENT_RETRIES {
+        run_state.stream_event_retries += 1;
+        true
+    } else {
+        false
+    }
+}
+
+/// Build the continuation prompt for stream error recovery (Internal visibility).
+pub(super) fn stream_error_continuation_message() -> Message {
+    let mut msg = Message::user(STREAM_ERROR_CONTINUATION_PROMPT);
     msg.visibility = Visibility::Internal;
     msg
 }
@@ -310,5 +337,61 @@ mod tests {
         assert_eq!(msg1.content, msg2.content);
         assert_eq!(msg1.visibility, msg2.visibility);
         assert_eq!(msg1.role, msg2.role);
+    }
+
+    // =====================================================================
+    // Stream error recovery tests
+    // =====================================================================
+
+    #[test]
+    fn stream_error_retry_triggers_within_limit() {
+        let mut state = LoopRunState::new();
+        assert!(should_retry_stream_error(&mut state));
+        assert_eq!(state.stream_event_retries, 1);
+        assert!(should_retry_stream_error(&mut state));
+        assert_eq!(state.stream_event_retries, 2);
+    }
+
+    #[test]
+    fn stream_error_retry_respects_max() {
+        let mut state = LoopRunState::new();
+        for _ in 0..MAX_STREAM_EVENT_RETRIES {
+            assert!(should_retry_stream_error(&mut state));
+        }
+        assert!(
+            !should_retry_stream_error(&mut state),
+            "should not retry beyond max"
+        );
+        assert_eq!(state.stream_event_retries, MAX_STREAM_EVENT_RETRIES);
+    }
+
+    #[test]
+    fn stream_error_max_retries_is_two() {
+        assert_eq!(MAX_STREAM_EVENT_RETRIES, 2);
+    }
+
+    #[test]
+    fn stream_error_continuation_message_is_internal() {
+        let msg = stream_error_continuation_message();
+        assert_eq!(msg.visibility, Visibility::Internal);
+        assert_eq!(msg.role, crate::contracts::thread::Role::User);
+    }
+
+    #[test]
+    fn stream_error_continuation_message_mentions_continue() {
+        let msg = stream_error_continuation_message();
+        assert!(msg.content.contains("continue") || msg.content.contains("Continue"));
+    }
+
+    #[test]
+    fn stream_error_counter_independent_of_truncation() {
+        let mut state = LoopRunState::new();
+        // Truncation retries
+        assert!(should_retry(&max_tokens_result(), &mut state));
+        assert_eq!(state.truncation_retries, 1);
+        // Stream error retries (independent counter)
+        assert!(should_retry_stream_error(&mut state));
+        assert_eq!(state.stream_event_retries, 1);
+        assert_eq!(state.truncation_retries, 1);
     }
 }

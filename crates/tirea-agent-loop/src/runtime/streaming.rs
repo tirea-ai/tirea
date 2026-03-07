@@ -55,6 +55,14 @@ impl StreamCollector {
         Self::default()
     }
 
+    /// Consume the collector and return only the accumulated text.
+    ///
+    /// Used for stream error recovery: partial tool calls are discarded
+    /// (incomplete JSON arguments are not usable), but text is preserved.
+    pub fn into_partial_text(self) -> String {
+        self.text
+    }
+
     /// Process a stream event and optionally return an output event.
     ///
     /// This is a pure-ish function - it updates internal state and returns
@@ -1859,5 +1867,23 @@ mod tests {
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].name, "search");
         assert_eq!(result.stop_reason, Some(StopReason::ToolUse));
+    }
+
+    #[test]
+    fn test_into_partial_text_returns_accumulated_text() {
+        let mut collector = StreamCollector::new();
+        collector.process(ChatStreamEvent::Chunk(genai::chat::StreamChunk {
+            content: "Hello ".to_string(),
+        }));
+        collector.process(ChatStreamEvent::Chunk(genai::chat::StreamChunk {
+            content: "world".to_string(),
+        }));
+        assert_eq!(collector.into_partial_text(), "Hello world");
+    }
+
+    #[test]
+    fn test_into_partial_text_empty_when_no_text() {
+        let collector = StreamCollector::new();
+        assert_eq!(collector.into_partial_text(), "");
     }
 }

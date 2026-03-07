@@ -19,6 +19,8 @@ pub(super) struct LoopRunState {
     pub(super) tool_call_history: VecDeque<Vec<String>>,
     /// Number of truncation recovery retries consumed so far.
     pub(super) truncation_retries: usize,
+    /// Number of mid-stream error recovery retries consumed so far.
+    pub(super) stream_event_retries: usize,
 }
 
 impl LoopRunState {
@@ -36,6 +38,7 @@ impl LoopRunState {
             start_time: Instant::now(),
             tool_call_history: VecDeque::new(),
             truncation_retries: 0,
+            stream_event_retries: 0,
         }
     }
 
