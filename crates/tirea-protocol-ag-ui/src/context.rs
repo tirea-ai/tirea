@@ -40,6 +40,12 @@ pub struct AgUiEventContext {
     tool_ids_with_deltas: HashSet<String>,
 }
 
+impl Default for AgUiEventContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AgUiEventContext {
     /// Create a new AG-UI context.
     ///

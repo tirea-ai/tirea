@@ -305,9 +305,10 @@ impl AgentOsBuilder {
             // If skills are configured+enabled, push the built-in SkillsSystemWiring.
             if skills_config.enabled {
                 if let Some(ref reg) = registry {
-                    system_wirings.push(Arc::new(
-                        wiring::SkillsSystemWiring::new(reg.clone(), skills_config.clone()),
-                    ));
+                    system_wirings.push(Arc::new(wiring::SkillsSystemWiring::new(
+                        reg.clone(),
+                        skills_config.clone(),
+                    )));
                 }
             }
 

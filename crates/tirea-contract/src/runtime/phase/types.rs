@@ -94,5 +94,5 @@ pub enum StepOutcome {
     /// Thread complete.
     Complete,
     /// Pending external suspension.
-    Pending(SuspendTicket),
+    Pending(Box<SuspendTicket>),
 }

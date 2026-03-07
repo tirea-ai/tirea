@@ -37,23 +37,12 @@ struct ProgressEmitGate {
     last_message: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct McpRefreshHealth {
     pub last_attempt_at: Option<SystemTime>,
     pub last_success_at: Option<SystemTime>,
     pub last_error: Option<String>,
     pub consecutive_failures: u64,
-}
-
-impl Default for McpRefreshHealth {
-    fn default() -> Self {
-        Self {
-            last_attempt_at: None,
-            last_success_at: None,
-            last_error: None,
-            consecutive_failures: 0,
-        }
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -335,12 +324,12 @@ fn normalize_progress(update: &McpProgressUpdate) -> Option<f64> {
 
 fn should_emit_progress(gate: &mut ProgressEmitGate, progress: f64, message: Option<&str>) -> bool {
     let now = Instant::now();
-    let interval_elapsed = gate.last_emit_at.map_or(true, |last| {
-        now.duration_since(last) >= MCP_PROGRESS_MIN_INTERVAL
-    });
-    let delta_large_enough = gate.last_progress.map_or(true, |last| {
-        (progress - last).abs() >= MCP_PROGRESS_MIN_DELTA
-    });
+    let interval_elapsed = gate
+        .last_emit_at
+        .is_none_or(|last| now.duration_since(last) >= MCP_PROGRESS_MIN_INTERVAL);
+    let delta_large_enough = gate
+        .last_progress
+        .is_none_or(|last| (progress - last).abs() >= MCP_PROGRESS_MIN_DELTA);
     let message_changed = message != gate.last_message.as_deref();
     let terminal = progress >= 1.0;
 

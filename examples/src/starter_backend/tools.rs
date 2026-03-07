@@ -336,17 +336,61 @@ impl Tool for ProgressDemoTool {
             "deploy" => {
                 // Simulates a deployment pipeline
                 let phases = [
-                    (ToolCallProgressStatus::Pending, 0.0, "Queued for deployment..."),
-                    (ToolCallProgressStatus::Running, 0.10, "Building container image..."),
-                    (ToolCallProgressStatus::Running, 0.25, "Pushing image to registry..."),
-                    (ToolCallProgressStatus::Running, 0.35, "Running pre-deploy checks..."),
-                    (ToolCallProgressStatus::Running, 0.45, "Rolling update: 0/3 pods ready"),
-                    (ToolCallProgressStatus::Running, 0.60, "Rolling update: 1/3 pods ready"),
-                    (ToolCallProgressStatus::Running, 0.75, "Rolling update: 2/3 pods ready"),
-                    (ToolCallProgressStatus::Running, 0.85, "Rolling update: 3/3 pods ready"),
-                    (ToolCallProgressStatus::Running, 0.92, "Running health checks..."),
-                    (ToolCallProgressStatus::Running, 0.97, "Switching traffic..."),
-                    (ToolCallProgressStatus::Done, 1.0, "Deployment successful (v2.4.1)"),
+                    (
+                        ToolCallProgressStatus::Pending,
+                        0.0,
+                        "Queued for deployment...",
+                    ),
+                    (
+                        ToolCallProgressStatus::Running,
+                        0.10,
+                        "Building container image...",
+                    ),
+                    (
+                        ToolCallProgressStatus::Running,
+                        0.25,
+                        "Pushing image to registry...",
+                    ),
+                    (
+                        ToolCallProgressStatus::Running,
+                        0.35,
+                        "Running pre-deploy checks...",
+                    ),
+                    (
+                        ToolCallProgressStatus::Running,
+                        0.45,
+                        "Rolling update: 0/3 pods ready",
+                    ),
+                    (
+                        ToolCallProgressStatus::Running,
+                        0.60,
+                        "Rolling update: 1/3 pods ready",
+                    ),
+                    (
+                        ToolCallProgressStatus::Running,
+                        0.75,
+                        "Rolling update: 2/3 pods ready",
+                    ),
+                    (
+                        ToolCallProgressStatus::Running,
+                        0.85,
+                        "Rolling update: 3/3 pods ready",
+                    ),
+                    (
+                        ToolCallProgressStatus::Running,
+                        0.92,
+                        "Running health checks...",
+                    ),
+                    (
+                        ToolCallProgressStatus::Running,
+                        0.97,
+                        "Switching traffic...",
+                    ),
+                    (
+                        ToolCallProgressStatus::Done,
+                        1.0,
+                        "Deployment successful (v2.4.1)",
+                    ),
                 ];
                 for (status, progress, message) in phases {
                     report(status, progress, progress * 100.0, 100.0, message)?;
@@ -362,7 +406,9 @@ impl Tool for ProgressDemoTool {
                 let total_steps = 20u32;
                 report(
                     ToolCallProgressStatus::Pending,
-                    0.0, 0.0, total_steps as f64,
+                    0.0,
+                    0.0,
+                    total_steps as f64,
                     "Build queued...",
                 )?;
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -394,25 +440,34 @@ impl Tool for ProgressDemoTool {
             "multi_phase" => {
                 // Three distinct phases with phase labels
                 let phases: &[(&str, &[(f64, &str)])] = &[
-                    ("Phase 1: Analysis", &[
-                        (0.0, "Scanning codebase..."),
-                        (0.08, "Parsing AST (125 files)..."),
-                        (0.15, "Building dependency graph..."),
-                        (0.22, "Analysis complete"),
-                    ]),
-                    ("Phase 2: Processing", &[
-                        (0.25, "Applying transformations..."),
-                        (0.35, "Optimizing hot paths..."),
-                        (0.45, "Generating intermediate output..."),
-                        (0.55, "Processing complete"),
-                    ]),
-                    ("Phase 3: Finalization", &[
-                        (0.60, "Writing output artifacts..."),
-                        (0.70, "Computing checksums..."),
-                        (0.80, "Uploading to artifact store..."),
-                        (0.90, "Cleaning up temp files..."),
-                        (1.0, "All phases complete"),
-                    ]),
+                    (
+                        "Phase 1: Analysis",
+                        &[
+                            (0.0, "Scanning codebase..."),
+                            (0.08, "Parsing AST (125 files)..."),
+                            (0.15, "Building dependency graph..."),
+                            (0.22, "Analysis complete"),
+                        ],
+                    ),
+                    (
+                        "Phase 2: Processing",
+                        &[
+                            (0.25, "Applying transformations..."),
+                            (0.35, "Optimizing hot paths..."),
+                            (0.45, "Generating intermediate output..."),
+                            (0.55, "Processing complete"),
+                        ],
+                    ),
+                    (
+                        "Phase 3: Finalization",
+                        &[
+                            (0.60, "Writing output artifacts..."),
+                            (0.70, "Computing checksums..."),
+                            (0.80, "Uploading to artifact store..."),
+                            (0.90, "Cleaning up temp files..."),
+                            (1.0, "All phases complete"),
+                        ],
+                    ),
                 ];
                 for (phase_name, steps) in phases {
                     for (progress, step_msg) in *steps {

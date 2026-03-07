@@ -499,9 +499,8 @@ impl AgentOs {
         }
 
         // Agent tools stay hardcoded (internal, needs &self/AgentOs access).
-        system_bundles.extend(
-            self.build_agent_tool_wiring_bundles(&resolved_plugins, frozen_agents)?,
-        );
+        system_bundles
+            .extend(self.build_agent_tool_wiring_bundles(&resolved_plugins, frozen_agents)?);
 
         let system_plugins = self.merge_wiring_bundles(&system_bundles, tools)?;
         let mut all_plugins = ResolvedBehaviors::default()

@@ -13081,8 +13081,8 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_tool_call_resu
 /// Sets `max_tokens = 4096` so that `infer_stop_reason` can detect MaxTokens
 /// when `completion_tokens == 4096`.
 fn truncation_test_agent(provider: MockStreamProvider) -> BaseAgent {
-    let mut config = BaseAgent::new("mock")
-        .with_llm_executor(Arc::new(provider) as Arc<dyn LlmExecutor>);
+    let mut config =
+        BaseAgent::new("mock").with_llm_executor(Arc::new(provider) as Arc<dyn LlmExecutor>);
     config.chat_options = Some(
         ChatOptions::default()
             .with_capture_usage(true)

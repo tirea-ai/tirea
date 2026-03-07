@@ -206,27 +206,27 @@ mod tests {
         }
 
         let tools = vec![
-            ToolDescriptor::new("search", "Search", "Search the web")
-                .with_parameters(serde_json::json!({
+            ToolDescriptor::new("search", "Search", "Search the web").with_parameters(
+                serde_json::json!({
                     "type": "object",
                     "properties": {
                         "query": { "type": "string" },
                         "limit": { "type": "integer" }
                     }
-                })),
-            ToolDescriptor::new("calc", "Calculator", "Evaluate math")
-                .with_parameters(serde_json::json!({
+                }),
+            ),
+            ToolDescriptor::new("calc", "Calculator", "Evaluate math").with_parameters(
+                serde_json::json!({
                     "type": "object",
                     "properties": {
                         "expression": { "type": "string" }
                     }
-                })),
+                }),
+            ),
         ];
 
-        let output_no_tools =
-            transform_no_tools.transform(messages.clone(), &[]);
-        let output_with_tools =
-            transform_with_tools.transform(messages, &tools);
+        let output_no_tools = transform_no_tools.transform(messages.clone(), &[]);
+        let output_with_tools = transform_with_tools.transform(messages, &tools);
 
         assert!(
             output_with_tools.messages.len() <= output_no_tools.messages.len(),
@@ -247,7 +247,9 @@ mod tests {
 
         let mut messages = vec![Message::system("System prompt content here.")];
         for i in 0..20 {
-            messages.push(Message::user(format!("Message number {i} with some content")));
+            messages.push(Message::user(format!(
+                "Message number {i} with some content"
+            )));
             messages.push(Message::assistant(format!("Response number {i}")));
         }
 
@@ -256,6 +258,9 @@ mod tests {
         assert!(output.messages.len() < 42); // less than 1 system + 40 history
         assert!(output.enable_prompt_cache);
         // System message is always preserved.
-        assert_eq!(output.messages[0].role, tirea_contract::thread::Role::System);
+        assert_eq!(
+            output.messages[0].role,
+            tirea_contract::thread::Role::System
+        );
     }
 }

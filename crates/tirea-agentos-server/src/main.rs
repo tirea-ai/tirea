@@ -59,18 +59,13 @@ struct AgentConfigFile {
     stop_condition_specs: Vec<StopConditionSpec>,
 }
 
-#[derive(Debug, Deserialize, Clone, Copy)]
+#[derive(Debug, Deserialize, Clone, Copy, Default)]
 #[serde(rename_all = "snake_case")]
 enum ToolExecutionModeConfig {
     Sequential,
     ParallelBatchApproval,
+    #[default]
     ParallelStreaming,
-}
-
-impl Default for ToolExecutionModeConfig {
-    fn default() -> Self {
-        Self::ParallelStreaming
-    }
 }
 
 impl From<ToolExecutionModeConfig> for ToolExecutionMode {
@@ -207,8 +202,7 @@ fn build_os(
     tensorzero_url: Option<String>,
     write_store: Arc<dyn ThreadStore>,
 ) -> AgentOs {
-    let mut builder = AgentOsBuilder::new()
-        .with_agent_state_store(write_store);
+    let mut builder = AgentOsBuilder::new().with_agent_state_store(write_store);
     #[cfg(feature = "permission")]
     {
         builder = builder
@@ -216,12 +210,12 @@ fn build_os(
             .with_registered_behavior("permission", Arc::new(PermissionPlugin));
     }
     builder = builder.with_tools({
-            let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-            tools.insert("serverInfo".to_string(), Arc::new(ServerInfoTool));
-            tools.insert("failingTool".to_string(), Arc::new(FailingTool));
-            tools.insert("finish".to_string(), Arc::new(FinishTool));
-            tools
-        });
+        let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+        tools.insert("serverInfo".to_string(), Arc::new(ServerInfoTool));
+        tools.insert("failingTool".to_string(), Arc::new(FailingTool));
+        tools.insert("finish".to_string(), Arc::new(FinishTool));
+        tools
+    });
 
     let agents = match cfg {
         Some(c) => c.agents,

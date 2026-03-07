@@ -19,17 +19,17 @@ pub(crate) fn merge_context_patch_into_effect(
     call: &ToolCall,
     _effect: &mut ToolExecutionEffect,
     context_patch: TrackedPatch,
-) -> Result<(), ToolResult> {
+) -> Result<(), Box<ToolResult>> {
     if context_patch.patch().is_empty() {
         return Ok(());
     }
 
     // No compatibility mode: tool-side direct state writes are always rejected.
-    Err(ToolResult::error_with_code(
+    Err(Box::new(ToolResult::error_with_code(
         &call.name,
         DIRECT_STATE_WRITE_DENIED_ERROR_CODE,
         "direct ToolCallContext state writes are disabled; emit ToolExecutionEffect actions instead",
-    ))
+    )))
 }
 
 /// Execute a single tool call.
@@ -113,7 +113,7 @@ pub async fn execute_single_tool_with_scope_and_behavior(
     if let Err(result) = merge_context_patch_into_effect(call, &mut effect, context_patch) {
         return ToolExecution {
             call: call.clone(),
-            result,
+            result: *result,
             patch: None,
         };
     }

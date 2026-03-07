@@ -18,6 +18,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot};
 
+type PendingRequestSender = oneshot::Sender<Result<Value, McpTransportError>>;
+type PendingRequests = Arc<Mutex<HashMap<i64, PendingRequestSender>>>;
+
 #[derive(Debug, Clone)]
 pub struct McpProgressUpdate {
     pub progress: f64,
@@ -160,7 +163,7 @@ impl ProgressAwareHttpTransport {
 
 pub(crate) struct ProgressAwareStdioTransport {
     write_tx: mpsc::Sender<WriteRequest>,
-    pending: Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, McpTransportError>>>>>,
+    pending: PendingRequests,
     progress_subscribers:
         Arc<Mutex<HashMap<ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>>>>,
     next_id: AtomicI64,
@@ -210,8 +213,7 @@ impl ProgressAwareStdioTransport {
             .ok_or_else(|| McpTransportError::TransportError("Failed to get stderr".to_string()))?;
 
         let alive = Arc::new(AtomicBool::new(true));
-        let pending: Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, McpTransportError>>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let pending: PendingRequests = Arc::new(Mutex::new(HashMap::new()));
         let progress_subscribers: Arc<
             Mutex<HashMap<ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>>>,
         > = Arc::new(Mutex::new(HashMap::new()));

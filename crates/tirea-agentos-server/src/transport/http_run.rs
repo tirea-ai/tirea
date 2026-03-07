@@ -14,26 +14,27 @@ use super::{
     TransportCapabilities,
 };
 
+pub struct HttpSseRelayConfig<F, ErrFmt> {
+    pub thread_id: String,
+    pub fanout: Option<broadcast::Sender<Bytes>>,
+    pub resumable_downstream: bool,
+    pub protocol_label: &'static str,
+    pub on_relay_done: F,
+    pub error_formatter: ErrFmt,
+}
+
 /// Wire an HTTP SSE relay for a single agent run.
 ///
-/// Sets up the full pipeline: runtime endpoint → protocol transcoder →
-/// transport binding → SSE server endpoint, then spawns the relay and
+/// Sets up the full pipeline: runtime endpoint -> protocol transcoder ->
+/// transport binding -> SSE server endpoint, then spawns the relay and
 /// event pump tasks.
 ///
 /// Returns the SSE byte receiver to feed into an HTTP response body.
-///
-/// `on_relay_done` is called after the relay finishes, receiving
-/// the SSE sender (for trailer support).
 pub fn wire_http_sse_relay<E, F, Fut, ErrFmt>(
     run_starter: RunStarter,
     encoder: E,
     ingress_rx: mpsc::UnboundedReceiver<RuntimeInput>,
-    thread_id: String,
-    fanout: Option<broadcast::Sender<Bytes>>,
-    resumable_downstream: bool,
-    protocol_label: &'static str,
-    on_relay_done: F,
-    error_formatter: ErrFmt,
+    config: HttpSseRelayConfig<F, ErrFmt>,
 ) -> mpsc::Receiver<Bytes>
 where
     E: Transcoder<Input = AgentEvent> + 'static,
@@ -42,6 +43,14 @@ where
     Fut: Future<Output = ()> + Send,
     ErrFmt: Fn(String) -> Bytes + Send + 'static,
 {
+    let HttpSseRelayConfig {
+        thread_id,
+        fanout,
+        resumable_downstream,
+        protocol_label,
+        on_relay_done,
+        error_formatter,
+    } = config;
     let (sse_tx, sse_rx) = mpsc::channel::<Bytes>(64);
 
     let upstream: Arc<HttpSseServerEndpoint<E::Output>> = match fanout {
@@ -169,7 +178,6 @@ mod tests {
             .into_iter()
             .filter_map(|b| {
                 let s = String::from_utf8(b.to_vec()).ok()?;
-                // SSE format: "data: <json>\n\n" — extract inner JSON string
                 let trimmed = s.trim();
                 let payload = trimmed.strip_prefix("data: ")?;
                 serde_json::from_str::<String>(payload).ok()
@@ -190,7 +198,6 @@ mod tests {
         let (starter, _decision_rx) = fake_starter(events);
         let (ingress_tx, ingress_rx) = mpsc::unbounded_channel::<RuntimeInput>();
 
-        // Inject Run as first message
         ingress_tx
             .send(RuntimeInput::Run(test_run_request()))
             .unwrap();
@@ -200,12 +207,14 @@ mod tests {
             starter,
             TestEncoder,
             ingress_rx,
-            "thread-1".to_string(),
-            None,
-            false,
-            "test",
-            |_sse_tx| async {},
-            |msg| Bytes::from(format!("data: {{\"error\":\"{msg}\"}}\n\n")),
+            HttpSseRelayConfig {
+                thread_id: "thread-1".to_string(),
+                fanout: None,
+                resumable_downstream: false,
+                protocol_label: "test",
+                on_relay_done: |_sse_tx| async {},
+                error_formatter: |msg| Bytes::from(format!("data: {{\"error\":\"{msg}\"}}\n\n")),
+            },
         );
 
         let mut chunks = Vec::new();
@@ -237,17 +246,18 @@ mod tests {
             starter,
             TestEncoder,
             ingress_rx,
-            "thread-1".to_string(),
-            None,
-            false,
-            "test",
-            move |_sse_tx| async move {
-                called_clone.store(true, Ordering::SeqCst);
+            HttpSseRelayConfig {
+                thread_id: "thread-1".to_string(),
+                fanout: None,
+                resumable_downstream: false,
+                protocol_label: "test",
+                on_relay_done: move |_sse_tx| async move {
+                    called_clone.store(true, Ordering::SeqCst);
+                },
+                error_formatter: |msg| Bytes::from(format!("data: {{\"error\":\"{msg}\"}}\n\n")),
             },
-            |msg| Bytes::from(format!("data: {{\"error\":\"{msg}\"}}\n\n")),
         );
 
-        // Drain to completion
         while sse_rx.recv().await.is_some() {}
 
         assert!(
@@ -271,14 +281,16 @@ mod tests {
             starter,
             TestEncoder,
             ingress_rx,
-            "thread-1".to_string(),
-            None,
-            false,
-            "test",
-            |sse_tx| async move {
-                let _ = sse_tx.send(Bytes::from("data: [DONE]\n\n")).await;
+            HttpSseRelayConfig {
+                thread_id: "thread-1".to_string(),
+                fanout: None,
+                resumable_downstream: false,
+                protocol_label: "test",
+                on_relay_done: |sse_tx: mpsc::Sender<Bytes>| async move {
+                    let _ = sse_tx.send(Bytes::from("data: [DONE]\n\n")).await;
+                },
+                error_formatter: |msg| Bytes::from(format!("data: {{\"error\":\"{msg}\"}}\n\n")),
             },
-            |msg| Bytes::from(format!("data: {{\"error\":\"{msg}\"}}\n\n")),
         );
 
         let mut chunks = Vec::new();
@@ -286,7 +298,6 @@ mod tests {
             chunks.push(chunk);
         }
 
-        // Last chunk should be the trailer sent via callback
         let last = String::from_utf8(chunks.last().unwrap().to_vec()).unwrap();
         assert_eq!(last.trim(), "data: [DONE]");
     }
@@ -309,21 +320,21 @@ mod tests {
             starter,
             TestEncoder,
             ingress_rx,
-            "thread-1".to_string(),
-            Some(fanout_tx),
-            true,
-            "test",
-            |_sse_tx| async {},
-            |msg| Bytes::from(format!("data: {{\"error\":\"{msg}\"}}\n\n")),
+            HttpSseRelayConfig {
+                thread_id: "thread-1".to_string(),
+                fanout: Some(fanout_tx),
+                resumable_downstream: true,
+                protocol_label: "test",
+                on_relay_done: |_sse_tx| async {},
+                error_formatter: |msg| Bytes::from(format!("data: {{\"error\":\"{msg}\"}}\n\n")),
+            },
         );
 
-        // Collect from SSE
         let mut sse_chunks = Vec::new();
         while let Some(chunk) = sse_rx.recv().await {
             sse_chunks.push(chunk);
         }
 
-        // Collect from fanout (non-blocking, it already has all items)
         let mut fanout_chunks = Vec::new();
         while let Ok(chunk) = fanout_rx.try_recv() {
             fanout_chunks.push(chunk);
@@ -343,7 +354,6 @@ mod tests {
         }]);
         let (ingress_tx, ingress_rx) = mpsc::unbounded_channel::<RuntimeInput>();
 
-        // Inject Run as first message, keep tx alive for decisions
         ingress_tx
             .send(RuntimeInput::Run(test_run_request()))
             .unwrap();
@@ -352,23 +362,22 @@ mod tests {
             starter,
             TestEncoder,
             ingress_rx,
-            "thread-1".to_string(),
-            None,
-            false,
-            "test",
-            |_sse_tx| async {},
-            |msg| Bytes::from(format!("data: {{\"error\":\"{msg}\"}}\n\n")),
+            HttpSseRelayConfig {
+                thread_id: "thread-1".to_string(),
+                fanout: None,
+                resumable_downstream: false,
+                protocol_label: "test",
+                on_relay_done: |_sse_tx| async {},
+                error_formatter: |msg| Bytes::from(format!("data: {{\"error\":\"{msg}\"}}\n\n")),
+            },
         );
 
-        // Send a decision through the ingress channel
         let decision = ToolCallDecision::resume("d1", serde_json::json!({"approved": true}), 1);
         ingress_tx.send(RuntimeInput::Decision(decision)).unwrap();
         drop(ingress_tx);
 
-        // Drain SSE to let relay process
         while sse_rx.recv().await.is_some() {}
 
-        // The decision should have been forwarded through the relay to decision_tx
         let received = decision_rx.try_recv();
         assert!(received.is_ok(), "decision should be forwarded to run");
         assert_eq!(received.unwrap().target_id, "d1");

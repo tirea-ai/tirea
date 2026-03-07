@@ -51,10 +51,7 @@ impl ThreadWriter for FileStore {
             thread.metadata.created_at = Some(now);
         }
         thread.metadata.updated_at = Some(now);
-        let head = ThreadHead {
-            thread,
-            version: 0,
-        };
+        let head = ThreadHead { thread, version: 0 };
         self.save_head(&head).await?;
         Ok(Committed { version: 0 })
     }

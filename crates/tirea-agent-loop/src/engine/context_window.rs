@@ -70,11 +70,7 @@ pub fn truncate_to_budget<'a>(
 /// Respects tool-call/result pair boundaries: if dropping a message would
 /// orphan a tool result (no matching assistant call) or orphan a tool call
 /// (no matching result), we adjust the split to keep the pair together.
-fn find_split_point(
-    history: &[Message],
-    budget_tokens: usize,
-    min_recent: usize,
-) -> usize {
+fn find_split_point(history: &[Message], budget_tokens: usize, min_recent: usize) -> usize {
     if history.is_empty() {
         return 0;
     }
@@ -253,9 +249,7 @@ mod tests {
     #[test]
     fn min_recent_always_preserved() {
         let sys = vec![system("sys")];
-        let history: Vec<Message> = (0..20)
-            .map(|i| user(&format!("msg {i}")))
-            .collect();
+        let history: Vec<Message> = (0..20).map(|i| user(&format!("msg {i}"))).collect();
 
         let policy = ContextWindowPolicy {
             max_context_tokens: 50, // impossibly tight
@@ -272,10 +266,10 @@ mod tests {
     #[test]
     fn adjust_split_moves_back_for_orphaned_tool_result() {
         let history = vec![
-            user("a"),                                                                // 0
-            assistant_with_calls("b", vec![ToolCall::new("c1", "t", json!({}))]),     // 1
-            tool_result("c1", "r"),                                                   // 2
-            user("c"),                                                                // 3
+            user("a"),                                                            // 0
+            assistant_with_calls("b", vec![ToolCall::new("c1", "t", json!({}))]), // 1
+            tool_result("c1", "r"),                                               // 2
+            user("c"),                                                            // 3
         ];
 
         // If naive split is 2 (keep [2,3]), tool result at 2 is orphaned.
@@ -286,10 +280,10 @@ mod tests {
     #[test]
     fn adjust_split_drops_orphaned_tool_results() {
         let history = vec![
-            user("a"),                                                                // 0
-            assistant_with_calls("b", vec![ToolCall::new("c1", "t", json!({}))]),     // 1
-            tool_result("c1", "r"),                                                   // 2
-            user("c"),                                                                // 3
+            user("a"),                                                            // 0
+            assistant_with_calls("b", vec![ToolCall::new("c1", "t", json!({}))]), // 1
+            tool_result("c1", "r"),                                               // 2
+            user("c"),                                                            // 3
         ];
 
         // If naive split is 2 (keep [2,3]), adjust backward to 1.
@@ -313,17 +307,17 @@ mod tests {
     fn adjust_split_handles_multiple_consecutive_tool_results() {
         // Assistant with 2 tool calls followed by 2 tool results
         let history = vec![
-            user("start"),                                                                 // 0
+            user("start"), // 0
             assistant_with_calls(
                 "calling two tools",
                 vec![
                     ToolCall::new("c1", "t1", json!({})),
                     ToolCall::new("c2", "t2", json!({})),
                 ],
-            ),                                                                             // 1
-            tool_result("c1", "result1"),                                                  // 2
-            tool_result("c2", "result2"),                                                  // 3
-            user("continue"),                                                              // 4
+            ), // 1
+            tool_result("c1", "result1"), // 2
+            tool_result("c2", "result2"), // 3
+            user("continue"), // 4
         ];
 
         // Naive split at 2 (first kept = tool result) → should move back to 1
@@ -332,7 +326,10 @@ mod tests {
 
         // Naive split at 3 (first kept = tool result) → should move back to 1
         let adjusted = adjust_split_for_tool_pairs(&history, 3);
-        assert_eq!(adjusted, 1, "should walk back through all consecutive tool results");
+        assert_eq!(
+            adjusted, 1,
+            "should walk back through all consecutive tool results"
+        );
     }
 
     #[test]
@@ -340,14 +337,11 @@ mod tests {
         // When split=2 and history[1] is an assistant with tool_calls,
         // the tool results at [2],[3] become orphaned and should be dropped too.
         let history = vec![
-            user("start"),                                                                 // 0
-            assistant_with_calls(
-                "calling",
-                vec![ToolCall::new("c1", "t1", json!({}))],
-            ),                                                                             // 1
-            tool_result("c1", "result"),                                                   // 2
-            user("next question"),                                                         // 3
-            assistant("answer"),                                                           // 4
+            user("start"),                                                               // 0
+            assistant_with_calls("calling", vec![ToolCall::new("c1", "t1", json!({}))]), // 1
+            tool_result("c1", "result"),                                                 // 2
+            user("next question"),                                                       // 3
+            assistant("answer"),                                                         // 4
         ];
 
         // Naive split at 3 means we keep [3,4]. Last dropped = history[2] which is

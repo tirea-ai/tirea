@@ -22,7 +22,7 @@ use crate::service::{
     truncate_thread_at_message, try_forward_decisions_to_active_run, ApiError, AppState,
     MessageQueryParams,
 };
-use crate::transport::http_run::wire_http_sse_relay;
+use crate::transport::http_run::{wire_http_sse_relay, HttpSseRelayConfig};
 use crate::transport::http_sse::{sse_body_stream, sse_response};
 
 const RUN_PATH: &str = "/agents/:agent_id/runs";
@@ -139,22 +139,24 @@ async fn run(
         prepared.starter,
         encoder,
         prepared.ingress_rx,
-        prepared.thread_id,
-        Some(fanout.clone()),
-        true,
-        "ai-sdk",
-        move |sse_tx| async move {
-            let trailer = Bytes::from("data: [DONE]\n\n");
-            let _ = fanout.send(trailer.clone());
-            if sse_tx.send(trailer).await.is_err() {
-                token_for_callback.cancel();
-            }
-            stream_registry().remove(&stream_key).await;
-            remove_active_run(&active_key).await;
-        },
-        |msg| {
-            let json = serde_json::to_string(&UIStreamEvent::error(&msg)).unwrap_or_default();
-            Bytes::from(format!("data: {json}\n\n"))
+        HttpSseRelayConfig {
+            thread_id: prepared.thread_id,
+            fanout: Some(fanout.clone()),
+            resumable_downstream: true,
+            protocol_label: "ai-sdk",
+            on_relay_done: move |sse_tx: tokio::sync::mpsc::Sender<Bytes>| async move {
+                let trailer = Bytes::from("data: [DONE]\n\n");
+                let _ = fanout.send(trailer.clone());
+                if sse_tx.send(trailer).await.is_err() {
+                    token_for_callback.cancel();
+                }
+                stream_registry().remove(&stream_key).await;
+                remove_active_run(&active_key).await;
+            },
+            error_formatter: |msg| {
+                let json = serde_json::to_string(&UIStreamEvent::error(&msg)).unwrap_or_default();
+                Bytes::from(format!("data: {json}\n\n"))
+            },
         },
     );
 

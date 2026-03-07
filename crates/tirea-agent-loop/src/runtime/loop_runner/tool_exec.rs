@@ -45,7 +45,7 @@ pub enum ExecuteToolsOutcome {
     /// Execution suspended on a tool call awaiting external decision.
     Suspended {
         thread: Thread,
-        suspended_call: SuspendedCall,
+        suspended_call: Box<SuspendedCall>,
     },
 }
 
@@ -650,7 +650,7 @@ async fn execute_tools_with_agent_and_executor(
         return if let Some(first) = suspended {
             Ok(ExecuteToolsOutcome::Suspended {
                 thread: out_thread,
-                suspended_call: first,
+                suspended_call: Box::new(first),
             })
         } else {
             Ok(ExecuteToolsOutcome::Completed(out_thread))
@@ -707,7 +707,7 @@ async fn execute_tools_with_agent_and_executor(
     if let Some(first) = suspended {
         Ok(ExecuteToolsOutcome::Suspended {
             thread: out_thread,
-            suspended_call: first,
+            suspended_call: Box::new(first),
         })
     } else {
         Ok(ExecuteToolsOutcome::Completed(out_thread))
@@ -931,98 +931,109 @@ async fn execute_single_tool_with_phases_impl(
             None,
             Vec::<Box<dyn Action>>::new(),
         )
-    } else if tool.is_none() {
-        (
-            ToolExecution {
-                call: call.clone(),
-                result: ToolResult::error(&call.name, format!("Tool '{}' not found", call.name)),
-                patch: None,
-            },
-            ToolCallOutcome::Failed,
-            None,
-            Vec::<Box<dyn Action>>::new(),
-        )
-    } else if let Err(e) = tool.unwrap().validate_args(&call.arguments) {
-        // Argument validation failed — return error to the LLM
-        (
-            ToolExecution {
-                call: call.clone(),
-                result: ToolResult::error(&call.name, e.to_string()),
-                patch: None,
-            },
-            ToolCallOutcome::Failed,
-            None,
-            Vec::<Box<dyn Action>>::new(),
-        )
-    } else if step.tool_pending() {
-        let Some(suspend_ticket) = step.gate.as_ref().and_then(|g| g.suspend_ticket.clone()) else {
-            return Err(AgentLoopError::StateError(
-                "tool is pending but suspend ticket is missing".to_string(),
-            ));
-        };
-        (
-            ToolExecution {
-                call: call.clone(),
-                result: ToolResult::suspended(
-                    &call.name,
-                    "Execution suspended; awaiting external decision",
-                ),
-                patch: None,
-            },
-            ToolCallOutcome::Suspended,
-            Some(SuspendedCall::new(call, suspend_ticket)),
-            Vec::<Box<dyn Action>>::new(),
-        )
     } else {
-        persist_tool_call_status(&step, call, ToolCallStatus::Running, None)?;
-        // Execute the tool with its own ToolCallContext
-        let tool_doc = tirea_state::DocCell::new(state.clone());
-        let tool_ops = std::sync::Mutex::new(Vec::new());
-        let tool_pending_msgs = std::sync::Mutex::new(Vec::new());
-        let mut tool_ctx = crate::contracts::ToolCallContext::new(
-            &tool_doc,
-            &tool_ops,
-            &call.id,
-            format!("tool:{}", call.name),
-            plugin_scope,
-            &tool_pending_msgs,
-            phase_ctx.activity_manager.clone(),
-        );
-        if let Some(token) = phase_ctx.cancellation_token {
-            tool_ctx = tool_ctx.with_cancellation_token(token);
+        match tool {
+            None => (
+                ToolExecution {
+                    call: call.clone(),
+                    result: ToolResult::error(
+                        &call.name,
+                        format!("Tool '{}' not found", call.name),
+                    ),
+                    patch: None,
+                },
+                ToolCallOutcome::Failed,
+                None,
+                Vec::<Box<dyn Action>>::new(),
+            ),
+            Some(tool) => {
+                if let Err(e) = tool.validate_args(&call.arguments) {
+                    (
+                        ToolExecution {
+                            call: call.clone(),
+                            result: ToolResult::error(&call.name, e.to_string()),
+                            patch: None,
+                        },
+                        ToolCallOutcome::Failed,
+                        None,
+                        Vec::<Box<dyn Action>>::new(),
+                    )
+                } else if step.tool_pending() {
+                    let Some(suspend_ticket) =
+                        step.gate.as_ref().and_then(|g| g.suspend_ticket.clone())
+                    else {
+                        return Err(AgentLoopError::StateError(
+                            "tool is pending but suspend ticket is missing".to_string(),
+                        ));
+                    };
+                    (
+                        ToolExecution {
+                            call: call.clone(),
+                            result: ToolResult::suspended(
+                                &call.name,
+                                "Execution suspended; awaiting external decision",
+                            ),
+                            patch: None,
+                        },
+                        ToolCallOutcome::Suspended,
+                        Some(SuspendedCall::new(call, suspend_ticket)),
+                        Vec::<Box<dyn Action>>::new(),
+                    )
+                } else {
+                    persist_tool_call_status(&step, call, ToolCallStatus::Running, None)?;
+                    // Execute the tool with its own ToolCallContext.
+                    let tool_doc = tirea_state::DocCell::new(state.clone());
+                    let tool_ops = std::sync::Mutex::new(Vec::new());
+                    let tool_pending_msgs = std::sync::Mutex::new(Vec::new());
+                    let mut tool_ctx = crate::contracts::ToolCallContext::new(
+                        &tool_doc,
+                        &tool_ops,
+                        &call.id,
+                        format!("tool:{}", call.name),
+                        plugin_scope,
+                        &tool_pending_msgs,
+                        phase_ctx.activity_manager.clone(),
+                    );
+                    if let Some(token) = phase_ctx.cancellation_token {
+                        tool_ctx = tool_ctx.with_cancellation_token(token);
+                    }
+                    let mut effect =
+                        match tool.execute_effect(call.arguments.clone(), &tool_ctx).await {
+                            Ok(effect) => effect,
+                            Err(e) => ToolExecutionEffect::from(ToolResult::error(
+                                &call.name,
+                                e.to_string(),
+                            )),
+                        };
+
+                    let context_patch = tool_ctx.take_patch();
+                    if let Err(result) =
+                        merge_context_patch_into_effect(call, &mut effect, context_patch)
+                    {
+                        effect = ToolExecutionEffect::from(*result);
+                    }
+                    let (result, actions) = effect.into_parts();
+                    let outcome = ToolCallOutcome::from_tool_result(&result);
+
+                    let suspended_call = if matches!(outcome, ToolCallOutcome::Suspended) {
+                        Some(suspended_call_from_tool_result(call, &result))
+                    } else {
+                        None
+                    };
+
+                    (
+                        ToolExecution {
+                            call: call.clone(),
+                            result,
+                            patch: None,
+                        },
+                        outcome,
+                        suspended_call,
+                        actions,
+                    )
+                }
+            }
         }
-        let mut effect = match tool
-            .unwrap()
-            .execute_effect(call.arguments.clone(), &tool_ctx)
-            .await
-        {
-            Ok(effect) => effect,
-            Err(e) => ToolExecutionEffect::from(ToolResult::error(&call.name, e.to_string())),
-        };
-
-        let context_patch = tool_ctx.take_patch();
-        if let Err(result) = merge_context_patch_into_effect(call, &mut effect, context_patch) {
-            effect = ToolExecutionEffect::from(result);
-        }
-        let (result, actions) = effect.into_parts();
-        let outcome = ToolCallOutcome::from_tool_result(&result);
-
-        let suspended_call = if matches!(outcome, ToolCallOutcome::Suspended) {
-            Some(suspended_call_from_tool_result(call, &result))
-        } else {
-            None
-        };
-
-        (
-            ToolExecution {
-                call: call.clone(),
-                result,
-                patch: None,
-            },
-            outcome,
-            suspended_call,
-            actions,
-        )
     };
 
     // Set tool result in context

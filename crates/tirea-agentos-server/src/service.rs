@@ -20,7 +20,7 @@ use tirea_contract::{AgentEvent, Identity, RuntimeInput};
 use tokio::sync::{mpsc, RwLock};
 
 use crate::run_service::{global_run_service, origin_from_protocol, wrap_with_run_tracking};
-use crate::transport::http_run::wire_http_sse_relay;
+use crate::transport::http_run::{wire_http_sse_relay, HttpSseRelayConfig};
 use crate::transport::runtime_endpoint::RunStarter;
 use crate::transport::TransportError;
 
@@ -482,24 +482,26 @@ pub async fn start_background_run(
         prepared.starter,
         encoder,
         prepared.ingress_rx,
-        thread_for_session,
-        None,
-        false,
-        protocol_label,
-        move |_sse_tx| async move {
-            remove_active_run(&active_key).await;
-        },
-        |msg| {
-            let error = serde_json::json!({
-                "type": "error",
-                "message": msg,
-                "code": "RELAY_ERROR",
-            });
-            let payload = serde_json::to_string(&error).unwrap_or_else(|_| {
-                "{\"type\":\"error\",\"message\":\"relay error\",\"code\":\"RELAY_ERROR\"}"
-                    .to_string()
-            });
-            Bytes::from(format!("data: {payload}\n\n"))
+        HttpSseRelayConfig {
+            thread_id: thread_for_session,
+            fanout: None,
+            resumable_downstream: false,
+            protocol_label,
+            on_relay_done: move |_sse_tx| async move {
+                remove_active_run(&active_key).await;
+            },
+            error_formatter: |msg| {
+                let error = serde_json::json!({
+                    "type": "error",
+                    "message": msg,
+                    "code": "RELAY_ERROR",
+                });
+                let payload = serde_json::to_string(&error).unwrap_or_else(|_| {
+                    "{\"type\":\"error\",\"message\":\"relay error\",\"code\":\"RELAY_ERROR\"}"
+                        .to_string()
+                });
+                Bytes::from(format!("data: {payload}\n\n"))
+            },
         },
     );
     tokio::spawn(async move { while sse_rx.recv().await.is_some() {} });

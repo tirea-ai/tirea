@@ -530,9 +530,11 @@ pub(super) fn run_stream(
                                 response,
                                 &mut decision_rx,
                                 &mut pending_decisions,
-                                &step_tool_provider,
-                                agent.as_ref(),
-                                &mut active_tool_descriptors,
+                                DecisionReplayInputs {
+                                    step_tool_provider: &step_tool_provider,
+                                    agent: agent.as_ref(),
+                                    active_tool_descriptors: &mut active_tool_descriptors,
+                                },
                                 &pending_delta_commit,
                             )
                             .await
@@ -562,9 +564,11 @@ pub(super) fn run_stream(
                                 response,
                                 &mut decision_rx,
                                 &mut pending_decisions,
-                                &step_tool_provider,
-                                agent.as_ref(),
-                                &mut active_tool_descriptors,
+                                DecisionReplayInputs {
+                                    step_tool_provider: &step_tool_provider,
+                                    agent: agent.as_ref(),
+                                    active_tool_descriptors: &mut active_tool_descriptors,
+                                },
                                 &pending_delta_commit,
                             )
                             .await
@@ -840,9 +844,11 @@ pub(super) fn run_stream(
                             response,
                             &mut decision_rx,
                             &mut pending_decisions,
-                            &step_tool_provider,
-                            agent.as_ref(),
-                            &mut active_tool_descriptors,
+                            DecisionReplayInputs {
+                                step_tool_provider: &step_tool_provider,
+                                agent: agent.as_ref(),
+                                active_tool_descriptors: &mut active_tool_descriptors,
+                            },
                             &pending_delta_commit,
                         )
                         .await

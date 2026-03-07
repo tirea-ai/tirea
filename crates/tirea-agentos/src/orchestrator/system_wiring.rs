@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::contracts::runtime::tool_call::Tool;
-use crate::contracts::runtime::AgentBehavior;
 use super::composition::RegistryBundle;
 use super::AgentDefinition;
 use super::AgentOsWiringError;
+use crate::contracts::runtime::tool_call::Tool;
+use crate::contracts::runtime::AgentBehavior;
 
 /// Generic wiring interface for extension subsystems.
 ///

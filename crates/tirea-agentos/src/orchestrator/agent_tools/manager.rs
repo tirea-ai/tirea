@@ -225,6 +225,18 @@ pub(super) struct SubAgentCompletion {
     pub(super) error: Option<String>,
 }
 
+pub(super) struct SubAgentExecutionRequest {
+    pub(super) agent_id: String,
+    pub(super) child_thread_id: String,
+    pub(super) run_id: String,
+    pub(super) parent_run_id: Option<String>,
+    pub(super) parent_tool_call_id: Option<String>,
+    pub(super) parent_thread_id: String,
+    pub(super) messages: Vec<crate::contracts::thread::Message>,
+    pub(super) initial_state: Option<serde_json::Value>,
+    pub(super) cancellation_token: Option<RunCancellationToken>,
+}
+
 fn bind_parent_tool_call_scope(
     run_config: &mut crate::contracts::RunConfig,
     parent_tool_call_id: Option<&str>,
@@ -243,18 +255,22 @@ fn bind_parent_tool_call_scope(
 
 pub(super) async fn execute_sub_agent(
     os: AgentOs,
-    agent_id: String,
-    child_thread_id: String,
-    run_id: String,
-    parent_run_id: Option<String>,
-    parent_tool_call_id: Option<String>,
-    parent_thread_id: String,
-    messages: Vec<crate::contracts::thread::Message>,
-    initial_state: Option<serde_json::Value>,
-    cancellation_token: Option<RunCancellationToken>,
+    request: SubAgentExecutionRequest,
     progress_reporter: Option<&SubAgentProgressReporter<'_>>,
 ) -> SubAgentCompletion {
-    let request = crate::contracts::io::RunRequest {
+    let SubAgentExecutionRequest {
+        agent_id,
+        child_thread_id,
+        run_id,
+        parent_run_id,
+        parent_tool_call_id,
+        parent_thread_id,
+        messages,
+        initial_state,
+        cancellation_token,
+    } = request;
+
+    let run_request = crate::contracts::io::RunRequest {
         agent_id,
         thread_id: Some(child_thread_id),
         run_id: Some(run_id),
@@ -266,7 +282,7 @@ pub(super) async fn execute_sub_agent(
         initial_decisions: Vec::new(),
     };
 
-    let mut resolved = match os.resolve(&request.agent_id) {
+    let mut resolved = match os.resolve(&run_request.agent_id) {
         Ok(r) => r,
         Err(e) => {
             return SubAgentCompletion {
@@ -284,7 +300,7 @@ pub(super) async fn execute_sub_agent(
         };
     }
 
-    let mut prepared = match os.prepare_run(request, resolved).await {
+    let mut prepared = match os.prepare_run(run_request, resolved).await {
         Ok(p) => p,
         Err(e) => {
             return SubAgentCompletion {

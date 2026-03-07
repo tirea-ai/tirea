@@ -14,7 +14,7 @@ use crate::service::{
     active_run_key, encode_message_page, load_message_page, prepare_http_run, remove_active_run,
     try_forward_decisions_to_active_run, ApiError, AppState, MessageQueryParams,
 };
-use crate::transport::http_run::wire_http_sse_relay;
+use crate::transport::http_run::{wire_http_sse_relay, HttpSseRelayConfig};
 use crate::transport::http_sse::{sse_body_stream, sse_response};
 
 const RUN_PATH: &str = "/agents/:agent_id/runs";
@@ -80,18 +80,20 @@ async fn run(
         prepared.starter,
         enc,
         prepared.ingress_rx,
-        prepared.thread_id,
-        None,
-        false,
-        "ag-ui",
-        move |_sse_tx| async move {
-            remove_active_run(&active_key).await;
-        },
-        |msg| {
-            let json =
-                serde_json::to_string(&Event::run_error(&msg, Some("RELAY_ERROR".to_string())))
-                    .unwrap_or_default();
-            Bytes::from(format!("data: {json}\n\n"))
+        HttpSseRelayConfig {
+            thread_id: prepared.thread_id,
+            fanout: None,
+            resumable_downstream: false,
+            protocol_label: "ag-ui",
+            on_relay_done: move |_sse_tx| async move {
+                remove_active_run(&active_key).await;
+            },
+            error_formatter: |msg| {
+                let json =
+                    serde_json::to_string(&Event::run_error(&msg, Some("RELAY_ERROR".to_string())))
+                        .unwrap_or_default();
+                Bytes::from(format!("data: {json}\n\n"))
+            },
         },
     );
 

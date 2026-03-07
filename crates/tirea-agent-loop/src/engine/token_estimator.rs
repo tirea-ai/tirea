@@ -136,7 +136,11 @@ mod tests {
         use crate::contracts::thread::ToolCall;
         let msg = Message::assistant_with_tool_calls(
             "I'll calculate that.",
-            vec![ToolCall::new("call_1", "calculator", json!({"expr": "2+2"}))],
+            vec![ToolCall::new(
+                "call_1",
+                "calculator",
+                json!({"expr": "2+2"}),
+            )],
         );
         let tokens = estimate_message_tokens(&msg);
         // Content + tool call name + args + overheads
@@ -145,14 +149,17 @@ mod tests {
 
     #[test]
     fn estimate_tool_tokens_basic() {
-        let tools = vec![ToolDescriptor::new("calc", "Calculator", "Evaluate math expressions")
-            .with_parameters(json!({
-                "type": "object",
-                "properties": {
-                    "expression": { "type": "string" }
-                },
-                "required": ["expression"]
-            }))];
+        let tools = vec![
+            ToolDescriptor::new("calc", "Calculator", "Evaluate math expressions").with_parameters(
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "expression": { "type": "string" }
+                    },
+                    "required": ["expression"]
+                }),
+            ),
+        ];
         let tokens = estimate_tool_tokens(&tools);
         assert!(tokens >= 20, "got {tokens}");
     }

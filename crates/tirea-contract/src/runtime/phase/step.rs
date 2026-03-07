@@ -248,7 +248,7 @@ impl<'a> StepContext<'a> {
         if let Some(gate) = &self.gate {
             if gate.pending {
                 if let Some(ticket) = gate.suspend_ticket.as_ref() {
-                    return StepOutcome::Pending(ticket.clone());
+                    return StepOutcome::Pending(Box::new(ticket.clone()));
                 }
                 return StepOutcome::Continue;
             }

@@ -28,9 +28,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 #[cfg(feature = "skills")]
 use tempfile::TempDir;
-use tirea_contract::testing::{
-    apply_before_inference_for_test, apply_lifecycle_for_test, TestFixture,
-};
+use tirea_contract::testing::{apply_before_inference_for_test, TestFixture};
 use tirea_contract::TerminationReason;
 
 fn decision_for(
@@ -1111,7 +1109,15 @@ async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_condition
             _chat_req: genai::chat::ChatRequest,
             _options: Option<&genai::chat::ChatOptions>,
         ) -> genai::Result<crate::runtime::loop_runner::LlmEventStream> {
-            Ok(Box::pin(futures::stream::empty()))
+            use genai::chat::{ChatStreamEvent, StreamChunk, StreamEnd};
+
+            Ok(Box::pin(futures::stream::iter(vec![
+                Ok(ChatStreamEvent::Start),
+                Ok(ChatStreamEvent::Chunk(StreamChunk {
+                    content: "ok".to_string(),
+                })),
+                Ok(ChatStreamEvent::End(StreamEnd::default())),
+            ])))
         }
 
         fn name(&self) -> &'static str {
@@ -3591,7 +3597,15 @@ async fn prepare_run_cleans_up_run_scoped_state_between_consecutive_runs() {
             _chat_req: genai::chat::ChatRequest,
             _options: Option<&genai::chat::ChatOptions>,
         ) -> genai::Result<crate::runtime::loop_runner::LlmEventStream> {
-            Ok(Box::pin(futures::stream::empty()))
+            use genai::chat::{ChatStreamEvent, StreamChunk, StreamEnd};
+
+            Ok(Box::pin(futures::stream::iter(vec![
+                Ok(ChatStreamEvent::Start),
+                Ok(ChatStreamEvent::Chunk(StreamChunk {
+                    content: "ok".to_string(),
+                })),
+                Ok(ChatStreamEvent::End(StreamEnd::default())),
+            ])))
         }
 
         fn name(&self) -> &'static str {
@@ -3734,8 +3748,10 @@ impl crate::contracts::runtime::tool_call::Tool for StubTool {
         &self,
         _args: Value,
         _ctx: &ToolCallContext<'_>,
-    ) -> Result<crate::contracts::runtime::tool_call::ToolResult, crate::contracts::runtime::tool_call::ToolError>
-    {
+    ) -> Result<
+        crate::contracts::runtime::tool_call::ToolResult,
+        crate::contracts::runtime::tool_call::ToolError,
+    > {
         Ok(crate::contracts::runtime::tool_call::ToolResult::success(
             self.0,
             json!({}),
@@ -3757,10 +3773,8 @@ impl SystemWiring for FakeSystemWiring {
         _ctx: &WiringContext<'_>,
     ) -> Result<Vec<Arc<dyn RegistryBundle>>, AgentOsWiringError> {
         let bundle = ToolBehaviorBundle::new(self.id)
-            .with_tool(
-                Arc::new(StubTool(self.tool_id))
-                    as Arc<dyn crate::contracts::runtime::tool_call::Tool>,
-            )
+            .with_tool(Arc::new(StubTool(self.tool_id))
+                as Arc<dyn crate::contracts::runtime::tool_call::Tool>)
             .with_behavior(Arc::new(TestPlugin(self.behavior_id)));
         Ok(vec![Arc::new(bundle)])
     }
@@ -3998,4 +4012,3 @@ fn reserved_behavior_ids_aggregates_from_wirings() {
     assert!(ids.contains(&"ext2_reserved"));
     assert_eq!(ids.len(), 6, "should aggregate all reserved ids: {ids:?}");
 }
-

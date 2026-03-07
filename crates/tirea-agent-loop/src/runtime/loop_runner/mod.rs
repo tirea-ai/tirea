@@ -451,7 +451,14 @@ pub(super) async fn run_step_prepare_phases(
             |step| inference_inputs_from_step(step, &system_prompt),
         )
         .await?;
-    Ok((messages, filtered_tools, run_action, transforms, pending, actions))
+    Ok((
+        messages,
+        filtered_tools,
+        run_action,
+        transforms,
+        pending,
+        actions,
+    ))
 }
 
 pub(super) struct PreparedStep {
@@ -684,7 +691,7 @@ fn stream_result_from_chat_response(response: &genai::chat::ChatResponse) -> Str
         .stop_reason
         .as_deref()
         .and_then(crate::runtime::streaming::map_genai_stop_reason)
-        .or_else(|| {
+        .or({
             if !tool_calls.is_empty() {
                 Some(tirea_contract::runtime::inference::StopReason::ToolUse)
             } else {
@@ -1330,9 +1337,11 @@ async fn apply_decisions_and_replay(
         decision_rx,
         pending_decisions,
         None,
-        step_tool_provider,
-        agent,
-        active_tool_descriptors,
+        DecisionReplayInputs {
+            step_tool_provider,
+            agent,
+            active_tool_descriptors,
+        },
         pending_delta_commit,
     )
     .await?
@@ -1344,14 +1353,18 @@ pub(super) struct DecisionReplayOutcome {
     resolved_call_ids: Vec<String>,
 }
 
+struct DecisionReplayInputs<'a> {
+    step_tool_provider: &'a Arc<dyn StepToolProvider>,
+    agent: &'a dyn Agent,
+    active_tool_descriptors: &'a mut Vec<crate::contracts::runtime::tool_call::ToolDescriptor>,
+}
+
 async fn drain_and_replay_decisions(
     run_ctx: &mut RunContext,
     decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
     pending_decisions: &mut VecDeque<ToolCallDecision>,
     decision: Option<ToolCallDecision>,
-    step_tool_provider: &Arc<dyn StepToolProvider>,
-    agent: &dyn Agent,
-    active_tool_descriptors: &mut Vec<crate::contracts::runtime::tool_call::ToolDescriptor>,
+    replay_inputs: DecisionReplayInputs<'_>,
     pending_delta_commit: &PendingDeltaCommitContext<'_>,
 ) -> Result<DecisionReplayOutcome, AgentLoopError> {
     if let Some(decision) = decision {
@@ -1362,9 +1375,9 @@ async fn drain_and_replay_decisions(
     let replay_events = replay_after_decisions(
         run_ctx,
         !decision_drain.resolved_call_ids.is_empty(),
-        step_tool_provider,
-        agent,
-        active_tool_descriptors,
+        replay_inputs.step_tool_provider,
+        replay_inputs.agent,
+        replay_inputs.active_tool_descriptors,
         pending_delta_commit,
     )
     .await?;
@@ -1381,9 +1394,7 @@ async fn apply_decision_and_replay(
     response: ToolCallDecision,
     decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
     pending_decisions: &mut VecDeque<ToolCallDecision>,
-    step_tool_provider: &Arc<dyn StepToolProvider>,
-    agent: &dyn Agent,
-    active_tool_descriptors: &mut Vec<crate::contracts::runtime::tool_call::ToolDescriptor>,
+    replay_inputs: DecisionReplayInputs<'_>,
     pending_delta_commit: &PendingDeltaCommitContext<'_>,
 ) -> Result<DecisionReplayOutcome, AgentLoopError> {
     drain_and_replay_decisions(
@@ -1391,9 +1402,7 @@ async fn apply_decision_and_replay(
         decision_rx,
         pending_decisions,
         Some(response),
-        step_tool_provider,
-        agent,
-        active_tool_descriptors,
+        replay_inputs,
         pending_delta_commit,
     )
     .await
@@ -1601,8 +1610,12 @@ pub async fn run_loop(
             true,
             "unknown llm error",
             |model| {
-                let request =
-                    build_request_for_filtered_tools(&messages, &step_tools.tools, &filtered_tools, &request_transforms);
+                let request = build_request_for_filtered_tools(
+                    &messages,
+                    &step_tools.tools,
+                    &filtered_tools,
+                    &request_transforms,
+                );
                 let executor = executor.clone();
                 let chat_options = chat_options.clone();
                 async move {

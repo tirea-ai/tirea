@@ -42,7 +42,7 @@ pub struct ToolResult {
     pub metadata: HashMap<String, Value>,
     /// Structured suspension payload for loop-level suspension handling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub suspension: Option<SuspendTicket>,
+    pub suspension: Option<Box<SuspendTicket>>,
 }
 
 impl ToolResult {
@@ -134,7 +134,7 @@ impl ToolResult {
             data: Value::Null,
             message: Some(message.into()),
             metadata: HashMap::new(),
-            suspension: Some(ticket),
+            suspension: Some(Box::new(ticket)),
         }
     }
 
@@ -162,7 +162,7 @@ impl ToolResult {
 
     /// Attach structured suspension payload for loop-level suspension handling.
     pub fn with_suspension(mut self, ticket: SuspendTicket) -> Self {
-        self.suspension = Some(ticket);
+        self.suspension = Some(Box::new(ticket));
         self
     }
 
@@ -183,7 +183,7 @@ impl ToolResult {
 
     /// Structured suspension payload attached by `with_suspension`.
     pub fn suspension(&self) -> Option<SuspendTicket> {
-        self.suspension.clone()
+        self.suspension.as_deref().cloned()
     }
 
     /// Convert to JSON value for serialization.

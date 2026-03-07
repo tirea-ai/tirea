@@ -139,6 +139,17 @@ fn filtered_fork_messages(messages: Vec<Message>) -> Vec<Message> {
         .collect()
 }
 
+struct LaunchNewRunRequest {
+    run_id: String,
+    owner_thread_id: String,
+    agent_id: String,
+    parent_run_id: Option<String>,
+    child_thread_id: String,
+    messages: Vec<Message>,
+    initial_state: Option<Value>,
+    background: bool,
+}
+
 fn is_target_agent_visible(
     registry: &dyn AgentRegistry,
     target: &str,
@@ -227,16 +238,19 @@ impl AgentRunTool {
     async fn launch_new_run(
         &self,
         ctx: &ToolCallContext<'_>,
-        run_id: String,
-        owner_thread_id: String,
-        agent_id: String,
-        parent_run_id: Option<String>,
-        child_thread_id: String,
-        messages: Vec<Message>,
-        initial_state: Option<Value>,
-        background: bool,
+        request: LaunchNewRunRequest,
         tool_name: &str,
     ) -> ToolResult {
+        let LaunchNewRunRequest {
+            run_id,
+            owner_thread_id,
+            agent_id,
+            parent_run_id,
+            child_thread_id,
+            messages,
+            initial_state,
+            background,
+        } = request;
         let sub = SubAgent {
             thread_id: child_thread_id.clone(),
             parent_run_id: parent_run_id.clone(),
@@ -280,15 +294,17 @@ impl AgentRunTool {
             tokio::spawn(async move {
                 let completion = execute_sub_agent(
                     os,
-                    agent_id_bg,
-                    child_thread_id_bg,
-                    run_id_bg.clone(),
-                    parent_run_id_bg,
-                    Some(parent_tool_call_id_bg),
-                    parent_thread_id_bg,
-                    messages,
-                    initial_state,
-                    Some(token),
+                    SubAgentExecutionRequest {
+                        agent_id: agent_id_bg,
+                        child_thread_id: child_thread_id_bg,
+                        run_id: run_id_bg.clone(),
+                        parent_run_id: parent_run_id_bg,
+                        parent_tool_call_id: Some(parent_tool_call_id_bg),
+                        parent_thread_id: parent_thread_id_bg,
+                        messages,
+                        initial_state,
+                        cancellation_token: Some(token),
+                    },
                     None,
                 )
                 .await;
@@ -328,15 +344,17 @@ impl AgentRunTool {
 
         let completion = execute_sub_agent(
             self.os.clone(),
-            agent_id.clone(),
-            child_thread_id.clone(),
-            run_id.clone(),
-            parent_run_id.clone(),
-            Some(parent_tool_call_id),
-            owner_thread_id,
-            messages,
-            initial_state,
-            None,
+            SubAgentExecutionRequest {
+                agent_id: agent_id.clone(),
+                child_thread_id: child_thread_id.clone(),
+                run_id: run_id.clone(),
+                parent_run_id: parent_run_id.clone(),
+                parent_tool_call_id: Some(parent_tool_call_id),
+                parent_thread_id: owner_thread_id,
+                messages,
+                initial_state,
+                cancellation_token: None,
+            },
             Some(&forward_progress),
         )
         .await;
@@ -471,14 +489,16 @@ impl Tool for AgentRunTool {
                         return Ok(self
                             .launch_new_run(
                                 ctx,
-                                run_id,
-                                owner_thread_id,
-                                handle.agent_id,
-                                caller_run_id,
-                                handle.child_thread_id,
-                                messages,
-                                None,
-                                background,
+                                LaunchNewRunRequest {
+                                    run_id,
+                                    owner_thread_id,
+                                    agent_id: handle.agent_id,
+                                    parent_run_id: caller_run_id,
+                                    child_thread_id: handle.child_thread_id,
+                                    messages,
+                                    initial_state: None,
+                                    background,
+                                },
                                 tool_name,
                             )
                             .await);
@@ -557,14 +577,16 @@ impl Tool for AgentRunTool {
                     return Ok(self
                         .launch_new_run(
                             ctx,
-                            run_id,
-                            owner_thread_id,
-                            persisted.agent_id,
-                            caller_run_id,
-                            persisted.thread_id,
-                            messages,
-                            None,
-                            background,
+                            LaunchNewRunRequest {
+                                run_id,
+                                owner_thread_id,
+                                agent_id: persisted.agent_id,
+                                parent_run_id: caller_run_id,
+                                child_thread_id: persisted.thread_id,
+                                messages,
+                                initial_state: None,
+                                background,
+                            },
                             tool_name,
                         )
                         .await);
@@ -611,14 +633,16 @@ impl Tool for AgentRunTool {
         Ok(self
             .launch_new_run(
                 ctx,
-                run_id,
-                owner_thread_id,
-                target_agent_id,
-                caller_run_id,
-                child_thread_id,
-                messages,
-                initial_state,
-                background,
+                LaunchNewRunRequest {
+                    run_id,
+                    owner_thread_id,
+                    agent_id: target_agent_id,
+                    parent_run_id: caller_run_id,
+                    child_thread_id,
+                    messages,
+                    initial_state,
+                    background,
+                },
                 tool_name,
             )
             .await)

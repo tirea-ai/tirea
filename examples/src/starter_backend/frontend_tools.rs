@@ -18,6 +18,12 @@ impl FrontendToolPlugin {
     }
 }
 
+impl Default for FrontendToolPlugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl AgentBehavior for FrontendToolPlugin {
     fn id(&self) -> &str {

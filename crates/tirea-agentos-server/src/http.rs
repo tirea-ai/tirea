@@ -17,12 +17,12 @@ use tirea_contract::{AgentEvent, Identity};
 
 use crate::run_service::{global_run_service, wrap_with_run_tracking};
 use crate::service::{
-    check_run_liveness, load_run_record, parse_message_query, prepare_http_run,
-    remove_active_run, require_agent_state_store, resolve_thread_id_from_run,
-    start_background_run, try_cancel_active_run_by_id,
-    try_forward_decisions_to_active_run_by_id, ApiError, MessageQueryParams, RunLookup,
+    check_run_liveness, load_run_record, parse_message_query, prepare_http_run, remove_active_run,
+    require_agent_state_store, resolve_thread_id_from_run, start_background_run,
+    try_cancel_active_run_by_id, try_forward_decisions_to_active_run_by_id, ApiError,
+    MessageQueryParams, RunLookup,
 };
-use crate::transport::http_run::wire_http_sse_relay;
+use crate::transport::http_run::{wire_http_sse_relay, HttpSseRelayConfig};
 use crate::transport::http_sse::{sse_body_stream, sse_response};
 
 pub use crate::service::AppState;
@@ -162,7 +162,7 @@ async fn patch_thread_metadata(
         .load_thread(&id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::ThreadNotFound(id))?;
+        .ok_or(ApiError::ThreadNotFound(id))?;
 
     if let Some(title) = payload.title {
         thread
@@ -176,7 +176,9 @@ async fn patch_thread_metadata(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    Ok(Json(serde_json::to_value(&thread.metadata).unwrap_or_default()))
+    Ok(Json(
+        serde_json::to_value(&thread.metadata).unwrap_or_default(),
+    ))
 }
 
 #[derive(Debug, Serialize)]
@@ -233,11 +235,7 @@ async fn get_thread_summaries(
     }
 
     // Sort by updated_at descending (None treated as 0 → sorts last)
-    summaries.sort_by(|a, b| {
-        b.updated_at
-            .unwrap_or(0)
-            .cmp(&a.updated_at.unwrap_or(0))
-    });
+    summaries.sort_by(|a, b| b.updated_at.unwrap_or(0).cmp(&a.updated_at.unwrap_or(0)));
 
     Ok(Json(summaries))
 }
@@ -413,24 +411,26 @@ async fn start_run(
         prepared.starter,
         encoder,
         prepared.ingress_rx,
-        prepared.thread_id,
-        None,
-        false,
-        "run-api",
-        move |_sse_tx| async move {
-            remove_active_run(&active_key).await;
-        },
-        |msg| {
-            let error = json!({
-                "type": "error",
-                "message": msg,
-                "code": "RELAY_ERROR",
-            });
-            let payload = serde_json::to_string(&error).unwrap_or_else(|_| {
-                "{\"type\":\"error\",\"message\":\"relay error\",\"code\":\"RELAY_ERROR\"}"
-                    .to_string()
-            });
-            Bytes::from(format!("data: {payload}\n\n"))
+        HttpSseRelayConfig {
+            thread_id: prepared.thread_id,
+            fanout: None,
+            resumable_downstream: false,
+            protocol_label: "run-api",
+            on_relay_done: move |_sse_tx| async move {
+                remove_active_run(&active_key).await;
+            },
+            error_formatter: |msg| {
+                let error = json!({
+                    "type": "error",
+                    "message": msg,
+                    "code": "RELAY_ERROR",
+                });
+                let payload = serde_json::to_string(&error).unwrap_or_else(|_| {
+                    "{\"type\":\"error\",\"message\":\"relay error\",\"code\":\"RELAY_ERROR\"}"
+                        .to_string()
+                });
+                Bytes::from(format!("data: {payload}\n\n"))
+            },
         },
     );
 

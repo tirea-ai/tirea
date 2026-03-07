@@ -45,7 +45,7 @@ impl FileRunStore {
         let mut records = Vec::new();
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            if path.extension().map_or(true, |ext| ext != "json") {
+            if path.extension().is_none_or(|ext| ext != "json") {
                 continue;
             }
             let content = tokio::fs::read_to_string(path).await?;

@@ -1,5 +1,5 @@
-use serde_json::Value;
 use crate::RunConfig;
+use serde_json::Value;
 
 /// Scope key: tool allow-list policy.
 pub const SCOPE_ALLOWED_TOOLS_KEY: &str = "__agent_policy_allowed_tools";

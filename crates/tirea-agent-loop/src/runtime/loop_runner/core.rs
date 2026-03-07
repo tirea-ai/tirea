@@ -199,7 +199,9 @@ pub(super) fn build_request_for_filtered_tools(
     messages: &[Message],
     tools: &HashMap<String, Arc<dyn Tool>>,
     filtered_tools: &[String],
-    transforms: &[std::sync::Arc<dyn tirea_contract::runtime::inference::InferenceRequestTransform>],
+    transforms: &[std::sync::Arc<
+        dyn tirea_contract::runtime::inference::InferenceRequestTransform,
+    >],
 ) -> genai::chat::ChatRequest {
     let filtered: HashSet<&str> = filtered_tools.iter().map(String::as_str).collect();
     let filtered_tool_refs: Vec<&dyn Tool> = tools

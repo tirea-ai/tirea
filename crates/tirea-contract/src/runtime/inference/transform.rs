@@ -151,10 +151,13 @@ mod tests {
         // First transform: cache=false, Second: cache=true
         let transforms: Vec<Arc<dyn InferenceRequestTransform>> = vec![
             Arc::new(PrependSystem("sys".into())), // cache=false
-            Arc::new(EnableCache),                  // cache=true
+            Arc::new(EnableCache),                 // cache=true
         ];
         let output = apply_request_transforms(messages, &[], &transforms);
-        assert!(output.enable_prompt_cache, "should be true via OR aggregation");
+        assert!(
+            output.enable_prompt_cache,
+            "should be true via OR aggregation"
+        );
     }
 
     #[test]
@@ -170,14 +173,10 @@ mod tests {
 
     #[test]
     fn chain_with_limiting_transform() {
-        let messages = vec![
-            Message::user("1"),
-            Message::user("2"),
-            Message::user("3"),
-        ];
+        let messages = vec![Message::user("1"), Message::user("2"), Message::user("3")];
         let transforms: Vec<Arc<dyn InferenceRequestTransform>> = vec![
             Arc::new(PrependSystem("sys".into())), // 4 messages
-            Arc::new(LimitMessages(2)),             // keep first 2
+            Arc::new(LimitMessages(2)),            // keep first 2
         ];
         let output = apply_request_transforms(messages, &[], &transforms);
         assert_eq!(output.messages.len(), 2);

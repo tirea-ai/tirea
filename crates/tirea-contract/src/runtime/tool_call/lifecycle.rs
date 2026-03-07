@@ -17,21 +17,16 @@ pub enum ResumeDecisionAction {
 ///
 /// The core loop stores stable call identity, pending interaction payload,
 /// and explicit resume behavior for deterministic replay.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolCallResumeMode {
     /// Resume by replaying the original backend tool call.
+    #[default]
     ReplayToolCall,
     /// Resume by turning external decision payload into tool result directly.
     UseDecisionAsToolResult,
     /// Resume by passing external payload back into tool-call arguments.
     PassDecisionToTool,
-}
-
-impl Default for ToolCallResumeMode {
-    fn default() -> Self {
-        Self::ReplayToolCall
-    }
 }
 
 /// External pending tool-call projection emitted to event streams.
@@ -97,7 +92,7 @@ impl SuspendedCall {
 /// When a tool call is suspended, this state holds the suspension ticket, pending
 /// interaction payload, and resume strategy. It is automatically deleted when the
 /// tool call reaches a terminal outcome (Succeeded/Failed/Cancelled).
-#[derive(Debug, Clone, Serialize, Deserialize, State)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 #[tirea(
     path = "suspended_call",
     action = "SuspendedCallAction",
@@ -107,14 +102,6 @@ pub struct SuspendedCallState {
     /// The suspended call data (flattened for serialization).
     #[serde(flatten)]
     pub call: SuspendedCall,
-}
-
-impl Default for SuspendedCallState {
-    fn default() -> Self {
-        Self {
-            call: SuspendedCall::default(),
-        }
-    }
 }
 
 /// Action type for `SuspendedCallState` reducer.

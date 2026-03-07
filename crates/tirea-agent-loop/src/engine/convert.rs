@@ -468,15 +468,15 @@ mod tests {
         let before = format!("{:?}", request.messages);
         apply_prompt_cache_hints(&mut request);
         let after = format!("{:?}", request.messages);
-        assert_eq!(before, after, "should be no-op when no system messages exist");
+        assert_eq!(
+            before, after,
+            "should be no-op when no system messages exist"
+        );
     }
 
     #[test]
     fn apply_prompt_cache_hints_single_system_message() {
-        let messages = vec![
-            Message::system("Only system"),
-            Message::user("Hello"),
-        ];
+        let messages = vec![Message::system("Only system"), Message::user("Hello")];
         let mut request = build_request(&messages, &[]);
         apply_prompt_cache_hints(&mut request);
         let debug_0 = format!("{:?}", request.messages[0]);
