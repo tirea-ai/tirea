@@ -5418,6 +5418,12 @@ fn text_chat_response_with_usage(
     }
 }
 
+fn truncated_chat_response(text: &str) -> genai::chat::ChatResponse {
+    let mut response = text_chat_response(text);
+    response.stop_reason = Some("length".to_string());
+    response
+}
+
 fn tool_call_chat_response_object_args(
     call_id: &str,
     name: &str,
@@ -5442,9 +5448,7 @@ fn tool_call_chat_response_object_args(
 
 #[test]
 fn stream_result_from_chat_response_uses_explicit_stop_reason() {
-    let mut response = text_chat_response("partial");
-    response.stop_reason = Some("length".to_string());
-
+    let response = truncated_chat_response("partial");
     let result = stream_result_from_chat_response(&response);
     assert_eq!(result.stop_reason, Some(StopReason::MaxTokens));
 }
@@ -5564,6 +5568,25 @@ async fn test_nonstream_uses_fallback_model_after_primary_failures() {
             .iter()
             .any(|m| m.role == crate::contracts::thread::Role::Assistant && m.content == "ok"),
         "assistant response should be stored in thread"
+    );
+}
+
+#[tokio::test]
+async fn test_nonstream_truncation_recovery_stitches_final_response() {
+    let provider = Arc::new(MockChatProvider::new(vec![
+        Ok(truncated_chat_response("partial output...")),
+        Ok(text_chat_response("complete response")),
+    ]));
+    let config = BaseAgent::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
+
+    assert_eq!(outcome.termination, TerminationReason::NaturalEnd);
+    assert_eq!(
+        outcome.response.as_deref(),
+        Some("partial output...complete response")
     );
 }
 
@@ -7258,6 +7281,55 @@ async fn test_stream_midstream_text_error_retries_with_continuation_context() {
 }
 
 #[tokio::test]
+async fn test_stream_midstream_text_error_stitches_run_finish_response() {
+    let provider = Arc::new(ScriptedStreamProvider::new(vec![
+        text_stream_error_attempt(
+            "hel",
+            web_stream_io_error(
+                std::io::ErrorKind::ConnectionReset,
+                "connection reset by peer",
+            ),
+        ),
+        text_stream_success_attempt("lo"),
+    ]));
+    let config = BaseAgent::new("mock")
+        .with_llm_retry_policy(LlmRetryPolicy {
+            max_attempts_per_model: 1,
+            initial_backoff_ms: 1,
+            max_backoff_ms: 1,
+            retry_stream_start: true,
+            max_stream_event_retries: 1,
+            stream_error_fallback_threshold: 2,
+        })
+        .with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let events = collect_stream_events(run_loop_stream(
+        Arc::new(config),
+        HashMap::new(),
+        run_ctx,
+        None,
+        None,
+        None,
+    ))
+    .await;
+
+    let streamed_text: String = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::TextDelta { delta } => Some(delta.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(streamed_text, "hello");
+    assert_eq!(
+        extract_run_finish_response(&events),
+        Some("hello".to_string())
+    );
+}
+
+#[tokio::test]
 async fn test_stream_midstream_tool_call_error_restarts_step_without_continuation_prompt() {
     let partial_tool_call = genai::chat::ToolCall {
         call_id: "call_1".to_string(),
@@ -7403,6 +7475,10 @@ async fn test_stream_midstream_repeated_errors_escalate_to_fallback_model() {
     assert_eq!(
         extract_inference_model(&events),
         Some("fallback".to_string())
+    );
+    assert_eq!(
+        extract_run_finish_response(&events),
+        Some("ABC".to_string())
     );
 }
 
@@ -13505,9 +13581,12 @@ async fn test_stream_truncation_recovery_retries_then_succeeds() {
         "should recover and complete normally"
     );
 
-    // The final response text should be from the second call
+    // The final response text should stitch the truncated prefix and recovery text.
     let response = extract_run_finish_response(&events);
-    assert_eq!(response.as_deref(), Some("complete response"));
+    assert_eq!(
+        response.as_deref(),
+        Some("partial output...complete response")
+    );
 }
 
 #[tokio::test]
@@ -13578,6 +13657,10 @@ async fn test_stream_truncation_recovery_exhausts_retries() {
     assert_eq!(
         inference_count, 4,
         "should have 4 inference calls: original + 3 retries"
+    );
+    assert_eq!(
+        extract_run_finish_response(&events),
+        Some("partial 1partial 2partial 3partial 4 - no more retries".to_string())
     );
 }
 

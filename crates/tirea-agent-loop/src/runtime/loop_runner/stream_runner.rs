@@ -203,6 +203,7 @@ pub(super) fn run_stream(
     let executor = llm_executor_for_run(agent.as_ref());
     let mut run_state = LoopRunState::new();
     let mut last_text = String::new();
+    let mut continued_response_prefix = String::new();
     let mut stream_retry_model_preference: Option<String> = None;
     let mut stream_error_counts_by_model: HashMap<String, usize> = HashMap::new();
     let run_cancellation_token = cancellation_token;
@@ -662,12 +663,15 @@ pub(super) fn run_stream(
                                 StreamRecoveryCheckpoint::PartialText(partial_text) => {
                                     let msg = assistant_message(&partial_text);
                                     run_ctx.add_message(Arc::new(msg));
-                                    last_text = partial_text;
+                                    extend_response_prefix(&mut continued_response_prefix, &partial_text);
+                                    last_text = continued_response_prefix.clone();
                                     let continuation =
                                         truncation_recovery::stream_error_continuation_message();
                                     run_ctx.add_message(Arc::new(continuation));
                                 }
-                                StreamRecoveryCheckpoint::ToolCallObserved => {}
+                                StreamRecoveryCheckpoint::ToolCallObserved => {
+                                    continued_response_prefix.clear();
+                                }
                             }
                             // Close the failed step and re-enter the outer loop.
                             yield emitter.step_end();
@@ -730,7 +734,7 @@ pub(super) fn run_stream(
                 }
                 terminate_stream_error!(outcome::LoopFailure::Llm(error_message.clone()), error_message);
             }
-            last_text = result.text.clone();
+            last_text = stitch_response_text(&continued_response_prefix, &result.text);
             run_state.update_from_response(&result);
             let inference_duration_ms = inference_start.elapsed().as_millis() as u64;
 
@@ -774,10 +778,12 @@ pub(super) fn run_stream(
             // Truncation recovery: if the model hit max_tokens with no tool
             // calls, inject a continuation prompt and re-enter inference.
             if truncation_recovery::should_retry(&result, &mut run_state) {
+                extend_response_prefix(&mut continued_response_prefix, &result.text);
                 let prompt = truncation_recovery::continuation_message();
                 run_ctx.add_message(std::sync::Arc::new(prompt));
                 continue;
             }
+            continued_response_prefix.clear();
 
             // Extract termination reason for deferred handling.
             let post_inference_termination = match &post_inference_action {

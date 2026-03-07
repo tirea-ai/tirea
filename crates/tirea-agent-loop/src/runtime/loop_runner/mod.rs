@@ -480,6 +480,25 @@ fn mark_step_completed(run_state: &mut LoopRunState) {
     run_state.completed_steps += 1;
 }
 
+fn stitch_response_text(prefix: &str, segment: &str) -> String {
+    if prefix.is_empty() {
+        return segment.to_string();
+    }
+    if segment.is_empty() {
+        return prefix.to_string();
+    }
+    let mut stitched = String::with_capacity(prefix.len() + segment.len());
+    stitched.push_str(prefix);
+    stitched.push_str(segment);
+    stitched
+}
+
+fn extend_response_prefix(prefix: &mut String, segment: &str) {
+    if !segment.is_empty() {
+        prefix.push_str(segment);
+    }
+}
+
 fn build_loop_outcome(
     run_ctx: RunContext,
     termination: TerminationReason,
@@ -1566,6 +1585,7 @@ pub async fn run_loop(
     let mut pending_decisions = VecDeque::new();
     let run_cancellation_token = cancellation_token;
     let mut last_text = String::new();
+    let mut continued_response_prefix = String::new();
     let step_tool_provider = step_tool_provider_for_run(agent, tools);
     let run_identity = stream_core::resolve_stream_run_identity(&mut run_ctx);
     let run_id = run_identity.run_id;
@@ -1802,7 +1822,7 @@ pub async fn run_loop(
 
         let result = stream_result_from_chat_response(&response);
         run_state.update_from_response(&result);
-        last_text = result.text.clone();
+        last_text = stitch_response_text(&continued_response_prefix, &result.text);
 
         // Add assistant message
         let assistant_msg_id = gen_message_id();
@@ -1848,10 +1868,12 @@ pub async fn run_loop(
         // Truncation recovery: if the model hit max_tokens with no tool
         // calls, inject a continuation prompt and re-enter inference.
         if truncation_recovery::should_retry(&result, &mut run_state) {
+            extend_response_prefix(&mut continued_response_prefix, &result.text);
             let prompt = truncation_recovery::continuation_message();
             run_ctx.add_message(Arc::new(prompt));
             continue;
         }
+        continued_response_prefix.clear();
 
         let post_inference_termination = match &post_inference_action {
             RunAction::Terminate(reason) => Some(reason.clone()),
