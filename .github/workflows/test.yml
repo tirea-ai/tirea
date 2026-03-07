@@ -19,13 +19,13 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.93.0
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
       - name: Run workspace tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
   ai-sdk-starter-build:
     name: AI SDK Starter Build

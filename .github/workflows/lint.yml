@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.93.0
         with:
           components: rustfmt
 
@@ -50,7 +50,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.93.0
         with:
           components: clippy
 
@@ -58,4 +58,4 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run clippy correctness checks
-        run: cargo clippy --workspace --lib --bins --examples -- -D clippy::correctness
+        run: cargo clippy --workspace --lib --bins --examples --locked -- -D clippy::correctness

@@ -408,7 +408,7 @@ pre-push:
     validate:
       run: |
         scripts/check-rustfmt-changed.sh
-        cargo clippy --workspace --lib --bins --examples -- -D clippy::correctness
+        cargo clippy --workspace --lib --bins --examples --locked -- -D clippy::correctness
 
 post-rewrite:
   commands:

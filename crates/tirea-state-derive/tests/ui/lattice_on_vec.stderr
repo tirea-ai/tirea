@@ -5,25 +5,22 @@ error: #[tirea(lattice)] is not supported on Option, Vec, or Map fields.
   |            ^^^^^^^^^^^^^
 
 error[E0277]: `GCounter` doesn't implement `Debug`
-  --> tests/ui/lattice_on_vec.rs:7:5
-   |
- 4 | #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, State)]
-   |          ----- in this derive macro expansion
+ --> tests/ui/lattice_on_vec.rs:7:5
+  |
+4 | #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, State)]
+  |          ----- in this derive macro expansion
 ...
- 7 |     field: Vec<GCounter>,
-   |     ^^^^^^^^^^^^^^^^^^^^ the trait `Debug` is not implemented for `GCounter`
-   |
-   = note: add `#[derive(Debug)]` to `GCounter` or manually `impl Debug for GCounter`
+7 |     field: Vec<GCounter>,
+  |     ^^^^^^^^^^^^^^^^^^^^ the trait `Debug` is not implemented for `GCounter`
+  |
+  = note: add `#[derive(Debug)]` to `GCounter` or manually `impl Debug for GCounter`
 help: the trait `Debug` is implemented for `Vec<T, A>`
-  --> $RUST/alloc/src/vec/mod.rs
-   |
-   | impl<T: fmt::Debug, A: Allocator> fmt::Debug for Vec<T, A> {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ --> $RUST/alloc/src/vec/mod.rs
 help: consider annotating `GCounter` with `#[derive(Debug)]`
-   |
-10 + #[derive(Debug)]
-11 | struct GCounter;
-   |
+  |
+10+ #[derive(Debug)]
+11| struct GCounter;
+  |
 
 error[E0277]: the trait bound `GCounter: Clone` is not satisfied
  --> tests/ui/lattice_on_vec.rs:7:5
