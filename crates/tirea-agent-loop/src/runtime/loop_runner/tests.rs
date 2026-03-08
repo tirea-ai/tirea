@@ -5477,7 +5477,7 @@ fn text_chat_response_with_usage(
 
 fn truncated_chat_response(text: &str) -> genai::chat::ChatResponse {
     let mut response = text_chat_response(text);
-    response.stop_reason = Some("length".to_string());
+    response.stop_reason = Some(genai::chat::StopReason::from("length".to_string()));
     response
 }
 
@@ -5513,7 +5513,7 @@ fn stream_result_from_chat_response_uses_explicit_stop_reason() {
 #[test]
 fn stream_result_from_chat_response_falls_back_when_stop_reason_unknown() {
     let mut response = tool_call_chat_response_object_args("c1", "echo", json!({"x": 1}));
-    response.stop_reason = Some("provider_specific_reason".to_string());
+    response.stop_reason = Some(genai::chat::StopReason::from("provider_specific_reason".to_string()));
 
     let result = stream_result_from_chat_response(&response);
     assert_eq!(result.stop_reason, Some(StopReason::ToolUse));

@@ -78,4 +78,3 @@ missing_docs = "warn"
 all = "warn"
 
 [patch.crates-io]
-genai = { git = "https://github.com/tirea-ai/rust-genai.git", rev = "d4efba7b1ba1aea49e9f0fe019f3f83c3e9440ae" }

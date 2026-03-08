@@ -30,14 +30,13 @@ pub(crate) fn token_usage_from_genai(u: &Usage) -> TokenUsage {
     }
 }
 
-pub(crate) fn map_genai_stop_reason(raw: &str) -> Option<StopReason> {
-    let normalized = raw.trim().to_ascii_lowercase();
-    match normalized.as_str() {
-        "stop" | "end_turn" | "completed" => Some(StopReason::EndTurn),
-        "length" | "max_tokens" | "model_length" => Some(StopReason::MaxTokens),
-        "tool_calls" | "tool_use" => Some(StopReason::ToolUse),
-        "stop_sequence" => Some(StopReason::StopSequence),
-        _ => None,
+pub(crate) fn map_genai_stop_reason(reason: &genai::chat::StopReason) -> Option<StopReason> {
+    match reason {
+        genai::chat::StopReason::Completed(_) => Some(StopReason::EndTurn),
+        genai::chat::StopReason::MaxTokens(_) => Some(StopReason::MaxTokens),
+        genai::chat::StopReason::ToolCall(_) => Some(StopReason::ToolUse),
+        genai::chat::StopReason::StopSequence(_) => Some(StopReason::StopSequence),
+        genai::chat::StopReason::ContentFilter(_) | genai::chat::StopReason::Other(_) => None,
     }
 }
 
@@ -58,7 +57,7 @@ pub struct StreamCollector {
     tool_calls: HashMap<String, PartialToolCall>,
     tool_call_order: Vec<String>,
     usage: Option<Usage>,
-    stop_reason: Option<String>,
+    stop_reason: Option<genai::chat::StopReason>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -248,7 +247,7 @@ impl StreamCollector {
         }
 
         let usage = self.usage.as_ref().map(token_usage_from_genai);
-        let explicit_stop_reason = self.stop_reason.as_deref().and_then(map_genai_stop_reason);
+        let explicit_stop_reason = self.stop_reason.as_ref().and_then(map_genai_stop_reason);
         let mut stop_reason = explicit_stop_reason
             .or_else(|| Self::infer_stop_reason(&tool_calls, &usage, max_output_tokens));
 
@@ -372,26 +371,40 @@ mod tests {
 
     #[test]
     fn test_map_genai_stop_reason_known_values() {
-        assert_eq!(map_genai_stop_reason("stop"), Some(StopReason::EndTurn));
-        assert_eq!(map_genai_stop_reason("END_TURN"), Some(StopReason::EndTurn));
-        assert_eq!(map_genai_stop_reason("length"), Some(StopReason::MaxTokens));
+        use genai::chat::StopReason as GSR;
         assert_eq!(
-            map_genai_stop_reason(" model_length "),
+            map_genai_stop_reason(&GSR::from("stop".to_string())),
+            Some(StopReason::EndTurn)
+        );
+        assert_eq!(
+            map_genai_stop_reason(&GSR::from("end_turn".to_string())),
+            Some(StopReason::EndTurn)
+        );
+        assert_eq!(
+            map_genai_stop_reason(&GSR::from("length".to_string())),
             Some(StopReason::MaxTokens)
         );
         assert_eq!(
-            map_genai_stop_reason("tool_calls"),
+            map_genai_stop_reason(&GSR::from("max_tokens".to_string())),
+            Some(StopReason::MaxTokens)
+        );
+        assert_eq!(
+            map_genai_stop_reason(&GSR::from("tool_calls".to_string())),
             Some(StopReason::ToolUse)
         );
         assert_eq!(
-            map_genai_stop_reason("stop_sequence"),
+            map_genai_stop_reason(&GSR::from("stop_sequence".to_string())),
             Some(StopReason::StopSequence)
         );
     }
 
     #[test]
     fn test_map_genai_stop_reason_unknown_value() {
-        assert_eq!(map_genai_stop_reason("content_filter"), None);
+        use genai::chat::StopReason as GSR;
+        assert_eq!(
+            map_genai_stop_reason(&GSR::from("content_filter".to_string())),
+            None
+        );
     }
 
     #[test]
@@ -402,7 +415,7 @@ mod tests {
                 completion_tokens: Some(128),
                 ..Default::default()
             }),
-            captured_stop_reason: Some("stop_sequence".to_string()),
+            captured_stop_reason: Some(genai::chat::StopReason::from("stop_sequence".to_string())),
             ..Default::default()
         }));
 
@@ -418,7 +431,7 @@ mod tests {
                 completion_tokens: Some(128),
                 ..Default::default()
             }),
-            captured_stop_reason: Some("unknown_stop_reason".to_string()),
+            captured_stop_reason: Some(genai::chat::StopReason::from("unknown_stop_reason".to_string())),
             ..Default::default()
         }));
 

@@ -1037,7 +1037,7 @@ fn stream_result_from_chat_response(response: &genai::chat::ChatResponse) -> Str
     ));
     let stop_reason = response
         .stop_reason
-        .as_deref()
+        .as_ref()
         .and_then(crate::runtime::streaming::map_genai_stop_reason)
         .or({
             if !tool_calls.is_empty() {
