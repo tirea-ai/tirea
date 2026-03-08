@@ -8,13 +8,18 @@ fn encoder_adopts_first_step_start_message_id() {
     let step_msg_id = "pre-gen-assistant-uuid".to_string();
     let mut encoder = AiSdkEncoder::new();
 
-    // Initialize via RunStart.
+    // Initialize via RunStart — message_id is now an independent UUID, not derived from run_id.
     let _ = encoder.on_agent_event(&AgentEvent::RunStart {
         thread_id: "t1".into(),
         run_id: "run_12345678".into(),
         parent_run_id: None,
     });
-    assert_eq!(encoder.message_id(), "msg_run_1234");
+    let initial_id = encoder.message_id().to_string();
+    assert!(!initial_id.is_empty(), "RunStart must set a message_id");
+    assert!(
+        !initial_id.contains("run_1234"),
+        "message_id must not leak run_id prefix, got: {initial_id}"
+    );
 
     let _ = encoder.on_agent_event(&AgentEvent::StepStart {
         message_id: step_msg_id.clone(),

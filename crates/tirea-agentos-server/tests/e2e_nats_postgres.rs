@@ -323,6 +323,7 @@ async fn e2e_nats_buffered_postgres_recover_replays_pending_deltas() {
     let delta1 = tirea_agentos::contracts::ThreadChangeSet {
         run_id: "np-run-r".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: tirea_agentos::contracts::thread::CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(
             tirea_agentos::contracts::thread::Message::assistant("mid"),
@@ -339,6 +340,7 @@ async fn e2e_nats_buffered_postgres_recover_replays_pending_deltas() {
     let delta2 = tirea_agentos::contracts::ThreadChangeSet {
         run_id: "np-run-r".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: tirea_agentos::contracts::thread::CheckpointReason::ToolResultsCommitted,
         messages: vec![Arc::new(
             tirea_agentos::contracts::thread::Message::assistant("tail"),
@@ -529,6 +531,7 @@ async fn e2e_nats_buffered_postgres_recover_deduplicates_duplicate_message_ids()
     let duplicate_delta = tirea_agentos::contracts::ThreadChangeSet {
         run_id: "np-dedup-run".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: tirea_agentos::contracts::thread::CheckpointReason::AssistantTurnCommitted,
         messages: vec![duplicate_msg.clone()],
         patches: vec![],
@@ -600,6 +603,7 @@ async fn e2e_nats_buffered_postgres_flush_retry_after_transient_save_failure() {
     let mid = tirea_agentos::contracts::ThreadChangeSet {
         run_id: "np-flaky-run".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: tirea_agentos::contracts::thread::CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(
             tirea_agentos::contracts::thread::Message::assistant("mid"),
@@ -616,6 +620,7 @@ async fn e2e_nats_buffered_postgres_flush_retry_after_transient_save_failure() {
     let run_finished = tirea_agentos::contracts::ThreadChangeSet {
         run_id: "np-flaky-run".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: tirea_agentos::contracts::thread::CheckpointReason::RunFinished,
         messages: vec![Arc::new(
             tirea_agentos::contracts::thread::Message::assistant("tail"),

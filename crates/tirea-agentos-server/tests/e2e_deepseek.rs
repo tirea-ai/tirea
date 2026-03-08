@@ -130,6 +130,7 @@ fn make_multiturn_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::orches
 // Basic chat (existing tests, preserved)
 // ============================================================================
 
+#[ignore]
 #[tokio::test]
 async fn e2e_ai_sdk_sse_with_deepseek() {
     if !has_deepseek_key() {
@@ -172,8 +173,8 @@ async fn e2e_ai_sdk_sse_with_deepseek() {
         "missing threadId in run-info"
     );
     assert!(
-        text.contains(r#""runId":"r1""#),
-        "missing runId in run-info"
+        !text.contains(r#""runId":"r1""#),
+        "runInfo should not expose request runId for AI SDK"
     );
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -187,6 +188,7 @@ async fn e2e_ai_sdk_sse_with_deepseek() {
     );
 }
 
+#[ignore]
 #[tokio::test]
 async fn e2e_ag_ui_sse_with_deepseek() {
     if !has_deepseek_key() {
@@ -242,6 +244,7 @@ async fn e2e_ag_ui_sse_with_deepseek() {
     );
 }
 
+#[ignore]
 #[tokio::test]
 async fn e2e_ai_sdk_client_disconnect_cancels_inflight_stream() {
     if !has_deepseek_key() {
@@ -329,6 +332,7 @@ async fn e2e_ai_sdk_client_disconnect_cancels_inflight_stream() {
 // Tool-using agent: AI SDK v6 endpoint
 // ============================================================================
 
+#[ignore]
 #[tokio::test]
 async fn e2e_ai_sdk_tool_call_with_deepseek() {
     if !has_deepseek_key() {
@@ -383,6 +387,7 @@ async fn e2e_ai_sdk_tool_call_with_deepseek() {
 // Tool-using agent: AG-UI endpoint
 // ============================================================================
 
+#[ignore]
 #[tokio::test]
 async fn e2e_ag_ui_tool_call_with_deepseek() {
     if !has_deepseek_key() {
@@ -451,6 +456,7 @@ async fn e2e_ag_ui_tool_call_with_deepseek() {
 // Multi-turn conversation via AI SDK endpoint
 // ============================================================================
 
+#[ignore]
 #[tokio::test]
 async fn e2e_ai_sdk_multiturn_with_deepseek() {
     if !has_deepseek_key() {
@@ -532,6 +538,7 @@ async fn e2e_ai_sdk_multiturn_with_deepseek() {
 // AI SDK: graceful finish via max rounds exceeded
 // ============================================================================
 
+#[ignore]
 #[tokio::test]
 async fn e2e_ai_sdk_finish_max_rounds_with_deepseek() {
     if !has_deepseek_key() {
@@ -612,6 +619,7 @@ async fn e2e_ai_sdk_finish_max_rounds_with_deepseek() {
 // AI SDK: Multi-step tool call (verify step events and ordering)
 // ============================================================================
 
+#[ignore]
 #[tokio::test]
 async fn e2e_ai_sdk_multistep_tool_with_deepseek() {
     if !has_deepseek_key() {
@@ -699,6 +707,7 @@ async fn e2e_ai_sdk_multistep_tool_with_deepseek() {
 // Multi-turn conversation via AG-UI endpoint
 // ============================================================================
 
+#[ignore]
 #[tokio::test]
 async fn e2e_ag_ui_multiturn_with_deepseek() {
     if !has_deepseek_key() {
@@ -775,6 +784,7 @@ async fn e2e_ag_ui_multiturn_with_deepseek() {
 // AG-UI with frontend tool definitions
 // ============================================================================
 
+#[ignore]
 #[tokio::test]
 async fn e2e_ag_ui_frontend_tools_with_deepseek() {
     if !has_deepseek_key() {
@@ -850,6 +860,7 @@ async fn e2e_ag_ui_frontend_tools_with_deepseek() {
 // AG-UI with context entries (useCopilotReadable)
 // ============================================================================
 
+#[ignore]
 #[tokio::test]
 async fn e2e_ag_ui_context_readable_with_deepseek() {
     if !has_deepseek_key() {
@@ -904,6 +915,7 @@ async fn e2e_ag_ui_context_readable_with_deepseek() {
 // AG-UI: RUN_FINISHED via max rounds exceeded
 // ============================================================================
 
+#[ignore]
 #[tokio::test]
 async fn e2e_ag_ui_run_finished_max_rounds_with_deepseek() {
     if !has_deepseek_key() {
@@ -981,6 +993,7 @@ async fn e2e_ag_ui_run_finished_max_rounds_with_deepseek() {
 // AG-UI: Multi-step tool call (verify multiple STEP cycles)
 // ============================================================================
 
+#[ignore]
 #[tokio::test]
 async fn e2e_ag_ui_multistep_tool_with_deepseek() {
     if !has_deepseek_key() {

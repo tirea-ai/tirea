@@ -6,70 +6,42 @@ use axum::http::Request;
 use axum::http::StatusCode;
 use common::{compose_http_app, get_json_text, post_sse, TerminatePlugin};
 use serde_json::{json, Value};
-use std::sync::{Arc, Once};
+use std::sync::{Arc, OnceLock};
 use tirea_agentos::contracts::storage::ThreadReader;
-use tirea_agentos::contracts::TerminationReason;
 use tirea_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
-use tirea_agentos_server::run_service::{global_run_service, init_run_service, RunService};
-use tirea_agentos_server::service::{
-    active_run_key, register_active_run_cancellation, register_active_run_with_id,
-    remove_active_run, AppState,
-};
-use tirea_contract::storage::RunOrigin;
-use tirea_contract::{AgentEvent, RuntimeInput, ToolCallDecision};
-use tirea_store_adapters::{MemoryRunStore, MemoryStore};
+use tirea_agentos_server::service::AppState;
+use tirea_contract::storage::{RunOrigin, RunRecord, RunStatus, RunWriter};
+use tirea_contract::ToolCallDecision;
+use tirea_store_adapters::MemoryStore;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-fn ensure_run_service() {
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let _ = init_run_service(Arc::new(MemoryRunStore::new()));
-    });
-    assert!(
-        global_run_service().is_some(),
-        "run service should initialize"
-    );
+fn shared_store() -> Arc<MemoryStore> {
+    static TEST_STORE: OnceLock<Arc<MemoryStore>> = OnceLock::new();
+    TEST_STORE
+        .get_or_init(|| Arc::new(MemoryStore::new()))
+        .clone()
 }
 
-async fn seed_completed_run(
-    service: &RunService,
-    run_id: &str,
-    thread_id: &str,
-    origin: RunOrigin,
-) {
-    service
-        .begin_intent(run_id, thread_id, origin, None, None)
-        .await
-        .expect("begin intent");
-    service
-        .apply_event(
-            run_id,
-            thread_id,
-            origin,
-            &AgentEvent::RunStart {
-                thread_id: thread_id.to_string(),
-                run_id: run_id.to_string(),
-                parent_run_id: None,
-            },
-        )
-        .await
-        .expect("apply run start");
-    service
-        .apply_event(
-            run_id,
-            thread_id,
-            origin,
-            &AgentEvent::RunFinish {
-                thread_id: thread_id.to_string(),
-                run_id: run_id.to_string(),
-                result: None,
-                termination: TerminationReason::NaturalEnd,
-            },
-        )
-        .await
-        .expect("apply run finish");
+fn now_unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64)
+}
+
+async fn seed_completed_run(store: &MemoryStore, run_id: &str, thread_id: &str, origin: RunOrigin) {
+    let mut record = RunRecord::new(
+        run_id.to_string(),
+        thread_id.to_string(),
+        "alpha",
+        origin,
+        RunStatus::Done,
+        now_unix_millis(),
+    );
+    record.termination_code = Some("natural".to_string());
+    record.updated_at = now_unix_millis();
+    store.upsert_run(&record).await.expect("seed completed run");
 }
 
 async fn fetch_well_known_etag(app: axum::Router) -> String {
@@ -111,10 +83,20 @@ fn make_os(store: Arc<MemoryStore>, agent_ids: &[&str]) -> Arc<AgentOs> {
 }
 
 fn make_app_with_agents(agent_ids: &[&str]) -> axum::Router {
-    let store = Arc::new(MemoryStore::new());
+    make_app_and_os_with_agents(agent_ids).0
+}
+
+fn make_app_and_os_with_agents(agent_ids: &[&str]) -> (axum::Router, Arc<AgentOs>) {
+    let store = shared_store();
     let read_store: Arc<dyn ThreadReader> = store.clone();
     let os = make_os(store, agent_ids);
-    compose_http_app(AppState { os, read_store })
+    (
+        compose_http_app(AppState {
+            os: os.clone(),
+            read_store,
+        }),
+        os,
+    )
 }
 
 fn make_app() -> axum::Router {
@@ -123,7 +105,6 @@ fn make_app() -> axum::Router {
 
 #[tokio::test]
 async fn a2a_discovery_endpoints_work() {
-    ensure_run_service();
     let app = make_app();
 
     let (status, body) = get_json_text(app.clone(), "/.well-known/agent-card.json").await;
@@ -160,7 +141,6 @@ async fn a2a_discovery_endpoints_work() {
 
 #[tokio::test]
 async fn a2a_well_known_single_agent_points_to_agent_send_url() {
-    ensure_run_service();
     let app = make_app_with_agents(&["solo"]);
 
     let (status, body) = get_json_text(app.clone(), "/.well-known/agent-card.json").await;
@@ -183,7 +163,6 @@ async fn a2a_well_known_single_agent_points_to_agent_send_url() {
 
 #[tokio::test]
 async fn a2a_well_known_emits_cache_headers_and_supports_if_none_match() {
-    ensure_run_service();
     let app = make_app();
 
     let response = app
@@ -250,7 +229,6 @@ async fn a2a_well_known_emits_cache_headers_and_supports_if_none_match() {
 
 #[tokio::test]
 async fn a2a_well_known_supports_if_none_match_star_and_csv() {
-    ensure_run_service();
     let app = make_app();
     let etag = fetch_well_known_etag(app.clone()).await;
 
@@ -284,7 +262,6 @@ async fn a2a_well_known_supports_if_none_match_star_and_csv() {
 
 #[tokio::test]
 async fn a2a_well_known_etag_changes_when_registry_changes() {
-    ensure_run_service();
     let one_agent_etag = fetch_well_known_etag(make_app_with_agents(&["solo"])).await;
     let two_agent_etag = fetch_well_known_etag(make_app_with_agents(&["alpha", "beta"])).await;
     assert_ne!(
@@ -294,8 +271,17 @@ async fn a2a_well_known_etag_changes_when_registry_changes() {
 }
 
 #[tokio::test]
+async fn a2a_well_known_etag_stable_across_agent_order() {
+    let forward = fetch_well_known_etag(make_app_with_agents(&["alpha", "beta"])).await;
+    let reverse = fetch_well_known_etag(make_app_with_agents(&["beta", "alpha"])).await;
+    assert_eq!(
+        forward, reverse,
+        "etag should be stable for the same agent set regardless of declaration order"
+    );
+}
+
+#[tokio::test]
 async fn a2a_message_send_starts_task_and_get_task() {
-    ensure_run_service();
     let app = make_app();
 
     let (status, body) = post_sse(
@@ -327,14 +313,17 @@ async fn a2a_message_send_starts_task_and_get_task() {
 
 #[tokio::test]
 async fn a2a_cancel_and_decision_only_use_active_run_registry() {
-    ensure_run_service();
-    let app = make_app();
+    let (app, os) = make_app_and_os_with_agents(&["alpha", "beta"]);
     let run_id = format!("a2a-run-{}", Uuid::new_v4().simple());
-    let key = active_run_key("a2a", "alpha", "a2a-thread", &run_id);
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RuntimeInput>();
-    register_active_run_with_id(key.clone(), run_id.clone(), tx).await;
+    let thread_id = format!("a2a-thread-{}", Uuid::new_v4().simple());
+    let (decision_tx, mut decision_rx) = tokio::sync::mpsc::unbounded_channel::<ToolCallDecision>();
     let token = RunCancellationToken::new();
-    register_active_run_cancellation(run_id.clone(), token.clone()).await;
+    os.register_thread_run_handle(run_id.clone(), "alpha", &thread_id, token.clone())
+        .await;
+    assert!(
+        os.bind_thread_run_decision_tx(&run_id, decision_tx).await,
+        "decision channel should bind to active handle"
+    );
 
     let decision = ToolCallDecision::resume("tool-1", json!({"approved": true}), 1);
     let (status, body) = post_sse(
@@ -350,11 +339,10 @@ async fn a2a_cancel_and_decision_only_use_active_run_registry() {
     let payload: Value = serde_json::from_str(&body).expect("valid response");
     assert_eq!(payload["status"].as_str(), Some("decision_forwarded"));
 
-    let forwarded = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+    let forwarded = tokio::time::timeout(std::time::Duration::from_secs(1), decision_rx.recv())
         .await
-        .expect("decision should arrive")
-        .expect("channel should produce runtime input");
-    assert!(matches!(forwarded, RuntimeInput::Decision(_)));
+        .expect("decision should arrive");
+    assert!(matches!(forwarded, Some(_)));
 
     let cancel_uri = format!("/v1/a2a/agents/alpha/tasks/{run_id}:cancel");
     let (status, body) = post_sse(app, &cancel_uri, json!({})).await;
@@ -363,18 +351,11 @@ async fn a2a_cancel_and_decision_only_use_active_run_registry() {
     assert_eq!(payload["status"].as_str(), Some("cancel_requested"));
     assert!(token.is_cancelled(), "token should be cancelled");
 
-    let forwarded = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-        .await
-        .expect("cancel should arrive")
-        .expect("channel should produce runtime input");
-    assert!(matches!(forwarded, RuntimeInput::Cancel));
-
-    remove_active_run(&key).await;
+    os.remove_thread_run_handle(&run_id).await;
 }
 
 #[tokio::test]
 async fn a2a_decision_only_requires_task_id() {
-    ensure_run_service();
     let app = make_app();
     let decision = ToolCallDecision::resume("tool-1", json!({"approved": true}), 1);
     let (status, _body) = post_sse(
@@ -390,14 +371,18 @@ async fn a2a_decision_only_requires_task_id() {
 
 #[tokio::test]
 async fn a2a_decision_only_returns_bad_request_for_inactive_task() {
-    ensure_run_service();
+    let store = shared_store();
     let app = make_app();
-    let service = global_run_service().expect("run service should initialize");
     let run_id = format!("inactive-a2a-{}", Uuid::new_v4().simple());
-    service
-        .begin_intent(&run_id, "inactive-thread", RunOrigin::A2a, None, None)
-        .await
-        .expect("seed inactive run");
+    let record = RunRecord::new(
+        run_id.clone(),
+        "inactive-thread",
+        "alpha",
+        RunOrigin::A2a,
+        RunStatus::Running,
+        now_unix_millis(),
+    );
+    store.upsert_run(&record).await.expect("seed inactive run");
 
     let decision = ToolCallDecision::resume("tool-1", json!({"approved": true}), 1);
     let (status, _body) = post_sse(
@@ -414,7 +399,6 @@ async fn a2a_decision_only_returns_bad_request_for_inactive_task() {
 
 #[tokio::test]
 async fn a2a_decision_only_returns_not_found_for_missing_task() {
-    ensure_run_service();
     let app = make_app();
     let decision = ToolCallDecision::resume("tool-1", json!({"approved": true}), 1);
     let missing = format!("missing-a2a-{}", Uuid::new_v4().simple());
@@ -432,12 +416,17 @@ async fn a2a_decision_only_returns_not_found_for_missing_task() {
 
 #[tokio::test]
 async fn a2a_message_send_with_task_id_reuses_parent_context() {
-    ensure_run_service();
+    let store = shared_store();
     let app = make_app();
-    let service = global_run_service().expect("run service should initialize");
     let parent_run_id = format!("parent-a2a-{}", Uuid::new_v4().simple());
     let parent_thread_id = format!("parent-thread-{}", Uuid::new_v4().simple());
-    seed_completed_run(&service, &parent_run_id, &parent_thread_id, RunOrigin::A2a).await;
+    seed_completed_run(
+        store.as_ref(),
+        &parent_run_id,
+        &parent_thread_id,
+        RunOrigin::A2a,
+    )
+    .await;
 
     let (status, body) = post_sse(
         app,
@@ -458,7 +447,6 @@ async fn a2a_message_send_with_task_id_reuses_parent_context() {
 
 #[tokio::test]
 async fn a2a_message_send_with_missing_task_id_returns_not_found() {
-    ensure_run_service();
     let app = make_app();
     let missing = format!("missing-task-{}", Uuid::new_v4().simple());
     let (status, _body) = post_sse(
@@ -475,7 +463,6 @@ async fn a2a_message_send_with_missing_task_id_returns_not_found() {
 
 #[tokio::test]
 async fn a2a_message_send_with_blank_context_id_creates_new_context() {
-    ensure_run_service();
     let app = make_app();
     let (status, body) = post_sse(
         app,
@@ -499,7 +486,6 @@ async fn a2a_message_send_with_blank_context_id_creates_new_context() {
 
 #[tokio::test]
 async fn a2a_rejects_unsupported_message_action() {
-    ensure_run_service();
     let app = make_app();
     let (status, _body) = post_sse(
         app,
@@ -514,7 +500,6 @@ async fn a2a_rejects_unsupported_message_action() {
 
 #[tokio::test]
 async fn a2a_cancel_path_requires_post_and_cancel_suffix() {
-    ensure_run_service();
     let app = make_app();
     let run_id = format!("cancel-path-{}", Uuid::new_v4().simple());
     let cancel_path = format!("/v1/a2a/agents/alpha/tasks/{run_id}:cancel");

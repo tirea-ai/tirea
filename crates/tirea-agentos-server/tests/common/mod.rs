@@ -79,7 +79,6 @@ pub fn compose_http_app(state: AppState) -> axum::Router {
     axum::Router::new()
         .merge(http::health_routes())
         .merge(http::thread_routes())
-        .merge(http::run_routes())
         .merge(protocol::a2a::http::well_known_routes())
         .nest("/v1/ag-ui", protocol::ag_ui::http::routes())
         .nest("/v1/ai-sdk", protocol::ai_sdk_v6::http::routes())

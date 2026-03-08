@@ -1,30 +1,32 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{compose_http_app, get_json_text, post_sse, TerminatePlugin};
+use common::{get_json_text, post_sse, TerminatePlugin};
 use serde_json::json;
 use serde_json::Value;
-use std::sync::{Arc, Once};
+use std::sync::{Arc, OnceLock};
 use tirea_agentos::contracts::storage::ThreadReader;
-use tirea_agentos::contracts::TerminationReason;
 use tirea_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
-use tirea_agentos_server::run_service::{global_run_service, init_run_service, RunService};
-use tirea_agentos_server::service::{
-    active_run_key, register_active_run, register_active_run_cancellation, remove_active_run,
-    AppState,
-};
-use tirea_contract::storage::{RunOrigin, RunRecord};
-use tirea_contract::{AgentEvent, RuntimeInput};
-use tirea_store_adapters::{MemoryRunStore, MemoryStore};
+use tirea_agentos_server::service::AppState;
+
+const TEST_AGENT_ID: &str = "test";
+use tirea_contract::storage::{RunOrigin, RunQuery, RunReader, RunRecord, RunStatus, RunWriter};
+use tirea_contract::ToolCallDecision;
+use tirea_store_adapters::MemoryStore;
 use uuid::Uuid;
 
-fn ensure_run_service() -> Arc<RunService> {
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let _ = init_run_service(Arc::new(MemoryRunStore::new()));
-    });
-    global_run_service().expect("run service should be initialized")
+fn shared_store() -> Arc<MemoryStore> {
+    static TEST_STORE: OnceLock<Arc<MemoryStore>> = OnceLock::new();
+    TEST_STORE
+        .get_or_init(|| Arc::new(MemoryStore::new()))
+        .clone()
+}
+
+fn now_unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64)
 }
 
 fn make_os(store: Arc<MemoryStore>) -> Arc<AgentOs> {
@@ -46,60 +48,61 @@ fn make_os(store: Arc<MemoryStore>) -> Arc<AgentOs> {
     )
 }
 
-fn make_app() -> axum::Router {
-    let thread_store = Arc::new(MemoryStore::new());
+fn make_app_with_os() -> (axum::Router, Arc<AgentOs>) {
+    let thread_store = shared_store();
     let read_store: Arc<dyn ThreadReader> = thread_store.clone();
     let os = make_os(thread_store);
-    compose_http_app(AppState { os, read_store })
+    let state = AppState {
+        os: os.clone(),
+        read_store,
+    };
+    // Explicitly opt in to run projection routes (not part of the default public API).
+    let app = axum::Router::new()
+        .merge(tirea_agentos_server::http::run_routes())
+        .merge(tirea_agentos_server::http::health_routes())
+        .with_state(state);
+    (app, os)
 }
 
-async fn seed_completed_run(
-    service: &RunService,
-    run_id: &str,
+fn make_app() -> axum::Router {
+    make_app_with_os().0
+}
+
+async fn seed_completed_run(store: &MemoryStore, run_id: &str, thread_id: &str, origin: RunOrigin) {
+    let mut record = RunRecord::new(
+        run_id.to_string(),
+        thread_id.to_string(),
+        "test",
+        origin,
+        RunStatus::Done,
+        now_unix_millis(),
+    );
+    record.termination_code = Some("natural".to_string());
+    record.updated_at = now_unix_millis();
+    store.upsert_run(&record).await.expect("seed completed run");
+}
+
+async fn wait_for_child_run(
+    store: &MemoryStore,
     thread_id: &str,
-    origin: RunOrigin,
-) {
-    service
-        .begin_intent(run_id, thread_id, origin, None, None)
-        .await
-        .expect("begin intent");
-    service
-        .apply_event(
-            run_id,
-            thread_id,
-            origin,
-            &AgentEvent::RunStart {
-                thread_id: thread_id.to_string(),
-                run_id: run_id.to_string(),
-                parent_run_id: None,
-            },
-        )
-        .await
-        .expect("apply run start");
-    service
-        .apply_event(
-            run_id,
-            thread_id,
-            origin,
-            &AgentEvent::RunFinish {
-                thread_id: thread_id.to_string(),
-                run_id: run_id.to_string(),
-                result: None,
-                termination: TerminationReason::NaturalEnd,
-            },
-        )
-        .await
-        .expect("apply run finish");
-}
-
-async fn wait_for_run(service: &RunService, run_id: &str) -> Option<RunRecord> {
+    parent_run_id: &str,
+) -> Option<RunRecord> {
     for _ in 0..50 {
-        if let Some(record) = service
-            .get_run(run_id)
-            .await
-            .expect("run lookup should succeed")
+        let page = RunReader::list_runs(
+            store,
+            &RunQuery {
+                thread_id: Some(thread_id.to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("list runs should succeed");
+        if let Some(child) = page
+            .items
+            .iter()
+            .find(|r| r.parent_run_id.as_deref() == Some(parent_run_id))
         {
-            return Some(record);
+            return Some(child.clone());
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
@@ -108,12 +111,12 @@ async fn wait_for_run(service: &RunService, run_id: &str) -> Option<RunRecord> {
 
 #[tokio::test]
 async fn get_run_returns_record() {
-    let service = ensure_run_service();
+    let store = shared_store();
     let app = make_app();
     let run_id = format!("run-{}", Uuid::new_v4().simple());
     let thread_id = format!("thread-{}", Uuid::new_v4().simple());
 
-    seed_completed_run(&service, &run_id, &thread_id, RunOrigin::AgUi).await;
+    seed_completed_run(store.as_ref(), &run_id, &thread_id, RunOrigin::AgUi).await;
 
     let uri = format!("/v1/runs/{run_id}");
     let (status, body) = get_json_text(app, &uri).await;
@@ -122,38 +125,31 @@ async fn get_run_returns_record() {
     let payload: Value = serde_json::from_str(&body).expect("valid json");
     assert_eq!(payload["run_id"].as_str(), Some(run_id.as_str()));
     assert_eq!(payload["thread_id"].as_str(), Some(thread_id.as_str()));
-    assert_eq!(payload["status"].as_str(), Some("completed"));
+    assert_eq!(payload["status"].as_str(), Some("done"));
     assert_eq!(payload["origin"].as_str(), Some("ag_ui"));
 }
 
 #[tokio::test]
 async fn list_runs_supports_filters() {
-    let service = ensure_run_service();
+    let store = shared_store();
     let app = make_app();
     let thread_id = format!("thread-{}", Uuid::new_v4().simple());
     let completed_run = format!("run-completed-{}", Uuid::new_v4().simple());
     let working_run = format!("run-working-{}", Uuid::new_v4().simple());
 
-    seed_completed_run(&service, &completed_run, &thread_id, RunOrigin::AgUi).await;
-    service
-        .begin_intent(&working_run, &thread_id, RunOrigin::AiSdk, None, None)
-        .await
-        .expect("begin working run");
-    service
-        .apply_event(
-            &working_run,
-            &thread_id,
-            RunOrigin::AiSdk,
-            &AgentEvent::RunStart {
-                thread_id: thread_id.clone(),
-                run_id: working_run.clone(),
-                parent_run_id: None,
-            },
-        )
-        .await
-        .expect("start working run");
+    seed_completed_run(store.as_ref(), &completed_run, &thread_id, RunOrigin::AgUi).await;
+    let mut working = RunRecord::new(
+        working_run.clone(),
+        thread_id.clone(),
+        "test",
+        RunOrigin::AiSdk,
+        RunStatus::Running,
+        now_unix_millis(),
+    );
+    working.updated_at = now_unix_millis();
+    store.upsert_run(&working).await.expect("seed working run");
 
-    let uri = format!("/v1/runs?thread_id={thread_id}&status=completed&origin=ag_ui");
+    let uri = format!("/v1/runs?thread_id={thread_id}&status=done&origin=ag_ui");
     let (status, body) = get_json_text(app, &uri).await;
     assert_eq!(status, StatusCode::OK);
 
@@ -164,20 +160,19 @@ async fn list_runs_supports_filters() {
         .expect("items should be an array");
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["run_id"].as_str(), Some(completed_run.as_str()));
-    assert_eq!(items[0]["status"].as_str(), Some("completed"));
+    assert_eq!(items[0]["status"].as_str(), Some("done"));
     assert_eq!(items[0]["origin"].as_str(), Some("ag_ui"));
 }
 
 #[tokio::test]
 async fn list_runs_supports_time_range_filters() {
-    let service = ensure_run_service();
+    let store = shared_store();
     let app = make_app();
     let thread_id = format!("thread-time-{}", Uuid::new_v4().simple());
     let run_id = format!("run-time-{}", Uuid::new_v4().simple());
-    seed_completed_run(&service, &run_id, &thread_id, RunOrigin::AgUi).await;
+    seed_completed_run(store.as_ref(), &run_id, &thread_id, RunOrigin::AgUi).await;
 
-    let record = service
-        .get_run(&run_id)
+    let record = RunReader::load_run(store.as_ref(), &run_id)
         .await
         .expect("query seeded run")
         .expect("seeded run exists");
@@ -205,7 +200,6 @@ async fn list_runs_supports_time_range_filters() {
 
 #[tokio::test]
 async fn get_run_returns_not_found_for_missing_id() {
-    let _service = ensure_run_service();
     let app = make_app();
     let missing_id = format!("missing-{}", Uuid::new_v4().simple());
 
@@ -225,7 +219,6 @@ async fn get_run_returns_not_found_for_missing_id() {
 
 #[tokio::test]
 async fn start_run_endpoint_streams_events_and_persists_record() {
-    let _service = ensure_run_service();
     let app = make_app();
 
     let (status, body) = post_sse(
@@ -270,13 +263,21 @@ async fn start_run_endpoint_streams_events_and_persists_record() {
 
 #[tokio::test]
 async fn inputs_endpoint_forwards_decisions_by_run_id() {
-    let _service = ensure_run_service();
-    let app = make_app();
+    let (app, os) = make_app_with_os();
     let run_id = format!("run-inputs-{}", Uuid::new_v4().simple());
-    let key = active_run_key("run_api", "test", "thread-inputs", &run_id);
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RuntimeInput>();
-    register_active_run(key.clone(), tx).await;
-    register_active_run_cancellation(run_id.clone(), RunCancellationToken::new()).await;
+    let thread_id = format!("thread-inputs-{}", Uuid::new_v4().simple());
+    let (decision_tx, mut decision_rx) = tokio::sync::mpsc::unbounded_channel::<ToolCallDecision>();
+    os.register_thread_run_handle(
+        run_id.clone(),
+        TEST_AGENT_ID,
+        &thread_id,
+        RunCancellationToken::new(),
+    )
+    .await;
+    assert!(
+        os.bind_thread_run_decision_tx(&run_id, decision_tx).await,
+        "decision channel should bind to active handle"
+    );
 
     let uri = format!("/v1/runs/{run_id}/inputs");
     let (status, body) = post_sse(
@@ -300,27 +301,30 @@ async fn inputs_endpoint_forwards_decisions_by_run_id() {
     assert_eq!(payload["status"].as_str(), Some("decision_forwarded"));
     assert_eq!(payload["run_id"].as_str(), Some(run_id.as_str()));
 
-    let forwarded = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+    let forwarded = tokio::time::timeout(std::time::Duration::from_secs(1), decision_rx.recv())
         .await
-        .expect("decision should arrive before timeout")
-        .expect("channel should yield runtime input");
-    match forwarded {
-        RuntimeInput::Decision(decision) => {
-            assert_eq!(decision.target_id, "tool-1");
-        }
-        other => panic!("expected RuntimeInput::Decision, got {other:?}"),
-    }
+        .expect("decision should arrive before timeout");
+    assert!(
+        matches!(forwarded, Some(ref decision) if decision.target_id == "tool-1"),
+        "expected decision for tool-1, got {forwarded:?}"
+    );
 
-    remove_active_run(&key).await;
+    os.remove_thread_run_handle(&run_id).await;
 }
 
 #[tokio::test]
 async fn inputs_endpoint_supports_message_and_decision_continuation() {
-    let service = ensure_run_service();
+    let store = shared_store();
     let app = make_app();
     let parent_run_id = format!("run-parent-{}", Uuid::new_v4().simple());
     let parent_thread_id = format!("thread-parent-{}", Uuid::new_v4().simple());
-    seed_completed_run(&service, &parent_run_id, &parent_thread_id, RunOrigin::AgUi).await;
+    seed_completed_run(
+        store.as_ref(),
+        &parent_run_id,
+        &parent_thread_id,
+        RunOrigin::AgUi,
+    )
+    .await;
 
     let uri = format!("/v1/runs/{parent_run_id}/inputs");
     let (status, body) = post_sse(
@@ -355,29 +359,28 @@ async fn inputs_endpoint_supports_message_and_decision_continuation() {
         payload["thread_id"].as_str(),
         Some(parent_thread_id.as_str())
     );
-    let child_run_id = payload["run_id"]
-        .as_str()
-        .expect("child run_id should exist")
-        .to_string();
+    // run_id must not be exposed in the public response.
+    assert!(
+        payload.get("run_id").is_none(),
+        "continuation response must not expose internal run_id"
+    );
 
-    let child = wait_for_run(&service, &child_run_id)
+    // Verify the child run was actually created via the run service.
+    let child = wait_for_child_run(store.as_ref(), &parent_thread_id, &parent_run_id)
         .await
-        .expect("child run should be persisted");
-    assert_eq!(child.run_id, child_run_id);
+        .expect("child run should be persisted for the thread");
     assert_eq!(child.thread_id, parent_thread_id);
     assert_eq!(child.parent_run_id.as_deref(), Some(parent_run_id.as_str()));
 }
 
 #[tokio::test]
 async fn cancel_endpoint_cancels_active_run() {
-    let _service = ensure_run_service();
-    let app = make_app();
+    let (app, os) = make_app_with_os();
     let run_id = format!("run-cancel-{}", Uuid::new_v4().simple());
-    let key = active_run_key("run_api", "test", "thread-cancel", &run_id);
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RuntimeInput>();
+    let thread_id = format!("thread-cancel-{}", Uuid::new_v4().simple());
     let token = RunCancellationToken::new();
-    register_active_run(key.clone(), tx).await;
-    register_active_run_cancellation(run_id.clone(), token.clone()).await;
+    os.register_thread_run_handle(run_id.clone(), TEST_AGENT_ID, &thread_id, token.clone())
+        .await;
 
     let uri = format!("/v1/runs/{run_id}/cancel");
     let (status, body) = post_sse(app, &uri, json!({})).await;
@@ -390,11 +393,5 @@ async fn cancel_endpoint_cancels_active_run() {
         "cancellation token should be cancelled"
     );
 
-    let forwarded = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-        .await
-        .expect("cancel should arrive before timeout")
-        .expect("channel should yield runtime input");
-    assert!(matches!(forwarded, RuntimeInput::Cancel));
-
-    remove_active_run(&key).await;
+    os.remove_thread_run_handle(&run_id).await;
 }

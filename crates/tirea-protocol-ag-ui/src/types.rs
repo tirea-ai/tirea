@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use tirea_contract::io::decision_translation::suspension_response_to_decision;
 use tirea_contract::io::ResumeDecisionAction;
 use tirea_contract::runtime::suspended_calls_from_state;
-use tirea_contract::{gen_message_id, RunRequest, Visibility};
+use tirea_contract::{gen_message_id, RunOrigin, RunRequest, Visibility};
 use tirea_contract::{SuspensionResponse, ToolCallDecision};
 use tracing::warn;
 
@@ -329,6 +329,7 @@ impl RunAgentInput {
             parent_run_id: self.parent_run_id,
             parent_thread_id: self.parent_thread_id,
             resource_id: None,
+            origin: RunOrigin::AgUi,
             state: self.state,
             messages: convert_agui_messages(&self.messages),
             initial_decisions,

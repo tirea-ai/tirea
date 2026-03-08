@@ -3,7 +3,6 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use tirea_contract::{AgentEvent, TerminationReason};
 use tracing::warn;
-use uuid::Uuid;
 
 // AG-UI Context
 // ============================================================================
@@ -14,8 +13,9 @@ use uuid::Uuid;
 /// State is initialized from the first `RunStart` event in the stream.
 #[derive(Debug, Clone)]
 pub struct AgUiEventContext {
-    /// Prefix derived from run_id (first 8 chars), set on RunStart.
-    run_id_prefix: String,
+    /// AG-UI-facing run id for event payloads; if set, replaces internal run_id
+    /// in outward-facing lifecycle events.
+    frontend_run_id: Option<String>,
     /// Current message identifier.
     pub message_id: String,
     /// Step counter for generating step names.
@@ -50,10 +50,10 @@ impl AgUiEventContext {
     /// Create a new AG-UI context.
     ///
     /// The context is fully initialized when the first `RunStart` event
-    /// arrives, which sets the `message_id` from the run ID.
+    /// arrives, which generates an independent `message_id` (UUID v7).
     pub fn new() -> Self {
         Self {
-            run_id_prefix: String::new(),
+            frontend_run_id: None,
             message_id: String::new(),
             step_counter: 0,
             text_started: false,
@@ -64,6 +64,19 @@ impl AgUiEventContext {
             last_state: None,
             tool_ids_with_deltas: HashSet::new(),
         }
+    }
+
+    /// Set a frontend run id used in outward-facing AG-UI lifecycle events.
+    pub fn with_frontend_run_id(mut self, run_id: impl Into<String>) -> Self {
+        self.frontend_run_id = Some(run_id.into());
+        self
+    }
+
+    fn outward_run_id<'a>(&self, internal_run_id: &'a str) -> String {
+        self.frontend_run_id
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| internal_run_id.to_string())
     }
 
     /// Generate the next step name.
@@ -144,7 +157,7 @@ impl AgUiEventContext {
 
     /// Generate a new message ID.
     pub fn new_message_id(&mut self) -> String {
-        self.message_id = format!("msg_{}_{}", self.run_id_prefix, Uuid::new_v4().simple());
+        self.message_id = tirea_contract::gen_message_id();
         self.message_id.clone()
     }
 
@@ -194,9 +207,13 @@ impl AgUiEventContext {
                 run_id,
                 parent_run_id,
             } => {
-                self.run_id_prefix = run_id.chars().take(8).collect();
-                self.message_id = format!("msg_{}", self.run_id_prefix);
-                vec![Event::run_started(thread_id, run_id, parent_run_id.clone())]
+                let outward_run_id = self.outward_run_id(run_id);
+                self.message_id = tirea_contract::gen_message_id();
+                vec![Event::run_started(
+                    thread_id,
+                    outward_run_id,
+                    parent_run_id.clone(),
+                )]
             }
             AgentEvent::RunFinish {
                 thread_id,
@@ -205,6 +222,7 @@ impl AgUiEventContext {
                 termination,
             } => {
                 let mut events = self.close_open_streams();
+                let outward_run_id = self.outward_run_id(run_id);
                 match termination {
                     TerminationReason::Cancelled => {
                         events.push(Event::run_error(
@@ -216,7 +234,11 @@ impl AgUiEventContext {
                         events.push(Event::run_error(msg, Some("ERROR".to_string())));
                     }
                     _ => {
-                        events.push(Event::run_finished(thread_id, run_id, result.clone()));
+                        events.push(Event::run_finished(
+                            thread_id,
+                            outward_run_id,
+                            result.clone(),
+                        ));
                     }
                 }
                 events

@@ -28,8 +28,6 @@ const RUN_INFO_EVENT_NAME: &str = "run-info";
 #[derive(Debug)]
 pub struct AiSdkEncoder {
     message_id: String,
-    /// Prefix derived from run_id (first 8 chars), set on RunStart.
-    run_id_prefix: String,
     text_open: bool,
     text_counter: u32,
     finished: bool,
@@ -47,7 +45,6 @@ impl AiSdkEncoder {
     pub fn new() -> Self {
         Self {
             message_id: String::new(),
-            run_id_prefix: String::new(),
             text_open: false,
             text_counter: 0,
             finished: false,
@@ -224,11 +221,8 @@ impl AiSdkEncoder {
                 events.push(UIStreamEvent::finish_step());
                 events
             }
-            AgentEvent::RunStart {
-                run_id, thread_id, ..
-            } => {
-                self.run_id_prefix = run_id.chars().take(8).collect();
-                self.message_id = format!("msg_{}", self.run_id_prefix);
+            AgentEvent::RunStart { thread_id, .. } => {
+                self.message_id = tirea_contract::gen_message_id();
                 vec![
                     UIStreamEvent::message_start(&self.message_id),
                     UIStreamEvent::data(
@@ -238,7 +232,6 @@ impl AiSdkEncoder {
                             "protocolVersion": "v1",
                             "aiSdkVersion": super::AI_SDK_VERSION,
                             "threadId": thread_id,
-                            "runId": run_id,
                         }),
                     ),
                 ]

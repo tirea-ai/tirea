@@ -2,7 +2,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use tirea_contract::io::decision_translation::suspension_response_to_decision;
-use tirea_contract::{Message, RunRequest, SuspensionResponse, ToolCallDecision};
+use tirea_contract::{Message, RunOrigin, RunRequest, SuspensionResponse, ToolCallDecision};
 
 use crate::message::{ToolState, ToolUIPart};
 
@@ -11,7 +11,6 @@ use crate::message::{ToolState, ToolUIPart};
 pub struct AiSdkV6RunRequest {
     pub thread_id: String,
     pub input: String,
-    pub run_id: Option<String>,
     pub parent_thread_id: Option<String>,
     pub trigger: Option<AiSdkTrigger>,
     pub message_id: Option<String>,
@@ -36,8 +35,6 @@ struct AiSdkV6MessagesRunRequest {
     legacy_input: Option<String>,
     #[serde(default)]
     messages: Vec<Value>,
-    #[serde(rename = "runId")]
-    run_id: Option<String>,
     #[serde(rename = "parentThreadId", alias = "parent_thread_id", default)]
     parent_thread_id: Option<String>,
     #[serde(default)]
@@ -73,7 +70,6 @@ impl TryFrom<AiSdkV6MessagesRunRequest> for AiSdkV6RunRequest {
         Ok(Self {
             thread_id,
             input,
-            run_id: req.run_id,
             parent_thread_id: req.parent_thread_id,
             trigger: req.trigger,
             message_id: req.message_id,
@@ -84,15 +80,10 @@ impl TryFrom<AiSdkV6MessagesRunRequest> for AiSdkV6RunRequest {
 
 impl AiSdkV6RunRequest {
     /// Build a request from explicit thread/input values (non-UI transport path).
-    pub fn from_thread_input(
-        thread_id: impl Into<String>,
-        input: impl Into<String>,
-        run_id: Option<String>,
-    ) -> Self {
+    pub fn from_thread_input(thread_id: impl Into<String>, input: impl Into<String>) -> Self {
         Self {
             thread_id: thread_id.into(),
             input: input.into(),
-            run_id,
             parent_thread_id: None,
             trigger: Some(AiSdkTrigger::SubmitMessage),
             message_id: None,
@@ -160,7 +151,7 @@ impl AiSdkV6RunRequest {
     ///
     /// Mapping rules:
     /// - `thread_id` is treated as optional when blank/whitespace.
-    /// - `run_id` is forwarded directly.
+    /// - `run_id` is always server-assigned (not client-supplied).
     /// - Only extracted user input text is appended as runtime user message.
     /// - `state`, `parent_run_id`, and `resource_id` are not supplied by AI SDK v6 input.
     pub fn into_runtime_run_request(self, agent_id: String) -> RunRequest {
@@ -176,10 +167,11 @@ impl AiSdkV6RunRequest {
             } else {
                 Some(self.thread_id)
             },
-            run_id: self.run_id,
+            run_id: None,
             parent_run_id: None,
             parent_thread_id: self.parent_thread_id,
             resource_id: None,
+            origin: RunOrigin::AiSdk,
             state: None,
             messages,
             initial_decisions,
@@ -390,13 +382,11 @@ mod tests {
                 { "role": "assistant", "parts": [{ "type": "text", "text": "ignored" }] },
                 { "id": "msg_user_2", "role": "user", "parts": [{ "type": "text", "text": "final" }, { "type": "file", "url": "u" }] }
             ],
-            "runId": "run-2"
         }))
         .expect("messages payload should deserialize");
 
         assert_eq!(req.thread_id, "thread-from-id");
         assert_eq!(req.input, "final");
-        assert_eq!(req.run_id.as_deref(), Some("run-2"));
         assert_eq!(req.parent_thread_id.as_deref(), Some("parent-thread-1"));
         assert_eq!(req.trigger, Some(AiSdkTrigger::SubmitMessage));
         assert_eq!(req.message_id.as_deref(), Some("msg_user_2"));
@@ -406,7 +396,6 @@ mod tests {
     fn into_runtime_run_request_forwards_parent_thread_id() {
         let req: AiSdkV6RunRequest = serde_json::from_value(json!({
             "id": "thread-forward-parent",
-            "runId": "run-forward-parent",
             "parentThreadId": "p-thread",
             "messages": [{ "role": "user", "content": "hello" }]
         }))
@@ -759,20 +748,20 @@ mod tests {
 
     #[test]
     fn validate_rejects_empty_thread_id() {
-        let req = AiSdkV6RunRequest::from_thread_input("", "hello", None);
+        let req = AiSdkV6RunRequest::from_thread_input("", "hello");
         let err = req.validate().unwrap_err();
         assert!(err.contains("id cannot be empty"), "unexpected: {err}");
     }
 
     #[test]
     fn validate_rejects_whitespace_thread_id() {
-        let req = AiSdkV6RunRequest::from_thread_input("  ", "hello", None);
+        let req = AiSdkV6RunRequest::from_thread_input("  ", "hello");
         assert!(req.validate().is_err());
     }
 
     #[test]
     fn validate_rejects_regenerate_without_message_id() {
-        let mut req = AiSdkV6RunRequest::from_thread_input("t1", "", None);
+        let mut req = AiSdkV6RunRequest::from_thread_input("t1", "");
         req.trigger = Some(AiSdkTrigger::RegenerateMessage);
         req.message_id = None;
         let err = req.validate().unwrap_err();
@@ -781,7 +770,7 @@ mod tests {
 
     #[test]
     fn validate_rejects_regenerate_with_empty_message_id() {
-        let mut req = AiSdkV6RunRequest::from_thread_input("t1", "", None);
+        let mut req = AiSdkV6RunRequest::from_thread_input("t1", "");
         req.trigger = Some(AiSdkTrigger::RegenerateMessage);
         req.message_id = Some("  ".to_string());
         let err = req.validate().unwrap_err();
@@ -793,14 +782,14 @@ mod tests {
 
     #[test]
     fn validate_rejects_no_input_no_decisions() {
-        let req = AiSdkV6RunRequest::from_thread_input("t1", "", None);
+        let req = AiSdkV6RunRequest::from_thread_input("t1", "");
         let err = req.validate().unwrap_err();
         assert!(err.contains("must include user input"), "unexpected: {err}");
     }
 
     #[test]
     fn validate_accepts_regenerate_without_user_input() {
-        let mut req = AiSdkV6RunRequest::from_thread_input("t1", "", None);
+        let mut req = AiSdkV6RunRequest::from_thread_input("t1", "");
         req.trigger = Some(AiSdkTrigger::RegenerateMessage);
         req.message_id = Some("msg_1".to_string());
         assert!(req.validate().is_ok());
@@ -808,7 +797,7 @@ mod tests {
 
     #[test]
     fn validate_accepts_valid_request() {
-        let req = AiSdkV6RunRequest::from_thread_input("t1", "hello", None);
+        let req = AiSdkV6RunRequest::from_thread_input("t1", "hello");
         assert!(req.validate().is_ok());
     }
 

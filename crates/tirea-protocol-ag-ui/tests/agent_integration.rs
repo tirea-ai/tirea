@@ -1178,6 +1178,7 @@ async fn test_incremental_checkpoints_via_append() {
         let delta = ThreadChangeSet {
             run_id: "run-1".to_string(),
             parent_run_id: None,
+            run_meta: None,
             reason: if checkpoint == 5 {
                 CheckpointReason::RunFinished
             } else {

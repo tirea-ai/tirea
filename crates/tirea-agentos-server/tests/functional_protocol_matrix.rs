@@ -3,7 +3,7 @@ use tirea_protocol_ag_ui::{convert_agui_messages, Message, Role as UiRole, RunAg
 use tirea_protocol_ai_sdk_v6::AiSdkV6RunRequest;
 
 #[test]
-fn functional_protocol_scenario_matrix_204() {
+fn functional_protocol_scenario_matrix_148() {
     let mut executed = 0usize;
 
     // ---------------------------------------------------------------------
@@ -26,34 +26,30 @@ fn functional_protocol_scenario_matrix_204() {
     }
 
     // ---------------------------------------------------------------------
-    // 2) AI SDK input adapter matrix (84 scenarios)
+    // 2) AI SDK input adapter matrix (28 scenarios)
     // ---------------------------------------------------------------------
     let aisdk_thread_cases = ["thread-1", "", " ", "\t", "thread-42", "x", " session "];
-    let aisdk_run_cases = [None, Some("run-a"), Some("run-b")];
     let aisdk_input_cases = ["hello", "hi there", "42", "{\"a\":1}"];
 
     for thread_id in aisdk_thread_cases {
-        for run_id in aisdk_run_cases {
-            for input in aisdk_input_cases {
-                let req = AiSdkV6RunRequest::from_thread_input(
-                    thread_id,
-                    input,
-                    run_id.map(str::to_string),
-                );
-                let run = req.into_runtime_run_request("agent".to_string());
-                let expected_thread = if thread_id.trim().is_empty() {
-                    None
-                } else {
-                    Some(thread_id.to_string())
-                };
+        for input in aisdk_input_cases {
+            let req = AiSdkV6RunRequest::from_thread_input(thread_id, input);
+            let run = req.into_runtime_run_request("agent".to_string());
+            let expected_thread = if thread_id.trim().is_empty() {
+                None
+            } else {
+                Some(thread_id.to_string())
+            };
 
-                assert_eq!(run.thread_id, expected_thread);
-                assert_eq!(run.run_id, run_id.map(str::to_string));
-                assert_eq!(run.messages.len(), 1);
-                assert_eq!(run.messages[0].role, CoreRole::User);
-                assert_eq!(run.messages[0].content, input);
-                executed += 1;
-            }
+            assert_eq!(run.thread_id, expected_thread);
+            assert!(
+                run.run_id.is_none(),
+                "run_id must always be server-assigned"
+            );
+            assert_eq!(run.messages.len(), 1);
+            assert_eq!(run.messages[0].role, CoreRole::User);
+            assert_eq!(run.messages[0].content, input);
+            executed += 1;
         }
     }
 
@@ -123,5 +119,5 @@ fn functional_protocol_scenario_matrix_204() {
         }
     }
 
-    assert_eq!(executed, 204, "functional scenario count drifted");
+    assert_eq!(executed, 148, "functional scenario count drifted");
 }

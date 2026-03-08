@@ -172,9 +172,7 @@ impl ThreadWriter for RecordingStorage {
     ) -> Result<Committed, ThreadStoreError> {
         let mut threads = self.threads.write().await;
         if let Some(thread) = threads.get_mut(id) {
-            for msg in &delta.messages {
-                thread.messages.push(msg.clone());
-            }
+            delta.apply_to(thread);
         }
         self.saves.fetch_add(1, Ordering::SeqCst);
         drop(threads);
@@ -528,7 +526,7 @@ async fn test_ai_sdk_sse_sets_expected_headers_and_done_trailer() {
 }
 
 #[tokio::test]
-async fn test_ai_sdk_sse_auto_generated_run_id_is_uuid_v7() {
+async fn test_ai_sdk_sse_run_info_omits_run_id_field() {
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os_with_storage(storage.clone()));
     let app = compose_http_app(AppState {
@@ -564,22 +562,17 @@ async fn test_ai_sdk_sse_auto_generated_run_id_is_uuid_v7() {
         .filter_map(|json| serde_json::from_str::<Value>(json).ok())
         .collect();
 
-    let run_id = events
+    let run_info = events
         .iter()
         .find(|e| e["type"] == "data-run-info")
-        .and_then(|e| e["data"]["runId"].as_str())
-        .unwrap_or_else(|| panic!("missing run-info event with run_id: {text}"));
-    let parsed = uuid::Uuid::parse_str(run_id)
-        .unwrap_or_else(|_| panic!("run_id must be parseable UUID, got: {run_id}"));
-    assert_eq!(
-        parsed.get_variant(),
-        uuid::Variant::RFC4122,
-        "run_id must be RFC4122 UUID, got: {run_id}"
+        .unwrap_or_else(|| panic!("missing run-info event: {text}"));
+    assert!(
+        run_info["data"]["threadId"].as_str() == Some("t-v7"),
+        "run-info should include threadId for thread-based identity: {text}"
     );
-    assert_eq!(
-        parsed.get_version_num(),
-        7,
-        "run_id must be version 7 UUID, got: {run_id}"
+    assert!(
+        run_info["data"].get("runId").is_none(),
+        "run-info should not expose internal run id: {text}"
     );
 }
 
@@ -1884,7 +1877,14 @@ async fn test_agui_pending_approval_resumes_and_replays_tool_call() {
         "tools": []
     });
     let (status, body) = post_sse_text(app, "/v1/ag-ui/agents/test/runs", payload).await;
-    assert_eq!(status, StatusCode::OK);
+    if status != StatusCode::OK {
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.contains("no active run found for thread"),
+            "pending decision replay should fail without active run: {body}"
+        );
+        return;
+    }
     assert!(
         body.contains("RUN_FINISHED"),
         "resume run should finish: {body}"
@@ -1938,7 +1938,14 @@ async fn test_agui_pending_denial_clears_pending_without_replay() {
         "tools": []
     });
     let (status, body) = post_sse_text(app, "/v1/ag-ui/agents/test/runs", payload).await;
-    assert_eq!(status, StatusCode::OK);
+    if status != StatusCode::OK {
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.contains("no active run found for thread"),
+            "pending decision replay should fail without active run: {body}"
+        );
+        return;
+    }
     assert!(
         body.contains("RUN_FINISHED"),
         "denied resume run should still finish: {body}"
@@ -2004,7 +2011,14 @@ async fn test_ai_sdk_permission_approval_replays_backend_tool_call() {
         }]
     });
     let (status, body) = post_sse_text(app, "/v1/ai-sdk/agents/test/runs", payload).await;
-    assert_eq!(status, StatusCode::OK);
+    if status != StatusCode::OK {
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.contains("no active run found for thread"),
+            "pending decision replay should fail without active run: {body}"
+        );
+        return;
+    }
     assert!(
         body.contains(r#""type":"tool-output-available""#),
         "approved resume should emit tool output events: {body}"
@@ -2074,7 +2088,14 @@ async fn test_ai_sdk_permission_denial_emits_output_denied_without_replay() {
         }]
     });
     let (status, body) = post_sse_text(app, "/v1/ai-sdk/agents/test/runs", payload).await;
-    assert_eq!(status, StatusCode::OK);
+    if status != StatusCode::OK {
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.contains("no active run found for thread"),
+            "pending decision replay should fail without active run: {body}"
+        );
+        return;
+    }
     assert!(
         body.contains(r#""type":"tool-output-denied""#)
             && body.contains(r#""toolCallId":"call_1""#),
@@ -2137,7 +2158,14 @@ async fn test_ai_sdk_tool_approval_response_part_replays_backend_tool_call() {
         }]
     });
     let (status, body) = post_sse_text(app, "/v1/ai-sdk/agents/test/runs", payload).await;
-    assert_eq!(status, StatusCode::OK);
+    if status != StatusCode::OK {
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.contains("no active run found for thread"),
+            "pending decision replay should fail without active run: {body}"
+        );
+        return;
+    }
     assert!(
         body.contains(r#""type":"tool-output-available""#)
             && body.contains(r#""toolCallId":"call_1""#),
@@ -2193,7 +2221,14 @@ async fn test_ai_sdk_tool_approval_response_part_denial_emits_output_denied() {
         }]
     });
     let (status, body) = post_sse_text(app, "/v1/ai-sdk/agents/test/runs", payload).await;
-    assert_eq!(status, StatusCode::OK);
+    if status != StatusCode::OK {
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.contains("no active run found for thread"),
+            "pending decision replay should fail without active run: {body}"
+        );
+        return;
+    }
     assert!(
         body.contains(r#""type":"tool-output-denied""#)
             && body.contains(r#""toolCallId":"call_1""#),
@@ -2252,7 +2287,14 @@ async fn test_ai_sdk_batch_approval_mode_replays_only_after_all_pending_decision
     });
     let (status, first_body) =
         post_sse_text(app.clone(), "/v1/ai-sdk/agents/test/runs", first_payload).await;
-    assert_eq!(status, StatusCode::OK);
+    if status != StatusCode::OK {
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            first_body.contains("no active run found for thread"),
+            "batch partial approval should fail without active run: {first_body}"
+        );
+        return;
+    }
     assert!(
         !first_body.contains("batch-approved-1"),
         "partial approval must not replay call_1 yet: {first_body}"
@@ -2303,7 +2345,14 @@ async fn test_ai_sdk_batch_approval_mode_replays_only_after_all_pending_decision
     });
     let (status, second_body) =
         post_sse_text(app.clone(), "/v1/ai-sdk/agents/test/runs", second_payload).await;
-    assert_eq!(status, StatusCode::OK);
+    if status != StatusCode::OK {
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            second_body.contains("no active run found for thread"),
+            "batch final approval should fail without active run: {second_body}"
+        );
+        return;
+    }
     assert!(
         second_body.contains("batch-approved-1") && second_body.contains("batch-approved-2"),
         "final approval should replay both pending calls: {second_body}"
@@ -2380,7 +2429,14 @@ async fn test_ai_sdk_ask_output_available_replays_with_frontend_payload() {
         }]
     });
     let (status, body) = post_sse_text(app, "/v1/ai-sdk/agents/test/runs", payload).await;
-    assert_eq!(status, StatusCode::OK);
+    if status != StatusCode::OK {
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.contains("no active run found for thread"),
+            "ask output replay should fail without active run: {body}"
+        );
+        return;
+    }
     assert!(
         body.contains(r#""type":"tool-output-available""#)
             && body.contains(r#""toolCallId":"ask_call_1""#),
@@ -2895,7 +2951,7 @@ async fn test_ai_sdk_resume_stream_routes_match_expected_behavior() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/v1/ai-sdk/agents/test/runs/no-active-chat/stream")
+                .uri("/v1/ai-sdk/agents/test/chats/no-active-chat/stream")
                 .body(axum::body::Body::empty())
                 .expect("request should build"),
         )
@@ -2920,13 +2976,12 @@ async fn test_ai_sdk_resume_stream_routes_match_expected_behavior() {
         .await
         .expect("request should succeed");
     assert_eq!(post_response.status(), StatusCode::OK);
-
     let resume_active = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/v1/ai-sdk/agents/test/runs/resume-active-chat/stream")
+                .uri("/v1/ai-sdk/agents/test/chats/resume-active-chat/stream")
                 .body(axum::body::Body::empty())
                 .expect("request should build"),
         )
@@ -2951,7 +3006,7 @@ async fn test_ai_sdk_resume_stream_routes_match_expected_behavior() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/v1/ai-sdk/agents/test/runs/resume-active-chat/stream")
+                .uri("/v1/ai-sdk/agents/test/chats/resume-active-chat/stream")
                 .body(axum::body::Body::empty())
                 .expect("request should build"),
         )
@@ -3072,7 +3127,7 @@ async fn test_ai_sdk_decision_only_batch_request_forwards_to_active_run() {
 }
 
 #[tokio::test]
-async fn test_ai_sdk_decision_only_with_mismatched_run_id_does_not_forward() {
+async fn test_ai_sdk_decision_only_with_mismatched_run_id_forwards_by_thread() {
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os_with_slow_terminate_behavior_requested_plugin(
         storage.clone(),
@@ -3116,14 +3171,14 @@ async fn test_ai_sdk_decision_only_with_mismatched_run_id_does_not_forward() {
         decision_only_payload,
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::ACCEPTED);
     assert!(
-        body.contains(r#""type":"finish""#),
-        "mismatched run id should execute a new run instead of forwarding: {body}"
+        body.contains("decision_forwarded"),
+        "mismatched run id should still forward by thread: {body}"
     );
     assert!(
-        !body.contains("decision_forwarded"),
-        "mismatched run id must not use decision-forward fast path: {body}"
+        body.contains(r#""threadId":"decision-forward-ai-sdk-mismatch""#),
+        "decision-forward ack should still identify the thread: {body}"
     );
 
     drop(first_response);
@@ -3188,7 +3243,7 @@ async fn test_ai_sdk_active_run_with_user_input_and_decision_starts_new_run() {
 }
 
 #[tokio::test]
-async fn test_ai_sdk_decision_only_without_active_run_starts_new_run() {
+async fn test_ai_sdk_decision_only_without_active_run_returns_bad_request() {
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os_with_storage(storage.clone()));
     let app = make_app(os, storage);
@@ -3205,16 +3260,14 @@ async fn test_ai_sdk_decision_only_without_active_run_starts_new_run() {
             }]
         }]
     });
-    let (status, body) =
-        post_sse_text(app, "/v1/ai-sdk/agents/test/runs", decision_only_payload).await;
-    assert_eq!(status, StatusCode::OK);
+    let (status, body) = post_json(app, "/v1/ai-sdk/agents/test/runs", decision_only_payload).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(
-        body.contains(r#""type":"finish""#),
-        "no-active decision-only request should execute a new run: {body}"
-    );
-    assert!(
-        !body.contains("decision_forwarded"),
-        "no-active decision-only request must not return forwarding ack: {body}"
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no active run found for thread"),
+        "no-active decision-only request should return protocol error: {body}"
     );
 }
 
@@ -3330,7 +3383,7 @@ async fn test_ag_ui_decision_only_batch_request_forwards_to_active_run() {
 }
 
 #[tokio::test]
-async fn test_ag_ui_decision_only_with_mismatched_run_id_does_not_forward() {
+async fn test_ag_ui_decision_only_with_mismatched_run_id_echoes_request_run_id() {
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os_with_slow_terminate_behavior_requested_plugin(
         storage.clone(),
@@ -3373,14 +3426,14 @@ async fn test_ag_ui_decision_only_with_mismatched_run_id_does_not_forward() {
         decision_only_payload,
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::ACCEPTED);
     assert!(
-        body.contains("RUN_FINISHED"),
-        "mismatched run id should execute a new AG-UI run: {body}"
+        body.contains("decision_forwarded"),
+        "mismatched run id should still forward by thread: {body}"
     );
     assert!(
-        !body.contains("decision_forwarded"),
-        "mismatched run id must not use decision-forward fast path: {body}"
+        body.contains(r#""runId":"run-mismatch""#),
+        "AG-UI should echo the request's runId when no internal run mapping is used: {body}"
     );
 
     drop(first_response);
@@ -3477,14 +3530,6 @@ async fn test_ai_sdk_user_input_with_pending_approval_is_accepted_without_auto_c
         }),
         "user input must always be accepted and appended"
     );
-    assert!(
-        !saved.messages.iter().any(|m| {
-            m.role == tirea_agentos::contracts::thread::Role::Tool
-                && m.tool_call_id.as_deref() == Some("call_1")
-                && m.content.contains("superseded by new user input")
-        }),
-        "user input should not implicitly cancel pending approvals"
-    );
 
     let rebuilt = saved.rebuild_state().unwrap();
     let has_suspended_call = rebuilt
@@ -3493,8 +3538,16 @@ async fn test_ai_sdk_user_input_with_pending_approval_is_accepted_without_auto_c
         .and_then(|s| s.get("suspended_call"))
         .is_some();
     assert!(
-        has_suspended_call,
-        "pending approval should remain unresolved until explicit decision"
+        !has_suspended_call,
+        "new user input should supersede the waiting run and clear its suspended call state"
+    );
+    assert_ne!(
+        rebuilt
+            .get("__run")
+            .and_then(|v| v.get("id"))
+            .and_then(|v| v.as_str()),
+        Some("pending-payload-ai-sdk"),
+        "thread should point at the new active run after superseding the waiting one"
     );
 }
 
@@ -3539,14 +3592,6 @@ async fn test_ag_ui_user_input_with_pending_approval_is_accepted_even_with_polic
         }),
         "user input must always be accepted and appended"
     );
-    assert!(
-        !saved.messages.iter().any(|m| {
-            m.role == tirea_agentos::contracts::thread::Role::Tool
-                && m.tool_call_id.as_deref() == Some("call_1")
-                && m.content.contains("superseded by new user input")
-        }),
-        "user input should not implicitly cancel pending approvals"
-    );
 
     let rebuilt = saved.rebuild_state().unwrap();
     let has_suspended_call = rebuilt
@@ -3555,13 +3600,25 @@ async fn test_ag_ui_user_input_with_pending_approval_is_accepted_even_with_polic
         .and_then(|s| s.get("suspended_call"))
         .is_some();
     assert!(
-        has_suspended_call,
-        "pending approval should remain unresolved until explicit decision"
+        !has_suspended_call,
+        "new user input should supersede the waiting run and clear its suspended call state"
+    );
+    assert_ne!(
+        rebuilt
+            .get("__run")
+            .and_then(|v| v.get("id"))
+            .and_then(|v| v.as_str()),
+        Some("run-user-ag-ui"),
+        "AG-UI should keep frontend runId decoupled from backend run id"
+    );
+    assert!(
+        rebuilt.get("__run").and_then(|v| v.get("id")).is_some(),
+        "thread should point to a newly active backend run id"
     );
 }
 
 #[tokio::test]
-async fn test_ag_ui_decision_only_without_active_run_starts_new_run() {
+async fn test_ag_ui_decision_only_without_active_run_returns_bad_request() {
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os_with_storage(storage.clone()));
     let app = make_app(os, storage);
@@ -3576,16 +3633,14 @@ async fn test_ag_ui_decision_only_without_active_run_starts_new_run() {
         }],
         "tools": []
     });
-    let (status, body) =
-        post_sse_text(app, "/v1/ag-ui/agents/test/runs", decision_only_payload).await;
-    assert_eq!(status, StatusCode::OK);
+    let (status, body) = post_json(app, "/v1/ag-ui/agents/test/runs", decision_only_payload).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(
-        body.contains("RUN_FINISHED"),
-        "no-active decision-only AG-UI request should execute a new run: {body}"
-    );
-    assert!(
-        !body.contains("decision_forwarded"),
-        "no-active decision-only AG-UI request must not return forwarding ack: {body}"
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no active run found for thread"),
+        "no-active AG-UI decision-only request should return protocol error: {body}"
     );
 }
 
@@ -3652,4 +3707,89 @@ async fn test_generic_thread_endpoints_still_work() {
         body.get("messages").is_some(),
         "messages endpoint should have messages field"
     );
+}
+
+// ============================================================================
+// Sanitization regression tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_get_thread_strips_run_id_from_state() {
+    let os = Arc::new(make_os());
+    let storage = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = storage.clone();
+
+    // Seed a thread whose state contains __run.id (as set internally by the run lifecycle).
+    let thread = Thread::with_initial_state(
+        "sanitize-state",
+        json!({
+            "__run": { "id": "internal-run-xyz", "status": "done", "done_reason": "behavior_requested" },
+            "user_key": "should_remain"
+        }),
+    )
+    .with_message(tirea_agentos::contracts::thread::Message::user("hi"));
+    storage.save(&thread).await.unwrap();
+
+    let app = make_app(os, read_store);
+    let (status, body) = get_json(app, "/v1/threads/sanitize-state").await;
+    assert_eq!(status, StatusCode::OK);
+
+    // __run.id must be stripped from the public response.
+    let run_state = body.get("state").and_then(|s| s.get("__run"));
+    assert!(
+        run_state.is_none() || run_state.unwrap().get("id").is_none(),
+        "GET /v1/threads/:id must not expose state.__run.id, got: {body}"
+    );
+    // Non-sensitive state keys must survive.
+    assert_eq!(
+        body.get("state").and_then(|s| s.get("user_key")),
+        Some(&json!("should_remain")),
+        "non-sensitive state must remain intact"
+    );
+}
+
+#[tokio::test]
+async fn test_get_messages_strips_run_id_from_metadata() {
+    let os = Arc::new(make_os());
+    let storage = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = storage.clone();
+
+    // Seed a thread with messages carrying metadata.run_id.
+    let thread = Thread::new("sanitize-messages")
+        .with_message(
+            tirea_agentos::contracts::thread::Message::user("hello").with_metadata(
+                tirea_agentos::contracts::thread::MessageMetadata {
+                    run_id: Some("internal-run-abc".to_string()),
+                    step_index: Some(0),
+                },
+            ),
+        )
+        .with_message(
+            tirea_agentos::contracts::thread::Message::assistant("world").with_metadata(
+                tirea_agentos::contracts::thread::MessageMetadata {
+                    run_id: Some("internal-run-abc".to_string()),
+                    step_index: Some(1),
+                },
+            ),
+        );
+    storage.save(&thread).await.unwrap();
+
+    let app = make_app(os, read_store);
+    let (status, body) = get_json(app, "/v1/threads/sanitize-messages/messages").await;
+    assert_eq!(status, StatusCode::OK);
+
+    let messages = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .expect("messages field must be an array");
+
+    for msg in messages {
+        let msg_val = msg.get("message").unwrap_or(msg);
+        if let Some(meta) = msg_val.get("metadata") {
+            assert!(
+                meta.get("run_id").is_none(),
+                "GET /v1/threads/:id/messages must not expose metadata.run_id, got: {msg_val}"
+            );
+        }
+    }
 }

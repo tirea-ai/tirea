@@ -1,7 +1,6 @@
 use super::{StreamState, TextUIPart, ToolState, ToolUIPart, UIMessage, UIMessagePart, UIRole};
 use serde_json::Value;
 use tirea_contract::{Message, Role};
-use tracing::warn;
 
 pub struct AiSdkV6HistoryEncoder;
 
@@ -51,20 +50,17 @@ impl AiSdkV6HistoryEncoder {
             }
         }
 
-        let metadata = match msg.metadata.as_ref() {
-            Some(metadata) => match serde_json::to_value(metadata) {
-                Ok(value) => Some(value),
-                Err(err) => {
-                    warn!(
-                        error = %err,
-                        message_id = msg.id.as_deref().unwrap_or_default(),
-                        "failed to serialize message metadata for AI SDK history"
-                    );
-                    None
-                }
-            },
-            None => None,
-        };
+        let metadata = msg.metadata.as_ref().and_then(|metadata| {
+            let mut object = serde_json::Map::new();
+            if let Some(step_index) = metadata.step_index {
+                object.insert("step_index".to_string(), Value::from(step_index));
+            }
+            if object.is_empty() {
+                None
+            } else {
+                Some(Value::Object(object))
+            }
+        });
 
         UIMessage {
             id: msg.id.clone().unwrap_or_default(),
@@ -247,7 +243,7 @@ mod tests {
         let encoded = AiSdkV6HistoryEncoder::encode_message(&msg);
         assert!(encoded.metadata.is_some());
         let meta = encoded.metadata.unwrap();
-        assert_eq!(meta["run_id"], "run_1");
+        assert!(meta.get("run_id").is_none(), "run_id must not be exposed");
         assert_eq!(meta["step_index"], 2);
     }
 
