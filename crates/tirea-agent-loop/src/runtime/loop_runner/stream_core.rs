@@ -1,38 +1,10 @@
-use super::*;
-use std::collections::HashMap;
-
 /// Pure stream-loop helpers:
-/// - derive run identity
 /// - read suspended-call state
 /// - derive result payloads / preallocated message ids
 ///
 /// No plugin execution, tool execution, or event emission happens here.
-pub(super) struct StreamRunIdentity {
-    pub(super) run_id: String,
-    pub(super) parent_run_id: Option<String>,
-}
-
-pub(super) fn resolve_stream_run_identity(
-    run_ctx: &mut crate::contracts::RunContext,
-) -> StreamRunIdentity {
-    let run_id = run_ctx
-        .run_config
-        .value("run_id")
-        .and_then(|v| v.as_str().map(String::from))
-        .unwrap_or_else(|| {
-            let id = uuid_v7();
-            let _ = run_ctx.run_config.set("run_id", &id);
-            id
-        });
-    let parent_run_id = run_ctx
-        .run_config
-        .value("parent_run_id")
-        .and_then(|v| v.as_str().map(String::from));
-    StreamRunIdentity {
-        run_id,
-        parent_run_id,
-    }
-}
+use super::*;
+use std::collections::HashMap;
 
 pub(super) fn preallocate_tool_result_message_ids(
     results: &[ToolExecutionResult],

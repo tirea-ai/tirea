@@ -40,6 +40,7 @@ impl std::fmt::Debug for AgentOs {
             &self.skills_registry.as_ref().map(|registry| registry.len()),
         );
         s.field("system_wirings", &self.system_wirings.len())
+            .field("active_runs", &"[internal]")
             .field("agent_tools", &self.agent_tools)
             .field("agent_state_store", &self.agent_state_store.is_some())
             .finish()
@@ -466,6 +467,7 @@ impl AgentOsBuilder {
             skills_registry,
             system_wirings,
             sub_agent_handles: Arc::new(SubAgentHandleTable::new()),
+            active_runs: Arc::new(thread_run::ActiveThreadRunRegistry::default()),
             agent_tools,
             agent_state_store,
         })

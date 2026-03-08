@@ -277,6 +277,7 @@ pub(super) async fn execute_sub_agent(
         parent_run_id,
         parent_thread_id: Some(parent_thread_id),
         resource_id: None,
+        origin: crate::contracts::storage::RunOrigin::Subagent,
         state: initial_state,
         messages,
         initial_decisions: Vec::new(),

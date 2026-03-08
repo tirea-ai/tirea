@@ -23,6 +23,7 @@ thiserror = "2"
 genai = "0.6.0-beta.3"
 futures = "0.3"
 uuid = { version = "1", features = ["v4", "v7"] }
+bytes = "1"
 
 [features]
 default = ["skills", "permission", "reminder", "observability"]

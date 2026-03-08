@@ -4,6 +4,7 @@ use crate::contracts::runtime::phase::{ActionSet, BeforeInferenceAction};
 use crate::contracts::runtime::phase::{Phase, StepContext};
 use crate::contracts::runtime::state::{reduce_state_actions, ScopeContext};
 use crate::contracts::runtime::tool_call::ToolStatus;
+use crate::contracts::storage::RunOrigin;
 use crate::contracts::thread::Thread;
 use crate::contracts::AgentBehavior;
 use crate::orchestrator::InMemoryAgentRegistry;
@@ -3866,6 +3867,7 @@ async fn integration_sub_agent_executes_tool_via_mock_llm() {
                 parent_run_id: Some("parent-run-1".to_string()),
                 parent_thread_id: Some("parent-thread".to_string()),
                 resource_id: None,
+                origin: RunOrigin::default(),
                 state: None,
                 messages: vec![crate::contracts::thread::Message::user("call echo tool")],
                 initial_decisions: vec![],
@@ -3986,6 +3988,7 @@ async fn integration_sub_agent_tool_invocation_counted() {
                 parent_run_id: None,
                 parent_thread_id: None,
                 resource_id: None,
+                origin: RunOrigin::default(),
                 state: None,
                 messages: vec![crate::contracts::thread::Message::user("count it")],
                 initial_decisions: vec![],
@@ -4039,6 +4042,7 @@ async fn integration_consecutive_runs_on_same_thread_accumulate_messages() {
                 parent_run_id: None,
                 parent_thread_id: Some("parent-thread".to_string()),
                 resource_id: None,
+                origin: RunOrigin::default(),
                 state: None,
                 messages: vec![crate::contracts::thread::Message::user("first task")],
                 initial_decisions: vec![],
@@ -4068,6 +4072,7 @@ async fn integration_consecutive_runs_on_same_thread_accumulate_messages() {
                 parent_run_id: None,
                 parent_thread_id: Some("parent-thread".to_string()),
                 resource_id: None,
+                origin: RunOrigin::default(),
                 state: None,
                 messages: vec![crate::contracts::thread::Message::user("second task")],
                 initial_decisions: vec![],
@@ -4146,6 +4151,7 @@ async fn integration_sub_agent_thread_independent_from_parent_thread() {
                 parent_run_id: None,
                 parent_thread_id: None,
                 resource_id: None,
+                origin: RunOrigin::default(),
                 state: Some(json!({"parent_data": "secret"})),
                 messages: vec![crate::contracts::thread::Message::user("parent task")],
                 initial_decisions: vec![],
@@ -4168,6 +4174,7 @@ async fn integration_sub_agent_thread_independent_from_parent_thread() {
                 parent_run_id: Some("parent-rid".to_string()),
                 parent_thread_id: Some("parent-tid".to_string()),
                 resource_id: None,
+                origin: RunOrigin::default(),
                 state: None,
                 messages: vec![crate::contracts::thread::Message::user("child task")],
                 initial_decisions: vec![],
@@ -4255,6 +4262,7 @@ async fn integration_agent_output_reads_tool_result_from_sub_agent() {
                 parent_run_id: None,
                 parent_thread_id: None,
                 resource_id: None,
+                origin: RunOrigin::default(),
                 state: None,
                 messages: vec![crate::contracts::thread::Message::user("echo test")],
                 initial_decisions: vec![],

@@ -34,6 +34,7 @@ mod policy;
 mod run;
 mod stop_policy_plugin;
 pub(crate) mod system_wiring;
+mod thread_run;
 mod wiring;
 
 #[cfg(test)]
@@ -61,6 +62,7 @@ pub use stop_policy_plugin::{
     ConsecutiveErrors, ContentMatch, LoopDetection, MaxRounds, StopConditionSpec, StopOnTool,
     StopPolicy, StopPolicyInput, StopPolicyStats, Timeout, TokenBudget,
 };
+pub use thread_run::{ForwardedDecision, ThreadRunHandle};
 
 pub use system_wiring::{SystemWiring, WiringContext};
 
@@ -69,11 +71,15 @@ pub use crate::runtime::loop_runner::ResolvedRun;
 #[derive(Clone)]
 struct AgentStateStoreStateCommitter {
     agent_state_store: Arc<dyn ThreadStore>,
+    persist_run_mapping: bool,
 }
 
 impl AgentStateStoreStateCommitter {
-    fn new(agent_state_store: Arc<dyn ThreadStore>) -> Self {
-        Self { agent_state_store }
+    fn new(agent_state_store: Arc<dyn ThreadStore>, persist_run_mapping: bool) -> Self {
+        Self {
+            agent_state_store,
+            persist_run_mapping,
+        }
     }
 }
 
@@ -82,9 +88,12 @@ impl StateCommitter for AgentStateStoreStateCommitter {
     async fn commit(
         &self,
         thread_id: &str,
-        changeset: crate::contracts::ThreadChangeSet,
+        mut changeset: crate::contracts::ThreadChangeSet,
         precondition: VersionPrecondition,
     ) -> Result<u64, StateCommitError> {
+        if !self.persist_run_mapping {
+            changeset.run_meta = None;
+        }
         self.agent_state_store
             .append(thread_id, &changeset, precondition)
             .await
@@ -353,6 +362,7 @@ pub struct PreparedRun {
     agent: Arc<dyn Agent>,
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
+    execution_ctx: crate::runtime::loop_runner::RunExecutionContext,
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
     decision_tx: tokio::sync::mpsc::UnboundedSender<ToolCallDecision>,
@@ -384,6 +394,7 @@ pub struct AgentOs {
     skills_registry: Option<Arc<dyn SkillRegistry>>,
     system_wirings: Vec<Arc<dyn SystemWiring>>,
     sub_agent_handles: Arc<SubAgentHandleTable>,
+    active_runs: Arc<thread_run::ActiveThreadRunRegistry>,
     agent_tools: AgentToolsConfig,
     agent_state_store: Option<Arc<dyn ThreadStore>>,
 }

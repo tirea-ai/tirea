@@ -1,8 +1,7 @@
-use super::{AgentLoopError, StateCommitError, StateCommitter};
-use crate::contracts::storage::VersionPrecondition;
+use super::{AgentLoopError, RunExecutionContext, StateCommitError, StateCommitter};
+use crate::contracts::storage::{RunOrigin, VersionPrecondition};
 use crate::contracts::thread::CheckpointReason;
-use crate::contracts::RunContext;
-use crate::contracts::ThreadChangeSet;
+use crate::contracts::{RunContext, RunMeta, TerminationReason, ThreadChangeSet};
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -42,9 +41,9 @@ pub(super) async fn commit_pending_delta(
     run_ctx: &mut RunContext,
     reason: CheckpointReason,
     force: bool,
-    run_id: &str,
-    parent_run_id: Option<&str>,
     state_committer: Option<&Arc<dyn StateCommitter>>,
+    execution_ctx: &RunExecutionContext,
+    termination: Option<&TerminationReason>,
 ) -> Result<(), AgentLoopError> {
     let Some(committer) = state_committer else {
         return Ok(());
@@ -69,15 +68,34 @@ pub(super) async fn commit_pending_delta(
         None
     };
 
-    let changeset = ThreadChangeSet::from_parts(
-        run_id.to_string(),
-        parent_run_id.map(str::to_string),
+    let mut changeset = ThreadChangeSet::from_parts(
+        execution_ctx.run_id.clone(),
+        execution_ctx.parent_run_id.clone(),
         reason,
         delta.messages,
         delta.patches,
         delta.actions,
         snapshot,
     );
+
+    // Loop always emits run-finished RunMeta. Whether this metadata is used to
+    // materialize/maintain durable run mappings is decided by the outer
+    // orchestration layer's StateCommitter policy.
+    if let Some(termination) = termination {
+        let agent_id = execution_ctx.agent_id.clone();
+        let origin: RunOrigin = execution_ctx.origin.clone();
+        let parent_thread_id = None; // Already set on the initial changeset.
+        let (status, termination_code, termination_detail) = map_termination(termination);
+        changeset.run_meta = Some(RunMeta {
+            agent_id,
+            origin,
+            status,
+            parent_thread_id,
+            termination_code,
+            termination_detail,
+        });
+    }
+
     let precondition = VersionPrecondition::Exact(run_ctx.version());
     let committed_version = committer
         .commit(run_ctx.thread_id(), changeset, precondition)
@@ -87,21 +105,44 @@ pub(super) async fn commit_pending_delta(
     Ok(())
 }
 
+fn map_termination(
+    termination: &TerminationReason,
+) -> (
+    crate::contracts::storage::RunStatus,
+    Option<String>,
+    Option<String>,
+) {
+    let (status, _) = termination.to_run_status();
+    match termination {
+        TerminationReason::NaturalEnd => (status, Some("natural".to_string()), None),
+        TerminationReason::BehaviorRequested => {
+            (status, Some("behavior_requested".to_string()), None)
+        }
+        TerminationReason::Suspended => (status, Some("input_required".to_string()), None),
+        TerminationReason::Cancelled => (status, Some("cancelled".to_string()), None),
+        TerminationReason::Error(message) => {
+            (status, Some("error".to_string()), Some(message.clone()))
+        }
+        TerminationReason::Stopped(stopped) => (
+            status,
+            Some(stopped.code.trim().to_ascii_lowercase()),
+            stopped.detail.clone(),
+        ),
+    }
+}
+
 pub(super) struct PendingDeltaCommitContext<'a> {
-    run_id: &'a str,
-    parent_run_id: Option<&'a str>,
+    execution_ctx: &'a RunExecutionContext,
     state_committer: Option<&'a Arc<dyn StateCommitter>>,
 }
 
 impl<'a> PendingDeltaCommitContext<'a> {
     pub(super) fn new(
-        run_id: &'a str,
-        parent_run_id: Option<&'a str>,
+        execution_ctx: &'a RunExecutionContext,
         state_committer: Option<&'a Arc<dyn StateCommitter>>,
     ) -> Self {
         Self {
-            run_id,
-            parent_run_id,
+            execution_ctx,
             state_committer,
         }
     }
@@ -116,9 +157,25 @@ impl<'a> PendingDeltaCommitContext<'a> {
             run_ctx,
             reason,
             force,
-            self.run_id,
-            self.parent_run_id,
             self.state_committer,
+            self.execution_ctx,
+            None,
+        )
+        .await
+    }
+
+    pub(super) async fn commit_run_finished(
+        &self,
+        run_ctx: &mut RunContext,
+        termination: &TerminationReason,
+    ) -> Result<(), AgentLoopError> {
+        commit_pending_delta(
+            run_ctx,
+            CheckpointReason::RunFinished,
+            true,
+            self.state_committer,
+            self.execution_ctx,
+            Some(termination),
         )
         .await
     }

@@ -7,7 +7,7 @@ use std::time::Duration;
 use tirea_agentos::orchestrator::AgentDefinition;
 use tirea_agentos::orchestrator::AgentOs;
 use tirea_contract::thread::Message;
-use tirea_contract::{AgentEvent, RunRequest};
+use tirea_contract::{AgentEvent, RunOrigin, RunRequest};
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
@@ -76,6 +76,7 @@ Do not skip tool calls.",
             parent_run_id: None,
             parent_thread_id: None,
             resource_id: None,
+            origin: RunOrigin::default(),
             state: None,
             messages: vec![Message::user("按流程执行，最后给我结果。")],
             initial_decisions: vec![],

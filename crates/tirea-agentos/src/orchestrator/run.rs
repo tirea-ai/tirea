@@ -4,7 +4,8 @@ use crate::contracts::runtime::state::{
 };
 use crate::contracts::runtime::{RunLifecycleAction, RunLifecycleState, RunStatus};
 use crate::contracts::storage::VersionPrecondition;
-use crate::runtime::loop_runner::run_loop_stream;
+use crate::runtime::loop_runner::{run_loop_stream_with_context, RunExecutionContext};
+use tirea_contract::runtime::suspended_calls_from_state;
 use tirea_state::{Op, Patch, TrackedPatch};
 
 fn now_unix_millis() -> u64 {
@@ -85,6 +86,44 @@ fn set_or_validate_parent_thread_id(
     Ok(true)
 }
 
+fn request_has_user_input(messages: &[Message]) -> bool {
+    messages.iter().any(|message| {
+        message.role == crate::contracts::thread::Role::User && !message.content.trim().is_empty()
+    })
+}
+
+fn clear_suspended_tool_call_state(state: &serde_json::Value) -> Option<serde_json::Value> {
+    let suspended = suspended_calls_from_state(state);
+    if suspended.is_empty() {
+        return None;
+    }
+
+    let mut cleaned_state = state.clone();
+    let Some(root) = cleaned_state.as_object_mut() else {
+        return None;
+    };
+
+    let Some(scope_obj) = root
+        .get_mut("__tool_call_scope")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return None;
+    };
+
+    let mut removed_any = false;
+    for call_id in suspended.keys() {
+        if scope_obj.remove(call_id).is_some() {
+            removed_any = true;
+        }
+    }
+
+    if removed_any && scope_obj.is_empty() {
+        root.remove("__tool_call_scope");
+    }
+
+    removed_any.then_some(cleaned_state)
+}
+
 impl AgentOs {
     pub fn agent_state_store(&self) -> Option<&Arc<dyn ThreadStore>> {
         self.agent_state_store.as_ref()
@@ -107,6 +146,120 @@ impl AgentOs {
         Ok(agent_state_store.load(id).await?)
     }
 
+    pub async fn current_run_id_for_thread(
+        &self,
+        agent_id: &str,
+        thread_id: &str,
+    ) -> Result<Option<String>, AgentOsRunError> {
+        if let Some(run_id) = self.active_run_id_for_thread(agent_id, thread_id).await {
+            return Ok(Some(run_id));
+        }
+        let store = self.require_agent_state_store()?;
+        let Some(record) = store.active_run_for_thread(thread_id).await? else {
+            return Ok(None);
+        };
+        if !record.agent_id.is_empty() && record.agent_id != agent_id {
+            return Ok(None);
+        }
+        Ok(Some(record.run_id))
+    }
+
+    async fn clear_suspended_calls_before_user_run_input(
+        &self,
+        run_request: &mut RunRequest,
+    ) -> Result<(), AgentOsRunError> {
+        let Some(thread_id) = run_request.thread_id.as_deref() else {
+            return Ok(());
+        };
+        if !request_has_user_input(&run_request.messages) {
+            return Ok(());
+        }
+
+        let store = self.require_agent_state_store()?;
+        let Some(head) = store.load(thread_id).await? else {
+            return Ok(());
+        };
+        if let Some(cleaned) = clear_suspended_tool_call_state(&head.thread.state) {
+            run_request.state = Some(cleaned);
+        }
+        Ok(())
+    }
+
+    pub async fn prepare_active_run_with_persistence(
+        &self,
+        owner_agent_id: &str,
+        mut run_request: RunRequest,
+        resolved: ResolvedRun,
+        persist_run: bool,
+        strip_lineage: bool,
+    ) -> Result<(PreparedRun, String, String), AgentOsRunError> {
+        if strip_lineage {
+            run_request.run_id = None;
+            run_request.parent_run_id = None;
+            run_request.parent_thread_id = None;
+        }
+
+        let previous_run_id = if !run_request.messages.is_empty() {
+            if let Some(thread_id) = run_request.thread_id.as_deref() {
+                self.current_run_id_for_thread(owner_agent_id, thread_id)
+                    .await?
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        self.clear_suspended_calls_before_user_run_input(&mut run_request)
+            .await?;
+
+        let prepared = self
+            .prepare_run_with_persistence(run_request, resolved, persist_run)
+            .await?;
+        let thread_id = prepared.thread_id.clone();
+        let run_id = prepared.run_id.clone();
+
+        if let Some(previous_run_id) = previous_run_id.filter(|candidate| candidate != &run_id) {
+            self.cancel_active_run_by_id(&previous_run_id).await;
+        }
+
+        self.register_thread_run_handle(
+            run_id.clone(),
+            owner_agent_id,
+            &thread_id,
+            RunCancellationToken::new(),
+        )
+        .await;
+
+        Ok((prepared, thread_id, run_id))
+    }
+
+    pub async fn start_prepared_active_run(
+        &self,
+        run_id: &str,
+        prepared: PreparedRun,
+    ) -> Result<RunStream, AgentOsRunError> {
+        let token = self
+            .active_thread_run_by_run_id(run_id)
+            .await
+            .ok_or_else(|| {
+                AgentOsRunError::Loop(AgentLoopError::StateError(format!(
+                    "active run handle missing for run '{run_id}'",
+                )))
+            })?
+            .cancellation_token();
+        let run = Self::execute_prepared(prepared.with_cancellation_token(token))?;
+        if !self
+            .bind_thread_run_decision_tx(run_id, run.decision_tx.clone())
+            .await
+        {
+            return Err(AgentOsRunError::Loop(AgentLoopError::StateError(format!(
+                "active run handle missing for run '{run_id}'",
+            ))));
+        }
+        Ok(run)
+    }
+
     /// Prepare a resolved run for execution.
     ///
     /// This handles all deterministic pre-run logic:
@@ -123,8 +276,22 @@ impl AgentOs {
     /// ```
     pub async fn prepare_run(
         &self,
+        request: RunRequest,
+        resolved: ResolvedRun,
+    ) -> Result<PreparedRun, AgentOsRunError> {
+        self.prepare_run_with_persistence(request, resolved, true)
+            .await
+    }
+
+    /// Prepare a resolved run and control whether the run should be persisted.
+    ///
+    /// This powers dialog-style runs where short-lived execution state is needed
+    /// but we intentionally do not keep durable run records.
+    pub async fn prepare_run_with_persistence(
+        &self,
         mut request: RunRequest,
         mut resolved: ResolvedRun,
+        persist_run: bool,
     ) -> Result<PreparedRun, AgentOsRunError> {
         let agent_state_store = self.require_agent_state_store()?;
 
@@ -179,8 +346,9 @@ impl AgentOs {
         }
 
         // 3. Deduplicate and append inbound messages
-        let deduped_messages = Self::dedup_messages(&thread, request.messages);
+        let mut deduped_messages = Self::dedup_messages(&thread, request.messages);
         if !deduped_messages.is_empty() {
+            deduped_messages = Self::attach_run_metadata_to_messages(deduped_messages, &run_id);
             thread = thread.with_messages(deduped_messages.clone());
         }
 
@@ -201,7 +369,7 @@ impl AgentOs {
                 })?;
         }
         delta_patches.push(run_lifecycle_running_patch(&thread.state, &run_id)?);
-        let changeset = crate::contracts::ThreadChangeSet::from_parts(
+        let mut changeset = crate::contracts::ThreadChangeSet::from_parts(
             run_id.clone(),
             parent_run_id.clone(),
             CheckpointReason::UserMessage,
@@ -210,6 +378,16 @@ impl AgentOs {
             Vec::new(),
             state_snapshot_for_delta,
         );
+        if persist_run {
+            changeset = changeset.with_run_meta(crate::contracts::RunMeta {
+                agent_id: request.agent_id.clone(),
+                origin: request.origin,
+                status: crate::contracts::storage::RunStatus::Running,
+                parent_thread_id: parent_thread_id.clone(),
+                termination_code: None,
+                termination_detail: None,
+            });
+        }
         let committed = agent_state_store
             .append(&thread_id, &changeset, VersionPrecondition::Exact(version))
             .await?;
@@ -224,6 +402,20 @@ impl AgentOs {
                 .run_config
                 .set("parent_run_id", parent.to_string())?;
         }
+        resolved
+            .run_config
+            .set("agent_id", request.agent_id.clone())?;
+        resolved.run_config.set(
+            "origin",
+            serde_json::to_value(request.origin)
+                .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?,
+        )?;
+        let execution_ctx = RunExecutionContext::new(
+            run_id.clone(),
+            parent_run_id.clone(),
+            request.agent_id.clone(),
+            request.origin,
+        );
 
         // 6. Behavior uniqueness: wiring ensures base uniqueness, but callers
         //    may mutate `resolved.agent.behavior` after resolve.
@@ -259,9 +451,11 @@ impl AgentOs {
             agent: Arc::new(resolved.agent),
             tools: resolved.tools,
             run_ctx,
+            execution_ctx,
             cancellation_token: None,
             state_committer: Some(Arc::new(AgentStateStoreStateCommitter::new(
                 agent_state_store.clone(),
+                persist_run,
             ))),
             decision_tx,
             decision_rx,
@@ -270,10 +464,11 @@ impl AgentOs {
 
     /// Execute a previously prepared run.
     pub fn execute_prepared(prepared: PreparedRun) -> Result<RunStream, AgentOsRunError> {
-        let events = run_loop_stream(
+        let events = run_loop_stream_with_context(
             prepared.agent,
             prepared.tools,
             prepared.run_ctx,
+            prepared.execution_ctx,
             prepared.cancellation_token,
             prepared.state_committer,
             Some(prepared.decision_rx),
@@ -334,6 +529,15 @@ impl AgentOs {
             .collect()
     }
 
+    fn attach_run_metadata_to_messages(mut messages: Vec<Message>, run_id: &str) -> Vec<Message> {
+        messages.iter_mut().for_each(|message| {
+            let mut metadata = message.metadata.clone().unwrap_or_default();
+            metadata.run_id = Some(run_id.to_string());
+            message.metadata = Some(metadata);
+        });
+        messages
+    }
+
     // --- Internal low-level helper (legacy) ---
 
     #[deprecated(note = "Use prepare_run + execute_prepared instead")]
@@ -352,10 +556,17 @@ impl AgentOs {
             resolved.agent.lattice_registry.clone(),
         )
         .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;
-        Ok(run_loop_stream(
+        let execution_ctx = RunExecutionContext::new(
+            thread.id.clone(),
+            None,
+            agent_id.to_string(),
+            crate::contracts::storage::RunOrigin::Internal,
+        );
+        Ok(run_loop_stream_with_context(
             Arc::new(resolved.agent),
             resolved.tools,
             run_ctx,
+            execution_ctx,
             cancellation_token,
             state_committer,
             None,

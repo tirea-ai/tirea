@@ -7859,14 +7859,20 @@ fn test_sync_run_lifecycle_for_termination_persists_status_and_reason() {
     ];
 
     for (termination, expected_status, expected_reason) in cases {
-        let mut run_config = tirea_contract::RunConfig::default();
-        run_config
-            .set("run_id", "run-lifecycle")
-            .expect("set run id");
-        let mut run_ctx =
-            RunContext::from_thread(&Thread::new("lifecycle-state"), run_config).expect("run ctx");
+        let run_ctx = RunContext::from_thread(
+            &Thread::new("lifecycle-state"),
+            tirea_contract::RunConfig::default(),
+        )
+        .expect("run ctx");
+        let mut run_ctx = run_ctx;
+        let execution_ctx = RunExecutionContext::new(
+            "run-lifecycle".to_string(),
+            None,
+            "test-agent".to_string(),
+            crate::contracts::RunOrigin::default(),
+        );
 
-        sync_run_lifecycle_for_termination(&mut run_ctx, &termination)
+        sync_run_lifecycle_for_termination(&mut run_ctx, &execution_ctx, &termination)
             .expect("sync lifecycle patch");
         let state = run_ctx.snapshot().expect("snapshot");
 
@@ -10555,6 +10561,15 @@ async fn test_run_loop_patches_accumulate_across_steps() {
 // Category 2: StateCommitter + version evolution
 // =============================================================================
 
+fn test_execution_ctx(run_id: &str) -> RunExecutionContext {
+    RunExecutionContext::new(
+        run_id.to_string(),
+        None,
+        "test-agent".to_string(),
+        crate::contracts::RunOrigin::default(),
+    )
+}
+
 /// commit_pending_delta with force=false is a no-op when delta is empty.
 #[tokio::test]
 async fn test_commit_pending_delta_noops_when_empty() {
@@ -10562,15 +10577,16 @@ async fn test_commit_pending_delta_noops_when_empty() {
     let committer: Arc<dyn StateCommitter> = Arc::new(state_commit::ChannelStateCommitter::new(tx));
 
     let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
+    let execution_ctx = test_execution_ctx("run-1");
 
     // No messages or patches added — delta is empty
     state_commit::commit_pending_delta(
         &mut run_ctx,
         CheckpointReason::AssistantTurnCommitted,
         false, // not forced
-        "run-1",
-        None,
         Some(&committer),
+        &execution_ctx,
+        None,
     )
     .await
     .unwrap();
@@ -10588,14 +10604,15 @@ async fn test_commit_pending_delta_force_persists_empty() {
     let committer: Arc<dyn StateCommitter> = Arc::new(state_commit::ChannelStateCommitter::new(tx));
 
     let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
+    let execution_ctx = test_execution_ctx("run-1");
 
     state_commit::commit_pending_delta(
         &mut run_ctx,
         CheckpointReason::RunFinished,
         true, // forced
-        "run-1",
-        None,
         Some(&committer),
+        &execution_ctx,
+        None,
     )
     .await
     .unwrap();
@@ -10618,6 +10635,7 @@ async fn test_commit_pending_delta_version_advancement() {
     let committer: Arc<dyn StateCommitter> = Arc::new(state_commit::ChannelStateCommitter::new(tx));
 
     let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
+    let execution_ctx = test_execution_ctx("run-1");
     assert_eq!(run_ctx.version(), 0);
 
     // First commit
@@ -10626,9 +10644,9 @@ async fn test_commit_pending_delta_version_advancement() {
         &mut run_ctx,
         CheckpointReason::UserMessage,
         false,
-        "run-1",
-        None,
         Some(&committer),
+        &execution_ctx,
+        None,
     )
     .await
     .unwrap();
@@ -10645,9 +10663,9 @@ async fn test_commit_pending_delta_version_advancement() {
         &mut run_ctx,
         CheckpointReason::AssistantTurnCommitted,
         false,
-        "run-1",
-        None,
         Some(&committer),
+        &execution_ctx,
+        None,
     )
     .await
     .unwrap();
@@ -10693,6 +10711,7 @@ async fn test_commit_pending_delta_precondition_exactness() {
     });
 
     let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
+    let execution_ctx = test_execution_ctx("run-1");
     run_ctx.set_version(10, None);
 
     run_ctx.add_message(Arc::new(Message::user("hi")));
@@ -10700,9 +10719,9 @@ async fn test_commit_pending_delta_precondition_exactness() {
         &mut run_ctx,
         CheckpointReason::UserMessage,
         false,
-        "run-1",
-        None,
         Some(&committer),
+        &execution_ctx,
+        None,
     )
     .await
     .unwrap();
@@ -10735,15 +10754,16 @@ async fn test_commit_pending_delta_error_propagation() {
 
     let committer: Arc<dyn StateCommitter> = Arc::new(FailingCommitter);
     let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
+    let execution_ctx = test_execution_ctx("run-1");
     run_ctx.add_message(Arc::new(Message::user("hi")));
 
     let result = state_commit::commit_pending_delta(
         &mut run_ctx,
         CheckpointReason::UserMessage,
         false,
-        "run-1",
-        None,
         Some(&committer),
+        &execution_ctx,
+        None,
     )
     .await;
 
@@ -10761,6 +10781,7 @@ async fn test_commit_pending_delta_error_propagation() {
 #[tokio::test]
 async fn test_commit_pending_delta_no_committer() {
     let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
+    let execution_ctx = test_execution_ctx("run-1");
     run_ctx.add_message(Arc::new(Message::user("hi")));
 
     // None committer — should succeed silently
@@ -10768,8 +10789,8 @@ async fn test_commit_pending_delta_no_committer() {
         &mut run_ctx,
         CheckpointReason::UserMessage,
         false,
-        "run-1",
         None,
+        &execution_ctx,
         None,
     )
     .await
@@ -10790,6 +10811,7 @@ async fn test_consecutive_checkpoints_disjoint_deltas() {
     let committer: Arc<dyn StateCommitter> = Arc::new(state_commit::ChannelStateCommitter::new(tx));
 
     let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
+    let execution_ctx = test_execution_ctx("run-1");
 
     // Checkpoint 1: user message
     run_ctx.add_message(Arc::new(Message::user("hello")));
@@ -10797,9 +10819,9 @@ async fn test_consecutive_checkpoints_disjoint_deltas() {
         &mut run_ctx,
         CheckpointReason::UserMessage,
         false,
-        "run-1",
-        None,
         Some(&committer),
+        &execution_ctx,
+        None,
     )
     .await
     .unwrap();
@@ -10813,9 +10835,9 @@ async fn test_consecutive_checkpoints_disjoint_deltas() {
         &mut run_ctx,
         CheckpointReason::AssistantTurnCommitted,
         false,
-        "run-1",
-        None,
         Some(&committer),
+        &execution_ctx,
+        None,
     )
     .await
     .unwrap();
@@ -10829,9 +10851,9 @@ async fn test_consecutive_checkpoints_disjoint_deltas() {
         &mut run_ctx,
         CheckpointReason::ToolResultsCommitted,
         false,
-        "run-1",
-        None,
         Some(&committer),
+        &execution_ctx,
+        None,
     )
     .await
     .unwrap();
@@ -10864,6 +10886,7 @@ async fn test_run_end_checkpoint_captures_remaining() {
     let committer: Arc<dyn StateCommitter> = Arc::new(state_commit::ChannelStateCommitter::new(tx));
 
     let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
+    let execution_ctx = test_execution_ctx("run-1");
 
     // Add data without committing
     run_ctx.add_message(Arc::new(Message::user("hello")));
@@ -10877,9 +10900,9 @@ async fn test_run_end_checkpoint_captures_remaining() {
         &mut run_ctx,
         CheckpointReason::RunFinished,
         true,
-        "run-1",
-        None,
         Some(&committer),
+        &execution_ctx,
+        None,
     )
     .await
     .unwrap();
@@ -10900,6 +10923,7 @@ async fn test_all_deltas_consumed_final_checkpoint_empty() {
     let committer: Arc<dyn StateCommitter> = Arc::new(state_commit::ChannelStateCommitter::new(tx));
 
     let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
+    let execution_ctx = test_execution_ctx("run-1");
 
     // Add and commit
     run_ctx.add_message(Arc::new(Message::user("hi")));
@@ -10907,9 +10931,9 @@ async fn test_all_deltas_consumed_final_checkpoint_empty() {
         &mut run_ctx,
         CheckpointReason::UserMessage,
         false,
-        "run-1",
-        None,
         Some(&committer),
+        &execution_ctx,
+        None,
     )
     .await
     .unwrap();
@@ -10920,9 +10944,9 @@ async fn test_all_deltas_consumed_final_checkpoint_empty() {
         &mut run_ctx,
         CheckpointReason::RunFinished,
         true,
-        "run-1",
-        None,
         Some(&committer),
+        &execution_ctx,
+        None,
     )
     .await
     .unwrap();

@@ -1,5 +1,5 @@
 use super::state_commit::PendingDeltaCommitContext;
-use super::stream_core::{preallocate_tool_result_message_ids, resolve_stream_run_identity};
+use super::stream_core::preallocate_tool_result_message_ids;
 use super::*;
 use crate::runtime::streaming::StreamRecoveryCheckpoint;
 use std::collections::HashSet;
@@ -192,6 +192,7 @@ pub(super) fn run_stream(
     agent: Arc<dyn Agent>,
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
+    execution_ctx: RunExecutionContext,
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
     decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
@@ -212,13 +213,11 @@ pub(super) fn run_stream(
         let (activity_tx, mut activity_rx) = tokio::sync::mpsc::unbounded_channel();
         let activity_manager: Arc<dyn ActivityManager> = Arc::new(ActivityHub::new(activity_tx));
 
-        let run_identity = resolve_stream_run_identity(&mut run_ctx);
-        let run_id = run_identity.run_id;
-        let parent_run_id = run_identity.parent_run_id;
+        let run_id = execution_ctx.run_id.clone();
+        let parent_run_id = execution_ctx.parent_run_id.clone();
         let baseline_suspended_call_ids = suspended_call_ids(&run_ctx);
         let pending_delta_commit = PendingDeltaCommitContext::new(
-            &run_id,
-            parent_run_id.as_deref(),
+            &execution_ctx,
             state_committer.as_ref(),
         );
         let mut emitter =
@@ -257,6 +256,7 @@ pub(super) fn run_stream(
                     &TerminationReason::Error(message.clone()),
                     &active_tool_descriptors,
                     agent.as_ref(),
+                    &execution_ctx,
                     &pending_delta_commit,
                     RunFinishedCommitPolicy::BestEffort,
                 )
@@ -297,6 +297,7 @@ pub(super) fn run_stream(
                     &final_termination,
                     &active_tool_descriptors,
                     agent.as_ref(),
+                    &execution_ctx,
                     &pending_delta_commit,
                     RunFinishedCommitPolicy::Required,
                 )

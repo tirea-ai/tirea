@@ -467,18 +467,17 @@ pub(super) fn apply_tool_results_impl(
     })
 }
 
-fn tool_result_metadata_from_run_ctx(run_ctx: &RunContext) -> Option<MessageMetadata> {
-    let run_id = run_ctx
-        .run_config
-        .value("run_id")
-        .and_then(|v| v.as_str().map(String::from))
-        .or_else(|| {
-            run_ctx.messages().iter().rev().find_map(|m| {
-                m.metadata
-                    .as_ref()
-                    .and_then(|meta| meta.run_id.as_ref().cloned())
-            })
-        });
+fn tool_result_metadata_from_run_ctx(
+    run_ctx: &RunContext,
+    run_id: Option<&str>,
+) -> Option<MessageMetadata> {
+    let run_id = run_id.map(|id| id.to_string()).or_else(|| {
+        run_ctx.messages().iter().rev().find_map(|m| {
+            m.metadata
+                .as_ref()
+                .and_then(|meta| meta.run_id.as_ref().cloned())
+        })
+    });
 
     let step_index = run_ctx
         .messages()
@@ -687,7 +686,7 @@ async fn execute_tools_with_agent_and_executor(
         })
         .await?;
 
-    let metadata = tool_result_metadata_from_run_ctx(&run_ctx);
+    let metadata = tool_result_metadata_from_run_ctx(&run_ctx, None);
     let applied = apply_tool_results_to_session(
         &mut run_ctx,
         &results,

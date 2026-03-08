@@ -63,7 +63,7 @@ use crate::contracts::runtime::{
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
 use crate::contracts::RunContext;
-use crate::contracts::{AgentEvent, RunAction, TerminationReason, ToolCallDecision};
+use crate::contracts::{AgentEvent, RunAction, RunOrigin, TerminationReason, ToolCallDecision};
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
 use crate::runtime::activity::ActivityHub;
 
@@ -158,8 +158,100 @@ impl ResolvedRun {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct RunExecutionContext {
+    pub run_id: String,
+    pub parent_run_id: Option<String>,
+    pub agent_id: String,
+    pub origin: RunOrigin,
+}
+
+impl RunExecutionContext {
+    pub const RUN_ID_KEY: &'static str = "run_id";
+    pub const PARENT_RUN_ID_KEY: &'static str = "parent_run_id";
+    pub const AGENT_ID_KEY: &'static str = "agent_id";
+    pub const ORIGIN_KEY: &'static str = "origin";
+
+    #[must_use]
+    pub const fn new(
+        run_id: String,
+        parent_run_id: Option<String>,
+        agent_id: String,
+        origin: RunOrigin,
+    ) -> Self {
+        Self {
+            run_id,
+            parent_run_id,
+            agent_id,
+            origin,
+        }
+    }
+
+    #[must_use]
+    pub fn from_run_config(run_ctx: &RunContext) -> Self {
+        let run_id = run_ctx
+            .run_config
+            .value(Self::RUN_ID_KEY)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(uuid_v7);
+
+        let parent_run_id = run_ctx
+            .run_config
+            .value(Self::PARENT_RUN_ID_KEY)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(ToOwned::to_owned);
+
+        let agent_id = run_ctx
+            .run_config
+            .value(Self::AGENT_ID_KEY)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| run_ctx.thread_id().to_string());
+
+        let origin = run_ctx
+            .run_config
+            .value(Self::ORIGIN_KEY)
+            .and_then(|value| serde_json::from_value::<RunOrigin>(value.clone()).ok())
+            .unwrap_or_default();
+
+        Self::new(run_id, parent_run_id, agent_id, origin)
+    }
+}
+
 fn uuid_v7() -> String {
     Uuid::now_v7().simple().to_string()
+}
+
+fn bind_execution_context_to_run_config(
+    run_ctx: &mut RunContext,
+    execution_ctx: &RunExecutionContext,
+) {
+    let _ = run_ctx.run_config.set(
+        RunExecutionContext::RUN_ID_KEY,
+        execution_ctx.run_id.clone(),
+    );
+    if let Some(parent_run_id) = execution_ctx.parent_run_id.as_deref() {
+        let _ = run_ctx.run_config.set(
+            RunExecutionContext::PARENT_RUN_ID_KEY,
+            parent_run_id.to_string(),
+        );
+    }
+    let _ = run_ctx.run_config.set(
+        RunExecutionContext::AGENT_ID_KEY,
+        execution_ctx.agent_id.clone(),
+    );
+    if let Ok(origin_value) = serde_json::to_value(execution_ctx.origin.clone()) {
+        let _ = run_ctx
+            .run_config
+            .set(RunExecutionContext::ORIGIN_KEY, origin_value);
+    }
 }
 
 pub(crate) fn current_unix_millis() -> u64 {
@@ -168,17 +260,21 @@ pub(crate) fn current_unix_millis() -> u64 {
         .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64)
 }
 
+#[cfg(test)]
 pub(super) fn sync_run_lifecycle_for_termination(
     run_ctx: &mut RunContext,
+    execution_ctx: &RunExecutionContext,
     termination: &TerminationReason,
 ) -> Result<(), AgentLoopError> {
-    let run_id = run_ctx
-        .run_config
-        .value("run_id")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|id| !id.is_empty());
-    let Some(run_id) = run_id else {
+    sync_run_lifecycle_for_termination_with_context(run_ctx, execution_ctx, termination)
+}
+
+fn sync_run_lifecycle_for_termination_with_context(
+    run_ctx: &mut RunContext,
+    execution_ctx: &RunExecutionContext,
+    termination: &TerminationReason,
+) -> Result<(), AgentLoopError> {
+    if execution_ctx.run_id.trim().is_empty() {
         return Ok(());
     };
 
@@ -189,7 +285,7 @@ pub(super) fn sync_run_lifecycle_for_termination(
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     let actions = vec![AnyStateAction::new::<RunLifecycleState>(
         RunLifecycleAction::Set {
-            id: run_id.to_string(),
+            id: execution_ctx.run_id.clone(),
             status,
             done_reason,
             updated_at: current_unix_millis(),
@@ -899,13 +995,14 @@ async fn persist_run_termination(
     termination: &TerminationReason,
     tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
     agent: &dyn Agent,
+    execution_ctx: &RunExecutionContext,
     pending_delta_commit: &PendingDeltaCommitContext<'_>,
     run_finished_commit_policy: RunFinishedCommitPolicy,
 ) -> Result<(), AgentLoopError> {
-    sync_run_lifecycle_for_termination(run_ctx, termination)?;
+    sync_run_lifecycle_for_termination_with_context(run_ctx, execution_ctx, termination)?;
     finalize_run_end(run_ctx, tool_descriptors, agent).await;
     if let Err(error) = pending_delta_commit
-        .commit(run_ctx, CheckpointReason::RunFinished, true)
+        .commit_run_finished(run_ctx, termination)
         .await
     {
         match run_finished_commit_policy {
@@ -1674,11 +1771,40 @@ async fn recv_decision(
 pub async fn run_loop(
     agent: &dyn Agent,
     tools: HashMap<String, Arc<dyn Tool>>,
+    run_ctx: RunContext,
+    cancellation_token: Option<RunCancellationToken>,
+    state_committer: Option<Arc<dyn StateCommitter>>,
+    decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
+) -> LoopOutcome {
+    let execution_ctx = RunExecutionContext::from_run_config(&run_ctx);
+    run_loop_with_context(
+        agent,
+        tools,
+        run_ctx,
+        execution_ctx,
+        cancellation_token,
+        state_committer,
+        decision_rx,
+    )
+    .await
+}
+
+/// Run the full agent loop until completion, suspension, cancellation, or error.
+///
+/// This is the primary non-streaming entry point. Tools are passed directly
+/// and used as the default tool set unless the agent's step_tool_provider is set
+/// (for dynamic per-step tool resolution).
+pub async fn run_loop_with_context(
+    agent: &dyn Agent,
+    tools: HashMap<String, Arc<dyn Tool>>,
     mut run_ctx: RunContext,
+    execution_ctx: RunExecutionContext,
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
     mut decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
 ) -> LoopOutcome {
+    bind_execution_context_to_run_config(&mut run_ctx, &execution_ctx);
+
     let executor = llm_executor_for_run(agent);
     let tool_executor = agent.tool_executor();
     let mut run_state = LoopRunState::new();
@@ -1687,12 +1813,10 @@ pub async fn run_loop(
     let mut last_text = String::new();
     let mut continued_response_prefix = String::new();
     let step_tool_provider = step_tool_provider_for_run(agent, tools);
-    let run_identity = stream_core::resolve_stream_run_identity(&mut run_ctx);
-    let run_id = run_identity.run_id;
-    let parent_run_id = run_identity.parent_run_id;
+    let run_id = execution_ctx.run_id.clone();
     let baseline_suspended_call_ids = suspended_call_ids(&run_ctx);
     let pending_delta_commit =
-        PendingDeltaCommitContext::new(&run_id, parent_run_id.as_deref(), state_committer.as_ref());
+        PendingDeltaCommitContext::new(&execution_ctx, state_committer.as_ref());
     let initial_step_tools = match resolve_step_tool_snapshot(&step_tool_provider, &run_ctx).await {
         Ok(snapshot) => snapshot,
         Err(error) => {
@@ -1722,6 +1846,7 @@ pub async fn run_loop(
                 &final_termination,
                 &active_tool_descriptors,
                 agent,
+                &execution_ctx,
                 &pending_delta_commit,
                 RunFinishedCommitPolicy::Required,
             )
@@ -2124,10 +2249,34 @@ pub fn run_loop_stream(
     state_committer: Option<Arc<dyn StateCommitter>>,
     decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
+    let execution_ctx = RunExecutionContext::from_run_config(&run_ctx);
+    run_loop_stream_with_context(
+        agent,
+        tools,
+        run_ctx,
+        execution_ctx,
+        cancellation_token,
+        state_committer,
+        decision_rx,
+    )
+}
+
+pub fn run_loop_stream_with_context(
+    agent: Arc<dyn Agent>,
+    tools: HashMap<String, Arc<dyn Tool>>,
+    mut run_ctx: RunContext,
+    execution_ctx: RunExecutionContext,
+    cancellation_token: Option<RunCancellationToken>,
+    state_committer: Option<Arc<dyn StateCommitter>>,
+    decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
+) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
+    bind_execution_context_to_run_config(&mut run_ctx, &execution_ctx);
+
     stream_runner::run_stream(
         agent,
         tools,
         run_ctx,
+        execution_ctx,
         cancellation_token,
         state_committer,
         decision_rx,
