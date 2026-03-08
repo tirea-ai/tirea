@@ -1,18 +1,38 @@
+use axum::body::to_bytes;
+use axum::http::{Request, StatusCode};
 use futures::StreamExt;
-use std::sync::Arc;
+use serde_json::{json, Value};
+use std::sync::{Arc, Once};
 use tirea_agentos::contracts::{AgentEvent, RunRequest};
 use tirea_agentos::orchestrator::AgentDefinition;
 use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder};
 use tirea_agentos_server::protocol::ag_ui::apply_agui_extensions;
+use tirea_agentos_server::run_service::{global_run_service, init_run_service};
+use tirea_agentos_server::service::{
+    active_run_key, register_active_run_with_id, remove_active_run, AppState,
+};
+use tirea_contract::{Message as CoreMessage, RuntimeInput, ThreadReader, ThreadWriter};
 use tirea_protocol_ag_ui::{Message, RunAgentInput};
 use tirea_protocol_ai_sdk_v6::AiSdkV6RunRequest;
-use tirea_store_adapters::MemoryStore;
+use tirea_store_adapters::{MemoryRunStore, MemoryStore};
+use tower::ServiceExt;
 
 mod common;
 
-use common::TerminatePlugin;
+use common::{compose_http_app, post_sse, TerminatePlugin};
 
-fn make_os() -> AgentOs {
+fn ensure_run_service() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let _ = init_run_service(Arc::new(MemoryRunStore::new()));
+    });
+    assert!(
+        global_run_service().is_some(),
+        "run service should initialize"
+    );
+}
+
+fn make_os_from_store(store: Arc<MemoryStore>) -> AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
         behavior_ids: vec!["terminate_behavior_requested_parity".into()],
@@ -25,9 +45,20 @@ fn make_os() -> AgentOs {
             Arc::new(TerminatePlugin::new("terminate_behavior_requested_parity")),
         )
         .with_agent("test", def)
-        .with_agent_state_store(Arc::new(MemoryStore::new()))
+        .with_agent_state_store(store)
         .build()
         .unwrap()
+}
+
+fn make_os() -> AgentOs {
+    make_os_from_store(Arc::new(MemoryStore::new()))
+}
+
+fn make_http_app() -> (axum::Router, Arc<MemoryStore>) {
+    let store = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_from_store(store.clone()));
+    let read_store: Arc<dyn ThreadReader> = store.clone();
+    (compose_http_app(AppState { os, read_store }), store)
 }
 
 fn collect_kinds(events: &[AgentEvent]) -> Vec<&'static str> {
@@ -116,5 +147,353 @@ async fn agui_and_ai_sdk_have_equivalent_runtime_event_shape() {
         collect_kinds(&agui_events),
         collect_kinds(&aisdk_events),
         "AG-UI and AI-SDK should produce equivalent runtime event shape for the same semantic input"
+    );
+}
+
+// =========================================================================
+// HTTP-level protocol contract tests
+// =========================================================================
+
+// ---- Decision-only forwarding -------------------------------------------
+
+#[tokio::test]
+async fn agui_decision_only_forwards_to_active_run() {
+    ensure_run_service();
+    let (app, _store) = make_http_app();
+
+    let thread_id = "agui-decision-thread";
+    let run_id = "agui-decision-run";
+    let key = active_run_key("ag_ui", "test", thread_id, run_id);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RuntimeInput>();
+    register_active_run_with_id(key.clone(), run_id.to_string(), tx).await;
+
+    // AG-UI decision-only: tool message with no user message.
+    let (status, body) = post_sse(
+        app,
+        "/v1/ag-ui/agents/test/runs",
+        json!({
+            "threadId": thread_id,
+            "runId": run_id,
+            "messages": [
+                { "role": "tool", "content": "true", "toolCallId": "tool-1" }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let payload: Value = serde_json::from_str(&body).expect("valid json");
+    assert_eq!(payload["status"].as_str(), Some("decision_forwarded"));
+    // AG-UI response includes runId.
+    assert_eq!(payload["runId"].as_str(), Some(run_id));
+    assert_eq!(payload["threadId"].as_str(), Some(thread_id));
+
+    let forwarded = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("decision should arrive before timeout")
+        .expect("channel should yield runtime input");
+    assert!(
+        matches!(forwarded, RuntimeInput::Decision(ref d) if d.target_id == "tool-1"),
+        "expected Decision for tool-1, got {forwarded:?}"
+    );
+
+    remove_active_run(&key).await;
+}
+
+#[tokio::test]
+async fn ai_sdk_decision_only_forwards_when_run_id_present() {
+    ensure_run_service();
+    let (app, _store) = make_http_app();
+
+    let thread_id = "aisdk-decision-thread";
+    let run_id = "aisdk-decision-run";
+    let key = active_run_key("ai_sdk", "test", thread_id, run_id);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RuntimeInput>();
+    register_active_run_with_id(key.clone(), run_id.to_string(), tx).await;
+
+    // AI-SDK decision-only: assistant message with tool-approval-response, no user input.
+    let (status, body) = post_sse(
+        app,
+        "/v1/ai-sdk/agents/test/runs",
+        json!({
+            "id": thread_id,
+            "runId": run_id,
+            "messages": [{
+                "role": "assistant",
+                "parts": [{
+                    "type": "tool-approval-response",
+                    "approvalId": "perm-1",
+                    "approved": true
+                }]
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let payload: Value = serde_json::from_str(&body).expect("valid json");
+    assert_eq!(payload["status"].as_str(), Some("decision_forwarded"));
+    assert_eq!(payload["threadId"].as_str(), Some(thread_id));
+    // AI-SDK response does NOT include runId (diverges from AG-UI).
+    assert!(
+        payload.get("runId").is_none(),
+        "AI-SDK decision_forwarded response should not include runId, got: {payload}"
+    );
+
+    let forwarded = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("decision should arrive before timeout")
+        .expect("channel should yield runtime input");
+    assert!(
+        matches!(forwarded, RuntimeInput::Decision(ref d) if d.target_id == "perm-1"),
+        "expected Decision for perm-1, got {forwarded:?}"
+    );
+
+    remove_active_run(&key).await;
+}
+
+#[tokio::test]
+async fn ai_sdk_decision_only_without_run_id_does_not_forward() {
+    ensure_run_service();
+    let (app, _store) = make_http_app();
+
+    // Register an active run — the null-guard on run_id should prevent forwarding.
+    let thread_id = "aisdk-norunid-thread";
+    let run_id = "aisdk-norunid-run";
+    let key = active_run_key("ai_sdk", "test", thread_id, run_id);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RuntimeInput>();
+    register_active_run_with_id(key.clone(), run_id.to_string(), tx).await;
+
+    // Decision-only request without runId — should NOT forward even though active run exists.
+    let (status, body) = post_sse(
+        app,
+        "/v1/ai-sdk/agents/test/runs",
+        json!({
+            "id": thread_id,
+            "messages": [{
+                "role": "assistant",
+                "parts": [{
+                    "type": "tool-approval-response",
+                    "approvalId": "perm-2",
+                    "approved": true
+                }]
+            }]
+        }),
+    )
+    .await;
+    // Falls through to full run — must NOT be 202 decision_forwarded.
+    assert_ne!(
+        status,
+        StatusCode::ACCEPTED,
+        "AI-SDK without run_id should not return 202, got body: {body}"
+    );
+    // Decision channel should be empty (not forwarded).
+    assert!(
+        rx.try_recv().is_err(),
+        "decision should not have been forwarded to active run"
+    );
+
+    remove_active_run(&key).await;
+}
+
+// ---- SSE response shape: headers, trailer -------------------------------
+
+#[tokio::test]
+async fn ai_sdk_sse_includes_custom_headers() {
+    ensure_run_service();
+    let (app, _store) = make_http_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ai-sdk/agents/test/runs")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    json!({
+                        "id": "header-test-thread",
+                        "messages": [{"role": "user", "content": "hello"}]
+                    })
+                    .to_string(),
+                ))
+                .expect("request build should succeed"),
+        )
+        .await
+        .expect("app should handle request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-vercel-ai-ui-message-stream")
+            .and_then(|v| v.to_str().ok()),
+        Some("v1"),
+        "AI-SDK response must include x-vercel-ai-ui-message-stream: v1"
+    );
+    assert!(
+        response
+            .headers()
+            .get("x-tirea-ai-sdk-version")
+            .is_some(),
+        "AI-SDK response must include x-tirea-ai-sdk-version header"
+    );
+}
+
+#[tokio::test]
+async fn ai_sdk_sse_ends_with_done_trailer() {
+    ensure_run_service();
+    let (app, _store) = make_http_app();
+
+    let (status, body) = post_sse(
+        app,
+        "/v1/ai-sdk/agents/test/runs",
+        json!({
+            "id": "done-trailer-thread",
+            "messages": [{"role": "user", "content": "hello"}]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let last_data_line = body
+        .lines()
+        .rev()
+        .find(|line| line.starts_with("data: "))
+        .expect("SSE body should contain at least one data line");
+    assert_eq!(
+        last_data_line.trim(),
+        "data: [DONE]",
+        "AI-SDK SSE stream must end with [DONE] trailer, got: {last_data_line}"
+    );
+}
+
+#[tokio::test]
+async fn agui_sse_has_no_done_trailer_or_custom_headers() {
+    ensure_run_service();
+    let (app, _store) = make_http_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ag-ui/agents/test/runs")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    json!({
+                        "threadId": "agui-no-trailer-thread",
+                        "runId": "agui-no-trailer-run",
+                        "messages": [{"role": "user", "content": "hello"}]
+                    })
+                    .to_string(),
+                ))
+                .expect("request build should succeed"),
+        )
+        .await
+        .expect("app should handle request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response
+            .headers()
+            .get("x-vercel-ai-ui-message-stream")
+            .is_none(),
+        "AG-UI response must NOT include x-vercel-ai-ui-message-stream header"
+    );
+
+    let body_bytes = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("body should be readable");
+    let body = String::from_utf8(body_bytes.to_vec()).expect("body should be utf-8");
+    assert!(
+        !body.contains("data: [DONE]"),
+        "AG-UI SSE stream must NOT contain [DONE] trailer"
+    );
+}
+
+// ---- AI-SDK resume_stream -----------------------------------------------
+
+#[tokio::test]
+async fn ai_sdk_resume_stream_returns_no_content_when_idle() {
+    ensure_run_service();
+    let (app, _store) = make_http_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/ai-sdk/agents/test/runs/nonexistent-chat/stream")
+                .body(axum::body::Body::empty())
+                .expect("request build should succeed"),
+        )
+        .await
+        .expect("app should handle request");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::NO_CONTENT,
+        "resume_stream with no active stream should return 204"
+    );
+}
+
+// ---- AI-SDK RegenerateMessage -------------------------------------------
+
+#[tokio::test]
+async fn ai_sdk_regenerate_truncates_thread() {
+    ensure_run_service();
+    let (app, store) = make_http_app();
+
+    // Seed a thread with 3 messages.
+    let thread_id = "regenerate-test-thread";
+    let msg1 = CoreMessage::user("first").with_id("msg-1".to_string());
+    let msg2 = CoreMessage::assistant("second").with_id("msg-2".to_string());
+    let msg3 = CoreMessage::assistant("third").with_id("msg-3".to_string());
+    let thread = tirea_contract::Thread::new(thread_id)
+        .with_message(msg1)
+        .with_message(msg2)
+        .with_message(msg3);
+    ThreadWriter::save(store.as_ref(), &thread)
+        .await
+        .expect("save seed thread");
+
+    // Verify 3 messages before.
+    let before = ThreadReader::load(store.as_ref(), thread_id)
+        .await
+        .expect("load should succeed")
+        .expect("thread should exist");
+    assert_eq!(before.thread.message_count(), 3);
+
+    // POST with trigger=regenerate-message, messageId pointing to 2nd message.
+    let (_status, _body) = post_sse(
+        app,
+        "/v1/ai-sdk/agents/test/runs",
+        json!({
+            "id": thread_id,
+            "trigger": "regenerate-message",
+            "messageId": "msg-2",
+            "messages": []
+        }),
+    )
+    .await;
+
+    // Verify truncation: the 3rd message should be gone.
+    let after = ThreadReader::load(store.as_ref(), thread_id)
+        .await
+        .expect("load should succeed")
+        .expect("thread should exist");
+    let ids: Vec<Option<&str>> = after
+        .thread
+        .messages
+        .iter()
+        .map(|m| m.id.as_deref())
+        .collect();
+    assert!(
+        ids.contains(&Some("msg-1")),
+        "msg-1 should survive truncation"
+    );
+    assert!(
+        ids.contains(&Some("msg-2")),
+        "msg-2 should survive truncation (inclusive)"
+    );
+    assert!(
+        !ids.contains(&Some("msg-3")),
+        "msg-3 should be removed by truncation, got ids: {ids:?}"
     );
 }
