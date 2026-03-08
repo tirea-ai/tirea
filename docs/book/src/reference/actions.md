@@ -40,13 +40,15 @@ In practice, a tool can safely do:
 
 - direct typed state writes through `ctx.state_of::<T>()` or `ctx.state::<T>(...)`
 - explicit `AnyStateAction`
-- custom `Action` implementations valid in `AfterToolExecute`
+- built-in `AfterToolExecuteAction`
+- custom `Action` implementations only when no built-in `AfterToolExecuteAction` variant matches
 
 The most common tool-side actions are:
 
 - `AnyStateAction`
-- custom actions equivalent to `AfterToolExecuteAction::AddUserMessage`
-- custom actions that mutate step-local runtime data after a tool completes
+- `AfterToolExecuteAction::AddUserMessage`
+- `AfterToolExecuteAction::AddSystemReminder`
+- custom actions that mutate step-local runtime data after a tool completes and have no built-in equivalent
 
 Important constraint:
 
@@ -59,7 +61,7 @@ Important constraint:
 
 Use it when:
 
-- you want reducer-style state updates instead of direct patch-style writes
+- you want reducer-style typed state updates instead of direct setter-style writes
 - a tool or plugin needs to mutate typed state in a phase-aware way
 - you need thread/run/tool-call scope to be resolved consistently by the runtime
 
@@ -67,7 +69,12 @@ Common constructors:
 
 - `AnyStateAction::new::<T>(action)` for thread/run scoped state
 - `AnyStateAction::new_for_call::<T>(action, call_id)` for tool-call scoped state
-- `AnyStateAction::Patch(...)` when the runtime materializes direct patch writes
+
+Important:
+
+- `AnyStateAction::Patch(...)` exists so the runtime can materialize direct `ctx.state...` writes into the same effect pipeline
+- it is a framework/internal bridge, not the recommended authoring path for tools or plugins
+- for business code, prefer `ctx.state...` for straightforward typed updates or `AnyStateAction::new...` for reducer-style domain actions
 
 ## What Plugins Can Emit
 
@@ -113,7 +120,7 @@ It emits:
 - a success `ToolResult`
 - `AnyStateAction` for `SkillStateAction::Activate(...)`
 - permission-domain state actions via `permission_state_action(...)`
-- a custom `AddUserMessage` action that inserts skill instructions into the message stream
+- `AfterToolExecuteAction::AddUserMessage` to insert skill instructions into the message stream
 
 See:
 
@@ -134,6 +141,8 @@ Choose based on which model fits the state update better:
 - direct field/setter patching for straightforward state edits
 - reducer action form when you want a domain action log or reducer semantics
 
+Avoid constructing raw `AnyStateAction::Patch(...)` in business code. That variant is for runtime bridging, replay plumbing, and other framework-level internals.
+
 ## Guidance By Scenario
 
 | Scenario | Recommended action form |
@@ -144,14 +153,14 @@ Choose based on which model fits the state update better:
 | Reject tool execution with an explicit reason | `BeforeToolExecuteAction::Block` |
 | Return a synthetic tool result without running the tool | `BeforeToolExecuteAction::SetToolResult` |
 | Persist typed state from a tool or plugin | `AnyStateAction` or direct `ctx.state...` writes |
-| Add follow-up instructions/messages after a tool completes | `AfterToolExecuteAction::AddUserMessage` or equivalent custom `Action` |
+| Add follow-up instructions/messages after a tool completes | `AfterToolExecuteAction::AddUserMessage` |
 | Modify request assembly itself | `BeforeInferenceAction::AddRequestTransform` |
 
 ## Rule Of Thumb
 
 - If you need phase-aware orchestration, use a plugin and core phase actions.
 - If you need domain work plus a result plus post-tool side effects, use a tool with `execute_effect`.
-- If all you need is state mutation, `AnyStateAction` is the shared currency between tools and plugins.
+- If all you need is state mutation, stay on the typed path: `ctx.state...` for direct updates or `AnyStateAction::new...` for reducer-style actions.
 
 ## Related
 

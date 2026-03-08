@@ -383,6 +383,15 @@ pub trait Tool: Send + Sync {
     /// The default implementation delegates to [`Tool::execute`] and wraps the
     /// result. Any direct context patch (from `ctx.state_of()`) is converted
     /// into an `AnyStateAction::Patch` action on the effect.
+    ///
+    /// For tool authors, the preferred public state-mutation paths are:
+    ///
+    /// - direct typed writes through `ctx.state_of::<T>()` / `ctx.state::<T>(...)`
+    /// - explicit typed actions via `AnyStateAction::new...`
+    ///
+    /// `AnyStateAction::Patch` is the runtime's internal bridge for collecting
+    /// direct context writes into the same effect pipeline. Tools generally
+    /// should not construct raw patch actions themselves.
     async fn execute_effect(
         &self,
         args: Value,

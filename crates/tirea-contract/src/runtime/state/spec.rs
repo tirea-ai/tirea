@@ -15,10 +15,12 @@ type ReduceFn = Box<dyn FnOnce(&Value, &str) -> TireaResult<Patch> + Send>;
 /// Type-erased state action that can be applied to a JSON document.
 ///
 /// Two variants:
-/// - `Typed`: Created via [`AnyStateAction::new`] which captures a concrete
-///   `StateSpec` type and action. The kernel applies these after each phase hook.
-/// - `Patch`: A pre-built [`TrackedPatch`] that bypasses the typed reducer
-///   pipeline, emitted directly as a state effect.
+/// - `Typed`: The primary public path for business logic. Created via
+///   [`AnyStateAction::new`] or [`AnyStateAction::new_for_call`] from a concrete
+///   `StateSpec` type and reducer action.
+/// - `Patch`: A framework/internal bridge for pre-built [`TrackedPatch`] values.
+///   This bypasses the typed reducer pipeline and should be avoided in normal
+///   tools/plugins unless you are implementing runtime internals.
 pub enum AnyStateAction {
     /// Type-erased action targeting a specific `StateSpec` type.
     Typed {
@@ -41,6 +43,10 @@ pub enum AnyStateAction {
         serialized_payload: Value,
     },
     /// Pre-built tracked patch emitted directly as a state effect.
+    ///
+    /// This exists primarily for runtime bridging and compatibility paths.
+    /// Prefer `Typed` actions for ordinary tool/plugin state updates.
+    #[doc(hidden)]
     Patch(TrackedPatch),
 }
 
@@ -196,7 +202,8 @@ impl AnyStateAction {
 
     /// If this is a raw `Patch` action, return the tracked patch directly.
     ///
-    /// Used by the effect applicator to preserve source metadata.
+    /// Used by runtime internals to preserve source metadata for pre-built
+    /// patches. Normal business code should prefer typed state actions.
     pub fn into_tracked_patch(self) -> Option<TrackedPatch> {
         match self {
             Self::Patch(tracked) => Some(tracked),

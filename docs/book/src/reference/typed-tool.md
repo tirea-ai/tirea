@@ -348,24 +348,11 @@ This matters when a tool must do more than report a result. For example:
 ## Example: Result Plus Actions
 
 ```rust,ignore
-use tirea::contracts::runtime::action::Action;
-use tirea::contracts::runtime::phase::step::StepContext;
+use tirea::contracts::runtime::phase::AfterToolExecuteAction;
 use tirea::contracts::runtime::state::AnyStateAction;
 use tirea::contracts::runtime::tool_call::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult,
 };
-
-struct AddUserMessage(String);
-
-impl Action for AddUserMessage {
-    fn label(&self) -> &'static str {
-        "add_user_message"
-    }
-
-    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        step.messaging.user_messages.push(self.0);
-    }
-}
 
 struct ActivateSkillTool;
 
@@ -396,7 +383,9 @@ impl Tool for ActivateSkillTool {
             .with_action(AnyStateAction::new::<SkillState>(
                 SkillStateAction::Activate("docx".to_string()),
             ))
-            .with_action(AddUserMessage("Skill instructions...".to_string())),
+            .with_action(AfterToolExecuteAction::AddUserMessage(
+                "Skill instructions...".to_string(),
+            )),
         )
     }
 }
@@ -406,6 +395,8 @@ The real skill implementation in this repository goes further and also applies p
 
 - [`crates/tirea-extension-skills/src/tools.rs`](/home/chaizhenhua/Codes/uncarve/crates/tirea-extension-skills/src/tools.rs)
 - [`crates/tirea-extension-permission/src/state.rs`](/home/chaizhenhua/Codes/uncarve/crates/tirea-extension-permission/src/state.rs)
+
+Prefer these built-in `AfterToolExecuteAction` variants for common post-tool side effects before introducing a custom `Action` type.
 
 ## Temporary Permission Changes
 
