@@ -25,6 +25,8 @@ use common::{
     ai_sdk_messages_payload, compose_http_app, extract_agui_text, extract_ai_sdk_text, post_sse,
     CalculatorTool,
 };
+use tirea_agentos::contracts::runtime::behavior::AgentBehavior;
+use tirea_extension_a2ui::{A2uiPlugin, A2uiRenderTool};
 
 fn has_deepseek_key() -> bool {
     std::env::var("DEEPSEEK_API_KEY").is_ok()
@@ -1088,4 +1090,151 @@ async fn e2e_ag_ui_multistep_tool_with_deepseek() {
 
     assert_eq!(events.first().map(|s| s.as_str()), Some("RUN_STARTED"));
     assert_eq!(events.last().map(|s| s.as_str()), Some("RUN_FINISHED"));
+}
+
+// ============================================================================
+// A2UI: Tool-based declarative UI rendering
+// ============================================================================
+
+const A2UI_CATALOG: &str = "https://a2ui.org/specification/v0_9/basic_catalog.json";
+
+/// Build AgentOs with A2UI tool + plugin for real LLM testing.
+fn make_a2ui_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::orchestrator::AgentOs {
+    let def = AgentDefinition {
+        id: "a2ui".to_string(),
+        model: "deepseek-chat".to_string(),
+        system_prompt: format!(
+            "You are an A2UI demo assistant that renders declarative UI.\n\
+            You MUST use the render_a2ui tool to send A2UI messages.\n\
+            Rules:\n\
+            - Always call render_a2ui with an array of A2UI v0.9 messages.\n\
+            - First send createSurface, then updateComponents, then updateDataModel.\n\
+            - Use catalogId: \"{A2UI_CATALOG}\"\n\
+            - After sending the UI, reply with a brief confirmation."
+        ),
+        max_rounds: 3,
+        behavior_ids: vec!["a2ui".to_string()],
+        ..Default::default()
+    };
+
+    let tools: HashMap<String, Arc<dyn Tool>> =
+        HashMap::from([("render_a2ui".to_string(), Arc::new(A2uiRenderTool::new()) as _)]);
+
+    AgentOsBuilder::new()
+        .with_tools(tools)
+        .with_agent("a2ui", def)
+        .with_registered_behavior(
+            "a2ui",
+            Arc::new(A2uiPlugin::with_catalog_id(A2UI_CATALOG)) as Arc<dyn AgentBehavior>,
+        )
+        .with_agent_state_store(write_store)
+        .build()
+        .expect("failed to build A2UI AgentOs")
+}
+
+#[ignore]
+#[tokio::test]
+async fn e2e_ag_ui_a2ui_tool_call_with_deepseek() {
+    if !has_deepseek_key() {
+        return;
+    }
+
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_a2ui_os(storage.clone()));
+    let app = compose_http_app(AppState {
+        os,
+        read_store: storage.clone(),
+    });
+
+    let payload = json!({
+        "threadId": "e2e-agui-a2ui",
+        "runId": "r-a2ui-1",
+        "messages": [
+            {"role": "user", "content": "Create a simple greeting card UI with a title saying 'Welcome' and a text field for name input."}
+        ],
+        "tools": []
+    });
+
+    let (status, text) =
+        post_sse_with_retry(app, "/v1/ag-ui/agents/a2ui/runs", payload).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        text.contains(r#""type":"RUN_STARTED""#),
+        "missing RUN_STARTED"
+    );
+    assert!(
+        text.contains(r#""type":"RUN_FINISHED""#),
+        "missing RUN_FINISHED — A2UI run should complete. Response:\n{text}"
+    );
+
+    // The LLM should call render_a2ui.
+    assert!(
+        text.contains(r#""type":"TOOL_CALL_START""#),
+        "missing TOOL_CALL_START — LLM didn't call render_a2ui. Response:\n{text}"
+    );
+    assert!(
+        text.contains("render_a2ui"),
+        "tool call should reference render_a2ui"
+    );
+
+    // Tool result should contain A2UI payload markers.
+    assert!(
+        text.contains(r#""type":"TOOL_CALL_RESULT""#),
+        "missing TOOL_CALL_RESULT — render_a2ui should produce a result"
+    );
+    assert!(
+        text.contains("createSurface") || text.contains("updateComponents"),
+        "tool call args should contain A2UI message types"
+    );
+}
+
+#[ignore]
+#[tokio::test]
+async fn e2e_ai_sdk_a2ui_tool_call_with_deepseek() {
+    if !has_deepseek_key() {
+        return;
+    }
+
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_a2ui_os(storage.clone()));
+    let app = compose_http_app(AppState {
+        os,
+        read_store: storage.clone(),
+    });
+
+    let payload = ai_sdk_messages_payload(
+        "e2e-sdk-a2ui",
+        "Build a task list UI with a text input and an add button using render_a2ui.",
+        Some("r-a2ui-sdk-1"),
+    );
+
+    let (status, text) =
+        post_sse_with_retry(app, "/v1/ai-sdk/agents/a2ui/runs", payload).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(text.contains(r#""type":"start""#), "missing start event");
+    assert!(
+        text.contains(r#""type":"finish""#),
+        "missing finish event — A2UI run should complete. Response:\n{text}"
+    );
+
+    // The LLM should invoke render_a2ui tool.
+    assert!(
+        text.contains(r#""type":"tool-input-start""#),
+        "missing tool-input-start — LLM didn't call render_a2ui"
+    );
+    assert!(
+        text.contains("render_a2ui"),
+        "tool events should reference render_a2ui"
+    );
+    assert!(
+        text.contains(r#""type":"tool-output-available""#),
+        "missing tool-output-available — render_a2ui should complete"
+    );
+
+    // Thread should be persisted.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let saved = storage.load_thread("e2e-sdk-a2ui").await.unwrap();
+    assert!(saved.is_some(), "A2UI thread not persisted");
 }

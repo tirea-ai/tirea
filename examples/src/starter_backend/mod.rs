@@ -15,6 +15,7 @@ use tirea_agentos::contracts::runtime::behavior::AgentBehavior;
 use tirea_agentos::contracts::runtime::tool_call::Tool;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
 use tirea_agentos::extensions::permission::{PermissionPlugin, ToolPolicyPlugin};
+use tirea_extension_a2ui::{A2uiPlugin, A2uiRenderTool};
 use tirea_agentos_server::http::{self, AppState};
 use tirea_agentos_server::protocol;
 use tirea_extension_mcp::McpToolRegistryManager;
@@ -178,6 +179,24 @@ Deterministic compatibility directives:\n\
         ..Default::default()
     };
 
+    let a2ui_agent = AgentDefinition {
+        id: "a2ui".to_string(),
+        model: args.model.clone(),
+        system_prompt: concat!(
+            "You are an A2UI demo assistant. When the user asks you to render UI, ",
+            "use the render_a2ui tool to send A2UI declarative UI messages.\n\n",
+            "Deterministic compatibility directives:\n",
+            "- If message contains RUN_A2UI_TOOL, call render_a2ui with a createSurface ",
+            "for surfaceId \"demo\" and catalogId \"https://a2ui.org/specification/v0_9/basic_catalog.json\", ",
+            "then updateComponents with a Card containing a Text component saying \"Hello A2UI\", ",
+            "then updateDataModel with an empty root object."
+        )
+        .into(),
+        max_rounds: args.max_rounds,
+        behavior_ids: vec!["a2ui".to_string()],
+        ..Default::default()
+    };
+
     let tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(GetWeatherTool),
         Arc::new(GetStockPriceTool),
@@ -198,6 +217,7 @@ Deterministic compatibility directives:\n\
         Arc::new(SetQuestionTool),
         Arc::new(DeleteResourcesTool),
         Arc::new(ExtractResourcesTool),
+        Arc::new(A2uiRenderTool::new()),
     ];
     let tool_map: HashMap<String, Arc<dyn Tool>> = tool_map_from_arc(tools);
     let mut mcp_tool_registry: Option<Arc<dyn ToolRegistry>> = None;
@@ -250,6 +270,9 @@ Deterministic compatibility directives:\n\
     if default_id != "research" {
         builder = builder.with_agent("research", research_agent);
     }
+    if default_id != "a2ui" {
+        builder = builder.with_agent("a2ui", a2ui_agent);
+    }
 
     let plugins: Vec<(String, Arc<dyn AgentBehavior>)> = vec![
         ("tool_policy".to_string(), Arc::new(ToolPolicyPlugin)),
@@ -257,6 +280,12 @@ Deterministic compatibility directives:\n\
         (
             "frontend_tools".to_string(),
             Arc::new(FrontendToolPlugin::new()),
+        ),
+        (
+            "a2ui".to_string(),
+            Arc::new(A2uiPlugin::with_catalog_id(
+                "https://a2ui.org/specification/v0_9/basic_catalog.json",
+            )),
         ),
     ];
     for (id, plugin) in plugins {

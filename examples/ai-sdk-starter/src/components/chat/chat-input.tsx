@@ -32,6 +32,7 @@ export function ChatInput({
       }
     >
       <input
+        data-testid="chat-input"
         value={input}
         onChange={(e) => setInput(e.target.value)}
         placeholder="Type a message..."

@@ -2,25 +2,21 @@ import { expect, test, type Page } from "@playwright/test";
 
 async function openChat(page: Page, agentId = "default") {
   await page.goto(`/?agentId=${agentId}`);
-  await expect(page.getByTestId("page-title")).toContainText(
-    "AI SDK Framework Integration Playground",
-    { timeout: 30_000 },
-  );
-  await expect(page.getByPlaceholder("Type a message...")).toBeVisible({
+  await expect(page.getByTestId("playground-root")).toBeVisible({
     timeout: 30_000,
   });
-  const createThreadButton = page.getByTestId("thread-create");
-  if (await createThreadButton.isVisible()) {
-    await createThreadButton.click();
-  }
+  await expect(page.getByTestId("chat-input")).toBeVisible({
+    timeout: 30_000,
+  });
 }
 
 async function sendPrompt(page: Page, prompt: string) {
-  await page.getByPlaceholder("Type a message...").fill(prompt);
+  await page.getByTestId("chat-input").fill(prompt);
   await page.getByRole("button", { name: "Send" }).click();
 }
 
 async function waitForRunComplete(page: Page) {
+  await page.waitForTimeout(500);
   await expect(page.getByRole("button", { name: "Send" })).toBeEnabled({
     timeout: 120_000,
   });

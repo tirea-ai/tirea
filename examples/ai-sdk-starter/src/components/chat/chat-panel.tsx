@@ -250,6 +250,7 @@ function ActiveChatPanel({
                   output: output as never,
                 });
               }}
+              onSendMessage={(text) => handleSend(text)}
               themeMode={themeMode}
               layout={layout}
             />

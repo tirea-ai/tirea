@@ -11,6 +11,7 @@ import { PermissionDialog } from "@/components/tools/permission-dialog";
 import { AskUserDialog } from "@/components/tools/ask-user-dialog";
 import { WeatherCard } from "@/components/tools/weather-card";
 import { getMcpUiContent, McpAppFrame } from "@/components/tools/mcp-app-frame";
+import { A2uiSurface } from "@/components/tools/a2ui-surface";
 
 type MessageListProps = {
   messages: UIMessage[];
@@ -27,6 +28,7 @@ type MessageListProps = {
     toolName: string,
     output: Record<string, unknown>,
   ) => Promise<void> | void;
+  onSendMessage?: (text: string) => void;
 };
 
 export function MessageList({
@@ -40,6 +42,7 @@ export function MessageList({
   onDeny,
   onAskSubmit,
   onFrontendToolSubmit,
+  onSendMessage,
 }: MessageListProps) {
   const isDark = themeMode === "dark";
   const itemClass = isDark ? "border-slate-700" : "border-slate-100";
@@ -69,6 +72,7 @@ export function MessageList({
                       onDeny={onDeny}
                       onAskSubmit={onAskSubmit}
                       onFrontendToolSubmit={onFrontendToolSubmit}
+                      onSendMessage={onSendMessage}
                       themeMode={themeMode}
                     />
                   ))}
@@ -140,6 +144,7 @@ function PartRenderer({
   onDeny,
   onAskSubmit,
   onFrontendToolSubmit,
+  onSendMessage,
   themeMode,
 }: {
   part: Record<string, unknown>;
@@ -154,6 +159,7 @@ function PartRenderer({
     toolName: string,
     output: Record<string, unknown>,
   ) => Promise<void> | void;
+  onSendMessage?: (text: string) => void;
   themeMode: "light" | "dark";
 }) {
   const p = part as { type: string; text?: string; state?: string; url?: string; title?: string; filename?: string; mediaType?: string };
@@ -183,6 +189,7 @@ function PartRenderer({
         onDeny={onDeny}
         onAskSubmit={onAskSubmit}
         onFrontendToolSubmit={onFrontendToolSubmit}
+        onSendMessage={onSendMessage}
         themeMode={themeMode}
       />
     );
@@ -199,6 +206,7 @@ function ToolPartRenderer({
   onDeny,
   onAskSubmit,
   onFrontendToolSubmit,
+  onSendMessage,
   themeMode,
 }: {
   part: Record<string, unknown>;
@@ -213,6 +221,7 @@ function ToolPartRenderer({
     toolName: string,
     output: Record<string, unknown>,
   ) => Promise<void> | void;
+  onSendMessage?: (text: string) => void;
   themeMode: "light" | "dark";
 }) {
   const tool = part as {
@@ -232,6 +241,36 @@ function ToolPartRenderer({
   if (name === "get_weather" && tool.output != null) {
     const output = tool.output as { location?: string };
     return <WeatherCard location={output.location ?? ""} />;
+  }
+
+  // A2UI surface renderer for render_a2ui tool
+  if (name === "render_a2ui" && tool.output != null) {
+    const output = tool.output as { data?: { a2ui?: unknown[] } };
+    const a2uiMessages = output.data?.a2ui;
+    if (Array.isArray(a2uiMessages) && a2uiMessages.length > 0) {
+      return (
+        <div>
+          <ToolCard
+            name={name}
+            state={tool.state}
+            input={tool.input}
+            output={tool.output}
+            errorText={tool.errorText}
+          />
+          <A2uiSurface
+            messages={a2uiMessages as never[]}
+            onEvent={(surfaceId, eventName, context) => {
+              if (onSendMessage) {
+                const ctx = JSON.stringify(context);
+                onSendMessage(
+                  `[A2UI event on surface "${surfaceId}": ${eventName}] ${ctx}`,
+                );
+              }
+            }}
+          />
+        </div>
+      );
+    }
   }
 
   // MCP App iframe for tools with mcp.ui.content metadata

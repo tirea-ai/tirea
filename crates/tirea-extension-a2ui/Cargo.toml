@@ -1,0 +1,20 @@
+[package]
+name = "tirea-extension-a2ui"
+version.workspace = true
+edition = "2021"
+description = "A2UI (Agent-to-UI) extension for tirea — declarative generative UI via tool-based rendering"
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+
+[dependencies]
+tirea-contract.workspace = true
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+tirea-contract = { workspace = true, features = ["test-support"] }
+tirea-state.workspace = true
+tokio = { version = "1", features = ["rt", "macros"] }

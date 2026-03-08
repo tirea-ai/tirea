@@ -20,6 +20,11 @@ const AGENT_OPTIONS = [
     title: "Stopper Agent",
     desc: "Stop policy demo via finish tool",
   },
+  {
+    id: "a2ui",
+    title: "A2UI Agent",
+    desc: "Declarative UI via A2UI protocol (render_a2ui tool)",
+  },
 ] as const;
 
 export function PlaygroundPage() {
@@ -50,26 +55,20 @@ export function PlaygroundPage() {
     startNewChat();
   };
 
+  // Use a stable key ("chat") so the ChatPanel instance (and its pendingRef)
+  // survives the draft→active transition when createThread sets activeThreadId.
+  // ActiveChatPanel is separately keyed by threadId for proper cleanup.
   const chat =
     !loaded ? (
       <div className="flex h-full items-center justify-center text-sm text-slate-400">
         Loading threads...
       </div>
-    ) : activeThreadId ? (
+    ) : (
       <ChatPanel
-        key={activeThreadId}
         threadId={activeThreadId}
         agentId={agentId}
         recommendedActions={recommendedActions}
-        onFirstMessage={(threadId, text) => autoTitle(threadId, text)}
-      />
-    ) : (
-      <ChatPanel
-        key="__draft__"
-        threadId={null}
-        agentId={agentId}
-        recommendedActions={recommendedActions}
-        onRequestThread={createThread}
+        onRequestThread={!activeThreadId ? createThread : undefined}
         onFirstMessage={(threadId, text) => autoTitle(threadId, text)}
       />
     );

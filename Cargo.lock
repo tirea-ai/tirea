@@ -4652,6 +4652,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tirea-agentos",
  "tirea-contract",
+ "tirea-extension-a2ui",
  "tirea-extension-permission",
  "tirea-protocol-ag-ui",
  "tirea-protocol-ai-sdk-v6",
@@ -4695,6 +4696,7 @@ dependencies = [
  "serde_json",
  "tirea-agentos",
  "tirea-agentos-server",
+ "tirea-extension-a2ui",
  "tirea-extension-mcp",
  "tirea-extension-permission",
  "tirea-state",
@@ -4704,6 +4706,20 @@ dependencies = [
  "tower-http",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "tirea-extension-a2ui"
+version = "0.3.0-alpha.4"
+dependencies = [
+ "async-trait",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "tirea-contract",
+ "tirea-state",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
