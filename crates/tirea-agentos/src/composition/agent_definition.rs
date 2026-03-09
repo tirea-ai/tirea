@@ -1,4 +1,4 @@
-use super::StopConditionSpec;
+use super::stop_condition::StopConditionSpec;
 use crate::loop_runtime::loop_runner::LlmRetryPolicy;
 use genai::chat::ChatOptions;
 

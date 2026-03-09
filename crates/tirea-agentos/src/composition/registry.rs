@@ -1,7 +1,9 @@
 use super::{
-    AgentRegistry, AgentRegistryError, BehaviorRegistry, BehaviorRegistryError, ModelDefinition,
-    ModelRegistry, ModelRegistryError, ProviderRegistry, ProviderRegistryError, ToolRegistry,
-    ToolRegistryError,
+    registry_set::{
+        AgentRegistry, AgentRegistryError, BehaviorRegistry, BehaviorRegistryError,
+        ModelDefinition, ModelRegistry, ModelRegistryError, ProviderRegistry,
+        ProviderRegistryError, ToolRegistry, ToolRegistryError,
+    },
 };
 use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::runtime::AgentBehavior;

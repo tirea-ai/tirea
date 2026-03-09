@@ -1,10 +1,8 @@
 use super::*;
 use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::runtime::AgentBehavior;
-use crate::runtime::AgentOs;
-use crate::runtime::agent_tools::SubAgentHandleTable;
+use crate::runtime::{AgentOs, RuntimeServices};
 use crate::runtime::resolve::SkillsSystemWiring;
-use crate::runtime::thread_run::ActiveThreadRunRegistry;
 use crate::runtime::StopPolicy;
 use crate::contracts::storage::ThreadStore;
 #[cfg(feature = "skills")]
@@ -499,24 +497,24 @@ impl AgentOsBuilder {
             |regs| Ok(Arc::new(CompositeAgentRegistry::try_new(regs)?)),
         )?;
 
-        let registries = RegistrySet::new(agents, base_tools, behaviors, providers, models);
-
-        Ok(AgentOs {
-            default_client: client.unwrap_or_default(),
-            agents: registries.agents,
-            base_tools: registries.tools,
-            behaviors: registries.behaviors,
-            providers: registries.providers,
-            models: registries.models,
+        let registries = RegistrySet::new(
+            agents,
+            base_tools,
+            behaviors,
+            providers,
+            models,
             stop_policies,
             #[cfg(feature = "skills")]
             skills_registry,
+        );
+        let services = RuntimeServices {
+            default_client: client.unwrap_or_default(),
             system_wirings,
-            sub_agent_handles: Arc::new(SubAgentHandleTable::new()),
-            active_runs: Arc::new(ActiveThreadRunRegistry::default()),
             agent_tools,
             agent_state_store,
-        })
+        };
+
+        Ok(AgentOs::from_registry_set(registries, services))
     }
 }
 

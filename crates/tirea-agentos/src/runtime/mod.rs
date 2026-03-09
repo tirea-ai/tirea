@@ -7,7 +7,7 @@ use genai::Client;
 
 use crate::composition::{
     AgentDefinition, AgentOsWiringError, AgentRegistry, AgentToolsConfig, BehaviorRegistry,
-    ModelRegistry, ProviderRegistry, StopPolicyRegistry, SystemWiring, ToolRegistry,
+    ModelRegistry, ProviderRegistry, RegistrySet, StopPolicyRegistry, SystemWiring, ToolRegistry,
 };
 use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::storage::{ThreadHead, ThreadStore, ThreadStoreError, VersionPrecondition};
@@ -196,4 +196,32 @@ pub struct AgentOs {
     pub(crate) active_runs: Arc<thread_run::ActiveThreadRunRegistry>,
     pub(crate) agent_tools: AgentToolsConfig,
     pub(crate) agent_state_store: Option<Arc<dyn ThreadStore>>,
+}
+
+pub(crate) struct RuntimeServices {
+    pub default_client: Client,
+    pub system_wirings: Vec<Arc<dyn SystemWiring>>,
+    pub agent_tools: AgentToolsConfig,
+    pub agent_state_store: Option<Arc<dyn ThreadStore>>,
+}
+
+impl AgentOs {
+    pub(crate) fn from_registry_set(registries: RegistrySet, services: RuntimeServices) -> Self {
+        Self {
+            default_client: services.default_client,
+            agents: registries.agents,
+            base_tools: registries.tools,
+            behaviors: registries.behaviors,
+            providers: registries.providers,
+            models: registries.models,
+            stop_policies: registries.stop_policies,
+            #[cfg(feature = "skills")]
+            skills_registry: registries.skills,
+            system_wirings: services.system_wirings,
+            sub_agent_handles: Arc::new(SubAgentHandleTable::new()),
+            active_runs: Arc::new(thread_run::ActiveThreadRunRegistry::default()),
+            agent_tools: services.agent_tools,
+            agent_state_store: services.agent_state_store,
+        }
+    }
 }

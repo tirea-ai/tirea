@@ -13,6 +13,7 @@ pub use agent_definition::{AgentDefinition, ToolExecutionMode};
 pub use builder::AgentOsBuilder;
 pub use config::{AgentToolsConfig, SkillsConfig};
 pub use errors::{AgentOsBuildError, AgentOsWiringError};
+pub use bundle::{BundleComposeError, BundleComposer, BundleRegistryAccumulator, BundleRegistryKind};
 pub use registry::{
     CompositeAgentRegistry, CompositeBehaviorRegistry, CompositeModelRegistry,
     CompositeProviderRegistry, CompositeToolRegistry, InMemoryAgentRegistry,
@@ -22,17 +23,11 @@ pub use registry::{
 pub use registry_set::{
     AgentRegistry, AgentRegistryError, BehaviorRegistry, BehaviorRegistryError, ModelDefinition,
     ModelRegistry, ModelRegistryError, ProviderRegistry, ProviderRegistryError, RegistryBundle,
-    ToolRegistry, ToolRegistryError,
+    StopPolicyRegistry, ToolRegistry, ToolRegistryError,
 };
 pub use stop_condition::StopConditionSpec;
 pub use stop_policy_registry::{
-    CompositeStopPolicyRegistry, InMemoryStopPolicyRegistry, StopPolicyRegistry,
-    StopPolicyRegistryError,
-};
-pub use bundle::{
-    BundleComposeError, BundleComposer, BundleRegistryAccumulator, BundleRegistryKind, RegistrySet,
-    ToolBehaviorBundle,
+    CompositeStopPolicyRegistry, InMemoryStopPolicyRegistry, StopPolicyRegistryError,
 };
 pub use wiring::{SystemWiring, WiringContext};
-
-pub use crate::loop_runtime::loop_runner::{tool_map, tool_map_from_arc};
+pub use bundle::{RegistrySet, ToolBehaviorBundle};

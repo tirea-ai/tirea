@@ -666,9 +666,7 @@ fn build_base_agent_from_definition(
         ToolExecutionMode::ParallelBatchApproval => {
             Arc::new(ParallelToolExecutor::batch_approval())
         }
-        ToolExecutionMode::ParallelStreaming => {
-            Arc::new(ParallelToolExecutor::streaming())
-        }
+        ToolExecutionMode::ParallelStreaming => Arc::new(ParallelToolExecutor::streaming()),
     };
 
     let mut lattice_registry = LatticeRegistry::new();
