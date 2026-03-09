@@ -1,8 +1,10 @@
 pub(crate) mod agent_tools;
 mod behavior;
+mod bundle_merge;
 mod errors;
 pub(crate) mod plugin;
 mod policy;
+mod prepare;
 pub(crate) mod resolve;
 mod run;
 pub(crate) mod thread_run;

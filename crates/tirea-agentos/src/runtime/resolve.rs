@@ -8,13 +8,12 @@ use super::{
     behavior::CompositeBehavior, AgentOs, AgentOsResolveError, StopPolicy,
 };
 #[cfg(feature = "skills")]
-use crate::extensions::skills::{
-    InMemorySkillRegistry, Skill, SkillDiscoveryPlugin, SkillRegistry, SkillSubsystem,
-    SkillSubsystemError, SKILLS_BUNDLE_ID, SKILLS_DISCOVERY_PLUGIN_ID, SKILLS_PLUGIN_ID,
-};
+pub(crate) use super::plugin::skills_wiring::SkillsSystemWiring;
+#[cfg(feature = "skills")]
+use crate::extensions::skills::{InMemorySkillRegistry, Skill, SkillRegistry};
 use crate::composition::{
     AgentDefinition, AgentOsBuilder, AgentOsWiringError, AgentRegistry, InMemoryAgentRegistry,
-    RegistryBundle, SkillsConfig, StopConditionSpec, SystemWiring, ToolBehaviorBundle,
+    RegistryBundle, StopConditionSpec, SystemWiring, ToolBehaviorBundle,
     ToolExecutionMode, WiringContext,
 };
 use crate::contracts::runtime::behavior::{AgentBehavior, NoOpBehavior};
@@ -30,123 +29,9 @@ use std::sync::Arc;
 use tirea_contract::runtime::state::{ActionDeserializerRegistry, StateScopeRegistry};
 use tirea_state::LatticeRegistry;
 
-// ---------------------------------------------------------------------------
-// SkillsSystemWiring — feature-gated SystemWiring impl for the skills subsystem
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "skills")]
-pub(crate) struct SkillsSystemWiring {
-    registry: Arc<dyn SkillRegistry>,
-    config: SkillsConfig,
-}
-
-#[cfg(feature = "skills")]
-impl SkillsSystemWiring {
-    pub(crate) fn new(registry: Arc<dyn SkillRegistry>, config: SkillsConfig) -> Self {
-        Self { registry, config }
-    }
-
-    fn freeze_registry(&self) -> Arc<dyn SkillRegistry> {
-        let mut frozen = InMemorySkillRegistry::new();
-        frozen.extend_upsert(self.registry.snapshot().into_values().collect());
-        Arc::new(frozen) as Arc<dyn SkillRegistry>
-    }
-
-    fn build_plugins(&self, registry: Arc<dyn SkillRegistry>) -> Vec<Arc<dyn AgentBehavior>> {
-        if !self.config.advertise_catalog {
-            return Vec::new();
-        }
-        let discovery = SkillDiscoveryPlugin::new(registry).with_limits(
-            self.config.discovery_max_entries,
-            self.config.discovery_max_chars,
-        );
-        vec![Arc::new(discovery)]
-    }
-}
-
-#[cfg(feature = "skills")]
-impl SystemWiring for SkillsSystemWiring {
-    fn id(&self) -> &str {
-        "skills"
-    }
-
-    fn reserved_behavior_ids(&self) -> &[&'static str] {
-        &[SKILLS_PLUGIN_ID, SKILLS_DISCOVERY_PLUGIN_ID]
-    }
-
-    fn wire(
-        &self,
-        ctx: &WiringContext<'_>,
-    ) -> Result<Vec<Arc<dyn RegistryBundle>>, AgentOsWiringError> {
-        // Ensure no user-installed behavior collides with reserved skills IDs.
-        let reserved = self.reserved_behavior_ids();
-        if let Some(existing) = ctx
-            .resolved_behaviors
-            .iter()
-            .map(|p| p.id())
-            .find(|id| reserved.contains(id))
-        {
-            return Err(AgentOsWiringError::SkillsBehaviorAlreadyInstalled(
-                existing.to_string(),
-            ));
-        }
-
-        let frozen = self.freeze_registry();
-
-        let subsystem = SkillSubsystem::new(frozen.clone());
-        let mut tool_defs = HashMap::new();
-        subsystem
-            .extend_tools(&mut tool_defs)
-            .map_err(|e| match e {
-                SkillSubsystemError::ToolIdConflict(id) => {
-                    AgentOsWiringError::SkillsToolIdConflict(id)
-                }
-            })?;
-
-        // Check tool conflicts with existing tools.
-        for id in tool_defs.keys() {
-            if ctx.existing_tools.contains_key(id) {
-                return Err(AgentOsWiringError::SkillsToolIdConflict(id.clone()));
-            }
-        }
-
-        let mut bundle = ToolBehaviorBundle::new(SKILLS_BUNDLE_ID).with_tools(tool_defs);
-        for plugin in self.build_plugins(frozen) {
-            bundle = bundle.with_behavior(plugin);
-        }
-        Ok(vec![Arc::new(bundle)])
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ResolvedBehaviors — behavior composition helper
-// ---------------------------------------------------------------------------
-
-#[derive(Default)]
-struct ResolvedBehaviors {
-    global: Vec<Arc<dyn AgentBehavior>>,
-    agent_default: Vec<Arc<dyn AgentBehavior>>,
-}
-
-impl ResolvedBehaviors {
-    fn with_global(mut self, plugins: Vec<Arc<dyn AgentBehavior>>) -> Self {
-        self.global.extend(plugins);
-        self
-    }
-
-    fn with_agent_default(mut self, plugins: Vec<Arc<dyn AgentBehavior>>) -> Self {
-        self.agent_default.extend(plugins);
-        self
-    }
-
-    fn into_plugins(self) -> Result<Vec<Arc<dyn AgentBehavior>>, AgentOsWiringError> {
-        let mut plugins = Vec::new();
-        plugins.extend(self.global);
-        plugins.extend(self.agent_default);
-        AgentOs::ensure_unique_behavior_ids(&plugins)?;
-        Ok(plugins)
-    }
-}
+use super::bundle_merge::{
+    ResolvedBehaviors, ensure_unique_behavior_ids, merge_wiring_bundles,
+};
 
 // ---------------------------------------------------------------------------
 // AgentOs wiring implementation
@@ -240,19 +125,6 @@ impl AgentOs {
         Ok(out)
     }
 
-    pub(super) fn ensure_unique_behavior_ids(
-        plugins: &[Arc<dyn AgentBehavior>],
-    ) -> Result<(), AgentOsWiringError> {
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for p in plugins {
-            let id = p.id().to_string();
-            if !seen.insert(id.clone()) {
-                return Err(AgentOsWiringError::BehaviorAlreadyInstalled(id));
-            }
-        }
-        Ok(())
-    }
-
     fn ensure_agent_tools_plugin_not_installed(
         plugins: &[Arc<dyn AgentBehavior>],
     ) -> Result<(), AgentOsWiringError> {
@@ -344,143 +216,6 @@ impl AgentOs {
         Ok(vec![tools_bundle, recovery_bundle])
     }
 
-    fn merge_wiring_bundles(
-        &self,
-        bundles: &[Arc<dyn RegistryBundle>],
-        tools: &mut HashMap<String, Arc<dyn Tool>>,
-    ) -> Result<Vec<Arc<dyn AgentBehavior>>, AgentOsWiringError> {
-        let mut plugins = Vec::new();
-        for bundle in bundles {
-            Self::validate_wiring_bundle(bundle.as_ref())?;
-            Self::merge_wiring_bundle_tools(bundle.as_ref(), tools)?;
-            let mut bundle_plugins = Self::collect_wiring_bundle_behaviors(bundle.as_ref())?;
-            plugins.append(&mut bundle_plugins);
-        }
-        Self::ensure_unique_behavior_ids(&plugins)?;
-        Ok(plugins)
-    }
-
-    fn validate_wiring_bundle(bundle: &dyn RegistryBundle) -> Result<(), AgentOsWiringError> {
-        let unsupported = [
-            (
-                !bundle.agent_definitions().is_empty(),
-                "agent_definitions".to_string(),
-            ),
-            (
-                !bundle.agent_registries().is_empty(),
-                "agent_registries".to_string(),
-            ),
-            (
-                !bundle.provider_definitions().is_empty(),
-                "provider_definitions".to_string(),
-            ),
-            (
-                !bundle.provider_registries().is_empty(),
-                "provider_registries".to_string(),
-            ),
-            (
-                !bundle.model_definitions().is_empty(),
-                "model_definitions".to_string(),
-            ),
-            (
-                !bundle.model_registries().is_empty(),
-                "model_registries".to_string(),
-            ),
-        ];
-        if let Some((_, kind)) = unsupported.into_iter().find(|(has, _)| *has) {
-            return Err(AgentOsWiringError::BundleUnsupportedContribution {
-                bundle_id: bundle.id().to_string(),
-                kind,
-            });
-        }
-        Ok(())
-    }
-
-    fn merge_wiring_bundle_tools(
-        bundle: &dyn RegistryBundle,
-        tools: &mut HashMap<String, Arc<dyn Tool>>,
-    ) -> Result<(), AgentOsWiringError> {
-        let mut defs: Vec<(String, Arc<dyn Tool>)> =
-            bundle.tool_definitions().into_iter().collect();
-        defs.sort_by(|a, b| a.0.cmp(&b.0));
-        for (id, tool) in defs {
-            if tools.contains_key(&id) {
-                return Err(Self::wiring_tool_conflict(bundle.id(), id));
-            }
-            tools.insert(id, tool);
-        }
-
-        for reg in bundle.tool_registries() {
-            let mut ids = reg.ids();
-            ids.sort();
-            for id in ids {
-                let Some(tool) = reg.get(&id) else {
-                    continue;
-                };
-                if tools.contains_key(&id) {
-                    return Err(Self::wiring_tool_conflict(bundle.id(), id));
-                }
-                tools.insert(id, tool);
-            }
-        }
-        Ok(())
-    }
-
-    fn collect_wiring_bundle_behaviors(
-        bundle: &dyn RegistryBundle,
-    ) -> Result<Vec<Arc<dyn AgentBehavior>>, AgentOsWiringError> {
-        let mut out = Vec::new();
-
-        let mut defs: Vec<(String, Arc<dyn AgentBehavior>)> =
-            bundle.behavior_definitions().into_iter().collect();
-        defs.sort_by(|a, b| a.0.cmp(&b.0));
-        for (key, behavior) in defs {
-            let behavior_id = behavior.id().to_string();
-            if key != behavior_id {
-                return Err(AgentOsWiringError::BundleBehaviorIdMismatch {
-                    bundle_id: bundle.id().to_string(),
-                    key,
-                    behavior_id,
-                });
-            }
-            out.push(behavior);
-        }
-
-        for reg in bundle.behavior_registries() {
-            let mut ids = reg.ids();
-            ids.sort();
-            for id in ids {
-                let Some(behavior) = reg.get(&id) else {
-                    continue;
-                };
-                if id != behavior.id() {
-                    return Err(AgentOsWiringError::BundleBehaviorIdMismatch {
-                        bundle_id: bundle.id().to_string(),
-                        key: id,
-                        behavior_id: behavior.id().to_string(),
-                    });
-                }
-                out.push(behavior);
-            }
-        }
-
-        Ok(out)
-    }
-
-    fn wiring_tool_conflict(bundle_id: &str, id: String) -> AgentOsWiringError {
-        #[cfg(feature = "skills")]
-        if bundle_id == SKILLS_BUNDLE_ID {
-            return AgentOsWiringError::SkillsToolIdConflict(id);
-        }
-        if bundle_id == AGENT_TOOLS_PLUGIN_ID || bundle_id == AGENT_RECOVERY_PLUGIN_ID {
-            return AgentOsWiringError::AgentToolIdConflict(id);
-        }
-        AgentOsWiringError::BundleToolIdConflict {
-            bundle_id: bundle_id.to_string(),
-            id,
-        }
-    }
-
     #[cfg(test)]
     pub(crate) fn wire_behaviors_into(
         &self,
@@ -520,7 +255,7 @@ impl AgentOs {
         system_bundles
             .extend(self.build_agent_tool_wiring_bundles(&resolved_plugins, frozen_agents)?);
 
-        let system_plugins = self.merge_wiring_bundles(&system_bundles, tools)?;
+        let system_plugins = merge_wiring_bundles(&system_bundles, tools)?;
         let mut all_plugins = ResolvedBehaviors::default()
             .with_global(system_plugins)
             .with_agent_default(resolved_plugins)
@@ -533,7 +268,7 @@ impl AgentOs {
         let stop_plugin = StopPolicyPlugin::new(stop_conditions, specs);
         if !stop_plugin.is_empty() {
             all_plugins.push(Arc::new(stop_plugin));
-            AgentOs::ensure_unique_behavior_ids(&all_plugins)?;
+            ensure_unique_behavior_ids(&all_plugins)?;
         }
 
         Ok(build_base_agent_from_definition(definition, all_plugins))
@@ -584,7 +319,7 @@ impl AgentOs {
             skills_bundles.extend(bundles);
         }
 
-        let skills_plugins = self.merge_wiring_bundles(&skills_bundles, tools)?;
+        let skills_plugins = merge_wiring_bundles(&skills_bundles, tools)?;
         let mut all_plugins = ResolvedBehaviors::default()
             .with_global(skills_plugins)
             .with_agent_default(resolved_plugins)
@@ -596,7 +331,7 @@ impl AgentOs {
         let stop_plugin = StopPolicyPlugin::new(stop_conditions, specs);
         if !stop_plugin.is_empty() {
             all_plugins.push(Arc::new(stop_plugin));
-            AgentOs::ensure_unique_behavior_ids(&all_plugins)?;
+            ensure_unique_behavior_ids(&all_plugins)?;
         }
 
         Ok(build_base_agent_from_definition(definition, all_plugins))
