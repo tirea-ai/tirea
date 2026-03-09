@@ -33,6 +33,7 @@ pub struct ReadOnlyContext<'a> {
     tool_result: Option<&'a ToolResult>,
     resume_input: Option<ToolCallResume>,
     scope_ctx: ScopeContext,
+    initial_message_count: usize,
 }
 
 impl<'a> ReadOnlyContext<'a> {
@@ -56,6 +57,7 @@ impl<'a> ReadOnlyContext<'a> {
             tool_result: None,
             resume_input: None,
             scope_ctx: ScopeContext::run(),
+            initial_message_count: 0,
         }
     }
 
@@ -106,6 +108,11 @@ impl<'a> ReadOnlyContext<'a> {
 
     pub fn messages(&self) -> &[Arc<Message>] {
         self.messages
+    }
+
+    /// Number of messages that existed before the current run started.
+    pub fn initial_message_count(&self) -> usize {
+        self.initial_message_count
     }
 
     pub fn run_config(&self) -> &RunConfig {
@@ -267,6 +274,7 @@ pub fn build_read_only_context_from_step<'a>(
         step.run_config(),
         doc,
     );
+    ctx.initial_message_count = step.initial_message_count();
     if let Some(llm) = step.llm_response.as_ref() {
         ctx = ctx.with_llm_response(llm);
     }

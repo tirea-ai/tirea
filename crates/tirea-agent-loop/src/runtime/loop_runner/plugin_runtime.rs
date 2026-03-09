@@ -250,6 +250,7 @@ where
         run_ctx.messages(),
         tool_descriptors.to_vec(),
     );
+    step.set_initial_message_count(run_ctx.initial_message_count());
     setup(&mut step);
     for phase in phases {
         emit_agent_phase(*phase, &mut step, agent.behavior(), &doc).await?;
@@ -347,6 +348,7 @@ pub(super) async fn emit_run_end_phase(
             run_ctx.messages(),
             tool_descriptors.to_vec(),
         );
+        step.set_initial_message_count(run_ctx.initial_message_count());
         if let Err(e) = emit_agent_phase(Phase::RunEnd, &mut step, agent.behavior(), &doc).await {
             tracing::warn!(error = %e, "RunEnd phase validation failed");
         }
@@ -414,6 +416,7 @@ where
         run_ctx.messages(),
         tool_descriptors.to_vec(),
     );
+    step.set_initial_message_count(run_ctx.initial_message_count());
     setup(&mut step);
     for phase in phases {
         emit_agent_phase(*phase, &mut step, behavior, &doc).await?;

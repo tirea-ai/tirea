@@ -57,6 +57,11 @@ impl<T> DeltaTracked<T> {
         self.items
     }
 
+    /// Number of items that existed before any push/extend (the initial set).
+    pub fn initial_count(&self) -> usize {
+        self.cursor
+    }
+
     /// Whether there are items after the cursor.
     pub fn has_delta(&self) -> bool {
         self.cursor < self.items.len()

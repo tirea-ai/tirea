@@ -32,6 +32,9 @@ pub struct StepContext<'a> {
     // === Thread Messages ===
     messages: &'a [Arc<Message>],
 
+    /// Number of messages that existed before the current run started.
+    initial_message_count: usize,
+
     // === Step scope: inference ===
     /// Tools and prompt context for the current inference call.
     /// Persists across reset (tools are carried over).
@@ -78,6 +81,7 @@ impl<'a> StepContext<'a> {
             ctx,
             thread_id,
             messages,
+            initial_message_count: 0,
             inference: InferenceContext {
                 tools,
                 ..Default::default()
@@ -106,6 +110,16 @@ impl<'a> StepContext<'a> {
 
     pub fn messages(&self) -> &[Arc<Message>] {
         self.messages
+    }
+
+    /// Number of messages that existed before the current run started.
+    pub fn initial_message_count(&self) -> usize {
+        self.initial_message_count
+    }
+
+    /// Set the initial message count (called by the loop after construction).
+    pub fn set_initial_message_count(&mut self, count: usize) {
+        self.initial_message_count = count;
     }
 
     pub fn state_of<T: State>(&self) -> T::Ref<'_> {

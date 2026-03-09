@@ -367,7 +367,9 @@ impl AgentBehavior for StopPolicyPlugin {
             },
         )));
 
-        let message_stats = derive_stats_from_messages_with_response(ctx.messages(), response);
+        // Only count messages from the current run to avoid cross-run accumulation.
+        let run_messages = &ctx.messages()[ctx.initial_message_count()..];
+        let message_stats = derive_stats_from_messages_with_response(run_messages, response);
         let elapsed = std::time::Duration::from_millis(now_ms.saturating_sub(started_at_ms));
 
         let run_ctx = RunContext::new(
@@ -649,6 +651,50 @@ mod tests {
             Some(1000),
             "started_at_ms should not change once set"
         );
+    }
+
+    /// Regression: `derive_stats_from_messages` used to count assistant messages
+    /// from the entire thread history, not just the current run. When a thread is
+    /// reused across multiple runs, the step counter accumulated across runs,
+    /// causing MaxRounds to fire prematurely on subsequent runs.
+    #[test]
+    fn stats_should_only_count_current_run_messages() {
+        // Simulate a thread with 5 prior assistant turns from previous runs.
+        let mut prior_messages: Vec<Arc<Message>> = Vec::new();
+        for i in 0..5 {
+            let call = ToolCall::new(&format!("old-{i}"), "echo", json!({}));
+            prior_messages.push(Arc::new(Message::user(format!("u{i}"))));
+            prior_messages.push(Arc::new(Message::assistant_with_tool_calls(
+                format!("prior-{i}"),
+                vec![call.clone()],
+            )));
+            prior_messages.push(Arc::new(Message::tool(
+                &call.id,
+                serde_json::to_string(&ToolResult::success("echo", json!({"ok": true}))).unwrap(),
+            )));
+        }
+
+        // Current run adds a new user message.
+        let run_start = prior_messages.len();
+        prior_messages.push(Arc::new(Message::user("new-user-message")));
+
+        // Current LLM response — this is the 1st assistant turn of the NEW run.
+        let response = StreamResult {
+            text: "new-response".to_string(),
+            tool_calls: vec![ToolCall::new("new-1", "echo", json!({}))],
+            usage: None,
+            stop_reason: None,
+        };
+
+        // Only count messages from run_start onward.
+        let stats =
+            derive_stats_from_messages_with_response(&prior_messages[run_start..], &response);
+        assert_eq!(
+            stats.step, 1,
+            "step must be 1 (only the current run's assistant turn), not 6"
+        );
+        assert_eq!(stats.total_tool_call_count, 1);
+        assert_eq!(stats.consecutive_errors, 0);
     }
 
     #[test]

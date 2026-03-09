@@ -131,6 +131,11 @@ impl RunContext {
         self.messages.as_slice()
     }
 
+    /// Number of messages that existed before this run started.
+    pub fn initial_message_count(&self) -> usize {
+        self.messages.initial_count()
+    }
+
     /// Add a single message to the run.
     pub fn add_message(&mut self, msg: Arc<Message>) {
         self.messages.push(msg);
