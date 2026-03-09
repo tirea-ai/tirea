@@ -487,6 +487,76 @@ fn classify_webc_error(error: &genai::webc::Error) -> LlmErrorClass {
     }
 }
 
+/// Classify a provider error event body by parsing its structured fields.
+///
+/// Provider error events (OpenAI, Anthropic, Gemini) embed a JSON body with a
+/// `type` field that describes the error category. This function extracts that
+/// field and maps it to an [`LlmErrorClass`] without relying on keyword
+/// matching against stringified content.
+///
+/// Known error type strings:
+/// - OpenAI: `"server_error"`, `"rate_limit_error"`, `"invalid_request_error"`, …
+/// - Anthropic: `"overloaded_error"`, `"api_error"`, `"authentication_error"`, …
+fn classify_chat_response_body(body: &serde_json::Value) -> LlmErrorClass {
+    // Collect candidate type strings from both the top-level and nested error
+    // object.  OpenAI streams extract the inner error, so body["type"] is
+    // already the error type.  Anthropic / Gemini may wrap it in an envelope
+    // where body["type"] == "error" and the real type lives at
+    // body["error"]["type"].
+    let top_type = body.get("type").and_then(|v| v.as_str());
+    let nested_type = body
+        .get("error")
+        .and_then(|e| e.get("type"))
+        .and_then(|v| v.as_str());
+
+    // Try the nested (more specific) type first when the top-level type is a
+    // generic envelope marker like "error".
+    let candidates: &[&str] = match (top_type, nested_type) {
+        (_, Some(inner)) => &[inner, top_type.unwrap_or("")],
+        (Some(top), None) => &[top],
+        (None, None) => &[],
+    };
+
+    for t in candidates {
+        let lower = t.to_ascii_lowercase();
+        if lower.contains("rate_limit") {
+            return LlmErrorClass::RateLimit;
+        }
+        if lower.contains("overloaded") || lower.contains("unavailable") {
+            return LlmErrorClass::ServerUnavailable;
+        }
+        if lower.contains("timeout") {
+            return LlmErrorClass::Timeout;
+        }
+        if lower.contains("server_error") || lower.contains("api_error") {
+            return LlmErrorClass::ServerError;
+        }
+        if lower.contains("authentication") || lower.contains("permission") {
+            return LlmErrorClass::Auth;
+        }
+        if lower.contains("invalid_request") || lower.contains("not_found") {
+            return LlmErrorClass::ClientRequest;
+        }
+    }
+
+    // Fallback: check for an HTTP status code in the body (some providers
+    // include a numeric `status` or `code` field).
+    let status_code = body
+        .get("status")
+        .or_else(|| body.get("code"))
+        .and_then(|v| v.as_u64())
+        .and_then(|v| u16::try_from(v).ok());
+
+    if let Some(code) = status_code {
+        let class = classify_status_code(code);
+        if class != LlmErrorClass::Unknown {
+            return class;
+        }
+    }
+
+    LlmErrorClass::Unknown
+}
+
 pub(super) fn classify_llm_error(error: &genai::Error) -> LlmErrorClass {
     match error {
         genai::Error::HttpError { status, .. } => classify_status_code(status.as_u16()),
@@ -495,6 +565,22 @@ pub(super) fn classify_llm_error(error: &genai::Error) -> LlmErrorClass {
         genai::Error::WebAdapterCall { webc_error, .. }
         | genai::Error::WebModelCall { webc_error, .. } => classify_webc_error(webc_error),
         genai::Error::Internal(message) => classify_llm_error_message(message),
+
+        // Mid-stream JSON parse failure — almost always caused by truncated /
+        // corrupted SSE data due to a transient network issue.
+        genai::Error::StreamParse { .. } => LlmErrorClass::Connection,
+
+        // Provider returned no response body at all — treat as server-side fault.
+        genai::Error::NoChatResponse { .. } => LlmErrorClass::ServerError,
+
+        // Provider streamed an explicit error event with a structured body.
+        genai::Error::ChatResponse { body, .. } => classify_chat_response_body(body),
+
+        // Auth configuration errors from genai itself (not HTTP 401/403).
+        genai::Error::RequiresApiKey { .. }
+        | genai::Error::NoAuthResolver { .. }
+        | genai::Error::NoAuthData { .. } => LlmErrorClass::Auth,
+
         other => classify_llm_error_message(&other.to_string()),
     }
 }

@@ -17,6 +17,7 @@ use tirea_agent_loop::contracts::{runtime::StreamResult, AgentEvent};
 use tirea_agent_loop::contracts::{RunContext, ToolCallContext};
 use tirea_agent_loop::runtime::loop_runner::{
     execute_tools_with_behaviors, run_loop, run_loop_stream, Agent, BaseAgent, GenaiLlmExecutor,
+    LlmRetryPolicy,
 };
 use tirea_extension_observability::{InMemorySink, LLMMetryPlugin};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -713,8 +714,14 @@ async fn test_run_loop_stream_sse_error_payload_is_not_silent_success() {
         })
         .build();
 
+    // Disable mid-stream retries so the error surfaces immediately.
+    let no_retry_policy = LlmRetryPolicy {
+        max_stream_event_retries: 0,
+        ..LlmRetryPolicy::default()
+    };
     let config = BaseAgent::new("gpt-4")
         .with_behavior(plugin)
+        .with_llm_retry_policy(no_retry_policy)
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();

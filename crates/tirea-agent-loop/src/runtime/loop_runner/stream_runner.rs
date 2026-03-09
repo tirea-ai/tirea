@@ -749,14 +749,82 @@ pub(super) fn run_stream(
 
             let max_output_tokens = chat_options.as_ref().and_then(|o| o.max_tokens);
             let result = collector.finish(max_output_tokens);
-            stream_retry_model_preference = None;
-            stream_retry_backoff_window.reset();
-            stream_error_counts_by_model.clear();
+
+            // Empty stream response: the stream completed without error but
+            // produced no content, tool calls, or usage.  This is almost always
+            // a provider-side transient fault (e.g. an SSE error payload that
+            // genai silently discarded).  Treat it like a retryable mid-stream
+            // error so the run is not terminated prematurely.
             if !saw_stream_payload
                 && result.text.is_empty()
                 && result.tool_calls.is_empty()
                 && !stream_result_has_usage(&result)
             {
+                let max_stream_retries = agent.llm_retry_policy().max_stream_event_retries;
+                if truncation_recovery::should_retry_stream_error(
+                    &mut run_state,
+                    max_stream_retries,
+                ) {
+                    let error_message = format!(
+                        "empty stream response from model='{inference_model}' (no content, tool calls, or usage); retrying"
+                    );
+                    tracing::warn!(
+                        error = %error_message,
+                        retry = run_state.stream_event_retries,
+                        "empty stream response, recovering"
+                    );
+                    match wait_retry_backoff(
+                        agent.as_ref(),
+                        run_state.stream_event_retries,
+                        &mut stream_retry_backoff_window,
+                        run_cancellation_token.as_ref(),
+                    )
+                    .await
+                    {
+                        RetryBackoffOutcome::Completed => {}
+                        RetryBackoffOutcome::Cancelled => {
+                            append_cancellation_user_message(
+                                &mut run_ctx,
+                                CancellationStage::Inference,
+                            );
+                            finish_run!(TerminationReason::Cancelled, None);
+                        }
+                        RetryBackoffOutcome::BudgetExhausted => {
+                            tracing::warn!(
+                                error = %error_message,
+                                retry = run_state.stream_event_retries,
+                                "empty stream retry budget exhausted"
+                            );
+                            match apply_llm_error_cleanup(
+                                &mut run_ctx,
+                                &active_tool_descriptors,
+                                agent.as_ref(),
+                                "llm_stream_event_error",
+                                error_message.clone(),
+                            )
+                            .await
+                            {
+                                Ok(()) => {}
+                                Err(phase_error) => {
+                                    let message = phase_error.to_string();
+                                    terminate_stream_error!(
+                                        outcome::LoopFailure::State(message.clone()),
+                                        message
+                                    );
+                                }
+                            }
+                            terminate_stream_error!(
+                                outcome::LoopFailure::Llm(error_message.clone()),
+                                error_message
+                            );
+                        }
+                    }
+                    yield emitter.step_end();
+                    mark_step_completed(&mut run_state);
+                    continue 'step;
+                }
+
+                // Retries exhausted — terminate.
                 let error_message = format!(
                     "empty stream response from model='{inference_model}' (no content, tool calls, or usage); possible upstream SSE error payload was ignored"
                 );
@@ -777,6 +845,11 @@ pub(super) fn run_stream(
                 }
                 terminate_stream_error!(outcome::LoopFailure::Llm(error_message.clone()), error_message);
             }
+
+            // Successful stream — reset retry state.
+            stream_retry_model_preference = None;
+            stream_retry_backoff_window.reset();
+            stream_error_counts_by_model.clear();
             last_text = stitch_response_text(&continued_response_prefix, &result.text);
             run_state.update_from_response(&result);
             let inference_duration_ms = inference_start.elapsed().as_millis() as u64;

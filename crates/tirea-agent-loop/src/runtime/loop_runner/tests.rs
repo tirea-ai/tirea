@@ -984,6 +984,233 @@ fn test_llm_retry_error_classification() {
 }
 
 #[test]
+fn test_stream_parse_is_retryable() {
+    let stream_parse = genai::Error::StreamParse {
+        model_iden: genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "mock"),
+        serde_error: serde_json::from_str::<serde_json::Value>("{{bad json").unwrap_err(),
+    };
+    assert_eq!(
+        classify_llm_error(&stream_parse),
+        LlmErrorClass::Connection,
+        "StreamParse should be classified as Connection (retryable)"
+    );
+    assert!(is_retryable_llm_error(&stream_parse));
+}
+
+#[test]
+fn test_no_chat_response_is_retryable() {
+    let no_response = genai::Error::NoChatResponse {
+        model_iden: genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "mock"),
+    };
+    assert_eq!(
+        classify_llm_error(&no_response),
+        LlmErrorClass::ServerError,
+        "NoChatResponse should be classified as ServerError (retryable)"
+    );
+    assert!(is_retryable_llm_error(&no_response));
+}
+
+#[test]
+fn test_chat_response_openai_server_error() {
+    let error = genai::Error::ChatResponse {
+        model_iden: genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "mock"),
+        body: serde_json::json!({
+            "message": "Error in input stream",
+            "type": "server_error"
+        }),
+    };
+    assert_eq!(
+        classify_llm_error(&error),
+        LlmErrorClass::ServerError,
+        "OpenAI server_error type should be classified as ServerError"
+    );
+    assert!(is_retryable_llm_error(&error));
+}
+
+#[test]
+fn test_chat_response_anthropic_overloaded() {
+    let error = genai::Error::ChatResponse {
+        model_iden: genai::ModelIden::new(genai::adapter::AdapterKind::Anthropic, "mock"),
+        body: serde_json::json!({
+            "type": "error",
+            "error": {
+                "type": "overloaded_error",
+                "message": "Overloaded"
+            }
+        }),
+    };
+    assert_eq!(
+        classify_llm_error(&error),
+        LlmErrorClass::ServerUnavailable,
+        "Anthropic overloaded_error should be classified as ServerUnavailable"
+    );
+    assert!(is_retryable_llm_error(&error));
+}
+
+#[test]
+fn test_chat_response_rate_limit() {
+    let error = genai::Error::ChatResponse {
+        model_iden: genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "mock"),
+        body: serde_json::json!({
+            "type": "rate_limit_error",
+            "message": "Rate limit exceeded"
+        }),
+    };
+    assert_eq!(
+        classify_llm_error(&error),
+        LlmErrorClass::RateLimit,
+    );
+    assert!(is_retryable_llm_error(&error));
+}
+
+#[test]
+fn test_chat_response_invalid_request() {
+    let error = genai::Error::ChatResponse {
+        model_iden: genai::ModelIden::new(genai::adapter::AdapterKind::Anthropic, "mock"),
+        body: serde_json::json!({
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": "max_tokens must be positive"
+            }
+        }),
+    };
+    assert_eq!(
+        classify_llm_error(&error),
+        LlmErrorClass::ClientRequest,
+    );
+    assert!(!is_retryable_llm_error(&error));
+}
+
+#[test]
+fn test_chat_response_authentication_error() {
+    let error = genai::Error::ChatResponse {
+        model_iden: genai::ModelIden::new(genai::adapter::AdapterKind::Anthropic, "mock"),
+        body: serde_json::json!({
+            "type": "error",
+            "error": {
+                "type": "authentication_error",
+                "message": "invalid x-api-key"
+            }
+        }),
+    };
+    assert_eq!(
+        classify_llm_error(&error),
+        LlmErrorClass::Auth,
+    );
+    assert!(!is_retryable_llm_error(&error));
+}
+
+#[test]
+fn test_chat_response_api_error() {
+    let error = genai::Error::ChatResponse {
+        model_iden: genai::ModelIden::new(genai::adapter::AdapterKind::Anthropic, "mock"),
+        body: serde_json::json!({
+            "type": "error",
+            "error": {
+                "type": "api_error",
+                "message": "Internal server error"
+            }
+        }),
+    };
+    assert_eq!(
+        classify_llm_error(&error),
+        LlmErrorClass::ServerError,
+    );
+    assert!(is_retryable_llm_error(&error));
+}
+
+#[test]
+fn test_chat_response_with_status_code_fallback() {
+    let error = genai::Error::ChatResponse {
+        model_iden: genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "mock"),
+        body: serde_json::json!({
+            "status": 503,
+            "message": "some unknown format"
+        }),
+    };
+    assert_eq!(
+        classify_llm_error(&error),
+        LlmErrorClass::ServerUnavailable,
+    );
+    assert!(is_retryable_llm_error(&error));
+}
+
+#[test]
+fn test_chat_response_unknown_body() {
+    let error = genai::Error::ChatResponse {
+        model_iden: genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "mock"),
+        body: serde_json::json!({
+            "finishReason": "SAFETY",
+            "usageMetadata": {}
+        }),
+    };
+    assert_eq!(
+        classify_llm_error(&error),
+        LlmErrorClass::Unknown,
+        "Unrecognized body structure should fall to Unknown"
+    );
+    assert!(!is_retryable_llm_error(&error));
+}
+
+#[test]
+fn test_auth_config_errors_are_non_retryable() {
+    let requires_key = genai::Error::RequiresApiKey {
+        model_iden: genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "mock"),
+    };
+    assert_eq!(classify_llm_error(&requires_key), LlmErrorClass::Auth);
+    assert!(!is_retryable_llm_error(&requires_key));
+
+    let no_resolver = genai::Error::NoAuthResolver {
+        model_iden: genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "mock"),
+    };
+    assert_eq!(classify_llm_error(&no_resolver), LlmErrorClass::Auth);
+    assert!(!is_retryable_llm_error(&no_resolver));
+
+    let no_data = genai::Error::NoAuthData {
+        model_iden: genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "mock"),
+    };
+    assert_eq!(classify_llm_error(&no_data), LlmErrorClass::Auth);
+    assert!(!is_retryable_llm_error(&no_data));
+}
+
+#[test]
+fn test_classify_chat_response_body_direct() {
+    // Direct type field (OpenAI extracted error)
+    assert_eq!(
+        classify_chat_response_body(&serde_json::json!({"type": "server_error"})),
+        LlmErrorClass::ServerError,
+    );
+    assert_eq!(
+        classify_chat_response_body(&serde_json::json!({"type": "rate_limit_error"})),
+        LlmErrorClass::RateLimit,
+    );
+    assert_eq!(
+        classify_chat_response_body(&serde_json::json!({"type": "overloaded_error"})),
+        LlmErrorClass::ServerUnavailable,
+    );
+
+    // Nested error.type field (Anthropic envelope)
+    assert_eq!(
+        classify_chat_response_body(&serde_json::json!({
+            "type": "error",
+            "error": {"type": "overloaded_error"}
+        })),
+        LlmErrorClass::ServerUnavailable,
+    );
+
+    // When top-level type is a non-error string (like "error"), fall through
+    // to nested lookup.
+    assert_eq!(
+        classify_chat_response_body(&serde_json::json!({
+            "type": "error",
+            "error": {"type": "authentication_error"}
+        })),
+        LlmErrorClass::Auth,
+    );
+}
+
+#[test]
 fn test_retry_backoff_plan_without_jitter_is_exponential_and_capped() {
     let policy = LlmRetryPolicy {
         initial_backoff_ms: 100,
