@@ -117,6 +117,7 @@ async fn integration_foreground_sub_agent_creates_thread_in_store() {
 #[tokio::test]
 async fn integration_task_output_reads_from_thread_store() {
     use crate::contracts::storage::ThreadReader;
+    use crate::runtime::background_tasks::TaskStore;
 
     let (os, storage) = build_integration_os();
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
@@ -147,27 +148,19 @@ async fn integration_task_output_reads_from_thread_store() {
         .unwrap();
     assert_eq!(result.status, ToolStatus::Success);
     let run_id = result.data["run_id"].as_str().unwrap().to_string();
-    let status_str = result.data["status"].as_str().unwrap();
-
-    // Persist the BackgroundTask metadata so task_output can read it.
     let child_thread_id = super::super::tools::sub_agent_thread_id(&run_id);
-    let doc = json!({
-        "background_tasks": {
-            "tasks": {
-                &run_id: {
-                    "task_type": "agent_run",
-                    "description": "agent:worker",
-                    "status": status_str,
-                    "created_at_ms": 0,
-                    "metadata": {
-                        "thread_id": child_thread_id,
-                        "agent_id": "worker"
-                    }
-                }
-            }
-        }
-    });
-    let output_fix = TestFixture::new_with_state(doc);
+    let task_store =
+        TaskStore::new(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>);
+    let task = task_store
+        .load_task(&run_id)
+        .await
+        .unwrap()
+        .expect("task should be persisted");
+    assert_eq!(task.metadata["thread_id"], json!(child_thread_id));
+    assert_eq!(task.metadata["agent_id"], json!("worker"));
+
+    let mut output_fix = TestFixture::new();
+    output_fix.run_config = integration_caller_scope(json!({}), "parent-run-1", vec![]);
     let output_result = output_tool
         .execute(
             json!({ "task_id": run_id }),
@@ -190,8 +183,10 @@ async fn integration_task_output_reads_from_thread_store() {
 }
 
 #[tokio::test]
-async fn integration_parent_state_contains_only_lightweight_metadata() {
-    let (os, _storage) = build_integration_os();
+async fn integration_persisted_task_state_contains_only_lightweight_metadata() {
+    use crate::runtime::background_tasks::TaskStore;
+
+    let (os, storage) = build_integration_os();
     let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
 
     let mut fix = TestFixture::new();
@@ -215,10 +210,13 @@ async fn integration_parent_state_contains_only_lightweight_metadata() {
     assert_eq!(result.status, ToolStatus::Success);
     let run_id = result.data["run_id"].as_str().unwrap();
 
-    // Check the state patch that was emitted.
-    let patch = fix.ctx_with("call-1", "tool:agent_run").take_patch();
-    let updated = apply_patches(&json!({}), std::iter::once(patch.patch())).unwrap();
-    let task_entry = &updated["background_tasks"]["tasks"][run_id];
+    let task_store = TaskStore::new(storage as Arc<dyn crate::contracts::storage::ThreadStore>);
+    let task = task_store
+        .load_task(run_id)
+        .await
+        .unwrap()
+        .expect("task should be persisted");
+    let task_entry = serde_json::to_value(task).unwrap();
 
     // Should have lightweight fields.
     assert!(
@@ -241,19 +239,19 @@ async fn integration_parent_state_contains_only_lightweight_metadata() {
     // Should NOT have embedded thread or messages.
     assert!(
         task_entry.get("thread").is_none() || task_entry["thread"].is_null(),
-        "BackgroundTask should NOT contain embedded Thread"
+        "TaskState should NOT contain embedded Thread"
     );
     assert!(
         task_entry.get("messages").is_none() || task_entry["messages"].is_null(),
-        "BackgroundTask should NOT contain messages"
+        "TaskState should NOT contain messages"
     );
     assert!(
         task_entry.get("state").is_none() || task_entry["state"].is_null(),
-        "BackgroundTask should NOT contain state snapshot"
+        "TaskState should NOT contain state snapshot"
     );
     assert!(
         task_entry.get("patches").is_none() || task_entry["patches"].is_null(),
-        "BackgroundTask should NOT contain patches"
+        "TaskState should NOT contain patches"
     );
 }
 
@@ -1187,23 +1185,36 @@ async fn integration_task_output_reads_tool_result_from_sub_agent() {
         Arc::new(BackgroundTaskManager::new()),
         Some(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>),
     );
-    let doc = json!({
-        "background_tasks": {
-            "tasks": {
-                "run-output-test": {
-                    "task_type": "agent_run",
-                    "description": "agent:worker",
-                    "status": "completed",
-                    "created_at_ms": 0,
-                    "metadata": {
-                        "thread_id": child_thread_id,
-                        "agent_id": "worker"
-                    }
-                }
-            }
-        }
-    });
-    let fix = TestFixture::new_with_state(doc);
+    let task_store = crate::runtime::background_tasks::TaskStore::new(
+        storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>
+    );
+    task_store
+        .create_task(crate::runtime::background_tasks::NewTaskSpec {
+            task_id: "run-output-test".to_string(),
+            owner_thread_id: "parent-thread".to_string(),
+            task_type: "agent_run".to_string(),
+            description: "agent:worker".to_string(),
+            parent_task_id: None,
+            supports_resume: true,
+            metadata: json!({
+                "thread_id": child_thread_id,
+                "agent_id": "worker"
+            }),
+        })
+        .await
+        .unwrap();
+    task_store
+        .persist_foreground_result(
+            "run-output-test",
+            crate::runtime::background_tasks::TaskStatus::Completed,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let mut fix = TestFixture::new();
+    fix.run_config = integration_caller_scope(json!({}), "parent-run-1", vec![]);
     let result = output_tool
         .execute(
             json!({ "task_id": "run-output-test" }),

@@ -1,50 +1,90 @@
 use super::*;
+use crate::contracts::runtime::phase::StepContext;
+use crate::contracts::storage::ThreadStore;
 use crate::loop_runtime::loop_runner::RunCancellationToken;
-use crate::runtime::background_tasks::TaskResult;
+use crate::runtime::background_tasks::{NewTaskSpec, TaskResult, TaskStatus, TaskStore};
 
-// Helper: build persisted-state JSON for a single running agent_run task.
-fn running_task_json(run_id: &str, agent_id: &str) -> serde_json::Value {
-    json!({
-        "task_type": "agent_run",
-        "description": format!("agent:{agent_id}"),
-        "status": "running",
-        "created_at_ms": 0,
-        "metadata": {
-            "thread_id": format!("sub-agent-{run_id}"),
-            "agent_id": agent_id
-        }
-    })
+fn recovery_task_store() -> Arc<TaskStore> {
+    let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
+    Arc::new(TaskStore::new(storage as Arc<dyn ThreadStore>))
+}
+
+async fn persist_agent_run(
+    task_store: &TaskStore,
+    owner_thread_id: &str,
+    run_id: &str,
+    agent_id: &str,
+    status: TaskStatus,
+    error: Option<&str>,
+) {
+    task_store
+        .create_task(NewTaskSpec {
+            task_id: run_id.to_string(),
+            owner_thread_id: owner_thread_id.to_string(),
+            task_type: AGENT_RUN_TOOL_ID.to_string(),
+            description: format!("agent:{agent_id}"),
+            parent_task_id: None,
+            supports_resume: true,
+            metadata: json!({
+                "thread_id": format!("sub-agent-{run_id}"),
+                "agent_id": agent_id
+            }),
+        })
+        .await
+        .unwrap();
+
+    if status != TaskStatus::Running {
+        task_store
+            .persist_foreground_result(run_id, status, error.map(str::to_string), None)
+            .await
+            .unwrap();
+    }
+}
+
+async fn persisted_status(task_store: &TaskStore, run_id: &str) -> TaskStatus {
+    task_store
+        .load_task(run_id)
+        .await
+        .unwrap()
+        .expect("task should exist")
+        .status
+}
+
+fn owner_step<'a>(fixture: &'a TestFixture) -> StepContext<'a> {
+    StepContext::new(fixture.ctx(), "owner-1", &fixture.messages, vec![])
 }
 
 // ── AgentRecoveryPlugin tests ────────────────────────────────────────────────
 
 #[tokio::test]
 async fn recovery_plugin_detects_orphan_and_records_confirmation() {
-    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()));
-    let thread = Thread::with_initial_state(
+    let task_store = recovery_task_store();
+    persist_agent_run(
+        &task_store,
         "owner-1",
-        json!({
-            "background_tasks": {
-                "tasks": {
-                    "run-1": running_task_json("run-1", "worker")
-                }
-            }
-        }),
-    );
+        "run-1",
+        "worker",
+        TaskStatus::Running,
+        None,
+    )
+    .await;
+    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()))
+        .with_task_store(Some(task_store.clone()));
+    let thread = Thread::with_initial_state("owner-1", json!({}));
     let doc = thread.rebuild_state().unwrap();
     let fixture = TestFixture::new_with_state(doc);
-    let mut step = fixture.step(vec![]);
+    let mut step = owner_step(&fixture);
     plugin.run_phase(Phase::RunStart, &mut step).await;
     assert!(matches!(
         step.run_action(),
         crate::contracts::RunAction::Continue
     ));
 
-    let updated = fixture.updated_state();
     assert_eq!(
-        updated["background_tasks"]["tasks"]["run-1"]["status"],
-        json!("stopped")
+        persisted_status(&task_store, "run-1").await,
+        TaskStatus::Stopped
     );
+    let updated = fixture.updated_state();
     assert_eq!(
         updated["__tool_call_scope"]["agent_recovery_run-1"]["suspended_call"]["suspension"]
             ["action"],
@@ -57,7 +97,7 @@ async fn recovery_plugin_detects_orphan_and_records_confirmation() {
     );
 
     let fixture2 = TestFixture::new_with_state(updated);
-    let mut before = fixture2.step(vec![]);
+    let mut before = owner_step(&fixture2);
     plugin.run_phase(Phase::BeforeInference, &mut before).await;
     assert!(
         matches!(before.run_action(), crate::contracts::RunAction::Continue),
@@ -67,7 +107,18 @@ async fn recovery_plugin_detects_orphan_and_records_confirmation() {
 
 #[tokio::test]
 async fn recovery_plugin_does_not_override_existing_suspended_interaction() {
-    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()));
+    let task_store = recovery_task_store();
+    persist_agent_run(
+        &task_store,
+        "owner-1",
+        "run-1",
+        "worker",
+        TaskStatus::Running,
+        None,
+    )
+    .await;
+    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()))
+        .with_task_store(Some(task_store));
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
@@ -89,18 +140,13 @@ async fn recovery_plugin_does_not_override_existing_suspended_interaction() {
                         "resume_mode": "pass_decision_to_tool"
                     }
                 }
-            },
-            "background_tasks": {
-                "tasks": {
-                    "run-1": running_task_json("run-1", "worker")
-                }
             }
         }),
     );
 
     let doc = thread.rebuild_state().unwrap();
     let fixture = TestFixture::new_with_state(doc);
-    let mut step = fixture.step(vec![]);
+    let mut step = owner_step(&fixture);
     plugin.run_phase(Phase::RunStart, &mut step).await;
     assert!(
         matches!(step.run_action(), crate::contracts::RunAction::Continue),
@@ -116,7 +162,18 @@ async fn recovery_plugin_does_not_override_existing_suspended_interaction() {
 
 #[tokio::test]
 async fn recovery_plugin_auto_approve_when_permission_allow() {
-    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()));
+    let task_store = recovery_task_store();
+    persist_agent_run(
+        &task_store,
+        "owner-1",
+        "run-1",
+        "worker",
+        TaskStatus::Running,
+        None,
+    )
+    .await;
+    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()))
+        .with_task_store(Some(task_store.clone()));
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
@@ -125,17 +182,12 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
                 "tools": {
                     "recover_agent_run": "allow"
                 }
-            },
-            "background_tasks": {
-                "tasks": {
-                    "run-1": running_task_json("run-1", "worker")
-                }
             }
         }),
     );
     let doc = thread.rebuild_state().unwrap();
     let fixture = TestFixture::new_with_state(doc);
-    let mut step = fixture.step(vec![]);
+    let mut step = owner_step(&fixture);
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
@@ -157,15 +209,26 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
         json!("run-1")
     );
     assert_eq!(
-        updated["background_tasks"]["tasks"]["run-1"]["status"],
-        json!("stopped")
+        persisted_status(&task_store, "run-1").await,
+        TaskStatus::Stopped
     );
 }
 
 #[cfg(feature = "permission")]
 #[tokio::test]
 async fn recovery_plugin_auto_deny_when_permission_deny() {
-    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()));
+    let task_store = recovery_task_store();
+    persist_agent_run(
+        &task_store,
+        "owner-1",
+        "run-1",
+        "worker",
+        TaskStatus::Running,
+        None,
+    )
+    .await;
+    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()))
+        .with_task_store(Some(task_store.clone()));
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
@@ -174,17 +237,12 @@ async fn recovery_plugin_auto_deny_when_permission_deny() {
                 "tools": {
                     "recover_agent_run": "deny"
                 }
-            },
-            "background_tasks": {
-                "tasks": {
-                    "run-1": running_task_json("run-1", "worker")
-                }
             }
         }),
     );
     let doc = thread.rebuild_state().unwrap();
     let fixture = TestFixture::new_with_state(doc);
-    let mut step = fixture.step(vec![]);
+    let mut step = owner_step(&fixture);
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
@@ -197,8 +255,8 @@ async fn recovery_plugin_auto_deny_when_permission_deny() {
         "deny should not set recovery tool-call resume state"
     );
     assert_eq!(
-        updated["background_tasks"]["tasks"]["run-1"]["status"],
-        json!("stopped")
+        persisted_status(&task_store, "run-1").await,
+        TaskStatus::Stopped
     );
     assert!(updated
         .get("__suspended_tool_calls")
@@ -209,24 +267,30 @@ async fn recovery_plugin_auto_deny_when_permission_deny() {
 
 #[tokio::test]
 async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
-    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()));
+    let task_store = recovery_task_store();
+    persist_agent_run(
+        &task_store,
+        "owner-1",
+        "run-1",
+        "worker",
+        TaskStatus::Running,
+        None,
+    )
+    .await;
+    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()))
+        .with_task_store(Some(task_store));
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
             "permissions": {
                 "default_behavior": "allow",
                 "tools": {}
-            },
-            "background_tasks": {
-                "tasks": {
-                    "run-1": running_task_json("run-1", "worker")
-                }
             }
         }),
     );
     let doc = thread.rebuild_state().unwrap();
     let fixture = TestFixture::new_with_state(doc);
-    let mut step = fixture.step(vec![]);
+    let mut step = owner_step(&fixture);
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
@@ -247,24 +311,30 @@ async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
 #[cfg(feature = "permission")]
 #[tokio::test]
 async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
-    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()));
+    let task_store = recovery_task_store();
+    persist_agent_run(
+        &task_store,
+        "owner-1",
+        "run-1",
+        "worker",
+        TaskStatus::Running,
+        None,
+    )
+    .await;
+    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()))
+        .with_task_store(Some(task_store));
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
             "permissions": {
                 "default_behavior": "deny",
                 "tools": {}
-            },
-            "background_tasks": {
-                "tasks": {
-                    "run-1": running_task_json("run-1", "worker")
-                }
             }
         }),
     );
     let doc = thread.rebuild_state().unwrap();
     let fixture = TestFixture::new_with_state(doc);
-    let mut step = fixture.step(vec![]);
+    let mut step = owner_step(&fixture);
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
@@ -286,7 +356,18 @@ async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
 #[cfg(feature = "permission")]
 #[tokio::test]
 async fn recovery_plugin_tool_rule_overrides_default_behavior() {
-    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()));
+    let task_store = recovery_task_store();
+    persist_agent_run(
+        &task_store,
+        "owner-1",
+        "run-1",
+        "worker",
+        TaskStatus::Running,
+        None,
+    )
+    .await;
+    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()))
+        .with_task_store(Some(task_store));
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
@@ -295,17 +376,12 @@ async fn recovery_plugin_tool_rule_overrides_default_behavior() {
                 "tools": {
                     "recover_agent_run": "ask"
                 }
-            },
-            "background_tasks": {
-                "tasks": {
-                    "run-1": running_task_json("run-1", "worker")
-                }
             }
         }),
     );
     let doc = thread.rebuild_state().unwrap();
     let fixture = TestFixture::new_with_state(doc);
-    let mut step = fixture.step(vec![]);
+    let mut step = owner_step(&fixture);
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
@@ -324,51 +400,64 @@ async fn recovery_plugin_tool_rule_overrides_default_behavior() {
     );
 }
 
-// ── Recovery plugin: multiple orphans ────────────────────────────────────────
-
 #[tokio::test]
 async fn recovery_plugin_detects_multiple_orphans_creates_one_suspension() {
-    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()));
-    let thread = Thread::with_initial_state(
+    let task_store = recovery_task_store();
+    persist_agent_run(
+        &task_store,
         "owner-1",
-        json!({
-            "background_tasks": {
-                "tasks": {
-                    "run-1": running_task_json("run-1", "worker-a"),
-                    "run-2": running_task_json("run-2", "worker-b"),
-                    "run-3": running_task_json("run-3", "worker-c")
-                }
-            }
-        }),
-    );
+        "run-1",
+        "worker-a",
+        TaskStatus::Running,
+        None,
+    )
+    .await;
+    persist_agent_run(
+        &task_store,
+        "owner-1",
+        "run-2",
+        "worker-b",
+        TaskStatus::Running,
+        None,
+    )
+    .await;
+    persist_agent_run(
+        &task_store,
+        "owner-1",
+        "run-3",
+        "worker-c",
+        TaskStatus::Running,
+        None,
+    )
+    .await;
+    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()))
+        .with_task_store(Some(task_store.clone()));
+    let thread = Thread::with_initial_state("owner-1", json!({}));
     let doc = thread.rebuild_state().unwrap();
     let fixture = TestFixture::new_with_state(doc);
-    let mut step = fixture.step(vec![]);
+    let mut step = owner_step(&fixture);
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
+    assert_eq!(
+        persisted_status(&task_store, "run-1").await,
+        TaskStatus::Stopped
+    );
+    assert_eq!(
+        persisted_status(&task_store, "run-2").await,
+        TaskStatus::Stopped
+    );
+    assert_eq!(
+        persisted_status(&task_store, "run-3").await,
+        TaskStatus::Stopped
+    );
+
     let updated = fixture.updated_state();
-
-    // All 3 should be marked stopped.
-    assert_eq!(
-        updated["background_tasks"]["tasks"]["run-1"]["status"],
-        json!("stopped")
-    );
-    assert_eq!(
-        updated["background_tasks"]["tasks"]["run-2"]["status"],
-        json!("stopped")
-    );
-    assert_eq!(
-        updated["background_tasks"]["tasks"]["run-3"]["status"],
-        json!("stopped")
-    );
-
-    // Only one recovery suspension should be created (for the first orphan).
     let scope = &updated["__tool_call_scope"];
     let suspended_count = scope
         .as_object()
         .map(|obj| {
             obj.values()
-                .filter(|v| v.get("suspended_call").is_some())
+                .filter(|value| value.get("suspended_call").is_some())
                 .count()
         })
         .unwrap_or(0);
@@ -378,12 +467,29 @@ async fn recovery_plugin_detects_multiple_orphans_creates_one_suspension() {
     );
 }
 
-// ── Recovery plugin: mix of orphans and live handles ─────────────────────────
-
 #[tokio::test]
 async fn recovery_plugin_only_marks_orphans_when_some_have_live_handles() {
+    let task_store = recovery_task_store();
+    persist_agent_run(
+        &task_store,
+        "owner-1",
+        "run-1",
+        "worker-a",
+        TaskStatus::Running,
+        None,
+    )
+    .await;
+    persist_agent_run(
+        &task_store,
+        "owner-1",
+        "run-2",
+        "worker-b",
+        TaskStatus::Running,
+        None,
+    )
+    .await;
+
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
-    // run-1 has a live handle in BackgroundTaskManager.
     let token = RunCancellationToken::new();
     bg_mgr
         .spawn_with_id(
@@ -401,42 +507,45 @@ async fn recovery_plugin_only_marks_orphans_when_some_have_live_handles() {
         )
         .await;
 
-    let plugin = AgentRecoveryPlugin::new(bg_mgr);
-    let thread = Thread::with_initial_state(
-        "owner-1",
-        json!({
-            "background_tasks": {
-                "tasks": {
-                    "run-1": running_task_json("run-1", "worker-a"),
-                    "run-2": running_task_json("run-2", "worker-b")
-                }
-            }
-        }),
-    );
+    let plugin = AgentRecoveryPlugin::new(bg_mgr).with_task_store(Some(task_store.clone()));
+    let thread = Thread::with_initial_state("owner-1", json!({}));
     let doc = thread.rebuild_state().unwrap();
     let fixture = TestFixture::new_with_state(doc);
-    let mut step = fixture.step(vec![]);
+    let mut step = owner_step(&fixture);
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
-    let updated = fixture.updated_state();
-
-    // run-1 has live handle -> not marked stopped.
     assert_eq!(
-        updated["background_tasks"]["tasks"]["run-1"]["status"],
-        json!("running")
+        persisted_status(&task_store, "run-1").await,
+        TaskStatus::Running
     );
-
-    // run-2 is orphaned -> marked stopped.
     assert_eq!(
-        updated["background_tasks"]["tasks"]["run-2"]["status"],
-        json!("stopped")
+        persisted_status(&task_store, "run-2").await,
+        TaskStatus::Stopped
     );
 }
 
-// ── Recovery plugin: no orphans when all have live handles ───────────────────
-
 #[tokio::test]
 async fn recovery_plugin_no_action_when_all_running_have_live_handles() {
+    let task_store = recovery_task_store();
+    persist_agent_run(
+        &task_store,
+        "owner-1",
+        "run-1",
+        "worker-a",
+        TaskStatus::Running,
+        None,
+    )
+    .await;
+    persist_agent_run(
+        &task_store,
+        "owner-1",
+        "run-2",
+        "worker-b",
+        TaskStatus::Running,
+        None,
+    )
+    .await;
+
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
     let token1 = RunCancellationToken::new();
     bg_mgr
@@ -471,40 +580,30 @@ async fn recovery_plugin_no_action_when_all_running_have_live_handles() {
         )
         .await;
 
-    let plugin = AgentRecoveryPlugin::new(bg_mgr);
-    let thread = Thread::with_initial_state(
-        "owner-1",
-        json!({
-            "background_tasks": {
-                "tasks": {
-                    "run-1": running_task_json("run-1", "worker-a"),
-                    "run-2": running_task_json("run-2", "worker-b")
-                }
-            }
-        }),
-    );
+    let plugin = AgentRecoveryPlugin::new(bg_mgr).with_task_store(Some(task_store.clone()));
+    let thread = Thread::with_initial_state("owner-1", json!({}));
     let doc = thread.rebuild_state().unwrap();
     let fixture = TestFixture::new_with_state(doc);
-    let mut step = fixture.step(vec![]);
+    let mut step = owner_step(&fixture);
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
+    assert_eq!(
+        persisted_status(&task_store, "run-1").await,
+        TaskStatus::Running
+    );
+    assert_eq!(
+        persisted_status(&task_store, "run-2").await,
+        TaskStatus::Running
+    );
+
     let updated = fixture.updated_state();
-
-    // Both still running (no orphan detection).
-    assert_eq!(
-        updated["background_tasks"]["tasks"]["run-1"]["status"],
-        json!("running")
-    );
-    assert_eq!(
-        updated["background_tasks"]["tasks"]["run-2"]["status"],
-        json!("running")
-    );
-
-    // No suspended recovery interaction.
     let has_suspended = updated
         .get("__tool_call_scope")
         .and_then(|scope| scope.as_object())
-        .map(|obj| obj.values().any(|v| v.get("suspended_call").is_some()))
+        .map(|obj| {
+            obj.values()
+                .any(|value| value.get("suspended_call").is_some())
+        })
         .unwrap_or(false);
     assert!(
         !has_suspended,
@@ -512,89 +611,85 @@ async fn recovery_plugin_no_action_when_all_running_have_live_handles() {
     );
 }
 
-// ── Recovery plugin: mixed statuses only Running without handle is orphan ────
-
 #[tokio::test]
 async fn recovery_plugin_ignores_completed_stopped_failed_in_persisted_state() {
-    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()));
-    let thread = Thread::with_initial_state(
+    let task_store = recovery_task_store();
+    persist_agent_run(
+        &task_store,
         "owner-1",
-        json!({
-            "background_tasks": {
-                "tasks": {
-                    "run-completed": {
-                        "task_type": "agent_run",
-                        "description": "agent:worker",
-                        "status": "completed",
-                        "created_at_ms": 0,
-                        "metadata": {
-                            "thread_id": "sub-agent-run-completed",
-                            "agent_id": "worker"
-                        }
-                    },
-                    "run-failed": {
-                        "task_type": "agent_run",
-                        "description": "agent:worker",
-                        "status": "failed",
-                        "created_at_ms": 0,
-                        "error": "oops",
-                        "metadata": {
-                            "thread_id": "sub-agent-run-failed",
-                            "agent_id": "worker"
-                        }
-                    },
-                    "run-stopped": {
-                        "task_type": "agent_run",
-                        "description": "agent:worker",
-                        "status": "stopped",
-                        "created_at_ms": 0,
-                        "metadata": {
-                            "thread_id": "sub-agent-run-stopped",
-                            "agent_id": "worker"
-                        }
-                    }
-                }
-            }
-        }),
-    );
+        "run-completed",
+        "worker",
+        TaskStatus::Completed,
+        None,
+    )
+    .await;
+    persist_agent_run(
+        &task_store,
+        "owner-1",
+        "run-failed",
+        "worker",
+        TaskStatus::Failed,
+        Some("oops"),
+    )
+    .await;
+    persist_agent_run(
+        &task_store,
+        "owner-1",
+        "run-stopped",
+        "worker",
+        TaskStatus::Stopped,
+        None,
+    )
+    .await;
+
+    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()))
+        .with_task_store(Some(task_store.clone()));
+    let thread = Thread::with_initial_state("owner-1", json!({}));
     let doc = thread.rebuild_state().unwrap();
     let fixture = TestFixture::new_with_state(doc);
-    let mut step = fixture.step(vec![]);
+    let mut step = owner_step(&fixture);
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
+    assert_eq!(
+        persisted_status(&task_store, "run-completed").await,
+        TaskStatus::Completed
+    );
+    assert_eq!(
+        persisted_status(&task_store, "run-failed").await,
+        TaskStatus::Failed
+    );
+    assert_eq!(
+        persisted_status(&task_store, "run-stopped").await,
+        TaskStatus::Stopped
+    );
+
     let updated = fixture.updated_state();
-
-    // None of them should change status.
-    assert_eq!(
-        updated["background_tasks"]["tasks"]["run-completed"]["status"],
-        json!("completed")
-    );
-    assert_eq!(
-        updated["background_tasks"]["tasks"]["run-failed"]["status"],
-        json!("failed")
-    );
-    assert_eq!(
-        updated["background_tasks"]["tasks"]["run-stopped"]["status"],
-        json!("stopped")
-    );
-
-    // No suspended recovery interaction.
     let has_suspended = updated
         .get("__tool_call_scope")
         .and_then(|scope| scope.as_object())
-        .map(|obj| obj.values().any(|v| v.get("suspended_call").is_some()))
+        .map(|obj| {
+            obj.values()
+                .any(|value| value.get("suspended_call").is_some())
+        })
         .unwrap_or(false);
     assert!(!has_suspended);
 }
 
-// ── Permission fallback test ─────────────────────────────────────────────────
-
 #[cfg(not(feature = "permission"))]
 #[tokio::test]
 async fn recovery_plugin_fallback_always_approves_despite_deny_state() {
-    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()));
-    // State declares "deny" for recover_agent_run, but without the permission
-    // feature the fallback always returns Allow.
+    let task_store = recovery_task_store();
+    persist_agent_run(
+        &task_store,
+        "owner-1",
+        "run-1",
+        "worker",
+        TaskStatus::Running,
+        None,
+    )
+    .await;
+    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()))
+        .with_task_store(Some(task_store));
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
@@ -603,22 +698,15 @@ async fn recovery_plugin_fallback_always_approves_despite_deny_state() {
                 "tools": {
                     "recover_agent_run": "deny"
                 }
-            },
-            "background_tasks": {
-                "tasks": {
-                    "run-1": running_task_json("run-1", "worker")
-                }
             }
         }),
     );
     let doc = thread.rebuild_state().unwrap();
     let fixture = TestFixture::new_with_state(doc);
-    let mut step = fixture.step(vec![]);
+    let mut step = owner_step(&fixture);
     plugin.run_phase(Phase::RunStart, &mut step).await;
 
     let updated = fixture.updated_state();
-    // Without permission feature, fallback always returns Allow -- so recovery
-    // should auto-approve even though state says "deny".
     assert_eq!(
         updated["__tool_call_scope"]["agent_recovery_run-1"]["tool_call_state"]["status"],
         json!("resuming"),

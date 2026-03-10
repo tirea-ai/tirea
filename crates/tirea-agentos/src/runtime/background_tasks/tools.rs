@@ -4,7 +4,7 @@
 //! read output, and cancel any background task regardless of type.
 
 use super::manager::BackgroundTaskManager;
-use super::{legacy_tasks_from_doc, BackgroundTask, TaskState, TaskStatus, TaskStore, TaskSummary};
+use super::{TaskState, TaskStatus, TaskStore, TaskSummary};
 use crate::contracts::runtime::tool_call::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
 };
@@ -66,7 +66,6 @@ impl TaskStatusTool {
         &self,
         owner_thread_id: &str,
         task_id: &str,
-        legacy: Option<&BackgroundTask>,
     ) -> Result<Option<TaskSummary>, String> {
         let persisted = if let Some(store) = &self.task_store {
             store
@@ -82,15 +81,11 @@ impl TaskStatusTool {
         Ok(match (persisted, live) {
             (_, Some(live)) => Some(live),
             (Some(task), None) => Some(task),
-            (None, None) => legacy.map(|task| task.summary(task_id)),
+            (None, None) => None,
         })
     }
 
-    async fn list_all(
-        &self,
-        owner_thread_id: &str,
-        legacy: HashMap<String, BackgroundTask>,
-    ) -> Result<Vec<TaskSummary>, String> {
+    async fn list_all(&self, owner_thread_id: &str) -> Result<Vec<TaskSummary>, String> {
         let mut by_id: HashMap<String, TaskSummary> = HashMap::new();
 
         if let Some(store) = &self.task_store {
@@ -105,12 +100,6 @@ impl TaskStatusTool {
 
         for summary in self.manager.list(owner_thread_id, None).await {
             by_id.insert(summary.task_id.clone(), summary);
-        }
-
-        for (task_id, task) in legacy {
-            by_id
-                .entry(task_id.clone())
-                .or_insert_with(|| task.summary(&task_id));
         }
 
         let mut out: Vec<TaskSummary> = by_id.into_values().collect();
@@ -154,15 +143,11 @@ impl Tool for TaskStatusTool {
                 "Missing caller thread context",
             ));
         };
-        let legacy_tasks = legacy_tasks_from_doc(&ctx.snapshot());
 
         let task_id = args.get("task_id").and_then(Value::as_str);
 
         if let Some(task_id) = task_id {
-            match self
-                .query_one(&thread_id, task_id, legacy_tasks.get(task_id))
-                .await
-            {
+            match self.query_one(&thread_id, task_id).await {
                 Ok(Some(summary)) => Ok(ToolResult::success(
                     TASK_STATUS_TOOL_ID,
                     serde_json::to_value(&summary).unwrap_or(Value::Null),
@@ -174,7 +159,7 @@ impl Tool for TaskStatusTool {
                 Err(err) => Ok(ToolResult::error(TASK_STATUS_TOOL_ID, err)),
             }
         } else {
-            match self.list_all(&thread_id, legacy_tasks).await {
+            match self.list_all(&thread_id).await {
                 Ok(tasks) => Ok(ToolResult::success(
                     TASK_STATUS_TOOL_ID,
                     json!({
@@ -313,10 +298,6 @@ impl TaskOutputTool {
         self.task_store = task_store;
         self
     }
-
-    fn legacy_task(ctx: &ToolCallContext<'_>, task_id: &str) -> Option<BackgroundTask> {
-        legacy_tasks_from_doc(&ctx.snapshot()).remove(task_id)
-    }
 }
 
 #[async_trait]
@@ -351,17 +332,13 @@ impl Tool for TaskOutputTool {
             Err(err) => return Ok(err),
         };
 
-        let legacy = Self::legacy_task(ctx, task_id);
         let thread_id = owner_thread_id(ctx);
 
         let Some(thread_id) = thread_id else {
-            return match legacy {
-                Some(task) => Ok(self.output_from_legacy(task_id, "", &task).await),
-                None => Ok(ToolResult::error(
-                    TASK_OUTPUT_TOOL_ID,
-                    "Missing caller thread context",
-                )),
-            };
+            return Ok(ToolResult::error(
+                TASK_OUTPUT_TOOL_ID,
+                "Missing caller thread context",
+            ));
         };
 
         let Some(task_store) = &self.task_store else {
@@ -376,9 +353,6 @@ impl Tool for TaskOutputTool {
                     }),
                 ));
             }
-            if let Some(task) = legacy {
-                return Ok(self.output_from_legacy(task_id, &thread_id, &task).await);
-            }
             return Ok(ToolResult::error(
                 TASK_OUTPUT_TOOL_ID,
                 format!("Unknown task_id: {task_id}"),
@@ -390,9 +364,6 @@ impl Tool for TaskOutputTool {
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("task store lookup failed: {e}")))?
         else {
-            if let Some(task) = legacy {
-                return Ok(self.output_from_legacy(task_id, &thread_id, &task).await);
-            }
             return Ok(ToolResult::error(
                 TASK_OUTPUT_TOOL_ID,
                 format!("Unknown task_id: {task_id}"),
@@ -437,64 +408,12 @@ impl TaskOutputTool {
             }),
         )
     }
-
-    async fn output_from_legacy(
-        &self,
-        task_id: &str,
-        owner_thread_id: &str,
-        task: &BackgroundTask,
-    ) -> ToolResult {
-        let live = self.manager.get(owner_thread_id, task_id).await;
-        let output = if task.task_type == "agent_run" {
-            let Some(store) = &self.task_store else {
-                return ToolResult::error(
-                    TASK_OUTPUT_TOOL_ID,
-                    "no thread store configured to load agent task output",
-                );
-            };
-            let synthetic = TaskState {
-                id: task_id.to_string(),
-                task_type: task.task_type.clone(),
-                description: task.description.clone(),
-                owner_thread_id: owner_thread_id.to_string(),
-                parent_task_id: task.parent_task_id.clone(),
-                status: task.status,
-                error: task.error.clone(),
-                result: None,
-                result_ref: None,
-                checkpoint: None,
-                supports_resume: true,
-                attempt: 0,
-                created_at_ms: task.created_at_ms,
-                updated_at_ms: task.completed_at_ms.unwrap_or(task.created_at_ms),
-                completed_at_ms: task.completed_at_ms,
-                cancel_requested_at_ms: None,
-                metadata: task.metadata.clone(),
-            };
-            match store.load_output_text(&synthetic).await {
-                Ok(output) => output.map(Value::String),
-                Err(err) => return ToolResult::error(TASK_OUTPUT_TOOL_ID, err.to_string()),
-            }
-        } else {
-            live.and_then(|summary| summary.result)
-        };
-
-        ToolResult::success(
-            TASK_OUTPUT_TOOL_ID,
-            json!({
-                "task_id": task_id,
-                "task_type": task.task_type,
-                "agent_id": task.metadata.get("agent_id").cloned().unwrap_or(Value::Null),
-                "status": task.status.as_str(),
-                "output": output,
-            }),
-        )
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contracts::storage::ThreadStore;
     use crate::contracts::RunConfig;
     use tirea_contract::testing::TestFixture;
 
@@ -911,72 +830,59 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn output_tool_falls_back_to_persisted_state() {
+    async fn output_tool_reads_persisted_state_from_task_store() {
         let mgr = Arc::new(BackgroundTaskManager::new());
-        let tool = TaskOutputTool::new(mgr, None);
-
-        let doc = json!({
-            "background_tasks": {
-                "tasks": {
-                    "run-1": {
-                        "task_type": "shell",
-                        "description": "echo test",
-                        "status": "completed",
-                        "created_at_ms": 0,
-                        "metadata": {}
-                    }
-                }
-            }
-        });
-        let fix = TestFixture::new_with_state(doc);
-        let result = tool
-            .execute(
-                json!({"task_id": "run-1"}),
-                &fix.ctx_with("call-1", "tool:task_output"),
+        let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
+        let task_store = Arc::new(TaskStore::new(storage as Arc<dyn ThreadStore>));
+        task_store
+            .create_task(super::super::NewTaskSpec {
+                task_id: "run-1".to_string(),
+                owner_thread_id: "thread-1".to_string(),
+                task_type: "shell".to_string(),
+                description: "echo test".to_string(),
+                parent_task_id: None,
+                supports_resume: false,
+                metadata: json!({}),
+            })
+            .await
+            .unwrap();
+        task_store
+            .persist_foreground_result(
+                "run-1",
+                TaskStatus::Completed,
+                None,
+                Some(json!({"stdout":"test"})),
             )
+            .await
+            .unwrap();
+
+        let tool = TaskOutputTool::new(mgr, None).with_task_store(Some(task_store));
+        let fix = fixture_with_thread("thread-1");
+        let result = tool
+            .execute(json!({"task_id": "run-1"}), &fix.ctx())
             .await
             .unwrap();
         assert!(result.is_success());
         assert_eq!(result.data["task_type"], "shell");
         assert_eq!(result.data["status"], "completed");
+        assert_eq!(result.data["output"]["stdout"], "test");
     }
 
     #[tokio::test]
-    async fn output_tool_persisted_agent_run_without_store_returns_error() {
+    async fn output_tool_without_task_store_cannot_read_persisted_task() {
         let mgr = Arc::new(BackgroundTaskManager::new());
         let tool = TaskOutputTool::new(mgr, None);
-
-        let doc = json!({
-            "background_tasks": {
-                "tasks": {
-                    "run-1": {
-                        "task_type": "agent_run",
-                        "description": "agent:worker",
-                        "status": "completed",
-                        "created_at_ms": 0,
-                        "metadata": {
-                            "thread_id": "sub-agent-run-1",
-                            "agent_id": "worker"
-                        }
-                    }
-                }
-            }
-        });
-        let fix = TestFixture::new_with_state(doc);
+        let fix = fixture_with_thread("thread-1");
         let result = tool
-            .execute(
-                json!({"task_id": "run-1"}),
-                &fix.ctx_with("call-1", "tool:task_output"),
-            )
+            .execute(json!({"task_id": "run-1"}), &fix.ctx())
             .await
             .unwrap();
-        // No ThreadStore configured → error.
         assert!(!result.is_success());
         assert!(result
             .message
             .as_deref()
             .unwrap_or("")
-            .contains("no thread store configured"));
+            .contains("Unknown task_id"));
     }
 
     #[tokio::test]

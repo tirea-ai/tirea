@@ -21,7 +21,6 @@ use tirea_contract::testing::{
     apply_after_inference_for_test, apply_after_tool_for_test, apply_before_inference_for_test,
     apply_before_tool_for_test, apply_lifecycle_for_test, TestFixture,
 };
-use tirea_state::apply_patches;
 
 #[async_trait]
 pub(super) trait AgentBehaviorTestDispatch {

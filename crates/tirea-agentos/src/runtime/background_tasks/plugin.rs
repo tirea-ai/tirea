@@ -4,8 +4,8 @@
 
 use super::manager::BackgroundTaskManager;
 use super::{
-    derived_task_view_from_doc, legacy_tasks_from_doc, BackgroundTaskView,
-    BackgroundTaskViewAction, BackgroundTaskViewState, TaskStore, TaskSummary,
+    derived_task_view_from_doc, BackgroundTaskView, BackgroundTaskViewAction,
+    BackgroundTaskViewState, TaskStore, TaskSummary,
 };
 use crate::contracts::runtime::behavior::{AgentBehavior, ReadOnlyContext};
 use crate::contracts::runtime::phase::{
@@ -51,7 +51,7 @@ impl BackgroundTasksPlugin {
         self
     }
 
-    async fn collect_task_summaries(&self, thread_id: &str, snapshot: &Value) -> Vec<TaskSummary> {
+    async fn collect_task_summaries(&self, thread_id: &str) -> Vec<TaskSummary> {
         let mut by_id: HashMap<String, TaskSummary> = HashMap::new();
 
         if let Some(task_store) = &self.task_store {
@@ -64,12 +64,6 @@ impl BackgroundTasksPlugin {
 
         for task in self.manager.list(thread_id, None).await {
             by_id.insert(task.task_id.clone(), task);
-        }
-
-        for (task_id, task) in legacy_tasks_from_doc(snapshot) {
-            by_id
-                .entry(task_id.clone())
-                .or_insert_with(|| task.summary(&task_id));
         }
 
         let mut tasks: Vec<_> = by_id.into_values().collect();
@@ -151,9 +145,7 @@ impl AgentBehavior for BackgroundTasksPlugin {
 
     async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
         let snapshot = ctx.snapshot();
-        let tasks = self
-            .collect_task_summaries(ctx.thread_id(), &snapshot)
-            .await;
+        let tasks = self.collect_task_summaries(ctx.thread_id()).await;
         let view = Self::derive_task_view(&tasks);
 
         self.sync_action_if_changed(&snapshot, &view)
@@ -178,9 +170,7 @@ impl AgentBehavior for BackgroundTasksPlugin {
         ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<AfterToolExecuteAction> {
         let snapshot = ctx.snapshot();
-        let tasks = self
-            .collect_task_summaries(ctx.thread_id(), &snapshot)
-            .await;
+        let tasks = self.collect_task_summaries(ctx.thread_id()).await;
         let view = Self::derive_task_view(&tasks);
 
         let mut actions = ActionSet::empty();

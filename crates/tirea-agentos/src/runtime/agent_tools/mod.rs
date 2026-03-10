@@ -48,10 +48,7 @@ mod types;
 
 use manager::{execute_sub_agent, SubAgentExecutionRequest};
 pub(super) use plugins::{AgentRecoveryPlugin, AgentToolsPlugin};
-use state::{
-    build_recovery_interaction, current_unix_millis, has_suspended_recovery_interaction,
-    recovery_target_id,
-};
+use state::{build_recovery_interaction, has_suspended_recovery_interaction, recovery_target_id};
 pub(super) use tools::AgentRunTool;
 
 #[cfg(test)]

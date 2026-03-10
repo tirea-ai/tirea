@@ -2,11 +2,7 @@ use super::state::current_unix_millis;
 use super::*;
 use crate::contracts::runtime::behavior::{AgentBehavior, ReadOnlyContext};
 use crate::contracts::runtime::phase::{ActionSet, BeforeInferenceAction, LifecycleAction};
-use crate::contracts::runtime::state::AnyStateAction;
-use crate::runtime::background_tasks::{
-    legacy_tasks_from_doc, BackgroundTaskAction, BackgroundTaskManager, BackgroundTaskState,
-    TaskStatus, TaskStore,
-};
+use crate::runtime::background_tasks::{BackgroundTaskManager, TaskStatus, TaskStore};
 #[cfg(feature = "permission")]
 use tirea_extension_permission::resolve_permission_behavior;
 
@@ -43,31 +39,19 @@ impl AgentBehavior for AgentRecoveryPlugin {
         AGENT_RECOVERY_PLUGIN_ID
     }
 
-    tirea_contract::declare_plugin_states!(BackgroundTaskState);
-
     async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
         use crate::contracts::runtime::{
             PendingToolCall, SuspendedCall, ToolCallResumeMode, ToolCallState,
         };
         let state = ctx.snapshot();
-        let legacy_tasks = legacy_tasks_from_doc(&state);
-        let mut tasks: Vec<_> = legacy_tasks
-            .iter()
-            .map(|(task_id, task)| task.summary(task_id))
-            .collect();
-
-        if let Some(task_store) = &self.task_store {
-            if let Ok(durable) = task_store.list_tasks_for_owner(ctx.thread_id()).await {
-                let mut by_id = std::collections::HashMap::new();
-                for task in tasks.drain(..) {
-                    by_id.insert(task.task_id.clone(), task);
-                }
-                for task in durable {
-                    by_id.insert(task.id.clone(), task.summary());
-                }
-                tasks = by_id.into_values().collect();
-            }
-        }
+        let mut tasks = match &self.task_store {
+            Some(task_store) => task_store
+                .list_tasks_for_owner(ctx.thread_id())
+                .await
+                .map(|tasks| tasks.into_iter().map(|task| task.summary()).collect())
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
         tasks.sort_by(|a, b| {
             a.created_at_ms
                 .cmp(&b.created_at_ms)
@@ -105,21 +89,6 @@ impl AgentBehavior for AgentRecoveryPlugin {
                             None,
                         )
                         .await;
-                }
-                if legacy_tasks.contains_key(&task.task_id) {
-                    actions = actions.and(LifecycleAction::State(AnyStateAction::new::<
-                        BackgroundTaskState,
-                    >(
-                        BackgroundTaskAction::SetStatus {
-                            task_id: task.task_id.clone(),
-                            status: TaskStatus::Stopped,
-                            error: Some(
-                                "No live executor found in current process; marked stopped"
-                                    .to_string(),
-                            ),
-                            completed_at_ms: Some(current_unix_millis()),
-                        },
-                    )));
                 }
             }
         }

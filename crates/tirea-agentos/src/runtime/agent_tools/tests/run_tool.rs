@@ -1,5 +1,63 @@
 use super::*;
 
+fn build_worker_os_with_store(
+    include_slow_terminate: bool,
+) -> (AgentOs, Arc<tirea_store_adapters::MemoryStore>) {
+    let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
+    let mut builder = AgentOs::builder()
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>);
+    if include_slow_terminate {
+        builder = builder.with_registered_behavior(
+            "slow_terminate_behavior_requested",
+            Arc::new(SlowTerminatePlugin),
+        );
+    }
+    let worker = if include_slow_terminate {
+        crate::runtime::AgentDefinition::new("gpt-4o-mini")
+            .with_behavior_id("slow_terminate_behavior_requested")
+    } else {
+        crate::runtime::AgentDefinition::new("gpt-4o-mini")
+    };
+    let os = builder.with_agent("worker", worker).build().unwrap();
+    (os, storage)
+}
+
+async fn persist_agent_run(
+    storage: Arc<tirea_store_adapters::MemoryStore>,
+    owner_thread_id: &str,
+    run_id: &str,
+    agent_id: &str,
+    thread_id: &str,
+    status: crate::runtime::background_tasks::TaskStatus,
+    error: Option<&str>,
+    parent_task_id: Option<&str>,
+) {
+    let task_store = crate::runtime::background_tasks::TaskStore::new(
+        storage as Arc<dyn crate::contracts::storage::ThreadStore>,
+    );
+    task_store
+        .create_task(crate::runtime::background_tasks::NewTaskSpec {
+            task_id: run_id.to_string(),
+            owner_thread_id: owner_thread_id.to_string(),
+            task_type: AGENT_RUN_TOOL_ID.to_string(),
+            description: format!("agent:{agent_id}"),
+            parent_task_id: parent_task_id.map(str::to_string),
+            supports_resume: true,
+            metadata: json!({
+                "thread_id": thread_id,
+                "agent_id": agent_id
+            }),
+        })
+        .await
+        .unwrap();
+    if status != crate::runtime::background_tasks::TaskStatus::Running {
+        task_store
+            .persist_foreground_result(run_id, status, error.map(str::to_string), None)
+            .await
+            .unwrap();
+    }
+}
+
 // ── AgentRunTool tests ───────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -229,19 +287,8 @@ async fn background_stop_then_resume_completes() {
 }
 
 #[tokio::test]
-async fn agent_run_tool_persists_run_state_patch() {
-    let os = AgentOs::builder()
-        .with_registered_behavior(
-            "slow_terminate_behavior_requested",
-            Arc::new(SlowTerminatePlugin),
-        )
-        .with_agent(
-            "worker",
-            crate::runtime::AgentDefinition::new("gpt-4o-mini")
-                .with_behavior_id("slow_terminate_behavior_requested"),
-        )
-        .build()
-        .unwrap();
+async fn agent_run_tool_persists_task_thread_state() {
+    let (os, storage) = build_worker_os_with_store(true);
     let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
 
     let mut fix = TestFixture::new();
@@ -262,49 +309,26 @@ async fn agent_run_tool_persists_run_state_patch() {
         .as_str()
         .expect("run_id should exist")
         .to_string();
-
-    let patch = fix.ctx_with("call-run", "tool:agent_run").take_patch();
-    assert!(
-        !patch.patch().is_empty(),
-        "expected tool to persist run snapshot into state"
+    let task_store = crate::runtime::background_tasks::TaskStore::new(
+        storage as Arc<dyn crate::contracts::storage::ThreadStore>,
     );
-    let base = json!({});
-    let updated = apply_patches(&base, std::iter::once(patch.patch())).unwrap();
+    let task = task_store
+        .load_task(&run_id)
+        .await
+        .unwrap()
+        .expect("task should be persisted");
     assert_eq!(
-        updated["background_tasks"]["tasks"][&run_id]["status"],
-        json!("running")
+        task.status,
+        crate::runtime::background_tasks::TaskStatus::Running
     );
-    // No thread field in BackgroundTask.
-    assert!(
-        updated["background_tasks"]["tasks"][&run_id]
-            .get("thread")
-            .is_none()
-            || updated["background_tasks"]["tasks"][&run_id]["thread"].is_null(),
-        "BackgroundTask should not contain embedded thread"
-    );
-    // thread_id should be present in metadata.
-    assert!(
-        updated["background_tasks"]["tasks"][&run_id]["metadata"]["thread_id"]
-            .as_str()
-            .is_some(),
-        "BackgroundTask should contain thread_id in metadata"
-    );
+    assert_eq!(task.parent_task_id.as_deref(), Some("parent-run-default"));
+    assert_eq!(task.metadata["agent_id"], json!("worker"));
+    assert!(task.metadata["thread_id"].as_str().is_some());
 }
 
 #[tokio::test]
 async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
-    let os = AgentOs::builder()
-        .with_registered_behavior(
-            "slow_terminate_behavior_requested",
-            Arc::new(SlowTerminatePlugin),
-        )
-        .with_agent(
-            "worker",
-            crate::runtime::AgentDefinition::new("gpt-4o-mini")
-                .with_behavior_id("slow_terminate_behavior_requested"),
-        )
-        .build()
-        .unwrap();
+    let (os, storage) = build_worker_os_with_store(true);
     let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
 
     let mut fix = TestFixture::new();
@@ -325,45 +349,34 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
         .as_str()
         .expect("run_id should exist")
         .to_string();
-
-    let patch = fix.ctx_with("call-run", "tool:agent_run").take_patch();
-    let base = json!({});
-    let updated = apply_patches(&base, std::iter::once(patch.patch())).unwrap();
-    assert_eq!(
-        updated["background_tasks"]["tasks"][&run_id]["parent_task_id"],
-        json!("parent-run-42")
+    let task_store = crate::runtime::background_tasks::TaskStore::new(
+        storage as Arc<dyn crate::contracts::storage::ThreadStore>,
     );
+    let task = task_store
+        .load_task(&run_id)
+        .await
+        .unwrap()
+        .expect("task should be persisted");
+    assert_eq!(task.parent_task_id.as_deref(), Some("parent-run-42"));
 }
 
 #[tokio::test]
 async fn agent_run_tool_query_existing_run_keeps_original_parent_lineage() {
-    let os = AgentOs::builder()
-        .with_agent(
-            "worker",
-            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
-        )
-        .build()
-        .unwrap();
+    let (os, storage) = build_worker_os_with_store(false);
     let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
-
-    let base_doc = json!({
-        "background_tasks": {
-            "tasks": {
-                "run-1": {
-                    "task_type": "agent_run",
-                    "description": "agent:worker",
-                    "status": "running",
-                    "created_at_ms": 1234567890,
-                    "metadata": {
-                        "thread_id": "custom-child-thread",
-                        "agent_id": "worker"
-                    }
-                }
-            }
-        }
-    });
-    let mut fix = TestFixture::new_with_state(base_doc.clone());
-    fix.run_config = caller_scope_with_state_and_run(base_doc.clone(), "query-parent-run");
+    persist_agent_run(
+        storage.clone(),
+        "owner-thread",
+        "run-1",
+        "worker",
+        "custom-child-thread",
+        crate::runtime::background_tasks::TaskStatus::Running,
+        None,
+        Some("original-parent"),
+    )
+    .await;
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope_with_state_and_run(json!({}), "query-parent-run");
 
     let result = run_tool
         .execute(
@@ -377,54 +390,37 @@ async fn agent_run_tool_query_existing_run_keeps_original_parent_lineage() {
         .unwrap();
     assert_eq!(result.status, ToolStatus::Success);
 
-    // Orphaned running task should be marked stopped, preserving metadata.
     assert_eq!(result.data["status"], json!("stopped"));
-    let patch = fix.ctx_with("call-run", "tool:agent_run").take_patch();
-    let updated = apply_patches(&base_doc, std::iter::once(patch.patch())).unwrap();
-    assert_eq!(
-        updated["background_tasks"]["tasks"]["run-1"]["metadata"]["thread_id"],
-        json!("custom-child-thread")
+    let task_store = crate::runtime::background_tasks::TaskStore::new(
+        storage as Arc<dyn crate::contracts::storage::ThreadStore>,
     );
+    let task = task_store.load_task("run-1").await.unwrap().unwrap();
     assert_eq!(
-        updated["background_tasks"]["tasks"]["run-1"]["metadata"]["agent_id"],
-        json!("worker")
+        task.status,
+        crate::runtime::background_tasks::TaskStatus::Stopped
     );
+    assert_eq!(task.metadata["thread_id"], json!("custom-child-thread"));
+    assert_eq!(task.metadata["agent_id"], json!("worker"));
+    assert_eq!(task.parent_task_id.as_deref(), Some("original-parent"));
 }
 
 #[tokio::test]
 async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
-    let os = AgentOs::builder()
-        .with_registered_behavior(
-            "slow_terminate_behavior_requested",
-            Arc::new(SlowTerminatePlugin),
-        )
-        .with_agent(
-            "worker",
-            crate::runtime::AgentDefinition::new("gpt-4o-mini")
-                .with_behavior_id("slow_terminate_behavior_requested"),
-        )
-        .build()
-        .unwrap();
+    let (os, storage) = build_worker_os_with_store(true);
     let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
-
-    let doc = json!({
-        "background_tasks": {
-            "tasks": {
-                "run-1": {
-                    "task_type": "agent_run",
-                    "description": "agent:worker",
-                    "status": "stopped",
-                    "created_at_ms": 1234567890,
-                    "metadata": {
-                        "thread_id": "sub-agent-run-1",
-                        "agent_id": "worker"
-                    }
-                }
-            }
-        }
-    });
-    let mut fix = TestFixture::new_with_state(doc.clone());
-    fix.run_config = caller_scope_with_state(doc);
+    persist_agent_run(
+        storage,
+        "owner-thread",
+        "run-1",
+        "worker",
+        "sub-agent-run-1",
+        crate::runtime::background_tasks::TaskStatus::Stopped,
+        None,
+        None,
+    )
+    .await;
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope();
     let resumed = run_tool
         .execute(
             json!({
@@ -447,38 +443,21 @@ async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
 
 #[tokio::test]
 async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
-    let os = AgentOs::builder()
-        .with_registered_behavior(
-            "slow_terminate_behavior_requested",
-            Arc::new(SlowTerminatePlugin),
-        )
-        .with_agent(
-            "worker",
-            crate::runtime::AgentDefinition::new("gpt-4o-mini")
-                .with_behavior_id("slow_terminate_behavior_requested"),
-        )
-        .build()
-        .unwrap();
+    let (os, storage) = build_worker_os_with_store(true);
     let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
-
-    let doc = json!({
-        "background_tasks": {
-            "tasks": {
-                "run-1": {
-                    "task_type": "agent_run",
-                    "description": "agent:worker",
-                    "status": "running",
-                    "created_at_ms": 1234567890,
-                    "metadata": {
-                        "thread_id": "sub-agent-run-1",
-                        "agent_id": "worker"
-                    }
-                }
-            }
-        }
-    });
-    let mut fix = TestFixture::new_with_state(doc.clone());
-    fix.run_config = caller_scope_with_state(doc);
+    persist_agent_run(
+        storage.clone(),
+        "owner-thread",
+        "run-1",
+        "worker",
+        "sub-agent-run-1",
+        crate::runtime::background_tasks::TaskStatus::Running,
+        None,
+        None,
+    )
+    .await;
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope();
     let summary = run_tool
         .execute(
             json!({
@@ -491,39 +470,35 @@ async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
         .unwrap();
     assert_eq!(summary.status, ToolStatus::Success);
     assert_eq!(summary.data["status"], json!("stopped"));
+    let task_store = crate::runtime::background_tasks::TaskStore::new(
+        storage as Arc<dyn crate::contracts::storage::ThreadStore>,
+    );
+    let task = task_store.load_task("run-1").await.unwrap().unwrap();
+    assert_eq!(
+        task.status,
+        crate::runtime::background_tasks::TaskStatus::Stopped
+    );
 }
 
 // ── AgentRunTool: resume completed/failed returns status ─────────────────────
 
 #[tokio::test]
 async fn agent_run_tool_returns_completed_status_when_resuming_completed_run() {
-    let os = AgentOs::builder()
-        .with_agent(
-            "worker",
-            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
-        )
-        .build()
-        .unwrap();
-
+    let (os, storage) = build_worker_os_with_store(false);
     let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
-    let doc = json!({
-        "background_tasks": {
-            "tasks": {
-                "run-1": {
-                    "task_type": "agent_run",
-                    "description": "agent:worker",
-                    "status": "completed",
-                    "created_at_ms": 1234567890,
-                    "metadata": {
-                        "thread_id": "sub-agent-run-1",
-                        "agent_id": "worker"
-                    }
-                }
-            }
-        }
-    });
-    let mut fix = TestFixture::new_with_state(doc.clone());
-    fix.run_config = caller_scope_with_state(doc);
+    persist_agent_run(
+        storage,
+        "owner-thread",
+        "run-1",
+        "worker",
+        "sub-agent-run-1",
+        crate::runtime::background_tasks::TaskStatus::Completed,
+        None,
+        None,
+    )
+    .await;
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope();
 
     let result = run_tool
         .execute(
@@ -538,34 +513,21 @@ async fn agent_run_tool_returns_completed_status_when_resuming_completed_run() {
 
 #[tokio::test]
 async fn agent_run_tool_returns_failed_status_when_resuming_failed_run() {
-    let os = AgentOs::builder()
-        .with_agent(
-            "worker",
-            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
-        )
-        .build()
-        .unwrap();
-
+    let (os, storage) = build_worker_os_with_store(false);
     let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
-    let doc = json!({
-        "background_tasks": {
-            "tasks": {
-                "run-1": {
-                    "task_type": "agent_run",
-                    "description": "agent:worker",
-                    "status": "failed",
-                    "error": "agent failed",
-                    "created_at_ms": 1234567890,
-                    "metadata": {
-                        "thread_id": "sub-agent-run-1",
-                        "agent_id": "worker"
-                    }
-                }
-            }
-        }
-    });
-    let mut fix = TestFixture::new_with_state(doc.clone());
-    fix.run_config = caller_scope_with_state(doc);
+    persist_agent_run(
+        storage,
+        "owner-thread",
+        "run-1",
+        "worker",
+        "sub-agent-run-1",
+        crate::runtime::background_tasks::TaskStatus::Failed,
+        Some("agent failed"),
+        None,
+    )
+    .await;
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope();
 
     let result = run_tool
         .execute(
@@ -698,33 +660,21 @@ async fn agent_run_tool_returns_error_for_unknown_run_id() {
 
 #[tokio::test]
 async fn agent_run_tool_returns_persisted_completed_without_rerun() {
-    let os = AgentOs::builder()
-        .with_agent(
-            "worker",
-            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
-        )
-        .build()
-        .unwrap();
+    let (os, storage) = build_worker_os_with_store(false);
     let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
-
-    let doc = json!({
-        "background_tasks": {
-            "tasks": {
-                "run-1": {
-                    "task_type": "agent_run",
-                    "description": "agent:worker",
-                    "status": "completed",
-                    "created_at_ms": 1234567890,
-                    "metadata": {
-                        "thread_id": "sub-agent-run-1",
-                        "agent_id": "worker"
-                    }
-                }
-            }
-        }
-    });
-    let mut fix = TestFixture::new_with_state(doc.clone());
-    fix.run_config = caller_scope_with_state(doc);
+    persist_agent_run(
+        storage,
+        "owner-thread",
+        "run-1",
+        "worker",
+        "sub-agent-run-1",
+        crate::runtime::background_tasks::TaskStatus::Completed,
+        None,
+        None,
+    )
+    .await;
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope();
 
     let result = run_tool
         .execute(
@@ -739,34 +689,21 @@ async fn agent_run_tool_returns_persisted_completed_without_rerun() {
 
 #[tokio::test]
 async fn agent_run_tool_returns_persisted_failed_with_error() {
-    let os = AgentOs::builder()
-        .with_agent(
-            "worker",
-            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
-        )
-        .build()
-        .unwrap();
+    let (os, storage) = build_worker_os_with_store(false);
     let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
-
-    let doc = json!({
-        "background_tasks": {
-            "tasks": {
-                "run-1": {
-                    "task_type": "agent_run",
-                    "description": "agent:worker",
-                    "status": "failed",
-                    "error": "something broke",
-                    "created_at_ms": 1234567890,
-                    "metadata": {
-                        "thread_id": "sub-agent-run-1",
-                        "agent_id": "worker"
-                    }
-                }
-            }
-        }
-    });
-    let mut fix = TestFixture::new_with_state(doc.clone());
-    fix.run_config = caller_scope_with_state(doc);
+    persist_agent_run(
+        storage,
+        "owner-thread",
+        "run-1",
+        "worker",
+        "sub-agent-run-1",
+        crate::runtime::background_tasks::TaskStatus::Failed,
+        Some("something broke"),
+        None,
+    )
+    .await;
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope();
 
     let result = run_tool
         .execute(

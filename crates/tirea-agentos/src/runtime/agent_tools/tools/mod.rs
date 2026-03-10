@@ -46,14 +46,6 @@ impl ToolArgError {
     }
 }
 
-pub(super) fn state_write_failed(tool_name: &str, err: impl std::fmt::Display) -> ToolResult {
-    tool_error(
-        tool_name,
-        "state_error",
-        format!("failed to persist sub-agent state: {err}"),
-    )
-}
-
 pub(super) fn scope_string(scope: Option<&tirea_contract::RunConfig>, key: &str) -> Option<String> {
     scope
         .and_then(|scope: &tirea_contract::RunConfig| scope.value(key))
