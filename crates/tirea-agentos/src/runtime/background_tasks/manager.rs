@@ -20,10 +20,6 @@ fn now_ms() -> u64 {
         .min(u128::from(u64::MAX)) as u64
 }
 
-fn gen_task_id() -> TaskId {
-    format!("bg_{}", uuid::Uuid::now_v7().simple())
-}
-
 /// In-memory runtime handle for a single background task.
 #[derive(Debug)]
 struct TaskHandle {
@@ -48,14 +44,7 @@ struct TaskHandle {
 /// The trait is object-safe so different notification strategies can be plugged in.
 #[async_trait::async_trait]
 pub trait TaskCompletionNotifier: Send + Sync {
-    async fn notify(
-        &self,
-        thread_id: &str,
-        task_id: &str,
-        task_type: &str,
-        description: &str,
-        result: &TaskResult,
-    );
+    async fn notify(&self, owner_thread_id: &str, summary: &TaskSummary);
 }
 
 /// No-op notifier used when no notification channel is configured.
@@ -63,7 +52,7 @@ pub(super) struct NoopNotifier;
 
 #[async_trait::async_trait]
 impl TaskCompletionNotifier for NoopNotifier {
-    async fn notify(&self, _: &str, _: &str, _: &str, _: &str, _: &TaskResult) {}
+    async fn notify(&self, _: &str, _: &TaskSummary) {}
 }
 
 /// Thread-scoped background task manager.
@@ -121,7 +110,7 @@ impl BackgroundTaskManager {
         Fut: Future<Output = TaskResult> + Send,
     {
         self.spawn_impl(
-            gen_task_id(),
+            new_task_id(),
             owner_thread_id,
             task_type,
             description,
@@ -210,8 +199,6 @@ impl BackgroundTaskManager {
         let handles = self.handles.clone();
         let notifier = self.notifier.clone();
         let tid = task_id.clone();
-        let ttype = task_type.to_string();
-        let desc = description.to_string();
         let thread_id = owner_thread_id.to_string();
 
         tokio::spawn(async move {
@@ -243,10 +230,15 @@ impl BackgroundTaskManager {
                 }
             }
 
-            // Deliver completion notification.
-            notifier
-                .notify(&thread_id, &tid, &ttype, &desc, &result)
-                .await;
+            // Deliver completion notification using the final effective summary.
+            let maybe_summary = {
+                let map = handles.lock().await;
+                map.get(&tid)
+                    .map(|handle| summary_from_handle(&tid, handle))
+            };
+            if let Some(summary) = maybe_summary {
+                notifier.notify(&thread_id, &summary).await;
+            }
         });
 
         task_id
@@ -474,9 +466,12 @@ fn summary_from_handle(task_id: &str, handle: &TaskHandle) -> TaskSummary {
         status: handle.status,
         error: handle.error.clone(),
         result: handle.result.clone(),
+        result_ref: None,
         created_at_ms: handle.created_at_ms,
         completed_at_ms: handle.completed_at_ms,
         parent_task_id: handle.parent_task_id.clone(),
+        supports_resume: handle.task_type == "agent_run",
+        attempt: 0,
         metadata: handle.metadata.clone(),
     }
 }
@@ -505,7 +500,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl TaskCompletionNotifier for CountingNotifier {
-        async fn notify(&self, _: &str, _: &str, _: &str, _: &str, _: &TaskResult) {
+        async fn notify(&self, _: &str, _: &TaskSummary) {
             self.count.fetch_add(1, Ordering::SeqCst);
         }
     }

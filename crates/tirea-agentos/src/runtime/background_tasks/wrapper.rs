@@ -6,6 +6,7 @@
 
 use super::manager::BackgroundTaskManager;
 use super::types::*;
+use super::{new_task_id, NewTaskSpec, TaskStore};
 use crate::contracts::runtime::tool_call::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
 };
@@ -44,6 +45,7 @@ pub trait BackgroundExecutable: Tool {
 pub struct BackgroundCapable<T: BackgroundExecutable> {
     inner: Arc<T>,
     manager: Arc<BackgroundTaskManager>,
+    task_store: Option<Arc<TaskStore>>,
 }
 
 impl<T: BackgroundExecutable> BackgroundCapable<T> {
@@ -51,11 +53,21 @@ impl<T: BackgroundExecutable> BackgroundCapable<T> {
         Self {
             inner: Arc::new(inner),
             manager,
+            task_store: None,
         }
     }
 
     pub fn from_arc(inner: Arc<T>, manager: Arc<BackgroundTaskManager>) -> Self {
-        Self { inner, manager }
+        Self {
+            inner,
+            manager,
+            task_store: None,
+        }
+    }
+
+    pub fn with_task_store(mut self, task_store: Option<Arc<TaskStore>>) -> Self {
+        self.task_store = task_store;
+        self
     }
 }
 
@@ -109,12 +121,32 @@ impl<T: BackgroundExecutable + 'static> Tool for BackgroundCapable<T> {
         let clean_args = strip_background_param(args);
         let inner = self.inner.clone();
 
+        let task_id = new_task_id();
+        if let Some(task_store) = &self.task_store {
+            task_store
+                .create_task(NewTaskSpec {
+                    task_id: task_id.clone(),
+                    owner_thread_id: owner_thread_id.clone(),
+                    task_type: tool_name.clone(),
+                    description: description.clone(),
+                    parent_task_id: None,
+                    supports_resume: false,
+                    metadata: Value::Object(serde_json::Map::new()),
+                })
+                .await
+                .map_err(|e| ToolError::ExecutionFailed(format!("task persistence failed: {e}")))?;
+        }
+
         let task_id = self
             .manager
-            .spawn(
+            .spawn_with_id(
+                task_id,
                 &owner_thread_id,
                 &tool_name,
                 &description,
+                RunCancellationToken::new(),
+                None,
+                Value::Object(serde_json::Map::new()),
                 move |cancel_token| async move {
                     inner.execute_background(clean_args, cancel_token).await
                 },

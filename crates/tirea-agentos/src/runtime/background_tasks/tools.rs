@@ -4,14 +4,14 @@
 //! read output, and cancel any background task regardless of type.
 
 use super::manager::BackgroundTaskManager;
-use super::types::BackgroundTaskState;
+use super::{legacy_tasks_from_doc, BackgroundTask, TaskState, TaskStatus, TaskStore, TaskSummary};
 use crate::contracts::runtime::tool_call::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
 };
 use crate::contracts::storage::ThreadStore;
-use crate::contracts::thread::Role;
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 pub const TASK_STATUS_TOOL_ID: &str = "task_status";
@@ -46,11 +46,80 @@ fn owner_thread_id(ctx: &ToolCallContext<'_>) -> Option<String> {
 #[derive(Debug, Clone)]
 pub struct TaskStatusTool {
     manager: Arc<BackgroundTaskManager>,
+    task_store: Option<Arc<TaskStore>>,
 }
 
 impl TaskStatusTool {
     pub fn new(manager: Arc<BackgroundTaskManager>) -> Self {
-        Self { manager }
+        Self {
+            manager,
+            task_store: None,
+        }
+    }
+
+    pub fn with_task_store(mut self, task_store: Option<Arc<TaskStore>>) -> Self {
+        self.task_store = task_store;
+        self
+    }
+
+    async fn query_one(
+        &self,
+        owner_thread_id: &str,
+        task_id: &str,
+        legacy: Option<&BackgroundTask>,
+    ) -> Result<Option<TaskSummary>, String> {
+        let persisted = if let Some(store) = &self.task_store {
+            store
+                .load_task_for_owner(owner_thread_id, task_id)
+                .await
+                .map_err(|e| e.to_string())?
+                .map(|task| task.summary())
+        } else {
+            None
+        };
+        let live = self.manager.get(owner_thread_id, task_id).await;
+
+        Ok(match (persisted, live) {
+            (_, Some(live)) => Some(live),
+            (Some(task), None) => Some(task),
+            (None, None) => legacy.map(|task| task.summary(task_id)),
+        })
+    }
+
+    async fn list_all(
+        &self,
+        owner_thread_id: &str,
+        legacy: HashMap<String, BackgroundTask>,
+    ) -> Result<Vec<TaskSummary>, String> {
+        let mut by_id: HashMap<String, TaskSummary> = HashMap::new();
+
+        if let Some(store) = &self.task_store {
+            let tasks = store
+                .list_tasks_for_owner(owner_thread_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            for task in tasks {
+                by_id.insert(task.id.clone(), task.summary());
+            }
+        }
+
+        for summary in self.manager.list(owner_thread_id, None).await {
+            by_id.insert(summary.task_id.clone(), summary);
+        }
+
+        for (task_id, task) in legacy {
+            by_id
+                .entry(task_id.clone())
+                .or_insert_with(|| task.summary(&task_id));
+        }
+
+        let mut out: Vec<TaskSummary> = by_id.into_values().collect();
+        out.sort_by(|a, b| {
+            a.created_at_ms
+                .cmp(&b.created_at_ms)
+                .then_with(|| a.task_id.cmp(&b.task_id))
+        });
+        Ok(out)
     }
 }
 
@@ -85,31 +154,36 @@ impl Tool for TaskStatusTool {
                 "Missing caller thread context",
             ));
         };
+        let legacy_tasks = legacy_tasks_from_doc(&ctx.snapshot());
 
         let task_id = args.get("task_id").and_then(Value::as_str);
 
         if let Some(task_id) = task_id {
-            // Single task query.
-            match self.manager.get(&thread_id, task_id).await {
-                Some(summary) => Ok(ToolResult::success(
+            match self
+                .query_one(&thread_id, task_id, legacy_tasks.get(task_id))
+                .await
+            {
+                Ok(Some(summary)) => Ok(ToolResult::success(
                     TASK_STATUS_TOOL_ID,
                     serde_json::to_value(&summary).unwrap_or(Value::Null),
                 )),
-                None => Ok(ToolResult::error(
+                Ok(None) => Ok(ToolResult::error(
                     TASK_STATUS_TOOL_ID,
                     format!("Unknown task_id: {task_id}"),
                 )),
+                Err(err) => Ok(ToolResult::error(TASK_STATUS_TOOL_ID, err)),
             }
         } else {
-            // List all tasks.
-            let tasks = self.manager.list(&thread_id, None).await;
-            Ok(ToolResult::success(
-                TASK_STATUS_TOOL_ID,
-                json!({
-                    "tasks": serde_json::to_value(&tasks).unwrap_or(Value::Null),
-                    "total": tasks.len(),
-                }),
-            ))
+            match self.list_all(&thread_id, legacy_tasks).await {
+                Ok(tasks) => Ok(ToolResult::success(
+                    TASK_STATUS_TOOL_ID,
+                    json!({
+                        "tasks": serde_json::to_value(&tasks).unwrap_or(Value::Null),
+                        "total": tasks.len(),
+                    }),
+                )),
+                Err(err) => Ok(ToolResult::error(TASK_STATUS_TOOL_ID, err)),
+            }
         }
     }
 }
@@ -122,11 +196,20 @@ impl Tool for TaskStatusTool {
 #[derive(Debug, Clone)]
 pub struct TaskCancelTool {
     manager: Arc<BackgroundTaskManager>,
+    task_store: Option<Arc<TaskStore>>,
 }
 
 impl TaskCancelTool {
     pub fn new(manager: Arc<BackgroundTaskManager>) -> Self {
-        Self { manager }
+        Self {
+            manager,
+            task_store: None,
+        }
+    }
+
+    pub fn with_task_store(mut self, task_store: Option<Arc<TaskStore>>) -> Self {
+        self.task_store = task_store;
+        self
     }
 }
 
@@ -170,6 +253,11 @@ impl Tool for TaskCancelTool {
 
         match self.manager.cancel_tree(&thread_id, task_id).await {
             Ok(cancelled) => {
+                if let Some(store) = &self.task_store {
+                    for summary in &cancelled {
+                        let _ = store.mark_cancel_requested(&summary.task_id).await;
+                    }
+                }
                 let ids: Vec<&str> = cancelled.iter().map(|s| s.task_id.as_str()).collect();
                 Ok(ToolResult::success(
                     TASK_CANCEL_TOOL_ID,
@@ -194,18 +282,18 @@ impl Tool for TaskCancelTool {
 ///
 /// For `agent_run` tasks, returns the last assistant message from the sub-agent
 /// thread. For other task types, returns the task result from the manager.
-/// Falls back to persisted `BackgroundTaskState` when the task is not in the
-/// in-memory manager (e.g. after process restart).
+/// Reads durable task state from task threads and overlays live in-memory
+/// results when available.
 #[derive(Clone)]
 pub struct TaskOutputTool {
     manager: Arc<BackgroundTaskManager>,
-    thread_store: Option<Arc<dyn ThreadStore>>,
+    task_store: Option<Arc<TaskStore>>,
 }
 
 impl std::fmt::Debug for TaskOutputTool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TaskOutputTool")
-            .field("has_thread_store", &self.thread_store.is_some())
+            .field("has_task_store", &self.task_store.is_some())
             .finish()
     }
 }
@@ -217,26 +305,17 @@ impl TaskOutputTool {
     ) -> Self {
         Self {
             manager,
-            thread_store,
+            task_store: thread_store.map(TaskStore::new).map(Arc::new),
         }
     }
 
-    /// Load the last assistant message from a thread stored in ThreadStore.
-    async fn load_agent_output(&self, thread_id: &str) -> Result<Option<String>, String> {
-        let Some(store) = &self.thread_store else {
-            return Err("no thread store configured".to_string());
-        };
-        match store.load(thread_id).await {
-            Ok(Some(head)) => Ok(head
-                .thread
-                .messages
-                .iter()
-                .rev()
-                .find(|m| m.role == Role::Assistant)
-                .map(|m| m.content.clone())),
-            Ok(None) => Ok(None),
-            Err(e) => Err(format!("failed to load sub-agent thread: {e}")),
-        }
+    pub fn with_task_store(mut self, task_store: Option<Arc<TaskStore>>) -> Self {
+        self.task_store = task_store;
+        self
+    }
+
+    fn legacy_task(ctx: &ToolCallContext<'_>, task_id: &str) -> Option<BackgroundTask> {
+        legacy_tasks_from_doc(&ctx.snapshot()).remove(task_id)
     }
 }
 
@@ -272,106 +351,144 @@ impl Tool for TaskOutputTool {
             Err(err) => return Ok(err),
         };
 
-        let Some(thread_id) = owner_thread_id(ctx) else {
-            // Fall back to persisted state when no caller thread context.
-            return Ok(self.output_from_persisted(task_id, ctx).await);
+        let legacy = Self::legacy_task(ctx, task_id);
+        let thread_id = owner_thread_id(ctx);
+
+        let Some(thread_id) = thread_id else {
+            return match legacy {
+                Some(task) => Ok(self.output_from_legacy(task_id, "", &task).await),
+                None => Ok(ToolResult::error(
+                    TASK_OUTPUT_TOOL_ID,
+                    "Missing caller thread context",
+                )),
+            };
         };
 
-        // Try live manager first.
-        if let Some(summary) = self.manager.get(&thread_id, task_id).await {
-            if summary.task_type == "agent_run" {
-                let agent_thread_id = summary
-                    .metadata
-                    .get("thread_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let agent_id = summary
-                    .metadata
-                    .get("agent_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                match self.load_agent_output(agent_thread_id).await {
-                    Ok(output) => {
-                        return Ok(ToolResult::success(
-                            TASK_OUTPUT_TOOL_ID,
-                            json!({
-                                "task_id": task_id,
-                                "task_type": "agent_run",
-                                "agent_id": agent_id,
-                                "status": summary.status.as_str(),
-                                "output": output,
-                            }),
-                        ));
-                    }
-                    Err(e) => {
-                        return Ok(ToolResult::error(TASK_OUTPUT_TOOL_ID, e));
-                    }
-                }
+        let Some(task_store) = &self.task_store else {
+            if let Some(summary) = self.manager.get(&thread_id, task_id).await {
+                return Ok(ToolResult::success(
+                    TASK_OUTPUT_TOOL_ID,
+                    json!({
+                        "task_id": task_id,
+                        "task_type": summary.task_type,
+                        "status": summary.status.as_str(),
+                        "output": summary.result,
+                    }),
+                ));
             }
-            // Non-agent task: return the result from manager.
-            return Ok(ToolResult::success(
+            if let Some(task) = legacy {
+                return Ok(self.output_from_legacy(task_id, &thread_id, &task).await);
+            }
+            return Ok(ToolResult::error(
                 TASK_OUTPUT_TOOL_ID,
-                json!({
-                    "task_id": task_id,
-                    "task_type": summary.task_type,
-                    "status": summary.status.as_str(),
-                    "output": summary.result,
-                }),
+                format!("Unknown task_id: {task_id}"),
             ));
-        }
+        };
 
-        // Fall back to persisted state.
-        Ok(self.output_from_persisted(task_id, ctx).await)
+        let Some(task) = task_store
+            .load_task_for_owner(&thread_id, task_id)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("task store lookup failed: {e}")))?
+        else {
+            if let Some(task) = legacy {
+                return Ok(self.output_from_legacy(task_id, &thread_id, &task).await);
+            }
+            return Ok(ToolResult::error(
+                TASK_OUTPUT_TOOL_ID,
+                format!("Unknown task_id: {task_id}"),
+            ));
+        };
+
+        Ok(self.output_from_task(task_id, &task).await)
     }
 }
 
 impl TaskOutputTool {
-    async fn output_from_persisted(&self, task_id: &str, ctx: &ToolCallContext<'_>) -> ToolResult {
-        let persisted = ctx
-            .state_of::<BackgroundTaskState>()
-            .tasks()
-            .ok()
-            .unwrap_or_default();
+    async fn output_from_task(&self, task_id: &str, task: &TaskState) -> ToolResult {
+        let live = self
+            .manager
+            .get(&task.owner_thread_id, task_id)
+            .await
+            .filter(|summary| summary.status == task.status || task.status == TaskStatus::Running);
 
-        let Some(task) = persisted.get(task_id) else {
-            return ToolResult::error(TASK_OUTPUT_TOOL_ID, format!("Unknown task_id: {task_id}"));
-        };
-
-        if task.task_type == "agent_run" {
-            let agent_id = task
-                .metadata
-                .get("agent_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            let agent_thread_id = task
-                .metadata
-                .get("thread_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            match self.load_agent_output(agent_thread_id).await {
-                Ok(output) => ToolResult::success(
-                    TASK_OUTPUT_TOOL_ID,
-                    json!({
-                        "task_id": task_id,
-                        "task_type": "agent_run",
-                        "agent_id": agent_id,
-                        "status": task.status.as_str(),
-                        "output": output,
-                    }),
-                ),
-                Err(e) => ToolResult::error(TASK_OUTPUT_TOOL_ID, e),
+        let output = if task.task_type == "agent_run" {
+            match &self.task_store {
+                Some(store) => match store.load_output_text(task).await {
+                    Ok(output) => output.map(Value::String),
+                    Err(e) => {
+                        return ToolResult::error(TASK_OUTPUT_TOOL_ID, e.to_string());
+                    }
+                },
+                None => None,
             }
         } else {
-            ToolResult::success(
-                TASK_OUTPUT_TOOL_ID,
-                json!({
-                    "task_id": task_id,
-                    "task_type": task.task_type,
-                    "status": task.status.as_str(),
-                    "output": null,
-                }),
-            )
-        }
+            live.and_then(|summary| summary.result)
+                .or_else(|| task.result.clone())
+        };
+
+        ToolResult::success(
+            TASK_OUTPUT_TOOL_ID,
+            json!({
+                "task_id": task_id,
+                "task_type": task.task_type.clone(),
+                "agent_id": task.metadata.get("agent_id").cloned().unwrap_or(Value::Null),
+                "status": task.status.as_str(),
+                "output": output,
+            }),
+        )
+    }
+
+    async fn output_from_legacy(
+        &self,
+        task_id: &str,
+        owner_thread_id: &str,
+        task: &BackgroundTask,
+    ) -> ToolResult {
+        let live = self.manager.get(owner_thread_id, task_id).await;
+        let output = if task.task_type == "agent_run" {
+            let Some(store) = &self.task_store else {
+                return ToolResult::error(
+                    TASK_OUTPUT_TOOL_ID,
+                    "no thread store configured to load agent task output",
+                );
+            };
+            let synthetic = TaskState {
+                id: task_id.to_string(),
+                task_type: task.task_type.clone(),
+                description: task.description.clone(),
+                owner_thread_id: owner_thread_id.to_string(),
+                parent_task_id: task.parent_task_id.clone(),
+                status: task.status,
+                error: task.error.clone(),
+                result: None,
+                result_ref: None,
+                checkpoint: None,
+                supports_resume: true,
+                attempt: 0,
+                created_at_ms: task.created_at_ms,
+                updated_at_ms: task.completed_at_ms.unwrap_or(task.created_at_ms),
+                completed_at_ms: task.completed_at_ms,
+                cancel_requested_at_ms: None,
+                metadata: task.metadata.clone(),
+            };
+            match store.load_output_text(&synthetic).await {
+                Ok(output) => output.map(Value::String),
+                Err(err) => return ToolResult::error(TASK_OUTPUT_TOOL_ID, err.to_string()),
+            }
+        } else {
+            live.and_then(|summary| summary.result)
+        };
+
+        ToolResult::success(
+            TASK_OUTPUT_TOOL_ID,
+            json!({
+                "task_id": task_id,
+                "task_type": task.task_type,
+                "agent_id": task.metadata.get("agent_id").cloned().unwrap_or(Value::Null),
+                "status": task.status.as_str(),
+                "output": output,
+            }),
+        )
     }
 }
 

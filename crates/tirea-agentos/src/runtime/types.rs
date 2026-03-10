@@ -18,7 +18,7 @@ use crate::loop_runtime::loop_runner::{
     Agent, RunCancellationToken, StateCommitError, StateCommitter,
 };
 
-use super::background_tasks::BackgroundTaskManager;
+use super::background_tasks::{BackgroundTaskManager, TaskPersistenceNotifier, TaskStore};
 use super::thread_run;
 
 /// Result of [`AgentOs::run_stream`]: an event stream plus metadata.
@@ -110,6 +110,15 @@ pub(crate) struct RuntimeServices {
 
 impl AgentOs {
     pub(crate) fn from_registry_set(registries: RegistrySet, services: RuntimeServices) -> Self {
+        let background_task_manager =
+            if let Some(agent_state_store) = services.agent_state_store.clone() {
+                let task_store = Arc::new(TaskStore::new(agent_state_store));
+                Arc::new(BackgroundTaskManager::with_notifier(Arc::new(
+                    TaskPersistenceNotifier::new(task_store),
+                )))
+            } else {
+                Arc::new(BackgroundTaskManager::new())
+            };
         Self {
             default_client: services.default_client,
             agents: registries.agents,
@@ -121,7 +130,7 @@ impl AgentOs {
             #[cfg(feature = "skills")]
             skills_registry: registries.skills,
             system_wirings: services.system_wirings,
-            background_task_manager: Arc::new(BackgroundTaskManager::new()),
+            background_task_manager,
             active_runs: Arc::new(thread_run::ActiveThreadRunRegistry::default()),
             agent_tools: services.agent_tools,
             agent_state_store: services.agent_state_store,

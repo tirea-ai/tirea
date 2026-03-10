@@ -16,8 +16,9 @@ mod tests;
 
 pub use background_tasks::{
     BackgroundCapable, BackgroundExecutable, BackgroundTask, BackgroundTaskAction,
-    BackgroundTaskManager, BackgroundTaskState, BackgroundTasksPlugin, TaskCancelTool,
-    TaskCompletionNotifier, TaskId, TaskOutputTool, TaskResult, TaskStatus, TaskStatusTool,
+    BackgroundTaskManager, BackgroundTaskState, BackgroundTasksPlugin, NewTaskSpec, TaskAction,
+    TaskCancelTool, TaskCompletionNotifier, TaskId, TaskOutputTool, TaskPersistenceNotifier,
+    TaskResult, TaskResultRef, TaskState, TaskStatus, TaskStatusTool, TaskStore, TaskStoreError,
     TaskSummary, BACKGROUND_TASKS_PLUGIN_ID, TASK_CANCEL_TOOL_ID, TASK_OUTPUT_TOOL_ID,
     TASK_STATUS_TOOL_ID,
 };

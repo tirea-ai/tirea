@@ -1,10 +1,65 @@
 use super::*;
 use crate::runtime::background_tasks::{
-    BackgroundTaskManager, BackgroundTaskState, TaskResult as BgTaskResult, TaskStatus,
+    BackgroundTask, BackgroundTaskManager, BackgroundTaskState, NewTaskSpec,
+    TaskResult as BgTaskResult, TaskStatus, TaskStore,
 };
 
 /// Task type used when registering sub-agent background runs with [`BackgroundTaskManager`].
 pub(crate) const AGENT_RUN_TASK_TYPE: &str = "agent_run";
+
+#[derive(Debug, Clone)]
+struct PersistedAgentRunRecord {
+    agent_id: String,
+    thread_id: String,
+    status: TaskStatus,
+    error: Option<String>,
+    parent_task_id: Option<String>,
+    metadata: Value,
+}
+
+impl PersistedAgentRunRecord {
+    fn from_task_state(task: crate::runtime::background_tasks::TaskState) -> Self {
+        Self {
+            agent_id: task
+                .metadata
+                .get("agent_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string(),
+            thread_id: task
+                .metadata
+                .get("thread_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            status: task.status,
+            error: task.error,
+            parent_task_id: task.parent_task_id,
+            metadata: task.metadata,
+        }
+    }
+
+    fn from_legacy(task: BackgroundTask) -> Self {
+        Self {
+            agent_id: task
+                .metadata
+                .get("agent_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string(),
+            thread_id: task
+                .metadata
+                .get("thread_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            status: task.status,
+            error: task.error,
+            parent_task_id: task.parent_task_id,
+            metadata: task.metadata,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct AgentRunTool {
@@ -38,6 +93,76 @@ impl AgentRunTool {
         ))
     }
 
+    fn task_store(&self) -> Option<TaskStore> {
+        self.os.agent_state_store().cloned().map(TaskStore::new)
+    }
+
+    fn read_legacy_task(&self, ctx: &ToolCallContext<'_>, run_id: &str) -> Option<BackgroundTask> {
+        ctx.state_of::<BackgroundTaskState>()
+            .tasks()
+            .ok()
+            .unwrap_or_default()
+            .remove(run_id)
+    }
+
+    fn write_legacy_running_record(
+        &self,
+        ctx: &ToolCallContext<'_>,
+        run_id: &str,
+        agent_id: &str,
+        parent_run_id: Option<&str>,
+        metadata: Value,
+        tool_name: &str,
+    ) -> Option<ToolResult> {
+        let task = BackgroundTask {
+            task_type: AGENT_RUN_TASK_TYPE.to_string(),
+            description: format!("agent:{agent_id}"),
+            status: TaskStatus::Running,
+            error: None,
+            created_at_ms: current_unix_millis(),
+            completed_at_ms: None,
+            parent_task_id: parent_run_id.map(str::to_string),
+            metadata,
+        };
+        if let Err(err) = ctx
+            .state_of::<BackgroundTaskState>()
+            .tasks_insert(run_id.to_string(), task)
+        {
+            return Some(state_write_failed(tool_name, err));
+        }
+        None
+    }
+
+    fn write_legacy_terminal_record(
+        &self,
+        ctx: &ToolCallContext<'_>,
+        run_id: &str,
+        agent_id: &str,
+        parent_run_id: Option<&str>,
+        metadata: Value,
+        status: TaskStatus,
+        error: Option<String>,
+        tool_name: &str,
+    ) -> Option<ToolResult> {
+        let task = BackgroundTask {
+            task_type: AGENT_RUN_TASK_TYPE.to_string(),
+            description: format!("agent:{agent_id}"),
+            status,
+            error,
+            created_at_ms: current_unix_millis(),
+            completed_at_ms: Some(current_unix_millis()),
+            parent_task_id: parent_run_id.map(str::to_string),
+            metadata,
+        };
+        if let Err(err) = ctx
+            .state_of::<BackgroundTaskState>()
+            .tasks_insert(run_id.to_string(), task)
+        {
+            return Some(state_write_failed(tool_name, err));
+        }
+        None
+    }
+
     async fn launch_new_run(
         &self,
         ctx: &ToolCallContext<'_>,
@@ -59,28 +184,50 @@ impl AgentRunTool {
             "thread_id": child_thread_id,
             "agent_id": agent_id,
         });
+        let description = format!("agent:{agent_id}");
+        let task_store = self.task_store();
 
         if background {
             let token = RunCancellationToken::new();
             let parent_run_id_bg = parent_run_id.clone();
             let parent_tool_call_id_bg = parent_tool_call_id.clone();
 
-            // Persist Running record to BackgroundTaskState immediately.
-            let task = crate::runtime::background_tasks::BackgroundTask {
-                task_type: AGENT_RUN_TASK_TYPE.to_string(),
-                description: format!("agent:{agent_id}"),
-                status: TaskStatus::Running,
-                error: None,
-                created_at_ms: current_unix_millis(),
-                completed_at_ms: None,
-                parent_task_id: parent_run_id.clone(),
-                metadata: metadata.clone(),
-            };
-            if let Err(err) = ctx
-                .state_of::<BackgroundTaskState>()
-                .tasks_insert(run_id.to_string(), task)
-            {
-                return state_write_failed(tool_name, err);
+            if let Some(result) = self.write_legacy_running_record(
+                ctx,
+                &run_id,
+                &agent_id,
+                parent_run_id.as_deref(),
+                metadata.clone(),
+                tool_name,
+            ) {
+                return result;
+            }
+
+            if let Some(task_store) = &task_store {
+                let task_persisted = if task_store.load_task(&run_id).await.ok().flatten().is_some()
+                {
+                    task_store.start_task_attempt(&run_id).await.map(|_| ())
+                } else {
+                    task_store
+                        .create_task(NewTaskSpec {
+                            task_id: run_id.clone(),
+                            owner_thread_id: owner_thread_id.clone(),
+                            task_type: AGENT_RUN_TASK_TYPE.to_string(),
+                            description: description.clone(),
+                            parent_task_id: parent_run_id.clone(),
+                            supports_resume: true,
+                            metadata: metadata.clone(),
+                        })
+                        .await
+                        .map(|_| ())
+                };
+                if let Err(err) = task_persisted {
+                    return tool_error(
+                        tool_name,
+                        "task_persist_failed",
+                        format!("failed to persist task start: {err}"),
+                    );
+                }
             }
 
             // Spawn via BackgroundTaskManager for unified tracking.
@@ -89,7 +236,6 @@ impl AgentRunTool {
             let agent_id_bg = agent_id.clone();
             let child_thread_id_bg = child_thread_id.clone();
             let parent_thread_id_bg = owner_thread_id.clone();
-            let description = format!("agent:{agent_id}");
 
             self.bg_manager
                 .spawn_with_id(
@@ -143,6 +289,7 @@ impl AgentRunTool {
             |update: crate::contracts::runtime::tool_call::ToolCallProgressUpdate| {
                 ctx.report_tool_call_progress(update)
             };
+        let owner_thread_id_for_exec = owner_thread_id.clone();
 
         let completion = execute_sub_agent(
             self.os.clone(),
@@ -152,7 +299,7 @@ impl AgentRunTool {
                 run_id: run_id.clone(),
                 parent_run_id: parent_run_id.clone(),
                 parent_tool_call_id: Some(parent_tool_call_id),
-                parent_thread_id: owner_thread_id,
+                parent_thread_id: owner_thread_id_for_exec,
                 messages,
                 initial_state,
                 cancellation_token: None,
@@ -168,22 +315,54 @@ impl AgentRunTool {
             SubAgentStatus::Running => TaskStatus::Running,
         };
 
-        // Persist completed state.
-        let task = crate::runtime::background_tasks::BackgroundTask {
-            task_type: AGENT_RUN_TASK_TYPE.to_string(),
-            description: format!("agent:{agent_id}"),
+        if let Some(result) = self.write_legacy_terminal_record(
+            ctx,
+            &run_id,
+            &agent_id,
+            parent_run_id.as_deref(),
+            metadata.clone(),
             status,
-            error: completion.error.clone(),
-            created_at_ms: current_unix_millis(),
-            completed_at_ms: Some(current_unix_millis()),
-            parent_task_id: parent_run_id,
-            metadata,
-        };
-        if let Err(err) = ctx
-            .state_of::<BackgroundTaskState>()
-            .tasks_insert(run_id.to_string(), task)
-        {
-            return state_write_failed(tool_name, err);
+            completion.error.clone(),
+            tool_name,
+        ) {
+            return result;
+        }
+
+        if let Some(task_store) = &task_store {
+            let task_persisted = if task_store.load_task(&run_id).await.ok().flatten().is_some() {
+                task_store.start_task_attempt(&run_id).await.map(|_| ())
+            } else {
+                task_store
+                    .create_task(NewTaskSpec {
+                        task_id: run_id.clone(),
+                        owner_thread_id: owner_thread_id.clone(),
+                        task_type: AGENT_RUN_TASK_TYPE.to_string(),
+                        description: description.clone(),
+                        parent_task_id: parent_run_id.clone(),
+                        supports_resume: true,
+                        metadata: metadata.clone(),
+                    })
+                    .await
+                    .map(|_| ())
+            };
+            if let Err(err) = task_persisted {
+                return tool_error(
+                    tool_name,
+                    "task_persist_failed",
+                    format!("failed to persist task start: {err}"),
+                );
+            }
+
+            if let Err(err) = task_store
+                .persist_foreground_result(&run_id, status, completion.error.clone(), None)
+                .await
+            {
+                return tool_error(
+                    tool_name,
+                    "task_persist_failed",
+                    format!("failed to persist task outcome: {err}"),
+                );
+            }
         }
 
         agent_tool_result(
@@ -237,6 +416,7 @@ impl Tool for AgentRunTool {
         };
         let caller_agent_id = scope_string(Some(scope), SCOPE_CALLER_AGENT_ID_KEY);
         let caller_run_id = scope_run_id(Some(scope));
+        let task_store = self.task_store();
 
         // ── Resume existing run by ID ──────────────────────────────
         if let Some(run_id) = run_id {
@@ -303,15 +483,36 @@ impl Tool for AgentRunTool {
                 }
             }
 
-            // 2. Check persisted state in BackgroundTaskState.
-            let persisted_opt = ctx
-                .state_of::<BackgroundTaskState>()
-                .tasks()
-                .ok()
-                .unwrap_or_default()
-                .remove(&run_id);
+            let legacy_persisted = self.read_legacy_task(ctx, &run_id);
+            let durable_persisted = if let Some(task_store) = task_store.clone() {
+                match task_store
+                    .load_task_for_owner(&owner_thread_id, &run_id)
+                    .await
+                {
+                    Ok(Some(task)) => Some(task),
+                    Ok(None) => None,
+                    Err(err) => {
+                        return Ok(tool_error(
+                            tool_name,
+                            "task_load_failed",
+                            format!("Failed to load persisted run state: {err}"),
+                        ));
+                    }
+                }
+            } else {
+                None
+            };
 
-            let Some(persisted) = persisted_opt else {
+            let durable_exists = durable_persisted.is_some();
+            let persisted = durable_persisted
+                .map(PersistedAgentRunRecord::from_task_state)
+                .or_else(|| {
+                    legacy_persisted
+                        .clone()
+                        .map(PersistedAgentRunRecord::from_legacy)
+                });
+
+            let Some(persisted) = persisted else {
                 return Ok(tool_error(
                     tool_name,
                     "unknown_run",
@@ -319,35 +520,49 @@ impl Tool for AgentRunTool {
                 ));
             };
 
-            let agent_id = persisted
-                .metadata
-                .get("agent_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string();
-            let thread_id = persisted
-                .metadata
-                .get("thread_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            // Orphaned running → mark stopped.
             if persisted.status == TaskStatus::Running {
-                let mut stopped = persisted.clone();
-                stopped.status = TaskStatus::Stopped;
-                stopped.error =
-                    Some("No live executor found in current process; marked stopped".to_string());
-                if let Err(err) = ctx
-                    .state_of::<BackgroundTaskState>()
-                    .tasks_insert(run_id.to_string(), stopped)
-                {
-                    return Ok(state_write_failed(tool_name, err));
+                if durable_exists {
+                    if let Some(task_store) = &task_store {
+                        if let Err(err) = task_store
+                            .persist_foreground_result(
+                                &run_id,
+                                TaskStatus::Stopped,
+                                Some(
+                                    "No live executor found in current process; marked stopped"
+                                        .to_string(),
+                                ),
+                                None,
+                            )
+                            .await
+                        {
+                            return Ok(tool_error(
+                                tool_name,
+                                "task_persist_failed",
+                                format!("Failed to mark orphaned task stopped: {err}"),
+                            ));
+                        }
+                    }
+                }
+                if legacy_persisted.is_some() {
+                    if let Some(result) = self.write_legacy_terminal_record(
+                        ctx,
+                        &run_id,
+                        &persisted.agent_id,
+                        persisted.parent_task_id.as_deref(),
+                        persisted.metadata.clone(),
+                        TaskStatus::Stopped,
+                        Some(
+                            "No live executor found in current process; marked stopped".to_string(),
+                        ),
+                        tool_name,
+                    ) {
+                        return Ok(result);
+                    }
                 }
                 return Ok(agent_tool_result(
                     tool_name,
                     &run_id,
-                    &agent_id,
+                    &persisted.agent_id,
                     "stopped",
                     Some("No live executor found in current process; marked stopped"),
                 ));
@@ -358,14 +573,14 @@ impl Tool for AgentRunTool {
                     return Ok(agent_tool_result(
                         tool_name,
                         &run_id,
-                        &agent_id,
+                        &persisted.agent_id,
                         persisted.status.as_str(),
                         persisted.error.as_deref(),
                     ));
                 }
                 TaskStatus::Stopped => {
                     if let Err(error) = self.ensure_target_visible(
-                        &agent_id,
+                        &persisted.agent_id,
                         caller_agent_id.as_deref(),
                         Some(scope),
                     ) {
@@ -383,9 +598,9 @@ impl Tool for AgentRunTool {
                             LaunchNewRunRequest {
                                 run_id,
                                 owner_thread_id,
-                                agent_id,
+                                agent_id: persisted.agent_id,
                                 parent_run_id: caller_run_id,
-                                child_thread_id: thread_id,
+                                child_thread_id: persisted.thread_id,
                                 messages,
                                 initial_state: None,
                                 background,

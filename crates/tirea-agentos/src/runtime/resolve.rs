@@ -3,7 +3,7 @@ use super::agent_tools::{
     AGENT_TOOLS_PLUGIN_ID, SCOPE_CALLER_AGENT_ID_KEY,
 };
 use super::background_tasks::{
-    BackgroundTasksPlugin, TaskCancelTool, TaskOutputTool, TaskStatusTool,
+    BackgroundTasksPlugin, TaskCancelTool, TaskOutputTool, TaskStatusTool, TaskStore,
     BACKGROUND_TASKS_PLUGIN_ID,
 };
 #[cfg(feature = "skills")]
@@ -197,7 +197,13 @@ impl AgentOs {
             self.agent_tools.discovery_max_entries,
             self.agent_tools.discovery_max_chars,
         );
-        let recovery_plugin = AgentRecoveryPlugin::new(self.background_task_manager.clone());
+        let recovery_plugin = AgentRecoveryPlugin::new(self.background_task_manager.clone())
+            .with_task_store(
+                self.agent_state_store
+                    .clone()
+                    .map(TaskStore::new)
+                    .map(Arc::new),
+            );
 
         let tools_bundle: Arc<dyn RegistryBundle> = Arc::new(
             ToolBehaviorBundle::new(AGENT_TOOLS_PLUGIN_ID)
@@ -214,12 +220,19 @@ impl AgentOs {
 
     fn build_background_task_bundles(&self) -> Vec<Arc<dyn RegistryBundle>> {
         let mgr = self.background_task_manager.clone();
-        let status_tool: Arc<dyn Tool> = Arc::new(TaskStatusTool::new(mgr.clone()));
-        let cancel_tool: Arc<dyn Tool> = Arc::new(TaskCancelTool::new(mgr.clone()));
-        let output_tool: Arc<dyn Tool> = Arc::new(TaskOutputTool::new(
-            mgr.clone(),
-            self.agent_state_store.clone(),
-        ));
+        let task_store = self
+            .agent_state_store
+            .clone()
+            .map(TaskStore::new)
+            .map(Arc::new);
+        let status_tool: Arc<dyn Tool> =
+            Arc::new(TaskStatusTool::new(mgr.clone()).with_task_store(task_store.clone()));
+        let cancel_tool: Arc<dyn Tool> =
+            Arc::new(TaskCancelTool::new(mgr.clone()).with_task_store(task_store.clone()));
+        let output_tool: Arc<dyn Tool> = Arc::new(
+            TaskOutputTool::new(mgr.clone(), self.agent_state_store.clone())
+                .with_task_store(task_store),
+        );
         let plugin = BackgroundTasksPlugin::new(mgr);
 
         let bundle: Arc<dyn RegistryBundle> = Arc::new(

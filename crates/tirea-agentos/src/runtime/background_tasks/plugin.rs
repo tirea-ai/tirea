@@ -2,7 +2,6 @@
 //! and provides running-task context reminders to the LLM.
 
 use super::manager::BackgroundTaskManager;
-use super::types::BackgroundTaskState;
 use crate::contracts::runtime::behavior::{AgentBehavior, ReadOnlyContext};
 use crate::contracts::runtime::phase::{ActionSet, AfterToolExecuteAction};
 use async_trait::async_trait;
@@ -10,8 +9,8 @@ use std::sync::Arc;
 
 pub const BACKGROUND_TASKS_PLUGIN_ID: &str = "background_tasks";
 
-/// Behavior that registers [`BackgroundTaskState`] and injects running-task
-/// reminders into the context after tool execution.
+/// Behavior that injects running-task reminders into the context after tool
+/// execution.
 ///
 /// All background tasks (shell, agent_run, etc.) are rendered uniformly.
 pub struct BackgroundTasksPlugin {
@@ -29,8 +28,6 @@ impl AgentBehavior for BackgroundTasksPlugin {
     fn id(&self) -> &str {
         BACKGROUND_TASKS_PLUGIN_ID
     }
-
-    tirea_contract::declare_plugin_states!(BackgroundTaskState);
 
     async fn after_tool_execute(
         &self,
@@ -104,7 +101,7 @@ mod tests {
 
         let mut scope_reg = tirea_contract::runtime::state::StateScopeRegistry::new();
         plugin.register_state_scopes(&mut scope_reg);
-        // Verify no panic; scope_reg should contain background_tasks entries.
+        // Verify no panic even though this plugin no longer registers thread state.
 
         let mut action_reg = tirea_contract::runtime::state::ActionDeserializerRegistry::new();
         plugin.register_action_deserializers(&mut action_reg);

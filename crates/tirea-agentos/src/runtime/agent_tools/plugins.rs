@@ -4,7 +4,8 @@ use crate::contracts::runtime::behavior::{AgentBehavior, ReadOnlyContext};
 use crate::contracts::runtime::phase::{ActionSet, BeforeInferenceAction, LifecycleAction};
 use crate::contracts::runtime::state::AnyStateAction;
 use crate::runtime::background_tasks::{
-    BackgroundTaskAction, BackgroundTaskManager, BackgroundTaskState, TaskStatus,
+    legacy_tasks_from_doc, BackgroundTaskAction, BackgroundTaskManager, BackgroundTaskState,
+    TaskStatus, TaskStore,
 };
 #[cfg(feature = "permission")]
 use tirea_extension_permission::resolve_permission_behavior;
@@ -19,11 +20,20 @@ fn resolve_permission_behavior(
 
 pub struct AgentRecoveryPlugin {
     bg_manager: Arc<BackgroundTaskManager>,
+    task_store: Option<Arc<TaskStore>>,
 }
 
 impl AgentRecoveryPlugin {
     pub fn new(bg_manager: Arc<BackgroundTaskManager>) -> Self {
-        Self { bg_manager }
+        Self {
+            bg_manager,
+            task_store: None,
+        }
+    }
+
+    pub fn with_task_store(mut self, task_store: Option<Arc<TaskStore>>) -> Self {
+        self.task_store = task_store;
+        self
     }
 }
 
@@ -33,18 +43,36 @@ impl AgentBehavior for AgentRecoveryPlugin {
         AGENT_RECOVERY_PLUGIN_ID
     }
 
+    tirea_contract::declare_plugin_states!(BackgroundTaskState);
+
     async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
         use crate::contracts::runtime::{
             PendingToolCall, SuspendedCall, ToolCallResumeMode, ToolCallState,
         };
-        use tirea_state::State;
-
         let state = ctx.snapshot();
-        let tasks = state
-            .get(BackgroundTaskState::PATH)
-            .and_then(|v| BackgroundTaskState::from_value(v).ok())
-            .map(|s| s.tasks)
-            .unwrap_or_default();
+        let legacy_tasks = legacy_tasks_from_doc(&state);
+        let mut tasks: Vec<_> = legacy_tasks
+            .iter()
+            .map(|(task_id, task)| task.summary(task_id))
+            .collect();
+
+        if let Some(task_store) = &self.task_store {
+            if let Ok(durable) = task_store.list_tasks_for_owner(ctx.thread_id()).await {
+                let mut by_id = std::collections::HashMap::new();
+                for task in tasks.drain(..) {
+                    by_id.insert(task.task_id.clone(), task);
+                }
+                for task in durable {
+                    by_id.insert(task.id.clone(), task.summary());
+                }
+                tasks = by_id.into_values().collect();
+            }
+        }
+        tasks.sort_by(|a, b| {
+            a.created_at_ms
+                .cmp(&b.created_at_ms)
+                .then_with(|| a.task_id.cmp(&b.task_id))
+        });
 
         if tasks.is_empty() {
             return ActionSet::empty();
@@ -56,28 +84,43 @@ impl AgentBehavior for AgentRecoveryPlugin {
         let mut orphaned_run_ids = Vec::new();
         let mut actions: ActionSet<LifecycleAction> = ActionSet::empty();
 
-        for (task_id, task) in &tasks {
+        for task in &tasks {
             if task.status != TaskStatus::Running {
                 continue;
             }
             if task.task_type != AGENT_RUN_TOOL_ID {
                 continue;
             }
-            if !self.bg_manager.contains_any(task_id).await {
-                // Orphaned: mark as stopped via SetStatus action.
-                orphaned_run_ids.push(task_id.clone());
-                actions = actions.and(LifecycleAction::State(AnyStateAction::new::<
-                    BackgroundTaskState,
-                >(
-                    BackgroundTaskAction::SetStatus {
-                        task_id: task_id.clone(),
-                        status: TaskStatus::Stopped,
-                        error: Some(
-                            "No live executor found in current process; marked stopped".to_string(),
-                        ),
-                        completed_at_ms: None,
-                    },
-                )));
+            if !self.bg_manager.contains_any(&task.task_id).await {
+                orphaned_run_ids.push(task.task_id.clone());
+                if let Some(task_store) = &self.task_store {
+                    let _ = task_store
+                        .persist_foreground_result(
+                            &task.task_id,
+                            TaskStatus::Stopped,
+                            Some(
+                                "No live executor found in current process; marked stopped"
+                                    .to_string(),
+                            ),
+                            None,
+                        )
+                        .await;
+                }
+                if legacy_tasks.contains_key(&task.task_id) {
+                    actions = actions.and(LifecycleAction::State(AnyStateAction::new::<
+                        BackgroundTaskState,
+                    >(
+                        BackgroundTaskAction::SetStatus {
+                            task_id: task.task_id.clone(),
+                            status: TaskStatus::Stopped,
+                            error: Some(
+                                "No live executor found in current process; marked stopped"
+                                    .to_string(),
+                            ),
+                            completed_at_ms: Some(current_unix_millis()),
+                        },
+                    )));
+                }
             }
         }
 
@@ -86,7 +129,7 @@ impl AgentBehavior for AgentRecoveryPlugin {
         }
 
         let run_id = orphaned_run_ids[0].clone();
-        let Some(task) = tasks.get(&run_id) else {
+        let Some(task) = tasks.iter().find(|task| task.task_id == run_id) else {
             return actions;
         };
 

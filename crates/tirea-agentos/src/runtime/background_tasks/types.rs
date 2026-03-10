@@ -1,7 +1,8 @@
 //! Core types for the background task system.
 //!
-//! These types model the lifecycle of background tasks spawned by tools.
-//! Tasks are thread-scoped and outlive individual runs.
+//! Background tasks are modeled as durable task threads plus an in-memory live
+//! execution table. `TaskState` is the persisted truth for query/recovery,
+//! while `BackgroundTaskManager` tracks active handles and cancellation tokens.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -10,6 +11,19 @@ use tirea_state::State;
 
 /// Unique identifier for a background task.
 pub type TaskId = String;
+
+/// Prefix for task journal threads persisted in [`ThreadStore`].
+pub const TASK_THREAD_PREFIX: &str = "task:";
+pub const TASK_THREAD_KIND_METADATA_KEY: &str = "__thread_kind";
+pub const TASK_THREAD_KIND_METADATA_VALUE: &str = "background_task";
+
+pub fn new_task_id() -> TaskId {
+    format!("bg_{}", uuid::Uuid::now_v7().simple())
+}
+
+pub fn task_thread_id(task_id: &str) -> String {
+    format!("{TASK_THREAD_PREFIX}{task_id}")
+}
 
 fn default_metadata() -> Value {
     Value::Object(serde_json::Map::new())
@@ -20,9 +34,10 @@ fn is_null_or_empty_object(v: &Value) -> bool {
 }
 
 /// Status of a background task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TaskStatus {
+    #[default]
     Running,
     Completed,
     Failed,
@@ -71,6 +86,20 @@ impl TaskResult {
     }
 }
 
+/// Durable reference to task output stored elsewhere.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TaskResultRef {
+    ThreadMessage {
+        thread_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+    },
+    External {
+        uri: String,
+    },
+}
+
 /// Summary of a background task visible to tools and plugins.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskSummary {
@@ -82,13 +111,17 @@ pub struct TaskSummary {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_ref: Option<TaskResultRef>,
     pub created_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at_ms: Option<u64>,
-    /// Parent task for tree-structured cancellation / querying.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_task_id: Option<TaskId>,
-    /// Domain-specific data (e.g. `{"thread_id":"…","agent_id":"…"}` for agent runs).
+    #[serde(default)]
+    pub supports_resume: bool,
+    #[serde(default)]
+    pub attempt: u32,
     #[serde(
         default = "default_metadata",
         skip_serializing_if = "is_null_or_empty_object"
@@ -96,7 +129,146 @@ pub struct TaskSummary {
     pub metadata: Value,
 }
 
-/// Lightweight persisted metadata for a background task.
+/// Durable task state stored inside a dedicated task thread (`task:<task_id>`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[tirea(path = "__task", action = "TaskAction", scope = "thread")]
+pub struct TaskState {
+    pub id: TaskId,
+    pub task_type: String,
+    pub description: String,
+    pub owner_thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_task_id: Option<TaskId>,
+    #[serde(default)]
+    pub status: TaskStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_ref: Option<TaskResultRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<Value>,
+    #[serde(default)]
+    pub supports_resume: bool,
+    #[serde(default)]
+    pub attempt: u32,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancel_requested_at_ms: Option<u64>,
+    #[serde(
+        default = "default_metadata",
+        skip_serializing_if = "is_null_or_empty_object"
+    )]
+    pub metadata: Value,
+}
+
+impl TaskState {
+    pub fn summary(&self) -> TaskSummary {
+        TaskSummary {
+            task_id: self.id.clone(),
+            task_type: self.task_type.clone(),
+            description: self.description.clone(),
+            status: self.status,
+            error: self.error.clone(),
+            result: self.result.clone(),
+            result_ref: self.result_ref.clone(),
+            created_at_ms: self.created_at_ms,
+            completed_at_ms: self.completed_at_ms,
+            parent_task_id: self.parent_task_id.clone(),
+            supports_resume: self.supports_resume,
+            attempt: self.attempt,
+            metadata: self.metadata.clone(),
+        }
+    }
+}
+
+/// Reducer actions for durable task state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TaskAction {
+    Register {
+        task: TaskState,
+    },
+    StartAttempt {
+        attempt: u32,
+        updated_at_ms: u64,
+    },
+    MarkCancelRequested {
+        requested_at_ms: u64,
+    },
+    SetCheckpoint {
+        checkpoint: Value,
+        updated_at_ms: u64,
+    },
+    SetStatus {
+        status: TaskStatus,
+        error: Option<String>,
+        result: Option<Value>,
+        result_ref: Option<TaskResultRef>,
+        completed_at_ms: Option<u64>,
+        updated_at_ms: u64,
+    },
+}
+
+impl TaskState {
+    fn reduce(&mut self, action: TaskAction) {
+        match action {
+            TaskAction::Register { task } => {
+                *self = task;
+            }
+            TaskAction::StartAttempt {
+                attempt,
+                updated_at_ms,
+            } => {
+                self.status = TaskStatus::Running;
+                self.error = None;
+                self.result = None;
+                self.result_ref = None;
+                self.completed_at_ms = None;
+                self.cancel_requested_at_ms = None;
+                self.attempt = attempt;
+                self.updated_at_ms = updated_at_ms;
+            }
+            TaskAction::MarkCancelRequested { requested_at_ms } => {
+                self.cancel_requested_at_ms = Some(requested_at_ms);
+                self.updated_at_ms = requested_at_ms;
+            }
+            TaskAction::SetCheckpoint {
+                checkpoint,
+                updated_at_ms,
+            } => {
+                self.checkpoint = Some(checkpoint);
+                self.updated_at_ms = updated_at_ms;
+            }
+            TaskAction::SetStatus {
+                status,
+                error,
+                result,
+                result_ref,
+                completed_at_ms,
+                updated_at_ms,
+            } => {
+                self.status = status;
+                self.error = error;
+                self.result = result;
+                self.result_ref = result_ref;
+                self.completed_at_ms = completed_at_ms;
+                self.updated_at_ms = updated_at_ms;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Legacy owner-thread projection (compatibility bridge)
+// ---------------------------------------------------------------------------
+
+/// Lightweight persisted metadata for a background task stored on the owner
+/// thread. This remains as a compatibility projection while task-thread
+/// persistence becomes the durable source of truth.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackgroundTask {
     pub task_type: String,
@@ -107,10 +279,8 @@ pub struct BackgroundTask {
     pub created_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at_ms: Option<u64>,
-    /// Parent task for tree-structured cancellation / querying.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_task_id: Option<TaskId>,
-    /// Domain-specific data (e.g. `{"thread_id":"…","agent_id":"…"}` for agent runs).
     #[serde(
         default = "default_metadata",
         skip_serializing_if = "is_null_or_empty_object"
@@ -118,7 +288,26 @@ pub struct BackgroundTask {
     pub metadata: Value,
 }
 
-/// Persisted background task state at `state["background_tasks"]`.
+impl BackgroundTask {
+    pub fn summary(&self, task_id: &str) -> TaskSummary {
+        TaskSummary {
+            task_id: task_id.to_string(),
+            task_type: self.task_type.clone(),
+            description: self.description.clone(),
+            status: self.status,
+            error: self.error.clone(),
+            result: None,
+            result_ref: None,
+            created_at_ms: self.created_at_ms,
+            completed_at_ms: self.completed_at_ms,
+            parent_task_id: self.parent_task_id.clone(),
+            supports_resume: self.task_type == "agent_run",
+            attempt: 0,
+            metadata: self.metadata.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 #[tirea(
     path = "background_tasks",
@@ -126,20 +315,16 @@ pub struct BackgroundTask {
     scope = "thread"
 )]
 pub struct BackgroundTaskState {
-    /// Background tasks keyed by `task_id`.
-    #[tirea(default = "HashMap::new()")]
+    #[tirea(default = "std::collections::HashMap::new()")]
     pub tasks: HashMap<String, BackgroundTask>,
 }
 
-/// Reducer actions for `BackgroundTaskState`.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BackgroundTaskAction {
-    /// Register a new running task.
     Register {
         task_id: TaskId,
         task: BackgroundTask,
     },
-    /// Update status of an existing task.
     SetStatus {
         task_id: TaskId,
         status: TaskStatus,
@@ -170,4 +355,11 @@ impl BackgroundTaskState {
             }
         }
     }
+}
+
+pub(crate) fn legacy_tasks_from_doc(doc: &Value) -> HashMap<String, BackgroundTask> {
+    doc.get(BackgroundTaskState::PATH)
+        .and_then(|v| BackgroundTaskState::from_value(v).ok())
+        .map(|state| state.tasks)
+        .unwrap_or_default()
 }

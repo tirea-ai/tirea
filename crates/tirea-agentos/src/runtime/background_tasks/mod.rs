@@ -16,18 +16,23 @@
 
 mod manager;
 mod plugin;
+mod store;
 mod tools;
 mod types;
 mod wrapper;
 
 pub use manager::{BackgroundTaskManager, TaskCompletionNotifier};
 pub use plugin::{BackgroundTasksPlugin, BACKGROUND_TASKS_PLUGIN_ID};
+pub use store::{NewTaskSpec, TaskPersistenceNotifier, TaskStore, TaskStoreError};
 pub use tools::{
     TaskCancelTool, TaskOutputTool, TaskStatusTool, TASK_CANCEL_TOOL_ID, TASK_OUTPUT_TOOL_ID,
     TASK_STATUS_TOOL_ID,
 };
+pub(crate) use types::legacy_tasks_from_doc;
+#[allow(unused_imports)]
 pub use types::{
-    BackgroundTask, BackgroundTaskAction, BackgroundTaskState, TaskId, TaskResult, TaskStatus,
-    TaskSummary,
+    new_task_id, task_thread_id, BackgroundTask, BackgroundTaskAction, BackgroundTaskState,
+    TaskAction, TaskId, TaskResult, TaskResultRef, TaskState, TaskStatus, TaskSummary,
+    TASK_THREAD_KIND_METADATA_KEY, TASK_THREAD_KIND_METADATA_VALUE, TASK_THREAD_PREFIX,
 };
 pub use wrapper::{BackgroundCapable, BackgroundExecutable};
