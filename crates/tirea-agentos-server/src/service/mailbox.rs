@@ -883,7 +883,7 @@ impl MailboxDispatcher {
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use tirea_agentos::composition::{AgentDefinition, AgentOsBuilder};
+    use tirea_agentos::composition::{AgentDefinition, AgentDefinitionSpec, AgentOsBuilder};
     use tirea_agentos::contracts::runtime::behavior::ReadOnlyContext;
     use tirea_agentos::contracts::runtime::phase::{ActionSet, BeforeInferenceAction};
     use tirea_agentos::contracts::{AgentBehavior, TerminationReason};
@@ -915,14 +915,14 @@ mod tests {
         Arc::new(
             AgentOsBuilder::new()
                 .with_registered_behavior("mailbox_terminate", Arc::new(TerminatePlugin))
-                .with_agent(
+                .with_agent_spec(AgentDefinitionSpec::local_with_id(
                     "test",
                     AgentDefinition {
                         id: "test".to_string(),
                         behavior_ids: vec!["mailbox_terminate".to_string()],
                         ..Default::default()
                     },
-                )
+                ))
                 .with_agent_state_store(store)
                 .build()
                 .expect("build AgentOs"),

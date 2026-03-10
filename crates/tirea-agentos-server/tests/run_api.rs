@@ -86,14 +86,14 @@ fn make_slow_interrupt_app() -> (axum::Router, Arc<AgentOs>, Arc<MemoryStore>) {
                     std::time::Duration::from_secs(30),
                 )),
             )
-            .with_agent(
+            .with_agent_spec(AgentDefinitionSpec::local_with_id(
                 TEST_AGENT_ID,
                 AgentDefinition {
                     id: TEST_AGENT_ID.to_string(),
                     behavior_ids: vec![behavior_id],
                     ..Default::default()
                 },
-            )
+            ))
             .with_agent_state_store(store.clone())
             .build()
             .expect("build AgentOs"),

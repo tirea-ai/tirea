@@ -18,6 +18,7 @@ use crate::extensions::skills::SkillRegistry;
 use crate::runtime::loop_runner::{Agent, RunCancellationToken, StateCommitError, StateCommitter};
 
 use super::agent_tools::SubAgentHandleTable;
+use super::background_tasks::{BackgroundTaskManager, TaskStore};
 use super::thread_run;
 
 /// Result of [`AgentOs::run_stream`]: an event stream plus metadata.
@@ -109,6 +110,7 @@ pub struct AgentOs {
     pub(crate) skills_registry: Option<Arc<dyn SkillRegistry>>,
     pub(crate) system_wirings: Vec<Arc<dyn SystemWiring>>,
     pub(crate) sub_agent_handles: Arc<SubAgentHandleTable>,
+    pub(crate) background_tasks: Arc<BackgroundTaskManager>,
     pub(crate) active_runs: Arc<thread_run::ActiveThreadRunRegistry>,
     pub(crate) agent_tools: AgentToolsConfig,
     pub(crate) agent_state_store: Option<Arc<dyn ThreadStore>>,
@@ -124,6 +126,11 @@ pub(crate) struct RuntimeServices {
 
 impl AgentOs {
     pub(crate) fn from_registry_set(registries: RegistrySet, services: RuntimeServices) -> Self {
+        let background_task_store = services
+            .agent_state_store
+            .as_ref()
+            .map(|store| Arc::new(TaskStore::new(store.clone())));
+
         Self {
             default_client: services.default_client,
             agents: registries.agents,
@@ -137,6 +144,9 @@ impl AgentOs {
             skills_registry: registries.skills,
             system_wirings: services.system_wirings,
             sub_agent_handles: Arc::new(SubAgentHandleTable::new()),
+            background_tasks: Arc::new(BackgroundTaskManager::with_task_store(
+                background_task_store,
+            )),
             active_runs: Arc::new(thread_run::ActiveThreadRunRegistry::default()),
             agent_tools: services.agent_tools,
             agent_state_store: services.agent_state_store,

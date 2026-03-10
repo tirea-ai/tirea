@@ -159,6 +159,7 @@ pub struct SubAgent {
 #[tirea(path = "sub_agents", action = "SubAgentAction", scope = "thread")]
 pub struct SubAgentState {
     /// Sub-agent runs keyed by `run_id`.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     #[tirea(default = "HashMap::new()")]
     pub runs: HashMap<String, SubAgent>,
 }
@@ -166,6 +167,8 @@ pub struct SubAgentState {
 /// Internal lifecycle action for `SubAgentState` reducer.
 #[derive(Serialize, Deserialize)]
 pub enum SubAgentAction {
+    /// Insert or replace a sub-agent run snapshot.
+    Upsert { run_id: String, sub: SubAgent },
     /// Set status of a sub-agent run (used by recovery plugin).
     SetStatus {
         run_id: String,
@@ -177,6 +180,9 @@ pub enum SubAgentAction {
 impl SubAgentState {
     fn reduce(&mut self, action: SubAgentAction) {
         match action {
+            SubAgentAction::Upsert { run_id, sub } => {
+                self.runs.insert(run_id, sub);
+            }
             SubAgentAction::SetStatus {
                 run_id,
                 status,
@@ -194,6 +200,9 @@ impl SubAgentState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction, ScopeContext};
+    use serde_json::json;
+    use tirea_state::apply_patches;
 
     #[test]
     fn execution_ref_local_thread_id_round_trips() {
@@ -213,5 +222,29 @@ mod tests {
         assert_eq!(execution.local_thread_id(), None);
         assert_eq!(execution.output_thread_id(), Some("sub-agent-run-1"));
         assert_eq!(execution.target_id(), Some("remote-worker"));
+    }
+
+    #[test]
+    fn sub_agent_state_upsert_creates_state_from_empty_snapshot() {
+        let action = AnyStateAction::new::<SubAgentState>(SubAgentAction::Upsert {
+            run_id: "run-1".to_string(),
+            sub: SubAgent {
+                execution: SubAgentExecutionRef::local("child-thread"),
+                parent_run_id: None,
+                agent_id: "worker".to_string(),
+                status: SubAgentStatus::Running,
+                error: None,
+            },
+        });
+
+        let patches = reduce_state_actions(vec![action], &json!({}), "test", &ScopeContext::run())
+            .expect("sub-agent state action should reduce from empty snapshot");
+        let next = apply_patches(&json!({}), patches.iter().map(|patch| patch.patch()))
+            .expect("sub-agent state patch should apply");
+        let state: SubAgentState = serde_json::from_value(next["sub_agents"].clone())
+            .expect("sub-agent state should deserialize after first upsert");
+
+        assert_eq!(state.runs.len(), 1);
+        assert_eq!(state.runs["run-1"].agent_id, "worker");
     }
 }

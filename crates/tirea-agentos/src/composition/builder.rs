@@ -6,7 +6,8 @@ use crate::contracts::storage::ThreadStore;
 use crate::extensions::skills::{
     CompositeSkillRegistry, InMemorySkillRegistry, Skill, SkillRegistry, SkillRegistryManagerError,
 };
-use crate::runtime::resolve::SkillsSystemWiring;
+#[cfg(feature = "skills")]
+use crate::runtime::plugin::skills_wiring::SkillsSystemWiring;
 use crate::runtime::StopPolicy;
 use crate::runtime::{AgentOs, RuntimeServices};
 use genai::Client;

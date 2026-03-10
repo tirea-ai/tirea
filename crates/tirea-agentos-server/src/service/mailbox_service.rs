@@ -939,7 +939,7 @@ pub struct ControlResult {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use tirea_agentos::composition::{AgentDefinition, AgentOsBuilder};
+    use tirea_agentos::composition::{AgentDefinition, AgentDefinitionSpec, AgentOsBuilder};
     use tirea_agentos::contracts::runtime::behavior::ReadOnlyContext;
     use tirea_agentos::contracts::runtime::phase::{ActionSet, BeforeInferenceAction};
     use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader, ThreadWriter};
@@ -994,14 +994,14 @@ mod tests {
             .with_registered_behavior("svc_terminate", Arc::new(TerminatePlugin))
             .with_agent_state_store(store);
         for agent_id in agent_ids {
-            builder = builder.with_agent(
+            builder = builder.with_agent_spec(AgentDefinitionSpec::local_with_id(
                 *agent_id,
                 AgentDefinition {
                     id: (*agent_id).to_string(),
                     behavior_ids: vec!["svc_terminate".to_string()],
                     ..Default::default()
                 },
-            );
+            ));
         }
         Arc::new(builder.build().expect("build AgentOs"))
     }
@@ -1898,30 +1898,30 @@ mod tests {
                     }),
                 )
                 .with_agent_state_store(store.clone())
-                .with_agent(
+                .with_agent_spec(AgentDefinitionSpec::local_with_id(
                     "parent-agent",
                     AgentDefinition {
                         id: "parent-agent".to_string(),
                         behavior_ids: vec!["svc_parent_busy".to_string()],
                         ..Default::default()
                     },
-                )
-                .with_agent(
+                ))
+                .with_agent_spec(AgentDefinitionSpec::local_with_id(
                     "worker-fast",
                     AgentDefinition {
                         id: "worker-fast".to_string(),
                         behavior_ids: vec!["svc_terminate".to_string()],
                         ..Default::default()
                     },
-                )
-                .with_agent(
+                ))
+                .with_agent_spec(AgentDefinitionSpec::local_with_id(
                     "worker-slow",
                     AgentDefinition {
                         id: "worker-slow".to_string(),
                         behavior_ids: vec!["svc_worker_slow".to_string()],
                         ..Default::default()
                     },
-                )
+                ))
                 .build()
                 .expect("build AgentOs"),
         );

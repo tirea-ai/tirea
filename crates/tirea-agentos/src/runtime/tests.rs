@@ -3830,7 +3830,10 @@ async fn prepare_run_cleans_up_tool_call_scope_between_consecutive_runs() {
     tools.insert("echo".to_string(), Arc::new(DecisionEchoTool));
     let os = AgentOs::builder()
         .with_tools(tools)
-        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
         .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .build()
         .unwrap();

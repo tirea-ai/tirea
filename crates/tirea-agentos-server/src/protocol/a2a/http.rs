@@ -409,40 +409,42 @@ async fn get_task(
     else {
         return Err(ApiError::RunNotFound(task_id));
     };
-    let thread = st
-        .read_store
-        .load(&record.thread_id)
-        .await
-        .map_err(|err| ApiError::Internal(err.to_string()))?;
-    let latest_output = thread
-        .as_ref()
-        .and_then(|head| latest_public_assistant_output(&head.thread));
-    let history = thread
-        .as_ref()
-        .map(|head| public_history(&head.thread))
-        .unwrap_or_default();
-    let artifacts = latest_output
-        .as_ref()
-        .map(|content| vec![json!({ "content": content })])
-        .unwrap_or_default();
-    let message = latest_output
-        .as_ref()
-        .map(|content| json!({ "role": "assistant", "content": content }));
-
     Ok(match task {
-        BackgroundTaskLookup::Run(record) => Json(json!({
-            "taskId": task_id,
-            "contextId": record.thread_id,
-            "status": record.status,
-            "origin": record.origin,
-            "terminationCode": record.termination_code,
-            "terminationDetail": record.termination_detail,
-            "createdAt": record.created_at,
-            "updatedAt": record.updated_at,
-            "message": message,
-            "artifacts": artifacts,
-            "history": history,
-        })),
+        BackgroundTaskLookup::Run(record) => {
+            let thread = st
+                .read_store
+                .load(&record.thread_id)
+                .await
+                .map_err(|err| ApiError::Internal(err.to_string()))?;
+            let latest_output = thread
+                .as_ref()
+                .and_then(|head| latest_public_assistant_output(&head.thread));
+            let history = thread
+                .as_ref()
+                .map(|head| public_history(&head.thread))
+                .unwrap_or_default();
+            let artifacts = latest_output
+                .as_ref()
+                .map(|content| vec![json!({ "content": content })])
+                .unwrap_or_default();
+            let message = latest_output
+                .as_ref()
+                .map(|content| json!({ "role": "assistant", "content": content }));
+
+            Json(json!({
+                "taskId": task_id,
+                "contextId": record.thread_id,
+                "status": record.status,
+                "origin": record.origin,
+                "terminationCode": record.termination_code,
+                "terminationDetail": record.termination_detail,
+                "createdAt": record.created_at,
+                "updatedAt": record.updated_at,
+                "message": message,
+                "artifacts": artifacts,
+                "history": history,
+            }))
+        }
         BackgroundTaskLookup::Mailbox(entry) => Json(json!({
             "taskId": task_id,
             "contextId": entry.mailbox_id,

@@ -735,6 +735,7 @@ async fn live_deepseek_a2a_message_send(
                 state: None,
                 messages: vec![Message::user(prompt)],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             })
             .await;
 
@@ -4873,6 +4874,7 @@ async fn integration_sub_agent_executes_tool_via_mock_llm() {
                 state: None,
                 messages: vec![crate::contracts::thread::Message::user("call echo tool")],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             },
             resolved,
         )
@@ -4997,6 +4999,7 @@ async fn integration_sub_agent_tool_invocation_counted() {
                 state: None,
                 messages: vec![crate::contracts::thread::Message::user("count it")],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             },
             resolved,
         )
@@ -5051,6 +5054,7 @@ async fn integration_consecutive_runs_on_same_thread_accumulate_messages() {
                 state: None,
                 messages: vec![crate::contracts::thread::Message::user("first task")],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             },
             resolved1,
         )
@@ -5081,6 +5085,7 @@ async fn integration_consecutive_runs_on_same_thread_accumulate_messages() {
                 state: None,
                 messages: vec![crate::contracts::thread::Message::user("second task")],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             },
             resolved2,
         )
@@ -5160,6 +5165,7 @@ async fn integration_sub_agent_thread_independent_from_parent_thread() {
                 state: Some(json!({"parent_data": "secret"})),
                 messages: vec![crate::contracts::thread::Message::user("parent task")],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             },
             parent_resolved,
         )
@@ -5183,6 +5189,7 @@ async fn integration_sub_agent_thread_independent_from_parent_thread() {
                 state: None,
                 messages: vec![crate::contracts::thread::Message::user("child task")],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             },
             child_resolved,
         )
@@ -5274,6 +5281,7 @@ async fn integration_agent_output_reads_tool_result_from_sub_agent() {
                 state: None,
                 messages: vec![crate::contracts::thread::Message::user("echo test")],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             },
             resolved,
         )

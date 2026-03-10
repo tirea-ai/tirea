@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use tirea_agent_loop::runtime::loop_runner::{LlmEventStream, LlmExecutor};
-use tirea_agentos::composition::AgentDefinition;
+use tirea_agentos::composition::{AgentDefinition, AgentDefinitionSpec};
 use tirea_agentos::runtime::AgentOs;
 use tirea_contract::runtime::tool_call::{
     Tool, ToolCallProgressState, ToolCallProgressStatus, ToolCallProgressUpdate, ToolDescriptor,
@@ -556,9 +556,18 @@ fn progress_snapshots(events: &[AgentEvent]) -> Vec<ToolCallProgressState> {
 fn build_mock_subagent_os(storage: Arc<MemoryStore>, slot: Arc<OnceLock<AgentOs>>) -> AgentOs {
     let os = AgentOs::builder()
         .with_agent_state_store(storage as Arc<dyn ThreadStore>)
-        .with_agent(PARENT_AGENT_ID, AgentDefinition::new("mock"))
-        .with_agent(CHILD_AGENT_ID, AgentDefinition::new("mock"))
-        .with_agent(GRANDCHILD_AGENT_ID, AgentDefinition::new("mock"))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            PARENT_AGENT_ID,
+            AgentDefinition::new("mock"),
+        ))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            CHILD_AGENT_ID,
+            AgentDefinition::new("mock"),
+        ))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            GRANDCHILD_AGENT_ID,
+            AgentDefinition::new("mock"),
+        ))
         .with_tools(HashMap::from([
             ("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>),
             (
