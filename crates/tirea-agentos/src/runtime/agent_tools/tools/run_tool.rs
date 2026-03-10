@@ -23,8 +23,7 @@ pub struct AgentRunArgs {
 
 /// Normalize optional string: trim whitespace and treat empty as None.
 fn normalize_opt(s: Option<String>) -> Option<String> {
-    s.map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
+    s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
 /// Task type used when registering sub-agent background runs.
@@ -80,17 +79,13 @@ impl AgentRunTool {
         let prompt = normalize_opt(args.prompt.clone());
 
         let Some(agent_id) = agent_id else {
-            return Err(
-                ToolArgError::new("invalid_arguments", "missing 'agent_id'")
-                    .into_tool_result(tool_name),
-            );
+            return Err(ToolArgError::new("invalid_arguments", "missing 'agent_id'")
+                .into_tool_result(tool_name));
         };
 
         if !is_resume && prompt.is_none() {
-            return Err(
-                ToolArgError::new("invalid_arguments", "missing 'prompt'")
-                    .into_tool_result(tool_name),
-            );
+            return Err(ToolArgError::new("invalid_arguments", "missing 'prompt'")
+                .into_tool_result(tool_name));
         }
 
         if let Err(error) = self.ensure_target_visible(&agent_id, caller_agent_id, scope) {
@@ -133,10 +128,7 @@ impl BackgroundExecutable for AgentRunTool {
     }
 
     fn task_metadata(&self, args: &Value) -> Value {
-        let run_id = args
-            .get("run_id")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let run_id = args.get("run_id").and_then(Value::as_str).unwrap_or("");
         let agent_id = args
             .get("agent_id")
             .and_then(Value::as_str)
@@ -223,9 +215,7 @@ impl BackgroundExecutable for AgentRunTool {
                 "run_id": task_id,
                 "status": "completed"
             })),
-            SubAgentStatus::Failed => {
-                BgTaskResult::Failed(completion.error.unwrap_or_default())
-            }
+            SubAgentStatus::Failed => BgTaskResult::Failed(completion.error.unwrap_or_default()),
             SubAgentStatus::Stopped => BgTaskResult::Stopped,
             SubAgentStatus::Running => BgTaskResult::Success(json!({ "run_id": task_id })),
         }
@@ -305,8 +295,7 @@ impl crate::contracts::runtime::tool_call::TypedTool for AgentRunTool {
             cancellation_token: None,
         };
 
-        let completion =
-            execute_sub_agent(self.os.clone(), request, Some(&forward_progress)).await;
+        let completion = execute_sub_agent(self.os.clone(), request, Some(&forward_progress)).await;
 
         Ok(agent_tool_result(
             tool_name,

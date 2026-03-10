@@ -1,7 +1,6 @@
 use super::actions::{
     apply_tool_policy, deny_missing_call_id, deny_tool, reject_out_of_scope, request_permission,
 };
-use tirea_contract::scope;
 use super::state::{resolve_permission_behavior, PermissionPolicy, ToolPermissionBehavior};
 use async_trait::async_trait;
 use serde_json::json;
@@ -10,6 +9,7 @@ use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
 use tirea_contract::runtime::phase::SuspendTicket;
 use tirea_contract::runtime::phase::{ActionSet, BeforeInferenceAction, BeforeToolExecuteAction};
 use tirea_contract::runtime::{PendingToolCall, ToolCallResumeMode};
+use tirea_contract::scope;
 
 /// Stable plugin id for permission actions.
 pub const PERMISSION_PLUGIN_ID: &str = "permission";

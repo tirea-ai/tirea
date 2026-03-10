@@ -122,7 +122,9 @@ impl TaskStore {
         self.append_task_action(
             &thread_id,
             task_id.as_str(),
-            TaskAction::Register { task: Box::new(task.clone()) },
+            TaskAction::Register {
+                task: Box::new(task.clone()),
+            },
             Some(Message::internal_system(format!(
                 "background task {} registered as running",
                 task.id

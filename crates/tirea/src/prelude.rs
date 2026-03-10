@@ -69,8 +69,8 @@ pub use crate::runtime::{AgentOs, PreparedRun, RunStream};
 pub use crate::composition::{AgentDefinition, AgentOsBuilder};
 
 // Plugin SPI
-pub use crate::contracts::AgentBehavior;
 pub use crate::contracts::runtime::phase::{ActionSet, BeforeInferenceAction};
+pub use crate::contracts::AgentBehavior;
 
 // ── Extension types (require "core" feature) ─────────────────────────────
 

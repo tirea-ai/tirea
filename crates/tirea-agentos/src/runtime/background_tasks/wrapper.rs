@@ -187,21 +187,38 @@ impl<T: BackgroundExecutable + 'static> BackgroundCapable<T> {
                             task_id
                         )));
                     }
-                    store
-                        .start_task_attempt(task_id)
-                        .await
-                        .map_err(|e| ToolError::ExecutionFailed(format!("task persist failed: {e}")))?;
+                    store.start_task_attempt(task_id).await.map_err(|e| {
+                        ToolError::ExecutionFailed(format!("task persist failed: {e}"))
+                    })?;
                 }
                 Ok(None) => {
                     // Resuming a non-existent task — create it.
-                    self.create_task(store, task_id, owner_thread_id, description, parent_task_id, metadata).await?;
+                    self.create_task(
+                        store,
+                        task_id,
+                        owner_thread_id,
+                        description,
+                        parent_task_id,
+                        metadata,
+                    )
+                    .await?;
                 }
                 Err(e) => {
-                    return Err(ToolError::ExecutionFailed(format!("task persist failed: {e}")));
+                    return Err(ToolError::ExecutionFailed(format!(
+                        "task persist failed: {e}"
+                    )));
                 }
             }
         } else {
-            self.create_task(store, task_id, owner_thread_id, description, parent_task_id, metadata).await?;
+            self.create_task(
+                store,
+                task_id,
+                owner_thread_id,
+                description,
+                parent_task_id,
+                metadata,
+            )
+            .await?;
         }
 
         Ok(())
@@ -261,7 +278,9 @@ impl<T: BackgroundExecutable + 'static> BackgroundCapable<T> {
                 None,
             )
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("failed to mark orphan stopped: {e}")))?;
+            .map_err(|e| {
+                ToolError::ExecutionFailed(format!("failed to mark orphan stopped: {e}"))
+            })?;
         Ok(())
     }
 

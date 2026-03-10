@@ -2,7 +2,9 @@ use super::*;
 use crate::contracts::runtime::phase::StepContext;
 use crate::contracts::storage::ThreadStore;
 use crate::loop_runtime::loop_runner::RunCancellationToken;
-use crate::runtime::background_tasks::{NewTaskSpec, SpawnParams, TaskResult, TaskStatus, TaskStore};
+use crate::runtime::background_tasks::{
+    NewTaskSpec, SpawnParams, TaskResult, TaskStatus, TaskStore,
+};
 
 fn recovery_task_store() -> Arc<TaskStore> {
     let storage = Arc::new(tirea_store_adapters::MemoryStore::new());

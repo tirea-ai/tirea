@@ -240,9 +240,7 @@ async fn agent_run_tool_rejects_self_target_agent() {
 #[tokio::test]
 async fn agent_run_tool_surfaces_task_store_load_failure_on_start() {
     let mem_store = Arc::new(tirea_store_adapters::MemoryStore::new());
-    let storage: Arc<dyn ThreadStore> = Arc::new(TaskLoadFailingStore {
-        inner: mem_store,
-    });
+    let storage: Arc<dyn ThreadStore> = Arc::new(TaskLoadFailingStore { inner: mem_store });
     let os = AgentOs::builder()
         .with_agent_state_store(storage.clone())
         .with_agent(
@@ -253,8 +251,7 @@ async fn agent_run_tool_surfaces_task_store_load_failure_on_start() {
         .unwrap();
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
     let task_store = Some(Arc::new(TaskStore::new(storage)));
-    let wrapped = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr)
-        .with_task_store(task_store);
+    let wrapped = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr).with_task_store(task_store);
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
 
@@ -414,11 +411,7 @@ async fn background_stop_then_resume_completes() {
 async fn agent_run_tool_persists_task_thread_state() {
     let (os, storage) = build_worker_os_with_store(true);
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
-    let wrapped = wrap_with_bg(
-        os,
-        bg_mgr,
-        Some(storage.clone() as Arc<dyn ThreadStore>),
-    );
+    let wrapped = wrap_with_bg(os, bg_mgr, Some(storage.clone() as Arc<dyn ThreadStore>));
 
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
@@ -459,11 +452,7 @@ async fn agent_run_tool_persists_task_thread_state() {
 async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
     let (os, storage) = build_worker_os_with_store(true);
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
-    let wrapped = wrap_with_bg(
-        os,
-        bg_mgr,
-        Some(storage.clone() as Arc<dyn ThreadStore>),
-    );
+    let wrapped = wrap_with_bg(os, bg_mgr, Some(storage.clone() as Arc<dyn ThreadStore>));
 
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope_with_state_and_run(json!({"forked": true}), "parent-run-42");
@@ -498,11 +487,7 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
 async fn agent_run_tool_query_existing_run_keeps_original_parent_lineage() {
     let (os, storage) = build_worker_os_with_store(false);
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
-    let wrapped = wrap_with_bg(
-        os,
-        bg_mgr,
-        Some(storage.clone() as Arc<dyn ThreadStore>),
-    );
+    let wrapped = wrap_with_bg(os, bg_mgr, Some(storage.clone() as Arc<dyn ThreadStore>));
     persist_agent_run(
         storage.clone(),
         "owner-thread",
@@ -550,11 +535,7 @@ async fn agent_run_tool_query_existing_run_keeps_original_parent_lineage() {
 async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
     let (os, storage) = build_worker_os_with_store(true);
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
-    let wrapped = wrap_with_bg(
-        os,
-        bg_mgr,
-        Some(storage.clone() as Arc<dyn ThreadStore>),
-    );
+    let wrapped = wrap_with_bg(os, bg_mgr, Some(storage.clone() as Arc<dyn ThreadStore>));
     persist_agent_run(
         storage,
         "owner-thread",
@@ -590,11 +571,7 @@ async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
 async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
     let (os, storage) = build_worker_os_with_store(true);
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
-    let wrapped = wrap_with_bg(
-        os,
-        bg_mgr,
-        Some(storage.clone() as Arc<dyn ThreadStore>),
-    );
+    let wrapped = wrap_with_bg(os, bg_mgr, Some(storage.clone() as Arc<dyn ThreadStore>));
     persist_agent_run(
         storage.clone(),
         "owner-thread",
@@ -638,7 +615,11 @@ async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
     );
     let task = task_store.load_task("run-1").await.unwrap().unwrap();
     // The attempt count should have increased from the resume.
-    assert!(task.attempt >= 2, "expected attempt >= 2 after resume, got: {}", task.attempt);
+    assert!(
+        task.attempt >= 2,
+        "expected attempt >= 2 after resume, got: {}",
+        task.attempt
+    );
 }
 
 // ── AgentRunTool: resume completed/failed returns status ─────────────────────
@@ -647,11 +628,7 @@ async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
 async fn agent_run_tool_returns_completed_status_when_resuming_completed_run() {
     let (os, storage) = build_worker_os_with_store(false);
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
-    let wrapped = wrap_with_bg(
-        os,
-        bg_mgr,
-        Some(storage.clone() as Arc<dyn ThreadStore>),
-    );
+    let wrapped = wrap_with_bg(os, bg_mgr, Some(storage.clone() as Arc<dyn ThreadStore>));
     persist_agent_run(
         storage.clone(),
         "owner-thread",
@@ -682,11 +659,7 @@ async fn agent_run_tool_returns_completed_status_when_resuming_completed_run() {
 async fn agent_run_tool_returns_failed_status_when_resuming_failed_run() {
     let (os, storage) = build_worker_os_with_store(false);
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
-    let wrapped = wrap_with_bg(
-        os,
-        bg_mgr,
-        Some(storage.clone() as Arc<dyn ThreadStore>),
-    );
+    let wrapped = wrap_with_bg(os, bg_mgr, Some(storage.clone() as Arc<dyn ThreadStore>));
     persist_agent_run(
         storage.clone(),
         "owner-thread",
@@ -837,11 +810,7 @@ async fn agent_run_tool_returns_error_for_unknown_run_id() {
 async fn agent_run_tool_returns_persisted_completed_without_rerun() {
     let (os, storage) = build_worker_os_with_store(false);
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
-    let wrapped = wrap_with_bg(
-        os,
-        bg_mgr,
-        Some(storage.clone() as Arc<dyn ThreadStore>),
-    );
+    let wrapped = wrap_with_bg(os, bg_mgr, Some(storage.clone() as Arc<dyn ThreadStore>));
     persist_agent_run(
         storage,
         "owner-thread",
@@ -872,11 +841,7 @@ async fn agent_run_tool_returns_persisted_completed_without_rerun() {
 async fn agent_run_tool_returns_persisted_failed_with_error() {
     let (os, storage) = build_worker_os_with_store(false);
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
-    let wrapped = wrap_with_bg(
-        os,
-        bg_mgr,
-        Some(storage.clone() as Arc<dyn ThreadStore>),
-    );
+    let wrapped = wrap_with_bg(os, bg_mgr, Some(storage.clone() as Arc<dyn ThreadStore>));
     persist_agent_run(
         storage,
         "owner-thread",

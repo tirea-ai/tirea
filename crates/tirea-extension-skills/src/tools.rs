@@ -1,11 +1,10 @@
 use crate::skill_md::{parse_allowed_tool_token, parse_skill_md};
-use crate::{SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY};
-use tirea_contract::scope::is_scope_allowed;
 use crate::{
     Skill, SkillError, SkillMaterializeError, SkillRegistry, SkillResource, SkillResourceKind,
     SkillState, SkillStateAction, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID,
     SKILL_SCRIPT_TOOL_ID,
 };
+use crate::{SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
@@ -15,6 +14,7 @@ use tirea_contract::runtime::state::AnyStateAction;
 use tirea_contract::runtime::tool_call::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult, ToolStatus,
 };
+use tirea_contract::scope::is_scope_allowed;
 use tirea_extension_permission::{
     permission_state_action, PermissionAction, ToolPermissionBehavior,
 };

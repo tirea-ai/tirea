@@ -57,7 +57,6 @@ pub(super) fn scope_run_id(scope: Option<&tirea_contract::RunConfig>) -> Option<
     scope_string(scope, SCOPE_RUN_ID_KEY)
 }
 
-
 pub(super) fn parse_caller_messages(
     scope: Option<&tirea_contract::RunConfig>,
 ) -> Option<Vec<Message>> {
@@ -126,7 +125,6 @@ pub(super) fn filtered_fork_messages(messages: Vec<Message>) -> Vec<Message> {
         })
         .collect()
 }
-
 
 pub(super) fn is_target_agent_visible(
     registry: &dyn AgentRegistry,

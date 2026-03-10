@@ -57,9 +57,11 @@ async fn integration_foreground_sub_agent_creates_thread_in_store() {
     let (os, storage) = build_integration_os();
 
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
-    let task_store = Some(Arc::new(TaskStore::new(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)));
-    let run_tool = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone())
-        .with_task_store(task_store);
+    let task_store = Some(Arc::new(TaskStore::new(
+        storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>
+    )));
+    let run_tool =
+        BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone()).with_task_store(task_store);
 
     let mut fix = TestFixture::new();
     fix.run_config = integration_caller_scope(
@@ -122,7 +124,9 @@ async fn integration_task_output_reads_from_thread_store() {
 
     let (os, storage) = build_integration_os();
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
-    let task_store = Arc::new(TaskStore::new(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>));
+    let task_store = Arc::new(TaskStore::new(
+        storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>
+    ));
     let run_tool = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone())
         .with_task_store(Some(task_store.clone()));
     let output_tool = TaskOutputTool::new(
@@ -186,7 +190,9 @@ async fn integration_task_output_reads_from_thread_store() {
 async fn integration_persisted_task_state_contains_only_lightweight_metadata() {
     let (os, storage) = build_integration_os();
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
-    let task_store = Arc::new(TaskStore::new(storage as Arc<dyn crate::contracts::storage::ThreadStore>));
+    let task_store = Arc::new(TaskStore::new(
+        storage as Arc<dyn crate::contracts::storage::ThreadStore>,
+    ));
     let run_tool = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone())
         .with_task_store(Some(task_store.clone()));
 
@@ -500,9 +506,11 @@ async fn integration_background_stop_resume_full_lifecycle_with_store() {
 
     let (os, storage) = build_integration_os();
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
-    let task_store = Some(Arc::new(TaskStore::new(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)));
-    let run_tool = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone())
-        .with_task_store(task_store);
+    let task_store = Some(Arc::new(TaskStore::new(
+        storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>
+    )));
+    let run_tool =
+        BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone()).with_task_store(task_store);
 
     // Phase 1: Launch background.
     let mut fix = TestFixture::new();
