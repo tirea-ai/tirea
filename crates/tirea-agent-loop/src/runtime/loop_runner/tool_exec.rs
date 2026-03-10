@@ -32,7 +32,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tirea_state::{Patch, TrackedPatch};
+use tirea_state::{apply_patch, Patch, TrackedPatch};
 
 /// Outcome of the public `execute_tools*` family of functions.
 ///
@@ -1117,10 +1117,6 @@ async fn execute_single_tool_with_phases_impl(
         step.emit_patch(tracked);
     }
 
-    let phase_patch_actions = std::mem::take(&mut step.pending_patches)
-        .into_iter()
-        .map(AnyStateAction::Patch);
-
     // Capture serialized actions before reduce consumes them.
     let mut serialized_actions: Vec<tirea_contract::SerializedAction> = tool_state_actions
         .iter()
@@ -1146,11 +1142,10 @@ async fn execute_single_tool_with_phases_impl(
     } else {
         state.clone()
     };
-    let pending_patches = reduce_tool_state_actions(
+    let pending_patches = apply_tracked_patches_checked(
         &phase_base_state,
-        phase_patch_actions.collect(),
-        "agent",
-        &tool_scope_ctx,
+        std::mem::take(&mut step.pending_patches),
+        &call.id,
     )?;
 
     let reminders = step.messaging.reminders.clone();
@@ -1193,6 +1188,66 @@ fn merge_tracked_patches(patches: &[TrackedPatch], source: &str) -> Option<Track
     }
 }
 
+fn apply_tracked_patches_checked(
+    base_state: &Value,
+    patches: Vec<TrackedPatch>,
+    call_id: &str,
+) -> Result<Vec<TrackedPatch>, AgentLoopError> {
+    let mut rolling = base_state.clone();
+    let mut validated = Vec::with_capacity(patches.len());
+    for tracked in patches {
+        if tracked.patch().is_empty() {
+            continue;
+        }
+        rolling = apply_patch(&rolling, tracked.patch()).map_err(|e| {
+            AgentLoopError::StateError(format!(
+                "failed to apply pending state patch for call '{}': {}",
+                call_id, e
+            ))
+        })?;
+        validated.push(tracked);
+    }
+    Ok(validated)
+}
+
 fn cancelled_error(_thread_id: &str) -> AgentLoopError {
     AgentLoopError::Cancelled
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use tirea_state::Op;
+
+    #[test]
+    fn apply_tracked_patches_checked_keeps_valid_sequence() {
+        let patches = vec![
+            TrackedPatch::new(Patch::new().with_op(Op::set(tirea_state::path!("alpha"), json!(1))))
+                .with_source("test:first"),
+            TrackedPatch::new(Patch::new().with_op(Op::set(tirea_state::path!("beta"), json!(2))))
+                .with_source("test:second"),
+        ];
+
+        let validated =
+            apply_tracked_patches_checked(&json!({}), patches, "call_1").expect("patches valid");
+
+        assert_eq!(validated.len(), 2);
+        assert_eq!(validated[0].patch().ops().len(), 1);
+        assert_eq!(validated[1].patch().ops().len(), 1);
+    }
+
+    #[test]
+    fn apply_tracked_patches_checked_reports_invalid_sequence() {
+        let patches = vec![TrackedPatch::new(
+            Patch::new().with_op(Op::increment(tirea_state::path!("counter"), 1_i64)),
+        )
+        .with_source("test:broken")];
+
+        let error = apply_tracked_patches_checked(&json!({}), patches, "call_1")
+            .expect_err("increment against missing path should fail");
+
+        assert!(matches!(error, AgentLoopError::StateError(message)
+            if message.contains("failed to apply pending state patch for call 'call_1'")));
+    }
 }
