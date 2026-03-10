@@ -1,3 +1,8 @@
+//! Model Context Protocol (MCP) client integration for external tool servers.
+//!
+//! Provides [`McpToolRegistryManager`] for connecting to MCP servers and
+//! exposing their tools as tirea [`Tool`](tirea_contract::runtime::tool_call::Tool) instances.
+
 mod client_transport;
 
 use async_trait::async_trait;

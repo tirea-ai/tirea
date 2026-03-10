@@ -60,6 +60,18 @@ pub use crate::contracts::runtime::phase::{
 pub use crate::contracts::runtime::tool_call::ToolGate;
 pub use crate::contracts::{Suspension, SuspensionResponse};
 
+// ── Core entry points (require "core" feature) ──────────────────────────
+
+#[cfg(feature = "core")]
+pub use crate::runtime::{AgentOs, PreparedRun, RunStream};
+
+#[cfg(feature = "core")]
+pub use crate::composition::{AgentDefinition, AgentOsBuilder};
+
+// Plugin SPI
+pub use crate::contracts::AgentBehavior;
+pub use crate::contracts::runtime::phase::{ActionSet, BeforeInferenceAction};
+
 // ── Extension types (require "core" feature) ─────────────────────────────
 
 #[cfg(feature = "core")]
