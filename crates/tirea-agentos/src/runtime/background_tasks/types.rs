@@ -11,6 +11,14 @@ use tirea_state::State;
 /// Unique identifier for a background task.
 pub type TaskId = String;
 
+fn default_metadata() -> Value {
+    Value::Object(serde_json::Map::new())
+}
+
+fn is_null_or_empty_object(v: &Value) -> bool {
+    v.is_null() || v.as_object().is_some_and(|m| m.is_empty())
+}
+
 /// Status of a background task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -19,6 +27,8 @@ pub enum TaskStatus {
     Completed,
     Failed,
     Cancelled,
+    /// Resumable — the task was stopped but can be restarted (e.g. agent runs).
+    Stopped,
 }
 
 impl TaskStatus {
@@ -28,11 +38,12 @@ impl TaskStatus {
             Self::Completed => "completed",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
+            Self::Stopped => "stopped",
         }
     }
 
     pub fn is_terminal(self) -> bool {
-        !matches!(self, Self::Running)
+        !matches!(self, Self::Running | Self::Stopped)
     }
 }
 
@@ -43,8 +54,10 @@ pub enum TaskResult {
     Success(Value),
     /// Task failed with an error message.
     Failed(String),
-    /// Task was cancelled.
+    /// Task was cancelled (terminal).
     Cancelled,
+    /// Task was stopped but can be resumed later.
+    Stopped,
 }
 
 impl TaskResult {
@@ -53,6 +66,7 @@ impl TaskResult {
             Self::Success(_) => TaskStatus::Completed,
             Self::Failed(_) => TaskStatus::Failed,
             Self::Cancelled => TaskStatus::Cancelled,
+            Self::Stopped => TaskStatus::Stopped,
         }
     }
 }
@@ -71,6 +85,15 @@ pub struct TaskSummary {
     pub created_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at_ms: Option<u64>,
+    /// Parent task for tree-structured cancellation / querying.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_task_id: Option<TaskId>,
+    /// Domain-specific data (e.g. `{"thread_id":"…","agent_id":"…"}` for agent runs).
+    #[serde(
+        default = "default_metadata",
+        skip_serializing_if = "is_null_or_empty_object"
+    )]
+    pub metadata: Value,
 }
 
 /// Lightweight persisted metadata for a background task.
@@ -84,15 +107,28 @@ pub struct BackgroundTask {
     pub created_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at_ms: Option<u64>,
+    /// Parent task for tree-structured cancellation / querying.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_task_id: Option<TaskId>,
+    /// Domain-specific data (e.g. `{"thread_id":"…","agent_id":"…"}` for agent runs).
+    #[serde(
+        default = "default_metadata",
+        skip_serializing_if = "is_null_or_empty_object"
+    )]
+    pub metadata: Value,
 }
 
 /// Persisted background task state at `state["background_tasks"]`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-#[tirea(path = "background_tasks", action = "BackgroundTaskAction", scope = "thread")]
+#[tirea(
+    path = "background_tasks",
+    action = "BackgroundTaskAction",
+    scope = "thread"
+)]
 pub struct BackgroundTaskState {
     /// Background tasks keyed by `task_id`.
     #[tirea(default = "HashMap::new()")]
-    pub tasks: HashMap<TaskId, BackgroundTask>,
+    pub tasks: HashMap<String, BackgroundTask>,
 }
 
 /// Reducer actions for `BackgroundTaskState`.

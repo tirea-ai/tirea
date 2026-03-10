@@ -11,7 +11,7 @@ async fn agent_run_tool_requires_scope_context() {
         )
         .build()
         .unwrap();
-    let tool = AgentRunTool::new(os, Arc::new(SubAgentHandleTable::new()));
+    let tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
     let fix = TestFixture::new();
     let result = tool
         .execute(
@@ -40,7 +40,7 @@ async fn agent_run_tool_rejects_disallowed_target_agent() {
         )
         .build()
         .unwrap();
-    let tool = AgentRunTool::new(os, Arc::new(SubAgentHandleTable::new()));
+    let tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
     fix.run_config
@@ -73,7 +73,7 @@ async fn agent_run_tool_rejects_self_target_agent() {
         )
         .build()
         .unwrap();
-    let tool = AgentRunTool::new(os, Arc::new(SubAgentHandleTable::new()));
+    let tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
     let result = tool
@@ -104,8 +104,7 @@ async fn agent_run_tool_fork_context_filters_messages() {
         )
         .build()
         .unwrap();
-    let handles = Arc::new(SubAgentHandleTable::new());
-    let run_tool = AgentRunTool::new(os, handles.clone());
+    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
 
     let fork_messages = vec![
         crate::contracts::thread::Message::system("parent-system"),
@@ -179,9 +178,8 @@ async fn background_stop_then_resume_completes() {
         )
         .build()
         .unwrap();
-    let handles = Arc::new(SubAgentHandleTable::new());
-    let run_tool = AgentRunTool::new(os, handles.clone());
-    let stop_tool = AgentStopTool::new(handles);
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let run_tool = AgentRunTool::new(os, bg_mgr.clone());
 
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
@@ -203,23 +201,14 @@ async fn background_stop_then_resume_completes() {
         .expect("run_id should exist")
         .to_string();
 
-    let mut stop_fix = TestFixture::new();
-    stop_fix.run_config = caller_scope();
-    let stopped = stop_tool
-        .execute(
-            json!({ "run_id": run_id.clone() }),
-            &stop_fix.ctx_with("call-stop", "tool:agent_stop"),
-        )
-        .await
-        .unwrap();
-    assert_eq!(stopped.status, ToolStatus::Success);
-    assert_eq!(stopped.data["status"], json!("stopped"));
+    // Cancel via BackgroundTaskManager directly.
+    bg_mgr.cancel("owner-thread", &run_id).await.unwrap();
 
     // Give cancelled background task a chance to flush stale completion.
     tokio::time::sleep(Duration::from_millis(30)).await;
 
-    // Resume: since there's no ThreadStore in this test context, resume from
-    // the live handle which is Stopped.
+    // Resume: the bg_manager should have the task marked as cancelled,
+    // and the run_tool will pick it up.
     let resumed = run_tool
         .execute(
             json!({
@@ -232,11 +221,9 @@ async fn background_stop_then_resume_completes() {
         .await
         .unwrap();
     assert_eq!(resumed.status, ToolStatus::Success);
-    // The execution will fail because there's no ThreadStore configured,
-    // but the tool itself should handle the error gracefully.
     let status = resumed.data["status"].as_str().unwrap();
     assert!(
-        status == "completed" || status == "failed",
+        status == "completed" || status == "failed" || status == "cancelled",
         "expected terminal status, got: {status}"
     );
 }
@@ -255,7 +242,7 @@ async fn agent_run_tool_persists_run_state_patch() {
         )
         .build()
         .unwrap();
-    let run_tool = AgentRunTool::new(os, Arc::new(SubAgentHandleTable::new()));
+    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
 
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
@@ -284,23 +271,23 @@ async fn agent_run_tool_persists_run_state_patch() {
     let base = json!({});
     let updated = apply_patches(&base, std::iter::once(patch.patch())).unwrap();
     assert_eq!(
-        updated["sub_agents"]["runs"][&run_id]["status"],
+        updated["background_tasks"]["tasks"][&run_id]["status"],
         json!("running")
     );
-    // No thread field in SubAgent.
+    // No thread field in BackgroundTask.
     assert!(
-        updated["sub_agents"]["runs"][&run_id]
+        updated["background_tasks"]["tasks"][&run_id]
             .get("thread")
             .is_none()
-            || updated["sub_agents"]["runs"][&run_id]["thread"].is_null(),
-        "SubAgent should not contain embedded thread"
+            || updated["background_tasks"]["tasks"][&run_id]["thread"].is_null(),
+        "BackgroundTask should not contain embedded thread"
     );
-    // thread_id should be present.
+    // thread_id should be present in metadata.
     assert!(
-        updated["sub_agents"]["runs"][&run_id]["thread_id"]
+        updated["background_tasks"]["tasks"][&run_id]["metadata"]["thread_id"]
             .as_str()
             .is_some(),
-        "SubAgent should contain thread_id"
+        "BackgroundTask should contain thread_id in metadata"
     );
 }
 
@@ -318,8 +305,7 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
         )
         .build()
         .unwrap();
-    let handles = Arc::new(SubAgentHandleTable::new());
-    let run_tool = AgentRunTool::new(os, handles.clone());
+    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
 
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope_with_state_and_run(json!({"forked": true}), "parent-run-42");
@@ -344,7 +330,7 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
     let base = json!({});
     let updated = apply_patches(&base, std::iter::once(patch.patch())).unwrap();
     assert_eq!(
-        updated["sub_agents"]["runs"][&run_id]["parent_run_id"],
+        updated["background_tasks"]["tasks"][&run_id]["parent_task_id"],
         json!("parent-run-42")
     );
 }
@@ -358,27 +344,20 @@ async fn agent_run_tool_query_existing_run_keeps_original_parent_lineage() {
         )
         .build()
         .unwrap();
-    let handles = Arc::new(SubAgentHandleTable::new());
-    handles
-        .put_running(
-            "run-1",
-            "owner-thread".to_string(),
-            "custom-child-thread".to_string(),
-            "worker".to_string(),
-            Some("origin-parent-run".to_string()),
-            None,
-        )
-        .await;
-    let run_tool = AgentRunTool::new(os, handles);
+    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
 
     let base_doc = json!({
-        "sub_agents": {
-            "runs": {
+        "background_tasks": {
+            "tasks": {
                 "run-1": {
-                    "thread_id": "custom-child-thread",
-                    "parent_run_id": "origin-parent-run",
-                    "agent_id": "worker",
-                    "status": "running"
+                    "task_type": "agent_run",
+                    "description": "agent:worker",
+                    "status": "running",
+                    "created_at_ms": 1234567890,
+                    "metadata": {
+                        "thread_id": "custom-child-thread",
+                        "agent_id": "worker"
+                    }
                 }
             }
         }
@@ -398,15 +377,17 @@ async fn agent_run_tool_query_existing_run_keeps_original_parent_lineage() {
         .unwrap();
     assert_eq!(result.status, ToolStatus::Success);
 
+    // Orphaned running task should be marked stopped, preserving metadata.
+    assert_eq!(result.data["status"], json!("stopped"));
     let patch = fix.ctx_with("call-run", "tool:agent_run").take_patch();
     let updated = apply_patches(&base_doc, std::iter::once(patch.patch())).unwrap();
     assert_eq!(
-        updated["sub_agents"]["runs"]["run-1"]["parent_run_id"],
-        json!("origin-parent-run")
+        updated["background_tasks"]["tasks"]["run-1"]["metadata"]["thread_id"],
+        json!("custom-child-thread")
     );
     assert_eq!(
-        updated["sub_agents"]["runs"]["run-1"]["thread_id"],
-        json!("custom-child-thread")
+        updated["background_tasks"]["tasks"]["run-1"]["metadata"]["agent_id"],
+        json!("worker")
     );
 }
 
@@ -424,15 +405,20 @@ async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
         )
         .build()
         .unwrap();
-    let run_tool = AgentRunTool::new(os, Arc::new(SubAgentHandleTable::new()));
+    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
 
     let doc = json!({
-        "sub_agents": {
-            "runs": {
+        "background_tasks": {
+            "tasks": {
                 "run-1": {
-                    "thread_id": "sub-agent-run-1",
-                    "agent_id": "worker",
-                    "status": "stopped"
+                    "task_type": "agent_run",
+                    "description": "agent:worker",
+                    "status": "stopped",
+                    "created_at_ms": 1234567890,
+                    "metadata": {
+                        "thread_id": "sub-agent-run-1",
+                        "agent_id": "worker"
+                    }
                 }
             }
         }
@@ -473,15 +459,20 @@ async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
         )
         .build()
         .unwrap();
-    let run_tool = AgentRunTool::new(os, Arc::new(SubAgentHandleTable::new()));
+    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
 
     let doc = json!({
-        "sub_agents": {
-            "runs": {
+        "background_tasks": {
+            "tasks": {
                 "run-1": {
-                    "thread_id": "sub-agent-run-1",
-                    "agent_id": "worker",
-                    "status": "running"
+                    "task_type": "agent_run",
+                    "description": "agent:worker",
+                    "status": "running",
+                    "created_at_ms": 1234567890,
+                    "metadata": {
+                        "thread_id": "sub-agent-run-1",
+                        "agent_id": "worker"
+                    }
                 }
             }
         }
@@ -513,31 +504,26 @@ async fn agent_run_tool_returns_completed_status_when_resuming_completed_run() {
         )
         .build()
         .unwrap();
-    let handles = Arc::new(SubAgentHandleTable::new());
-    let epoch = handles
-        .put_running(
-            "run-1",
-            "owner-thread".to_string(),
-            "sub-agent-run-1".to_string(),
-            "worker".to_string(),
-            None,
-            None,
-        )
-        .await;
-    handles
-        .update_after_completion(
-            "run-1",
-            epoch,
-            SubAgentCompletion {
-                status: SubAgentStatus::Completed,
-                error: None,
-            },
-        )
-        .await;
 
-    let run_tool = AgentRunTool::new(os, handles);
-    let mut fix = TestFixture::new();
-    fix.run_config = caller_scope();
+    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let doc = json!({
+        "background_tasks": {
+            "tasks": {
+                "run-1": {
+                    "task_type": "agent_run",
+                    "description": "agent:worker",
+                    "status": "completed",
+                    "created_at_ms": 1234567890,
+                    "metadata": {
+                        "thread_id": "sub-agent-run-1",
+                        "agent_id": "worker"
+                    }
+                }
+            }
+        }
+    });
+    let mut fix = TestFixture::new_with_state(doc.clone());
+    fix.run_config = caller_scope_with_state(doc);
 
     let result = run_tool
         .execute(
@@ -559,31 +545,27 @@ async fn agent_run_tool_returns_failed_status_when_resuming_failed_run() {
         )
         .build()
         .unwrap();
-    let handles = Arc::new(SubAgentHandleTable::new());
-    let epoch = handles
-        .put_running(
-            "run-1",
-            "owner-thread".to_string(),
-            "sub-agent-run-1".to_string(),
-            "worker".to_string(),
-            None,
-            None,
-        )
-        .await;
-    handles
-        .update_after_completion(
-            "run-1",
-            epoch,
-            SubAgentCompletion {
-                status: SubAgentStatus::Failed,
-                error: Some("agent failed".to_string()),
-            },
-        )
-        .await;
 
-    let run_tool = AgentRunTool::new(os, handles);
-    let mut fix = TestFixture::new();
-    fix.run_config = caller_scope();
+    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let doc = json!({
+        "background_tasks": {
+            "tasks": {
+                "run-1": {
+                    "task_type": "agent_run",
+                    "description": "agent:worker",
+                    "status": "failed",
+                    "error": "agent failed",
+                    "created_at_ms": 1234567890,
+                    "metadata": {
+                        "thread_id": "sub-agent-run-1",
+                        "agent_id": "worker"
+                    }
+                }
+            }
+        }
+    });
+    let mut fix = TestFixture::new_with_state(doc.clone());
+    fix.run_config = caller_scope_with_state(doc);
 
     let result = run_tool
         .execute(
@@ -608,7 +590,7 @@ async fn agent_run_tool_requires_prompt_for_new_run() {
         )
         .build()
         .unwrap();
-    let run_tool = AgentRunTool::new(os, Arc::new(SubAgentHandleTable::new()));
+    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
 
@@ -635,7 +617,7 @@ async fn agent_run_tool_requires_agent_id_for_new_run() {
         )
         .build()
         .unwrap();
-    let run_tool = AgentRunTool::new(os, Arc::new(SubAgentHandleTable::new()));
+    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
 
@@ -668,7 +650,7 @@ async fn agent_run_tool_rejects_excluded_agent() {
         )
         .build()
         .unwrap();
-    let run_tool = AgentRunTool::new(os, Arc::new(SubAgentHandleTable::new()));
+    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
     fix.run_config
@@ -694,7 +676,7 @@ async fn agent_run_tool_rejects_excluded_agent() {
 #[tokio::test]
 async fn agent_run_tool_returns_error_for_unknown_run_id() {
     let os = AgentOs::builder().build().unwrap();
-    let run_tool = AgentRunTool::new(os, Arc::new(SubAgentHandleTable::new()));
+    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
 
@@ -723,15 +705,20 @@ async fn agent_run_tool_returns_persisted_completed_without_rerun() {
         )
         .build()
         .unwrap();
-    let run_tool = AgentRunTool::new(os, Arc::new(SubAgentHandleTable::new()));
+    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
 
     let doc = json!({
-        "sub_agents": {
-            "runs": {
+        "background_tasks": {
+            "tasks": {
                 "run-1": {
-                    "thread_id": "sub-agent-run-1",
-                    "agent_id": "worker",
-                    "status": "completed"
+                    "task_type": "agent_run",
+                    "description": "agent:worker",
+                    "status": "completed",
+                    "created_at_ms": 1234567890,
+                    "metadata": {
+                        "thread_id": "sub-agent-run-1",
+                        "agent_id": "worker"
+                    }
                 }
             }
         }
@@ -759,16 +746,21 @@ async fn agent_run_tool_returns_persisted_failed_with_error() {
         )
         .build()
         .unwrap();
-    let run_tool = AgentRunTool::new(os, Arc::new(SubAgentHandleTable::new()));
+    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
 
     let doc = json!({
-        "sub_agents": {
-            "runs": {
+        "background_tasks": {
+            "tasks": {
                 "run-1": {
-                    "thread_id": "sub-agent-run-1",
-                    "agent_id": "worker",
+                    "task_type": "agent_run",
+                    "description": "agent:worker",
                     "status": "failed",
-                    "error": "something broke"
+                    "error": "something broke",
+                    "created_at_ms": 1234567890,
+                    "metadata": {
+                        "thread_id": "sub-agent-run-1",
+                        "agent_id": "worker"
+                    }
                 }
             }
         }

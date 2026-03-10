@@ -41,7 +41,12 @@ async fn run_multi_subagent() -> Result<(), String> {
                 .with_system_prompt(
                     "You are writer agent. Reply with exactly one short Chinese sentence only.",
                 )
-                .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()]),
+                .with_excluded_tools(vec![
+                    "agent_run".to_string(),
+                    "task_status".to_string(),
+                    "task_cancel".to_string(),
+                    "task_output".to_string(),
+                ]),
         )
         .with_agent(
             "reviewer",
@@ -49,7 +54,12 @@ async fn run_multi_subagent() -> Result<(), String> {
                 .with_system_prompt(
                     "You are reviewer agent. Reply with exactly one short Chinese review sentence only.",
                 )
-                .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()]),
+                .with_excluded_tools(vec![
+                    "agent_run".to_string(),
+                    "task_status".to_string(),
+                    "task_cancel".to_string(),
+                    "task_output".to_string(),
+                ]),
         )
         .with_agent(
             "orchestrator",

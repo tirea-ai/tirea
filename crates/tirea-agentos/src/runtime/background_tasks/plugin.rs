@@ -12,6 +12,8 @@ pub const BACKGROUND_TASKS_PLUGIN_ID: &str = "background_tasks";
 
 /// Behavior that registers [`BackgroundTaskState`] and injects running-task
 /// reminders into the context after tool execution.
+///
+/// All background tasks (shell, agent_run, etc.) are rendered uniformly.
 pub struct BackgroundTasksPlugin {
     manager: Arc<BackgroundTaskManager>,
 }
@@ -41,26 +43,26 @@ impl AgentBehavior for BackgroundTasksPlugin {
             .unwrap_or(ctx.thread_id());
 
         let tasks = self.manager.list(thread_id, None).await;
-        let running: Vec<_> = tasks
-            .iter()
-            .filter(|t| t.status == super::types::TaskStatus::Running)
-            .collect();
+        let active: Vec<_> = tasks.iter().filter(|t| !t.status.is_terminal()).collect();
 
-        if running.is_empty() {
+        if active.is_empty() {
             return ActionSet::empty();
         }
 
         let mut s = String::new();
         s.push_str("<background_tasks>\n");
-        for t in &running {
+        for t in &active {
             s.push_str(&format!(
-                "<task id=\"{}\" type=\"{}\" description=\"{}\"/>\n",
-                t.task_id, t.task_type, t.description,
+                "<task id=\"{}\" type=\"{}\" status=\"{}\" description=\"{}\"/>\n",
+                t.task_id,
+                t.task_type,
+                t.status.as_str(),
+                t.description,
             ));
         }
         s.push_str("</background_tasks>\n");
         s.push_str(
-            "Use tool \"task_status\" to check progress, or \"task_cancel\" to cancel a task.",
+            "Use tool \"task_status\" to check progress, \"task_output\" to read results, or \"task_cancel\" to cancel active tasks.",
         );
 
         ActionSet::single(AfterToolExecuteAction::AddSystemReminder(s))
@@ -70,9 +72,9 @@ impl AgentBehavior for BackgroundTasksPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tirea_contract::runtime::phase::Phase;
     use crate::contracts::RunConfig;
     use serde_json::{json, Value};
+    use tirea_contract::runtime::phase::Phase;
     use tirea_state::DocCell;
 
     const THREAD_ID_KEY: &str = "__agent_tool_caller_thread_id";
@@ -127,10 +129,15 @@ mod tests {
     async fn after_tool_execute_shows_running_tasks() {
         let mgr = Arc::new(BackgroundTaskManager::new());
         // Spawn a running task.
-        mgr.spawn("thread-1", "shell", "building project", |cancel| async move {
-            cancel.cancelled().await;
-            super::super::types::TaskResult::Cancelled
-        })
+        mgr.spawn(
+            "thread-1",
+            "shell",
+            "building project",
+            |cancel| async move {
+                cancel.cancelled().await;
+                super::super::types::TaskResult::Cancelled
+            },
+        )
         .await;
 
         let plugin = BackgroundTasksPlugin::new(mgr);
@@ -149,6 +156,7 @@ mod tests {
         assert!(reminder.contains("<background_tasks>"));
         assert!(reminder.contains("building project"));
         assert!(reminder.contains("task_status"));
+        assert!(reminder.contains("task_output"));
     }
 
     #[tokio::test]
@@ -168,7 +176,10 @@ mod tests {
         let ctx = make_ctx_with_thread("thread-1", &rc, &doc);
 
         let actions = plugin.after_tool_execute(&ctx).await;
-        assert!(actions.is_empty(), "completed tasks should not trigger reminder");
+        assert!(
+            actions.is_empty(),
+            "completed tasks should not trigger reminder"
+        );
     }
 
     #[tokio::test]
@@ -183,7 +194,7 @@ mod tests {
         let plugin = BackgroundTasksPlugin::new(mgr);
         let doc = DocCell::new(json!({}));
         let rc = RunConfig::new(); // no __agent_tool_caller_thread_id
-        // thread_id parameter IS "fallback-thread" — used as fallback.
+                                   // thread_id parameter IS "fallback-thread" — used as fallback.
         let ctx = make_ctx_with_thread("fallback-thread", &rc, &doc);
 
         let actions = plugin.after_tool_execute(&ctx).await;

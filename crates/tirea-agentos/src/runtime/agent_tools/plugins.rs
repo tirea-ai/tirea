@@ -1,10 +1,11 @@
 use super::state::current_unix_millis;
 use super::*;
 use crate::contracts::runtime::behavior::{AgentBehavior, ReadOnlyContext};
-use crate::contracts::runtime::phase::{
-    ActionSet, AfterToolExecuteAction, BeforeInferenceAction, LifecycleAction,
-};
+use crate::contracts::runtime::phase::{ActionSet, BeforeInferenceAction, LifecycleAction};
 use crate::contracts::runtime::state::AnyStateAction;
+use crate::runtime::background_tasks::{
+    BackgroundTaskAction, BackgroundTaskManager, BackgroundTaskState, TaskStatus,
+};
 #[cfg(feature = "permission")]
 use tirea_extension_permission::resolve_permission_behavior;
 
@@ -17,12 +18,12 @@ fn resolve_permission_behavior(
 }
 
 pub struct AgentRecoveryPlugin {
-    handles: Arc<SubAgentHandleTable>,
+    bg_manager: Arc<BackgroundTaskManager>,
 }
 
 impl AgentRecoveryPlugin {
-    pub fn new(handles: Arc<SubAgentHandleTable>) -> Self {
-        Self { handles }
+    pub fn new(bg_manager: Arc<BackgroundTaskManager>) -> Self {
+        Self { bg_manager }
     }
 }
 
@@ -32,41 +33,51 @@ impl AgentBehavior for AgentRecoveryPlugin {
         AGENT_RECOVERY_PLUGIN_ID
     }
 
-    tirea_contract::declare_plugin_states!(SubAgentState);
-
     async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
         use crate::contracts::runtime::{
             PendingToolCall, SuspendedCall, ToolCallResumeMode, ToolCallState,
         };
+        use tirea_state::State;
 
         let state = ctx.snapshot();
-        let runs = parse_persisted_runs_from_doc(&state);
-        if runs.is_empty() {
+        let tasks = state
+            .get(BackgroundTaskState::PATH)
+            .and_then(|v| BackgroundTaskState::from_value(v).ok())
+            .map(|s| s.tasks)
+            .unwrap_or_default();
+
+        if tasks.is_empty() {
             return ActionSet::empty();
         }
 
         let has_suspended_recovery = has_suspended_recovery_interaction(&state);
 
-        // Detect orphans: Running in persisted state but no live handle.
+        // Detect orphans: Running agent_run tasks in persisted state but no live handle.
         let mut orphaned_run_ids = Vec::new();
         let mut actions: ActionSet<LifecycleAction> = ActionSet::empty();
 
-        for (run_id, sub) in &runs {
-            if sub.status != SubAgentStatus::Running {
+        for (task_id, task) in &tasks {
+            if task.status != TaskStatus::Running {
                 continue;
             }
-            if !self.handles.contains(run_id).await {
+            if task.task_type != AGENT_RUN_TOOL_ID {
+                continue;
+            }
+            if !self.bg_manager.contains_any(task_id).await {
                 // Orphaned: mark as stopped via SetStatus action.
-                orphaned_run_ids.push(run_id.clone());
-                actions = actions.and(LifecycleAction::State(
-                    AnyStateAction::new::<SubAgentState>(SubAgentAction::SetStatus {
-                        run_id: run_id.clone(),
-                        status: SubAgentStatus::Stopped,
+                orphaned_run_ids.push(task_id.clone());
+                actions = actions.and(LifecycleAction::State(AnyStateAction::new::<
+                    BackgroundTaskState,
+                >(
+                    BackgroundTaskAction::SetStatus {
+                        task_id: task_id.clone(),
+                        status: TaskStatus::Stopped,
                         error: Some(
                             "No live executor found in current process; marked stopped".to_string(),
                         ),
-                    }),
-                ));
+                        completed_at_ms: None,
+                    },
+                )));
             }
         }
 
@@ -75,9 +86,15 @@ impl AgentBehavior for AgentRecoveryPlugin {
         }
 
         let run_id = orphaned_run_ids[0].clone();
-        let Some(sub) = runs.get(&run_id) else {
+        let Some(task) = tasks.get(&run_id) else {
             return actions;
         };
+
+        let agent_id = task
+            .metadata
+            .get("agent_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
 
         let behavior = resolve_permission_behavior(&state, AGENT_RECOVERY_INTERACTION_ACTION);
 
@@ -103,7 +120,7 @@ impl AgentBehavior for AgentRecoveryPlugin {
 
         match behavior {
             ToolPermissionBehavior::Allow => {
-                let interaction = build_recovery_interaction(&run_id, sub);
+                let interaction = build_recovery_interaction(&run_id, agent_id);
                 let suspended_call = make_suspended_call(&interaction);
                 let call_id = suspended_call.call_id.clone();
                 let resume_token = suspended_call.ticket.pending.id.clone();
@@ -134,7 +151,7 @@ impl AgentBehavior for AgentRecoveryPlugin {
             }
             ToolPermissionBehavior::Deny => {}
             ToolPermissionBehavior::Ask => {
-                let interaction = build_recovery_interaction(&run_id, sub);
+                let interaction = build_recovery_interaction(&run_id, agent_id);
                 let suspended_call = make_suspended_call(&interaction);
                 actions = actions.and(LifecycleAction::State(suspended_call.into_state_action()));
             }
@@ -146,16 +163,14 @@ impl AgentBehavior for AgentRecoveryPlugin {
 #[derive(Clone)]
 pub struct AgentToolsPlugin {
     agents: Arc<dyn AgentRegistry>,
-    handles: Arc<SubAgentHandleTable>,
     max_entries: usize,
     max_chars: usize,
 }
 
 impl AgentToolsPlugin {
-    pub fn new(agents: Arc<dyn AgentRegistry>, handles: Arc<SubAgentHandleTable>) -> Self {
+    pub fn new(agents: Arc<dyn AgentRegistry>) -> Self {
         Self {
             agents,
-            handles,
             max_entries: 64,
             max_chars: 16 * 1024,
         }
@@ -216,10 +231,15 @@ impl AgentToolsPlugin {
         out.push_str("Run or resume: tool \"agent_run\" with {\"agent_id\":\"<id>\",\"prompt\":\"...\",\"fork_context\":false,\"background\":false}.\n");
         out.push_str("Resume existing run: tool \"agent_run\" with {\"run_id\":\"...\",\"prompt\":\"optional\",\"background\":false}.\n");
         out.push_str(
-            "Stop running background run: tool \"agent_stop\" with {\"run_id\":\"...\"}.\n",
+            "Check background run: tool \"task_status\" with {\"task_id\":\"<run_id>\"}.\n",
         );
-        out.push_str("Retrieve output: tool \"agent_output\" with {\"run_id\":\"...\"}.\n");
-        out.push_str("Statuses: running, completed, failed, stopped (stopped can be resumed).\n");
+        out.push_str(
+            "Cancel background run: tool \"task_cancel\" with {\"task_id\":\"<run_id>\"}.\n",
+        );
+        out.push_str("Retrieve output: tool \"task_output\" with {\"task_id\":\"<run_id>\"}.\n");
+        out.push_str(
+            "Statuses: running, completed, failed, cancelled, stopped (stopped can be resumed).\n",
+        );
         out.push_str("</agent_tools_usage>");
 
         if out.len() > self.max_chars {
@@ -227,44 +247,6 @@ impl AgentToolsPlugin {
         }
 
         out.trim_end().to_string()
-    }
-
-    async fn render_reminder(&self, thread_id: &str) -> Option<String> {
-        let runs = self.handles.running_or_stopped_for_owner(thread_id).await;
-        if runs.is_empty() {
-            return None;
-        }
-
-        let mut s = String::new();
-        s.push_str("<agent_runs>\n");
-        let total = runs.len();
-        let mut shown = 0usize;
-        for r in runs.into_iter().take(self.max_entries) {
-            s.push_str(&format!(
-                "<run id=\"{}\" agent=\"{}\" status=\"{}\"/>\n",
-                r.run_id,
-                r.agent_id,
-                r.status.as_str(),
-            ));
-            shown += 1;
-            if s.len() >= self.max_chars {
-                break;
-            }
-        }
-        s.push_str("</agent_runs>\n");
-        if shown < total {
-            s.push_str(&format!(
-                "Note: agent_runs truncated (total={}, shown={}).\n",
-                total, shown
-            ));
-        }
-        s.push_str(
-            "Use tool \"agent_run\" with run_id to resume/check, \"agent_stop\" to stop, or \"agent_output\" to retrieve output.",
-        );
-        if s.len() > self.max_chars {
-            s.truncate(self.max_chars);
-        }
-        Some(s)
     }
 }
 
@@ -287,16 +269,6 @@ impl AgentBehavior for AgentToolsPlugin {
             ActionSet::empty()
         } else {
             ActionSet::single(BeforeInferenceAction::AddSystemContext(rendered))
-        }
-    }
-
-    async fn after_tool_execute(
-        &self,
-        ctx: &ReadOnlyContext<'_>,
-    ) -> ActionSet<AfterToolExecuteAction> {
-        match self.render_reminder(ctx.thread_id()).await {
-            Some(s) => ActionSet::single(AfterToolExecuteAction::AddSystemReminder(s)),
-            None => ActionSet::empty(),
         }
     }
 }

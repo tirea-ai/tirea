@@ -1,20 +1,32 @@
 use super::*;
+use crate::loop_runtime::loop_runner::RunCancellationToken;
+use crate::runtime::background_tasks::TaskResult;
+
+// Helper: build persisted-state JSON for a single running agent_run task.
+fn running_task_json(run_id: &str, agent_id: &str) -> serde_json::Value {
+    json!({
+        "task_type": "agent_run",
+        "description": format!("agent:{agent_id}"),
+        "status": "running",
+        "created_at_ms": 0,
+        "metadata": {
+            "thread_id": format!("sub-agent-{run_id}"),
+            "agent_id": agent_id
+        }
+    })
+}
 
 // ── AgentRecoveryPlugin tests ────────────────────────────────────────────────
 
 #[tokio::test]
 async fn recovery_plugin_detects_orphan_and_records_confirmation() {
-    let plugin = AgentRecoveryPlugin::new(Arc::new(SubAgentHandleTable::new()));
+    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()));
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
-            "sub_agents": {
-                "runs": {
-                    "run-1": {
-                        "thread_id": "sub-agent-run-1",
-                        "agent_id": "worker",
-                        "status": "running"
-                    }
+            "background_tasks": {
+                "tasks": {
+                    "run-1": running_task_json("run-1", "worker")
                 }
             }
         }),
@@ -30,7 +42,7 @@ async fn recovery_plugin_detects_orphan_and_records_confirmation() {
 
     let updated = fixture.updated_state();
     assert_eq!(
-        updated["sub_agents"]["runs"]["run-1"]["status"],
+        updated["background_tasks"]["tasks"]["run-1"]["status"],
         json!("stopped")
     );
     assert_eq!(
@@ -55,7 +67,7 @@ async fn recovery_plugin_detects_orphan_and_records_confirmation() {
 
 #[tokio::test]
 async fn recovery_plugin_does_not_override_existing_suspended_interaction() {
-    let plugin = AgentRecoveryPlugin::new(Arc::new(SubAgentHandleTable::new()));
+    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()));
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
@@ -78,13 +90,9 @@ async fn recovery_plugin_does_not_override_existing_suspended_interaction() {
                     }
                 }
             },
-            "sub_agents": {
-                "runs": {
-                    "run-1": {
-                        "thread_id": "sub-agent-run-1",
-                        "agent_id": "worker",
-                        "status": "running"
-                    }
+            "background_tasks": {
+                "tasks": {
+                    "run-1": running_task_json("run-1", "worker")
                 }
             }
         }),
@@ -108,7 +116,7 @@ async fn recovery_plugin_does_not_override_existing_suspended_interaction() {
 
 #[tokio::test]
 async fn recovery_plugin_auto_approve_when_permission_allow() {
-    let plugin = AgentRecoveryPlugin::new(Arc::new(SubAgentHandleTable::new()));
+    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()));
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
@@ -118,13 +126,9 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
                     "recover_agent_run": "allow"
                 }
             },
-            "sub_agents": {
-                "runs": {
-                    "run-1": {
-                        "thread_id": "sub-agent-run-1",
-                        "agent_id": "worker",
-                        "status": "running"
-                    }
+            "background_tasks": {
+                "tasks": {
+                    "run-1": running_task_json("run-1", "worker")
                 }
             }
         }),
@@ -153,7 +157,7 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
         json!("run-1")
     );
     assert_eq!(
-        updated["sub_agents"]["runs"]["run-1"]["status"],
+        updated["background_tasks"]["tasks"]["run-1"]["status"],
         json!("stopped")
     );
 }
@@ -161,7 +165,7 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
 #[cfg(feature = "permission")]
 #[tokio::test]
 async fn recovery_plugin_auto_deny_when_permission_deny() {
-    let plugin = AgentRecoveryPlugin::new(Arc::new(SubAgentHandleTable::new()));
+    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()));
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
@@ -171,13 +175,9 @@ async fn recovery_plugin_auto_deny_when_permission_deny() {
                     "recover_agent_run": "deny"
                 }
             },
-            "sub_agents": {
-                "runs": {
-                    "run-1": {
-                        "thread_id": "sub-agent-run-1",
-                        "agent_id": "worker",
-                        "status": "running"
-                    }
+            "background_tasks": {
+                "tasks": {
+                    "run-1": running_task_json("run-1", "worker")
                 }
             }
         }),
@@ -197,7 +197,7 @@ async fn recovery_plugin_auto_deny_when_permission_deny() {
         "deny should not set recovery tool-call resume state"
     );
     assert_eq!(
-        updated["sub_agents"]["runs"]["run-1"]["status"],
+        updated["background_tasks"]["tasks"]["run-1"]["status"],
         json!("stopped")
     );
     assert!(updated
@@ -209,7 +209,7 @@ async fn recovery_plugin_auto_deny_when_permission_deny() {
 
 #[tokio::test]
 async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
-    let plugin = AgentRecoveryPlugin::new(Arc::new(SubAgentHandleTable::new()));
+    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()));
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
@@ -217,13 +217,9 @@ async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
                 "default_behavior": "allow",
                 "tools": {}
             },
-            "sub_agents": {
-                "runs": {
-                    "run-1": {
-                        "thread_id": "sub-agent-run-1",
-                        "agent_id": "worker",
-                        "status": "running"
-                    }
+            "background_tasks": {
+                "tasks": {
+                    "run-1": running_task_json("run-1", "worker")
                 }
             }
         }),
@@ -251,7 +247,7 @@ async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
 #[cfg(feature = "permission")]
 #[tokio::test]
 async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
-    let plugin = AgentRecoveryPlugin::new(Arc::new(SubAgentHandleTable::new()));
+    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()));
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
@@ -259,13 +255,9 @@ async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
                 "default_behavior": "deny",
                 "tools": {}
             },
-            "sub_agents": {
-                "runs": {
-                    "run-1": {
-                        "thread_id": "sub-agent-run-1",
-                        "agent_id": "worker",
-                        "status": "running"
-                    }
+            "background_tasks": {
+                "tasks": {
+                    "run-1": running_task_json("run-1", "worker")
                 }
             }
         }),
@@ -294,7 +286,7 @@ async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
 #[cfg(feature = "permission")]
 #[tokio::test]
 async fn recovery_plugin_tool_rule_overrides_default_behavior() {
-    let plugin = AgentRecoveryPlugin::new(Arc::new(SubAgentHandleTable::new()));
+    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()));
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
@@ -304,13 +296,9 @@ async fn recovery_plugin_tool_rule_overrides_default_behavior() {
                     "recover_agent_run": "ask"
                 }
             },
-            "sub_agents": {
-                "runs": {
-                    "run-1": {
-                        "thread_id": "sub-agent-run-1",
-                        "agent_id": "worker",
-                        "status": "running"
-                    }
+            "background_tasks": {
+                "tasks": {
+                    "run-1": running_task_json("run-1", "worker")
                 }
             }
         }),
@@ -340,27 +328,15 @@ async fn recovery_plugin_tool_rule_overrides_default_behavior() {
 
 #[tokio::test]
 async fn recovery_plugin_detects_multiple_orphans_creates_one_suspension() {
-    let plugin = AgentRecoveryPlugin::new(Arc::new(SubAgentHandleTable::new()));
+    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()));
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
-            "sub_agents": {
-                "runs": {
-                    "run-1": {
-                        "thread_id": "sub-agent-run-1",
-                        "agent_id": "worker-a",
-                        "status": "running"
-                    },
-                    "run-2": {
-                        "thread_id": "sub-agent-run-2",
-                        "agent_id": "worker-b",
-                        "status": "running"
-                    },
-                    "run-3": {
-                        "thread_id": "sub-agent-run-3",
-                        "agent_id": "worker-c",
-                        "status": "running"
-                    }
+            "background_tasks": {
+                "tasks": {
+                    "run-1": running_task_json("run-1", "worker-a"),
+                    "run-2": running_task_json("run-2", "worker-b"),
+                    "run-3": running_task_json("run-3", "worker-c")
                 }
             }
         }),
@@ -374,15 +350,15 @@ async fn recovery_plugin_detects_multiple_orphans_creates_one_suspension() {
 
     // All 3 should be marked stopped.
     assert_eq!(
-        updated["sub_agents"]["runs"]["run-1"]["status"],
+        updated["background_tasks"]["tasks"]["run-1"]["status"],
         json!("stopped")
     );
     assert_eq!(
-        updated["sub_agents"]["runs"]["run-2"]["status"],
+        updated["background_tasks"]["tasks"]["run-2"]["status"],
         json!("stopped")
     );
     assert_eq!(
-        updated["sub_agents"]["runs"]["run-3"]["status"],
+        updated["background_tasks"]["tasks"]["run-3"]["status"],
         json!("stopped")
     );
 
@@ -406,35 +382,33 @@ async fn recovery_plugin_detects_multiple_orphans_creates_one_suspension() {
 
 #[tokio::test]
 async fn recovery_plugin_only_marks_orphans_when_some_have_live_handles() {
-    let handles = Arc::new(SubAgentHandleTable::new());
-    // run-1 has a live handle.
-    handles
-        .put_running(
-            "run-1",
-            "owner-1".to_string(),
-            "sub-agent-run-1".to_string(),
-            "worker-a".to_string(),
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    // run-1 has a live handle in BackgroundTaskManager.
+    let token = RunCancellationToken::new();
+    bg_mgr
+        .spawn_with_id(
+            "run-1".to_string(),
+            "owner-1",
+            "agent_run",
+            "agent:worker-a",
+            token.clone(),
             None,
-            None,
+            json!({"agent_id": "worker-a", "thread_id": "sub-agent-run-1"}),
+            |cancel| async move {
+                cancel.cancelled().await;
+                TaskResult::Cancelled
+            },
         )
         .await;
 
-    let plugin = AgentRecoveryPlugin::new(handles);
+    let plugin = AgentRecoveryPlugin::new(bg_mgr);
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
-            "sub_agents": {
-                "runs": {
-                    "run-1": {
-                        "thread_id": "sub-agent-run-1",
-                        "agent_id": "worker-a",
-                        "status": "running"
-                    },
-                    "run-2": {
-                        "thread_id": "sub-agent-run-2",
-                        "agent_id": "worker-b",
-                        "status": "running"
-                    }
+            "background_tasks": {
+                "tasks": {
+                    "run-1": running_task_json("run-1", "worker-a"),
+                    "run-2": running_task_json("run-2", "worker-b")
                 }
             }
         }),
@@ -448,13 +422,13 @@ async fn recovery_plugin_only_marks_orphans_when_some_have_live_handles() {
 
     // run-1 has live handle -> not marked stopped.
     assert_eq!(
-        updated["sub_agents"]["runs"]["run-1"]["status"],
+        updated["background_tasks"]["tasks"]["run-1"]["status"],
         json!("running")
     );
 
     // run-2 is orphaned -> marked stopped.
     assert_eq!(
-        updated["sub_agents"]["runs"]["run-2"]["status"],
+        updated["background_tasks"]["tasks"]["run-2"]["status"],
         json!("stopped")
     );
 }
@@ -463,44 +437,48 @@ async fn recovery_plugin_only_marks_orphans_when_some_have_live_handles() {
 
 #[tokio::test]
 async fn recovery_plugin_no_action_when_all_running_have_live_handles() {
-    let handles = Arc::new(SubAgentHandleTable::new());
-    handles
-        .put_running(
-            "run-1",
-            "owner-1".to_string(),
-            "sub-agent-run-1".to_string(),
-            "worker-a".to_string(),
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let token1 = RunCancellationToken::new();
+    bg_mgr
+        .spawn_with_id(
+            "run-1".to_string(),
+            "owner-1",
+            "agent_run",
+            "agent:worker-a",
+            token1.clone(),
             None,
-            None,
+            json!({"agent_id": "worker-a", "thread_id": "sub-agent-run-1"}),
+            |cancel| async move {
+                cancel.cancelled().await;
+                TaskResult::Cancelled
+            },
         )
         .await;
-    handles
-        .put_running(
-            "run-2",
-            "owner-1".to_string(),
-            "sub-agent-run-2".to_string(),
-            "worker-b".to_string(),
+    let token2 = RunCancellationToken::new();
+    bg_mgr
+        .spawn_with_id(
+            "run-2".to_string(),
+            "owner-1",
+            "agent_run",
+            "agent:worker-b",
+            token2.clone(),
             None,
-            None,
+            json!({"agent_id": "worker-b", "thread_id": "sub-agent-run-2"}),
+            |cancel| async move {
+                cancel.cancelled().await;
+                TaskResult::Cancelled
+            },
         )
         .await;
 
-    let plugin = AgentRecoveryPlugin::new(handles);
+    let plugin = AgentRecoveryPlugin::new(bg_mgr);
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
-            "sub_agents": {
-                "runs": {
-                    "run-1": {
-                        "thread_id": "sub-agent-run-1",
-                        "agent_id": "worker-a",
-                        "status": "running"
-                    },
-                    "run-2": {
-                        "thread_id": "sub-agent-run-2",
-                        "agent_id": "worker-b",
-                        "status": "running"
-                    }
+            "background_tasks": {
+                "tasks": {
+                    "run-1": running_task_json("run-1", "worker-a"),
+                    "run-2": running_task_json("run-2", "worker-b")
                 }
             }
         }),
@@ -514,11 +492,11 @@ async fn recovery_plugin_no_action_when_all_running_have_live_handles() {
 
     // Both still running (no orphan detection).
     assert_eq!(
-        updated["sub_agents"]["runs"]["run-1"]["status"],
+        updated["background_tasks"]["tasks"]["run-1"]["status"],
         json!("running")
     );
     assert_eq!(
-        updated["sub_agents"]["runs"]["run-2"]["status"],
+        updated["background_tasks"]["tasks"]["run-2"]["status"],
         json!("running")
     );
 
@@ -538,27 +516,42 @@ async fn recovery_plugin_no_action_when_all_running_have_live_handles() {
 
 #[tokio::test]
 async fn recovery_plugin_ignores_completed_stopped_failed_in_persisted_state() {
-    let plugin = AgentRecoveryPlugin::new(Arc::new(SubAgentHandleTable::new()));
+    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()));
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
-            "sub_agents": {
-                "runs": {
+            "background_tasks": {
+                "tasks": {
                     "run-completed": {
-                        "thread_id": "sub-agent-run-completed",
-                        "agent_id": "worker",
-                        "status": "completed"
+                        "task_type": "agent_run",
+                        "description": "agent:worker",
+                        "status": "completed",
+                        "created_at_ms": 0,
+                        "metadata": {
+                            "thread_id": "sub-agent-run-completed",
+                            "agent_id": "worker"
+                        }
                     },
                     "run-failed": {
-                        "thread_id": "sub-agent-run-failed",
-                        "agent_id": "worker",
+                        "task_type": "agent_run",
+                        "description": "agent:worker",
                         "status": "failed",
-                        "error": "oops"
+                        "created_at_ms": 0,
+                        "error": "oops",
+                        "metadata": {
+                            "thread_id": "sub-agent-run-failed",
+                            "agent_id": "worker"
+                        }
                     },
                     "run-stopped": {
-                        "thread_id": "sub-agent-run-stopped",
-                        "agent_id": "worker",
-                        "status": "stopped"
+                        "task_type": "agent_run",
+                        "description": "agent:worker",
+                        "status": "stopped",
+                        "created_at_ms": 0,
+                        "metadata": {
+                            "thread_id": "sub-agent-run-stopped",
+                            "agent_id": "worker"
+                        }
                     }
                 }
             }
@@ -573,15 +566,15 @@ async fn recovery_plugin_ignores_completed_stopped_failed_in_persisted_state() {
 
     // None of them should change status.
     assert_eq!(
-        updated["sub_agents"]["runs"]["run-completed"]["status"],
+        updated["background_tasks"]["tasks"]["run-completed"]["status"],
         json!("completed")
     );
     assert_eq!(
-        updated["sub_agents"]["runs"]["run-failed"]["status"],
+        updated["background_tasks"]["tasks"]["run-failed"]["status"],
         json!("failed")
     );
     assert_eq!(
-        updated["sub_agents"]["runs"]["run-stopped"]["status"],
+        updated["background_tasks"]["tasks"]["run-stopped"]["status"],
         json!("stopped")
     );
 
@@ -599,7 +592,7 @@ async fn recovery_plugin_ignores_completed_stopped_failed_in_persisted_state() {
 #[cfg(not(feature = "permission"))]
 #[tokio::test]
 async fn recovery_plugin_fallback_always_approves_despite_deny_state() {
-    let plugin = AgentRecoveryPlugin::new(Arc::new(SubAgentHandleTable::new()));
+    let plugin = AgentRecoveryPlugin::new(Arc::new(BackgroundTaskManager::new()));
     // State declares "deny" for recover_agent_run, but without the permission
     // feature the fallback always returns Allow.
     let thread = Thread::with_initial_state(
@@ -611,13 +604,9 @@ async fn recovery_plugin_fallback_always_approves_despite_deny_state() {
                     "recover_agent_run": "deny"
                 }
             },
-            "sub_agents": {
-                "runs": {
-                    "run-1": {
-                        "thread_id": "sub-agent-run-1",
-                        "agent_id": "worker",
-                        "status": "running"
-                    }
+            "background_tasks": {
+                "tasks": {
+                    "run-1": running_task_json("run-1", "worker")
                 }
             }
         }),

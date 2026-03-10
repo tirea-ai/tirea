@@ -1,9 +1,10 @@
 use super::agent_tools::{
-    AgentOutputTool, AgentRecoveryPlugin, AgentRunTool, AgentStopTool, AgentToolsPlugin,
-    AGENT_RECOVERY_PLUGIN_ID, AGENT_TOOLS_PLUGIN_ID, SCOPE_CALLER_AGENT_ID_KEY,
+    AgentRecoveryPlugin, AgentRunTool, AgentToolsPlugin, AGENT_RECOVERY_PLUGIN_ID,
+    AGENT_TOOLS_PLUGIN_ID, SCOPE_CALLER_AGENT_ID_KEY,
 };
 use super::background_tasks::{
-    BackgroundTasksPlugin, TaskCancelTool, TaskStatusTool, BACKGROUND_TASKS_PLUGIN_ID,
+    BackgroundTasksPlugin, TaskCancelTool, TaskOutputTool, TaskStatusTool,
+    BACKGROUND_TASKS_PLUGIN_ID,
 };
 #[cfg(feature = "skills")]
 pub(crate) use super::plugin::skills_wiring::SkillsSystemWiring;
@@ -189,23 +190,18 @@ impl AgentOs {
 
         let run_tool: Arc<dyn Tool> = Arc::new(AgentRunTool::new(
             pinned_os.clone(),
-            self.sub_agent_handles.clone(),
+            self.background_task_manager.clone(),
         ));
-        let stop_tool: Arc<dyn Tool> = Arc::new(AgentStopTool::new(self.sub_agent_handles.clone()));
-        let output_tool: Arc<dyn Tool> = Arc::new(AgentOutputTool::new(pinned_os));
 
-        let tools_plugin = AgentToolsPlugin::new(agents_registry, self.sub_agent_handles.clone())
-            .with_limits(
-                self.agent_tools.discovery_max_entries,
-                self.agent_tools.discovery_max_chars,
-            );
-        let recovery_plugin = AgentRecoveryPlugin::new(self.sub_agent_handles.clone());
+        let tools_plugin = AgentToolsPlugin::new(agents_registry).with_limits(
+            self.agent_tools.discovery_max_entries,
+            self.agent_tools.discovery_max_chars,
+        );
+        let recovery_plugin = AgentRecoveryPlugin::new(self.background_task_manager.clone());
 
         let tools_bundle: Arc<dyn RegistryBundle> = Arc::new(
             ToolBehaviorBundle::new(AGENT_TOOLS_PLUGIN_ID)
                 .with_tool(run_tool)
-                .with_tool(stop_tool)
-                .with_tool(output_tool)
                 .with_behavior(Arc::new(tools_plugin)),
         );
         let recovery_bundle: Arc<dyn RegistryBundle> = Arc::new(
@@ -220,12 +216,17 @@ impl AgentOs {
         let mgr = self.background_task_manager.clone();
         let status_tool: Arc<dyn Tool> = Arc::new(TaskStatusTool::new(mgr.clone()));
         let cancel_tool: Arc<dyn Tool> = Arc::new(TaskCancelTool::new(mgr.clone()));
+        let output_tool: Arc<dyn Tool> = Arc::new(TaskOutputTool::new(
+            mgr.clone(),
+            self.agent_state_store.clone(),
+        ));
         let plugin = BackgroundTasksPlugin::new(mgr);
 
         let bundle: Arc<dyn RegistryBundle> = Arc::new(
             ToolBehaviorBundle::new(BACKGROUND_TASKS_PLUGIN_ID)
                 .with_tool(status_tool)
                 .with_tool(cancel_tool)
+                .with_tool(output_tool)
                 .with_behavior(Arc::new(plugin)),
         );
         vec![bundle]
@@ -270,7 +271,7 @@ impl AgentOs {
         system_bundles
             .extend(self.build_agent_tool_wiring_bundles(&resolved_plugins, frozen_agents)?);
 
-        // Background task tools (task_status, task_cancel) + state registration.
+        // Background task tools (task_status, task_cancel, task_output) + state registration.
         system_bundles.extend(self.build_background_task_bundles());
 
         let system_plugins = merge_wiring_bundles(&system_bundles, tools)?;

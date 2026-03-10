@@ -1,16 +1,17 @@
 # Sub-Agent Delegation
 
-Sub-agent delegation is a built-in orchestration layer where one run can start/stop/resume other agent runs.
+Sub-agent delegation is a built-in orchestration layer where one run can start/cancel/resume other agent runs.
 
 ## Runtime Model
 
-Delegation is implemented through three tools:
+Delegation is implemented through four tools:
 
 - `agent_run`: start or resume a child run
-- `agent_stop`: stop a running child run tree
-- `agent_output`: read child run output
+- `task_status`: inspect child-run task state (`run_id` is also the `task_id`)
+- `task_cancel`: cancel a running child run (descendants are cancelled automatically)
+- `task_output`: read child run output
 
-System behaviors (`agent_tools`, `agent_recovery`) are wired during resolve and inject usage guidance/reminders.
+System behaviors (`agent_tools`, `agent_recovery`, `background_tasks`) are wired during resolve and inject usage guidance/reminders.
 
 ## Ownership and Threads
 
@@ -24,17 +25,17 @@ This keeps parent and child state/history isolated while preserving ancestry.
 
 Delegation state is tracked in two layers:
 
-1. In-memory handle table (`SubAgentHandleTable`)
+1. In-memory background task manager (`BackgroundTaskManager`)
    - live status
    - cancellation token
    - owner thread checks
 
-2. Persisted thread state (`SubAgentState` at path `sub_agents`)
-   - `runs: HashMap<run_id, SubAgent>`
-   - status (`running`, `completed`, `failed`, `stopped`)
-   - error text for failed/stopped runs
+2. Persisted thread state (`BackgroundTaskState` at path `background_tasks`)
+   - `tasks: HashMap<task_id, BackgroundTask>`
+   - status (`running`, `completed`, `failed`, `cancelled`, `stopped`)
+   - lightweight metadata for child thread / agent identity
 
-The in-memory table drives active control; persisted state supports resume/recovery semantics.
+The in-memory manager drives active control; persisted state supports resume/recovery semantics.
 
 ## Foreground vs Background
 
@@ -46,7 +47,7 @@ The in-memory table drives active control; persisted state supports resume/recov
 `agent_run(background=true)`:
 
 - child continues asynchronously
-- parent gets immediate summary and may later call `agent_run` (resume/check), `agent_stop`, or `agent_output`
+- parent gets immediate summary and may later call `agent_run` (resume/check), `task_status`, `task_cancel`, or `task_output`
 
 ## Policy and Visibility
 

@@ -7,27 +7,27 @@ use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor};
 use crate::contracts::runtime::tool_call::{ToolError, ToolResult};
 use crate::contracts::storage::{RunOrigin, ThreadReader, ThreadWriter};
 use crate::contracts::thread::{Message, Thread};
-use crate::contracts::{AgentBehavior, AgentEvent, RunRequest};
 use crate::contracts::ToolCallContext;
-use genai::Client;
-use std::collections::HashMap;
-use std::sync::Arc;
+use crate::contracts::{AgentBehavior, AgentEvent, RunRequest};
 #[cfg(feature = "skills")]
 use crate::extensions::skills::{
     FsSkill, FsSkillRegistryManager, InMemorySkillRegistry, ScriptResult, Skill, SkillError,
     SkillMeta, SkillRegistry, SkillRegistryError, SkillResource, SkillResourceKind,
 };
-use crate::runtime::agent_tools::SCOPE_CALLER_AGENT_ID_KEY;
 use crate::loop_runtime::loop_runner::{
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
+use crate::runtime::agent_tools::SCOPE_CALLER_AGENT_ID_KEY;
 use async_trait::async_trait;
+use genai::Client;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 #[cfg(feature = "skills")]
 use std::fs;
 #[cfg(feature = "skills")]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 #[cfg(feature = "skills")]
 use std::time::Duration;
 #[cfg(feature = "skills")]
@@ -573,9 +573,10 @@ async fn resolve_wires_skills_and_preserves_base_tools() {
     assert!(resolved.tools.contains_key("load_skill_resource"));
     assert!(resolved.tools.contains_key("skill_script"));
     assert!(resolved.tools.contains_key("agent_run"));
-    assert!(resolved.tools.contains_key("agent_stop"));
+    // agent_stop removed — cancellation unified under task_cancel
     assert!(resolved.tools.contains_key("task_status"));
     assert!(resolved.tools.contains_key("task_cancel"));
+    assert!(resolved.tools.contains_key("task_output"));
     let behavior_ids = resolved.agent.behavior.behavior_ids();
     assert_eq!(behavior_ids.len(), 5);
     assert_eq!(behavior_ids[0], "skills_discovery");
@@ -1045,8 +1046,8 @@ async fn run_and_run_stream_work_without_llm_when_terminate_behavior_requested()
 
 #[tokio::test]
 async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_conditions_to_loop() {
-    use crate::runtime::StopPolicyInput;
     use crate::loop_runtime::loop_runner::run_loop;
+    use crate::runtime::StopPolicyInput;
 
     #[derive(Debug)]
     struct AlwaysStopPolicy;
@@ -1251,7 +1252,10 @@ async fn resolve_wires_agent_tools_by_default() {
 
     let resolved = os.resolve("a1").unwrap();
     assert!(resolved.tools.contains_key("agent_run"));
-    assert!(resolved.tools.contains_key("agent_stop"));
+    // agent_stop removed — cancellation unified under task_cancel
+    assert!(resolved.tools.contains_key("task_status"));
+    assert!(resolved.tools.contains_key("task_cancel"));
+    assert!(resolved.tools.contains_key("task_output"));
     let behavior_ids = resolved.agent.behavior.behavior_ids();
     assert_eq!(behavior_ids[0], "agent_tools");
     assert_eq!(behavior_ids[1], "agent_recovery");
@@ -1474,9 +1478,10 @@ async fn resolve_wires_skills_before_plugins() {
     assert!(resolved.tools.contains_key("load_skill_resource"));
     assert!(resolved.tools.contains_key("skill_script"));
     assert!(resolved.tools.contains_key("agent_run"));
-    assert!(resolved.tools.contains_key("agent_stop"));
+    // agent_stop removed — cancellation unified under task_cancel
     assert!(resolved.tools.contains_key("task_status"));
     assert!(resolved.tools.contains_key("task_cancel"));
+    assert!(resolved.tools.contains_key("task_output"));
 
     let behavior_ids = resolved.agent.behavior.behavior_ids();
     assert_eq!(behavior_ids[0], "skills_discovery");
@@ -3260,8 +3265,9 @@ async fn prepare_run_scope_tool_registry_adds_new_tool() {
         .unwrap();
 
     assert!(prepared.tools.contains_key("frontend_action"));
-    // Backend tools (agent_run, agent_stop) should also be present
+    // Backend tools should also be present
     assert!(prepared.tools.contains_key("agent_run"));
+    assert!(prepared.tools.contains_key("task_output"));
 }
 
 #[tokio::test]

@@ -38,6 +38,8 @@ struct TaskHandle {
     cancellation_requested: bool,
     created_at_ms: u64,
     completed_at_ms: Option<u64>,
+    parent_task_id: Option<TaskId>,
+    metadata: Value,
 }
 
 /// Callback invoked after a background task completes.
@@ -118,16 +120,72 @@ impl BackgroundTaskManager {
         F: FnOnce(RunCancellationToken) -> Fut + Send + 'static,
         Fut: Future<Output = TaskResult> + Send,
     {
-        let task_id = gen_task_id();
-        let cancel_token = RunCancellationToken::new();
+        self.spawn_impl(
+            gen_task_id(),
+            owner_thread_id,
+            task_type,
+            description,
+            None,
+            None,
+            Value::Object(serde_json::Map::new()),
+            task,
+        )
+        .await
+    }
+
+    /// Spawn a background task with a caller-supplied ID and cancellation token.
+    ///
+    /// Use this when the caller already owns an ID (e.g. a sub-agent `run_id`)
+    /// and/or a cancellation token that is shared with other subsystems.
+    pub async fn spawn_with_id<F, Fut>(
+        &self,
+        task_id: TaskId,
+        owner_thread_id: &str,
+        task_type: &str,
+        description: &str,
+        cancel_token: RunCancellationToken,
+        parent_task_id: Option<&str>,
+        metadata: Value,
+        task: F,
+    ) -> TaskId
+    where
+        F: FnOnce(RunCancellationToken) -> Fut + Send + 'static,
+        Fut: Future<Output = TaskResult> + Send,
+    {
+        self.spawn_impl(
+            task_id,
+            owner_thread_id,
+            task_type,
+            description,
+            Some(cancel_token),
+            parent_task_id.map(str::to_string),
+            metadata,
+            task,
+        )
+        .await
+    }
+
+    async fn spawn_impl<F, Fut>(
+        &self,
+        task_id: TaskId,
+        owner_thread_id: &str,
+        task_type: &str,
+        description: &str,
+        external_cancel_token: Option<RunCancellationToken>,
+        parent_task_id: Option<String>,
+        metadata: Value,
+        task: F,
+    ) -> TaskId
+    where
+        F: FnOnce(RunCancellationToken) -> Fut + Send + 'static,
+        Fut: Future<Output = TaskResult> + Send,
+    {
+        let cancel_token = external_cancel_token.unwrap_or_else(RunCancellationToken::new);
         let now = now_ms();
 
         let epoch = {
             let mut handles = self.handles.lock().await;
-            let epoch = handles
-                .get(&task_id)
-                .map(|h| h.epoch + 1)
-                .unwrap_or(1);
+            let epoch = handles.get(&task_id).map(|h| h.epoch + 1).unwrap_or(1);
             handles.insert(
                 task_id.clone(),
                 TaskHandle {
@@ -142,6 +200,8 @@ impl BackgroundTaskManager {
                     cancellation_requested: false,
                     created_at_ms: now,
                     completed_at_ms: None,
+                    parent_task_id,
+                    metadata,
                 },
             );
             epoch
@@ -213,11 +273,7 @@ impl BackgroundTaskManager {
     }
 
     /// Get a summary of a single task.
-    pub async fn get(
-        &self,
-        owner_thread_id: &str,
-        task_id: &str,
-    ) -> Option<TaskSummary> {
+    pub async fn get(&self, owner_thread_id: &str, task_id: &str) -> Option<TaskSummary> {
         let handles = self.handles.lock().await;
         let handle = handles.get(task_id)?;
         if handle.owner_thread_id != owner_thread_id {
@@ -246,20 +302,168 @@ impl BackgroundTaskManager {
     /// Check if there are running tasks for a thread.
     pub async fn has_running_tasks(&self, owner_thread_id: &str) -> bool {
         let handles = self.handles.lock().await;
-        handles.values().any(|h| {
-            h.owner_thread_id == owner_thread_id && h.status == TaskStatus::Running
-        })
+        handles
+            .values()
+            .any(|h| h.owner_thread_id == owner_thread_id && h.status == TaskStatus::Running)
     }
 
     /// Remove completed/terminal task entries from the in-memory table.
     pub async fn gc_terminal(&self, owner_thread_id: &str) -> usize {
         let mut handles = self.handles.lock().await;
         let before = handles.len();
-        handles.retain(|_, h| {
-            h.owner_thread_id != owner_thread_id || !h.status.is_terminal()
-        });
+        handles.retain(|_, h| h.owner_thread_id != owner_thread_id || !h.status.is_terminal());
         before - handles.len()
     }
+
+    /// Check if a task exists for the given thread.
+    pub async fn contains(&self, owner_thread_id: &str, task_id: &str) -> bool {
+        let handles = self.handles.lock().await;
+        handles
+            .get(task_id)
+            .is_some_and(|h| h.owner_thread_id == owner_thread_id)
+    }
+
+    /// Check if a task exists in any thread.
+    pub async fn contains_any(&self, task_id: &str) -> bool {
+        let handles = self.handles.lock().await;
+        handles.contains_key(task_id)
+    }
+
+    /// Cancel a task and all its descendants (by `parent_task_id` chain).
+    ///
+    /// Returns summaries of all tasks that were cancelled. The root task must
+    /// be owned by `owner_thread_id`; descendants are found by traversing
+    /// `parent_task_id` links within the same owner.
+    pub async fn cancel_tree(
+        &self,
+        owner_thread_id: &str,
+        task_id: &str,
+    ) -> Result<Vec<TaskSummary>, String> {
+        let mut handles = self.handles.lock().await;
+        let Some(root) = handles.get(task_id) else {
+            return Err(format!("Unknown task_id: {task_id}"));
+        };
+        if root.owner_thread_id != owner_thread_id {
+            return Err(format!("Unknown task_id: {task_id}"));
+        }
+
+        // Collect the full descendant tree.
+        let tree_ids = collect_descendant_ids(&handles, owner_thread_id, task_id, true);
+        if tree_ids.is_empty() {
+            return Err(format!(
+                "Task '{task_id}' is not running (current status: {})",
+                root.status.as_str()
+            ));
+        }
+
+        let mut cancelled = false;
+        let mut out = Vec::with_capacity(tree_ids.len());
+        for id in tree_ids {
+            if let Some(handle) = handles.get_mut(&id) {
+                if handle.status == TaskStatus::Running {
+                    handle.cancellation_requested = true;
+                    handle.cancel_token.cancel();
+                    cancelled = true;
+                }
+                out.push(summary_from_handle(&id, handle));
+            }
+        }
+
+        if cancelled {
+            Ok(out)
+        } else {
+            Err(format!(
+                "Task '{task_id}' is not running (current status: {})",
+                handles
+                    .get(task_id)
+                    .map(|h| h.status.as_str())
+                    .unwrap_or("unknown")
+            ))
+        }
+    }
+
+    /// Externally update a task's status (e.g. recovery marking orphans as stopped).
+    pub async fn update_status(
+        &self,
+        task_id: &str,
+        status: TaskStatus,
+        error: Option<String>,
+    ) -> bool {
+        let mut handles = self.handles.lock().await;
+        if let Some(handle) = handles.get_mut(task_id) {
+            handle.status = status;
+            handle.error = error;
+            if status.is_terminal() {
+                handle.completed_at_ms = Some(now_ms());
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// List tasks filtered by `task_type`, optionally filtered by status.
+    pub async fn list_by_type(
+        &self,
+        owner_thread_id: &str,
+        task_type: &str,
+        status_filter: Option<TaskStatus>,
+    ) -> Vec<TaskSummary> {
+        let handles = self.handles.lock().await;
+        let mut out: Vec<TaskSummary> = handles
+            .iter()
+            .filter(|(_, h)| h.owner_thread_id == owner_thread_id)
+            .filter(|(_, h)| h.task_type == task_type)
+            .filter(|(_, h)| status_filter.is_none_or(|s| s == h.status))
+            .map(|(id, h)| summary_from_handle(id, h))
+            .collect();
+        out.sort_by(|a, b| a.created_at_ms.cmp(&b.created_at_ms));
+        out
+    }
+}
+
+/// Collect task IDs forming the subtree rooted at `root_id` via `parent_task_id` links.
+fn collect_descendant_ids(
+    handles: &HashMap<TaskId, TaskHandle>,
+    owner_thread_id: &str,
+    root_id: &str,
+    include_root: bool,
+) -> Vec<String> {
+    // Build children-by-parent index.
+    let mut children_by_parent: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (id, h) in handles.iter() {
+        if h.owner_thread_id != owner_thread_id {
+            continue;
+        }
+        if let Some(parent) = h.parent_task_id.as_deref() {
+            children_by_parent
+                .entry(parent)
+                .or_default()
+                .push(id.as_str());
+        }
+    }
+
+    let mut result = Vec::new();
+    let mut stack = vec![root_id];
+    let mut is_root = true;
+    while let Some(current) = stack.pop() {
+        if !is_root || include_root {
+            // Only include running tasks (for cancel_tree semantics).
+            if handles
+                .get(current)
+                .is_some_and(|h| h.status == TaskStatus::Running)
+            {
+                result.push(current.to_string());
+            }
+        }
+        is_root = false;
+        if let Some(children) = children_by_parent.get(current) {
+            for child in children {
+                stack.push(child);
+            }
+        }
+    }
+    result
 }
 
 fn summary_from_handle(task_id: &str, handle: &TaskHandle) -> TaskSummary {
@@ -272,6 +476,8 @@ fn summary_from_handle(task_id: &str, handle: &TaskHandle) -> TaskSummary {
         result: handle.result.clone(),
         created_at_ms: handle.created_at_ms,
         completed_at_ms: handle.completed_at_ms,
+        parent_task_id: handle.parent_task_id.clone(),
+        metadata: handle.metadata.clone(),
     }
 }
 
@@ -726,5 +932,120 @@ mod tests {
         // No panic, no error — just verify it works.
         let tasks = mgr.list("thread-1", None).await;
         assert_eq!(tasks.len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // spawn_with_id tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn spawn_with_id_uses_caller_supplied_id() {
+        let mgr = BackgroundTaskManager::new();
+        let token = RunCancellationToken::new();
+        let tid = mgr
+            .spawn_with_id(
+                "my-custom-id".to_string(),
+                "thread-1",
+                "agent_run",
+                "agent:worker",
+                token,
+                None,
+                serde_json::json!({}),
+                |_cancel: RunCancellationToken| async { TaskResult::Success(Value::Null) },
+            )
+            .await;
+
+        assert_eq!(tid, "my-custom-id");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let summary = mgr.get("thread-1", "my-custom-id").await.unwrap();
+        assert_eq!(summary.task_type, "agent_run");
+        assert_eq!(summary.description, "agent:worker");
+        assert_eq!(summary.status, TaskStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn spawn_with_id_uses_external_cancel_token() {
+        let mgr = BackgroundTaskManager::new();
+        let token = RunCancellationToken::new();
+        let token_clone = token.clone();
+
+        mgr.spawn_with_id(
+            "cancel-test".to_string(),
+            "thread-1",
+            "shell",
+            "long task",
+            token,
+            None,
+            serde_json::json!({}),
+            |cancel: RunCancellationToken| async move {
+                cancel.cancelled().await;
+                TaskResult::Cancelled
+            },
+        )
+        .await;
+
+        // Task should be running.
+        let summary = mgr.get("thread-1", "cancel-test").await.unwrap();
+        assert_eq!(summary.status, TaskStatus::Running);
+
+        // Cancel via the external token directly.
+        token_clone.cancel();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Task closure returns Cancelled, but cancellation_requested was not set
+        // via manager.cancel(), so the status uses result.status() = Cancelled.
+        let summary = mgr.get("thread-1", "cancel-test").await.unwrap();
+        assert_eq!(summary.status, TaskStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn spawn_with_id_cancel_via_manager_works() {
+        let mgr = BackgroundTaskManager::new();
+        let token = RunCancellationToken::new();
+
+        mgr.spawn_with_id(
+            "mgr-cancel".to_string(),
+            "thread-1",
+            "agent_run",
+            "agent:worker",
+            token,
+            None,
+            serde_json::json!({}),
+            |cancel: RunCancellationToken| async move {
+                cancel.cancelled().await;
+                TaskResult::Cancelled
+            },
+        )
+        .await;
+
+        // Cancel via manager (sets cancellation_requested).
+        mgr.cancel("thread-1", "mgr-cancel").await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let summary = mgr.get("thread-1", "mgr-cancel").await.unwrap();
+        assert_eq!(summary.status, TaskStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn spawn_with_id_notifier_called_on_completion() {
+        let notifier = CountingNotifier::new();
+        let mgr = BackgroundTaskManager::with_notifier(notifier.clone());
+        let token = RunCancellationToken::new();
+
+        mgr.spawn_with_id(
+            "notify-test".to_string(),
+            "thread-1",
+            "agent_run",
+            "desc",
+            token,
+            None,
+            serde_json::json!({}),
+            |_cancel: RunCancellationToken| async { TaskResult::Success(Value::Null) },
+        )
+        .await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(notifier.count(), 1);
     }
 }

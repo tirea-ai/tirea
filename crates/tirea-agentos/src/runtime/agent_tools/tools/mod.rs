@@ -1,22 +1,24 @@
 use super::*;
 use crate::contracts::ToolCallContext;
 
-mod output_tool;
 mod run_tool;
-mod stop_tool;
 
-pub use output_tool::AgentOutputTool;
 pub use run_tool::AgentRunTool;
-pub use stop_tool::AgentStopTool;
 
-pub(super) fn to_tool_result(tool_name: &str, summary: SubAgentSummary) -> ToolResult {
+pub(super) fn agent_tool_result(
+    tool_name: &str,
+    run_id: &str,
+    agent_id: &str,
+    status: &str,
+    error: Option<&str>,
+) -> ToolResult {
     ToolResult::success(
         tool_name,
         json!({
-            "run_id": summary.run_id,
-            "agent_id": summary.agent_id,
-            "status": summary.status.as_str(),
-            "error": summary.error,
+            "run_id": run_id,
+            "agent_id": agent_id,
+            "status": status,
+            "error": error,
         }),
     )
 }

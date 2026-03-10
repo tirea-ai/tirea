@@ -6,8 +6,8 @@ use futures::Stream;
 use genai::Client;
 
 use crate::composition::{
-    AgentToolsConfig, AgentRegistry, BehaviorRegistry,
-    ModelRegistry, ProviderRegistry, RegistrySet, StopPolicyRegistry, SystemWiring, ToolRegistry,
+    AgentRegistry, AgentToolsConfig, BehaviorRegistry, ModelRegistry, ProviderRegistry,
+    RegistrySet, StopPolicyRegistry, SystemWiring, ToolRegistry,
 };
 use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::storage::{ThreadStore, VersionPrecondition};
@@ -18,7 +18,6 @@ use crate::loop_runtime::loop_runner::{
     Agent, RunCancellationToken, StateCommitError, StateCommitter,
 };
 
-use super::agent_tools::SubAgentHandleTable;
 use super::background_tasks::BackgroundTaskManager;
 use super::thread_run;
 
@@ -96,7 +95,6 @@ pub struct AgentOs {
     #[cfg(feature = "skills")]
     pub(crate) skills_registry: Option<Arc<dyn SkillRegistry>>,
     pub(crate) system_wirings: Vec<Arc<dyn SystemWiring>>,
-    pub(crate) sub_agent_handles: Arc<SubAgentHandleTable>,
     pub(crate) background_task_manager: Arc<BackgroundTaskManager>,
     pub(crate) active_runs: Arc<thread_run::ActiveThreadRunRegistry>,
     pub(crate) agent_tools: AgentToolsConfig,
@@ -123,7 +121,6 @@ impl AgentOs {
             #[cfg(feature = "skills")]
             skills_registry: registries.skills,
             system_wirings: services.system_wirings,
-            sub_agent_handles: Arc::new(SubAgentHandleTable::new()),
             background_task_manager: Arc::new(BackgroundTaskManager::new()),
             active_runs: Arc::new(thread_run::ActiveThreadRunRegistry::default()),
             agent_tools: services.agent_tools,

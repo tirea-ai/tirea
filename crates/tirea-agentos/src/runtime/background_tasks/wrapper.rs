@@ -115,7 +115,9 @@ impl<T: BackgroundExecutable + 'static> Tool for BackgroundCapable<T> {
                 &owner_thread_id,
                 &tool_name,
                 &description,
-                move |cancel_token| async move { inner.execute_background(clean_args, cancel_token).await },
+                move |cancel_token| async move {
+                    inner.execute_background(clean_args, cancel_token).await
+                },
             )
             .await;
 

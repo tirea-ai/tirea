@@ -14,16 +14,19 @@ mod types;
 #[cfg(test)]
 mod tests;
 
+pub use background_tasks::{
+    BackgroundCapable, BackgroundExecutable, BackgroundTask, BackgroundTaskAction,
+    BackgroundTaskManager, BackgroundTaskState, BackgroundTasksPlugin, TaskCancelTool,
+    TaskCompletionNotifier, TaskId, TaskOutputTool, TaskResult, TaskStatus, TaskStatusTool,
+    TaskSummary, BACKGROUND_TASKS_PLUGIN_ID, TASK_CANCEL_TOOL_ID, TASK_OUTPUT_TOOL_ID,
+    TASK_STATUS_TOOL_ID,
+};
 pub use behavior::compose_behaviors;
 pub use errors::{AgentOsResolveError, AgentOsRunError};
 pub use plugin::context_window::{ContextWindowPlugin, CONTEXT_WINDOW_PLUGIN_ID};
 pub use plugin::stop_policy::{
-    ConsecutiveErrors, ContentMatch, LoopDetection, MaxRounds, StopPolicy, StopPolicyInput,
-    StopPolicyPlugin, StopPolicyStats, StopOnTool, Timeout, TokenBudget,
-};
-pub use background_tasks::{
-    BackgroundCapable, BackgroundExecutable, BackgroundTaskManager, BackgroundTasksPlugin,
-    TaskCancelTool, TaskCompletionNotifier, TaskStatusTool, BACKGROUND_TASKS_PLUGIN_ID,
+    ConsecutiveErrors, ContentMatch, LoopDetection, MaxRounds, StopOnTool, StopPolicy,
+    StopPolicyInput, StopPolicyPlugin, StopPolicyStats, Timeout, TokenBudget,
 };
 pub use thread_run::ForwardedDecision;
 pub use types::{AgentOs, PreparedRun, RunStream};

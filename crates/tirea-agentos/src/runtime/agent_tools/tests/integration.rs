@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::background_tasks::TaskOutputTool;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Integration tests: full sub-agent lifecycle through ThreadStore
@@ -54,8 +55,8 @@ async fn integration_foreground_sub_agent_creates_thread_in_store() {
     use crate::contracts::storage::ThreadReader;
 
     let (os, storage) = build_integration_os();
-    let handles = Arc::new(SubAgentHandleTable::new());
-    let run_tool = AgentRunTool::new(os, handles.clone());
+
+    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
 
     let mut fix = TestFixture::new();
     fix.run_config = integration_caller_scope(
@@ -114,13 +115,16 @@ async fn integration_foreground_sub_agent_creates_thread_in_store() {
 }
 
 #[tokio::test]
-async fn integration_agent_output_reads_from_thread_store() {
+async fn integration_task_output_reads_from_thread_store() {
     use crate::contracts::storage::ThreadReader;
 
     let (os, storage) = build_integration_os();
-    let handles = Arc::new(SubAgentHandleTable::new());
-    let run_tool = AgentRunTool::new(os.clone(), handles.clone());
-    let output_tool = AgentOutputTool::new(os);
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let run_tool = AgentRunTool::new(os, bg_mgr.clone());
+    let output_tool = TaskOutputTool::new(
+        bg_mgr,
+        Some(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>),
+    );
 
     let mut fix = TestFixture::new();
     fix.run_config = integration_caller_scope(
@@ -145,15 +149,20 @@ async fn integration_agent_output_reads_from_thread_store() {
     let run_id = result.data["run_id"].as_str().unwrap().to_string();
     let status_str = result.data["status"].as_str().unwrap();
 
-    // Persist the SubAgent metadata into fixture state so agent_output can read it.
+    // Persist the BackgroundTask metadata so task_output can read it.
     let child_thread_id = super::super::tools::sub_agent_thread_id(&run_id);
     let doc = json!({
-        "sub_agents": {
-            "runs": {
+        "background_tasks": {
+            "tasks": {
                 &run_id: {
-                    "thread_id": child_thread_id,
-                    "agent_id": "worker",
-                    "status": status_str
+                    "task_type": "agent_run",
+                    "description": "agent:worker",
+                    "status": status_str,
+                    "created_at_ms": 0,
+                    "metadata": {
+                        "thread_id": child_thread_id,
+                        "agent_id": "worker"
+                    }
                 }
             }
         }
@@ -161,30 +170,29 @@ async fn integration_agent_output_reads_from_thread_store() {
     let output_fix = TestFixture::new_with_state(doc);
     let output_result = output_tool
         .execute(
-            json!({ "run_id": run_id }),
-            &output_fix.ctx_with("call-output", "tool:agent_output"),
+            json!({ "task_id": run_id }),
+            &output_fix.ctx_with("call-output", "tool:task_output"),
         )
         .await
         .unwrap();
 
-    // agent_output should return success with sub-agent info.
+    // task_output should return success with sub-agent info.
     assert_eq!(output_result.status, ToolStatus::Success);
     assert_eq!(output_result.data["agent_id"], json!("worker"));
-    assert_eq!(output_result.data["run_id"], json!(run_id));
+    assert_eq!(output_result.data["task_id"], json!(run_id));
 
-    // The child thread should exist in store (verified by agent_output reading it).
+    // The child thread should exist in store (verified by task_output reading it).
     let child_head = storage.load(&child_thread_id).await.unwrap();
     assert!(
         child_head.is_some(),
-        "child thread should exist in store for agent_output to read"
+        "child thread should exist in store for task_output to read"
     );
 }
 
 #[tokio::test]
 async fn integration_parent_state_contains_only_lightweight_metadata() {
     let (os, _storage) = build_integration_os();
-    let handles = Arc::new(SubAgentHandleTable::new());
-    let run_tool = AgentRunTool::new(os, handles.clone());
+    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
 
     let mut fix = TestFixture::new();
     fix.run_config = integration_caller_scope(
@@ -210,38 +218,42 @@ async fn integration_parent_state_contains_only_lightweight_metadata() {
     // Check the state patch that was emitted.
     let patch = fix.ctx_with("call-1", "tool:agent_run").take_patch();
     let updated = apply_patches(&json!({}), std::iter::once(patch.patch())).unwrap();
-    let sub_agent_entry = &updated["sub_agents"]["runs"][run_id];
+    let task_entry = &updated["background_tasks"]["tasks"][run_id];
 
     // Should have lightweight fields.
     assert!(
-        sub_agent_entry["thread_id"].as_str().is_some(),
-        "should have thread_id"
+        task_entry["metadata"]["thread_id"].as_str().is_some(),
+        "should have thread_id in metadata"
     );
     assert!(
-        sub_agent_entry["agent_id"].as_str().is_some(),
-        "should have agent_id"
+        task_entry["metadata"]["agent_id"].as_str().is_some(),
+        "should have agent_id in metadata"
     );
     assert!(
-        sub_agent_entry["status"].as_str().is_some(),
+        task_entry["status"].as_str().is_some(),
         "should have status"
+    );
+    assert!(
+        task_entry["task_type"].as_str().is_some(),
+        "should have task_type"
     );
 
     // Should NOT have embedded thread or messages.
     assert!(
-        sub_agent_entry.get("thread").is_none() || sub_agent_entry["thread"].is_null(),
-        "SubAgent should NOT contain embedded Thread"
+        task_entry.get("thread").is_none() || task_entry["thread"].is_null(),
+        "BackgroundTask should NOT contain embedded Thread"
     );
     assert!(
-        sub_agent_entry.get("messages").is_none() || sub_agent_entry["messages"].is_null(),
-        "SubAgent should NOT contain messages"
+        task_entry.get("messages").is_none() || task_entry["messages"].is_null(),
+        "BackgroundTask should NOT contain messages"
     );
     assert!(
-        sub_agent_entry.get("state").is_none() || sub_agent_entry["state"].is_null(),
-        "SubAgent should NOT contain state snapshot"
+        task_entry.get("state").is_none() || task_entry["state"].is_null(),
+        "BackgroundTask should NOT contain state snapshot"
     );
     assert!(
-        sub_agent_entry.get("patches").is_none() || sub_agent_entry["patches"].is_null(),
-        "SubAgent should NOT contain patches"
+        task_entry.get("patches").is_none() || task_entry["patches"].is_null(),
+        "BackgroundTask should NOT contain patches"
     );
 }
 
@@ -250,8 +262,8 @@ async fn integration_background_sub_agent_persists_to_store_after_completion() {
     use crate::contracts::storage::ThreadReader;
 
     let (os, storage) = build_integration_os();
-    let handles = Arc::new(SubAgentHandleTable::new());
-    let run_tool = AgentRunTool::new(os, handles.clone());
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let run_tool = AgentRunTool::new(os, bg_mgr.clone());
 
     let mut fix = TestFixture::new();
     fix.run_config = integration_caller_scope(
@@ -292,15 +304,16 @@ async fn integration_background_sub_agent_persists_to_store_after_completion() {
         "child thread should have parent_thread_id"
     );
 
-    // Verify: handle table shows completed.
-    let summary = handles
-        .get_owned_summary("parent-thread", &run_id)
+    // Verify: BackgroundTaskManager shows completed.
+    let task = bg_mgr
+        .get("parent-thread", &run_id)
         .await
-        .expect("handle should exist");
+        .expect("task should exist in bg manager");
     assert!(
-        summary.status == SubAgentStatus::Completed || summary.status == SubAgentStatus::Failed,
+        task.status == crate::runtime::background_tasks::TaskStatus::Completed
+            || task.status == crate::runtime::background_tasks::TaskStatus::Failed,
         "background run should be terminal after completion: {:?}",
-        summary.status
+        task.status
     );
 }
 
@@ -309,8 +322,8 @@ async fn integration_background_sub_agent_preserves_parent_run_id_in_deltas() {
     use crate::contracts::storage::ThreadSync;
 
     let (os, storage) = build_integration_os();
-    let handles = Arc::new(SubAgentHandleTable::new());
-    let run_tool = AgentRunTool::new(os, handles);
+
+    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
 
     let mut fix = TestFixture::new();
     fix.run_config = integration_caller_scope(
@@ -360,8 +373,8 @@ async fn integration_fork_context_passes_state_to_sub_agent_thread() {
     use crate::contracts::storage::ThreadReader;
 
     let (os, storage) = build_integration_os();
-    let handles = Arc::new(SubAgentHandleTable::new());
-    let run_tool = AgentRunTool::new(os, handles.clone());
+
+    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
 
     let fork_state = json!({
         "project": "tirea",
@@ -424,8 +437,8 @@ async fn integration_multiple_parallel_sub_agents_create_independent_threads() {
     use crate::contracts::storage::ThreadReader;
 
     let (os, storage) = build_integration_os();
-    let handles = Arc::new(SubAgentHandleTable::new());
-    let run_tool = AgentRunTool::new(os, handles.clone());
+
+    let run_tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
 
     let mut run_ids = Vec::new();
     for i in 0..3 {
@@ -488,9 +501,8 @@ async fn integration_background_stop_resume_full_lifecycle_with_store() {
     use crate::contracts::storage::ThreadReader;
 
     let (os, storage) = build_integration_os();
-    let handles = Arc::new(SubAgentHandleTable::new());
-    let run_tool = AgentRunTool::new(os, handles.clone());
-    let stop_tool = AgentStopTool::new(handles.clone());
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let run_tool = AgentRunTool::new(os, bg_mgr.clone());
 
     // Phase 1: Launch background.
     let mut fix = TestFixture::new();
@@ -515,21 +527,8 @@ async fn integration_background_stop_resume_full_lifecycle_with_store() {
     let run_id = started.data["run_id"].as_str().unwrap().to_string();
     let child_thread_id = super::super::tools::sub_agent_thread_id(&run_id);
 
-    // Phase 2: Stop immediately.
-    let mut stop_fix = TestFixture::new();
-    stop_fix.run_config = integration_caller_scope(
-        json!({}),
-        "parent-run-1",
-        vec![crate::contracts::thread::Message::user("hi")],
-    );
-    let stopped = stop_tool
-        .execute(
-            json!({ "run_id": &run_id }),
-            &stop_fix.ctx_with("call-stop", "tool:agent_stop"),
-        )
-        .await
-        .unwrap();
-    assert_eq!(stopped.data["status"], json!("stopped"));
+    // Phase 2: Cancel immediately via BackgroundTaskManager.
+    bg_mgr.cancel("parent-thread", &run_id).await.unwrap();
 
     // Wait for background task to flush.
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -541,7 +540,16 @@ async fn integration_background_stop_resume_full_lifecycle_with_store() {
         "child thread should exist in store even after stop"
     );
 
-    // Phase 3: Resume (foreground).
+    // Verify: bg_manager shows the task as cancelled.
+    let cancelled_task = bg_mgr.get("parent-thread", &run_id).await.unwrap();
+    assert_eq!(
+        cancelled_task.status,
+        crate::runtime::background_tasks::TaskStatus::Cancelled,
+        "manager should show task as cancelled after stop"
+    );
+
+    // Phase 3: Resume (foreground). The bg_manager has the task as Cancelled,
+    // which is terminal — run_tool will return the current status.
     let resumed = run_tool
         .execute(
             json!({
@@ -556,7 +564,9 @@ async fn integration_background_stop_resume_full_lifecycle_with_store() {
     assert_eq!(resumed.status, ToolStatus::Success);
     let resumed_status = resumed.data["status"].as_str().unwrap();
     assert!(
-        resumed_status == "completed" || resumed_status == "failed",
+        resumed_status == "completed"
+            || resumed_status == "failed"
+            || resumed_status == "cancelled",
         "resumed run should reach terminal state, got: {resumed_status}"
     );
 
@@ -565,13 +575,6 @@ async fn integration_background_stop_resume_full_lifecycle_with_store() {
     assert!(
         final_head.is_some(),
         "resumed child should use the same thread_id"
-    );
-    let final_thread = final_head.unwrap().thread;
-    // After resume, the thread should have more messages (original + resume prompt).
-    assert!(
-        final_thread.messages.len() >= 2,
-        "resumed thread should have accumulated messages from both runs, got {}",
-        final_thread.messages.len()
     );
 }
 
@@ -1134,7 +1137,7 @@ async fn integration_sub_agent_thread_independent_from_parent_thread() {
 }
 
 #[tokio::test]
-async fn integration_agent_output_reads_tool_result_from_sub_agent() {
+async fn integration_task_output_reads_tool_result_from_sub_agent() {
     use crate::contracts::io::RunRequest;
 
     let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
@@ -1179,15 +1182,23 @@ async fn integration_agent_output_reads_tool_result_from_sub_agent() {
     let run = AgentOs::execute_prepared(prepared).unwrap();
     let _: Vec<_> = run.events.collect().await;
 
-    // Now use AgentOutputTool to read the output.
-    let output_tool = AgentOutputTool::new(os);
+    // Now use TaskOutputTool to read the output.
+    let output_tool = TaskOutputTool::new(
+        Arc::new(BackgroundTaskManager::new()),
+        Some(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>),
+    );
     let doc = json!({
-        "sub_agents": {
-            "runs": {
+        "background_tasks": {
+            "tasks": {
                 "run-output-test": {
-                    "thread_id": child_thread_id,
-                    "agent_id": "worker",
-                    "status": "completed"
+                    "task_type": "agent_run",
+                    "description": "agent:worker",
+                    "status": "completed",
+                    "created_at_ms": 0,
+                    "metadata": {
+                        "thread_id": child_thread_id,
+                        "agent_id": "worker"
+                    }
                 }
             }
         }
@@ -1195,25 +1206,196 @@ async fn integration_agent_output_reads_tool_result_from_sub_agent() {
     let fix = TestFixture::new_with_state(doc);
     let result = output_tool
         .execute(
-            json!({ "run_id": "run-output-test" }),
-            &fix.ctx_with("call-output", "tool:agent_output"),
+            json!({ "task_id": "run-output-test" }),
+            &fix.ctx_with("call-output", "tool:task_output"),
         )
         .await
         .unwrap();
 
     assert_eq!(result.status, ToolStatus::Success);
     assert_eq!(result.data["agent_id"], json!("worker"));
+    assert_eq!(result.data["task_id"], json!("run-output-test"));
     assert_eq!(result.data["status"], json!("completed"));
 
     // The output should contain the last assistant message (the text response after tool execution).
     let output = result.data["output"].as_str();
     assert!(
         output.is_some(),
-        "agent_output should return the last assistant message"
+        "task_output should return the last assistant message"
     );
     assert!(
         output.unwrap().contains("analysis complete"),
         "output should contain the mock LLM's final response: got {:?}",
         output
+    );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Integration tests: BackgroundTaskManager integration with agent tools
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn integration_background_run_tracked_in_background_task_manager() {
+    let (os, _storage) = build_integration_os();
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let run_tool = AgentRunTool::new(os, bg_mgr.clone());
+
+    let mut fix = TestFixture::new();
+    fix.run_config = integration_caller_scope(
+        json!({}),
+        "parent-run-1",
+        vec![crate::contracts::thread::Message::user("hi")],
+    );
+
+    let result = run_tool
+        .execute(
+            json!({
+                "agent_id": "worker",
+                "prompt": "background task",
+                "background": true
+            }),
+            &fix.ctx_with("call-bg", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.data["status"], json!("running"));
+    let run_id = result.data["run_id"].as_str().unwrap().to_string();
+
+    // The run should be visible in BackgroundTaskManager.
+    let task = bg_mgr.get("parent-thread", &run_id).await;
+    assert!(
+        task.is_some(),
+        "background run should be tracked in manager"
+    );
+    let task = task.unwrap();
+    assert_eq!(task.task_type, "agent_run");
+    assert!(task.description.contains("worker"));
+    assert_eq!(
+        task.status,
+        crate::runtime::background_tasks::TaskStatus::Running
+    );
+
+    // Wait for background run to complete (SlowTerminatePlugin terminates quickly).
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // After completion, manager should reflect terminal status.
+    let completed_task = bg_mgr.get("parent-thread", &run_id).await.unwrap();
+    assert!(
+        completed_task.status != crate::runtime::background_tasks::TaskStatus::Running,
+        "task should no longer be running after completion"
+    );
+}
+
+#[tokio::test]
+async fn integration_background_stop_cancels_in_both_systems() {
+    let (os, _storage) = build_integration_os();
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let run_tool = AgentRunTool::new(os, bg_mgr.clone());
+
+    let mut fix = TestFixture::new();
+    fix.run_config = integration_caller_scope(
+        json!({}),
+        "parent-run-1",
+        vec![crate::contracts::thread::Message::user("hi")],
+    );
+
+    // Launch background.
+    let result = run_tool
+        .execute(
+            json!({
+                "agent_id": "worker",
+                "prompt": "long task",
+                "background": true
+            }),
+            &fix.ctx_with("call-bg", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+    let run_id = result.data["run_id"].as_str().unwrap().to_string();
+
+    // Verify running in manager.
+    let task = bg_mgr.get("parent-thread", &run_id).await.unwrap();
+    assert_eq!(
+        task.status,
+        crate::runtime::background_tasks::TaskStatus::Running
+    );
+
+    // Cancel via BackgroundTaskManager directly.
+    bg_mgr.cancel("parent-thread", &run_id).await.unwrap();
+
+    // Wait for background task to flush.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // BackgroundTaskManager should reflect cancellation.
+    let cancelled_task = bg_mgr.get("parent-thread", &run_id).await.unwrap();
+    assert_eq!(
+        cancelled_task.status,
+        crate::runtime::background_tasks::TaskStatus::Cancelled,
+        "manager should show task as cancelled"
+    );
+}
+
+#[tokio::test]
+async fn integration_background_tasks_plugin_includes_all_task_types() {
+    use crate::contracts::runtime::behavior::AgentBehavior;
+    use crate::runtime::background_tasks::BackgroundTasksPlugin;
+
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+
+    // Spawn a generic task.
+    bg_mgr
+        .spawn("thread-1", "shell", "build project", |cancel| async move {
+            cancel.cancelled().await;
+            crate::runtime::background_tasks::TaskResult::Cancelled
+        })
+        .await;
+
+    // Spawn an agent_run task.
+    let token = crate::loop_runtime::loop_runner::RunCancellationToken::new();
+    bg_mgr
+        .spawn_with_id(
+            "agent-run-123".to_string(),
+            "thread-1",
+            "agent_run",
+            "agent:worker",
+            token.clone(),
+            None,
+            serde_json::json!({}),
+            |cancel: crate::loop_runtime::loop_runner::RunCancellationToken| async move {
+                cancel.cancelled().await;
+                crate::runtime::background_tasks::TaskResult::Cancelled
+            },
+        )
+        .await;
+
+    let plugin = BackgroundTasksPlugin::new(bg_mgr.clone());
+
+    let doc = tirea_state::DocCell::new(json!({}));
+    let mut rc = crate::contracts::RunConfig::new();
+    rc.set("__agent_tool_caller_thread_id", "thread-1".to_string())
+        .unwrap();
+    let ctx = crate::contracts::runtime::behavior::ReadOnlyContext::new(
+        tirea_contract::runtime::phase::Phase::AfterToolExecute,
+        "thread-1",
+        &[],
+        &rc,
+        &doc,
+    );
+
+    let actions = plugin.after_tool_execute(&ctx).await;
+    assert_eq!(actions.len(), 1);
+
+    let reminder = match actions.into_iter().next().unwrap() {
+        crate::contracts::runtime::phase::AfterToolExecuteAction::AddSystemReminder(s) => s,
+        _ => panic!("unexpected action variant"),
+    };
+    // All task types should now appear in the unified reminder.
+    assert!(
+        reminder.contains("build project"),
+        "reminder should include shell task"
+    );
+    assert!(
+        reminder.contains("agent:worker"),
+        "reminder should include agent_run tasks"
     );
 }

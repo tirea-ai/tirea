@@ -9,7 +9,7 @@
 //! - [`BackgroundTaskManager`] — thread-scoped handle table (spawn, cancel, query)
 //! - [`BackgroundExecutable`] — trait for tools that support context-free background execution
 //! - [`BackgroundCapable<T>`] — decorator that adds `run_in_background` parameter to a tool
-//! - [`TaskStatusTool`] / [`TaskCancelTool`] — built-in tools for LLM interaction
+//! - [`TaskStatusTool`] / [`TaskCancelTool`] / [`TaskOutputTool`] — built-in tools for LLM interaction
 //! - [`TaskCompletionNotifier`] — pluggable callback for completion delivery (e.g. mailbox)
 //!
 //! Tasks are thread-scoped and outlive individual runs.
@@ -22,7 +22,10 @@ mod wrapper;
 
 pub use manager::{BackgroundTaskManager, TaskCompletionNotifier};
 pub use plugin::{BackgroundTasksPlugin, BACKGROUND_TASKS_PLUGIN_ID};
-pub use tools::{TaskCancelTool, TaskStatusTool, TASK_CANCEL_TOOL_ID, TASK_STATUS_TOOL_ID};
+pub use tools::{
+    TaskCancelTool, TaskOutputTool, TaskStatusTool, TASK_CANCEL_TOOL_ID, TASK_OUTPUT_TOOL_ID,
+    TASK_STATUS_TOOL_ID,
+};
 pub use types::{
     BackgroundTask, BackgroundTaskAction, BackgroundTaskState, TaskId, TaskResult, TaskStatus,
     TaskSummary,

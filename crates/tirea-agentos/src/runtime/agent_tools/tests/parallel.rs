@@ -16,9 +16,8 @@ async fn parallel_background_runs_and_stop_all() {
         )
         .build()
         .unwrap();
-    let handles = Arc::new(SubAgentHandleTable::new());
-    let run_tool = AgentRunTool::new(os, handles.clone());
-    let stop_tool = AgentStopTool::new(handles.clone());
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let run_tool = AgentRunTool::new(os, bg_mgr.clone());
 
     let mut fix = TestFixture::new();
     fix.run_config = caller_scope();
@@ -42,132 +41,31 @@ async fn parallel_background_runs_and_stop_all() {
         run_ids.push(started.data["run_id"].as_str().unwrap().to_string());
     }
 
-    // All should show as running.
-    let running = handles.running_or_stopped_for_owner("owner-thread").await;
+    // All should show as running in BackgroundTaskManager.
+    let running = bg_mgr
+        .list(
+            "owner-thread",
+            Some(crate::runtime::background_tasks::TaskStatus::Running),
+        )
+        .await;
     assert_eq!(running.len(), 3);
-    for summary in &running {
-        assert_eq!(summary.status, SubAgentStatus::Running);
-    }
 
-    // Stop each one.
+    // Cancel each one via BackgroundTaskManager.
     for run_id in &run_ids {
-        let mut stop_fix = TestFixture::new();
-        stop_fix.run_config = caller_scope();
-        let stopped = stop_tool
-            .execute(
-                json!({ "run_id": run_id }),
-                &stop_fix.ctx_with("call-stop", "tool:agent_stop"),
-            )
-            .await
-            .unwrap();
-        assert_eq!(stopped.status, ToolStatus::Success);
-        assert_eq!(stopped.data["status"], json!("stopped"));
+        bg_mgr.cancel("owner-thread", run_id).await.unwrap();
     }
 
-    // All should show as stopped.
-    let stopped_all = handles.running_or_stopped_for_owner("owner-thread").await;
-    assert_eq!(stopped_all.len(), 3);
-    for summary in &stopped_all {
-        assert_eq!(summary.status, SubAgentStatus::Stopped);
-    }
-}
+    // Wait for background tasks to flush.
+    tokio::time::sleep(Duration::from_millis(200)).await;
 
-// ── Status lifecycle tests ───────────────────────────────────────────────────
-
-#[tokio::test]
-async fn sub_agent_status_lifecycle_running_to_completed() {
-    let handles = SubAgentHandleTable::new();
-    let epoch = handles
-        .put_running(
-            "run-1",
-            "owner".to_string(),
-            "sub-agent-run-1".to_string(),
-            "worker".to_string(),
-            None,
-            None,
+    // All should show as cancelled.
+    let cancelled_all = bg_mgr
+        .list(
+            "owner-thread",
+            Some(crate::runtime::background_tasks::TaskStatus::Cancelled),
         )
         .await;
-
-    let summary = handles
-        .get_owned_summary("owner", "run-1")
-        .await
-        .expect("run should exist");
-    assert_eq!(summary.status, SubAgentStatus::Running);
-
-    let completed = handles
-        .update_after_completion(
-            "run-1",
-            epoch,
-            SubAgentCompletion {
-                status: SubAgentStatus::Completed,
-                error: None,
-            },
-        )
-        .await
-        .expect("should complete");
-    assert_eq!(completed.status, SubAgentStatus::Completed);
-}
-
-#[tokio::test]
-async fn sub_agent_status_lifecycle_running_to_failed() {
-    let handles = SubAgentHandleTable::new();
-    let epoch = handles
-        .put_running(
-            "run-1",
-            "owner".to_string(),
-            "sub-agent-run-1".to_string(),
-            "worker".to_string(),
-            None,
-            None,
-        )
-        .await;
-
-    let failed = handles
-        .update_after_completion(
-            "run-1",
-            epoch,
-            SubAgentCompletion {
-                status: SubAgentStatus::Failed,
-                error: Some("something went wrong".to_string()),
-            },
-        )
-        .await
-        .expect("should fail");
-    assert_eq!(failed.status, SubAgentStatus::Failed);
-    assert_eq!(failed.error.as_deref(), Some("something went wrong"));
-}
-
-#[tokio::test]
-async fn cancellation_requested_overrides_completion_status() {
-    let handles = SubAgentHandleTable::new();
-    let token = RunCancellationToken::new();
-    let epoch = handles
-        .put_running(
-            "run-1",
-            "owner".to_string(),
-            "sub-agent-run-1".to_string(),
-            "worker".to_string(),
-            None,
-            Some(token.clone()),
-        )
-        .await;
-
-    // Stop the run (sets run_cancellation_requested).
-    handles.stop_owned_tree("owner", "run-1").await.unwrap();
-
-    // Completion arrives with Completed, but cancellation should win.
-    let result = handles
-        .update_after_completion(
-            "run-1",
-            epoch,
-            SubAgentCompletion {
-                status: SubAgentStatus::Completed,
-                error: None,
-            },
-        )
-        .await
-        .expect("should apply");
-    assert_eq!(result.status, SubAgentStatus::Stopped);
+    assert_eq!(cancelled_all.len(), 3);
 }
 
 // ── Parallel tool-level operations ───────────────────────────────────────────
@@ -186,8 +84,8 @@ async fn parallel_background_launches_produce_unique_run_ids() {
         )
         .build()
         .unwrap();
-    let handles = Arc::new(SubAgentHandleTable::new());
-    let run_tool = AgentRunTool::new(os, handles.clone());
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let run_tool = AgentRunTool::new(os, bg_mgr.clone());
 
     let mut run_ids = Vec::new();
     for i in 0..5 {
@@ -212,8 +110,13 @@ async fn parallel_background_launches_produce_unique_run_ids() {
     let unique: std::collections::HashSet<&str> = run_ids.iter().map(|s| s.as_str()).collect();
     assert_eq!(unique.len(), 5, "all run_ids should be unique");
 
-    // All should be visible as running.
-    let running = handles.running_or_stopped_for_owner("owner-thread").await;
+    // All should be visible as running in BackgroundTaskManager.
+    let running = bg_mgr
+        .list(
+            "owner-thread",
+            Some(crate::runtime::background_tasks::TaskStatus::Running),
+        )
+        .await;
     assert_eq!(running.len(), 5);
 }
 
@@ -231,9 +134,8 @@ async fn parallel_launch_and_immediate_stop() {
         )
         .build()
         .unwrap();
-    let handles = Arc::new(SubAgentHandleTable::new());
-    let run_tool = AgentRunTool::new(os, handles.clone());
-    let stop_tool = AgentStopTool::new(handles.clone());
+    let bg_mgr = Arc::new(BackgroundTaskManager::new());
+    let run_tool = AgentRunTool::new(os, bg_mgr.clone());
 
     // Launch background run.
     let mut fix = TestFixture::new();
@@ -251,26 +153,16 @@ async fn parallel_launch_and_immediate_stop() {
         .unwrap();
     let run_id = started.data["run_id"].as_str().unwrap().to_string();
 
-    // Immediately stop (race with background execution).
-    let mut stop_fix = TestFixture::new();
-    stop_fix.run_config = caller_scope();
-    let stopped = stop_tool
-        .execute(
-            json!({ "run_id": run_id }),
-            &stop_fix.ctx_with("call-stop", "tool:agent_stop"),
-        )
-        .await
-        .unwrap();
-    assert_eq!(stopped.status, ToolStatus::Success);
-    assert_eq!(stopped.data["status"], json!("stopped"));
+    // Immediately cancel via BackgroundTaskManager (race with background execution).
+    bg_mgr.cancel("owner-thread", &run_id).await.unwrap();
 
     // Wait for background task to flush.
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // Verify the run is stopped (cancellation override should prevent it from flipping to completed).
-    let summary = handles
-        .get_owned_summary("owner-thread", &run_id)
-        .await
-        .unwrap();
-    assert_eq!(summary.status, SubAgentStatus::Stopped);
+    // Verify the run is cancelled (cancellation override should prevent it from flipping to completed).
+    let task = bg_mgr.get("owner-thread", &run_id).await.unwrap();
+    assert_eq!(
+        task.status,
+        crate::runtime::background_tasks::TaskStatus::Cancelled
+    );
 }

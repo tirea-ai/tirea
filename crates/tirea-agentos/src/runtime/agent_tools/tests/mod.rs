@@ -12,8 +12,10 @@ use crate::loop_runtime::loop_runner::{
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
     TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
+use crate::runtime::background_tasks::BackgroundTaskManager;
 use async_trait::async_trait;
 use serde_json::json;
+use std::collections::HashMap;
 use std::time::Duration;
 use tirea_contract::testing::{
     apply_after_inference_for_test, apply_after_tool_for_test, apply_before_inference_for_test,
@@ -129,12 +131,8 @@ pub(super) fn caller_scope() -> tirea_contract::RunConfig {
     caller_scope_with_state(json!({"forked": true}))
 }
 
-mod handle_table;
 mod integration;
-mod output_tool;
 mod parallel;
 mod plugins;
 mod recovery;
 mod run_tool;
-mod state_helpers;
-mod stop_tool;

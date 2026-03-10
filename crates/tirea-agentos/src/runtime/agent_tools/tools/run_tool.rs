@@ -1,14 +1,20 @@
 use super::*;
+use crate::runtime::background_tasks::{
+    BackgroundTaskManager, BackgroundTaskState, TaskResult as BgTaskResult, TaskStatus,
+};
+
+/// Task type used when registering sub-agent background runs with [`BackgroundTaskManager`].
+pub(crate) const AGENT_RUN_TASK_TYPE: &str = "agent_run";
 
 #[derive(Debug, Clone)]
 pub struct AgentRunTool {
     os: AgentOs,
-    handles: Arc<SubAgentHandleTable>,
+    bg_manager: Arc<BackgroundTaskManager>,
 }
 
 impl AgentRunTool {
-    pub fn new(os: AgentOs, handles: Arc<SubAgentHandleTable>) -> Self {
-        Self { os, handles }
+    pub fn new(os: AgentOs, bg_manager: Arc<BackgroundTaskManager>) -> Self {
+        Self { os, bg_manager }
     }
 
     fn ensure_target_visible(
@@ -32,31 +38,6 @@ impl AgentRunTool {
         ))
     }
 
-    async fn persist_live_summary(
-        &self,
-        ctx: &ToolCallContext<'_>,
-        run_id: &str,
-        child_thread_id: &str,
-        parent_run_id: Option<String>,
-        summary: &SubAgentSummary,
-        tool_name: &str,
-    ) -> ToolResult {
-        let sub = SubAgent {
-            thread_id: child_thread_id.to_string(),
-            parent_run_id,
-            agent_id: summary.agent_id.clone(),
-            status: summary.status,
-            error: summary.error.clone(),
-        };
-        if let Err(err) = ctx
-            .state_of::<SubAgentState>()
-            .runs_insert(run_id.to_string(), sub)
-        {
-            return state_write_failed(tool_name, err);
-        }
-        to_tool_result(tool_name, summary.clone())
-    }
-
     async fn launch_new_run(
         &self,
         ctx: &ToolCallContext<'_>,
@@ -73,92 +54,91 @@ impl AgentRunTool {
             initial_state,
             background,
         } = request;
-        let sub = SubAgent {
-            thread_id: child_thread_id.clone(),
-            parent_run_id: parent_run_id.clone(),
-            agent_id: agent_id.clone(),
-            status: SubAgentStatus::Running,
-            error: None,
-        };
         let parent_tool_call_id = ctx.call_id().to_string();
+        let metadata = serde_json::json!({
+            "thread_id": child_thread_id,
+            "agent_id": agent_id,
+        });
 
         if background {
             let token = RunCancellationToken::new();
             let parent_run_id_bg = parent_run_id.clone();
             let parent_tool_call_id_bg = parent_tool_call_id.clone();
-            let epoch = self
-                .handles
-                .put_running(
-                    &run_id,
-                    owner_thread_id.clone(),
-                    child_thread_id.clone(),
-                    agent_id.clone(),
-                    parent_run_id.clone(),
-                    Some(token.clone()),
-                )
-                .await;
 
-            // Persist Running record immediately.
+            // Persist Running record to BackgroundTaskState immediately.
+            let task = crate::runtime::background_tasks::BackgroundTask {
+                task_type: AGENT_RUN_TASK_TYPE.to_string(),
+                description: format!("agent:{agent_id}"),
+                status: TaskStatus::Running,
+                error: None,
+                created_at_ms: current_unix_millis(),
+                completed_at_ms: None,
+                parent_task_id: parent_run_id.clone(),
+                metadata: metadata.clone(),
+            };
             if let Err(err) = ctx
-                .state_of::<SubAgentState>()
-                .runs_insert(run_id.to_string(), sub)
+                .state_of::<BackgroundTaskState>()
+                .tasks_insert(run_id.to_string(), task)
             {
-                let _ = self.handles.remove_if_epoch(&run_id, epoch).await;
                 return state_write_failed(tool_name, err);
             }
 
-            let handles = self.handles.clone();
+            // Spawn via BackgroundTaskManager for unified tracking.
             let os = self.os.clone();
             let run_id_bg = run_id.clone();
             let agent_id_bg = agent_id.clone();
-            let child_thread_id_bg = child_thread_id;
-            let parent_thread_id_bg = owner_thread_id;
-            tokio::spawn(async move {
-                let completion = execute_sub_agent(
-                    os,
-                    SubAgentExecutionRequest {
-                        agent_id: agent_id_bg,
-                        child_thread_id: child_thread_id_bg,
-                        run_id: run_id_bg.clone(),
-                        parent_run_id: parent_run_id_bg,
-                        parent_tool_call_id: Some(parent_tool_call_id_bg),
-                        parent_thread_id: parent_thread_id_bg,
-                        messages,
-                        initial_state,
-                        cancellation_token: Some(token),
+            let child_thread_id_bg = child_thread_id.clone();
+            let parent_thread_id_bg = owner_thread_id.clone();
+            let description = format!("agent:{agent_id}");
+
+            self.bg_manager
+                .spawn_with_id(
+                    run_id.clone(),
+                    &owner_thread_id,
+                    AGENT_RUN_TASK_TYPE,
+                    &description,
+                    token.clone(),
+                    parent_run_id.as_deref(),
+                    metadata,
+                    move |_cancel| async move {
+                        let completion = execute_sub_agent(
+                            os,
+                            SubAgentExecutionRequest {
+                                agent_id: agent_id_bg,
+                                child_thread_id: child_thread_id_bg,
+                                run_id: run_id_bg.clone(),
+                                parent_run_id: parent_run_id_bg,
+                                parent_tool_call_id: Some(parent_tool_call_id_bg),
+                                parent_thread_id: parent_thread_id_bg,
+                                messages,
+                                initial_state,
+                                cancellation_token: Some(token),
+                            },
+                            None,
+                        )
+                        .await;
+
+                        match completion.status {
+                            SubAgentStatus::Completed => BgTaskResult::Success(serde_json::json!({
+                                "run_id": run_id_bg,
+                                "status": "completed"
+                            })),
+                            SubAgentStatus::Failed => {
+                                BgTaskResult::Failed(completion.error.unwrap_or_default())
+                            }
+                            SubAgentStatus::Stopped => BgTaskResult::Stopped,
+                            SubAgentStatus::Running => {
+                                BgTaskResult::Success(serde_json::json!({ "run_id": run_id_bg }))
+                            }
+                        }
                     },
-                    None,
                 )
                 .await;
-                let _ = handles
-                    .update_after_completion(&run_id_bg, epoch, completion)
-                    .await;
-            });
 
-            return to_tool_result(
-                tool_name,
-                SubAgentSummary {
-                    run_id,
-                    agent_id,
-                    status: SubAgentStatus::Running,
-                    error: None,
-                },
-            );
+            return agent_tool_result(tool_name, &run_id, &agent_id, "running", None);
         }
 
         // Foreground run.
-        let epoch = self
-            .handles
-            .put_running(
-                &run_id,
-                owner_thread_id.clone(),
-                child_thread_id.clone(),
-                agent_id.clone(),
-                parent_run_id.clone(),
-                None,
-            )
-            .await;
-
         let forward_progress =
             |update: crate::contracts::runtime::tool_call::ToolCallProgressUpdate| {
                 ctx.report_tool_call_progress(update)
@@ -181,32 +161,38 @@ impl AgentRunTool {
         )
         .await;
 
-        let completed_sub = SubAgent {
-            thread_id: child_thread_id,
-            parent_run_id,
-            agent_id: agent_id.clone(),
-            status: completion.status,
-            error: completion.error.clone(),
+        let status = match completion.status {
+            SubAgentStatus::Completed => TaskStatus::Completed,
+            SubAgentStatus::Failed => TaskStatus::Failed,
+            SubAgentStatus::Stopped => TaskStatus::Stopped,
+            SubAgentStatus::Running => TaskStatus::Running,
         };
 
-        let summary = self
-            .handles
-            .update_after_completion(&run_id, epoch, completion)
-            .await
-            .unwrap_or_else(|| SubAgentSummary {
-                run_id: run_id.clone(),
-                agent_id,
-                status: completed_sub.status,
-                error: completed_sub.error.clone(),
-            });
-
+        // Persist completed state.
+        let task = crate::runtime::background_tasks::BackgroundTask {
+            task_type: AGENT_RUN_TASK_TYPE.to_string(),
+            description: format!("agent:{agent_id}"),
+            status,
+            error: completion.error.clone(),
+            created_at_ms: current_unix_millis(),
+            completed_at_ms: Some(current_unix_millis()),
+            parent_task_id: parent_run_id,
+            metadata,
+        };
         if let Err(err) = ctx
-            .state_of::<SubAgentState>()
-            .runs_insert(run_id.to_string(), completed_sub)
+            .state_of::<BackgroundTaskState>()
+            .tasks_insert(run_id.to_string(), task)
         {
             return state_write_failed(tool_name, err);
         }
-        to_tool_result(tool_name, summary)
+
+        agent_tool_result(
+            tool_name,
+            &run_id,
+            &agent_id,
+            status.as_str(),
+            completion.error.as_deref(),
+        )
     }
 }
 
@@ -254,49 +240,38 @@ impl Tool for AgentRunTool {
 
         // ── Resume existing run by ID ──────────────────────────────
         if let Some(run_id) = run_id {
-            // 1. Check live handle first.
-            if let Some(existing) = self
-                .handles
-                .get_owned_summary(&owner_thread_id, &run_id)
-                .await
-            {
-                match existing.status {
-                    SubAgentStatus::Running
-                    | SubAgentStatus::Completed
-                    | SubAgentStatus::Failed => {
-                        let handle = match self
-                            .handles
-                            .handle_for_resume(&owner_thread_id, &run_id)
-                            .await
-                        {
-                            Ok(v) => v,
-                            Err(e) => return Ok(tool_error(tool_name, "unknown_run", e)),
-                        };
-                        let result = self
-                            .persist_live_summary(
-                                ctx,
-                                &run_id,
-                                &handle.child_thread_id,
-                                handle.parent_run_id.clone(),
-                                &existing,
-                                tool_name,
-                            )
-                            .await;
-                        return Ok(result);
-                    }
-                    SubAgentStatus::Stopped => {
-                        // Resume from live handle.
-                        let handle = match self
-                            .handles
-                            .handle_for_resume(&owner_thread_id, &run_id)
-                            .await
-                        {
-                            Ok(v) => v,
-                            Err(e) => return Ok(tool_error(tool_name, "unknown_run", e)),
-                        };
+            // 1. Check live task in BackgroundTaskManager.
+            if let Some(summary) = self.bg_manager.get(&owner_thread_id, &run_id).await {
+                let agent_id = summary
+                    .metadata
+                    .get("agent_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let thread_id = summary
+                    .metadata
+                    .get("thread_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
 
+                match summary.status {
+                    TaskStatus::Running
+                    | TaskStatus::Completed
+                    | TaskStatus::Failed
+                    | TaskStatus::Cancelled => {
+                        return Ok(agent_tool_result(
+                            tool_name,
+                            &run_id,
+                            &agent_id,
+                            summary.status.as_str(),
+                            summary.error.as_deref(),
+                        ));
+                    }
+                    TaskStatus::Stopped => {
+                        // Resume stopped task.
                         if let Err(error) = self.ensure_target_visible(
-                            &handle.agent_id,
+                            &agent_id,
                             caller_agent_id.as_deref(),
                             Some(scope),
                         ) {
@@ -314,9 +289,9 @@ impl Tool for AgentRunTool {
                                 LaunchNewRunRequest {
                                     run_id,
                                     owner_thread_id,
-                                    agent_id: handle.agent_id,
+                                    agent_id,
                                     parent_run_id: caller_run_id,
-                                    child_thread_id: handle.child_thread_id,
+                                    child_thread_id: thread_id,
                                     messages,
                                     initial_state: None,
                                     background,
@@ -328,10 +303,10 @@ impl Tool for AgentRunTool {
                 }
             }
 
-            // 2. Check persisted state.
+            // 2. Check persisted state in BackgroundTaskState.
             let persisted_opt = ctx
-                .state_of::<SubAgentState>()
-                .runs()
+                .state_of::<BackgroundTaskState>()
+                .tasks()
                 .ok()
                 .unwrap_or_default()
                 .remove(&run_id);
@@ -344,47 +319,53 @@ impl Tool for AgentRunTool {
                 ));
             };
 
+            let agent_id = persisted
+                .metadata
+                .get("agent_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let thread_id = persisted
+                .metadata
+                .get("thread_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
             // Orphaned running → mark stopped.
-            if persisted.status == SubAgentStatus::Running {
-                let stopped = SubAgent {
-                    status: SubAgentStatus::Stopped,
-                    error: Some(
-                        "No live executor found in current process; marked stopped".to_string(),
-                    ),
-                    ..persisted.clone()
-                };
+            if persisted.status == TaskStatus::Running {
+                let mut stopped = persisted.clone();
+                stopped.status = TaskStatus::Stopped;
+                stopped.error =
+                    Some("No live executor found in current process; marked stopped".to_string());
                 if let Err(err) = ctx
-                    .state_of::<SubAgentState>()
-                    .runs_insert(run_id.to_string(), stopped.clone())
+                    .state_of::<BackgroundTaskState>()
+                    .tasks_insert(run_id.to_string(), stopped)
                 {
                     return Ok(state_write_failed(tool_name, err));
                 }
-                return Ok(to_tool_result(
+                return Ok(agent_tool_result(
                     tool_name,
-                    SubAgentSummary {
-                        run_id,
-                        agent_id: stopped.agent_id,
-                        status: SubAgentStatus::Stopped,
-                        error: stopped.error,
-                    },
+                    &run_id,
+                    &agent_id,
+                    "stopped",
+                    Some("No live executor found in current process; marked stopped"),
                 ));
             }
 
             match persisted.status {
-                SubAgentStatus::Completed | SubAgentStatus::Failed => {
-                    return Ok(to_tool_result(
+                TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled => {
+                    return Ok(agent_tool_result(
                         tool_name,
-                        SubAgentSummary {
-                            run_id,
-                            agent_id: persisted.agent_id,
-                            status: persisted.status,
-                            error: persisted.error,
-                        },
+                        &run_id,
+                        &agent_id,
+                        persisted.status.as_str(),
+                        persisted.error.as_deref(),
                     ));
                 }
-                SubAgentStatus::Stopped => {
+                TaskStatus::Stopped => {
                     if let Err(error) = self.ensure_target_visible(
-                        &persisted.agent_id,
+                        &agent_id,
                         caller_agent_id.as_deref(),
                         Some(scope),
                     ) {
@@ -402,9 +383,9 @@ impl Tool for AgentRunTool {
                             LaunchNewRunRequest {
                                 run_id,
                                 owner_thread_id,
-                                agent_id: persisted.agent_id,
+                                agent_id,
                                 parent_run_id: caller_run_id,
-                                child_thread_id: persisted.thread_id,
+                                child_thread_id: thread_id,
                                 messages,
                                 initial_state: None,
                                 background,
@@ -413,7 +394,7 @@ impl Tool for AgentRunTool {
                         )
                         .await);
                 }
-                SubAgentStatus::Running => unreachable!("handled above"),
+                TaskStatus::Running => unreachable!("handled above"),
             }
         }
 

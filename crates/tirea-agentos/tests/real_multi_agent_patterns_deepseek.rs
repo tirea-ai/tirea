@@ -35,9 +35,7 @@ fn truncate_str(s: &str, max_bytes: usize) -> &str {
 
 fn require_deepseek_key() {
     if std::env::var("DEEPSEEK_API_KEY").is_err() {
-        panic!(
-            "DEEPSEEK_API_KEY not set. Export it before running ignored tests."
-        );
+        panic!("DEEPSEEK_API_KEY not set. Export it before running ignored tests.");
     }
 }
 
@@ -48,7 +46,12 @@ struct RunResult {
     last_error: String,
 }
 
-async fn execute_run(os: &AgentOs, agent_id: &str, thread_id: &str, prompt: &str) -> Result<RunResult, String> {
+async fn execute_run(
+    os: &AgentOs,
+    agent_id: &str,
+    thread_id: &str,
+    prompt: &str,
+) -> Result<RunResult, String> {
     let run = os
         .run_stream(RunRequest {
             agent_id: agent_id.to_string(),
@@ -142,13 +145,23 @@ async fn pattern_coordinator_routes_to_specialist() {
                 "billing",
                 AgentDefinition::new("deepseek-chat")
                     .with_system_prompt("You are a billing specialist. Reply in Chinese. Always mention '账单' in your answer.")
-                    .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()]),
+                    .with_excluded_tools(vec![
+                        "agent_run".to_string(),
+                        "task_status".to_string(),
+                        "task_cancel".to_string(),
+                        "task_output".to_string(),
+                    ]),
             )
             .with_agent(
                 "support",
                 AgentDefinition::new("deepseek-chat")
                     .with_system_prompt("You are a technical support specialist. Reply in Chinese. Always mention '技术' in your answer.")
-                    .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()]),
+                    .with_excluded_tools(vec![
+                        "agent_run".to_string(),
+                        "task_status".to_string(),
+                        "task_cancel".to_string(),
+                        "task_output".to_string(),
+                    ]),
             )
             .with_agent(
                 "orchestrator",
@@ -198,13 +211,23 @@ async fn pattern_sequential_pipeline() {
                 "translator",
                 AgentDefinition::new("deepseek-chat")
                     .with_system_prompt("You are a translator. Translate the given Chinese text to English. Output only the English translation.")
-                    .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()]),
+                    .with_excluded_tools(vec![
+                        "agent_run".to_string(),
+                        "task_status".to_string(),
+                        "task_cancel".to_string(),
+                        "task_output".to_string(),
+                    ]),
             )
             .with_agent(
                 "summarizer",
                 AgentDefinition::new("deepseek-chat")
                     .with_system_prompt("You are a summarizer. Summarize the given English text into one short sentence. Output only the summary.")
-                    .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()]),
+                    .with_excluded_tools(vec![
+                        "agent_run".to_string(),
+                        "task_status".to_string(),
+                        "task_cancel".to_string(),
+                        "task_output".to_string(),
+                    ]),
             )
             .with_agent(
                 "orchestrator",
@@ -261,19 +284,34 @@ async fn pattern_parallel_fan_out_gather() {
                 "security_reviewer",
                 AgentDefinition::new("deepseek-chat")
                     .with_system_prompt("You are a security reviewer. Analyze the code for security issues. Reply with a short security report (2-3 sentences).")
-                    .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()]),
+                    .with_excluded_tools(vec![
+                        "agent_run".to_string(),
+                        "task_status".to_string(),
+                        "task_cancel".to_string(),
+                        "task_output".to_string(),
+                    ]),
             )
             .with_agent(
                 "style_reviewer",
                 AgentDefinition::new("deepseek-chat")
                     .with_system_prompt("You are a code style reviewer. Check the code for style and readability. Reply with a short style report (2-3 sentences).")
-                    .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()]),
+                    .with_excluded_tools(vec![
+                        "agent_run".to_string(),
+                        "task_status".to_string(),
+                        "task_cancel".to_string(),
+                        "task_output".to_string(),
+                    ]),
             )
             .with_agent(
                 "perf_reviewer",
                 AgentDefinition::new("deepseek-chat")
                     .with_system_prompt("You are a performance reviewer. Analyze the code for performance issues. Reply with a short performance report (2-3 sentences).")
-                    .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()]),
+                    .with_excluded_tools(vec![
+                        "agent_run".to_string(),
+                        "task_status".to_string(),
+                        "task_cancel".to_string(),
+                        "task_output".to_string(),
+                    ]),
             )
             .with_agent(
                 "orchestrator",
@@ -347,13 +385,23 @@ async fn pattern_hierarchical_decomposition() {
                 "fact_finder",
                 AgentDefinition::new("deepseek-chat")
                     .with_system_prompt("You are a fact finder. When asked about a topic, provide 3 key facts. Be concise.")
-                    .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()]),
+                    .with_excluded_tools(vec![
+                        "agent_run".to_string(),
+                        "task_status".to_string(),
+                        "task_cancel".to_string(),
+                        "task_output".to_string(),
+                    ]),
             )
             .with_agent(
                 "summarizer",
                 AgentDefinition::new("deepseek-chat")
                     .with_system_prompt("You are a summarizer. Condense the given facts into one paragraph.")
-                    .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()]),
+                    .with_excluded_tools(vec![
+                        "agent_run".to_string(),
+                        "task_status".to_string(),
+                        "task_cancel".to_string(),
+                        "task_output".to_string(),
+                    ]),
             )
             .with_agent(
                 "researcher",
@@ -430,7 +478,12 @@ async fn pattern_generator_critic() {
                         If invalid, output exactly: FAIL followed by a brief reason.\n\
                         Output only PASS or FAIL with reason, nothing else.",
                     )
-                    .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()]),
+                    .with_excluded_tools(vec![
+                        "agent_run".to_string(),
+                        "task_status".to_string(),
+                        "task_cancel".to_string(),
+                        "task_output".to_string(),
+                    ]),
             )
             .with_agent(
                 "generator",
