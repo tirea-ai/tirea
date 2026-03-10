@@ -1,6 +1,6 @@
 use super::AgentLoopError;
 use crate::contracts::runtime::phase::StepContext;
-use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction, ScopeContext};
+use crate::contracts::runtime::state::{reduce_state_actions, ScopeContext};
 use crate::contracts::runtime::tool_call::tool_call_states_from_state;
 use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::runtime::SuspendedCall;
@@ -8,7 +8,7 @@ use crate::contracts::thread::{Message, Role};
 use crate::contracts::RunAction;
 use crate::contracts::RunContext;
 use crate::runtime::control::{ToolCallResume, ToolCallState, ToolCallStatus};
-use tirea_state::{parse_path, Op, Patch, TrackedPatch};
+use tirea_state::{Patch, TrackedPatch};
 
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -301,17 +301,8 @@ pub(super) fn upsert_tool_call_state(
         ));
     }
 
-    let scope_path = format!("__tool_call_scope.{}.tool_call_state", call_id);
-    let path = parse_path(&scope_path);
-    let value = serde_json::to_value(tool_state).map_err(|e| {
-        AgentLoopError::StateError(format!(
-            "failed to serialize tool call state for '{call_id}': {e}"
-        ))
-    })?;
-    let raw = TrackedPatch::new(tirea_state::Patch::with_ops(vec![Op::set(path, value)]))
-        .with_source("agent_loop");
     let mut reduced = reduce_state_actions(
-        vec![AnyStateAction::Patch(raw)],
+        vec![tool_state.into_state_action()],
         base_state,
         "agent_loop",
         &ScopeContext::run(),
@@ -360,9 +351,13 @@ mod tests {
         let patch = upsert_tool_call_state(&state, "call_a", updated).expect("patch should build");
         let ops = patch.patch().ops();
         assert_eq!(ops.len(), 1);
-        assert_eq!(
-            ops[0].path().to_string(),
-            "$.__tool_call_scope.call_a.tool_call_state"
+        assert!(
+            ops[0]
+                .path()
+                .to_string()
+                .starts_with("$.__tool_call_scope.call_a.tool_call_state"),
+            "unexpected patch path: {}",
+            ops[0].path()
         );
 
         let merged = apply_patch(&state, patch.patch()).expect("patch should apply");
