@@ -255,7 +255,6 @@ pub(super) fn run_stream(
                     agent.as_ref(),
                     &execution_ctx,
                     &pending_delta_commit,
-                    RunFinishedCommitPolicy::BestEffort,
                 )
                 .await
                 {
@@ -296,7 +295,6 @@ pub(super) fn run_stream(
                     agent.as_ref(),
                     &execution_ctx,
                     &pending_delta_commit,
-                    RunFinishedCommitPolicy::Required,
                 )
                 .await
                 {

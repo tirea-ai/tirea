@@ -1104,12 +1104,6 @@ pub(super) async fn finalize_run_end(
     plugin_runtime::emit_run_end_phase(run_ctx, tool_descriptors, agent).await
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RunFinishedCommitPolicy {
-    Required,
-    BestEffort,
-}
-
 fn normalize_termination_for_suspended_calls(
     run_ctx: &RunContext,
     termination: TerminationReason,
@@ -1139,21 +1133,12 @@ async fn persist_run_termination(
     agent: &dyn Agent,
     execution_ctx: &RunExecutionContext,
     pending_delta_commit: &PendingDeltaCommitContext<'_>,
-    run_finished_commit_policy: RunFinishedCommitPolicy,
 ) -> Result<(), AgentLoopError> {
     sync_run_lifecycle_for_termination_with_context(run_ctx, execution_ctx, termination)?;
     finalize_run_end(run_ctx, tool_descriptors, agent).await;
-    if let Err(error) = pending_delta_commit
+    pending_delta_commit
         .commit_run_finished(run_ctx, termination)
-        .await
-    {
-        match run_finished_commit_policy {
-            RunFinishedCommitPolicy::Required => return Err(error),
-            RunFinishedCommitPolicy::BestEffort => {
-                tracing::warn!(error = %error, "failed to commit run-finished delta");
-            }
-        }
-    }
+        .await?;
     Ok(())
 }
 
@@ -1990,7 +1975,6 @@ pub async fn run_loop_with_context(
                 agent,
                 &execution_ctx,
                 &pending_delta_commit,
-                RunFinishedCommitPolicy::Required,
             )
             .await
             {

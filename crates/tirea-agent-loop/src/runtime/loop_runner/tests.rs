@@ -1056,10 +1056,7 @@ fn test_chat_response_rate_limit() {
             "message": "Rate limit exceeded"
         }),
     };
-    assert_eq!(
-        classify_llm_error(&error),
-        LlmErrorClass::RateLimit,
-    );
+    assert_eq!(classify_llm_error(&error), LlmErrorClass::RateLimit,);
     assert!(is_retryable_llm_error(&error));
 }
 
@@ -1075,10 +1072,7 @@ fn test_chat_response_invalid_request() {
             }
         }),
     };
-    assert_eq!(
-        classify_llm_error(&error),
-        LlmErrorClass::ClientRequest,
-    );
+    assert_eq!(classify_llm_error(&error), LlmErrorClass::ClientRequest,);
     assert!(!is_retryable_llm_error(&error));
 }
 
@@ -1094,10 +1088,7 @@ fn test_chat_response_authentication_error() {
             }
         }),
     };
-    assert_eq!(
-        classify_llm_error(&error),
-        LlmErrorClass::Auth,
-    );
+    assert_eq!(classify_llm_error(&error), LlmErrorClass::Auth,);
     assert!(!is_retryable_llm_error(&error));
 }
 
@@ -1113,10 +1104,7 @@ fn test_chat_response_api_error() {
             }
         }),
     };
-    assert_eq!(
-        classify_llm_error(&error),
-        LlmErrorClass::ServerError,
-    );
+    assert_eq!(classify_llm_error(&error), LlmErrorClass::ServerError,);
     assert!(is_retryable_llm_error(&error));
 }
 
@@ -1129,10 +1117,7 @@ fn test_chat_response_with_status_code_fallback() {
             "message": "some unknown format"
         }),
     };
-    assert_eq!(
-        classify_llm_error(&error),
-        LlmErrorClass::ServerUnavailable,
-    );
+    assert_eq!(classify_llm_error(&error), LlmErrorClass::ServerUnavailable,);
     assert!(is_retryable_llm_error(&error));
 }
 
@@ -8376,6 +8361,65 @@ async fn test_stream_run_finished_commit_failure_emits_error_without_run_finish_
             CheckpointReason::RunFinished
         ]
     );
+}
+
+#[tokio::test]
+async fn test_stream_error_termination_run_finished_commit_failure_emits_state_error_only() {
+    let committer = Arc::new(RecordingStateCommitter::new(Some(
+        CheckpointReason::RunFinished,
+    )));
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let provider = Arc::new(ScriptedStreamProvider::new(vec![
+        text_stream_error_attempt(
+            "hel",
+            web_stream_io_error(
+                std::io::ErrorKind::ConnectionReset,
+                "connection reset by peer",
+            ),
+        ),
+    ]));
+    let config = BaseAgent::new("mock")
+        .with_llm_retry_policy(LlmRetryPolicy {
+            max_attempts_per_model: 1,
+            initial_backoff_ms: 10,
+            max_backoff_ms: 10,
+            backoff_jitter_percent: 0,
+            max_retry_window_ms: Some(5),
+            retry_stream_start: true,
+            max_stream_event_retries: 1,
+            stream_error_fallback_threshold: 2,
+        })
+        .with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let stream = run_loop_stream(
+        Arc::new(config),
+        HashMap::new(),
+        run_ctx,
+        None,
+        Some(committer.clone() as Arc<dyn StateCommitter>),
+        None,
+    );
+    let events = collect_stream_events(stream).await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Error { message, code } if message.contains("state commit failed") && code.as_deref() == Some("STATE_ERROR"))),
+        "expected state commit error event, got: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Error { message, code } if message.contains("connection reset by peer") && code.as_deref() == Some("LLM_ERROR"))),
+        "original llm error must not be emitted after run-finished persistence failure: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::RunFinish { .. })),
+        "run finish event should be suppressed when error termination cannot persist RunFinished: {events:?}"
+    );
+    assert_eq!(committer.reasons(), vec![CheckpointReason::RunFinished]);
 }
 
 #[tokio::test]
