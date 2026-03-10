@@ -1180,7 +1180,7 @@ fn resolve_sets_runtime_caller_agent_id() {
     assert_eq!(
         resolved
             .run_config
-            .value(tirea_contract::scope::SCOPE_ALLOWED_SKILLS_KEY),
+            .value(super::policy::SCOPE_ALLOWED_SKILLS_KEY),
         Some(&json!(["s1"]))
     );
     assert_eq!(

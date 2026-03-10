@@ -1,4 +1,5 @@
-use crate::tool_filter::{is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY};
+use crate::{SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY};
+use tirea_contract::scope::is_scope_allowed;
 use crate::{SkillMeta, SkillRegistry, SkillState, SKILLS_DISCOVERY_PLUGIN_ID};
 use async_trait::async_trait;
 use std::collections::HashSet;

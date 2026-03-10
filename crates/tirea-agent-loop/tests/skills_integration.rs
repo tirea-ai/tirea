@@ -12,10 +12,10 @@ use tirea_agent_loop::contracts::thread::Thread;
 use tirea_agent_loop::contracts::thread::{Message, ToolCall};
 use tirea_agent_loop::engine::tool_execution::execute_single_tool_with_scope_and_behavior;
 use tirea_contract::testing::TestFixture;
-use tirea_extension_permission::{PermissionPlugin, SCOPE_ALLOWED_SKILLS_KEY};
+use tirea_extension_permission::PermissionPlugin;
 use tirea_extension_skills::{
     FsSkill, InMemorySkillRegistry, LoadSkillResourceTool, Skill, SkillActivateTool, SkillRegistry,
-    SkillScriptTool,
+    SkillScriptTool, SCOPE_ALLOWED_SKILLS_KEY,
 };
 
 struct TestToolBehavior {

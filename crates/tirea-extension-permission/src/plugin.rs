@@ -1,7 +1,7 @@
 use super::actions::{
     apply_tool_policy, deny_missing_call_id, deny_tool, reject_out_of_scope, request_permission,
 };
-use super::scope;
+use tirea_contract::scope;
 use super::state::{resolve_permission_behavior, PermissionPolicy, ToolPermissionBehavior};
 use async_trait::async_trait;
 use serde_json::json;

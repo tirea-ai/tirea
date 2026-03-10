@@ -1,5 +1,6 @@
 use crate::skill_md::{parse_allowed_tool_token, parse_skill_md};
-use crate::tool_filter::{is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY};
+use crate::{SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY};
+use tirea_contract::scope::is_scope_allowed;
 use crate::{
     Skill, SkillError, SkillMaterializeError, SkillRegistry, SkillResource, SkillResourceKind,
     SkillState, SkillStateAction, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID,

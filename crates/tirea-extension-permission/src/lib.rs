@@ -5,7 +5,6 @@
 
 mod actions;
 mod plugin;
-pub mod scope;
 mod state;
 
 pub use actions::{
@@ -15,7 +14,6 @@ pub use actions::{
 pub use plugin::{
     PermissionPlugin, ToolPolicyPlugin, PERMISSION_CONFIRM_TOOL_NAME, PERMISSION_PLUGIN_ID,
 };
-pub use scope::*;
 pub use state::{
     permission_state_action, resolve_permission_behavior, PermissionAction, PermissionPolicy,
     PermissionPolicyAction, ToolPermissionBehavior,
@@ -421,7 +419,7 @@ mod tests {
     async fn test_tool_policy_blocks_out_of_scope() {
         let mut config = RunConfig::new();
         config
-            .set(scope::SCOPE_ALLOWED_TOOLS_KEY, vec!["other_tool"])
+            .set(tirea_contract::scope::SCOPE_ALLOWED_TOOLS_KEY, vec!["other_tool"])
             .unwrap();
         let doc = DocCell::new(json!({}));
         let args = json!({});
@@ -441,7 +439,7 @@ mod tests {
     async fn test_tool_policy_allows_in_scope() {
         let mut config = RunConfig::new();
         config
-            .set(scope::SCOPE_ALLOWED_TOOLS_KEY, vec!["my_tool"])
+            .set(tirea_contract::scope::SCOPE_ALLOWED_TOOLS_KEY, vec!["my_tool"])
             .unwrap();
         let doc = DocCell::new(json!({}));
         let args = json!({});
@@ -478,7 +476,7 @@ mod tests {
     async fn test_tool_policy_excluded_tool_is_blocked() {
         let mut config = RunConfig::new();
         config
-            .set(scope::SCOPE_EXCLUDED_TOOLS_KEY, vec!["excluded_tool"])
+            .set(tirea_contract::scope::SCOPE_EXCLUDED_TOOLS_KEY, vec!["excluded_tool"])
             .unwrap();
         let doc = DocCell::new(json!({}));
         let args = json!({});

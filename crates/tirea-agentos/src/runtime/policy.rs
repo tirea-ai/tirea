@@ -5,10 +5,21 @@ use std::sync::Arc;
 use tirea_contract::RunConfig;
 
 pub(super) use tirea_contract::scope::{
-    is_id_allowed, is_scope_allowed, SCOPE_ALLOWED_AGENTS_KEY, SCOPE_ALLOWED_SKILLS_KEY,
-    SCOPE_ALLOWED_TOOLS_KEY, SCOPE_EXCLUDED_AGENTS_KEY, SCOPE_EXCLUDED_SKILLS_KEY,
-    SCOPE_EXCLUDED_TOOLS_KEY,
+    is_id_allowed, is_scope_allowed, SCOPE_ALLOWED_TOOLS_KEY, SCOPE_EXCLUDED_TOOLS_KEY,
 };
+
+// Skill scope keys — owned by tirea-extension-skills.
+#[cfg(feature = "skills")]
+pub(super) use tirea_extension_skills::{SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY};
+#[cfg(not(feature = "skills"))]
+pub(super) const SCOPE_ALLOWED_SKILLS_KEY: &str = "__agent_policy_allowed_skills";
+#[cfg(not(feature = "skills"))]
+pub(super) const SCOPE_EXCLUDED_SKILLS_KEY: &str = "__agent_policy_excluded_skills";
+
+/// Scope key: delegate-agent allow-list policy.
+pub(super) const SCOPE_ALLOWED_AGENTS_KEY: &str = "__agent_policy_allowed_agents";
+/// Scope key: delegate-agent deny-list policy.
+pub(super) const SCOPE_EXCLUDED_AGENTS_KEY: &str = "__agent_policy_excluded_agents";
 
 pub(super) fn filter_tools_in_place(
     tools: &mut HashMap<String, Arc<dyn Tool>>,

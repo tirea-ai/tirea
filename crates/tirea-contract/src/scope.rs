@@ -5,14 +5,6 @@ use serde_json::Value;
 pub const SCOPE_ALLOWED_TOOLS_KEY: &str = "__agent_policy_allowed_tools";
 /// Scope key: tool deny-list policy.
 pub const SCOPE_EXCLUDED_TOOLS_KEY: &str = "__agent_policy_excluded_tools";
-/// Scope key: skill allow-list policy.
-pub const SCOPE_ALLOWED_SKILLS_KEY: &str = "__agent_policy_allowed_skills";
-/// Scope key: skill deny-list policy.
-pub const SCOPE_EXCLUDED_SKILLS_KEY: &str = "__agent_policy_excluded_skills";
-/// Scope key: delegate-agent allow-list policy.
-pub const SCOPE_ALLOWED_AGENTS_KEY: &str = "__agent_policy_allowed_agents";
-/// Scope key: delegate-agent deny-list policy.
-pub const SCOPE_EXCLUDED_AGENTS_KEY: &str = "__agent_policy_excluded_agents";
 
 /// Check whether an identifier is allowed by optional allow/deny lists.
 #[must_use]
