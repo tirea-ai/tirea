@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 
-use super::{MailboxEntry, MailboxPage, MailboxQuery, MailboxStoreError};
+use super::{
+    MailboxEntry, MailboxPage, MailboxQuery, MailboxStoreError, MailboxThreadInterrupt,
+    MailboxThreadState,
+};
 
 #[async_trait]
 pub trait MailboxReader: Send + Sync {
@@ -14,6 +17,11 @@ pub trait MailboxReader: Send + Sync {
         run_id: &str,
     ) -> Result<Option<MailboxEntry>, MailboxStoreError>;
 
+    async fn load_mailbox_thread_state(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<MailboxThreadState>, MailboxStoreError>;
+
     async fn list_mailbox_entries(
         &self,
         query: &MailboxQuery,
@@ -23,6 +31,12 @@ pub trait MailboxReader: Send + Sync {
 #[async_trait]
 pub trait MailboxWriter: MailboxReader {
     async fn enqueue_mailbox_entry(&self, entry: &MailboxEntry) -> Result<(), MailboxStoreError>;
+
+    async fn ensure_mailbox_thread_state(
+        &self,
+        thread_id: &str,
+        now: u64,
+    ) -> Result<MailboxThreadState, MailboxStoreError>;
 
     async fn claim_mailbox_entries(
         &self,
@@ -71,12 +85,25 @@ pub trait MailboxWriter: MailboxReader {
         now: u64,
     ) -> Result<Option<MailboxEntry>, MailboxStoreError>;
 
+    async fn supersede_mailbox_entry(
+        &self,
+        entry_id: &str,
+        now: u64,
+        reason: &str,
+    ) -> Result<Option<MailboxEntry>, MailboxStoreError>;
+
     async fn cancel_pending_mailbox_for_thread(
         &self,
         thread_id: &str,
         now: u64,
         exclude_run_id: Option<&str>,
     ) -> Result<Vec<MailboxEntry>, MailboxStoreError>;
+
+    async fn interrupt_mailbox_thread(
+        &self,
+        thread_id: &str,
+        now: u64,
+    ) -> Result<MailboxThreadInterrupt, MailboxStoreError>;
 }
 
 pub trait MailboxStore: MailboxWriter {}

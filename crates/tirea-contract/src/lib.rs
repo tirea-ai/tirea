@@ -152,10 +152,10 @@ pub use runtime::{
 pub use storage::{
     paginate_in_memory, paginate_mailbox_entries, paginate_runs_in_memory, Committed, MailboxEntry,
     MailboxEntryStatus, MailboxPage, MailboxQuery, MailboxReader, MailboxStore, MailboxStoreError,
-    MailboxWriter, MessagePage, MessageQuery, MessageWithCursor, RunOrigin, RunPage, RunQuery,
-    RunReader, RunRecord, RunStore, RunStoreError, RunWriter, SortOrder, ThreadHead,
-    ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore, ThreadStoreError, ThreadSync,
-    ThreadWriter, VersionPrecondition,
+    MailboxThreadInterrupt, MailboxThreadState, MailboxWriter, MessagePage, MessageQuery,
+    MessageWithCursor, RunOrigin, RunPage, RunQuery, RunReader, RunRecord, RunStore, RunStoreError,
+    RunWriter, SortOrder, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore,
+    ThreadStoreError, ThreadSync, ThreadWriter, VersionPrecondition,
 };
 
 // transport

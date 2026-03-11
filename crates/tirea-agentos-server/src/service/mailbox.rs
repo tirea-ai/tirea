@@ -43,6 +43,7 @@ fn normalize_background_run_request(agent_id: &str, mut request: RunRequest) -> 
 
 fn mailbox_entry_from_request(
     request: RunRequest,
+    generation: u64,
     dedupe_key: Option<String>,
     available_at: u64,
 ) -> MailboxEntry {
@@ -58,6 +59,7 @@ fn mailbox_entry_from_request(
             .clone()
             .expect("background mailbox request should have run_id"),
         agent_id: request.agent_id.clone(),
+        generation,
         status: MailboxEntryStatus::Queued,
         request,
         dedupe_key,
@@ -75,6 +77,10 @@ fn mailbox_entry_from_request(
 
 fn mailbox_error(err: MailboxStoreError) -> ApiError {
     ApiError::Internal(err.to_string())
+}
+
+fn is_generation_mismatch(err: &MailboxStoreError) -> bool {
+    matches!(err, MailboxStoreError::GenerationMismatch { .. })
 }
 
 fn is_permanent_dispatch_error(err: &AgentOsRunError) -> bool {
@@ -108,13 +114,14 @@ async fn nack_claimed_entry(
     retry_delay_ms: u64,
     error: &str,
 ) -> Result<(), ApiError> {
+    let now = now_unix_millis();
     match mailbox_store
         .nack_mailbox_entry(
             entry_id,
             claim_token,
-            now_unix_millis().saturating_add(retry_delay_ms),
+            now.saturating_add(retry_delay_ms),
             error,
-            now_unix_millis(),
+            now,
         )
         .await
     {
@@ -142,6 +149,7 @@ async fn dead_letter_claimed_entry(
 
 enum MailboxRunStartError {
     Busy(String),
+    Superseded(String),
     Permanent(String),
     Retryable(String),
     Internal(ApiError),
@@ -149,9 +157,39 @@ enum MailboxRunStartError {
 
 async fn start_run_for_claimed_entry(
     os: &Arc<AgentOs>,
+    mailbox_store: &Arc<dyn MailboxStore>,
     entry: &MailboxEntry,
     persist_run: bool,
 ) -> Result<RunStream, MailboxRunStartError> {
+    if let Some(current_entry) = mailbox_store
+        .load_mailbox_entry(&entry.entry_id)
+        .await
+        .map_err(mailbox_error)
+        .map_err(MailboxRunStartError::Internal)?
+    {
+        if current_entry.status != MailboxEntryStatus::Claimed
+            || current_entry.claim_token != entry.claim_token
+        {
+            return Err(MailboxRunStartError::Superseded(
+                current_entry
+                    .last_error
+                    .unwrap_or_else(|| "mailbox entry is no longer active".to_string()),
+            ));
+        }
+    }
+
+    if mailbox_store
+        .load_mailbox_thread_state(&entry.thread_id)
+        .await
+        .map_err(mailbox_error)
+        .map_err(MailboxRunStartError::Internal)?
+        .is_some_and(|state| state.current_generation != entry.generation)
+    {
+        return Err(MailboxRunStartError::Superseded(
+            "mailbox entry superseded by interrupt".to_string(),
+        ));
+    }
+
     match os
         .current_run_id_for_thread(&entry.agent_id, &entry.thread_id)
         .await
@@ -204,24 +242,42 @@ async fn enqueue_mailbox_run(
         .run_id
         .clone()
         .expect("normalized mailbox run request should have run_id");
-    let entry = mailbox_entry_from_request(request, None, available_at);
 
-    match mailbox_store.enqueue_mailbox_entry(&entry).await {
-        Ok(()) => Ok((thread_id, run_id)),
-        Err(MailboxStoreError::AlreadyExists(_)) => {
-            let existing = mailbox_store
-                .load_mailbox_entry_by_run_id(&run_id)
-                .await
-                .map_err(mailbox_error)?
-                .ok_or_else(|| {
-                    ApiError::Internal(format!(
-                        "mailbox enqueue reported duplicate run '{run_id}' but no entry exists"
-                    ))
-                })?;
-            Ok((existing.thread_id, existing.run_id))
+    for _ in 0..2 {
+        let now = now_unix_millis();
+        let thread_state = mailbox_store
+            .ensure_mailbox_thread_state(&thread_id, now)
+            .await
+            .map_err(mailbox_error)?;
+        let entry = mailbox_entry_from_request(
+            request.clone(),
+            thread_state.current_generation,
+            None,
+            available_at,
+        );
+
+        match mailbox_store.enqueue_mailbox_entry(&entry).await {
+            Ok(()) => return Ok((thread_id.clone(), run_id.clone())),
+            Err(MailboxStoreError::AlreadyExists(_)) => {
+                let existing = mailbox_store
+                    .load_mailbox_entry_by_run_id(&run_id)
+                    .await
+                    .map_err(mailbox_error)?
+                    .ok_or_else(|| {
+                        ApiError::Internal(format!(
+                            "mailbox enqueue reported duplicate run '{run_id}' but no entry exists"
+                        ))
+                    })?;
+                return Ok((existing.thread_id, existing.run_id));
+            }
+            Err(err) if is_generation_mismatch(&err) => continue,
+            Err(err) => return Err(mailbox_error(err)),
         }
-        Err(err) => Err(mailbox_error(err)),
     }
+
+    Err(ApiError::Internal(format!(
+        "mailbox enqueue raced with interrupt for thread '{thread_id}'"
+    )))
 }
 
 pub fn require_mailbox_store(state: &super::AppState) -> Result<Arc<dyn MailboxStore>, ApiError> {
@@ -274,6 +330,9 @@ pub async fn start_streaming_run_via_mailbox(
             Some(entry) if entry.status == MailboxEntryStatus::Accepted => {
                 ApiError::BadRequest("run has already been accepted".to_string())
             }
+            Some(entry) if entry.status == MailboxEntryStatus::Superseded => {
+                ApiError::BadRequest("run has been superseded".to_string())
+            }
             Some(entry) if entry.status == MailboxEntryStatus::Cancelled => {
                 ApiError::BadRequest("run has already been cancelled".to_string())
             }
@@ -296,7 +355,7 @@ pub async fn start_streaming_run_via_mailbox(
         ))
     })?;
 
-    match start_run_for_claimed_entry(os, &entry, false).await {
+    match start_run_for_claimed_entry(os, mailbox_store, &entry, false).await {
         Ok(run) => {
             let accepted_run_id = run.run_id.clone();
             ack_claimed_entry(
@@ -307,6 +366,13 @@ pub async fn start_streaming_run_via_mailbox(
             )
             .await?;
             Ok(run)
+        }
+        Err(MailboxRunStartError::Superseded(error)) => {
+            let _ = mailbox_store
+                .supersede_mailbox_entry(&entry.entry_id, now_unix_millis(), &error)
+                .await
+                .map_err(mailbox_error)?;
+            Err(ApiError::BadRequest(error))
         }
         Err(MailboxRunStartError::Busy(error)) => {
             mailbox_store
@@ -346,7 +412,8 @@ pub async fn cancel_pending_mailbox_for_thread(
 
 pub struct ThreadInterruptResult {
     pub cancelled_run_id: Option<String>,
-    pub cancelled_entries: Vec<MailboxEntry>,
+    pub generation: u64,
+    pub superseded_entries: Vec<MailboxEntry>,
 }
 
 pub async fn interrupt_thread(
@@ -355,12 +422,13 @@ pub async fn interrupt_thread(
     mailbox_store: &Arc<dyn MailboxStore>,
     thread_id: &str,
 ) -> Result<ThreadInterruptResult, ApiError> {
+    let interrupted = mailbox_store
+        .interrupt_mailbox_thread(thread_id, now_unix_millis())
+        .await
+        .map_err(mailbox_error)?;
     let cancelled_run_id = os.cancel_active_run_by_thread(thread_id).await;
-    let cancelled_entries =
-        cancel_pending_mailbox_for_thread(mailbox_store, thread_id, cancelled_run_id.as_deref())
-            .await?;
 
-    if cancelled_run_id.is_none() && cancelled_entries.is_empty() {
+    if cancelled_run_id.is_none() && interrupted.superseded_entries.is_empty() {
         let thread_exists = read_store
             .load_thread(thread_id)
             .await
@@ -383,7 +451,8 @@ pub async fn interrupt_thread(
 
     Ok(ThreadInterruptResult {
         cancelled_run_id,
-        cancelled_entries,
+        generation: interrupted.thread_state.current_generation,
+        superseded_entries: interrupted.superseded_entries,
     })
 }
 
@@ -480,12 +549,20 @@ impl MailboxDispatcher {
             ))
         })?;
 
-        match start_run_for_claimed_entry(&self.os, &entry, true).await {
+        match start_run_for_claimed_entry(&self.os, &self.mailbox_store, &entry, true).await {
             Ok(run) => {
                 let run_id = run.run_id.clone();
                 ack_claimed_entry(&self.mailbox_store, &entry.entry_id, &claim_token, &run_id)
                     .await?;
                 Ok(Some(run))
+            }
+            Err(MailboxRunStartError::Superseded(error)) => {
+                let _ = self
+                    .mailbox_store
+                    .supersede_mailbox_entry(&entry.entry_id, now_unix_millis(), &error)
+                    .await
+                    .map_err(mailbox_error)?;
+                Ok(None)
             }
             Err(MailboxRunStartError::Busy(error))
             | Err(MailboxRunStartError::Retryable(error)) => {
@@ -645,5 +722,62 @@ mod tests {
             .expect("load thread")
             .expect("thread should exist");
         assert_eq!(thread.id, thread_id);
+    }
+
+    #[tokio::test]
+    async fn dispatcher_skips_claimed_entry_after_interrupt_supersedes_it() {
+        let store = Arc::new(MemoryStore::new());
+        let mailbox_store: Arc<dyn MailboxStore> = store.clone();
+        let os = make_os(store.clone());
+
+        let (_thread_id, run_id) = enqueue_background_run(
+            &os,
+            &mailbox_store,
+            "test",
+            RunRequest {
+                agent_id: "test".to_string(),
+                thread_id: Some("mailbox-supersede-thread".to_string()),
+                run_id: Some("mailbox-supersede-run".to_string()),
+                parent_run_id: None,
+                parent_thread_id: None,
+                resource_id: None,
+                origin: Default::default(),
+                state: None,
+                messages: vec![],
+                initial_decisions: vec![],
+            },
+        )
+        .await
+        .expect("enqueue background run");
+
+        let claimed = mailbox_store
+            .claim_mailbox_entries(1, "test-dispatcher", now_unix_millis(), 5_000)
+            .await
+            .expect("claim mailbox entry");
+        assert_eq!(claimed.len(), 1);
+
+        mailbox_store
+            .interrupt_mailbox_thread("mailbox-supersede-thread", now_unix_millis())
+            .await
+            .expect("interrupt mailbox thread");
+
+        let dispatcher = MailboxDispatcher::new(os.clone(), mailbox_store.clone())
+            .with_consumer_id("test-dispatcher");
+        let started = dispatcher
+            .dispatch_claimed_entry(claimed.into_iter().next().expect("claimed entry"))
+            .await
+            .expect("dispatch after supersede");
+        assert!(started.is_none());
+
+        let mailbox_entry =
+            MailboxReader::load_mailbox_entry_by_run_id(mailbox_store.as_ref(), &run_id)
+                .await
+                .expect("load mailbox entry")
+                .expect("mailbox entry should exist");
+        assert_eq!(mailbox_entry.status, MailboxEntryStatus::Superseded);
+        assert!(RunReader::load_run(store.as_ref(), &run_id)
+            .await
+            .expect("load run record")
+            .is_none());
     }
 }

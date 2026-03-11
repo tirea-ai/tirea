@@ -234,10 +234,11 @@ async fn interrupt_thread(
     let mailbox_store = require_mailbox_store(&st)?;
     let ThreadInterruptResult {
         cancelled_run_id,
-        cancelled_entries,
+        generation,
+        superseded_entries,
     } = crate::service::interrupt_thread(&st.os, st.read_store.as_ref(), &mailbox_store, &id)
         .await?;
-    let cancelled_run_ids: Vec<String> = cancelled_entries
+    let superseded_run_ids: Vec<String> = superseded_entries
         .iter()
         .map(|entry| entry.run_id.clone())
         .collect();
@@ -246,9 +247,10 @@ async fn interrupt_thread(
         Json(json!({
             "status": "interrupt_requested",
             "thread_id": id,
+            "generation": generation,
             "cancelled_run_id": cancelled_run_id,
-            "cancelled_pending_count": cancelled_entries.len(),
-            "cancelled_pending_run_ids": cancelled_run_ids,
+            "superseded_pending_count": superseded_entries.len(),
+            "superseded_pending_run_ids": superseded_run_ids,
         })),
     )
         .into_response())

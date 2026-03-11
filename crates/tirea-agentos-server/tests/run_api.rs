@@ -108,6 +108,7 @@ fn mailbox_entry(run_id: &str, thread_id: &str) -> MailboxEntry {
         thread_id: thread_id.to_string(),
         run_id: run_id.to_string(),
         agent_id: TEST_AGENT_ID.to_string(),
+        generation: 0,
         status: MailboxEntryStatus::Queued,
         request: RunRequest {
             agent_id: TEST_AGENT_ID.to_string(),
@@ -331,8 +332,9 @@ async fn interrupt_thread_cancels_active_run_and_pending_mailbox_entries() {
         payload["cancelled_run_id"].as_str(),
         Some(active_run_id.as_str())
     );
-    assert_eq!(payload["cancelled_pending_count"].as_u64(), Some(1));
-    assert!(payload["cancelled_pending_run_ids"]
+    assert_eq!(payload["generation"].as_u64(), Some(1));
+    assert_eq!(payload["superseded_pending_count"].as_u64(), Some(1));
+    assert!(payload["superseded_pending_run_ids"]
         .as_array()
         .expect("cancelled pending ids should be present")
         .iter()
@@ -346,7 +348,7 @@ async fn interrupt_thread_cancels_active_run_and_pending_mailbox_entries() {
         .await
         .expect("load queued mailbox entry")
         .expect("queued mailbox entry should exist");
-    assert_eq!(queued_entry.status, MailboxEntryStatus::Cancelled);
+    assert_eq!(queued_entry.status, MailboxEntryStatus::Superseded);
 }
 
 #[tokio::test]
