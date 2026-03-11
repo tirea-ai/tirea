@@ -332,14 +332,13 @@ async fn message_send(
         source_mailbox_entry_id: None,
     };
 
-    let (context_id, _run_id, task_id) =
-        start_background_run(
-            &st.mailbox_service,
-            &agent_id,
-            run_request,
-            EnqueueOptions::default(),
-        )
-        .await?;
+    let (context_id, _run_id, task_id) = start_background_run(
+        &st.mailbox_service,
+        &agent_id,
+        run_request,
+        EnqueueOptions::default(),
+    )
+    .await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({
@@ -369,8 +368,12 @@ async fn get_task(
             "task_id is required in task path".to_string(),
         ));
     }
-    let Some(task) =
-        load_background_task(st.read_store.as_ref(), st.mailbox_store().as_ref(), &task_id).await?
+    let Some(task) = load_background_task(
+        st.read_store.as_ref(),
+        st.mailbox_store().as_ref(),
+        &task_id,
+    )
+    .await?
     else {
         return Err(ApiError::RunNotFound(task_id));
     };
@@ -432,8 +435,12 @@ async fn cancel_task(
     }
 
     Err(
-        match load_background_task(st.read_store.as_ref(), st.mailbox_store().as_ref(), &task_id)
-            .await?
+        match load_background_task(
+            st.read_store.as_ref(),
+            st.mailbox_store().as_ref(),
+            &task_id,
+        )
+        .await?
         {
             Some(_) => ApiError::BadRequest("task is not active".to_string()),
             None => match check_run_liveness(st.read_store.as_ref(), &task_id).await? {

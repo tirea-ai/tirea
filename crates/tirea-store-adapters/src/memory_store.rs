@@ -81,6 +81,14 @@ impl MailboxWriter for MemoryStore {
         }
 
         let mut mailbox = self.mailbox.write().await;
+        if let Some(dedupe_key) = entry.dedupe_key.as_deref() {
+            if mailbox.values().any(|existing| {
+                existing.mailbox_id == entry.mailbox_id
+                    && existing.dedupe_key.as_deref() == Some(dedupe_key)
+            }) {
+                return Err(MailboxStoreError::AlreadyExists(dedupe_key.to_string()));
+            }
+        }
         if mailbox.contains_key(&entry.entry_id) {
             return Err(MailboxStoreError::AlreadyExists(entry.entry_id.clone()));
         }
@@ -366,9 +374,7 @@ impl MailboxWriter for MemoryStore {
     ) -> Result<usize, MailboxStoreError> {
         let mut mailbox = self.mailbox.write().await;
         let before = mailbox.len();
-        mailbox.retain(|_, entry| {
-            !(entry.status.is_terminal() && entry.updated_at < older_than)
-        });
+        mailbox.retain(|_, entry| !(entry.status.is_terminal() && entry.updated_at < older_than));
         Ok(before - mailbox.len())
     }
 }

@@ -64,6 +64,7 @@ async fn execute_run(
             state: None,
             messages: vec![Message::user(prompt)],
             initial_decisions: vec![],
+            source_mailbox_entry_id: None,
         })
         .await
         .map_err(|e| format!("run start failed: {e}"))?;

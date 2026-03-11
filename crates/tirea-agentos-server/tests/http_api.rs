@@ -16,8 +16,8 @@ use tirea_agentos::contracts::storage::{
     ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore, ThreadStoreError, ThreadWriter,
 };
 use tirea_agentos::contracts::thread::Thread;
-use tirea_agentos::contracts::{RunRequest, ThreadChangeSet};
 use tirea_agentos::contracts::ToolCallContext;
+use tirea_agentos::contracts::{RunRequest, ThreadChangeSet};
 use tirea_agentos::runtime::AgentOs;
 use tirea_agentos_server::service::{AppState, MailboxService};
 use tirea_contract::testing::MailboxEntryBuilder;

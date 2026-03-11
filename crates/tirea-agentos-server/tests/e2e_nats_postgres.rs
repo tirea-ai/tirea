@@ -9,10 +9,10 @@ use testcontainers::ImageExt;
 use testcontainers_modules::nats::Nats;
 use testcontainers_modules::postgres::Postgres;
 use tirea_agentos::composition::{AgentDefinition, AgentOsBuilder};
+use tirea_agentos::contracts::storage::MailboxStore;
 use tirea_agentos::contracts::storage::{
     ThreadReader, ThreadStore, ThreadWriter, VersionPrecondition,
 };
-use tirea_agentos::contracts::storage::MailboxStore;
 use tirea_agentos_server::service::{AppState, MailboxService};
 use tirea_store_adapters::{NatsBufferedThreadWriter, PostgresStore};
 use tower::ServiceExt;
@@ -21,7 +21,10 @@ mod common;
 
 use common::{compose_http_app, TerminatePlugin};
 
-fn test_mailbox_svc(os: &Arc<tirea_agentos::runtime::AgentOs>, store: Arc<dyn MailboxStore>) -> Arc<MailboxService> {
+fn test_mailbox_svc(
+    os: &Arc<tirea_agentos::runtime::AgentOs>,
+    store: Arc<dyn MailboxStore>,
+) -> Arc<MailboxService> {
     Arc::new(MailboxService::new(os.clone(), store, "test"))
 }
 

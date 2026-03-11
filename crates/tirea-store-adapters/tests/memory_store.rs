@@ -1561,6 +1561,32 @@ async fn mailbox_enqueue_duplicate_entry_id_returns_already_exists() {
     assert!(matches!(result, Err(MailboxStoreError::AlreadyExists(_))));
 }
 
+#[tokio::test]
+async fn mailbox_enqueue_duplicate_dedupe_key_in_same_mailbox_returns_already_exists() {
+    let store = MemoryStore::new();
+    store
+        .ensure_mailbox_state("mailbox-dup-dedupe", 1)
+        .await
+        .unwrap();
+    store
+        .enqueue_mailbox_entry(
+            &MailboxEntryBuilder::queued("entry-dup-dedupe-1", "mailbox-dup-dedupe")
+                .with_dedupe_key("dup-key")
+                .build(),
+        )
+        .await
+        .unwrap();
+
+    let result = store
+        .enqueue_mailbox_entry(
+            &MailboxEntryBuilder::queued("entry-dup-dedupe-2", "mailbox-dup-dedupe")
+                .with_dedupe_key("dup-key")
+                .build(),
+        )
+        .await;
+    assert!(matches!(result, Err(MailboxStoreError::AlreadyExists(_))));
+}
+
 // ---------------------------------------------------------------------------
 // Generation mismatch on enqueue
 // ---------------------------------------------------------------------------

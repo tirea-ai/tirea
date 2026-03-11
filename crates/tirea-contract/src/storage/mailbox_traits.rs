@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 
-use super::{MailboxEntry, MailboxInterrupt, MailboxPage, MailboxQuery, MailboxState, MailboxStoreError};
+use super::{
+    MailboxEntry, MailboxInterrupt, MailboxPage, MailboxQuery, MailboxState, MailboxStoreError,
+};
 
 #[async_trait]
 pub trait MailboxReader: Send + Sync {

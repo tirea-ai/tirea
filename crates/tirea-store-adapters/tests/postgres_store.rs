@@ -60,7 +60,6 @@ async fn make_store_without_ensure(database_url: &str) -> PostgresStore {
     PostgresStore::new(pool)
 }
 
-
 // ========================================================================
 // Basic round-trip
 // ========================================================================

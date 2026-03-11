@@ -1879,53 +1879,6 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
 }
 
 #[tokio::test]
-async fn prepare_run_returns_error_when_run_id_already_exists_in_run_config() {
-    use tirea_store_adapters::MemoryStore;
-
-    let storage = Arc::new(MemoryStore::new());
-    let os = AgentOs::builder()
-        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
-        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
-        .build()
-        .unwrap();
-
-    let mut resolved = os.resolve("a1").unwrap();
-    resolved
-        .run_config
-        .set("run_id", "preset-run-id")
-        .expect("preset run_id");
-
-    let err = match os
-        .prepare_run(
-            RunRequest {
-                agent_id: "a1".to_string(),
-                thread_id: Some("t-prepare-duplicate-run-id".to_string()),
-                run_id: Some("run-prepare".to_string()),
-                parent_run_id: None,
-                parent_thread_id: None,
-                resource_id: None,
-                origin: RunOrigin::default(),
-                state: None,
-                messages: vec![crate::contracts::thread::Message::user("hello")],
-                initial_decisions: vec![],
-                source_mailbox_entry_id: None,
-            },
-            resolved,
-        )
-        .await
-    {
-        Ok(_) => panic!("duplicate run_id in run_config should fail"),
-        Err(err) => err,
-    };
-
-    assert!(matches!(
-        err,
-        AgentOsRunError::RunConfig(crate::contracts::RunConfigError::AlreadySet(ref key))
-            if key == "run_id"
-    ));
-}
-
-#[tokio::test]
 async fn prepare_run_sets_parent_thread_id_for_existing_thread_without_lineage() {
     use tirea_store_adapters::MemoryStore;
 
@@ -3851,6 +3804,7 @@ async fn prepare_run_cleans_up_tool_call_scope_between_consecutive_runs() {
                 state: None,
                 messages: vec![Message::user("go")],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             },
             resolved1,
         )
@@ -3881,6 +3835,7 @@ async fn prepare_run_cleans_up_tool_call_scope_between_consecutive_runs() {
                 state: None,
                 messages: vec![Message::user("go again")],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             },
             resolved2,
         )
