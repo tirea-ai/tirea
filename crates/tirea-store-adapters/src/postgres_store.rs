@@ -540,6 +540,68 @@ impl MailboxWriter for PostgresStore {
         Ok(claimed)
     }
 
+    async fn claim_mailbox_entry_by_run_id(
+        &self,
+        run_id: &str,
+        consumer_id: &str,
+        now: u64,
+        lease_duration_ms: u64,
+    ) -> Result<Option<MailboxEntry>, MailboxStoreError> {
+        let mut tx = self.pool.begin().await.map_err(Self::mailbox_sql_err)?;
+        let now_i64 = i64::try_from(now).map_err(|_| {
+            MailboxStoreError::Backend("now too large for postgres BIGINT".to_string())
+        })?;
+        let row = sqlx::query_as::<_, MailboxRowTuple>(&format!(
+            "SELECT entry_id, thread_id, run_id, agent_id, status, request, dedupe_key, \
+             available_at, attempt_count, last_error, claim_token, claimed_by, lease_until, \
+             accepted_run_id, created_at, updated_at FROM {} \
+             WHERE run_id = $1 AND (status = 'queued' OR (status = 'claimed' AND lease_until IS NOT NULL AND lease_until <= $2)) \
+             FOR UPDATE SKIP LOCKED",
+            self.mailbox_table
+        ))
+        .bind(run_id)
+        .bind(now_i64)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(Self::mailbox_sql_err)?;
+
+        let Some(row) = row else {
+            tx.commit().await.map_err(Self::mailbox_sql_err)?;
+            return Ok(None);
+        };
+
+        let mut entry = Self::mailbox_entry_from_row(row)?;
+        let claim_token = uuid::Uuid::now_v7().simple().to_string();
+        let lease_until = now.saturating_add(lease_duration_ms);
+        sqlx::query(&format!(
+            "UPDATE {} SET status = $1, claim_token = $2, claimed_by = $3, lease_until = $4, \
+             attempt_count = attempt_count + 1, updated_at = $5 WHERE entry_id = $6",
+            self.mailbox_table
+        ))
+        .bind(Self::encode_mailbox_status(
+            tirea_contract::MailboxEntryStatus::Claimed,
+        ))
+        .bind(&claim_token)
+        .bind(consumer_id)
+        .bind(i64::try_from(lease_until).map_err(|_| {
+            MailboxStoreError::Backend("lease_until too large for postgres BIGINT".to_string())
+        })?)
+        .bind(now_i64)
+        .bind(&entry.entry_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(Self::mailbox_sql_err)?;
+        tx.commit().await.map_err(Self::mailbox_sql_err)?;
+
+        entry.status = tirea_contract::MailboxEntryStatus::Claimed;
+        entry.claim_token = Some(claim_token);
+        entry.claimed_by = Some(consumer_id.to_string());
+        entry.lease_until = Some(lease_until);
+        entry.attempt_count = entry.attempt_count.saturating_add(1);
+        entry.updated_at = now;
+        Ok(Some(entry))
+    }
+
     async fn ack_mailbox_entry(
         &self,
         entry_id: &str,

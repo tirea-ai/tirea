@@ -32,6 +32,14 @@ pub trait MailboxWriter: MailboxReader {
         lease_duration_ms: u64,
     ) -> Result<Vec<MailboxEntry>, MailboxStoreError>;
 
+    async fn claim_mailbox_entry_by_run_id(
+        &self,
+        run_id: &str,
+        consumer_id: &str,
+        now: u64,
+        lease_duration_ms: u64,
+    ) -> Result<Option<MailboxEntry>, MailboxStoreError>;
+
     async fn ack_mailbox_entry(
         &self,
         entry_id: &str,

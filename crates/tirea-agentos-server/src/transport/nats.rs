@@ -1,8 +1,8 @@
 use serde::Serialize;
 use std::future::Future;
 use std::sync::Arc;
-use tirea_agentos::contracts::{AgentEvent, RunRequest};
-use tirea_agentos::runtime::{AgentOs, ResolvedRun, RunStream};
+use tirea_agentos::contracts::AgentEvent;
+use tirea_agentos::runtime::RunStream;
 use tirea_contract::{RuntimeInput, Transcoder};
 
 use crate::transport::NatsProtocolError;
@@ -66,42 +66,17 @@ impl NatsTransport {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn run_and_publish<E, ErrEvent, BuildEncoder, BuildErrorEvent>(
+    pub async fn publish_run_stream<E, BuildEncoder>(
         &self,
-        os: &AgentOs,
-        run_request: RunRequest,
-        resolved: ResolvedRun,
+        run: RunStream,
         reply: async_nats::Subject,
-        persist_run: bool,
         build_encoder: BuildEncoder,
-        build_error_event: BuildErrorEvent,
     ) -> Result<(), NatsProtocolError>
     where
         E: Transcoder<Input = AgentEvent> + 'static,
         E::Output: Serialize + Send + 'static,
-        ErrEvent: Serialize,
         BuildEncoder: FnOnce(&RunStream) -> E,
-        BuildErrorEvent: FnOnce(String) -> ErrEvent,
     {
-        let owner_agent_id = run_request.agent_id.clone();
-        let run = match os
-            .start_active_run_with_persistence(
-                &owner_agent_id,
-                run_request,
-                resolved,
-                persist_run,
-                !persist_run,
-            )
-            .await
-        {
-            Ok(run) => run,
-            Err(err) => {
-                return self
-                    .publish_error_event(reply, build_error_event(err.to_string()))
-                    .await;
-            }
-        };
         let session_thread_id = run.thread_id.clone();
         let encoder = build_encoder(&run);
         let upstream = Arc::new(NatsReplyServerEndpoint::new(self.client.clone(), reply));

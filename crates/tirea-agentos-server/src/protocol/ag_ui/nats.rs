@@ -1,9 +1,11 @@
 use serde::Deserialize;
 use std::sync::Arc;
+use tirea_agentos::contracts::storage::MailboxStore;
 use tirea_agentos::runtime::AgentOs;
 use tirea_protocol_ag_ui::{AgUiProtocolEncoder, Event, RunAgentInput};
 
 use super::runtime::apply_agui_extensions;
+use crate::service::start_streaming_run_via_mailbox;
 use crate::transport::nats::NatsTransport;
 use crate::transport::NatsProtocolError;
 
@@ -11,12 +13,14 @@ use crate::transport::NatsProtocolError;
 pub async fn serve(
     transport: NatsTransport,
     os: Arc<AgentOs>,
+    mailbox_store: Arc<dyn MailboxStore>,
     subject: String,
 ) -> Result<(), NatsProtocolError> {
     transport
         .serve(&subject, "agui", move |transport, msg| {
             let os = os.clone();
-            async move { handle_message(transport, os, msg).await }
+            let mailbox_store = mailbox_store.clone();
+            async move { handle_message(transport, os, mailbox_store, msg).await }
         })
         .await
 }
@@ -24,6 +28,7 @@ pub async fn serve(
 async fn handle_message(
     transport: NatsTransport,
     os: Arc<AgentOs>,
+    mailbox_store: Arc<dyn MailboxStore>,
     msg: async_nats::Message,
 ) -> Result<(), NatsProtocolError> {
     #[derive(Debug, Deserialize)]
@@ -58,20 +63,36 @@ async fn handle_message(
     };
 
     let mut resolved = resolved;
-    apply_agui_extensions(&mut resolved, &req.request);
+    if let Err(err) = apply_agui_extensions(&mut resolved, &req.request) {
+        return transport
+            .publish_error_event(reply, Event::run_error(err.to_string(), None))
+            .await;
+    }
+    let agent_id = req.agent_id.clone();
     let frontend_run_id = req.request.run_id.clone();
-    let mut run_request = req.request.into_runtime_run_request(req.agent_id);
+    let mut run_request = req.request.into_runtime_run_request(agent_id.clone());
     run_request.run_id = None;
 
+    let run = match start_streaming_run_via_mailbox(
+        &os,
+        &mailbox_store,
+        &agent_id,
+        run_request,
+        "agui-nats-inline",
+    )
+    .await
+    {
+        Ok(run) => run,
+        Err(err) => {
+            return transport
+                .publish_error_event(reply, Event::run_error(err.to_string(), None))
+                .await;
+        }
+    };
+
     transport
-        .run_and_publish(
-            os.as_ref(),
-            run_request,
-            resolved,
-            reply,
-            false,
-            move |_run| AgUiProtocolEncoder::new_with_frontend_run_id(frontend_run_id),
-            |msg| Event::run_error(msg, None),
-        )
+        .publish_run_stream(run, reply, move |_run| {
+            AgUiProtocolEncoder::new_with_frontend_run_id(frontend_run_id)
+        })
         .await
 }

@@ -5,9 +5,10 @@ mod run;
 
 pub use api::{normalize_optional_id, ApiError, AppState};
 pub use mailbox::{
-    cancel_pending_mailbox_for_thread, enqueue_background_run, load_background_task,
-    require_mailbox_store, try_cancel_active_or_queued_run_by_id, BackgroundTaskLookup,
-    CancelBackgroundRunResult, MailboxDispatcher,
+    cancel_pending_mailbox_for_thread, enqueue_background_run, interrupt_thread,
+    load_background_task, require_mailbox_store, start_streaming_run_via_mailbox,
+    try_cancel_active_or_queued_run_by_id, BackgroundTaskLookup, CancelBackgroundRunResult,
+    MailboxDispatcher, ThreadInterruptResult,
 };
 pub use messages::{
     encode_message_page, load_message_page, parse_message_query, EncodedMessagePage,

@@ -118,6 +118,35 @@ impl MailboxWriter for MemoryStore {
         Ok(claimed)
     }
 
+    async fn claim_mailbox_entry_by_run_id(
+        &self,
+        run_id: &str,
+        consumer_id: &str,
+        now: u64,
+        lease_duration_ms: u64,
+    ) -> Result<Option<MailboxEntry>, MailboxStoreError> {
+        let mut mailbox = self.mailbox.write().await;
+        let Some(entry) = mailbox.values_mut().find(|entry| entry.run_id == run_id) else {
+            return Ok(None);
+        };
+        if entry.status.is_terminal() {
+            return Ok(None);
+        }
+        if entry.status == tirea_contract::MailboxEntryStatus::Claimed
+            && entry.lease_until.is_some_and(|lease| lease > now)
+        {
+            return Ok(None);
+        }
+
+        entry.status = tirea_contract::MailboxEntryStatus::Claimed;
+        entry.claim_token = Some(uuid::Uuid::now_v7().simple().to_string());
+        entry.claimed_by = Some(consumer_id.to_string());
+        entry.lease_until = Some(now.saturating_add(lease_duration_ms));
+        entry.attempt_count = entry.attempt_count.saturating_add(1);
+        entry.updated_at = now;
+        Ok(Some(entry.clone()))
+    }
+
     async fn ack_mailbox_entry(
         &self,
         entry_id: &str,

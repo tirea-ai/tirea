@@ -3,10 +3,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::StreamExt;
 use tirea_agentos::contracts::storage::{
-    MailboxEntry, MailboxEntryStatus, MailboxReader, MailboxStore, MailboxStoreError, ThreadReader,
+    MailboxEntry, MailboxEntryStatus, MailboxQuery, MailboxReader, MailboxStore, MailboxStoreError,
+    ThreadReader,
 };
 use tirea_agentos::contracts::RunRequest;
-use tirea_agentos::{AgentOs, AgentOsRunError};
+use tirea_agentos::{AgentOs, AgentOsRunError, RunStream};
 use tirea_contract::storage::RunRecord;
 
 use super::ApiError;
@@ -15,6 +16,7 @@ const DEFAULT_MAILBOX_POLL_INTERVAL_MS: u64 = 100;
 const DEFAULT_MAILBOX_LEASE_MS: u64 = 30_000;
 const DEFAULT_MAILBOX_RETRY_MS: u64 = 250;
 const DEFAULT_MAILBOX_BATCH_SIZE: usize = 16;
+const INLINE_MAILBOX_AVAILABLE_AT: u64 = i64::MAX as u64;
 
 fn now_unix_millis() -> u64 {
     SystemTime::now()
@@ -39,7 +41,11 @@ fn normalize_background_run_request(agent_id: &str, mut request: RunRequest) -> 
     request
 }
 
-fn mailbox_entry_from_request(request: RunRequest, dedupe_key: Option<String>) -> MailboxEntry {
+fn mailbox_entry_from_request(
+    request: RunRequest,
+    dedupe_key: Option<String>,
+    available_at: u64,
+) -> MailboxEntry {
     let now = now_unix_millis();
     MailboxEntry {
         entry_id: new_id(),
@@ -55,7 +61,7 @@ fn mailbox_entry_from_request(request: RunRequest, dedupe_key: Option<String>) -
         status: MailboxEntryStatus::Queued,
         request,
         dedupe_key,
-        available_at: now,
+        available_at,
         attempt_count: 0,
         last_error: None,
         claim_token: None,
@@ -79,18 +85,113 @@ async fn drain_background_run(mut run: tirea_agentos::RunStream) {
     while run.events.next().await.is_some() {}
 }
 
-pub fn require_mailbox_store(state: &super::AppState) -> Result<Arc<dyn MailboxStore>, ApiError> {
-    state
-        .mailbox_store
-        .clone()
-        .ok_or_else(|| ApiError::Internal("mailbox store not configured".to_string()))
+async fn ack_claimed_entry(
+    mailbox_store: &Arc<dyn MailboxStore>,
+    entry_id: &str,
+    claim_token: &str,
+    accepted_run_id: &str,
+) -> Result<(), ApiError> {
+    match mailbox_store
+        .ack_mailbox_entry(entry_id, claim_token, accepted_run_id, now_unix_millis())
+        .await
+    {
+        Ok(()) => Ok(()),
+        Err(MailboxStoreError::ClaimConflict(_)) => Ok(()),
+        Err(err) => Err(mailbox_error(err)),
+    }
 }
 
-pub async fn enqueue_background_run(
+async fn nack_claimed_entry(
+    mailbox_store: &Arc<dyn MailboxStore>,
+    entry_id: &str,
+    claim_token: &str,
+    retry_delay_ms: u64,
+    error: &str,
+) -> Result<(), ApiError> {
+    match mailbox_store
+        .nack_mailbox_entry(
+            entry_id,
+            claim_token,
+            now_unix_millis().saturating_add(retry_delay_ms),
+            error,
+            now_unix_millis(),
+        )
+        .await
+    {
+        Ok(()) => Ok(()),
+        Err(MailboxStoreError::ClaimConflict(_)) => Ok(()),
+        Err(err) => Err(mailbox_error(err)),
+    }
+}
+
+async fn dead_letter_claimed_entry(
+    mailbox_store: &Arc<dyn MailboxStore>,
+    entry_id: &str,
+    claim_token: &str,
+    error: &str,
+) -> Result<(), ApiError> {
+    match mailbox_store
+        .dead_letter_mailbox_entry(entry_id, claim_token, error, now_unix_millis())
+        .await
+    {
+        Ok(()) => Ok(()),
+        Err(MailboxStoreError::ClaimConflict(_)) => Ok(()),
+        Err(err) => Err(mailbox_error(err)),
+    }
+}
+
+enum MailboxRunStartError {
+    Busy(String),
+    Permanent(String),
+    Retryable(String),
+    Internal(ApiError),
+}
+
+async fn start_run_for_claimed_entry(
+    os: &Arc<AgentOs>,
+    entry: &MailboxEntry,
+    persist_run: bool,
+) -> Result<RunStream, MailboxRunStartError> {
+    match os
+        .current_run_id_for_thread(&entry.agent_id, &entry.thread_id)
+        .await
+    {
+        Ok(Some(run_id)) if run_id != entry.run_id => {
+            return Err(MailboxRunStartError::Busy(
+                "thread already has an active run".to_string(),
+            ));
+        }
+        Ok(_) => {}
+        Err(err) => return Err(MailboxRunStartError::Internal(ApiError::from(err))),
+    }
+
+    let resolved = os
+        .resolve(&entry.agent_id)
+        .map_err(|err| MailboxRunStartError::Permanent(err.to_string()))?;
+
+    os.start_active_run_with_persistence(
+        &entry.agent_id,
+        entry.request.clone(),
+        resolved,
+        persist_run,
+        !persist_run,
+    )
+    .await
+    .map_err(|err| {
+        if is_permanent_dispatch_error(&err) {
+            MailboxRunStartError::Permanent(err.to_string())
+        } else {
+            MailboxRunStartError::Retryable(err.to_string())
+        }
+    })
+}
+
+async fn enqueue_mailbox_run(
     os: &Arc<AgentOs>,
     mailbox_store: &Arc<dyn MailboxStore>,
     agent_id: &str,
     request: RunRequest,
+    available_at: u64,
 ) -> Result<(String, String), ApiError> {
     os.resolve(agent_id).map_err(AgentOsRunError::from)?;
 
@@ -103,7 +204,7 @@ pub async fn enqueue_background_run(
         .run_id
         .clone()
         .expect("normalized mailbox run request should have run_id");
-    let entry = mailbox_entry_from_request(request, None);
+    let entry = mailbox_entry_from_request(request, None, available_at);
 
     match mailbox_store.enqueue_mailbox_entry(&entry).await {
         Ok(()) => Ok((thread_id, run_id)),
@@ -123,6 +224,115 @@ pub async fn enqueue_background_run(
     }
 }
 
+pub fn require_mailbox_store(state: &super::AppState) -> Result<Arc<dyn MailboxStore>, ApiError> {
+    state
+        .mailbox_store
+        .clone()
+        .ok_or_else(|| ApiError::Internal("mailbox store not configured".to_string()))
+}
+
+pub async fn enqueue_background_run(
+    os: &Arc<AgentOs>,
+    mailbox_store: &Arc<dyn MailboxStore>,
+    agent_id: &str,
+    request: RunRequest,
+) -> Result<(String, String), ApiError> {
+    enqueue_mailbox_run(os, mailbox_store, agent_id, request, now_unix_millis()).await
+}
+
+pub async fn start_streaming_run_via_mailbox(
+    os: &Arc<AgentOs>,
+    mailbox_store: &Arc<dyn MailboxStore>,
+    agent_id: &str,
+    request: RunRequest,
+    consumer_id: &str,
+) -> Result<RunStream, ApiError> {
+    let (_thread_id, run_id) = enqueue_mailbox_run(
+        os,
+        mailbox_store,
+        agent_id,
+        request,
+        INLINE_MAILBOX_AVAILABLE_AT,
+    )
+    .await?;
+
+    let Some(entry) = mailbox_store
+        .claim_mailbox_entry_by_run_id(
+            &run_id,
+            consumer_id,
+            now_unix_millis(),
+            DEFAULT_MAILBOX_LEASE_MS,
+        )
+        .await
+        .map_err(mailbox_error)?
+    else {
+        let existing = mailbox_store
+            .load_mailbox_entry_by_run_id(&run_id)
+            .await
+            .map_err(mailbox_error)?;
+        return Err(match existing {
+            Some(entry) if entry.status == MailboxEntryStatus::Accepted => {
+                ApiError::BadRequest("run has already been accepted".to_string())
+            }
+            Some(entry) if entry.status == MailboxEntryStatus::Cancelled => {
+                ApiError::BadRequest("run has already been cancelled".to_string())
+            }
+            Some(entry) if entry.status == MailboxEntryStatus::DeadLetter => ApiError::Internal(
+                entry
+                    .last_error
+                    .unwrap_or_else(|| "mailbox entry moved to dead letter".to_string()),
+            ),
+            Some(_) => ApiError::BadRequest("run is already claimed".to_string()),
+            None => ApiError::Internal(format!(
+                "mailbox entry for run '{run_id}' disappeared before inline dispatch"
+            )),
+        });
+    };
+
+    let claim_token = entry.claim_token.clone().ok_or_else(|| {
+        ApiError::Internal(format!(
+            "mailbox entry '{}' was claimed without claim_token",
+            entry.entry_id
+        ))
+    })?;
+
+    match start_run_for_claimed_entry(os, &entry, false).await {
+        Ok(run) => {
+            let accepted_run_id = run.run_id.clone();
+            ack_claimed_entry(
+                mailbox_store,
+                &entry.entry_id,
+                &claim_token,
+                &accepted_run_id,
+            )
+            .await?;
+            Ok(run)
+        }
+        Err(MailboxRunStartError::Busy(error)) => {
+            mailbox_store
+                .cancel_mailbox_entry_by_run_id(&entry.run_id, now_unix_millis())
+                .await
+                .map_err(mailbox_error)?;
+            Err(ApiError::BadRequest(error))
+        }
+        Err(MailboxRunStartError::Permanent(error))
+        | Err(MailboxRunStartError::Retryable(error)) => {
+            dead_letter_claimed_entry(mailbox_store, &entry.entry_id, &claim_token, &error).await?;
+            Err(ApiError::Internal(error))
+        }
+        Err(MailboxRunStartError::Internal(error)) => {
+            dead_letter_claimed_entry(
+                mailbox_store,
+                &entry.entry_id,
+                &claim_token,
+                &error.to_string(),
+            )
+            .await?;
+            Err(error)
+        }
+    }
+}
+
 pub async fn cancel_pending_mailbox_for_thread(
     mailbox_store: &Arc<dyn MailboxStore>,
     thread_id: &str,
@@ -132,6 +342,49 @@ pub async fn cancel_pending_mailbox_for_thread(
         .cancel_pending_mailbox_for_thread(thread_id, now_unix_millis(), exclude_run_id)
         .await
         .map_err(mailbox_error)
+}
+
+pub struct ThreadInterruptResult {
+    pub cancelled_run_id: Option<String>,
+    pub cancelled_entries: Vec<MailboxEntry>,
+}
+
+pub async fn interrupt_thread(
+    os: &Arc<AgentOs>,
+    read_store: &dyn ThreadReader,
+    mailbox_store: &Arc<dyn MailboxStore>,
+    thread_id: &str,
+) -> Result<ThreadInterruptResult, ApiError> {
+    let cancelled_run_id = os.cancel_active_run_by_thread(thread_id).await;
+    let cancelled_entries =
+        cancel_pending_mailbox_for_thread(mailbox_store, thread_id, cancelled_run_id.as_deref())
+            .await?;
+
+    if cancelled_run_id.is_none() && cancelled_entries.is_empty() {
+        let thread_exists = read_store
+            .load_thread(thread_id)
+            .await
+            .map_err(|err| ApiError::Internal(err.to_string()))?
+            .is_some();
+        if !thread_exists {
+            let mailbox_page = mailbox_store
+                .list_mailbox_entries(&MailboxQuery {
+                    thread_id: Some(thread_id.to_string()),
+                    limit: 1,
+                    ..Default::default()
+                })
+                .await
+                .map_err(mailbox_error)?;
+            if mailbox_page.total == 0 {
+                return Err(ApiError::ThreadNotFound(thread_id.to_string()));
+            }
+        }
+    }
+
+    Ok(ThreadInterruptResult {
+        cancelled_run_id,
+        cancelled_entries,
+    })
 }
 
 pub enum BackgroundTaskLookup {
@@ -216,64 +469,10 @@ impl MailboxDispatcher {
         self
     }
 
-    async fn finish_ack(
+    async fn dispatch_claimed_entry(
         &self,
-        entry_id: &str,
-        claim_token: &str,
-        accepted_run_id: &str,
-    ) -> Result<(), ApiError> {
-        match self
-            .mailbox_store
-            .ack_mailbox_entry(entry_id, claim_token, accepted_run_id, now_unix_millis())
-            .await
-        {
-            Ok(()) => Ok(()),
-            Err(MailboxStoreError::ClaimConflict(_)) => Ok(()),
-            Err(err) => Err(mailbox_error(err)),
-        }
-    }
-
-    async fn finish_retry(
-        &self,
-        entry_id: &str,
-        claim_token: &str,
-        error: &str,
-    ) -> Result<(), ApiError> {
-        match self
-            .mailbox_store
-            .nack_mailbox_entry(
-                entry_id,
-                claim_token,
-                now_unix_millis().saturating_add(self.retry_delay_ms),
-                error,
-                now_unix_millis(),
-            )
-            .await
-        {
-            Ok(()) => Ok(()),
-            Err(MailboxStoreError::ClaimConflict(_)) => Ok(()),
-            Err(err) => Err(mailbox_error(err)),
-        }
-    }
-
-    async fn finish_dead_letter(
-        &self,
-        entry_id: &str,
-        claim_token: &str,
-        error: &str,
-    ) -> Result<(), ApiError> {
-        match self
-            .mailbox_store
-            .dead_letter_mailbox_entry(entry_id, claim_token, error, now_unix_millis())
-            .await
-        {
-            Ok(()) => Ok(()),
-            Err(MailboxStoreError::ClaimConflict(_)) => Ok(()),
-            Err(err) => Err(mailbox_error(err)),
-        }
-    }
-
-    async fn dispatch_claimed_entry(&self, entry: MailboxEntry) -> Result<(), ApiError> {
+        entry: MailboxEntry,
+    ) -> Result<Option<RunStream>, ApiError> {
         let claim_token = entry.claim_token.clone().ok_or_else(|| {
             ApiError::Internal(format!(
                 "mailbox entry '{}' was claimed without claim_token",
@@ -281,56 +480,36 @@ impl MailboxDispatcher {
             ))
         })?;
 
-        if self
-            .os
-            .current_run_id_for_thread(&entry.agent_id, &entry.thread_id)
-            .await
-            .map_err(ApiError::from)?
-            .is_some_and(|run_id| run_id != entry.run_id)
-        {
-            return self
-                .finish_retry(
-                    &entry.entry_id,
-                    &claim_token,
-                    "thread already has an active run",
-                )
-                .await;
-        }
-
-        let resolved = match self.os.resolve(&entry.agent_id) {
-            Ok(resolved) => resolved,
-            Err(err) => {
-                return self
-                    .finish_dead_letter(&entry.entry_id, &claim_token, &err.to_string())
-                    .await
-            }
-        };
-
-        match self
-            .os
-            .start_active_run_with_persistence(
-                &entry.agent_id,
-                entry.request.clone(),
-                resolved,
-                true,
-                false,
-            )
-            .await
-        {
+        match start_run_for_claimed_entry(&self.os, &entry, true).await {
             Ok(run) => {
                 let run_id = run.run_id.clone();
-                tokio::spawn(drain_background_run(run));
-                self.finish_ack(&entry.entry_id, &claim_token, &run_id)
-                    .await
+                ack_claimed_entry(&self.mailbox_store, &entry.entry_id, &claim_token, &run_id)
+                    .await?;
+                Ok(Some(run))
             }
-            Err(err) if is_permanent_dispatch_error(&err) => {
-                self.finish_dead_letter(&entry.entry_id, &claim_token, &err.to_string())
-                    .await
+            Err(MailboxRunStartError::Busy(error))
+            | Err(MailboxRunStartError::Retryable(error)) => {
+                nack_claimed_entry(
+                    &self.mailbox_store,
+                    &entry.entry_id,
+                    &claim_token,
+                    self.retry_delay_ms,
+                    &error,
+                )
+                .await?;
+                Ok(None)
             }
-            Err(err) => {
-                self.finish_retry(&entry.entry_id, &claim_token, &err.to_string())
-                    .await
+            Err(MailboxRunStartError::Permanent(error)) => {
+                dead_letter_claimed_entry(
+                    &self.mailbox_store,
+                    &entry.entry_id,
+                    &claim_token,
+                    &error,
+                )
+                .await?;
+                Ok(None)
             }
+            Err(MailboxRunStartError::Internal(error)) => Err(error),
         }
     }
 
@@ -348,7 +527,9 @@ impl MailboxDispatcher {
 
         let mut processed = 0usize;
         for entry in claimed {
-            self.dispatch_claimed_entry(entry).await?;
+            if let Some(run) = self.dispatch_claimed_entry(entry).await? {
+                tokio::spawn(drain_background_run(run));
+            }
             processed = processed.saturating_add(1);
         }
         Ok(processed)

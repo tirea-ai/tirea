@@ -334,7 +334,9 @@ async fn main() {
         .nest("/v1/ag-ui", protocol::ag_ui::http::routes())
         .nest("/v1/ai-sdk", protocol::ai_sdk_v6::http::routes())
         .nest("/v1/a2a", protocol::a2a::http::routes())
-        .with_state(AppState::new(os.clone(), read_store).with_mailbox_store(mailbox_store));
+        .with_state(
+            AppState::new(os.clone(), read_store).with_mailbox_store(mailbox_store.clone()),
+        );
 
     if let Some(nats_url) = args.nats_url.clone() {
         let nats_config = NatsConfig::new(nats_url);
@@ -342,21 +344,31 @@ async fn main() {
             Ok(transport) => {
                 let os_for_agui = os.clone();
                 let os_for_aisdk = os.clone();
+                let mailbox_for_agui = mailbox_store.clone();
+                let mailbox_for_aisdk = mailbox_store.clone();
                 let agui_transport = transport.clone();
                 let agui_subject = nats_config.ag_ui_subject.clone();
                 let aisdk_subject = nats_config.ai_sdk_subject;
                 tokio::spawn(async move {
-                    if let Err(e) =
-                        protocol::ag_ui::nats::serve(agui_transport, os_for_agui, agui_subject)
-                            .await
+                    if let Err(e) = protocol::ag_ui::nats::serve(
+                        agui_transport,
+                        os_for_agui,
+                        mailbox_for_agui,
+                        agui_subject,
+                    )
+                    .await
                     {
                         eprintln!("nats ag-ui gateway stopped: {}", e);
                     }
                 });
                 tokio::spawn(async move {
-                    if let Err(e) =
-                        protocol::ai_sdk_v6::nats::serve(transport, os_for_aisdk, aisdk_subject)
-                            .await
+                    if let Err(e) = protocol::ai_sdk_v6::nats::serve(
+                        transport,
+                        os_for_aisdk,
+                        mailbox_for_aisdk,
+                        aisdk_subject,
+                    )
+                    .await
                     {
                         eprintln!("nats ai-sdk gateway stopped: {}", e);
                     }

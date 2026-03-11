@@ -15,7 +15,7 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::nats::Nats;
 use tirea_agentos::composition::AgentDefinition;
 use tirea_agentos::composition::AgentOsBuilder;
-use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
+use tirea_agentos::contracts::storage::{MailboxReader, ThreadReader, ThreadStore};
 use tirea_agentos_server::nats::NatsConfig;
 use tirea_agentos_server::protocol;
 use tirea_store_adapters::MemoryStore;
@@ -63,7 +63,7 @@ async fn start_nats() -> Option<(testcontainers::ContainerAsync<Nats>, String)> 
 async fn setup_gateway(nats_url: &str) -> (Arc<MemoryStore>, async_nats::Client) {
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(storage.clone()));
-    spawn_protocol_services(nats_url, os).await;
+    spawn_protocol_services(nats_url, os, storage.clone()).await;
 
     // Give the gateway a moment to subscribe.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -79,14 +79,16 @@ async fn spawn_gateway_with_storage(
     nats_url: &str,
     storage: Arc<MemoryStore>,
 ) -> tokio::task::JoinHandle<()> {
-    let os = Arc::new(make_os(storage));
+    let os = Arc::new(make_os(storage.clone()));
     let nats_url = nats_url.to_string();
-    tokio::spawn(async move {
-        spawn_protocol_services(&nats_url, os).await;
-    })
+    tokio::spawn(async move { spawn_protocol_services(&nats_url, os, storage).await })
 }
 
-async fn spawn_protocol_services(nats_url: &str, os: Arc<tirea_agentos::runtime::AgentOs>) {
+async fn spawn_protocol_services(
+    nats_url: &str,
+    os: Arc<tirea_agentos::runtime::AgentOs>,
+    mailbox_store: Arc<MemoryStore>,
+) {
     let nats_config = NatsConfig::new(nats_url.to_string());
     let transport = nats_config
         .connect()
@@ -94,15 +96,31 @@ async fn spawn_protocol_services(nats_url: &str, os: Arc<tirea_agentos::runtime:
         .expect("failed to connect protocol service to NATS");
     let os_for_agui = os.clone();
     let os_for_aisdk = os.clone();
+    let mailbox_for_agui: Arc<dyn tirea_agentos::contracts::storage::MailboxStore> =
+        mailbox_store.clone();
+    let mailbox_for_aisdk: Arc<dyn tirea_agentos::contracts::storage::MailboxStore> =
+        mailbox_store.clone();
     let agui_transport = transport.clone();
     let agui_subject = nats_config.ag_ui_subject.clone();
     let aisdk_subject = nats_config.ai_sdk_subject;
 
     tokio::spawn(async move {
-        let _ = protocol::ag_ui::nats::serve(agui_transport, os_for_agui, agui_subject).await;
+        let _ = protocol::ag_ui::nats::serve(
+            agui_transport,
+            os_for_agui,
+            mailbox_for_agui,
+            agui_subject,
+        )
+        .await;
     });
     tokio::spawn(async move {
-        let _ = protocol::ai_sdk_v6::nats::serve(transport, os_for_aisdk, aisdk_subject).await;
+        let _ = protocol::ai_sdk_v6::nats::serve(
+            transport,
+            os_for_aisdk,
+            mailbox_for_aisdk,
+            aisdk_subject,
+        )
+        .await;
     });
 }
 
@@ -315,6 +333,65 @@ async fn test_nats_aisdk_happy_path() {
             .any(|m| m.content.contains("hi from nats sdk")),
         "user message not found in persisted thread"
     );
+}
+
+#[tokio::test]
+async fn test_nats_aisdk_mailbox_entry_is_accepted() {
+    let Some((_container, nats_url)) = start_nats().await else {
+        return;
+    };
+    let (storage, client) = setup_gateway(&nats_url).await;
+
+    let reply_subject = "test.reply.aisdk.mailbox.1";
+    let mut sub = client.subscribe(reply_subject).await.unwrap();
+    let run_id = "run-mailbox-accepted";
+
+    let payload = json!({
+        "agentId": "test",
+        "sessionId": "nats-sdk-mailbox",
+        "input": "mailbox backed streaming",
+        "runId": run_id,
+        "replySubject": reply_subject
+    });
+
+    client
+        .publish(
+            "agentos.ai-sdk.runs",
+            serde_json::to_vec(&payload).unwrap().into(),
+        )
+        .await
+        .unwrap();
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        tokio::select! {
+            msg = sub.next() => {
+                match msg {
+                    Some(m) => {
+                        let text = String::from_utf8_lossy(&m.payload).to_string();
+                        if text.contains("\"type\":\"finish\"") {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                panic!("timed out waiting for mailbox-backed AI SDK reply");
+            }
+        }
+    }
+
+    let mailbox = MailboxReader::load_mailbox_entry_by_run_id(storage.as_ref(), run_id)
+        .await
+        .expect("load mailbox entry")
+        .expect("mailbox entry should exist");
+    assert_eq!(
+        mailbox.status,
+        tirea_contract::storage::MailboxEntryStatus::Accepted
+    );
+    assert_eq!(mailbox.run_id, run_id);
+    assert!(mailbox.accepted_run_id.is_some());
 }
 
 // ============================================================================
