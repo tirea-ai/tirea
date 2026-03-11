@@ -1120,10 +1120,8 @@ async fn e2e_ag_ui_a2ui_tool_call_with_deepseek() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_a2ui_os(storage.clone()));
-    let app = compose_http_app(AppState {
-        os,
-        read_store: storage.clone(),
-    });
+    let svc = test_mailbox_svc(&os, storage.clone());
+    let app = compose_http_app(AppState::new(os, storage.clone(), svc));
 
     let payload = json!({
         "threadId": "e2e-agui-a2ui",
@@ -1176,10 +1174,8 @@ async fn e2e_ai_sdk_a2ui_tool_call_with_deepseek() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_a2ui_os(storage.clone()));
-    let app = compose_http_app(AppState {
-        os,
-        read_store: storage.clone(),
-    });
+    let svc = test_mailbox_svc(&os, storage.clone());
+    let app = compose_http_app(AppState::new(os, storage.clone(), svc));
 
     let payload = ai_sdk_messages_payload(
         "e2e-sdk-a2ui",

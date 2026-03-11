@@ -567,7 +567,11 @@ async fn e2e_tensorzero_ai_sdk_multiturn() {
     let os = Arc::new(make_os(storage.clone()));
 
     // Turn 1.
-    let app1 = compose_http_app(AppState::new(os.clone(), storage.clone(), test_mailbox_svc(&os, storage.clone())));
+    let app1 = compose_http_app(AppState::new(
+        os.clone(),
+        storage.clone(),
+        test_mailbox_svc(&os, storage.clone()),
+    ));
 
     let (status, text1) = post_sse(
         app1,
@@ -590,7 +594,11 @@ async fn e2e_tensorzero_ai_sdk_multiturn() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Turn 2.
-    let app2 = compose_http_app(AppState::new(os.clone(), storage.clone(), test_mailbox_svc(&os, storage.clone())));
+    let app2 = compose_http_app(AppState::new(
+        os.clone(),
+        storage.clone(),
+        test_mailbox_svc(&os, storage.clone()),
+    ));
 
     let (status, text2) = post_sse(
         app2,
@@ -785,7 +793,11 @@ async fn e2e_tensorzero_ag_ui_multiturn() {
     let os = Arc::new(make_os(storage.clone()));
 
     // Turn 1.
-    let app1 = compose_http_app(AppState::new(os.clone(), storage.clone(), test_mailbox_svc(&os, storage.clone())));
+    let app1 = compose_http_app(AppState::new(
+        os.clone(),
+        storage.clone(),
+        test_mailbox_svc(&os, storage.clone()),
+    ));
 
     let (status, _) = post_sse(
         app1,
@@ -805,7 +817,11 @@ async fn e2e_tensorzero_ag_ui_multiturn() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Turn 2: AG-UI sends full history.
-    let app2 = compose_http_app(AppState::new(os.clone(), storage.clone(), test_mailbox_svc(&os, storage.clone())));
+    let app2 = compose_http_app(AppState::new(
+        os.clone(),
+        storage.clone(),
+        test_mailbox_svc(&os, storage.clone()),
+    ));
 
     let (status, text2) = post_sse(
         app2,
@@ -1025,7 +1041,11 @@ async fn e2e_tensorzero_ai_sdk_load_history() {
     let thread_id = "tz-sdk-history";
 
     // Turn 1: agent run to populate the thread.
-    let app1 = compose_http_app(AppState::new(os.clone(), storage.clone(), test_mailbox_svc(&os, storage.clone())));
+    let app1 = compose_http_app(AppState::new(
+        os.clone(),
+        storage.clone(),
+        test_mailbox_svc(&os, storage.clone()),
+    ));
     let (status, text1) = post_sse(
         app1,
         "/v1/ai-sdk/agents/deepseek/runs",
@@ -1045,7 +1065,11 @@ async fn e2e_tensorzero_ai_sdk_load_history() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Load history via AI SDK encoded endpoint.
-    let app2 = compose_http_app(AppState::new(os.clone(), storage.clone(), test_mailbox_svc(&os, storage.clone())));
+    let app2 = compose_http_app(AppState::new(
+        os.clone(),
+        storage.clone(),
+        test_mailbox_svc(&os, storage.clone()),
+    ));
     let (status, history_text) =
         get_json(app2, &format!("/v1/ai-sdk/threads/{thread_id}/messages")).await;
 
@@ -1111,7 +1135,11 @@ async fn e2e_tensorzero_ag_ui_load_history() {
     let thread_id = "tz-agui-history";
 
     // Turn 1: agent run to populate the thread.
-    let app1 = compose_http_app(AppState::new(os.clone(), storage.clone(), test_mailbox_svc(&os, storage.clone())));
+    let app1 = compose_http_app(AppState::new(
+        os.clone(),
+        storage.clone(),
+        test_mailbox_svc(&os, storage.clone()),
+    ));
     let (status, _) = post_sse(
         app1,
         "/v1/ag-ui/agents/deepseek/runs",
@@ -1130,7 +1158,11 @@ async fn e2e_tensorzero_ag_ui_load_history() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Load history via AG-UI encoded endpoint.
-    let app2 = compose_http_app(AppState::new(os.clone(), storage.clone(), test_mailbox_svc(&os, storage.clone())));
+    let app2 = compose_http_app(AppState::new(
+        os.clone(),
+        storage.clone(),
+        test_mailbox_svc(&os, storage.clone()),
+    ));
     let (status, history_text) =
         get_json(app2, &format!("/v1/ag-ui/threads/{thread_id}/messages")).await;
 
@@ -1187,7 +1219,11 @@ async fn e2e_tensorzero_ai_sdk_multiturn_history() {
     let thread_id = "tz-sdk-mt-history";
 
     // Turn 1.
-    let app1 = compose_http_app(AppState::new(os.clone(), storage.clone(), test_mailbox_svc(&os, storage.clone())));
+    let app1 = compose_http_app(AppState::new(
+        os.clone(),
+        storage.clone(),
+        test_mailbox_svc(&os, storage.clone()),
+    ));
     let (status, _) = post_sse(
         app1,
         "/v1/ai-sdk/agents/deepseek/runs",
@@ -1203,7 +1239,11 @@ async fn e2e_tensorzero_ai_sdk_multiturn_history() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Turn 2.
-    let app2 = compose_http_app(AppState::new(os.clone(), storage.clone(), test_mailbox_svc(&os, storage.clone())));
+    let app2 = compose_http_app(AppState::new(
+        os.clone(),
+        storage.clone(),
+        test_mailbox_svc(&os, storage.clone()),
+    ));
     let (status, text2) = post_sse(
         app2,
         "/v1/ai-sdk/agents/deepseek/runs",
@@ -1226,7 +1266,11 @@ async fn e2e_tensorzero_ai_sdk_multiturn_history() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Load full history.
-    let app3 = compose_http_app(AppState::new(os.clone(), storage.clone(), test_mailbox_svc(&os, storage.clone())));
+    let app3 = compose_http_app(AppState::new(
+        os.clone(),
+        storage.clone(),
+        test_mailbox_svc(&os, storage.clone()),
+    ));
     let (status, history_text) = get_json(
         app3,
         &format!("/v1/ai-sdk/threads/{thread_id}/messages?limit=200"),
@@ -1290,7 +1334,11 @@ async fn e2e_tensorzero_raw_message_history() {
     let thread_id = "tz-raw-history";
 
     // Run one turn to create the thread.
-    let app1 = compose_http_app(AppState::new(os.clone(), storage.clone(), test_mailbox_svc(&os, storage.clone())));
+    let app1 = compose_http_app(AppState::new(
+        os.clone(),
+        storage.clone(),
+        test_mailbox_svc(&os, storage.clone()),
+    ));
     let (status, sse_text) = post_sse(
         app1,
         "/v1/ai-sdk/agents/deepseek/runs",
@@ -1303,7 +1351,11 @@ async fn e2e_tensorzero_raw_message_history() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Load raw messages.
-    let app2 = compose_http_app(AppState::new(os.clone(), storage.clone(), test_mailbox_svc(&os, storage.clone())));
+    let app2 = compose_http_app(AppState::new(
+        os.clone(),
+        storage.clone(),
+        test_mailbox_svc(&os, storage.clone()),
+    ));
     let (status, raw_text) = get_json(app2, &format!("/v1/threads/{thread_id}/messages")).await;
 
     println!("=== Raw Message History (status={status}) ===\n{raw_text}");
@@ -1326,7 +1378,11 @@ async fn e2e_tensorzero_raw_message_history() {
     );
 
     // Load thread metadata.
-    let app3 = compose_http_app(AppState::new(os.clone(), storage.clone(), test_mailbox_svc(&os, storage.clone())));
+    let app3 = compose_http_app(AppState::new(
+        os.clone(),
+        storage.clone(),
+        test_mailbox_svc(&os, storage.clone()),
+    ));
     let (status, thread_text) = get_json(app3, &format!("/v1/threads/{thread_id}")).await;
 
     println!("=== Thread Metadata ===\n{thread_text}");
@@ -1375,7 +1431,11 @@ async fn e2e_tensorzero_tool_call_history() {
     let thread_id = "tz-tool-history";
 
     // Run a tool-using conversation.
-    let app1 = compose_http_app(AppState::new(os.clone(), storage.clone(), test_mailbox_svc(&os, storage.clone())));
+    let app1 = compose_http_app(AppState::new(
+        os.clone(),
+        storage.clone(),
+        test_mailbox_svc(&os, storage.clone()),
+    ));
     let (status, text) = post_sse(
         app1,
         "/v1/ai-sdk/agents/calc/runs",
@@ -1395,7 +1455,11 @@ async fn e2e_tensorzero_tool_call_history() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Load AI SDK history — should include tool parts.
-    let app2 = compose_http_app(AppState::new(os.clone(), storage.clone(), test_mailbox_svc(&os, storage.clone())));
+    let app2 = compose_http_app(AppState::new(
+        os.clone(),
+        storage.clone(),
+        test_mailbox_svc(&os, storage.clone()),
+    ));
     let (status, history_text) = get_json(
         app2,
         &format!("/v1/ai-sdk/threads/{thread_id}/messages?limit=200&visibility=none"),
@@ -1445,7 +1509,11 @@ async fn e2e_tensorzero_tool_call_history() {
     );
 
     // Load AG-UI history for comparison.
-    let app3 = compose_http_app(AppState::new(os.clone(), storage.clone(), test_mailbox_svc(&os, storage.clone())));
+    let app3 = compose_http_app(AppState::new(
+        os.clone(),
+        storage.clone(),
+        test_mailbox_svc(&os, storage.clone()),
+    ));
     let (status, agui_text) = get_json(
         app3,
         &format!("/v1/ag-ui/threads/{thread_id}/messages?limit=200&visibility=none"),

@@ -4,10 +4,10 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tirea_contract::storage::{
-    paginate_mailbox_entries, paginate_runs_in_memory, Committed, MailboxEntry, MailboxPage,
-    MailboxQuery, MailboxReader, MailboxStoreError, MailboxInterrupt, MailboxState,
-    MailboxWriter, RunPage, RunQuery, RunRecord, ThreadHead, ThreadListPage, ThreadListQuery,
-    ThreadReader, ThreadStoreError, ThreadWriter, VersionPrecondition,
+    paginate_mailbox_entries, paginate_runs_in_memory, Committed, MailboxEntry, MailboxInterrupt,
+    MailboxPage, MailboxQuery, MailboxReader, MailboxState, MailboxStoreError, MailboxWriter,
+    RunPage, RunQuery, RunRecord, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader,
+    ThreadStoreError, ThreadWriter, VersionPrecondition,
 };
 use tirea_contract::{Thread, ThreadChangeSet, Version};
 
@@ -54,9 +54,10 @@ impl FileStore {
     }
 
     fn mailbox_state_path(&self, mailbox_id: &str) -> Result<PathBuf, MailboxStoreError> {
-        file_utils::validate_fs_id(mailbox_id, "mailbox id")
-            .map_err(MailboxStoreError::Backend)?;
-        Ok(self.mailbox_threads_dir().join(format!("{mailbox_id}.json")))
+        file_utils::validate_fs_id(mailbox_id, "mailbox id").map_err(MailboxStoreError::Backend)?;
+        Ok(self
+            .mailbox_threads_dir()
+            .join(format!("{mailbox_id}.json")))
     }
 
     async fn save_mailbox_entry(&self, entry: &MailboxEntry) -> Result<(), MailboxStoreError> {
@@ -68,10 +69,7 @@ impl FileStore {
             .map_err(MailboxStoreError::Io)
     }
 
-    async fn save_mailbox_state(
-        &self,
-        state: &MailboxState,
-    ) -> Result<(), MailboxStoreError> {
+    async fn save_mailbox_state(&self, state: &MailboxState) -> Result<(), MailboxStoreError> {
         let payload = serde_json::to_string_pretty(state)
             .map_err(|e| MailboxStoreError::Serialization(e.to_string()))?;
         let filename = format!("{}.json", state.mailbox_id);
@@ -176,6 +174,15 @@ impl MailboxWriter for FileStore {
                 expected: mailbox_state.current_generation,
                 actual: entry.generation,
             });
+        }
+        if let Some(dedupe_key) = entry.dedupe_key.as_deref() {
+            let existing = self.load_all_mailbox_entries().await?;
+            if existing.iter().any(|current| {
+                current.mailbox_id == entry.mailbox_id
+                    && current.dedupe_key.as_deref() == Some(dedupe_key)
+            }) {
+                return Err(MailboxStoreError::AlreadyExists(dedupe_key.to_string()));
+            }
         }
         self.save_mailbox_state(&mailbox_state).await?;
         self.save_mailbox_entry(entry).await
@@ -798,10 +805,8 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
     use tirea_contract::{
+        storage::{MailboxEntryStatus, MailboxReader, MailboxWriter, ThreadReader},
         testing::MailboxEntryBuilder,
-        storage::{
-            MailboxEntryStatus, MailboxReader, MailboxWriter, ThreadReader,
-        },
         CheckpointReason, Message, MessageQuery, ThreadWriter,
     };
     use tirea_state::{path, Op, Patch, TrackedPatch};
@@ -1174,5 +1179,21 @@ mod tests {
             .expect("fresh entry should exist");
         assert_eq!(fresh_loaded.generation, 1);
         assert_eq!(fresh_loaded.status, MailboxEntryStatus::Queued);
+    }
+
+    #[tokio::test]
+    async fn file_storage_mailbox_rejects_duplicate_dedupe_key_in_same_mailbox() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = FileStore::new(temp_dir.path());
+        let first = MailboxEntryBuilder::queued("entry-file-dedupe-1", "mailbox-file-dedupe")
+            .with_dedupe_key("dup-key")
+            .build();
+        let duplicate = MailboxEntryBuilder::queued("entry-file-dedupe-2", "mailbox-file-dedupe")
+            .with_dedupe_key("dup-key")
+            .build();
+
+        storage.enqueue_mailbox_entry(&first).await.unwrap();
+        let result = storage.enqueue_mailbox_entry(&duplicate).await;
+        assert!(matches!(result, Err(MailboxStoreError::AlreadyExists(_))));
     }
 }

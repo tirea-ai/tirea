@@ -13,12 +13,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tirea_agentos::contracts::io::RunRequest;
 use tirea_agentos::contracts::runtime::tool_call::Tool;
-use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
+use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader, ThreadStore};
 use tirea_agentos::contracts::thread::Message;
 use tirea_agentos::contracts::AgentBehavior;
 use tirea_agentos::runtime::loop_runner::{LlmEventStream, LlmExecutor};
 use tirea_agentos::{AgentDefinition, AgentOs, AgentOsBuilder};
-use tirea_agentos_server::service::AppState;
+use tirea_agentos_server::service::{AppState, MailboxService};
 use tirea_extension_a2ui::{A2uiPlugin, A2uiRenderTool};
 use tirea_store_adapters::MemoryStore;
 
@@ -202,6 +202,7 @@ async fn e2e_a2ui_tool_call_via_agent_os() {
                 state: None,
                 messages: vec![Message::user("Render a contact form UI")],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             },
             resolved,
         )
@@ -261,10 +262,17 @@ async fn e2e_a2ui_agui_http_tool_call_result() {
     // then use AgentOs-level for the actual tool call verification.
     // For the HTTP test, we verify that the A2UI agent is reachable and the tool is registered.
 
-    let app = compose_http_app(AppState {
-        os: Arc::new(os),
-        read_store: store.clone() as Arc<dyn ThreadReader>,
-    });
+    let os = Arc::new(os);
+    let mailbox_svc = Arc::new(MailboxService::new(
+        os.clone(),
+        store.clone() as Arc<dyn MailboxStore>,
+        "test",
+    ));
+    let app = compose_http_app(AppState::new(
+        os,
+        store.clone() as Arc<dyn ThreadReader>,
+        mailbox_svc,
+    ));
 
     // AG-UI request — without a real/mock LLM the agent will fail at inference,
     // but we can verify the route accepts the request and the agent is found.
@@ -294,10 +302,17 @@ async fn e2e_a2ui_ai_sdk_http_route() {
     let store = Arc::new(MemoryStore::new());
     let os = build_a2ui_os(store.clone());
 
-    let app = compose_http_app(AppState {
-        os: Arc::new(os),
-        read_store: store.clone() as Arc<dyn ThreadReader>,
-    });
+    let os = Arc::new(os);
+    let mailbox_svc = Arc::new(MailboxService::new(
+        os.clone(),
+        store.clone() as Arc<dyn MailboxStore>,
+        "test",
+    ));
+    let app = compose_http_app(AppState::new(
+        os,
+        store.clone() as Arc<dyn ThreadReader>,
+        mailbox_svc,
+    ));
 
     let payload = json!({
         "id": "a2ui-aisdk-test",
@@ -413,6 +428,7 @@ async fn e2e_a2ui_validation_rejects_invalid_payload() {
                 state: None,
                 messages: vec![Message::user("bad payload")],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             },
             resolved,
         )
@@ -517,6 +533,7 @@ async fn e2e_a2ui_plugin_injects_system_prompt() {
                 state: None,
                 messages: vec![Message::user("test prompt injection")],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             },
             resolved,
         )

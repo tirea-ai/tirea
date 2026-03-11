@@ -10,15 +10,15 @@ pub(crate) mod agent_tools;
 pub(crate) mod background_tasks;
 mod behavior;
 mod bundle_merge;
-mod errors;
 pub(crate) mod context;
-#[cfg(feature = "skills")]
-pub(crate) mod skills_wiring;
-pub(crate) mod stop_policy;
+mod errors;
 mod policy;
 mod prepare;
 pub(crate) mod resolve;
 mod run;
+#[cfg(feature = "skills")]
+pub(crate) mod skills_wiring;
+pub(crate) mod stop_policy;
 pub(crate) mod thread_run;
 mod types;
 
@@ -37,8 +37,8 @@ pub use background_tasks::{
     TASK_CANCEL_TOOL_ID, TASK_OUTPUT_TOOL_ID, TASK_STATUS_TOOL_ID,
 };
 pub use behavior::compose_behaviors;
-pub use errors::{AgentOsResolveError, AgentOsRunError};
 pub use context::{ContextPlugin, CONTEXT_PLUGIN_ID};
+pub use errors::{AgentOsResolveError, AgentOsRunError};
 pub use stop_policy::{
     ConsecutiveErrors, ContentMatch, LoopDetection, MaxRounds, StopOnTool, StopPolicy,
     StopPolicyInput, StopPolicyPlugin, StopPolicyStats, Timeout, TokenBudget,

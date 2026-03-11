@@ -9,8 +9,9 @@ use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use tirea_agentos::contracts::storage::{
     MailboxEntry, MailboxEntryOrigin, MailboxEntryStatus, MailboxQuery, MailboxReader,
-    MailboxStore, MailboxStoreError, ThreadReader,
+    MailboxStore, MailboxStoreError, RunStatus, ThreadReader,
 };
+use tirea_agentos::contracts::thread::Message;
 use tirea_agentos::contracts::RunRequest;
 use tirea_agentos::{AgentOs, AgentOsRunError, RunStream};
 use tirea_contract::storage::{MailboxReceiver, ReceiveOutcome, RunRecord};
@@ -114,6 +115,53 @@ pub(crate) fn is_permanent_dispatch_error(err: &AgentOsRunError) -> bool {
 
 pub(crate) async fn drain_background_run(mut run: RunStream) {
     while run.events.next().await.is_some() {}
+}
+
+pub(crate) fn parent_completion_notification_dedupe_key(
+    parent_run_id: &str,
+    child_run_id: &str,
+) -> String {
+    format!("parent-task-completion:{parent_run_id}:{child_run_id}")
+}
+
+fn parent_completion_notification_status(record: &RunRecord) -> Option<&'static str> {
+    if record.status != RunStatus::Done {
+        return None;
+    }
+
+    match record.termination_code.as_deref() {
+        Some("error") => Some("failed"),
+        Some("cancelled") => Some("cancelled"),
+        Some(code) if code.starts_with("stopped:") => Some("stopped"),
+        Some("behavior_requested" | "natural") | None => Some("completed"),
+        Some(_) => Some("completed"),
+    }
+}
+
+pub(crate) fn build_parent_completion_notification_message(record: &RunRecord) -> Option<Message> {
+    let recipient_task_id = record.parent_run_id.clone()?;
+    let status = parent_completion_notification_status(record)?;
+    let task_id = record
+        .source_mailbox_entry_id
+        .as_deref()
+        .unwrap_or(record.run_id.as_str());
+    let content = serde_json::json!({
+        "type": "background_task_notification",
+        "recipient_task_id": recipient_task_id,
+        "child_task_id": task_id,
+        "child_run_id": record.run_id,
+        "child_thread_id": record.thread_id,
+        "status": status,
+        "termination_code": record.termination_code,
+        "termination_detail": record.termination_detail,
+        "result_ref": {
+            "task_id": task_id,
+            "run_id": record.run_id,
+            "thread_id": record.thread_id,
+        },
+    });
+
+    Some(Message::internal_system(content.to_string()))
 }
 
 // ---------------------------------------------------------------------------

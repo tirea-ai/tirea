@@ -16,10 +16,10 @@ use testcontainers_modules::nats::Nats;
 use tirea_agentos::composition::AgentDefinition;
 use tirea_agentos::composition::AgentOsBuilder;
 use tirea_agentos::contracts::storage::{MailboxReader, MailboxStore, ThreadReader, ThreadStore};
-use tirea_contract::storage::{MailboxEntryStatus, MailboxQuery};
 use tirea_agentos_server::nats::NatsConfig;
 use tirea_agentos_server::protocol;
 use tirea_agentos_server::service::MailboxService;
+use tirea_contract::storage::{MailboxEntryStatus, MailboxQuery};
 use tirea_store_adapters::MemoryStore;
 
 mod common;

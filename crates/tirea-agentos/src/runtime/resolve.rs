@@ -7,10 +7,10 @@ use super::background_tasks::{
     TaskStore, BACKGROUND_TASKS_PLUGIN_ID,
 };
 use super::context::{policy_for_model, ContextPlugin, CONTEXT_PLUGIN_ID};
+use super::policy::{filter_tools_in_place, set_runtime_policy_from_definition_if_absent};
 #[cfg(feature = "skills")]
 pub(crate) use super::skills_wiring::SkillsSystemWiring;
 use super::stop_policy::{StopPolicyPlugin, STOP_POLICY_PLUGIN_ID};
-use super::policy::{filter_tools_in_place, set_runtime_policy_from_definition_if_absent};
 use super::{behavior::CompositeBehavior, AgentOs, AgentOsResolveError, StopPolicy};
 use crate::composition::{
     AgentDefinition, AgentOsBuilder, AgentOsWiringError, AgentRegistry, InMemoryAgentRegistry,

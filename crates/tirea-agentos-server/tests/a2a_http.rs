@@ -503,6 +503,68 @@ async fn a2a_message_send_with_task_id_reuses_parent_context() {
 }
 
 #[tokio::test]
+async fn a2a_message_send_notifies_parent_task_on_completion() {
+    let store = shared_store();
+    let app = make_app();
+    let parent_run_id = format!("parent-notify-{}", Uuid::new_v4().simple());
+    let parent_thread_id = format!("parent-notify-thread-{}", Uuid::new_v4().simple());
+    seed_completed_run(
+        store.as_ref(),
+        &parent_run_id,
+        &parent_thread_id,
+        RunOrigin::A2a,
+    )
+    .await;
+
+    let (status, body) = post_sse(
+        app.clone(),
+        "/v1/a2a/agents/alpha/message:send",
+        json!({
+            "taskId": parent_run_id,
+            "input": "continue with completion notice"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "unexpected response: {body}");
+    let payload: Value = serde_json::from_str(&body).expect("valid response");
+    let child_task_id = payload["taskId"]
+        .as_str()
+        .expect("child task id should be returned")
+        .to_string();
+
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    let (status, body) = get_json_text(
+        app,
+        &format!("/v1/threads/{parent_thread_id}/messages?visibility=internal"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected messages response: {body}"
+    );
+    let payload: Value = serde_json::from_str(&body).expect("valid messages response");
+    let messages = payload["messages"]
+        .as_array()
+        .expect("messages should be an array");
+    assert!(
+        messages.iter().any(|message| {
+            let Some(content) = message["content"].as_str() else {
+                return false;
+            };
+            let Ok(notification) = serde_json::from_str::<Value>(content) else {
+                return false;
+            };
+            notification["type"].as_str() == Some("background_task_notification")
+                && notification["recipient_task_id"].as_str() == Some(parent_run_id.as_str())
+                && notification["child_task_id"].as_str() == Some(child_task_id.as_str())
+        }),
+        "expected completion notification for child task {child_task_id}: {payload}"
+    );
+}
+
+#[tokio::test]
 async fn a2a_message_send_with_missing_task_id_returns_not_found() {
     let app = make_app();
     let missing = format!("missing-task-{}", Uuid::new_v4().simple());
