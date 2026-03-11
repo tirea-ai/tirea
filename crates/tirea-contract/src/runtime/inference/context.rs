@@ -7,7 +7,7 @@ use std::sync::Arc;
 ///
 /// Pure data struct used by [`ContextWindowPlugin`] to configure the
 /// context window transform. Lives in the contract layer so plugin crates
-/// can construct it without depending on `tirea-agent-loop`.
+/// can construct it without depending on `tirea-agentos`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextWindowPolicy {
     /// Model's total context window size in tokens.

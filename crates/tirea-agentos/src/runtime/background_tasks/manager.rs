@@ -8,7 +8,7 @@
 
 use super::store::TaskStore;
 use super::types::*;
-use crate::loop_runtime::loop_runner::RunCancellationToken;
+use crate::runtime::loop_runner::RunCancellationToken;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::future::Future;

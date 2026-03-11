@@ -9,8 +9,7 @@ Use this repo map to find the right place to work:
 - `crates/tirea-state/` — state engine, patch apply, conflict detection
 - `crates/tirea-state-derive/` — `#[derive(State)]`
 - `crates/tirea-contract/` — shared runtime/tool/protocol contracts
-- `crates/tirea-agent-loop/` — loop runtime and execution engine
-- `crates/tirea-agentos/` — orchestration and composition
+- `crates/tirea-agentos/` — agent runtime, inference engine, orchestration, and composition
 - `crates/tirea-agentos-server/` — HTTP/SSE/NATS gateway
 - `crates/tirea-store-adapters/` — file, memory, postgres, and NATS-backed stores
 - `examples/` — frontend starters and example backends

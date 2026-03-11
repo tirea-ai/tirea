@@ -11,9 +11,9 @@ use mcp::transport::McpServerConnectionConfig;
 use serde_json::{json, Value};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use tirea_agent_loop::contracts::thread::{Message, Thread};
-use tirea_agent_loop::contracts::{AgentEvent, RunContext, RunPolicy};
-use tirea_agent_loop::runtime::loop_runner::{run_loop_stream, Agent, BaseAgent, LlmExecutor};
+use tirea_agentos::contracts::thread::{Message, Thread};
+use tirea_agentos::contracts::{AgentEvent, RunContext, RunPolicy};
+use tirea_agentos::runtime::loop_runner::{run_loop_stream, Agent, BaseAgent, LlmExecutor};
 use tirea_contract::runtime::tool_call::TOOL_CALL_PROGRESS_ACTIVITY_TYPE;
 use tirea_contract::Transcoder;
 use tirea_extension_mcp::McpToolRegistryManager;
@@ -76,7 +76,7 @@ impl LlmExecutor for MockStreamProvider {
         _model: &str,
         _chat_req: ChatRequest,
         _options: Option<&ChatOptions>,
-    ) -> genai::Result<tirea_agent_loop::runtime::loop_runner::LlmEventStream> {
+    ) -> genai::Result<tirea_agentos::runtime::loop_runner::LlmEventStream> {
         let response = {
             let mut guard = self.responses.lock().expect("responses lock");
             if guard.is_empty() {

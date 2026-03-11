@@ -1,3 +1,11 @@
+// ── Modules from the former tirea-agent-loop crate ──────────────────────
+pub mod activity;
+pub mod control;
+pub mod loop_runner;
+pub mod run_context;
+pub mod streaming;
+
+// ── AgentOS orchestration modules ───────────────────────────────────────
 pub(crate) mod agent_tools;
 pub(crate) mod background_tasks;
 mod behavior;
@@ -14,6 +22,10 @@ mod types;
 #[cfg(test)]
 mod tests;
 
+// ── Re-exports: loop runner (former agent-loop) ─────────────────────────
+pub use loop_runner::ResolvedRun;
+
+// ── Re-exports: AgentOS orchestration ───────────────────────────────────
 pub use background_tasks::{
     BackgroundCapable, BackgroundExecutable, BackgroundTaskManager, BackgroundTaskView,
     BackgroundTaskViewAction, BackgroundTaskViewState, BackgroundTasksPlugin, NewTaskSpec,
@@ -32,8 +44,6 @@ pub use thread_run::ForwardedDecision;
 pub use types::{AgentOs, PreparedRun, RunStream};
 
 pub(crate) use types::RuntimeServices;
-
-pub use crate::loop_runtime::loop_runner::ResolvedRun;
 
 #[cfg(test)]
 pub(crate) use crate::composition::AgentDefinition;

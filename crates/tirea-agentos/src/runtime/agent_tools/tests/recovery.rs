@@ -6,7 +6,7 @@ use crate::contracts::storage::{
     VersionPrecondition,
 };
 use crate::contracts::thread::{Thread, ThreadChangeSet};
-use crate::loop_runtime::loop_runner::RunCancellationToken;
+use crate::runtime::loop_runner::RunCancellationToken;
 use crate::runtime::background_tasks::{
     NewTaskSpec, SpawnParams, TaskResult, TaskStatus, TaskStore,
 };

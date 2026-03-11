@@ -8,14 +8,14 @@ use phoenix_test_helpers::{
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tirea_agent_loop::contracts::runtime::tool_call::{
+use tirea_agentos::contracts::runtime::tool_call::{
     Tool, ToolDescriptor, ToolError, ToolResult,
 };
-use tirea_agent_loop::contracts::thread::{Message, Thread, ToolCall};
-use tirea_agent_loop::contracts::AgentBehavior;
-use tirea_agent_loop::contracts::{runtime::StreamResult, AgentEvent};
-use tirea_agent_loop::contracts::{RunContext, ToolCallContext};
-use tirea_agent_loop::runtime::loop_runner::{
+use tirea_agentos::contracts::thread::{Message, Thread, ToolCall};
+use tirea_agentos::contracts::AgentBehavior;
+use tirea_agentos::contracts::{runtime::StreamResult, AgentEvent};
+use tirea_agentos::contracts::{RunContext, ToolCallContext};
+use tirea_agentos::runtime::loop_runner::{
     execute_tools_with_behaviors, run_loop, run_loop_stream, Agent, BaseAgent, GenaiLlmExecutor,
 };
 use tirea_extension_observability::{InMemorySink, LLMMetryPlugin};
@@ -175,7 +175,7 @@ async fn test_llmmetry_exports_error_span_to_phoenix_via_otlp() {
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
     assert!(matches!(
         outcome.termination,
-        tirea_agent_loop::contracts::TerminationReason::Error(_)
+        tirea_agentos::contracts::TerminationReason::Error(_)
     ));
 
     let _ = provider.force_flush();

@@ -35,8 +35,7 @@ The published site is available at <https://tirea-ai.github.io/tirea/>.
 | `tirea_state` | Core state management | [tirea_state](../doc/tirea_state/index.html) |
 | `tirea_state_derive` | Derive macros | [tirea_state_derive](../doc/tirea_state_derive/index.html) |
 | `tirea_contract` | Shared contracts | [tirea_contract](../doc/tirea_contract/index.html) |
-| `tirea_agent_loop` | Agent loop runtime | [tirea_agent_loop](../doc/tirea_agent_loop/index.html) |
-| `tirea_agentos` | Orchestration layer | [tirea_agentos](../doc/tirea_agentos/index.html) |
+| `tirea_agentos` | Agent runtime & orchestration | [tirea_agentos](../doc/tirea_agentos/index.html) |
 | `tirea_store_adapters` | Persistence adapters | [tirea_store_adapters](../doc/tirea_store_adapters/index.html) |
 | `tirea_agentos_server` | Server gateway | [tirea_agentos_server](../doc/tirea_agentos_server/index.html) |
 | `tirea` | Umbrella re-export crate | [tirea](../doc/tirea/index.html) |
@@ -59,12 +58,6 @@ The published site is available at <https://tirea-ai.github.io/tirea/>.
 - [`RunRequest`](../doc/tirea_contract/struct.RunRequest.html) — Unified protocol request
 - [`Tool`](../doc/tirea_contract/trait.Tool.html) — Tool trait
 - [`ThreadStore`](../doc/tirea_contract/trait.ThreadStore.html) — Persistence abstraction
-
-### tirea_agent_loop
-
-- [`run_loop`](../doc/tirea_agent_loop/runtime/loop_runner/fn.run_loop.html) — Non-stream loop execution
-- [`run_loop_stream`](../doc/tirea_agent_loop/runtime/loop_runner/fn.run_loop_stream.html) — Streamed loop execution
-- [`BaseAgent`](../doc/tirea_agent_loop/runtime/loop_runner/struct.BaseAgent.html) — Standard `Agent` implementation
 
 ### tirea_agentos
 

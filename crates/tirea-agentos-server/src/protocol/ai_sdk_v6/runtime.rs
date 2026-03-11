@@ -4,7 +4,7 @@
 //! no additional plugins.
 
 use std::sync::Arc;
-use tirea_agent_loop::runtime::loop_runner::ParallelToolExecutor;
+use tirea_agentos::runtime::loop_runner::ParallelToolExecutor;
 use tirea_agentos::runtime::ResolvedRun;
 
 use tirea_protocol_ai_sdk_v6::AiSdkV6RunRequest;
@@ -21,7 +21,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::HashMap;
-    use tirea_agent_loop::runtime::loop_runner::BaseAgent;
+    use tirea_agentos::runtime::loop_runner::BaseAgent;
     use tirea_contract::RunPolicy;
 
     fn empty_resolved() -> ResolvedRun {

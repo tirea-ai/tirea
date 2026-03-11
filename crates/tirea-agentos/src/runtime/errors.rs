@@ -1,6 +1,6 @@
 use crate::composition::AgentOsWiringError;
 use crate::contracts::storage::ThreadStoreError;
-use crate::loop_runtime::loop_runner::AgentLoopError;
+use crate::runtime::loop_runner::AgentLoopError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AgentOsResolveError {

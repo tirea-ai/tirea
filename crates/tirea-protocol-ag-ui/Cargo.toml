@@ -18,7 +18,6 @@ tracing = "0.1"
 uuid = { version = "1", features = ["v4", "v7"] }
 
 [dev-dependencies]
-tirea-agent-loop.workspace = true
 tirea-contract = { workspace = true, features = ["test-support"] }
 tirea-agentos.workspace = true
 async-trait = "0.1"

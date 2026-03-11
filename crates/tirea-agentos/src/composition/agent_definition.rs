@@ -1,5 +1,5 @@
 use super::stop_condition::StopConditionSpec;
-use crate::loop_runtime::loop_runner::LlmRetryPolicy;
+use crate::runtime::loop_runner::LlmRetryPolicy;
 use genai::chat::ChatOptions;
 
 /// Tool execution strategy mode exposed by AgentDefinition.

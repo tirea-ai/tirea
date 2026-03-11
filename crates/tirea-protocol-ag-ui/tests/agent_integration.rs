@@ -6,9 +6,9 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tirea_agent_loop::engine::convert;
-use tirea_agent_loop::runtime::activity::ActivityHub;
-use tirea_agent_loop::runtime::loop_runner::AgentLoopError;
+use tirea_agentos::engine::convert;
+use tirea_agentos::runtime::activity::ActivityHub;
+use tirea_agentos::runtime::loop_runner::AgentLoopError;
 use tirea_agentos::contracts::runtime::tool_call::{
     Tool, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult,
 };
@@ -814,10 +814,10 @@ async fn test_tool_reminder_integration() {
 
 use std::sync::Arc;
 use tempfile::TempDir;
-use tirea_agent_loop::runtime::loop_runner::{
+use tirea_agentos::runtime::loop_runner::{
     execute_tools, tool_map, BaseAgent, SequentialToolExecutor,
 };
-use tirea_agent_loop::runtime::streaming::StreamCollector;
+use tirea_agentos::runtime::streaming::StreamCollector;
 use tirea_agentos::contracts::runtime::StreamResult;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadWriter};
 use tirea_agentos::contracts::thread::Message;
@@ -2194,7 +2194,7 @@ fn test_stream_collector_end_event_with_tool_calls() {
 
 #[test]
 fn test_stream_output_tool_call_delta_coverage() {
-    use tirea_agent_loop::runtime::streaming::StreamOutput;
+    use tirea_agentos::runtime::streaming::StreamOutput;
 
     // Test ToolCallDelta variant
     let delta = StreamOutput::ToolCallDelta {
@@ -2213,7 +2213,7 @@ fn test_stream_output_tool_call_delta_coverage() {
 
 #[test]
 fn test_stream_output_tool_call_start_coverage() {
-    use tirea_agent_loop::runtime::streaming::StreamOutput;
+    use tirea_agentos::runtime::streaming::StreamOutput;
 
     let start = StreamOutput::ToolCallStart {
         id: "call_abc".to_string(),
@@ -2832,7 +2832,7 @@ impl Tool for NestedStateTool {
 
 #[tokio::test]
 async fn test_sequential_execution_with_conflicting_patches() {
-    use tirea_agent_loop::engine::tool_execution::execute_tools_sequential;
+    use tirea_agentos::engine::tool_execution::execute_tools_sequential;
 
     // Test sequential execution where patches might conflict
     let mut tools: std::collections::HashMap<String, Arc<dyn Tool>> =
@@ -2876,7 +2876,7 @@ async fn test_sequential_execution_with_conflicting_patches() {
 
 #[tokio::test]
 async fn test_sequential_execution_with_nested_state() {
-    use tirea_agent_loop::engine::tool_execution::execute_tools_sequential;
+    use tirea_agentos::engine::tool_execution::execute_tools_sequential;
 
     // Test sequential execution with nested state modifications
     let mut tools: std::collections::HashMap<String, Arc<dyn Tool>> =
@@ -2909,7 +2909,7 @@ async fn test_sequential_execution_with_nested_state() {
 /// Test parallel execution state isolation - each tool sees the same initial state
 #[tokio::test]
 async fn test_parallel_execution_state_isolation() {
-    use tirea_agent_loop::engine::tool_execution::execute_tools_parallel;
+    use tirea_agentos::engine::tool_execution::execute_tools_parallel;
 
     let mut tools: std::collections::HashMap<String, Arc<dyn Tool>> =
         std::collections::HashMap::new();
@@ -3060,7 +3060,7 @@ async fn test_parallel_execution_different_fields() {
 /// Test parallel vs sequential with same operations - different results
 #[tokio::test]
 async fn test_sequential_vs_parallel_execution_difference() {
-    use tirea_agent_loop::engine::tool_execution::{
+    use tirea_agentos::engine::tool_execution::{
         execute_tools_parallel, execute_tools_sequential,
     };
 
@@ -3245,7 +3245,7 @@ impl Tool for ReadOnlyTool {
 
 #[tokio::test]
 async fn test_tool_execution_with_empty_patch() {
-    use tirea_agent_loop::engine::tool_execution::execute_single_tool;
+    use tirea_agentos::engine::tool_execution::execute_single_tool;
 
     let tool = ReadOnlyTool;
     let call = tirea_agentos::contracts::thread::ToolCall::new("call_1", "read_only", json!({}));
@@ -3261,7 +3261,7 @@ async fn test_tool_execution_with_empty_patch() {
 
 #[tokio::test]
 async fn test_sequential_execution_with_mixed_patch_results() {
-    use tirea_agent_loop::engine::tool_execution::execute_tools_sequential;
+    use tirea_agentos::engine::tool_execution::execute_tools_sequential;
 
     let mut tools: std::collections::HashMap<String, Arc<dyn Tool>> =
         std::collections::HashMap::new();
@@ -3304,7 +3304,7 @@ async fn test_sequential_execution_with_mixed_patch_results() {
 
 #[test]
 fn test_agent_loop_error_all_variants() {
-    use tirea_agent_loop::runtime::loop_runner::AgentLoopError;
+    use tirea_agentos::runtime::loop_runner::AgentLoopError;
 
     // LlmError
     let llm_err = AgentLoopError::LlmError("API rate limit exceeded".to_string());
@@ -3767,7 +3767,7 @@ async fn test_e2e_sequential_tool_execution() {
 
 #[tokio::test]
 async fn test_execute_single_tool_not_found() {
-    use tirea_agent_loop::engine::tool_execution::execute_single_tool;
+    use tirea_agentos::engine::tool_execution::execute_single_tool;
 
     let call =
         tirea_agentos::contracts::thread::ToolCall::new("call_1", "nonexistent_tool", json!({}));
@@ -3788,7 +3788,7 @@ async fn test_execute_single_tool_not_found() {
 
 #[tokio::test]
 async fn test_execute_single_tool_with_complex_state() {
-    use tirea_agent_loop::engine::tool_execution::execute_single_tool;
+    use tirea_agentos::engine::tool_execution::execute_single_tool;
 
     let tool = IncrementTool;
     let call = tirea_agentos::contracts::thread::ToolCall::new(
@@ -4719,7 +4719,7 @@ fn test_stream_collector_end_merges_chunk_and_captured_tool_calls() {
 #[test]
 fn test_stream_collector_tool_chunk_with_null_arguments() {
     use genai::chat::{ChatStreamEvent, ToolChunk};
-    use tirea_agent_loop::runtime::streaming::StreamOutput;
+    use tirea_agentos::runtime::streaming::StreamOutput;
 
     let mut collector = StreamCollector::new();
 
@@ -6861,7 +6861,7 @@ async fn test_permission_flow_multiple_tools_mixed() {
 /// and suspended_interaction persisted in session state.
 #[tokio::test]
 async fn test_e2e_permission_suspend_with_real_tool() {
-    use tirea_agent_loop::runtime::loop_runner::{
+    use tirea_agentos::runtime::loop_runner::{
         execute_tools_with_behaviors, tool_map, ExecuteToolsOutcome,
     };
 
@@ -6945,7 +6945,7 @@ async fn test_e2e_permission_suspend_with_real_tool() {
 /// After suspend, denial causes the tool to be blocked (error result, no execution).
 #[tokio::test]
 async fn test_e2e_permission_deny_blocks_via_execute_tools() {
-    use tirea_agent_loop::runtime::loop_runner::{
+    use tirea_agentos::runtime::loop_runner::{
         execute_tools_with_behaviors, tool_map, ExecuteToolsOutcome,
     };
 
@@ -7046,7 +7046,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
 /// After suspend, approval (without PermissionPlugin re-running) lets the tool execute.
 #[tokio::test]
 async fn test_e2e_permission_approve_executes_via_execute_tools() {
-    use tirea_agent_loop::runtime::loop_runner::{
+    use tirea_agentos::runtime::loop_runner::{
         execute_tools_with_behaviors, tool_map, ExecuteToolsOutcome,
     };
 

@@ -7,7 +7,7 @@ pub mod registry;
 mod stop_condition;
 mod wiring;
 
-pub use crate::loop_runtime::loop_runner::{tool_map, tool_map_from_arc};
+pub use crate::runtime::loop_runner::{tool_map, tool_map_from_arc};
 pub use agent_definition::{AgentDefinition, ToolExecutionMode};
 pub use builder::AgentOsBuilder;
 pub use bundle::ToolBehaviorBundle;

@@ -6,11 +6,11 @@ use std::fs;
 use std::io::Write;
 use std::sync::Arc;
 use tempfile::TempDir;
-use tirea_agent_loop::contracts::runtime::behavior::AgentBehavior;
-use tirea_agent_loop::contracts::runtime::tool_call::{Tool, ToolResult};
-use tirea_agent_loop::contracts::thread::Thread;
-use tirea_agent_loop::contracts::thread::{Message, ToolCall};
-use tirea_agent_loop::engine::tool_execution::execute_single_tool_with_run_policy_and_behavior;
+use tirea_agentos::contracts::runtime::behavior::AgentBehavior;
+use tirea_agentos::contracts::runtime::tool_call::{Tool, ToolResult};
+use tirea_agentos::contracts::thread::Thread;
+use tirea_agentos::contracts::thread::{Message, ToolCall};
+use tirea_agentos::engine::tool_execution::execute_single_tool_with_run_policy_and_behavior;
 use tirea_contract::testing::TestFixture;
 use tirea_extension_permission::PermissionPlugin;
 use tirea_extension_skills::{

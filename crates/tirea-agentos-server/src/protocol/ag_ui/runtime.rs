@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
-use tirea_agent_loop::runtime::loop_runner::{
+use tirea_agentos::runtime::loop_runner::{
     BaseAgent, ParallelToolExecutor, SequentialToolExecutor,
 };
 use tirea_agentos::runtime::{compose_behaviors, ResolvedRun};
@@ -285,7 +285,7 @@ mod tests {
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use tirea_agent_loop::runtime::loop_runner::BaseAgent;
+    use tirea_agentos::runtime::loop_runner::BaseAgent;
     use tirea_contract::runtime::phase::{Phase, StepContext};
     use tirea_contract::runtime::tool_call::ToolGate;
     use tirea_contract::testing::TestFixture;

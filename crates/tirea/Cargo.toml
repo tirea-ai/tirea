@@ -13,8 +13,7 @@ categories = ["asynchronous"]
 tirea-contract.workspace = true
 tirea-state.workspace = true
 
-# Core: agent loop + orchestrator (default)
-tirea-agent-loop = { workspace = true, optional = true }
+# Core: AgentOS (default)
 tirea-agentos = { workspace = true, optional = true }
 
 # Protocols
@@ -35,7 +34,7 @@ schemars = { workspace = true }
 
 [features]
 default = ["core"]
-core = ["dep:tirea-agent-loop", "dep:tirea-agentos"]
+core = ["dep:tirea-agentos"]
 ag-ui = ["dep:tirea-protocol-ag-ui", "core"]
 ai-sdk-v6 = ["dep:tirea-protocol-ai-sdk-v6"]
 skills = ["dep:tirea-extension-skills", "core"]

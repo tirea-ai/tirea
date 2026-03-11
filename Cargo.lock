@@ -4567,7 +4567,6 @@ dependencies = [
  "schemars 1.2.1",
  "serde",
  "serde_json",
- "tirea-agent-loop",
  "tirea-agentos",
  "tirea-contract",
  "tirea-extension-skills",
@@ -4579,55 +4578,27 @@ dependencies = [
 ]
 
 [[package]]
-name = "tirea-agent-loop"
+name = "tirea-agentos"
 version = "0.3.0"
 dependencies = [
  "async-stream",
  "async-trait",
+ "bytes",
  "criterion",
  "futures",
  "genai",
  "json-patch",
+ "model-context-protocol",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "phoenix-test-helpers",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tirea-contract",
- "tirea-extension-observability",
- "tirea-extension-permission",
- "tirea-extension-skills",
- "tirea-state",
- "tirea-store-adapters",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "trybuild",
- "uuid",
-]
-
-[[package]]
-name = "tirea-agentos"
-version = "0.3.0"
-dependencies = [
- "async-trait",
- "bytes",
- "futures",
- "genai",
- "model-context-protocol",
  "reqwest 0.12.28",
  "schemars 1.2.1",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
- "tirea-agent-loop",
  "tirea-contract",
  "tirea-extension-mcp",
  "tirea-extension-observability",
@@ -4637,7 +4608,11 @@ dependencies = [
  "tirea-state",
  "tirea-store-adapters",
  "tokio",
+ "tokio-util",
  "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "trybuild",
  "uuid",
 ]
 
@@ -4662,7 +4637,6 @@ dependencies = [
  "testcontainers",
  "testcontainers-modules",
  "thiserror 2.0.18",
- "tirea-agent-loop",
  "tirea-agentos",
  "tirea-contract",
  "tirea-extension-permission",
@@ -4808,7 +4782,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "tirea-agent-loop",
  "tirea-agentos",
  "tirea-contract",
  "tirea-state",
@@ -4829,7 +4802,7 @@ dependencies = [
  "model-context-protocol",
  "serde",
  "serde_json",
- "tirea-agent-loop",
+ "tirea-agentos",
  "tirea-contract",
  "tirea-extension-mcp",
  "tokio",

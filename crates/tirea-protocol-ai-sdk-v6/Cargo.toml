@@ -19,7 +19,7 @@ async-trait = "0.1"
 futures = "0.3"
 genai.workspace = true
 mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"] }
-tirea-agent-loop.workspace = true
+tirea-agentos.workspace = true
 tirea-extension-mcp.workspace = true
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread"] }
 

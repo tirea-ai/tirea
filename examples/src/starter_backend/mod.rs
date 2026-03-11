@@ -80,7 +80,7 @@ pub async fn serve_starter_backend(args: StarterBackendArgs, config: StarterBack
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,genai=warn,tirea_agent_loop=info".parse().unwrap()),
+                .unwrap_or_else(|_| "info,genai=warn,tirea_agentos=info".parse().unwrap()),
         )
         .with_target(true)
         .init();

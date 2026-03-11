@@ -11,7 +11,6 @@ categories = ["asynchronous"]
 [dependencies]
 tirea-state.workspace = true
 tirea-contract.workspace = true
-tirea-agent-loop.workspace = true
 tirea-extension-permission = { workspace = true, optional = true }
 tirea-extension-reminder = { workspace = true, optional = true }
 tirea-extension-observability = { workspace = true, optional = true }
@@ -21,13 +20,16 @@ schemars.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
+async-stream = "0.3"
 tokio = { version = "1", features = ["sync", "rt", "time", "process"] }
+tokio-util = "0.7"
 thiserror = "2"
 genai.workspace = true
 futures = "0.3"
 uuid = { version = "1", features = ["v4", "v7"] }
 bytes = "1"
 tracing = "0.1"
+json-patch = "3"
 
 [features]
 default = ["skills", "permission", "reminder", "observability"]
@@ -39,10 +41,22 @@ mcp = ["dep:tirea-extension-mcp"]
 
 [dev-dependencies]
 tirea-contract = { workspace = true, features = ["test-support"] }
+tirea-state = { workspace = true, features = ["derive"] }
+tirea-extension-observability.workspace = true
+tirea-extension-permission.workspace = true
+tirea-extension-skills.workspace = true
 tirea-store-adapters.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
 tempfile = "3"
+tracing-subscriber = { version = "0.3", features = ["fmt", "registry"] }
+opentelemetry = "0.28"
+opentelemetry_sdk = { version = "0.28", features = ["rt-tokio", "testing"] }
+opentelemetry-otlp = { version = "0.28", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace"] }
+tracing-opentelemetry = "0.29"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+phoenix-test-helpers = { path = "../../e2e/phoenix/test-helpers" }
+criterion.workspace = true
+trybuild.workspace = true
 mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"] }
 
 [lints]

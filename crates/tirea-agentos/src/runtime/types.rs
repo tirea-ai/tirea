@@ -15,7 +15,7 @@ use crate::contracts::storage::{ThreadStore, VersionPrecondition};
 use crate::contracts::{AgentEvent, RunContext, ToolCallDecision};
 #[cfg(feature = "skills")]
 use crate::extensions::skills::SkillRegistry;
-use crate::loop_runtime::loop_runner::{
+use crate::runtime::loop_runner::{
     Agent, RunCancellationToken, StateCommitError, StateCommitter,
 };
 

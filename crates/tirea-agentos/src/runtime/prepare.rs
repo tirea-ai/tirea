@@ -6,7 +6,7 @@ use crate::contracts::runtime::state::{
 };
 use crate::contracts::runtime::{RunLifecycleAction, RunLifecycleState, RunStatus};
 use crate::contracts::thread::{Message, Thread};
-use crate::loop_runtime::loop_runner::AgentLoopError;
+use crate::runtime::loop_runner::AgentLoopError;
 use std::sync::Arc;
 use tirea_state::{Op, Patch, TrackedPatch};
 

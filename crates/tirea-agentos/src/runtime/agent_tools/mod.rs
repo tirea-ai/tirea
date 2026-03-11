@@ -15,7 +15,7 @@ pub(crate) enum ToolPermissionBehavior {
     Ask,
     Deny,
 }
-use crate::loop_runtime::loop_runner::RunCancellationToken;
+use crate::runtime::loop_runner::RunCancellationToken;
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::{json, Value};

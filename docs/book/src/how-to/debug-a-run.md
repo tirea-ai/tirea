@@ -62,7 +62,7 @@ A fix is effective when:
 
 ## Key Files
 
-- `crates/tirea-agent-loop/src/runtime/loop_runner/mod.rs`
+- `crates/tirea-agentos/src/runtime/loop_runner/mod.rs`
 - `crates/tirea-agentos-server/src/http.rs`
 - `crates/tirea-agentos-server/tests/run_api.rs`
 

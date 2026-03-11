@@ -16,7 +16,7 @@ use super::{new_task_id, NewTaskSpec, TaskStore, TaskStoreError};
 use crate::contracts::runtime::tool_call::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
 };
-use crate::loop_runtime::loop_runner::RunCancellationToken;
+use crate::runtime::loop_runner::RunCancellationToken;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::sync::Arc;

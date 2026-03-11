@@ -9,8 +9,7 @@
 | `tirea-state` | Core library: typed state, JSON patches, apply, conflict detection |
 | `tirea-state-derive` | Proc-macro for `#[derive(State)]` |
 | `tirea-contract` | Shared contracts: thread/events/tools/plugins/runtime/storage/protocol |
-| `tirea-agent-loop` | Loop runtime: inference, tool execution, stop policies, streaming |
-| `tirea-agentos` | Orchestration layer: registry wiring, run preparation, persistence integration |
+| `tirea-agentos` | Agent runtime: inference engine, tool execution, orchestration, plugin composition |
 | `tirea-store-adapters` | Storage adapters: memory/file/postgres/nats-buffered |
 | `tirea` | Umbrella crate that re-exports core modules |
 | `tirea-agentos-server` | HTTP/SSE/NATS gateway server |
@@ -72,8 +71,7 @@ These paths matter most when you move from docs into code:
 | Path | Purpose |
 |------|---------|
 | `crates/tirea-contract/` | Core runtime contracts: tools, events, state/runtime interfaces |
-| `crates/tirea-agent-loop/` | Loop execution, phases, streaming, tool execution |
-| `crates/tirea-agentos/` | Orchestration, agent wiring, extension integration |
+| `crates/tirea-agentos/` | Agent runtime: inference engine, tool execution, orchestration, extensions |
 | `crates/tirea-agentos-server/` | HTTP/SSE/NATS server surfaces |
 | `crates/tirea-state/` | Immutable state patch/apply/conflict engine |
 | `examples/src/` | Small backend examples for tools, agents, and state |

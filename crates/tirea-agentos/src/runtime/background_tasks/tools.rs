@@ -818,8 +818,8 @@ mod tests {
     #[tokio::test]
     async fn cancel_tool_cancels_descendants_by_default() {
         let mgr = Arc::new(BackgroundTaskManager::new());
-        let root_token = crate::loop_runtime::loop_runner::RunCancellationToken::new();
-        let child_token = crate::loop_runtime::loop_runner::RunCancellationToken::new();
+        let root_token = crate::runtime::loop_runner::RunCancellationToken::new();
+        let child_token = crate::runtime::loop_runner::RunCancellationToken::new();
 
         mgr.spawn_with_id(
             SpawnParams {
@@ -913,7 +913,7 @@ mod tests {
                 parent_task_id: None,
                 metadata: json!({}),
             },
-            crate::loop_runtime::loop_runner::RunCancellationToken::new(),
+            crate::runtime::loop_runner::RunCancellationToken::new(),
             |cancel| async move {
                 cancel.cancelled().await;
                 super::super::types::TaskResult::Cancelled
@@ -967,7 +967,7 @@ mod tests {
                 parent_task_id: None,
                 metadata: json!({}),
             },
-            crate::loop_runtime::loop_runner::RunCancellationToken::new(),
+            crate::runtime::loop_runner::RunCancellationToken::new(),
             |cancel| async move {
                 cancel.cancelled().await;
                 super::super::types::TaskResult::Cancelled
@@ -1046,7 +1046,7 @@ mod tests {
                     parent_task_id: parent_task_id.map(str::to_string),
                     metadata: json!({}),
                 },
-                crate::loop_runtime::loop_runner::RunCancellationToken::new(),
+                crate::runtime::loop_runner::RunCancellationToken::new(),
                 |cancel| async move {
                     cancel.cancelled().await;
                     super::super::types::TaskResult::Cancelled

@@ -4,7 +4,6 @@ members = [
     "crates/tirea-state",
     "crates/tirea-state-derive",
     "crates/tirea-contract",
-    "crates/tirea-agent-loop",
     "crates/tirea-agentos",
     "crates/tirea-extension-permission",
     "crates/tirea-extension-reminder",
@@ -33,7 +32,6 @@ repository = "https://github.com/tirea-ai/tirea"
 tirea-state = { version = "0.3.0", path = "crates/tirea-state" }
 tirea-state-derive = { version = "0.3.0", path = "crates/tirea-state-derive" }
 tirea-contract = { version = "0.3.0", path = "crates/tirea-contract" }
-tirea-agent-loop = { version = "0.3.0", path = "crates/tirea-agent-loop" }
 tirea-agentos = { version = "0.3.0", path = "crates/tirea-agentos" }
 tirea-agentos-server = { version = "0.3.0", path = "crates/tirea-agentos-server" }
 tirea-extension-permission = { version = "0.3.0", path = "crates/tirea-extension-permission" }

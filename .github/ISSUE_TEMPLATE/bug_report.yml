@@ -20,7 +20,6 @@ body:
       label: Affected area
       options:
         - crates/tirea-state
-        - crates/tirea-agent-loop
         - crates/tirea-agentos
         - crates/tirea-agentos-server
         - crates/tirea-store-adapters

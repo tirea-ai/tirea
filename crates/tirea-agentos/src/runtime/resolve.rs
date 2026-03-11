@@ -22,7 +22,7 @@ use crate::contracts::runtime::ToolExecutor;
 use crate::contracts::RunPolicy;
 #[cfg(feature = "skills")]
 use crate::extensions::skills::{InMemorySkillRegistry, Skill, SkillRegistry};
-use crate::loop_runtime::loop_runner::{
+use crate::runtime::loop_runner::{
     BaseAgent, GenaiLlmExecutor, ParallelToolExecutor, ResolvedRun, SequentialToolExecutor,
 };
 use genai::Client;

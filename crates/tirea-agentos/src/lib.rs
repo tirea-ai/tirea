@@ -7,15 +7,8 @@
 
 pub use tirea_contract as contracts;
 
-// Internal aliases for tirea-agent-loop modules (used throughout runtime/).
-pub(crate) mod loop_engine {
-    pub use tirea_agent_loop::engine::*;
-}
-pub(crate) mod loop_runtime {
-    pub use tirea_agent_loop::runtime::*;
-}
-
 pub mod composition;
+pub mod engine;
 pub mod extensions;
 pub mod runtime;
 

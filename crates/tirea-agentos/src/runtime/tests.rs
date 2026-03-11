@@ -1037,7 +1037,7 @@ async fn run_and_run_stream_work_without_llm_when_terminate_behavior_requested()
 
 #[tokio::test]
 async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_conditions_to_loop() {
-    use crate::loop_runtime::loop_runner::run_loop;
+    use crate::runtime::loop_runner::run_loop;
     use crate::runtime::StopPolicyInput;
 
     #[derive(Debug)]
@@ -1083,7 +1083,7 @@ async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_condition
     struct OneShotLlm;
 
     #[async_trait]
-    impl crate::loop_runtime::loop_runner::LlmExecutor for OneShotLlm {
+    impl crate::runtime::loop_runner::LlmExecutor for OneShotLlm {
         async fn exec_chat_response(
             &self,
             _model: &str,
@@ -1108,7 +1108,7 @@ async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_condition
             _model: &str,
             _chat_req: genai::chat::ChatRequest,
             _options: Option<&genai::chat::ChatOptions>,
-        ) -> genai::Result<crate::loop_runtime::loop_runner::LlmEventStream> {
+        ) -> genai::Result<crate::runtime::loop_runner::LlmEventStream> {
             use genai::chat::{ChatStreamEvent, StreamChunk, StreamEnd};
 
             Ok(Box::pin(futures::stream::iter(vec![
@@ -1126,7 +1126,7 @@ async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_condition
     }
 
     let config = resolved.agent.with_llm_executor(
-        Arc::new(OneShotLlm) as Arc<dyn crate::loop_runtime::loop_runner::LlmExecutor>
+        Arc::new(OneShotLlm) as Arc<dyn crate::runtime::loop_runner::LlmExecutor>
     );
     let thread = crate::contracts::thread::Thread::new("stop-plugin-thread")
         .with_message(crate::contracts::thread::Message::user("go"));
@@ -3546,7 +3546,7 @@ async fn prepare_run_cleans_up_run_scoped_state_between_consecutive_runs() {
     struct OneShotLlm;
 
     #[async_trait]
-    impl crate::loop_runtime::loop_runner::LlmExecutor for OneShotLlm {
+    impl crate::runtime::loop_runner::LlmExecutor for OneShotLlm {
         async fn exec_chat_response(
             &self,
             _model: &str,
@@ -3571,7 +3571,7 @@ async fn prepare_run_cleans_up_run_scoped_state_between_consecutive_runs() {
             _model: &str,
             _chat_req: genai::chat::ChatRequest,
             _options: Option<&genai::chat::ChatOptions>,
-        ) -> genai::Result<crate::loop_runtime::loop_runner::LlmEventStream> {
+        ) -> genai::Result<crate::runtime::loop_runner::LlmEventStream> {
             use genai::chat::{ChatStreamEvent, StreamChunk, StreamEnd};
 
             Ok(Box::pin(futures::stream::iter(vec![
@@ -3604,7 +3604,7 @@ async fn prepare_run_cleans_up_run_scoped_state_between_consecutive_runs() {
     // --- Run 1: creates StopPolicyRuntimeState via after_inference ---
     let mut resolved = os.resolve("a1").unwrap();
     resolved.agent = resolved.agent.with_llm_executor(
-        Arc::new(OneShotLlm) as Arc<dyn crate::loop_runtime::loop_runner::LlmExecutor>
+        Arc::new(OneShotLlm) as Arc<dyn crate::runtime::loop_runner::LlmExecutor>
     );
     let prepared = os
         .prepare_run(
@@ -3638,7 +3638,7 @@ async fn prepare_run_cleans_up_run_scoped_state_between_consecutive_runs() {
     // --- Run 2: prepare_run should clean up run-scoped state ---
     let mut resolved2 = os.resolve("a1").unwrap();
     resolved2.agent = resolved2.agent.with_llm_executor(
-        Arc::new(OneShotLlm) as Arc<dyn crate::loop_runtime::loop_runner::LlmExecutor>
+        Arc::new(OneShotLlm) as Arc<dyn crate::runtime::loop_runner::LlmExecutor>
     );
     let prepared2 = os
         .prepare_run(
@@ -3696,7 +3696,7 @@ async fn prepare_run_cleans_up_tool_call_scope_between_consecutive_runs() {
     }
 
     #[async_trait]
-    impl crate::loop_runtime::loop_runner::LlmExecutor for RepeatToolCallLlm {
+    impl crate::runtime::loop_runner::LlmExecutor for RepeatToolCallLlm {
         async fn exec_chat_response(
             &self,
             _model: &str,
@@ -3711,7 +3711,7 @@ async fn prepare_run_cleans_up_tool_call_scope_between_consecutive_runs() {
             _model: &str,
             _chat_req: genai::chat::ChatRequest,
             _options: Option<&genai::chat::ChatOptions>,
-        ) -> genai::Result<crate::loop_runtime::loop_runner::LlmEventStream> {
+        ) -> genai::Result<crate::runtime::loop_runner::LlmEventStream> {
             let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
             if idx % 2 == 0 {
                 let tool_call = genai::chat::ToolCall {
@@ -3759,7 +3759,7 @@ async fn prepare_run_cleans_up_tool_call_scope_between_consecutive_runs() {
     let thread_id = "t-tool-call-scope-cleanup";
     let llm = Arc::new(RepeatToolCallLlm {
         call_count: AtomicUsize::new(0),
-    }) as Arc<dyn crate::loop_runtime::loop_runner::LlmExecutor>;
+    }) as Arc<dyn crate::runtime::loop_runner::LlmExecutor>;
 
     let mut resolved1 = os.resolve("a1").unwrap();
     resolved1.agent = resolved1.agent.with_llm_executor(llm.clone());

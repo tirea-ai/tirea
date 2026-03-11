@@ -11,7 +11,7 @@ use crate::contracts::runtime::RunIdentity;
 use crate::contracts::storage::{ThreadHead, ThreadStore, VersionPrecondition};
 use crate::contracts::thread::{CheckpointReason, Message, Thread};
 use crate::contracts::{AgentEvent, RunContext, RunRequest};
-use crate::loop_runtime::loop_runner::{
+use crate::runtime::loop_runner::{
     run_loop_stream_with_context, AgentLoopError, RunCancellationToken, StateCommitter,
 };
 use futures::StreamExt;

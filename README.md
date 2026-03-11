@@ -42,8 +42,7 @@ Choose the path that matches what you want to do first:
 - `tirea-state`: typed state + JSON patch apply/conflict detection
 - `tirea-state-derive`: `#[derive(State)]` proc macro
 - `tirea-contract`: shared runtime/tool/protocol contracts
-- `tirea-agent-loop`: agent execution loop
-- `tirea-agentos`: orchestration and composition
+- `tirea-agentos`: agent runtime, inference engine, orchestration, and composition
 - `tirea-store-adapters`: memory/file/postgres/nats-buffered stores
 - `tirea-agentos-server`: HTTP/SSE/NATS gateway
 - `tirea`: umbrella re-export crate
