@@ -65,6 +65,7 @@ fn mailbox_entry(run_id: &str, thread_id: &str) -> MailboxEntry {
         thread_id: thread_id.to_string(),
         run_id: run_id.to_string(),
         agent_id: "agent".to_string(),
+        generation: 0,
         status: MailboxEntryStatus::Queued,
         request: RunRequest {
             agent_id: "agent".to_string(),
@@ -285,6 +286,50 @@ async fn test_mailbox_claim_by_run_id_ignores_available_at_for_inline_dispatch()
         .expect("inline claim should succeed");
     assert_eq!(targeted.status, MailboxEntryStatus::Claimed);
     assert_eq!(targeted.claimed_by.as_deref(), Some("worker-inline"));
+}
+
+#[tokio::test]
+async fn test_mailbox_interrupt_bumps_generation_and_supersedes_pending_entries() {
+    let Some((_container, url)) = start_postgres().await else {
+        return;
+    };
+    let store = make_store(&url).await;
+
+    let old_a = mailbox_entry("run-pg-old-a", "thread-pg-interrupt");
+    let old_b = mailbox_entry("run-pg-old-b", "thread-pg-interrupt");
+    store.enqueue_mailbox_entry(&old_a).await.unwrap();
+    store.enqueue_mailbox_entry(&old_b).await.unwrap();
+
+    let interrupted = store
+        .interrupt_mailbox_thread("thread-pg-interrupt", 50)
+        .await
+        .unwrap();
+    assert_eq!(interrupted.thread_state.current_generation, 1);
+    assert_eq!(interrupted.superseded_entries.len(), 2);
+
+    let superseded = store
+        .load_mailbox_entry_by_run_id("run-pg-old-a")
+        .await
+        .unwrap()
+        .expect("superseded entry should exist");
+    assert_eq!(superseded.status, MailboxEntryStatus::Superseded);
+
+    let next_generation = store
+        .ensure_mailbox_thread_state("thread-pg-interrupt", 60)
+        .await
+        .unwrap()
+        .current_generation;
+    let mut fresh = mailbox_entry("run-pg-fresh", "thread-pg-interrupt");
+    fresh.generation = next_generation;
+    store.enqueue_mailbox_entry(&fresh).await.unwrap();
+
+    let fresh_loaded = store
+        .load_mailbox_entry_by_run_id("run-pg-fresh")
+        .await
+        .unwrap()
+        .expect("fresh entry should exist");
+    assert_eq!(fresh_loaded.generation, 1);
+    assert_eq!(fresh_loaded.status, MailboxEntryStatus::Queued);
 }
 
 #[tokio::test]

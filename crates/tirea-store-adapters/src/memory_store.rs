@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use tirea_contract::storage::{
     paginate_mailbox_entries, paginate_runs_in_memory, MailboxEntry, MailboxPage, MailboxQuery,
-    MailboxReader, MailboxStoreError, MailboxWriter, RunPage, RunQuery, RunReader, RunRecord,
-    RunStoreError, RunWriter, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader,
-    ThreadStoreError, ThreadSync, ThreadWriter, VersionPrecondition,
+    MailboxReader, MailboxStoreError, MailboxThreadInterrupt, MailboxThreadState, MailboxWriter,
+    RunPage, RunQuery, RunReader, RunRecord, RunStoreError, RunWriter, ThreadHead, ThreadListPage,
+    ThreadListQuery, ThreadReader, ThreadStoreError, ThreadSync, ThreadWriter, VersionPrecondition,
 };
 use tirea_contract::{Committed, Thread, ThreadChangeSet, Version};
 
@@ -25,6 +25,7 @@ pub struct MemoryStore {
     entries: tokio::sync::RwLock<std::collections::HashMap<String, MemoryEntry>>,
     runs: tokio::sync::RwLock<std::collections::HashMap<String, RunRecord>>,
     mailbox: tokio::sync::RwLock<std::collections::HashMap<String, MailboxEntry>>,
+    mailbox_threads: tokio::sync::RwLock<std::collections::HashMap<String, MailboxThreadState>>,
 }
 
 impl MemoryStore {
@@ -54,6 +55,13 @@ impl MailboxReader for MemoryStore {
             .cloned())
     }
 
+    async fn load_mailbox_thread_state(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<MailboxThreadState>, MailboxStoreError> {
+        Ok(self.mailbox_threads.read().await.get(thread_id).cloned())
+    }
+
     async fn list_mailbox_entries(
         &self,
         query: &MailboxQuery,
@@ -67,6 +75,23 @@ impl MailboxReader for MemoryStore {
 #[async_trait]
 impl MailboxWriter for MemoryStore {
     async fn enqueue_mailbox_entry(&self, entry: &MailboxEntry) -> Result<(), MailboxStoreError> {
+        let mut mailbox_threads = self.mailbox_threads.write().await;
+        let thread_state =
+            mailbox_threads
+                .entry(entry.thread_id.clone())
+                .or_insert(MailboxThreadState {
+                    thread_id: entry.thread_id.clone(),
+                    current_generation: entry.generation,
+                    updated_at: entry.updated_at,
+                });
+        if thread_state.current_generation != entry.generation {
+            return Err(MailboxStoreError::GenerationMismatch {
+                thread_id: entry.thread_id.clone(),
+                expected: thread_state.current_generation,
+                actual: entry.generation,
+            });
+        }
+
         let mut mailbox = self.mailbox.write().await;
         if mailbox.contains_key(&entry.entry_id)
             || mailbox
@@ -77,6 +102,23 @@ impl MailboxWriter for MemoryStore {
         }
         mailbox.insert(entry.entry_id.clone(), entry.clone());
         Ok(())
+    }
+
+    async fn ensure_mailbox_thread_state(
+        &self,
+        thread_id: &str,
+        now: u64,
+    ) -> Result<MailboxThreadState, MailboxStoreError> {
+        let mut mailbox_threads = self.mailbox_threads.write().await;
+        let state = mailbox_threads
+            .entry(thread_id.to_string())
+            .or_insert(MailboxThreadState {
+                thread_id: thread_id.to_string(),
+                current_generation: 0,
+                updated_at: now,
+            });
+        state.updated_at = now;
+        Ok(state.clone())
     }
 
     async fn claim_mailbox_entries(
@@ -239,6 +281,28 @@ impl MailboxWriter for MemoryStore {
         Ok(Some(entry.clone()))
     }
 
+    async fn supersede_mailbox_entry(
+        &self,
+        entry_id: &str,
+        now: u64,
+        reason: &str,
+    ) -> Result<Option<MailboxEntry>, MailboxStoreError> {
+        let mut mailbox = self.mailbox.write().await;
+        let Some(entry) = mailbox.get_mut(entry_id) else {
+            return Ok(None);
+        };
+        if entry.status.is_terminal() {
+            return Ok(Some(entry.clone()));
+        }
+        entry.status = tirea_contract::MailboxEntryStatus::Superseded;
+        entry.last_error = Some(reason.to_string());
+        entry.claim_token = None;
+        entry.claimed_by = None;
+        entry.lease_until = None;
+        entry.updated_at = now;
+        Ok(Some(entry.clone()))
+    }
+
     async fn cancel_pending_mailbox_for_thread(
         &self,
         thread_id: &str,
@@ -263,6 +327,49 @@ impl MailboxWriter for MemoryStore {
             cancelled.push(entry.clone());
         }
         Ok(cancelled)
+    }
+
+    async fn interrupt_mailbox_thread(
+        &self,
+        thread_id: &str,
+        now: u64,
+    ) -> Result<MailboxThreadInterrupt, MailboxStoreError> {
+        let mut mailbox_threads = self.mailbox_threads.write().await;
+        let mut mailbox = self.mailbox.write().await;
+
+        let state = mailbox_threads
+            .entry(thread_id.to_string())
+            .or_insert(MailboxThreadState {
+                thread_id: thread_id.to_string(),
+                current_generation: 0,
+                updated_at: now,
+            });
+        state.current_generation = state.current_generation.saturating_add(1);
+        state.updated_at = now;
+        let next_generation = state.current_generation;
+        let thread_state = state.clone();
+
+        let mut superseded = Vec::new();
+        for entry in mailbox.values_mut() {
+            if entry.thread_id != thread_id || entry.status.is_terminal() {
+                continue;
+            }
+            if entry.generation >= next_generation {
+                continue;
+            }
+            entry.status = tirea_contract::MailboxEntryStatus::Superseded;
+            entry.last_error = Some("superseded by interrupt".to_string());
+            entry.claim_token = None;
+            entry.claimed_by = None;
+            entry.lease_until = None;
+            entry.updated_at = now;
+            superseded.push(entry.clone());
+        }
+
+        Ok(MailboxThreadInterrupt {
+            thread_state,
+            superseded_entries: superseded,
+        })
     }
 }
 

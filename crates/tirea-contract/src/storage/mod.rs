@@ -11,7 +11,7 @@ pub use crate::runtime::RunStatus;
 pub use mailbox_traits::{MailboxReader, MailboxStore, MailboxWriter};
 pub use mailbox_types::{
     paginate_mailbox_entries, MailboxEntry, MailboxEntryStatus, MailboxPage, MailboxQuery,
-    MailboxStoreError,
+    MailboxStoreError, MailboxThreadInterrupt, MailboxThreadState,
 };
 pub use run_traits::{RunReader, RunStore, RunWriter};
 pub use run_types::{

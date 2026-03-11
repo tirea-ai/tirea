@@ -9,13 +9,17 @@ pub enum MailboxEntryStatus {
     Queued,
     Claimed,
     Accepted,
+    Superseded,
     Cancelled,
     DeadLetter,
 }
 
 impl MailboxEntryStatus {
     pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Accepted | Self::Cancelled | Self::DeadLetter)
+        matches!(
+            self,
+            Self::Accepted | Self::Superseded | Self::Cancelled | Self::DeadLetter
+        )
     }
 }
 
@@ -26,6 +30,7 @@ pub struct MailboxEntry {
     pub thread_id: String,
     pub run_id: String,
     pub agent_id: String,
+    pub generation: u64,
     pub status: MailboxEntryStatus,
     pub request: RunRequest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -52,10 +57,26 @@ impl MailboxEntry {
             MailboxEntryStatus::Queued => self.available_at <= now,
             MailboxEntryStatus::Claimed => self.lease_until.is_some_and(|lease| lease <= now),
             MailboxEntryStatus::Accepted
+            | MailboxEntryStatus::Superseded
             | MailboxEntryStatus::Cancelled
             | MailboxEntryStatus::DeadLetter => false,
         }
     }
+}
+
+/// Durable thread-scoped mailbox control state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MailboxThreadState {
+    pub thread_id: String,
+    pub current_generation: u64,
+    pub updated_at: u64,
+}
+
+/// Result of bumping thread mailbox generation and superseding older entries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MailboxThreadInterrupt {
+    pub thread_state: MailboxThreadState,
+    pub superseded_entries: Vec<MailboxEntry>,
 }
 
 /// Query options for listing queued inputs.
@@ -126,6 +147,13 @@ pub enum MailboxStoreError {
 
     #[error("mailbox claim token mismatch for entry: {0}")]
     ClaimConflict(String),
+
+    #[error("mailbox generation mismatch for thread '{thread_id}': expected {expected}, got {actual}")]
+    GenerationMismatch {
+        thread_id: String,
+        expected: u64,
+        actual: u64,
+    },
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
