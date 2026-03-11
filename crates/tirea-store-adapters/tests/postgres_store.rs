@@ -262,6 +262,32 @@ async fn test_mailbox_roundtrip_and_cancellation() {
 }
 
 #[tokio::test]
+async fn test_mailbox_claim_by_run_id_ignores_available_at_for_inline_dispatch() {
+    let Some((_container, url)) = start_postgres().await else {
+        return;
+    };
+    let store = make_store(&url).await;
+
+    let mut entry = mailbox_entry("run-pg-inline", "thread-pg-inline");
+    entry.available_at = i64::MAX as u64;
+    store.enqueue_mailbox_entry(&entry).await.unwrap();
+
+    let claimed = store
+        .claim_mailbox_entries(10, "worker-batch", 10, 5_000)
+        .await
+        .unwrap();
+    assert!(claimed.is_empty());
+
+    let targeted = store
+        .claim_mailbox_entry_by_run_id("run-pg-inline", "worker-inline", 10, 5_000)
+        .await
+        .unwrap()
+        .expect("inline claim should succeed");
+    assert_eq!(targeted.status, MailboxEntryStatus::Claimed);
+    assert_eq!(targeted.claimed_by.as_deref(), Some("worker-inline"));
+}
+
+#[tokio::test]
 async fn test_run_projection_roundtrip_and_filters() {
     let Some((_container, url)) = start_postgres().await else {
         return;

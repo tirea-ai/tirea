@@ -1,9 +1,11 @@
 use serde::Deserialize;
 use std::sync::Arc;
+use tirea_agentos::contracts::storage::MailboxStore;
 use tirea_agentos::runtime::AgentOs;
 use tirea_protocol_ai_sdk_v6::{AiSdkEncoder, AiSdkV6RunRequest, UIStreamEvent};
 
 use super::runtime::apply_ai_sdk_extensions;
+use crate::service::start_streaming_run_via_mailbox;
 use crate::transport::nats::NatsTransport;
 use crate::transport::NatsProtocolError;
 
@@ -11,12 +13,14 @@ use crate::transport::NatsProtocolError;
 pub async fn serve(
     transport: NatsTransport,
     os: Arc<AgentOs>,
+    mailbox_store: Arc<dyn MailboxStore>,
     subject: String,
 ) -> Result<(), NatsProtocolError> {
     transport
         .serve(&subject, "aisdk", move |transport, msg| {
             let os = os.clone();
-            async move { handle_message(transport, os, msg).await }
+            let mailbox_store = mailbox_store.clone();
+            async move { handle_message(transport, os, mailbox_store, msg).await }
         })
         .await
 }
@@ -24,6 +28,7 @@ pub async fn serve(
 async fn handle_message(
     transport: NatsTransport,
     os: Arc<AgentOs>,
+    mailbox_store: Arc<dyn MailboxStore>,
     msg: async_nats::Message,
 ) -> Result<(), NatsProtocolError> {
     #[derive(Debug, Deserialize)]
@@ -33,6 +38,8 @@ async fn handle_message(
         #[serde(rename = "sessionId")]
         thread_id: String,
         input: String,
+        #[serde(rename = "runId")]
+        run_id: Option<String>,
         #[serde(rename = "replySubject")]
         reply_subject: Option<String>,
     }
@@ -63,17 +70,28 @@ async fn handle_message(
 
     let req_for_runtime = AiSdkV6RunRequest::from_thread_input(req.thread_id, req.input);
     apply_ai_sdk_extensions(&mut resolved, &req_for_runtime);
-    let run_request = req_for_runtime.into_runtime_run_request(req.agent_id);
+    let agent_id = req.agent_id.clone();
+    let mut run_request = req_for_runtime.into_runtime_run_request(agent_id.clone());
+    run_request.run_id = req.run_id;
+
+    let run = match start_streaming_run_via_mailbox(
+        &os,
+        &mailbox_store,
+        &agent_id,
+        run_request,
+        "aisdk-nats-inline",
+    )
+    .await
+    {
+        Ok(run) => run,
+        Err(err) => {
+            return transport
+                .publish_error_event(reply, UIStreamEvent::error(err.to_string()))
+                .await;
+        }
+    };
 
     transport
-        .run_and_publish(
-            os.as_ref(),
-            run_request,
-            resolved,
-            reply,
-            false,
-            move |_run| AiSdkEncoder::new(),
-            UIStreamEvent::error,
-        )
+        .publish_run_stream(run, reply, move |_run| AiSdkEncoder::new())
         .await
 }

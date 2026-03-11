@@ -1,18 +1,21 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{get_json_text, post_sse, TerminatePlugin};
+use common::{get_json_text, post_sse, SlowTerminatePlugin, TerminatePlugin};
 use serde_json::json;
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
 use tirea_agentos::composition::{AgentDefinition, AgentOsBuilder};
-use tirea_agentos::contracts::storage::ThreadReader;
+use tirea_agentos::contracts::storage::{MailboxWriter, ThreadReader};
 use tirea_agentos::contracts::RunRequest;
 use tirea_agentos::runtime::{AgentOs, RunStream};
 use tirea_agentos_server::service::AppState;
 
 const TEST_AGENT_ID: &str = "test";
-use tirea_contract::storage::{RunOrigin, RunQuery, RunReader, RunRecord, RunStatus, RunWriter};
+use tirea_contract::storage::{
+    MailboxEntry, MailboxEntryStatus, RunOrigin, RunQuery, RunReader, RunRecord, RunStatus,
+    RunWriter,
+};
 use tirea_store_adapters::MemoryStore;
 use uuid::Uuid;
 
@@ -56,6 +59,7 @@ fn make_app_with_os() -> (axum::Router, Arc<AgentOs>) {
     // Explicitly opt in to run projection routes (not part of the default public API).
     let app = axum::Router::new()
         .merge(tirea_agentos_server::http::run_routes())
+        .merge(tirea_agentos_server::http::thread_routes())
         .merge(tirea_agentos_server::http::health_routes())
         .with_state(state);
     (app, os)
@@ -63,6 +67,71 @@ fn make_app_with_os() -> (axum::Router, Arc<AgentOs>) {
 
 fn make_app() -> axum::Router {
     make_app_with_os().0
+}
+
+fn make_slow_interrupt_app() -> (axum::Router, Arc<AgentOs>, Arc<MemoryStore>) {
+    let store = Arc::new(MemoryStore::new());
+    let behavior_id = format!("slow-terminate-{}", Uuid::new_v4().simple());
+    let os = Arc::new(
+        AgentOsBuilder::new()
+            .with_registered_behavior(
+                &behavior_id,
+                Arc::new(SlowTerminatePlugin::new(
+                    behavior_id.clone(),
+                    std::time::Duration::from_secs(30),
+                )),
+            )
+            .with_agent(
+                TEST_AGENT_ID,
+                AgentDefinition {
+                    id: TEST_AGENT_ID.to_string(),
+                    behavior_ids: vec![behavior_id],
+                    ..Default::default()
+                },
+            )
+            .with_agent_state_store(store.clone())
+            .build()
+            .expect("build AgentOs"),
+    );
+    let read_store: Arc<dyn ThreadReader> = store.clone();
+    let app = axum::Router::new()
+        .merge(tirea_agentos_server::http::run_routes())
+        .merge(tirea_agentos_server::http::thread_routes())
+        .merge(tirea_agentos_server::http::health_routes())
+        .with_state(AppState::new(os.clone(), read_store).with_mailbox_store(store.clone()));
+    (app, os, store)
+}
+
+fn mailbox_entry(run_id: &str, thread_id: &str) -> MailboxEntry {
+    MailboxEntry {
+        entry_id: format!("entry-{run_id}"),
+        thread_id: thread_id.to_string(),
+        run_id: run_id.to_string(),
+        agent_id: TEST_AGENT_ID.to_string(),
+        status: MailboxEntryStatus::Queued,
+        request: RunRequest {
+            agent_id: TEST_AGENT_ID.to_string(),
+            thread_id: Some(thread_id.to_string()),
+            run_id: Some(run_id.to_string()),
+            parent_run_id: None,
+            parent_thread_id: None,
+            resource_id: None,
+            origin: RunOrigin::User,
+            state: None,
+            messages: vec![],
+            initial_decisions: vec![],
+        },
+        dedupe_key: None,
+        available_at: now_unix_millis(),
+        attempt_count: 0,
+        last_error: None,
+        claim_token: None,
+        claimed_by: None,
+        lease_until: None,
+        accepted_run_id: None,
+        created_at: now_unix_millis(),
+        updated_at: now_unix_millis(),
+    }
 }
 
 async fn start_active_run(
@@ -236,6 +305,48 @@ async fn get_run_returns_not_found_for_missing_id() {
             .contains("run not found"),
         "unexpected payload: {payload}"
     );
+}
+
+#[tokio::test]
+async fn interrupt_thread_cancels_active_run_and_pending_mailbox_entries() {
+    let (app, os, store) = make_slow_interrupt_app();
+    let thread_id = format!("thread-interrupt-{}", Uuid::new_v4().simple());
+    let active_run_id = format!("run-active-{}", Uuid::new_v4().simple());
+    let queued_run_id = format!("run-queued-{}", Uuid::new_v4().simple());
+
+    let _active_run = start_active_run(&os, TEST_AGENT_ID, &thread_id, &active_run_id).await;
+    store
+        .enqueue_mailbox_entry(&mailbox_entry(&queued_run_id, &thread_id))
+        .await
+        .expect("enqueue queued mailbox entry");
+
+    let uri = format!("/v1/threads/{thread_id}/interrupt");
+    let (status, body) = post_sse(app, &uri, json!({})).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    let payload: Value = serde_json::from_str(&body).expect("valid json");
+    assert_eq!(payload["status"].as_str(), Some("interrupt_requested"));
+    assert_eq!(payload["thread_id"].as_str(), Some(thread_id.as_str()));
+    assert_eq!(
+        payload["cancelled_run_id"].as_str(),
+        Some(active_run_id.as_str())
+    );
+    assert_eq!(payload["cancelled_pending_count"].as_u64(), Some(1));
+    assert!(payload["cancelled_pending_run_ids"]
+        .as_array()
+        .expect("cancelled pending ids should be present")
+        .iter()
+        .any(|value| value.as_str() == Some(queued_run_id.as_str())));
+
+    let queued_entry =
+        tirea_agentos::contracts::storage::MailboxReader::load_mailbox_entry_by_run_id(
+            store.as_ref(),
+            &queued_run_id,
+        )
+        .await
+        .expect("load queued mailbox entry")
+        .expect("queued mailbox entry should exist");
+    assert_eq!(queued_entry.status, MailboxEntryStatus::Cancelled);
 }
 
 #[tokio::test]

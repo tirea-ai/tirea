@@ -18,7 +18,7 @@ use crate::service::{
     check_run_liveness, load_run_record, normalize_optional_id, parse_message_query,
     require_agent_state_store, require_mailbox_store, start_background_run, start_http_run,
     try_cancel_active_or_queued_run_by_id, try_forward_decisions_to_active_run_by_id, ApiError,
-    MessageQueryParams, RunLookup,
+    MessageQueryParams, RunLookup, ThreadInterruptResult,
 };
 use crate::transport::http_run::{wire_http_sse_relay, HttpSseRelayConfig};
 use crate::transport::http_sse::{sse_body_stream, sse_response};
@@ -29,6 +29,7 @@ const HEALTH_PATH: &str = "/health";
 const THREADS_PATH: &str = "/v1/threads";
 const THREAD_SUMMARIES_PATH: &str = "/v1/threads/summaries";
 const THREAD_PATH: &str = "/v1/threads/:id";
+const THREAD_INTERRUPT_PATH: &str = "/v1/threads/:id/interrupt";
 const THREAD_METADATA_PATH: &str = "/v1/threads/:id/metadata";
 const THREAD_MESSAGES_PATH: &str = "/v1/threads/:id/messages";
 const RUNS_PATH: &str = "/v1/runs";
@@ -48,6 +49,7 @@ pub fn thread_routes() -> Router<AppState> {
         // Register /summaries before /:id to avoid `:id` capturing "summaries"
         .route(THREAD_SUMMARIES_PATH, get(get_thread_summaries))
         .route(THREAD_PATH, get(get_thread).delete(delete_thread))
+        .route(THREAD_INTERRUPT_PATH, post(interrupt_thread))
         .route(THREAD_METADATA_PATH, patch(patch_thread_metadata))
         .route(THREAD_MESSAGES_PATH, get(get_thread_messages))
 }
@@ -223,6 +225,33 @@ async fn patch_thread_metadata(
     Ok(Json(
         serde_json::to_value(&thread.metadata).unwrap_or_default(),
     ))
+}
+
+async fn interrupt_thread(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    let mailbox_store = require_mailbox_store(&st)?;
+    let ThreadInterruptResult {
+        cancelled_run_id,
+        cancelled_entries,
+    } = crate::service::interrupt_thread(&st.os, st.read_store.as_ref(), &mailbox_store, &id)
+        .await?;
+    let cancelled_run_ids: Vec<String> = cancelled_entries
+        .iter()
+        .map(|entry| entry.run_id.clone())
+        .collect();
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "status": "interrupt_requested",
+            "thread_id": id,
+            "cancelled_run_id": cancelled_run_id,
+            "cancelled_pending_count": cancelled_entries.len(),
+            "cancelled_pending_run_ids": cancelled_run_ids,
+        })),
+    )
+        .into_response())
 }
 
 #[derive(Debug, Serialize)]

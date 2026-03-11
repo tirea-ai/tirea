@@ -1320,3 +1320,25 @@ async fn mailbox_cancel_pending_entries_by_thread_respects_exclusion() {
         .unwrap();
     assert_eq!(other.status, MailboxEntryStatus::Queued);
 }
+
+#[tokio::test]
+async fn mailbox_claim_by_run_id_ignores_available_at_for_inline_dispatch() {
+    let store = MemoryStore::new();
+    let mut entry = mailbox_entry("run-inline", "thread-inline");
+    entry.available_at = i64::MAX as u64;
+    store.enqueue_mailbox_entry(&entry).await.unwrap();
+
+    let claimed = store
+        .claim_mailbox_entries(10, "worker-batch", 10, 5_000)
+        .await
+        .unwrap();
+    assert!(claimed.is_empty());
+
+    let targeted = store
+        .claim_mailbox_entry_by_run_id("run-inline", "worker-inline", 10, 5_000)
+        .await
+        .unwrap()
+        .expect("inline claim should succeed");
+    assert_eq!(targeted.status, MailboxEntryStatus::Claimed);
+    assert_eq!(targeted.claimed_by.as_deref(), Some("worker-inline"));
+}

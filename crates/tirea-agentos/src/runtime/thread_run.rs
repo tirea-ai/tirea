@@ -254,6 +254,15 @@ impl AgentOs {
         }
         true
     }
+
+    pub async fn cancel_active_run_by_thread(&self, thread_id: &str) -> Option<String> {
+        let handle = self.active_runs.handle_by_thread(thread_id).await?;
+        let run_id = handle.run_id().to_string();
+        if !handle.cancel() {
+            self.active_runs.remove_by_run_id(&run_id).await;
+        }
+        Some(run_id)
+    }
 }
 
 #[cfg(test)]

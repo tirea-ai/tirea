@@ -167,6 +167,35 @@ impl MailboxWriter for FileStore {
         Ok(claimed)
     }
 
+    async fn claim_mailbox_entry_by_run_id(
+        &self,
+        run_id: &str,
+        consumer_id: &str,
+        now: u64,
+        lease_duration_ms: u64,
+    ) -> Result<Option<MailboxEntry>, MailboxStoreError> {
+        let Some(mut entry) = self.load_mailbox_entry_by_run_id(run_id).await? else {
+            return Ok(None);
+        };
+        if entry.status.is_terminal() {
+            return Ok(None);
+        }
+        if entry.status == tirea_contract::MailboxEntryStatus::Claimed
+            && entry.lease_until.is_some_and(|lease| lease > now)
+        {
+            return Ok(None);
+        }
+
+        entry.status = tirea_contract::MailboxEntryStatus::Claimed;
+        entry.claim_token = Some(uuid::Uuid::now_v7().simple().to_string());
+        entry.claimed_by = Some(consumer_id.to_string());
+        entry.lease_until = Some(now.saturating_add(lease_duration_ms));
+        entry.attempt_count = entry.attempt_count.saturating_add(1);
+        entry.updated_at = now;
+        self.save_mailbox_entry(&entry).await?;
+        Ok(Some(entry))
+    }
+
     async fn ack_mailbox_entry(
         &self,
         entry_id: &str,
@@ -929,5 +958,28 @@ mod tests {
             .unwrap()
             .expect("mailbox entry should persist");
         assert_eq!(loaded.status, MailboxEntryStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn file_storage_mailbox_claim_by_run_id_ignores_available_at() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = FileStore::new(temp_dir.path());
+        let mut entry = mailbox_entry("run-file-inline", "thread-file-inline");
+        entry.available_at = i64::MAX as u64;
+        storage.enqueue_mailbox_entry(&entry).await.unwrap();
+
+        let claimed = storage
+            .claim_mailbox_entries(1, "worker-file-batch", 10, 5_000)
+            .await
+            .unwrap();
+        assert!(claimed.is_empty());
+
+        let targeted = storage
+            .claim_mailbox_entry_by_run_id("run-file-inline", "worker-file-inline", 10, 5_000)
+            .await
+            .unwrap()
+            .expect("inline claim should succeed");
+        assert_eq!(targeted.status, MailboxEntryStatus::Claimed);
+        assert_eq!(targeted.claimed_by.as_deref(), Some("worker-file-inline"));
     }
 }
