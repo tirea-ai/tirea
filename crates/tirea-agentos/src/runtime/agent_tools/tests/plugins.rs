@@ -17,7 +17,7 @@ fn plugin_filters_agents_by_scope_policy() {
     reg.upsert("writer", crate::runtime::AgentDefinition::new("mock"));
     reg.upsert("reviewer", crate::runtime::AgentDefinition::new("mock"));
     let plugin = AgentToolsPlugin::new(Arc::new(reg));
-    let mut rt = tirea_contract::RunConfig::new();
+    let mut rt = tirea_contract::RuntimeOptions::new();
     rt.policy_mut()
         .set_allowed_agents_if_absent(Some(&["writer".to_string()]));
     let rendered = plugin.render_available_agents(None, Some(rt.policy()));

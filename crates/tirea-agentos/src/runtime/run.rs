@@ -369,7 +369,7 @@ impl AgentOs {
 
         let run_ctx = RunContext::from_thread_with_registry_and_execution(
             &thread,
-            resolved.run_config,
+            resolved.runtime_options,
             execution_ctx.clone(),
             resolved.agent.lattice_registry.clone(),
         )
@@ -494,7 +494,7 @@ impl AgentOs {
         );
         let run_ctx = RunContext::from_thread_with_registry_and_execution(
             &thread,
-            resolved.run_config,
+            resolved.runtime_options,
             execution_ctx.clone(),
             resolved.agent.lattice_registry.clone(),
         )

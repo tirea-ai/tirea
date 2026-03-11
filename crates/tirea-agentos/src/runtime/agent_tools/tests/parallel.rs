@@ -21,7 +21,7 @@ async fn parallel_background_runs_and_stop_all() {
     let run_tool = BackgroundCapable::new(AgentRunTool::new(os), bg_mgr.clone());
 
     let mut fix = TestFixture::new();
-    apply_caller_scope(&mut fix);
+    apply_caller_context(&mut fix);
 
     // Launch 3 background runs in parallel.
     let mut run_ids = Vec::new();
@@ -91,7 +91,7 @@ async fn parallel_background_launches_produce_unique_run_ids() {
     let mut run_ids = Vec::new();
     for i in 0..5 {
         let mut fix = TestFixture::new();
-        apply_caller_scope(&mut fix);
+        apply_caller_context(&mut fix);
         let started = run_tool
             .execute(
                 json!({
@@ -140,7 +140,7 @@ async fn parallel_launch_and_immediate_stop() {
 
     // Launch background run.
     let mut fix = TestFixture::new();
-    apply_caller_scope(&mut fix);
+    apply_caller_context(&mut fix);
     let started = run_tool
         .execute(
             json!({

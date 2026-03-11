@@ -204,7 +204,7 @@ mod tests {
         VersionPrecondition,
     };
     use crate::contracts::thread::{Thread, ThreadChangeSet};
-    use crate::contracts::RunConfig;
+    use crate::contracts::RuntimeOptions;
     use async_trait::async_trait;
     use serde_json::{json, Value};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -294,10 +294,10 @@ mod tests {
     fn make_ctx<'a>(
         phase: Phase,
         thread_id: &'a str,
-        run_config: &'a RunConfig,
+        runtime_options: &'a RuntimeOptions,
         doc: &'a DocCell,
     ) -> ReadOnlyContext<'a> {
-        ReadOnlyContext::new(phase, thread_id, &[], run_config, doc)
+        ReadOnlyContext::new(phase, thread_id, &[], runtime_options, doc)
     }
 
     fn apply_state_actions(doc: &DocCell, actions: Vec<AnyStateAction>) {
@@ -405,7 +405,7 @@ mod tests {
 
         let plugin = BackgroundTasksPlugin::new(mgr).with_task_store(Some(task_store));
         let doc = DocCell::new(json!({}));
-        let rc = RunConfig::new();
+        let rc = RuntimeOptions::new();
         let ctx = make_ctx(Phase::RunStart, "thread-1", &rc, &doc);
 
         let actions = plugin.run_start(&ctx).await;
@@ -453,7 +453,7 @@ mod tests {
                 }
             }
         }));
-        let rc = RunConfig::new();
+        let rc = RuntimeOptions::new();
         let ctx = make_ctx(Phase::RunStart, "thread-1", &rc, &doc);
 
         let actions = plugin.run_start(&ctx).await;
@@ -480,7 +480,7 @@ mod tests {
 
         let plugin = BackgroundTasksPlugin::new(mgr).with_task_store(Some(task_store));
         let doc = DocCell::new(json!({}));
-        let rc = RunConfig::new();
+        let rc = RuntimeOptions::new();
         let ctx = make_ctx(Phase::RunStart, "thread-1", &rc, &doc);
 
         let actions = plugin.run_start(&ctx).await;
@@ -517,7 +517,7 @@ mod tests {
                 }
             }
         }));
-        let rc = RunConfig::new();
+        let rc = RuntimeOptions::new();
         let ctx = make_ctx(Phase::BeforeInference, "thread-1", &rc, &doc);
 
         let actions = plugin.before_inference(&ctx).await;
@@ -536,7 +536,7 @@ mod tests {
         let plugin = BackgroundTasksPlugin::new(mgr);
 
         let doc = DocCell::new(json!({}));
-        let rc = RunConfig::new();
+        let rc = RuntimeOptions::new();
         let ctx = make_ctx(Phase::AfterToolExecute, "thread-1", &rc, &doc);
 
         let actions = plugin.after_tool_execute(&ctx).await;
@@ -561,7 +561,7 @@ mod tests {
 
         let plugin = BackgroundTasksPlugin::new(mgr);
         let doc = DocCell::new(json!({}));
-        let rc = RunConfig::new();
+        let rc = RuntimeOptions::new();
         let ctx = make_ctx(Phase::AfterToolExecute, "thread-1", &rc, &doc);
 
         let actions = plugin.after_tool_execute(&ctx).await;
@@ -595,7 +595,7 @@ mod tests {
 
         let plugin = BackgroundTasksPlugin::new(mgr);
         let doc = DocCell::new(json!({}));
-        let rc = RunConfig::new();
+        let rc = RuntimeOptions::new();
         let ctx = make_ctx(Phase::AfterToolExecute, "thread-1", &rc, &doc);
 
         let actions = plugin.after_tool_execute(&ctx).await;
@@ -628,7 +628,7 @@ mod tests {
                 }
             }
         }));
-        let rc = RunConfig::new();
+        let rc = RuntimeOptions::new();
         let ctx = make_ctx(Phase::AfterToolExecute, "thread-1", &rc, &doc);
 
         let actions = plugin.after_tool_execute(&ctx).await;
@@ -650,7 +650,7 @@ mod tests {
 
         let plugin = BackgroundTasksPlugin::new(mgr);
         let doc = DocCell::new(json!({}));
-        let rc = RunConfig::new();
+        let rc = RuntimeOptions::new();
 
         let ctx_b = make_ctx(Phase::AfterToolExecute, "thread-B", &rc, &doc);
         let actions = plugin.after_tool_execute(&ctx_b).await;

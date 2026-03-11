@@ -138,7 +138,7 @@ pub struct ResolvedRun {
     /// Resolved tool map after filtering and wiring.
     pub tools: HashMap<String, Arc<dyn Tool>>,
     /// Typed per-run configuration and policy.
-    pub run_config: crate::contracts::RunConfig,
+    pub runtime_options: crate::contracts::RuntimeOptions,
 }
 
 impl ResolvedRun {
@@ -175,7 +175,7 @@ fn ensure_execution_context(
         execution_ctx.agent_id = agent.id().to_string();
     }
     if execution_ctx.parent_tool_call_id_opt().is_none() {
-        if let Some(parent_tool_call_id) = run_ctx.run_config.parent_tool_call_id() {
+        if let Some(parent_tool_call_id) = run_ctx.runtime_options.parent_tool_call_id() {
             execution_ctx.parent_tool_call_id = Some(parent_tool_call_id.to_string());
         }
     }
@@ -1006,7 +1006,7 @@ pub(super) fn suspended_call_pending_events_for_ids(
 
 pub(super) struct ToolExecutionContext {
     pub(super) state: serde_json::Value,
-    pub(super) run_config: tirea_contract::RunConfig,
+    pub(super) runtime_options: tirea_contract::RuntimeOptions,
     pub(super) execution_ctx: RunExecutionContext,
     pub(super) caller_context: crate::contracts::runtime::tool_call::CallerContext,
 }
@@ -1020,7 +1020,7 @@ pub(super) fn prepare_tool_execution_context(
     let caller_context = caller_context_for_tool_execution(run_ctx, &state);
     Ok(ToolExecutionContext {
         state,
-        run_config: run_ctx.run_config.clone(),
+        runtime_options: run_ctx.runtime_options.clone(),
         execution_ctx: run_ctx.execution_ctx().clone(),
         caller_context,
     })
@@ -1364,7 +1364,7 @@ async fn drain_resuming_tool_calls_and_replay(
                     tool_descriptors,
                     agent_behavior: Some(agent.behavior()),
                     activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
-                    run_config: &run_ctx.run_config,
+                    runtime_options: &run_ctx.runtime_options,
                     execution_ctx: run_ctx.execution_ctx().clone(),
                     caller_context,
                     thread_id: run_ctx.thread_id(),
@@ -2201,7 +2201,7 @@ pub async fn run_loop_with_context(
             tool_descriptors: &active_tool_descriptors,
             agent_behavior: Some(agent.behavior()),
             activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
-            run_config: &tool_context.run_config,
+            runtime_options: &tool_context.runtime_options,
             execution_ctx: tool_context.execution_ctx.clone(),
             caller_context: tool_context.caller_context.clone(),
             thread_id: run_ctx.thread_id(),

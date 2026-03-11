@@ -5,9 +5,6 @@ use crate::runtime::background_tasks::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-const BG_PLANNED_MESSAGES_KEY: &str = "__agent_run_planned_messages";
-const BG_PLANNED_INITIAL_STATE_KEY: &str = "__agent_run_planned_initial_state";
-
 /// Arguments for the agent run tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AgentRunArgs {
@@ -17,13 +14,16 @@ pub struct AgentRunArgs {
     pub prompt: Option<String>,
     /// Existing run id to resume or inspect.
     pub run_id: Option<String>,
-    /// Whether to fork caller state/messages into the new run.
+    /// Whether to fork caller messages into the new run.
     #[serde(default)]
     pub fork_context: bool,
-    /// Internal flag set by BackgroundCapable wrapper for resume paths.
-    #[serde(default, rename = "__is_resume")]
-    #[schemars(skip)]
-    pub is_resume: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentRunBackgroundPlan {
+    agent_id: String,
+    messages: Vec<Message>,
+    initial_state: Option<Value>,
 }
 
 /// Normalize optional string: trim whitespace and treat empty as None.
@@ -119,31 +119,22 @@ impl AgentRunTool {
         Ok((agent_id, messages, initial_state))
     }
 
-    fn encode_background_plan(
-        args: &mut Value,
-        agent_id: &str,
-        messages: &[Message],
-        initial_state: Option<Value>,
-    ) -> Result<(), ToolResult> {
+    fn normalize_background_args(args: &mut Value, agent_id: &str) -> Result<(), ToolResult> {
         let Some(obj) = args.as_object_mut() else {
             return Err(ToolResult::error(
                 AGENT_RUN_TOOL_ID,
                 "agent_run arguments must be a JSON object",
             ));
         };
-
         obj.insert("agent_id".to_string(), json!(agent_id));
-        obj.insert(BG_PLANNED_MESSAGES_KEY.to_string(), json!(messages));
-        obj.insert(
-            BG_PLANNED_INITIAL_STATE_KEY.to_string(),
-            initial_state.unwrap_or(Value::Null),
-        );
         Ok(())
     }
 }
 
 #[async_trait]
 impl BackgroundExecutable for AgentRunTool {
+    type PreparedBackground = AgentRunBackgroundPlan;
+
     fn task_type(&self) -> &str {
         AGENT_RUN_TASK_TYPE
     }
@@ -185,11 +176,12 @@ impl BackgroundExecutable for AgentRunTool {
         format!("agent:{agent_id}")
     }
 
-    fn prepare_background_args(
+    fn prepare_background(
         &self,
         args: &mut Value,
         ctx: &ToolCallContext<'_>,
-    ) -> Result<(), ToolResult> {
+        is_resume: bool,
+    ) -> Result<Self::PreparedBackground, ToolResult> {
         let parsed: AgentRunArgs = serde_json::from_value(args.clone()).map_err(|e| {
             ToolResult::error(
                 AGENT_RUN_TOOL_ID,
@@ -200,11 +192,16 @@ impl BackgroundExecutable for AgentRunTool {
         let (agent_id, messages, initial_state) = self.resolve_execution_context(
             &parsed,
             ctx.caller_context().messages(),
-            Some(ctx.run_config().policy()),
+            Some(ctx.runtime_options().policy()),
             caller_agent_id.as_deref(),
-            parsed.is_resume,
+            is_resume,
         )?;
-        Self::encode_background_plan(args, &agent_id, &messages, initial_state)
+        Self::normalize_background_args(args, &agent_id)?;
+        Ok(AgentRunBackgroundPlan {
+            agent_id,
+            messages,
+            initial_state,
+        })
     }
 
     fn foreground_task_status(&self, result: &ToolResult) -> (TaskStatus, Option<String>) {
@@ -231,53 +228,20 @@ impl BackgroundExecutable for AgentRunTool {
     async fn execute_background(
         &self,
         task_id: &str,
-        args: Value,
+        _args: Value,
+        prepared: Self::PreparedBackground,
+        execution: crate::runtime::background_tasks::BackgroundExecutionContext,
         cancel_token: RunCancellationToken,
     ) -> BgTaskResult {
-        // Extract parent context injected by BackgroundCapable wrapper.
-        let parent_thread_id = args
-            .get("__parent_thread_id")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let parent_run_id = args
-            .get("__parent_run_id")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-
-        let run_args: AgentRunArgs = match serde_json::from_value(args.clone()) {
-            Ok(a) => a,
-            Err(e) => return BgTaskResult::Failed(format!("invalid args: {e}")),
-        };
-
-        let agent_id = match normalize_opt(run_args.agent_id.clone()) {
-            Some(id) => id,
-            None => return BgTaskResult::Failed("missing agent_id".to_string()),
-        };
-
-        let messages = match args
-            .get(BG_PLANNED_MESSAGES_KEY)
-            .cloned()
-            .map(serde_json::from_value::<Vec<Message>>)
-            .transpose()
-        {
-            Ok(messages) => messages.unwrap_or_default(),
-            Err(e) => return BgTaskResult::Failed(format!("invalid planned messages: {e}")),
-        };
-        let initial_state = args
-            .get(BG_PLANNED_INITIAL_STATE_KEY)
-            .cloned()
-            .filter(|value| !value.is_null());
-
         let request = SubAgentExecutionRequest {
-            agent_id,
+            agent_id: prepared.agent_id,
             child_thread_id: sub_agent_thread_id(task_id),
             run_id: task_id.to_string(),
-            parent_run_id,
+            parent_run_id: execution.parent_task_id,
             parent_tool_call_id: None,
-            parent_thread_id,
-            messages,
-            initial_state,
+            parent_thread_id: execution.owner_thread_id,
+            messages: prepared.messages,
+            initial_state: prepared.initial_state,
             cancellation_token: Some(cancel_token),
         };
 
@@ -292,6 +256,18 @@ impl BackgroundExecutable for AgentRunTool {
             SubAgentStatus::Stopped => BgTaskResult::Stopped,
             SubAgentStatus::Running => BgTaskResult::Success(json!({ "run_id": task_id })),
         }
+    }
+
+    async fn execute_foreground(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+        is_resume: bool,
+    ) -> Result<ToolResult, ToolError> {
+        let parsed: AgentRunArgs = serde_json::from_value(args).map_err(|e| {
+            ToolError::ExecutionFailed(format!("invalid arguments for agent_run: {e}"))
+        })?;
+        self.execute(parsed, ctx, is_resume).await
     }
 }
 
@@ -313,6 +289,17 @@ impl crate::contracts::runtime::tool_call::TypedTool for AgentRunTool {
         &self,
         args: AgentRunArgs,
         ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
+        self.execute(args, ctx, false).await
+    }
+}
+
+impl AgentRunTool {
+    async fn execute(
+        &self,
+        args: AgentRunArgs,
+        ctx: &ToolCallContext<'_>,
+        is_resume: bool,
     ) -> Result<ToolResult, ToolError> {
         let tool_name = AGENT_RUN_TOOL_ID;
         let owner_thread_id = ctx.caller_context().thread_id().map(str::to_string);
@@ -344,9 +331,9 @@ impl crate::contracts::runtime::tool_call::TypedTool for AgentRunTool {
         let (agent_id, messages, initial_state) = match self.resolve_execution_context(
             &args,
             ctx.caller_context().messages(),
-            Some(ctx.run_config().policy()),
+            Some(ctx.runtime_options().policy()),
             caller_agent_id.as_deref(),
-            args.is_resume,
+            is_resume,
         ) {
             Ok(ctx) => ctx,
             Err(result) => return Ok(result),

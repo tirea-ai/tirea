@@ -10,7 +10,7 @@ use tirea_agent_loop::contracts::runtime::behavior::AgentBehavior;
 use tirea_agent_loop::contracts::runtime::tool_call::{Tool, ToolResult};
 use tirea_agent_loop::contracts::thread::Thread;
 use tirea_agent_loop::contracts::thread::{Message, ToolCall};
-use tirea_agent_loop::engine::tool_execution::execute_single_tool_with_scope_and_behavior;
+use tirea_agent_loop::engine::tool_execution::execute_single_tool_with_runtime_options_and_behavior;
 use tirea_contract::testing::TestFixture;
 use tirea_extension_permission::PermissionPlugin;
 use tirea_extension_skills::{
@@ -84,7 +84,7 @@ echo "hello"
 async fn apply_tool(thread: Thread, tool: &dyn Tool, call: ToolCall) -> (Thread, ToolResult) {
     let state = thread.rebuild_state().unwrap();
     let behavior = TestToolBehavior::new();
-    let exec = execute_single_tool_with_scope_and_behavior(
+    let exec = execute_single_tool_with_runtime_options_and_behavior(
         Some(tool),
         &call,
         &state,
@@ -104,11 +104,11 @@ async fn apply_tool_with_scope(
     thread: Thread,
     tool: &dyn Tool,
     call: ToolCall,
-    scope: &tirea_contract::RunConfig,
+    scope: &tirea_contract::RuntimeOptions,
 ) -> (Thread, ToolResult) {
     let state = thread.rebuild_state().unwrap();
     let behavior = TestToolBehavior::new();
-    let exec = execute_single_tool_with_scope_and_behavior(
+    let exec = execute_single_tool_with_runtime_options_and_behavior(
         Some(tool),
         &call,
         &state,
@@ -155,7 +155,7 @@ async fn test_skill_activation_delivers_instructions_via_user_messages_on_effect
     let doc = tirea_state::DocCell::new(state);
     let ops = std::sync::Mutex::new(Vec::new());
     let pending_messages = std::sync::Mutex::new(Vec::new());
-    let scope = tirea_contract::RunConfig::default();
+    let scope = tirea_contract::RuntimeOptions::default();
     let ctx = tirea_contract::runtime::tool_call::ToolCallContext::new(
         &doc,
         &ops,
@@ -190,7 +190,7 @@ async fn test_skill_activation_respects_scope_skill_policy() {
     let (_td, skills) = make_skill_tree();
     let activate = SkillActivateTool::new(skills);
     let thread = Thread::with_initial_state("s", json!({}));
-    let mut scope = tirea_contract::RunConfig::new();
+    let mut scope = tirea_contract::RuntimeOptions::new();
     scope
         .policy_mut()
         .set_allowed_skills_if_absent(Some(&["other-skill".to_string()]));
@@ -210,7 +210,7 @@ async fn test_load_skill_resource_respects_scope_skill_policy() {
     let (_td, skills) = make_skill_tree();
     let load = LoadSkillResourceTool::new(skills);
     let thread = Thread::with_initial_state("s", json!({}));
-    let mut scope = tirea_contract::RunConfig::new();
+    let mut scope = tirea_contract::RuntimeOptions::new();
     scope
         .policy_mut()
         .set_allowed_skills_if_absent(Some(&["other-skill".to_string()]));
@@ -488,7 +488,7 @@ async fn test_skill_activation_user_messages_contain_skill_instructions() {
     let doc = tirea_state::DocCell::new(state);
     let ops = std::sync::Mutex::new(Vec::new());
     let pending_messages = std::sync::Mutex::new(Vec::new());
-    let scope = tirea_contract::RunConfig::default();
+    let scope = tirea_contract::RuntimeOptions::default();
     let ctx = tirea_contract::runtime::tool_call::ToolCallContext::new(
         &doc,
         &ops,

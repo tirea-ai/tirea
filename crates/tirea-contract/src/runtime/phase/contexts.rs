@@ -4,7 +4,7 @@ use crate::runtime::run::{RunAction, TerminationReason};
 use crate::runtime::tool_call::gate::{SuspendTicket, ToolCallAction};
 use crate::runtime::tool_call::{ToolCallResume, ToolResult};
 use crate::thread::Message;
-use crate::RunConfig;
+use crate::RuntimeOptions;
 use serde_json::Value;
 use std::sync::Arc;
 use tirea_state::State;
@@ -17,7 +17,7 @@ pub trait PhaseContext {
     fn phase(&self) -> Phase;
     fn thread_id(&self) -> &str;
     fn messages(&self) -> &[Arc<Message>];
-    fn run_config(&self) -> &RunConfig;
+    fn runtime_options(&self) -> &RuntimeOptions;
     fn execution_ctx(&self) -> &RunExecutionContext;
     fn state_of<T: State>(&self) -> T::Ref<'_>;
     fn snapshot(&self) -> serde_json::Value;
@@ -49,8 +49,8 @@ macro_rules! impl_phase_context {
                 self.step.messages()
             }
 
-            fn run_config(&self) -> &RunConfig {
-                self.step.run_config()
+            fn runtime_options(&self) -> &RuntimeOptions {
+                self.step.runtime_options()
             }
 
             fn execution_ctx(&self) -> &RunExecutionContext {

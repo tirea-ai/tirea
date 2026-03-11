@@ -283,7 +283,8 @@ impl AgentBehavior for AgentToolsPlugin {
         ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<BeforeInferenceAction> {
         let caller_agent = ctx.execution_ctx().agent_id_opt();
-        let rendered = self.render_available_agents(caller_agent, Some(ctx.run_config().policy()));
+        let rendered =
+            self.render_available_agents(caller_agent, Some(ctx.runtime_options().policy()));
         if rendered.is_empty() {
             ActionSet::empty()
         } else {

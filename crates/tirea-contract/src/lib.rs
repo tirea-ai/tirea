@@ -118,10 +118,10 @@ pub mod thread;
 pub mod transport;
 
 /// Per-run runtime configuration.
-pub type RunConfig = runtime::RunConfig;
+pub type RuntimeOptions = runtime::RuntimeOptions;
 
-/// Error type for `RunConfig` operations.
-pub type RunConfigError = runtime::RunConfigError;
+/// Error type for `RuntimeOptions` operations.
+pub type RuntimeOptionsError = runtime::RuntimeOptionsError;
 
 // thread
 pub use thread::{

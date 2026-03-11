@@ -10,7 +10,7 @@ use crate::runtime::state::StateScopeRegistry;
 use crate::runtime::state::{ScopeContext, StateActionDeserializerRegistry, StateScope, StateSpec};
 use crate::runtime::tool_call::{ToolCallResume, ToolResult};
 use crate::thread::Message;
-use crate::RunConfig;
+use crate::RuntimeOptions;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
@@ -25,7 +25,7 @@ pub struct ReadOnlyContext<'a> {
     phase: Phase,
     thread_id: &'a str,
     messages: &'a [Arc<Message>],
-    run_config: &'a RunConfig,
+    runtime_options: &'a RuntimeOptions,
     execution_ctx: RunExecutionContext,
     doc: &'a DocCell,
     llm_response: Option<&'a LLMResponse>,
@@ -43,14 +43,14 @@ impl<'a> ReadOnlyContext<'a> {
         phase: Phase,
         thread_id: &'a str,
         messages: &'a [Arc<Message>],
-        run_config: &'a RunConfig,
+        runtime_options: &'a RuntimeOptions,
         doc: &'a DocCell,
     ) -> Self {
         Self {
             phase,
             thread_id,
             messages,
-            run_config,
+            runtime_options,
             execution_ctx: RunExecutionContext::default(),
             doc,
             llm_response: None,
@@ -118,8 +118,8 @@ impl<'a> ReadOnlyContext<'a> {
         self.initial_message_count
     }
 
-    pub fn run_config(&self) -> &RunConfig {
-        self.run_config
+    pub fn runtime_options(&self) -> &RuntimeOptions {
+        self.runtime_options
     }
 
     pub fn execution_ctx(&self) -> &RunExecutionContext {
@@ -281,7 +281,7 @@ pub fn build_read_only_context_from_step<'a>(
         phase,
         step.thread_id(),
         step.messages(),
-        step.run_config(),
+        step.runtime_options(),
         doc,
     )
     .with_execution_ctx(step.ctx().execution_ctx());
@@ -316,7 +316,7 @@ mod tests {
     #[tokio::test]
     async fn default_agent_all_phases_noop() {
         let agent = NoOpBehavior;
-        let config = RunConfig::new();
+        let config = RuntimeOptions::new();
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::RunStart, "t1", &[], &config, &doc);
 
@@ -346,7 +346,7 @@ mod tests {
         }
 
         let agent = ContextBehavior;
-        let config = RunConfig::new();
+        let config = RuntimeOptions::new();
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
 
@@ -356,7 +356,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_only_context_accessors() {
-        let config = RunConfig::new();
+        let config = RuntimeOptions::new();
         let doc = DocCell::new(json!({"key": "val"}));
         let ctx = ReadOnlyContext::new(Phase::AfterToolExecute, "thread_42", &[], &config, &doc);
 
@@ -374,7 +374,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_only_context_with_tool_info() {
-        let config = RunConfig::new();
+        let config = RuntimeOptions::new();
         let doc = DocCell::new(json!({}));
         let args = json!({"x": 1});
         let ctx = ReadOnlyContext::new(Phase::BeforeToolExecute, "t1", &[], &config, &doc)

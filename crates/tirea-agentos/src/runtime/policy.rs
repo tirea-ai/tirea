@@ -2,7 +2,7 @@ use crate::composition::AgentDefinition;
 use crate::contracts::runtime::tool_call::Tool;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tirea_contract::RunConfig;
+use tirea_contract::RuntimeOptions;
 
 pub(super) use tirea_contract::scope::{is_id_allowed, is_scope_allowed};
 
@@ -14,11 +14,11 @@ pub(super) fn filter_tools_in_place(
     tools.retain(|id, _| is_id_allowed(id, allowed, excluded));
 }
 
-pub(super) fn set_scope_filters_from_definition_if_absent(
-    scope: &mut RunConfig,
+pub(super) fn set_runtime_policy_from_definition_if_absent(
+    runtime_options: &mut RuntimeOptions,
     definition: &AgentDefinition,
 ) {
-    let policy = scope.policy_mut();
+    let policy = runtime_options.policy_mut();
     policy.set_allowed_tools_if_absent(definition.allowed_tools.as_deref());
     policy.set_excluded_tools_if_absent(definition.excluded_tools.as_deref());
     policy.set_allowed_skills_if_absent(definition.allowed_skills.as_deref());

@@ -82,7 +82,7 @@ impl AgentBehavior for PermissionPlugin {
 
 /// Tool scope policy plugin.
 ///
-/// Enforces allow/deny list filtering via typed `RunConfig` policy fields.
+/// Enforces allow/deny list filtering via typed `RuntimeOptions` policy fields.
 /// Install before [`PermissionPlugin`] so out-of-scope tools are blocked first.
 pub struct ToolPolicyPlugin;
 
@@ -96,9 +96,9 @@ impl AgentBehavior for ToolPolicyPlugin {
         &self,
         ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<BeforeInferenceAction> {
-        let run_config = ctx.run_config();
-        let allowed = run_config.policy().allowed_tools();
-        let excluded = run_config.policy().excluded_tools();
+        let runtime_options = ctx.runtime_options();
+        let allowed = runtime_options.policy().allowed_tools();
+        let excluded = runtime_options.policy().excluded_tools();
 
         if allowed.is_none() && excluded.is_none() {
             return ActionSet::empty();
@@ -118,8 +118,12 @@ impl AgentBehavior for ToolPolicyPlugin {
             return ActionSet::empty();
         };
 
-        let run_config = ctx.run_config();
-        if !scope::is_scope_allowed(Some(run_config.policy()), tool_id, scope::ScopeDomain::Tool) {
+        let runtime_options = ctx.runtime_options();
+        if !scope::is_scope_allowed(
+            Some(runtime_options.policy()),
+            tool_id,
+            scope::ScopeDomain::Tool,
+        ) {
             ActionSet::single(reject_out_of_scope(tool_id))
         } else {
             ActionSet::empty()

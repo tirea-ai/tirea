@@ -23,17 +23,17 @@ pub(super) struct SubAgentExecutionRequest {
     pub(super) cancellation_token: Option<RunCancellationToken>,
 }
 
-fn bind_parent_tool_call_scope(
-    run_config: &mut crate::contracts::RunConfig,
+fn bind_parent_tool_call_runtime_options(
+    runtime_options: &mut crate::contracts::RuntimeOptions,
     parent_tool_call_id: Option<&str>,
-) -> Result<(), crate::contracts::RunConfigError> {
+) -> Result<(), crate::contracts::RuntimeOptionsError> {
     let Some(parent_tool_call_id) = parent_tool_call_id
         .map(str::trim)
         .filter(|id| !id.is_empty())
     else {
         return Ok(());
     };
-    run_config.set_parent_tool_call_id(parent_tool_call_id.to_string())
+    runtime_options.set_parent_tool_call_id(parent_tool_call_id.to_string())
 }
 
 pub(super) async fn execute_sub_agent(
@@ -75,9 +75,10 @@ pub(super) async fn execute_sub_agent(
             };
         }
     };
-    if let Err(e) =
-        bind_parent_tool_call_scope(&mut resolved.run_config, parent_tool_call_id.as_deref())
-    {
+    if let Err(e) = bind_parent_tool_call_runtime_options(
+        &mut resolved.runtime_options,
+        parent_tool_call_id.as_deref(),
+    ) {
         return SubAgentCompletion {
             status: SubAgentStatus::Failed,
             error: Some(e.to_string()),
@@ -213,18 +214,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bind_parent_tool_call_scope_sets_scope_key_when_present() {
-        let mut run_config = crate::contracts::RunConfig::default();
-        bind_parent_tool_call_scope(&mut run_config, Some("call_parent_1"))
+    fn bind_parent_tool_call_runtime_options_sets_parent_tool_call_id_when_present() {
+        let mut runtime_options = crate::contracts::RuntimeOptions::default();
+        bind_parent_tool_call_runtime_options(&mut runtime_options, Some("call_parent_1"))
             .expect("set parent tool call id");
-        assert_eq!(run_config.parent_tool_call_id(), Some("call_parent_1"));
+        assert_eq!(runtime_options.parent_tool_call_id(), Some("call_parent_1"));
     }
 
     #[test]
-    fn bind_parent_tool_call_scope_ignores_blank_values() {
-        let mut run_config = crate::contracts::RunConfig::default();
-        bind_parent_tool_call_scope(&mut run_config, Some("   ")).expect("ignore blank id");
-        assert!(run_config.parent_tool_call_id().is_none());
+    fn bind_parent_tool_call_runtime_options_ignores_blank_values() {
+        let mut runtime_options = crate::contracts::RuntimeOptions::default();
+        bind_parent_tool_call_runtime_options(&mut runtime_options, Some("   "))
+            .expect("ignore blank id");
+        assert!(runtime_options.parent_tool_call_id().is_none());
     }
 
     #[tokio::test]

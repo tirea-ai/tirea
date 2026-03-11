@@ -2,7 +2,7 @@ use crate::storage::RunOrigin;
 
 /// Error type for typed run configuration mutations.
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
-pub enum RunConfigError {
+pub enum RuntimeOptionsError {
     #[error("run config field already set: {field}")]
     AlreadySet { field: &'static str },
 }
@@ -102,12 +102,12 @@ fn normalize_scope_values(values: Option<&[String]>) -> Option<Vec<String>> {
 
 /// Typed per-run configuration shared across runtime contexts.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RunConfig {
+pub struct RuntimeOptions {
     policy: ScopePolicy,
     parent_tool_call_id: Option<String>,
 }
 
-impl RunConfig {
+impl RuntimeOptions {
     pub const PARENT_TOOL_CALL_ID_FIELD: &'static str = "parent_tool_call_id";
 
     #[must_use]
@@ -130,9 +130,9 @@ impl RunConfig {
     pub fn set_parent_tool_call_id(
         &mut self,
         value: impl Into<String>,
-    ) -> Result<(), RunConfigError> {
+    ) -> Result<(), RuntimeOptionsError> {
         if self.parent_tool_call_id.is_some() {
-            return Err(RunConfigError::AlreadySet {
+            return Err(RuntimeOptionsError::AlreadySet {
                 field: Self::PARENT_TOOL_CALL_ID_FIELD,
             });
         }
@@ -225,8 +225,8 @@ mod tests {
     }
 
     #[test]
-    fn run_config_parent_tool_call_id_is_set_once() {
-        let mut config = RunConfig::new();
+    fn runtime_options_parent_tool_call_id_is_set_once() {
+        let mut config = RuntimeOptions::new();
         config
             .set_parent_tool_call_id("call-1")
             .expect("first set should succeed");
@@ -235,8 +235,8 @@ mod tests {
             .expect_err("second set should fail");
         assert_eq!(
             err,
-            RunConfigError::AlreadySet {
-                field: RunConfig::PARENT_TOOL_CALL_ID_FIELD,
+            RuntimeOptionsError::AlreadySet {
+                field: RuntimeOptions::PARENT_TOOL_CALL_ID_FIELD,
             }
         );
     }

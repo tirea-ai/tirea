@@ -22,6 +22,15 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 const RUN_IN_BACKGROUND_PARAM: &str = "run_in_background";
+
+/// Typed runtime context passed into background executions after the spawn boundary.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BackgroundExecutionContext {
+    pub owner_thread_id: String,
+    pub parent_task_id: Option<String>,
+    pub is_resume: bool,
+}
+
 /// Context-free background execution trait.
 ///
 /// Tools implement this to opt into background execution support via
@@ -29,6 +38,9 @@ const RUN_IN_BACKGROUND_PARAM: &str = "run_in_background";
 /// background spawning — tools only implement execution logic.
 #[async_trait]
 pub trait BackgroundExecutable: Tool {
+    /// Background-only prepared input computed before crossing the spawn boundary.
+    type PreparedBackground: Send + 'static;
+
     /// Task type label for persistence (e.g. `"agent_run"`, `"shell"`).
     fn task_type(&self) -> &str;
 
@@ -74,12 +86,25 @@ pub trait BackgroundExecutable: Tool {
     /// Tools can use this to perform the same semantic checks they enforce in
     /// foreground mode and to inject hidden, precomputed execution inputs that
     /// can safely cross the spawn boundary.
-    fn prepare_background_args(
+    fn prepare_background(
         &self,
         _args: &mut Value,
         _ctx: &ToolCallContext<'_>,
-    ) -> Result<(), ToolResult> {
-        Ok(())
+        _is_resume: bool,
+    ) -> Result<Self::PreparedBackground, ToolResult>;
+
+    /// Execute the tool logic in foreground mode.
+    ///
+    /// Tools can override this when foreground execution needs typed control
+    /// data (for example, resume state) that should not be smuggled through
+    /// hidden JSON fields.
+    async fn execute_foreground(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+        _is_resume: bool,
+    ) -> Result<ToolResult, ToolError> {
+        self.execute(args, ctx).await
     }
 
     /// Derive the durable terminal task status for a foreground execution.
@@ -103,6 +128,8 @@ pub trait BackgroundExecutable: Tool {
         &self,
         task_id: &str,
         args: Value,
+        prepared: Self::PreparedBackground,
+        execution: BackgroundExecutionContext,
         cancel_token: RunCancellationToken,
     ) -> TaskResult;
 }
@@ -345,13 +372,6 @@ impl<T: BackgroundExecutable + 'static> BackgroundCapable<T> {
         }
     }
 
-    /// Tag args as a resume so tools can relax validation (e.g. prompt optional).
-    fn mark_resume(args: &mut Value) {
-        if let Some(obj) = args.as_object_mut() {
-            obj.insert("__is_resume".to_string(), json!(true));
-        }
-    }
-
     /// Handle the resume/status query path when a task_id is found in args.
     async fn handle_existing_task(
         &self,
@@ -391,7 +411,6 @@ impl<T: BackgroundExecutable + 'static> BackgroundCapable<T> {
                     );
                     if self.inner.supports_resume() {
                         Self::enrich_args_for_resume(&mut args, &lookup.summary.metadata);
-                        Self::mark_resume(&mut args);
                         return self
                             .execute_task(
                                 args,
@@ -416,7 +435,6 @@ impl<T: BackgroundExecutable + 'static> BackgroundCapable<T> {
                 }
                 // Resume: re-execute with same task_id, enriched with stored metadata.
                 Self::enrich_args_for_resume(&mut args, &lookup.summary.metadata);
-                Self::mark_resume(&mut args);
                 self.execute_task(
                     args,
                     ctx,
@@ -440,11 +458,17 @@ impl<T: BackgroundExecutable + 'static> BackgroundCapable<T> {
         ctx: &ToolCallContext<'_>,
         params: &ExecuteParams<'_>,
     ) -> Result<ToolResult, ToolError> {
-        if params.background {
-            if let Err(result) = self.inner.prepare_background_args(&mut args, ctx) {
-                return Ok(result);
+        let prepared = if params.background {
+            match self
+                .inner
+                .prepare_background(&mut args, ctx, params.is_resume)
+            {
+                Ok(prepared) => Some(prepared),
+                Err(result) => return Ok(result),
             }
-        }
+        } else {
+            None
+        };
 
         let description = self.inner.task_description(&args);
         let metadata = self.inner.task_metadata(&args);
@@ -461,21 +485,16 @@ impl<T: BackgroundExecutable + 'static> BackgroundCapable<T> {
         .await?;
 
         if params.background {
-            // Inject parent context so execute_background can access lineage.
-            if let Some(obj) = args.as_object_mut() {
-                obj.insert(
-                    "__parent_thread_id".to_string(),
-                    json!(params.owner_thread_id),
-                );
-                if let Some(parent) = params.parent_task_id {
-                    obj.insert("__parent_run_id".to_string(), json!(parent));
-                }
-            }
-
             let inner = self.inner.clone();
             let task_id_owned = params.task_id.to_string();
             let cancel_token = RunCancellationToken::new();
             let spawn_token = cancel_token.clone();
+            let execution = BackgroundExecutionContext {
+                owner_thread_id: params.owner_thread_id.to_string(),
+                parent_task_id: params.parent_task_id.map(str::to_string),
+                is_resume: params.is_resume,
+            };
+            let prepared = prepared.expect("background preparation should exist");
 
             self.manager
                 .spawn_with_id(
@@ -490,7 +509,13 @@ impl<T: BackgroundExecutable + 'static> BackgroundCapable<T> {
                     cancel_token,
                     move |_cancel| async move {
                         inner
-                            .execute_background(&task_id_owned, args, spawn_token)
+                            .execute_background(
+                                &task_id_owned,
+                                args,
+                                prepared,
+                                execution,
+                                spawn_token,
+                            )
                             .await
                     },
                 )
@@ -509,8 +534,10 @@ impl<T: BackgroundExecutable + 'static> BackgroundCapable<T> {
                 }),
             ))
         } else {
-            // Foreground: delegate to inner.execute() which has ToolCallContext.
-            let result = self.inner.execute(args, ctx).await?;
+            let result = self
+                .inner
+                .execute_foreground(args, ctx, params.is_resume)
+                .await?;
 
             // Infer terminal status from ToolResult for persistence.
             let (status, error) = self.inner.foreground_task_status(&result);
@@ -645,14 +672,27 @@ mod tests {
 
     #[async_trait]
     impl BackgroundExecutable for EchoTool {
+        type PreparedBackground = ();
+
         fn task_type(&self) -> &str {
             "echo"
+        }
+
+        fn prepare_background(
+            &self,
+            _args: &mut Value,
+            _ctx: &ToolCallContext<'_>,
+            _is_resume: bool,
+        ) -> Result<Self::PreparedBackground, ToolResult> {
+            Ok(())
         }
 
         async fn execute_background(
             &self,
             _task_id: &str,
             args: Value,
+            _prepared: Self::PreparedBackground,
+            _execution: BackgroundExecutionContext,
             _cancel_token: RunCancellationToken,
         ) -> TaskResult {
             let msg = args
@@ -834,14 +874,27 @@ mod tests {
 
     #[async_trait]
     impl BackgroundExecutable for SlowTool {
+        type PreparedBackground = ();
+
         fn task_type(&self) -> &str {
             "slow"
+        }
+
+        fn prepare_background(
+            &self,
+            _args: &mut Value,
+            _ctx: &ToolCallContext<'_>,
+            _is_resume: bool,
+        ) -> Result<Self::PreparedBackground, ToolResult> {
+            Ok(())
         }
 
         async fn execute_background(
             &self,
             _task_id: &str,
             _args: Value,
+            _prepared: Self::PreparedBackground,
+            _execution: BackgroundExecutionContext,
             cancel_token: RunCancellationToken,
         ) -> TaskResult {
             tokio::select! {

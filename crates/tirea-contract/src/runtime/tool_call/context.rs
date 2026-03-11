@@ -8,7 +8,7 @@ use crate::runtime::activity::ActivityManager;
 use crate::runtime::run::RunExecutionContext;
 use crate::runtime::{ToolCallResume, ToolCallState};
 use crate::thread::Message;
-use crate::RunConfig;
+use crate::RuntimeOptions;
 use futures::future::pending;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -229,7 +229,7 @@ pub struct ToolCallContext<'a> {
     ops: &'a Mutex<Vec<Op>>,
     call_id: String,
     source: String,
-    run_config: &'a RunConfig,
+    runtime_options: &'a RuntimeOptions,
     execution_ctx: RunExecutionContext,
     caller_context: CallerContext,
     pending_messages: &'a Mutex<Vec<Arc<Message>>>,
@@ -258,7 +258,7 @@ impl<'a> ToolCallContext<'a> {
         ops: &'a Mutex<Vec<Op>>,
         call_id: impl Into<String>,
         source: impl Into<String>,
-        run_config: &'a RunConfig,
+        runtime_options: &'a RuntimeOptions,
         pending_messages: &'a Mutex<Vec<Arc<Message>>>,
         activity_manager: Arc<dyn ActivityManager>,
     ) -> Self {
@@ -269,7 +269,7 @@ impl<'a> ToolCallContext<'a> {
             ops,
             call_id: call_id.into(),
             source: source.into(),
-            run_config,
+            runtime_options,
             execution_ctx: RunExecutionContext::default(),
             caller_context: CallerContext::default(),
             pending_messages,
@@ -361,8 +361,8 @@ impl<'a> ToolCallContext<'a> {
     // =========================================================================
 
     /// Borrow the run config.
-    pub fn run_config(&self) -> &RunConfig {
-        self.run_config
+    pub fn runtime_options(&self) -> &RuntimeOptions {
+        self.runtime_options
     }
 
     pub fn execution_ctx(&self) -> &RunExecutionContext {
@@ -720,7 +720,7 @@ mod tests {
     fn make_ctx<'a>(
         doc: &'a DocCell,
         ops: &'a Mutex<Vec<Op>>,
-        run_config: &'a RunConfig,
+        runtime_options: &'a RuntimeOptions,
         pending: &'a Mutex<Vec<Arc<Message>>>,
     ) -> ToolCallContext<'a> {
         ToolCallContext::new(
@@ -728,7 +728,7 @@ mod tests {
             ops,
             "call-1",
             "test",
-            run_config,
+            runtime_options,
             pending,
             NoOpActivityManager::arc(),
         )
@@ -756,7 +756,7 @@ mod tests {
     fn test_identity() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RunConfig::default();
+        let scope = RuntimeOptions::default();
         let pending = Mutex::new(Vec::new());
 
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
@@ -769,7 +769,7 @@ mod tests {
     fn test_typed_context_access() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let mut scope = RunConfig::new();
+        let mut scope = RuntimeOptions::new();
         scope
             .set_parent_tool_call_id("call-parent")
             .expect("set parent tool call id");
@@ -779,7 +779,10 @@ mod tests {
             .with_execution_context(execution_ctx("run-1"))
             .with_caller_context(caller_context("thread-1"));
 
-        assert_eq!(ctx.run_config().parent_tool_call_id(), Some("call-parent"));
+        assert_eq!(
+            ctx.runtime_options().parent_tool_call_id(),
+            Some("call-parent")
+        );
         assert_eq!(ctx.execution_ctx().run_id_opt(), Some("run-1"));
         assert_eq!(ctx.caller_context().thread_id(), Some("thread-1"));
         assert_eq!(ctx.caller_context().agent_id(), Some("caller"));
@@ -790,7 +793,7 @@ mod tests {
     fn test_state_of_read_write() {
         let doc = DocCell::new(json!({"__test_fixture": {"label": null}}));
         let ops = Mutex::new(Vec::new());
-        let scope = RunConfig::default();
+        let scope = RuntimeOptions::default();
         let pending = Mutex::new(Vec::new());
 
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
@@ -813,7 +816,7 @@ mod tests {
     fn test_write_through_read_cross_ref() {
         let doc = DocCell::new(json!({"__test_fixture": {"label": null}}));
         let ops = Mutex::new(Vec::new());
-        let scope = RunConfig::default();
+        let scope = RuntimeOptions::default();
         let pending = Mutex::new(Vec::new());
 
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
@@ -832,7 +835,7 @@ mod tests {
     fn test_take_patch() {
         let doc = DocCell::new(json!({"__test_fixture": {"label": null}}));
         let ops = Mutex::new(Vec::new());
-        let scope = RunConfig::default();
+        let scope = RuntimeOptions::default();
         let pending = Mutex::new(Vec::new());
 
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
@@ -855,7 +858,7 @@ mod tests {
     fn test_add_messages() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RunConfig::default();
+        let scope = RuntimeOptions::default();
         let pending = Mutex::new(Vec::new());
 
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
@@ -870,7 +873,7 @@ mod tests {
     fn test_call_state() {
         let doc = DocCell::new(json!({"tool_calls": {}}));
         let ops = Mutex::new(Vec::new());
-        let scope = RunConfig::default();
+        let scope = RuntimeOptions::default();
         let pending = Mutex::new(Vec::new());
 
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
@@ -886,7 +889,7 @@ mod tests {
     fn test_tool_call_state_roundtrip_and_resume_input() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RunConfig::default();
+        let scope = RuntimeOptions::default();
         let pending = Mutex::new(Vec::new());
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
@@ -925,7 +928,7 @@ mod tests {
     fn test_clear_tool_call_state_for_removes_entry() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RunConfig::default();
+        let scope = RuntimeOptions::default();
         let pending = Mutex::new(Vec::new());
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
@@ -957,7 +960,7 @@ mod tests {
     fn test_cancellation_token_absent_by_default() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RunConfig::default();
+        let scope = RuntimeOptions::default();
         let pending = Mutex::new(Vec::new());
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
@@ -969,7 +972,7 @@ mod tests {
     async fn test_cancelled_waits_for_attached_token() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RunConfig::default();
+        let scope = RuntimeOptions::default();
         let pending = Mutex::new(Vec::new());
         let token = CancellationToken::new();
 
@@ -999,7 +1002,7 @@ mod tests {
     async fn test_cancelled_without_token_never_resolves() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RunConfig::default();
+        let scope = RuntimeOptions::default();
         let pending = Mutex::new(Vec::new());
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
@@ -1075,7 +1078,7 @@ mod tests {
     fn test_report_tool_call_progress_emits_tool_call_progress_activity() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RunConfig::default();
+        let scope = RuntimeOptions::default();
         let pending = Mutex::new(Vec::new());
         let activity_manager = Arc::new(RecordingActivityManager::default());
 
@@ -1118,7 +1121,7 @@ mod tests {
     fn test_report_tool_call_progress_rejects_non_finite_values() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RunConfig::default();
+        let scope = RuntimeOptions::default();
         let pending = Mutex::new(Vec::new());
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
@@ -1155,7 +1158,7 @@ mod tests {
     fn test_report_tool_call_progress_writes_lineage_and_metadata() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RunConfig::new();
+        let scope = RuntimeOptions::new();
         let pending = Mutex::new(Vec::new());
         let activity_manager = Arc::new(RecordingActivityManager::default());
         let execution_ctx = RunExecutionContext::new(
@@ -1212,7 +1215,7 @@ mod tests {
     fn test_report_tool_call_progress_without_parent_tool_call_anchors_to_run_node() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RunConfig::new();
+        let scope = RuntimeOptions::new();
         let pending = Mutex::new(Vec::new());
         let activity_manager = Arc::new(RecordingActivityManager::default());
         let execution_ctx = execution_ctx("run-123");
@@ -1246,7 +1249,7 @@ mod tests {
     fn test_report_tool_call_progress_uses_injected_sink_instead_of_activity_manager() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RunConfig::default();
+        let scope = RuntimeOptions::default();
         let pending = Mutex::new(Vec::new());
         let activity_manager = Arc::new(RecordingActivityManager::default());
         let sink = Arc::new(RecordingProgressSink::default());
@@ -1289,7 +1292,7 @@ mod tests {
     fn test_report_tool_call_progress_propagates_sink_error() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RunConfig::default();
+        let scope = RuntimeOptions::default();
         let pending = Mutex::new(Vec::new());
         let ctx = ToolCallContext::new(
             &doc,

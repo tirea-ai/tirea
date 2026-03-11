@@ -4,7 +4,7 @@ use crate::runtime::run::RunExecutionContext;
 use crate::runtime::tool_call::lifecycle::SuspendedCall;
 use crate::runtime::tool_call::{CallerContext, Tool, ToolDescriptor, ToolResult};
 use crate::thread::{Message, ToolCall};
-use crate::RunConfig;
+use crate::RuntimeOptions;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -54,7 +54,7 @@ pub struct ToolExecutionRequest<'a> {
     /// Agent behavior for declarative phase dispatch.
     pub agent_behavior: Option<&'a dyn AgentBehavior>,
     pub activity_manager: Arc<dyn ActivityManager>,
-    pub run_config: &'a RunConfig,
+    pub runtime_options: &'a RuntimeOptions,
     pub execution_ctx: RunExecutionContext,
     pub caller_context: CallerContext,
     pub thread_id: &'a str,

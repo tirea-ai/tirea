@@ -6,7 +6,7 @@ use crate::runtime::suspended_calls_from_state;
 use crate::runtime::tool_call::ToolCallContext;
 use crate::runtime::tool_call::{CallerContext, SuspendedCall};
 use crate::thread::Message;
-use crate::RunConfig;
+use crate::RuntimeOptions;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use tirea_state::{
@@ -29,7 +29,7 @@ pub struct RunContext {
     messages: DeltaTracked<Arc<Message>>,
     thread_patches: DeltaTracked<TrackedPatch>,
     serialized_state_actions: DeltaTracked<SerializedStateAction>,
-    pub run_config: RunConfig,
+    pub runtime_options: RuntimeOptions,
     execution_ctx: RunExecutionContext,
     doc: DocCell,
     version: Option<u64>,
@@ -43,18 +43,18 @@ impl RunContext {
     /// - `thread_id`: thread identifier (owned)
     /// - `state`: already-rebuilt state (base + patches)
     /// - `messages`: initial messages (cursor set to end — no delta)
-    /// - `run_config`: per-run sealed configuration
+    /// - `runtime_options`: typed per-run runtime options
     pub fn new(
         thread_id: impl Into<String>,
         state: Value,
         messages: Vec<Arc<Message>>,
-        run_config: RunConfig,
+        runtime_options: RuntimeOptions,
     ) -> Self {
         Self::with_registry_and_execution(
             thread_id,
             state,
             messages,
-            run_config,
+            runtime_options,
             RunExecutionContext::default(),
             Arc::new(LatticeRegistry::new()),
         )
@@ -65,14 +65,14 @@ impl RunContext {
         thread_id: impl Into<String>,
         state: Value,
         messages: Vec<Arc<Message>>,
-        run_config: RunConfig,
+        runtime_options: RuntimeOptions,
         lattice_registry: Arc<LatticeRegistry>,
     ) -> Self {
         Self::with_registry_and_execution(
             thread_id,
             state,
             messages,
-            run_config,
+            runtime_options,
             RunExecutionContext::default(),
             lattice_registry,
         )
@@ -82,7 +82,7 @@ impl RunContext {
         thread_id: impl Into<String>,
         state: Value,
         messages: Vec<Arc<Message>>,
-        run_config: RunConfig,
+        runtime_options: RuntimeOptions,
         execution_ctx: RunExecutionContext,
         lattice_registry: Arc<LatticeRegistry>,
     ) -> Self {
@@ -93,7 +93,7 @@ impl RunContext {
             messages: DeltaTracked::new(messages),
             thread_patches: DeltaTracked::empty(),
             serialized_state_actions: DeltaTracked::empty(),
-            run_config,
+            runtime_options,
             execution_ctx,
             doc,
             version: None,
@@ -293,7 +293,7 @@ impl RunContext {
             ops,
             call_id,
             source,
-            &self.run_config,
+            &self.runtime_options,
             pending_messages,
             activity_manager,
         )
@@ -306,15 +306,15 @@ impl RunContext {
     /// Convenience constructor from a `Thread`.
     ///
     /// Rebuilds state from the thread's base state + patches, then wraps
-    /// the thread's messages and the given `run_config` into a `RunContext`.
+    /// the thread's messages and the given `runtime_options` into a `RunContext`.
     /// Version metadata is carried over from thread metadata.
     pub fn from_thread(
         thread: &crate::thread::Thread,
-        run_config: RunConfig,
+        runtime_options: RuntimeOptions,
     ) -> Result<Self, tirea_state::TireaError> {
         Self::from_thread_with_registry_and_execution(
             thread,
-            run_config,
+            runtime_options,
             RunExecutionContext::default(),
             Arc::new(LatticeRegistry::new()),
         )
@@ -323,12 +323,12 @@ impl RunContext {
     /// Convenience constructor from a `Thread` with a lattice registry.
     pub fn from_thread_with_registry(
         thread: &crate::thread::Thread,
-        run_config: RunConfig,
+        runtime_options: RuntimeOptions,
         lattice_registry: Arc<LatticeRegistry>,
     ) -> Result<Self, tirea_state::TireaError> {
         Self::from_thread_with_registry_and_execution(
             thread,
-            run_config,
+            runtime_options,
             RunExecutionContext::default(),
             lattice_registry,
         )
@@ -336,7 +336,7 @@ impl RunContext {
 
     pub fn from_thread_with_registry_and_execution(
         thread: &crate::thread::Thread,
-        run_config: RunConfig,
+        runtime_options: RuntimeOptions,
         execution_ctx: RunExecutionContext,
         lattice_registry: Arc<LatticeRegistry>,
     ) -> Result<Self, tirea_state::TireaError> {
@@ -346,7 +346,7 @@ impl RunContext {
             thread.id.clone(),
             state,
             messages,
-            run_config,
+            runtime_options,
             execution_ctx,
             lattice_registry,
         );
@@ -382,7 +382,7 @@ mod tests {
     #[test]
     fn new_context_has_no_delta() {
         let msgs = vec![Arc::new(Message::user("hi"))];
-        let mut ctx = RunContext::new("t-1", json!({}), msgs, RunConfig::default());
+        let mut ctx = RunContext::new("t-1", json!({}), msgs, RuntimeOptions::default());
         assert!(!ctx.has_delta());
         let delta = ctx.take_delta();
         assert!(delta.is_empty());
@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn add_message_creates_delta() {
-        let mut ctx = RunContext::new("t-1", json!({}), vec![], RunConfig::default());
+        let mut ctx = RunContext::new("t-1", json!({}), vec![], RuntimeOptions::default());
         ctx.add_message(Arc::new(Message::user("hello")));
         ctx.add_message(Arc::new(Message::assistant("hi")));
         assert!(ctx.has_delta());
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn add_patch_creates_delta() {
-        let mut ctx = RunContext::new("t-1", json!({"a": 1}), vec![], RunConfig::default());
+        let mut ctx = RunContext::new("t-1", json!({"a": 1}), vec![], RuntimeOptions::default());
         let patch = TrackedPatch::new(Patch::new().with_op(Op::set(path!("a"), json!(2))));
         ctx.add_thread_patch(patch);
         assert!(ctx.has_delta());
@@ -415,7 +415,7 @@ mod tests {
 
     #[test]
     fn multiple_deltas() {
-        let mut ctx = RunContext::new("t-1", json!({}), vec![], RunConfig::default());
+        let mut ctx = RunContext::new("t-1", json!({}), vec![], RuntimeOptions::default());
         ctx.add_message(Arc::new(Message::user("a")));
         let d1 = ctx.take_delta();
         assert_eq!(d1.messages.len(), 1);
@@ -441,7 +441,7 @@ mod tests {
             Arc::new(Message::user("pre-existing-1")),
             Arc::new(Message::assistant("pre-existing-2")),
         ];
-        let mut ctx = RunContext::new("t-1", json!({}), initial, RunConfig::default());
+        let mut ctx = RunContext::new("t-1", json!({}), initial, RuntimeOptions::default());
 
         // No delta despite having 2 messages
         assert!(!ctx.has_delta());
@@ -462,7 +462,7 @@ mod tests {
     /// a run is considered new.
     #[test]
     fn all_patches_are_delta() {
-        let mut ctx = RunContext::new("t-1", json!({"a": 0}), vec![], RunConfig::default());
+        let mut ctx = RunContext::new("t-1", json!({"a": 0}), vec![], RuntimeOptions::default());
         ctx.add_thread_patch(TrackedPatch::new(
             Patch::new().with_op(Op::set(path!("a"), json!(1))),
         ));
@@ -476,7 +476,7 @@ mod tests {
     /// Multiple take_delta calls produce non-overlapping results.
     #[test]
     fn consecutive_take_delta_non_overlapping() {
-        let mut ctx = RunContext::new("t-1", json!({}), vec![], RunConfig::default());
+        let mut ctx = RunContext::new("t-1", json!({}), vec![], RuntimeOptions::default());
 
         // Round 1: 1 message + 1 patch
         ctx.add_message(Arc::new(Message::user("m1")));
@@ -518,7 +518,7 @@ mod tests {
             "t-1",
             json!({"__test_fixture": {"label": null}}),
             vec![],
-            RunConfig::default(),
+            RuntimeOptions::default(),
         );
         let ctrl: TestFixtureState = ctx.snapshot_of().unwrap();
         assert!(ctrl.label.is_none());
@@ -532,7 +532,7 @@ mod tests {
             "t-1",
             json!({"custom": {"label": null}}),
             vec![],
-            RunConfig::default(),
+            RuntimeOptions::default(),
         );
         let ctrl: TestFixtureState = ctx.snapshot_at("custom").unwrap();
         assert!(ctrl.label.is_none());
@@ -542,7 +542,7 @@ mod tests {
     fn snapshot_of_returns_error_for_missing_path() {
         use crate::testing::TestFixtureState;
 
-        let ctx = RunContext::new("t-1", json!({}), vec![], RunConfig::default());
+        let ctx = RunContext::new("t-1", json!({}), vec![], RuntimeOptions::default());
         assert!(ctx.snapshot_of::<TestFixtureState>().is_err());
     }
 
@@ -559,7 +559,7 @@ mod tests {
             Patch::new().with_op(Op::set(path!("counter"), json!(5))),
         ));
 
-        let ctx = RunContext::from_thread(&thread, RunConfig::default()).unwrap();
+        let ctx = RunContext::from_thread(&thread, RuntimeOptions::default()).unwrap();
         // thread_base is pre-rebuilt (includes thread patches)
         assert_eq!(ctx.thread_base()["counter"], 5);
         // No run patches yet
@@ -576,7 +576,7 @@ mod tests {
         thread.metadata.version = Some(42);
         thread.metadata.version_timestamp = Some(1700000000);
 
-        let ctx = RunContext::from_thread(&thread, RunConfig::default()).unwrap();
+        let ctx = RunContext::from_thread(&thread, RuntimeOptions::default()).unwrap();
         assert_eq!(ctx.version(), 42);
         assert_eq!(ctx.version_timestamp(), Some(1700000000));
     }
@@ -594,7 +594,7 @@ mod tests {
             },
         ])));
 
-        let result = RunContext::from_thread(&thread, RunConfig::default());
+        let result = RunContext::from_thread(&thread, RuntimeOptions::default());
         assert!(
             result.is_err(),
             "broken patch should cause from_thread to fail"
@@ -607,14 +607,14 @@ mod tests {
 
     #[test]
     fn version_defaults_to_zero() {
-        let ctx = RunContext::new("t-1", json!({}), vec![], RunConfig::default());
+        let ctx = RunContext::new("t-1", json!({}), vec![], RuntimeOptions::default());
         assert_eq!(ctx.version(), 0);
         assert_eq!(ctx.version_timestamp(), None);
     }
 
     #[test]
     fn set_version_updates_correctly() {
-        let mut ctx = RunContext::new("t-1", json!({}), vec![], RunConfig::default());
+        let mut ctx = RunContext::new("t-1", json!({}), vec![], RuntimeOptions::default());
         ctx.set_version(5, Some(1700000000));
         assert_eq!(ctx.version(), 5);
         assert_eq!(ctx.version_timestamp(), Some(1700000000));

@@ -968,7 +968,7 @@ pub(super) fn run_stream(
                         tool_descriptors: &tool_descriptors_for_exec,
                         agent_behavior: Some(agent.behavior()),
                         activity_manager: activity_manager.clone(),
-                        run_config: &tool_context.run_config,
+                        runtime_options: &tool_context.runtime_options,
                         execution_ctx: tool_context.execution_ctx.clone(),
                         caller_context: tool_context.caller_context.clone(),
                         thread_id: &sid_for_tools,

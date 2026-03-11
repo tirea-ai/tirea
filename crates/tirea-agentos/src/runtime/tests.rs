@@ -288,12 +288,12 @@ async fn wire_skills_inserts_tools_and_plugin() {
         }
     });
     let doc = tirea_state::DocCell::new(state);
-    let run_config = crate::contracts::RunConfig::new();
+    let runtime_options = crate::contracts::RuntimeOptions::new();
     let ctx = ReadOnlyContext::new(
         crate::contracts::runtime::phase::Phase::BeforeInference,
         "thread_1",
         &[],
-        &run_config,
+        &runtime_options,
         &doc,
     );
     let actions = cfg.behavior.before_inference(&ctx).await;
@@ -1130,7 +1130,7 @@ async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_condition
     );
     let thread = crate::contracts::thread::Thread::new("stop-plugin-thread")
         .with_message(crate::contracts::thread::Message::user("go"));
-    let run_ctx = crate::contracts::RunContext::from_thread(&thread, resolved.run_config)
+    let run_ctx = crate::contracts::RunContext::from_thread(&thread, resolved.runtime_options)
         .expect("build run context");
     let outcome = run_loop(&config, resolved.tools, run_ctx, None, None, None).await;
     assert!(
@@ -1162,15 +1162,15 @@ fn resolve_sets_typed_scope_policy() {
         .unwrap();
     let resolved = os.resolve("a1").unwrap();
     assert_eq!(
-        resolved.run_config.policy().allowed_skills(),
+        resolved.runtime_options.policy().allowed_skills(),
         Some(&["s1".to_string()][..])
     );
     assert_eq!(
-        resolved.run_config.policy().allowed_agents(),
+        resolved.runtime_options.policy().allowed_agents(),
         Some(&["worker".to_string()][..])
     );
     assert_eq!(
-        resolved.run_config.policy().allowed_tools(),
+        resolved.runtime_options.policy().allowed_tools(),
         Some(&["echo".to_string()][..])
     );
 }
@@ -1386,12 +1386,12 @@ async fn resolve_wires_plugins_from_registry() {
         .any(|id| *id == "p1"));
 
     let doc = tirea_state::DocCell::new(json!({}));
-    let run_config = crate::contracts::RunConfig::new();
+    let runtime_options = crate::contracts::RuntimeOptions::new();
     let ctx = ReadOnlyContext::new(
         crate::contracts::runtime::phase::Phase::BeforeInference,
         "thread_1",
         &[],
-        &run_config,
+        &runtime_options,
         &doc,
     );
     let actions = resolved.agent.behavior.before_inference(&ctx).await;

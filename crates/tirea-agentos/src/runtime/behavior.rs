@@ -154,7 +154,7 @@ mod tests {
     use super::*;
     use crate::contracts::runtime::phase::BeforeInferenceAction;
     use crate::contracts::runtime::phase::Phase;
-    use crate::contracts::RunConfig;
+    use crate::contracts::RuntimeOptions;
     use serde_json::json;
     use tirea_state::DocCell;
 
@@ -199,10 +199,10 @@ mod tests {
 
     fn make_ctx<'a>(
         doc: &'a DocCell,
-        run_config: &'a RunConfig,
+        runtime_options: &'a RuntimeOptions,
         phase: Phase,
     ) -> ReadOnlyContext<'a> {
-        ReadOnlyContext::new(phase, "thread_1", &[], run_config, doc)
+        ReadOnlyContext::new(phase, "thread_1", &[], runtime_options, doc)
     }
 
     #[tokio::test]
@@ -220,8 +220,8 @@ mod tests {
         let composite = CompositeBehavior::new("test", behaviors);
 
         let doc = DocCell::new(json!({}));
-        let run_config = RunConfig::new();
-        let ctx = make_ctx(&doc, &run_config, Phase::BeforeInference);
+        let runtime_options = RuntimeOptions::new();
+        let ctx = make_ctx(&doc, &runtime_options, Phase::BeforeInference);
         let actions = composite.before_inference(&ctx).await;
 
         assert_eq!(actions.len(), 2);
@@ -234,8 +234,8 @@ mod tests {
     async fn composite_empty_behaviors_returns_empty() {
         let composite = CompositeBehavior::new("empty", vec![]);
         let doc = DocCell::new(json!({}));
-        let run_config = RunConfig::new();
-        let ctx = make_ctx(&doc, &run_config, Phase::BeforeInference);
+        let runtime_options = RuntimeOptions::new();
+        let ctx = make_ctx(&doc, &runtime_options, Phase::BeforeInference);
 
         let actions = composite.before_inference(&ctx).await;
         assert!(actions.is_empty());
@@ -257,8 +257,8 @@ mod tests {
         let composite = CompositeBehavior::new("order_test", behaviors);
 
         let doc = DocCell::new(json!({}));
-        let run_config = RunConfig::new();
-        let ctx = make_ctx(&doc, &run_config, Phase::BeforeInference);
+        let runtime_options = RuntimeOptions::new();
+        let ctx = make_ctx(&doc, &runtime_options, Phase::BeforeInference);
         let actions = composite.before_inference(&ctx).await;
 
         // BlockBehavior returns empty for BeforeInference, so 2 actions

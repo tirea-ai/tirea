@@ -70,7 +70,7 @@ pub(super) struct ToolPhaseContext<'a> {
     pub(super) tool_descriptors: &'a [ToolDescriptor],
     pub(super) agent_behavior: Option<&'a dyn AgentBehavior>,
     pub(super) activity_manager: Arc<dyn ActivityManager>,
-    pub(super) run_config: &'a tirea_contract::RunConfig,
+    pub(super) runtime_options: &'a tirea_contract::RuntimeOptions,
     pub(super) execution_ctx: tirea_contract::runtime::RunExecutionContext,
     pub(super) caller_context: CallerContext,
     pub(super) thread_id: &'a str,
@@ -84,7 +84,7 @@ impl<'a> ToolPhaseContext<'a> {
             tool_descriptors: request.tool_descriptors,
             agent_behavior: request.agent_behavior,
             activity_manager: request.activity_manager.clone(),
-            run_config: request.run_config,
+            runtime_options: request.runtime_options,
             execution_ctx: request.execution_ctx.clone(),
             caller_context: request.caller_context.clone(),
             thread_id: request.thread_id,
@@ -598,7 +598,7 @@ async fn execute_tools_with_agent_and_executor(
         &thread.id,
         rebuilt_state.clone(),
         thread.messages.clone(),
-        tirea_contract::RunConfig::default(),
+        tirea_contract::RuntimeOptions::default(),
     );
 
     let tool_descriptors: Vec<ToolDescriptor> =
@@ -673,7 +673,7 @@ async fn execute_tools_with_agent_and_executor(
             tool_descriptors: &tool_descriptors,
             agent_behavior: behavior,
             activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
-            run_config: &run_ctx.run_config,
+            runtime_options: &run_ctx.runtime_options,
             execution_ctx: run_ctx.execution_ctx().clone(),
             caller_context,
             thread_id: run_ctx.thread_id(),
@@ -723,8 +723,8 @@ pub(super) async fn execute_tools_parallel_with_phases(
         return Err(cancelled_error(phase_ctx.thread_id));
     }
 
-    // Clone run config for parallel tasks (RunConfig is Clone).
-    let run_config_owned = phase_ctx.run_config.clone();
+    // Clone run config for parallel tasks (RuntimeOptions is Clone).
+    let runtime_options_owned = phase_ctx.runtime_options.clone();
     let thread_id = phase_ctx.thread_id.to_string();
     let thread_messages = Arc::new(phase_ctx.thread_messages.to_vec());
     let tool_descriptors = phase_ctx.tool_descriptors.to_vec();
@@ -736,7 +736,7 @@ pub(super) async fn execute_tools_parallel_with_phases(
         let call = call.clone();
         let tool_descriptors = tool_descriptors.clone();
         let activity_manager = phase_ctx.activity_manager.clone();
-        let rt = run_config_owned.clone();
+        let rt = runtime_options_owned.clone();
         let execution_ctx = phase_ctx.execution_ctx.clone();
         let caller_context = phase_ctx.caller_context.clone();
         let sid = thread_id.clone();
@@ -751,7 +751,7 @@ pub(super) async fn execute_tools_parallel_with_phases(
                     tool_descriptors: &tool_descriptors,
                     agent_behavior: agent,
                     activity_manager,
-                    run_config: &rt,
+                    runtime_options: &rt,
                     execution_ctx,
                     caller_context,
                     thread_id: &sid,
@@ -794,7 +794,7 @@ pub(super) async fn execute_tools_sequential_with_phases(
             tool_descriptors: phase_ctx.tool_descriptors,
             agent_behavior: phase_ctx.agent_behavior,
             activity_manager: phase_ctx.activity_manager.clone(),
-            run_config: phase_ctx.run_config,
+            runtime_options: phase_ctx.runtime_options,
             execution_ctx: phase_ctx.execution_ctx.clone(),
             caller_context: phase_ctx.caller_context.clone(),
             thread_id: phase_ctx.thread_id,
@@ -873,7 +873,7 @@ async fn execute_single_tool_with_phases_impl(
     let doc = tirea_state::DocCell::new(state.clone());
     let ops = std::sync::Mutex::new(Vec::new());
     let pending_messages = std::sync::Mutex::new(Vec::new());
-    let plugin_scope = phase_ctx.run_config;
+    let plugin_scope = phase_ctx.runtime_options;
     let mut plugin_tool_call_ctx = crate::contracts::ToolCallContext::new(
         &doc,
         &ops,

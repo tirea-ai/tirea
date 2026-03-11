@@ -9,7 +9,7 @@ use super::background_tasks::{
 #[cfg(feature = "skills")]
 pub(crate) use super::plugin::skills_wiring::SkillsSystemWiring;
 use super::plugin::stop_policy::{StopPolicyPlugin, STOP_POLICY_PLUGIN_ID};
-use super::policy::{filter_tools_in_place, set_scope_filters_from_definition_if_absent};
+use super::policy::{filter_tools_in_place, set_runtime_policy_from_definition_if_absent};
 use super::{behavior::CompositeBehavior, AgentOs, AgentOsResolveError, StopPolicy};
 use crate::composition::{
     AgentDefinition, AgentOsBuilder, AgentOsWiringError, AgentRegistry, InMemoryAgentRegistry,
@@ -19,7 +19,7 @@ use crate::composition::{
 use crate::contracts::runtime::behavior::{AgentBehavior, NoOpBehavior};
 use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::runtime::ToolExecutor;
-use crate::contracts::RunConfig;
+use crate::contracts::RuntimeOptions;
 #[cfg(feature = "skills")]
 use crate::extensions::skills::{InMemorySkillRegistry, Skill, SkillRegistry};
 use crate::loop_runtime::loop_runner::{
@@ -393,8 +393,8 @@ impl AgentOs {
             .get(agent_id)
             .ok_or_else(|| AgentOsResolveError::AgentNotFound(agent_id.to_string()))?;
 
-        let mut run_config = RunConfig::new();
-        set_scope_filters_from_definition_if_absent(&mut run_config, &definition);
+        let mut runtime_options = RuntimeOptions::new();
+        set_runtime_policy_from_definition_if_absent(&mut runtime_options, &definition);
 
         let allowed_tools = definition.allowed_tools.clone();
         let excluded_tools = definition.excluded_tools.clone();
@@ -409,7 +409,7 @@ impl AgentOs {
         Ok(ResolvedRun {
             agent: cfg,
             tools,
-            run_config,
+            runtime_options,
         })
     }
 }

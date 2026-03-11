@@ -10,7 +10,7 @@ use futures::future::join_all;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tirea_contract::RunConfig;
+use tirea_contract::RuntimeOptions;
 use tirea_state::{apply_patch, DocCell, Patch, TrackedPatch};
 
 const DIRECT_STATE_WRITE_DENIED_ERROR_CODE: &str = "tool_context_state_write_not_allowed";
@@ -49,25 +49,26 @@ pub async fn execute_single_tool(
     call: &ToolCall,
     state: &Value,
 ) -> ToolExecution {
-    execute_single_tool_with_scope_and_behavior(tool, call, state, None, None).await
+    execute_single_tool_with_runtime_options_and_behavior(tool, call, state, None, None).await
 }
 
-/// Execute a single tool call with an optional scope context.
-pub async fn execute_single_tool_with_scope(
+/// Execute a single tool call with optional runtime options.
+pub async fn execute_single_tool_with_runtime_options(
     tool: Option<&dyn Tool>,
     call: &ToolCall,
     state: &Value,
-    scope: Option<&RunConfig>,
+    runtime_options: Option<&RuntimeOptions>,
 ) -> ToolExecution {
-    execute_single_tool_with_scope_and_behavior(tool, call, state, scope, None).await
+    execute_single_tool_with_runtime_options_and_behavior(tool, call, state, runtime_options, None)
+        .await
 }
 
-/// Execute a single tool call with optional scope and behavior router.
-pub async fn execute_single_tool_with_scope_and_behavior(
+/// Execute a single tool call with optional runtime options and behavior router.
+pub async fn execute_single_tool_with_runtime_options_and_behavior(
     tool: Option<&dyn Tool>,
     call: &ToolCall,
     state: &Value,
-    scope: Option<&RunConfig>,
+    runtime_options: Option<&RuntimeOptions>,
     _behavior: Option<&dyn AgentBehavior>,
 ) -> ToolExecution {
     let Some(tool) = tool else {
@@ -81,15 +82,15 @@ pub async fn execute_single_tool_with_scope_and_behavior(
     // Create context for this tool call
     let doc = DocCell::new(state.clone());
     let ops = Mutex::new(Vec::new());
-    let default_scope = RunConfig::default();
-    let scope = scope.unwrap_or(&default_scope);
+    let default_runtime_options = RuntimeOptions::default();
+    let runtime_options = runtime_options.unwrap_or(&default_runtime_options);
     let pending_messages = Mutex::new(Vec::new());
     let ctx = ToolCallContext::new(
         &doc,
         &ops,
         &call.id,
         format!("tool:{}", call.name),
-        scope,
+        runtime_options,
         &pending_messages,
         tirea_contract::runtime::activity::NoOpActivityManager::arc(),
     );
@@ -382,9 +383,11 @@ mod tests {
         let tool = DirectWriteEffectTool;
         let call = ToolCall::new("call_1", "direct_write_effect", json!({}));
         let state = json!({});
-        let scope = RunConfig::default();
+        let scope = RuntimeOptions::default();
 
-        let exec = execute_single_tool_with_scope(Some(&tool), &call, &state, Some(&scope)).await;
+        let exec =
+            execute_single_tool_with_runtime_options(Some(&tool), &call, &state, Some(&scope))
+                .await;
         assert!(exec.result.is_error());
         assert_eq!(
             exec.result.data["error"]["code"],
@@ -460,14 +463,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execute_single_tool_with_scope_reads_typed_run_config() {
-        /// Tool that reads typed run-config data and returns it.
-        struct ScopeReaderTool;
+    async fn test_execute_single_tool_with_runtime_options_reads_typed_runtime_options() {
+        /// Tool that reads typed runtime options and returns them.
+        struct RuntimeOptionsReaderTool;
 
         #[async_trait]
-        impl Tool for ScopeReaderTool {
+        impl Tool for RuntimeOptionsReaderTool {
             fn descriptor(&self) -> ToolDescriptor {
-                ToolDescriptor::new("scope_reader", "ScopeReader", "Reads scope values")
+                ToolDescriptor::new(
+                    "runtime_options_reader",
+                    "RuntimeOptionsReader",
+                    "Reads runtime options",
+                )
             }
 
             async fn execute(
@@ -475,38 +482,51 @@ mod tests {
                 _args: Value,
                 ctx: &ToolCallContext<'_>,
             ) -> Result<ToolResult, ToolError> {
-                let parent_tool_call_id = ctx.run_config().parent_tool_call_id().unwrap_or("none");
+                let parent_tool_call_id = ctx
+                    .runtime_options()
+                    .parent_tool_call_id()
+                    .unwrap_or("none");
                 Ok(ToolResult::success(
-                    "scope_reader",
+                    "runtime_options_reader",
                     json!({"parent_tool_call_id": parent_tool_call_id}),
                 ))
             }
         }
 
-        let mut scope = RunConfig::new();
-        scope
+        let mut runtime_options = RuntimeOptions::new();
+        runtime_options
             .set_parent_tool_call_id("call-parent")
             .expect("set parent tool call id");
 
-        let tool = ScopeReaderTool;
-        let call = ToolCall::new("call_1", "scope_reader", json!({}));
+        let tool = RuntimeOptionsReaderTool;
+        let call = ToolCall::new("call_1", "runtime_options_reader", json!({}));
         let state = json!({});
 
-        let exec = execute_single_tool_with_scope(Some(&tool), &call, &state, Some(&scope)).await;
+        let exec = execute_single_tool_with_runtime_options(
+            Some(&tool),
+            &call,
+            &state,
+            Some(&runtime_options),
+        )
+        .await;
 
         assert!(exec.result.is_success());
         assert_eq!(exec.result.data["parent_tool_call_id"], "call-parent");
     }
 
     #[tokio::test]
-    async fn test_execute_single_tool_with_scope_none() {
-        /// Tool that checks typed run-config defaults when no scope is supplied.
-        struct ScopeCheckerTool;
+    async fn test_execute_single_tool_with_runtime_options_none() {
+        /// Tool that checks typed runtime-option defaults when none are supplied.
+        struct RuntimeOptionsCheckerTool;
 
         #[async_trait]
-        impl Tool for ScopeCheckerTool {
+        impl Tool for RuntimeOptionsCheckerTool {
             fn descriptor(&self) -> ToolDescriptor {
-                ToolDescriptor::new("scope_checker", "ScopeChecker", "Checks scope presence")
+                ToolDescriptor::new(
+                    "runtime_options_checker",
+                    "RuntimeOptionsChecker",
+                    "Checks runtime option presence",
+                )
             }
 
             async fn execute(
@@ -515,34 +535,40 @@ mod tests {
                 ctx: &ToolCallContext<'_>,
             ) -> Result<ToolResult, ToolError> {
                 Ok(ToolResult::success(
-                    "scope_checker",
+                    "runtime_options_checker",
                     json!({
-                        "has_scope": true,
-                        "has_parent_tool_call_id": ctx.run_config().parent_tool_call_id().is_some()
+                        "has_runtime_options": true,
+                        "has_parent_tool_call_id": ctx.runtime_options().parent_tool_call_id().is_some()
                     }),
                 ))
             }
         }
 
-        let tool = ScopeCheckerTool;
-        let call = ToolCall::new("call_1", "scope_checker", json!({}));
+        let tool = RuntimeOptionsCheckerTool;
+        let call = ToolCall::new("call_1", "runtime_options_checker", json!({}));
         let state = json!({});
 
-        // Without scope — ToolCallContext still provides a (default-empty) scope
-        let exec = execute_single_tool_with_scope(Some(&tool), &call, &state, None).await;
-        assert_eq!(exec.result.data["has_scope"], true);
+        // Without explicit runtime options, ToolCallContext still provides defaults.
+        let exec = execute_single_tool_with_runtime_options(Some(&tool), &call, &state, None).await;
+        assert_eq!(exec.result.data["has_runtime_options"], true);
         assert_eq!(exec.result.data["has_parent_tool_call_id"], false);
 
-        // With scope (empty)
-        let scope = RunConfig::new();
-        let exec = execute_single_tool_with_scope(Some(&tool), &call, &state, Some(&scope)).await;
-        assert_eq!(exec.result.data["has_scope"], true);
+        // With explicit empty runtime options.
+        let runtime_options = RuntimeOptions::new();
+        let exec = execute_single_tool_with_runtime_options(
+            Some(&tool),
+            &call,
+            &state,
+            Some(&runtime_options),
+        )
+        .await;
+        assert_eq!(exec.result.data["has_runtime_options"], true);
         assert_eq!(exec.result.data["has_parent_tool_call_id"], false);
     }
 
     #[tokio::test]
-    async fn test_execute_with_scope_sensitive_key() {
-        /// Tool that reads typed policy values from scope.
+    async fn test_execute_with_runtime_option_policy() {
+        /// Tool that reads typed policy values from runtime options.
         struct SensitiveReaderTool;
 
         #[async_trait]
@@ -557,7 +583,7 @@ mod tests {
                 ctx: &ToolCallContext<'_>,
             ) -> Result<ToolResult, ToolError> {
                 let allowed_tools = ctx
-                    .run_config()
+                    .runtime_options()
                     .policy()
                     .allowed_tools()
                     .map(|items| items.to_vec())
@@ -569,8 +595,8 @@ mod tests {
             }
         }
 
-        let mut scope = RunConfig::new();
-        scope
+        let mut runtime_options = RuntimeOptions::new();
+        runtime_options
             .policy_mut()
             .set_allowed_tools_if_absent(Some(&["sensitive".to_string(), "echo".to_string()]));
 
@@ -578,7 +604,13 @@ mod tests {
         let call = ToolCall::new("call_1", "sensitive", json!({}));
         let state = json!({});
 
-        let exec = execute_single_tool_with_scope(Some(&tool), &call, &state, Some(&scope)).await;
+        let exec = execute_single_tool_with_runtime_options(
+            Some(&tool),
+            &call,
+            &state,
+            Some(&runtime_options),
+        )
+        .await;
 
         assert!(exec.result.is_success());
         assert_eq!(

@@ -87,7 +87,7 @@ impl SkillActivateTool {
         };
         let meta = skill.meta();
         if !is_scope_allowed(
-            Some(ctx.run_config().policy()),
+            Some(ctx.runtime_options().policy()),
             &meta.id,
             ScopeDomain::Skill,
         ) {
@@ -293,7 +293,7 @@ impl Tool for LoadSkillResourceTool {
         };
         let meta = skill.meta();
         if !is_scope_allowed(
-            Some(ctx.run_config().policy()),
+            Some(ctx.runtime_options().policy()),
             &meta.id,
             ScopeDomain::Skill,
         ) {
@@ -445,7 +445,7 @@ impl Tool for SkillScriptTool {
         };
         let meta = skill.meta();
         if !is_scope_allowed(
-            Some(ctx.run_config().policy()),
+            Some(ctx.runtime_options().policy()),
             &meta.id,
             ScopeDomain::Skill,
         ) {

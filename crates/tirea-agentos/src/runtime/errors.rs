@@ -17,7 +17,7 @@ pub enum AgentOsResolveError {
     },
 
     #[error(transparent)]
-    RunConfig(#[from] crate::contracts::RunConfigError),
+    RuntimeOptions(#[from] crate::contracts::RuntimeOptionsError),
 
     #[error(transparent)]
     Wiring(#[from] AgentOsWiringError),
@@ -29,7 +29,7 @@ pub enum AgentOsRunError {
     Resolve(#[from] AgentOsResolveError),
 
     #[error(transparent)]
-    RunConfig(#[from] crate::contracts::RunConfigError),
+    RuntimeOptions(#[from] crate::contracts::RuntimeOptionsError),
 
     #[error(transparent)]
     Loop(#[from] AgentLoopError),

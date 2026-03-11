@@ -5,7 +5,7 @@ use crate::runtime::state::{AnyStateAction, SerializedStateAction};
 use crate::runtime::tool_call::gate::ToolGate;
 use crate::runtime::tool_call::{ToolCallContext, ToolDescriptor, ToolResult};
 use crate::thread::Message;
-use crate::RunConfig;
+use crate::RuntimeOptions;
 use serde_json::Value;
 use std::sync::Arc;
 use tirea_state::{State, TireaResult, TrackedPatch};
@@ -131,8 +131,8 @@ impl<'a> StepContext<'a> {
         self.ctx.state::<T>(path)
     }
 
-    pub fn run_config(&self) -> &RunConfig {
-        self.ctx.run_config()
+    pub fn runtime_options(&self) -> &RuntimeOptions {
+        self.ctx.runtime_options()
     }
 
     pub fn execution_ctx(&self) -> &RunExecutionContext {

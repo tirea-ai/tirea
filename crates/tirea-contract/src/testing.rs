@@ -17,7 +17,7 @@ use crate::runtime::{
     PendingToolCall, StepContext, SuspendTicket, ToolCallContext, ToolCallResumeMode,
 };
 use crate::thread::Message;
-use crate::RunConfig;
+use crate::RuntimeOptions;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
@@ -34,7 +34,7 @@ pub struct TestFixtureState {
 pub struct TestFixture {
     pub doc: DocCell,
     pub ops: Mutex<Vec<Op>>,
-    pub run_config: RunConfig,
+    pub runtime_options: RuntimeOptions,
     pub execution_ctx: RunExecutionContext,
     pub caller_context: CallerContext,
     pub pending_messages: Mutex<Vec<Arc<Message>>>,
@@ -46,7 +46,7 @@ impl TestFixture {
         Self {
             doc: DocCell::new(serde_json::json!({})),
             ops: Mutex::new(Vec::new()),
-            run_config: RunConfig::default(),
+            runtime_options: RuntimeOptions::default(),
             execution_ctx: RunExecutionContext::default(),
             caller_context: CallerContext::default(),
             pending_messages: Mutex::new(Vec::new()),
@@ -67,7 +67,7 @@ impl TestFixture {
             &self.ops,
             "test",
             "test",
-            &self.run_config,
+            &self.runtime_options,
             &self.pending_messages,
             NoOpActivityManager::arc(),
         )
@@ -85,7 +85,7 @@ impl TestFixture {
             &self.ops,
             call_id,
             source,
-            &self.run_config,
+            &self.runtime_options,
             &self.pending_messages,
             NoOpActivityManager::arc(),
         )

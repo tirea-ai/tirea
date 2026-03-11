@@ -34,7 +34,7 @@ where
             phase,
             step.thread_id(),
             step.messages(),
-            step.run_config(),
+            step.runtime_options(),
             step.ctx().doc(),
         );
         match phase {
@@ -93,12 +93,12 @@ impl AgentBehavior for SlowTerminatePlugin {
     }
 }
 
-pub(super) fn apply_caller_scope_with_state_and_run(
+pub(super) fn apply_caller_context_with_state_and_run(
     fix: &mut TestFixture,
     state: serde_json::Value,
     run_id: &str,
 ) {
-    apply_caller_scope_with_state_run_and_messages(
+    apply_caller_context_with_state_run_and_messages(
         fix,
         state,
         run_id,
@@ -106,7 +106,7 @@ pub(super) fn apply_caller_scope_with_state_and_run(
     )
 }
 
-pub(super) fn apply_caller_scope_with_state_run_and_messages(
+pub(super) fn apply_caller_context_with_state_run_and_messages(
     fix: &mut TestFixture,
     _state: serde_json::Value,
     run_id: &str,
@@ -126,12 +126,12 @@ pub(super) fn apply_caller_scope_with_state_run_and_messages(
     );
 }
 
-pub(super) fn apply_caller_scope_with_state(fix: &mut TestFixture, state: serde_json::Value) {
-    apply_caller_scope_with_state_and_run(fix, state, "parent-run-default")
+pub(super) fn apply_caller_context_with_state(fix: &mut TestFixture, state: serde_json::Value) {
+    apply_caller_context_with_state_and_run(fix, state, "parent-run-default")
 }
 
-pub(super) fn apply_caller_scope(fix: &mut TestFixture) {
-    apply_caller_scope_with_state(fix, json!({"forked": true}))
+pub(super) fn apply_caller_context(fix: &mut TestFixture) {
+    apply_caller_context_with_state(fix, json!({"forked": true}))
 }
 
 mod integration;
