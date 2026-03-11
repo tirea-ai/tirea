@@ -104,6 +104,12 @@ pub trait MailboxWriter: MailboxReader {
         thread_id: &str,
         now: u64,
     ) -> Result<MailboxThreadInterrupt, MailboxStoreError>;
+
+    /// Delete terminal entries older than `older_than` (unix millis). Returns count deleted.
+    async fn purge_terminal_mailbox_entries(
+        &self,
+        older_than: u64,
+    ) -> Result<usize, MailboxStoreError>;
 }
 
 pub trait MailboxStore: MailboxWriter {}

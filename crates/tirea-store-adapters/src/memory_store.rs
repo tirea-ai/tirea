@@ -371,6 +371,18 @@ impl MailboxWriter for MemoryStore {
             superseded_entries: superseded,
         })
     }
+
+    async fn purge_terminal_mailbox_entries(
+        &self,
+        older_than: u64,
+    ) -> Result<usize, MailboxStoreError> {
+        let mut mailbox = self.mailbox.write().await;
+        let before = mailbox.len();
+        mailbox.retain(|_, entry| {
+            !(entry.status.is_terminal() && entry.updated_at < older_than)
+        });
+        Ok(before - mailbox.len())
+    }
 }
 
 #[async_trait]

@@ -987,6 +987,25 @@ impl MailboxWriter for PostgresStore {
             superseded_entries,
         })
     }
+
+    async fn purge_terminal_mailbox_entries(
+        &self,
+        older_than: u64,
+    ) -> Result<usize, MailboxStoreError> {
+        let older_than_i64 = i64::try_from(older_than).map_err(|_| {
+            MailboxStoreError::Backend("older_than too large for postgres BIGINT".to_string())
+        })?;
+        let result = sqlx::query(&format!(
+            "DELETE FROM {} WHERE status IN ('accepted', 'superseded', 'cancelled', 'dead_letter') \
+             AND updated_at < $1",
+            self.mailbox_table
+        ))
+        .bind(older_than_i64)
+        .execute(&self.pool)
+        .await
+        .map_err(Self::mailbox_sql_err)?;
+        Ok(result.rows_affected() as usize)
+    }
 }
 
 #[cfg(feature = "postgres")]

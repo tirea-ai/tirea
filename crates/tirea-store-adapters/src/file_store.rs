@@ -457,6 +457,26 @@ impl MailboxWriter for FileStore {
             superseded_entries: superseded,
         })
     }
+
+    async fn purge_terminal_mailbox_entries(
+        &self,
+        older_than: u64,
+    ) -> Result<usize, MailboxStoreError> {
+        let entries = self.load_all_mailbox_entries().await?;
+        let mut count = 0usize;
+        for entry in entries {
+            if entry.status.is_terminal() && entry.updated_at < older_than {
+                let path = self.mailbox_dir().join(format!("{}.json", entry.entry_id));
+                if path.exists() {
+                    tokio::fs::remove_file(&path)
+                        .await
+                        .map_err(MailboxStoreError::Io)?;
+                    count += 1;
+                }
+            }
+        }
+        Ok(count)
+    }
 }
 
 #[async_trait]

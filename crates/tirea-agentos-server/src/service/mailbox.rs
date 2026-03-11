@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use tirea_agentos::contracts::storage::{
     MailboxEntry, MailboxEntryStatus, MailboxQuery, MailboxReader, MailboxStore, MailboxStoreError,
@@ -16,6 +17,9 @@ const DEFAULT_MAILBOX_POLL_INTERVAL_MS: u64 = 100;
 const DEFAULT_MAILBOX_LEASE_MS: u64 = 30_000;
 const DEFAULT_MAILBOX_RETRY_MS: u64 = 250;
 const DEFAULT_MAILBOX_BATCH_SIZE: usize = 16;
+const DEFAULT_MAILBOX_MAX_ATTEMPTS: u32 = 10;
+const DEFAULT_MAILBOX_GC_INTERVAL_SECS: u64 = 60;
+const DEFAULT_MAILBOX_GC_TTL_MS: u64 = 24 * 60 * 60 * 1000; // 24 hours
 const INLINE_MAILBOX_AVAILABLE_AT: u64 = i64::MAX as u64;
 
 fn now_unix_millis() -> u64 {
@@ -517,6 +521,7 @@ pub struct MailboxDispatcher {
     lease_duration_ms: u64,
     retry_delay_ms: u64,
     batch_size: usize,
+    max_attempts: u32,
 }
 
 impl MailboxDispatcher {
@@ -529,6 +534,7 @@ impl MailboxDispatcher {
             lease_duration_ms: DEFAULT_MAILBOX_LEASE_MS,
             retry_delay_ms: DEFAULT_MAILBOX_RETRY_MS,
             batch_size: DEFAULT_MAILBOX_BATCH_SIZE,
+            max_attempts: DEFAULT_MAILBOX_MAX_ATTEMPTS,
         }
     }
 
@@ -549,41 +555,64 @@ impl MailboxDispatcher {
             ))
         })?;
 
+        let entry_id = entry.entry_id.as_str();
+        let run_id = entry.run_id.as_str();
+
         match start_run_for_claimed_entry(&self.os, &self.mailbox_store, &entry, true).await {
             Ok(run) => {
-                let run_id = run.run_id.clone();
-                ack_claimed_entry(&self.mailbox_store, &entry.entry_id, &claim_token, &run_id)
-                    .await?;
+                let accepted_run_id = run.run_id.clone();
+                ack_claimed_entry(
+                    &self.mailbox_store,
+                    entry_id,
+                    &claim_token,
+                    &accepted_run_id,
+                )
+                .await?;
+                tracing::debug!(entry_id, run_id, "mailbox entry accepted");
                 Ok(Some(run))
             }
             Err(MailboxRunStartError::Superseded(error)) => {
                 let _ = self
                     .mailbox_store
-                    .supersede_mailbox_entry(&entry.entry_id, now_unix_millis(), &error)
+                    .supersede_mailbox_entry(entry_id, now_unix_millis(), &error)
                     .await
                     .map_err(mailbox_error)?;
+                tracing::debug!(entry_id, run_id, %error, "mailbox entry superseded");
                 Ok(None)
             }
             Err(MailboxRunStartError::Busy(error))
             | Err(MailboxRunStartError::Retryable(error)) => {
-                nack_claimed_entry(
-                    &self.mailbox_store,
-                    &entry.entry_id,
-                    &claim_token,
-                    self.retry_delay_ms,
-                    &error,
-                )
-                .await?;
+                if entry.attempt_count >= self.max_attempts {
+                    dead_letter_claimed_entry(
+                        &self.mailbox_store,
+                        entry_id,
+                        &claim_token,
+                        &format!("max attempts ({}) exceeded: {error}", self.max_attempts),
+                    )
+                    .await?;
+                    tracing::warn!(entry_id, run_id, attempts = entry.attempt_count, "mailbox entry dead-lettered after max attempts");
+                } else {
+                    nack_claimed_entry(
+                        &self.mailbox_store,
+                        entry_id,
+                        &claim_token,
+                        self.retry_delay_ms,
+                        &error,
+                    )
+                    .await?;
+                    tracing::debug!(entry_id, run_id, attempts = entry.attempt_count, %error, "mailbox entry nacked for retry");
+                }
                 Ok(None)
             }
             Err(MailboxRunStartError::Permanent(error)) => {
                 dead_letter_claimed_entry(
                     &self.mailbox_store,
-                    &entry.entry_id,
+                    entry_id,
                     &claim_token,
                     &error,
                 )
                 .await?;
+                tracing::warn!(entry_id, run_id, %error, "mailbox entry dead-lettered (permanent)");
                 Ok(None)
             }
             Err(MailboxRunStartError::Internal(error)) => Err(error),
@@ -602,21 +631,55 @@ impl MailboxDispatcher {
             .await
             .map_err(mailbox_error)?;
 
-        let mut processed = 0usize;
-        for entry in claimed {
-            if let Some(run) = self.dispatch_claimed_entry(entry).await? {
-                tokio::spawn(drain_background_run(run));
-            }
-            processed = processed.saturating_add(1);
+        let count = claimed.len();
+        if count == 0 {
+            return Ok(0);
         }
-        Ok(processed)
+
+        let mut futures: FuturesUnordered<_> = claimed
+            .into_iter()
+            .map(|entry| self.dispatch_claimed_entry(entry))
+            .collect();
+
+        let mut first_error: Option<ApiError> = None;
+        while let Some(result) = futures.next().await {
+            match result {
+                Ok(Some(run)) => {
+                    tokio::spawn(drain_background_run(run));
+                }
+                Ok(None) => {}
+                Err(err) if first_error.is_none() => {
+                    first_error = Some(err);
+                }
+                Err(_) => {}
+            }
+        }
+
+        if let Some(err) = first_error {
+            return Err(err);
+        }
+        Ok(count)
     }
 
     pub async fn run_forever(self) {
+        let gc_interval = Duration::from_secs(DEFAULT_MAILBOX_GC_INTERVAL_SECS);
+        let mut last_gc = std::time::Instant::now();
+
         loop {
             if let Err(err) = self.dispatch_ready_once().await {
                 tracing::error!("mailbox dispatcher failed: {err}");
             }
+
+            if last_gc.elapsed() >= gc_interval {
+                let cutoff = now_unix_millis().saturating_sub(DEFAULT_MAILBOX_GC_TTL_MS);
+                match self.mailbox_store.purge_terminal_mailbox_entries(cutoff).await {
+                    Ok(0) => {}
+                    Ok(n) => tracing::debug!(purged = n, "mailbox GC purged terminal entries"),
+                    Err(err) => tracing::warn!("mailbox GC failed: {err}"),
+                }
+                last_gc = std::time::Instant::now();
+            }
+
             tokio::time::sleep(self.poll_interval).await;
         }
     }
