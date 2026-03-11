@@ -2,8 +2,9 @@ use serde_json::json;
 use std::sync::Arc;
 use tirea_contract::runtime::state::SerializedStateAction;
 use tirea_contract::storage::{
-    MailboxEntryStatus, MailboxQuery, MailboxReader, MailboxStoreError, MailboxWriter,
-    ThreadReader, ThreadStore, ThreadStoreError, ThreadSync, ThreadWriter, VersionPrecondition,
+    MailboxEntryOrigin, MailboxEntryStatus, MailboxQuery, MailboxReader, MailboxStoreError,
+    MailboxWriter, ThreadReader, ThreadStore, ThreadStoreError, ThreadSync, ThreadWriter,
+    VersionPrecondition,
 };
 use tirea_contract::testing::MailboxEntryBuilder;
 use tirea_contract::thread::ThreadChangeSet;
@@ -1914,4 +1915,50 @@ async fn mailbox_list_entries_filters_and_paginates() {
         .unwrap();
     assert_eq!(page_last.items.len(), 1);
     assert!(!page_last.has_more);
+}
+
+#[tokio::test]
+async fn mailbox_list_entries_filters_by_origin() {
+    let store = MemoryStore::new();
+
+    store
+        .enqueue_mailbox_entry(
+            &MailboxEntryBuilder::queued("entry-ext", "mailbox-origin")
+                .with_origin(MailboxEntryOrigin::External)
+                .build(),
+        )
+        .await
+        .unwrap();
+    store
+        .enqueue_mailbox_entry(
+            &MailboxEntryBuilder::queued("entry-int", "mailbox-origin")
+                .with_origin(MailboxEntryOrigin::Internal)
+                .build(),
+        )
+        .await
+        .unwrap();
+
+    let external = store
+        .list_mailbox_entries(&MailboxQuery {
+            mailbox_id: Some("mailbox-origin".to_string()),
+            origin: Some(MailboxEntryOrigin::External),
+            limit: 100,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(external.total, 1);
+    assert_eq!(external.items[0].entry_id, "entry-ext");
+
+    let internal = store
+        .list_mailbox_entries(&MailboxQuery {
+            mailbox_id: Some("mailbox-origin".to_string()),
+            origin: Some(MailboxEntryOrigin::Internal),
+            limit: 100,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(internal.total, 1);
+    assert_eq!(internal.items[0].entry_id, "entry-int");
 }

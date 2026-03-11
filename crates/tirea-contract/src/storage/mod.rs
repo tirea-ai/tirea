@@ -10,8 +10,9 @@ pub mod types;
 pub use crate::runtime::RunStatus;
 pub use mailbox_traits::{MailboxReader, MailboxStore, MailboxWriter};
 pub use mailbox_types::{
-    paginate_mailbox_entries, MailboxEntry, MailboxEntryStatus, MailboxInterrupt, MailboxPage,
-    MailboxQuery, MailboxReceiver, MailboxState, MailboxStoreError, ReceiveOutcome,
+    paginate_mailbox_entries, MailboxEntry, MailboxEntryOrigin, MailboxEntryStatus,
+    MailboxInterrupt, MailboxPage, MailboxQuery, MailboxReceiver, MailboxState, MailboxStoreError,
+    ReceiveOutcome,
 };
 pub use run_traits::{RunReader, RunStore, RunWriter};
 pub use run_types::{

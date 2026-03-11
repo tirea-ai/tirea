@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+use super::RunOrigin;
+
 /// Durable status for a queued mailbox entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -24,12 +26,40 @@ impl MailboxEntryStatus {
     }
 }
 
+/// Coarse-grained ingress origin for mailbox entries.
+///
+/// This is intentionally separate from thread message visibility:
+/// - origin = who submitted the queued work item
+/// - visibility = which messages are exposed to external API consumers
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MailboxEntryOrigin {
+    /// Submitted from an external protocol or end-user API surface.
+    #[default]
+    External,
+    /// Submitted from internal orchestration/runtime code paths.
+    Internal,
+}
+
+impl MailboxEntryOrigin {
+    /// Classify a run origin into coarse mailbox origin buckets.
+    pub fn from_run_origin(origin: RunOrigin) -> Self {
+        match origin {
+            RunOrigin::Subagent | RunOrigin::Internal => Self::Internal,
+            RunOrigin::User | RunOrigin::AgUi | RunOrigin::AiSdk | RunOrigin::A2a => Self::External,
+        }
+    }
+}
+
 /// A durable queued message in a mailbox.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MailboxEntry {
     pub entry_id: String,
     /// Target mailbox address.
     pub mailbox_id: String,
+    /// Coarse ingress origin classification for routing and visibility defaults.
+    #[serde(default)]
+    pub origin: MailboxEntryOrigin,
     /// Identity of the sender for audit and reply routing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sender_id: Option<String>,
@@ -88,6 +118,7 @@ pub struct MailboxInterrupt {
 #[derive(Debug, Clone, Default)]
 pub struct MailboxQuery {
     pub mailbox_id: Option<String>,
+    pub origin: Option<MailboxEntryOrigin>,
     pub status: Option<MailboxEntryStatus>,
     pub offset: usize,
     pub limit: usize,
@@ -106,6 +137,10 @@ pub fn paginate_mailbox_entries(entries: &[MailboxEntry], query: &MailboxQuery) 
         .iter()
         .filter(|entry| match query.mailbox_id.as_deref() {
             Some(mailbox_id) => entry.mailbox_id == mailbox_id,
+            None => true,
+        })
+        .filter(|entry| match query.origin {
+            Some(origin) => entry.origin == origin,
             None => true,
         })
         .filter(|entry| match query.status {
@@ -165,7 +200,9 @@ pub enum MailboxStoreError {
     #[error("mailbox claim token mismatch for entry: {0}")]
     ClaimConflict(String),
 
-    #[error("mailbox generation mismatch for mailbox '{mailbox_id}': expected {expected}, got {actual}")]
+    #[error(
+        "mailbox generation mismatch for mailbox '{mailbox_id}': expected {expected}, got {actual}"
+    )]
     GenerationMismatch {
         mailbox_id: String,
         expected: u64,

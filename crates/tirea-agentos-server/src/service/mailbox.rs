@@ -8,8 +8,8 @@ use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use tirea_agentos::contracts::storage::{
-    MailboxEntry, MailboxEntryStatus, MailboxQuery, MailboxReader, MailboxStore, MailboxStoreError,
-    ThreadReader,
+    MailboxEntry, MailboxEntryOrigin, MailboxEntryStatus, MailboxQuery, MailboxReader,
+    MailboxStore, MailboxStoreError, ThreadReader,
 };
 use tirea_agentos::contracts::RunRequest;
 use tirea_agentos::{AgentOs, AgentOsRunError, RunStream};
@@ -42,7 +42,10 @@ pub(crate) fn new_id() -> String {
 // Agent-specific helpers
 // ---------------------------------------------------------------------------
 
-pub(crate) fn normalize_background_run_request(agent_id: &str, mut request: RunRequest) -> RunRequest {
+pub(crate) fn normalize_background_run_request(
+    agent_id: &str,
+    mut request: RunRequest,
+) -> RunRequest {
     request.agent_id = agent_id.to_string();
     if request.thread_id.is_none() {
         request.thread_id = Some(new_id());
@@ -79,6 +82,7 @@ pub(crate) fn mailbox_entry_from_request(
     MailboxEntry {
         entry_id: new_id(),
         mailbox_id,
+        origin: MailboxEntryOrigin::from_run_origin(request.origin),
         sender_id: options.sender_id.clone(),
         payload,
         priority: options.priority,
@@ -256,8 +260,7 @@ pub(crate) async fn start_agent_run_for_entry(
         .map_err(mailbox_error)
         .map_err(MailboxRunStartError::Internal)?
     {
-        if current.status != MailboxEntryStatus::Claimed
-            || current.claim_token != entry.claim_token
+        if current.status != MailboxEntryStatus::Claimed || current.claim_token != entry.claim_token
         {
             return Err(MailboxRunStartError::Superseded(
                 current
@@ -292,10 +295,7 @@ pub(crate) async fn start_agent_run_for_entry(
         .unwrap_or_else(|| entry.mailbox_id.clone());
 
     // Check for active run on thread
-    match os
-        .current_run_id_for_thread(&agent_id, &thread_id)
-        .await
-    {
+    match os.current_run_id_for_thread(&agent_id, &thread_id).await {
         Ok(Some(_)) => {
             return Err(MailboxRunStartError::Busy(
                 "thread already has an active run".to_string(),
@@ -309,21 +309,15 @@ pub(crate) async fn start_agent_run_for_entry(
         .resolve(&agent_id)
         .map_err(|err| MailboxRunStartError::Permanent(err.to_string()))?;
 
-    os.start_active_run_with_persistence(
-        &agent_id,
-        request,
-        resolved,
-        persist_run,
-        !persist_run,
-    )
-    .await
-    .map_err(|err| {
-        if is_permanent_dispatch_error(&err) {
-            MailboxRunStartError::Permanent(err.to_string())
-        } else {
-            MailboxRunStartError::Retryable(err.to_string())
-        }
-    })
+    os.start_active_run_with_persistence(&agent_id, request, resolved, persist_run, !persist_run)
+        .await
+        .map_err(|err| {
+            if is_permanent_dispatch_error(&err) {
+                MailboxRunStartError::Permanent(err.to_string())
+            } else {
+                MailboxRunStartError::Retryable(err.to_string())
+            }
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -373,7 +367,6 @@ pub(crate) async fn enqueue_mailbox_run(
     )))
 }
 
-
 /// Enqueue a background run. Returns (thread_id, run_id, entry_id).
 pub async fn enqueue_background_run(
     os: &Arc<AgentOs>,
@@ -382,9 +375,15 @@ pub async fn enqueue_background_run(
     request: RunRequest,
     options: EnqueueOptions,
 ) -> Result<(String, String, String), ApiError> {
-    let (mailbox_id, entry_id, run_id) =
-        enqueue_mailbox_run(os, mailbox_store, agent_id, request, now_unix_millis(), options)
-            .await?;
+    let (mailbox_id, entry_id, run_id) = enqueue_mailbox_run(
+        os,
+        mailbox_store,
+        agent_id,
+        request,
+        now_unix_millis(),
+        options,
+    )
+    .await?;
     Ok((mailbox_id, run_id, entry_id))
 }
 
@@ -677,10 +676,7 @@ pub struct MailboxDispatcher {
 }
 
 impl MailboxDispatcher {
-    pub fn new(
-        mailbox_store: Arc<dyn MailboxStore>,
-        receiver: Arc<dyn MailboxReceiver>,
-    ) -> Self {
+    pub fn new(mailbox_store: Arc<dyn MailboxStore>, receiver: Arc<dyn MailboxReceiver>) -> Self {
         Self {
             mailbox_store,
             receiver,
@@ -739,7 +735,11 @@ impl MailboxDispatcher {
                         &format!("max attempts ({}) exceeded: {reason}", self.max_attempts),
                     )
                     .await?;
-                    tracing::warn!(entry_id, attempts = entry.attempt_count, "mailbox entry dead-lettered after max attempts");
+                    tracing::warn!(
+                        entry_id,
+                        attempts = entry.attempt_count,
+                        "mailbox entry dead-lettered after max attempts"
+                    );
                 } else {
                     nack_claimed_entry(
                         &self.mailbox_store,
@@ -753,13 +753,8 @@ impl MailboxDispatcher {
                 }
             }
             ReceiveOutcome::Reject(reason) => {
-                dead_letter_claimed_entry(
-                    &self.mailbox_store,
-                    entry_id,
-                    &claim_token,
-                    &reason,
-                )
-                .await?;
+                dead_letter_claimed_entry(&self.mailbox_store, entry_id, &claim_token, &reason)
+                    .await?;
                 tracing::warn!(entry_id, %reason, "mailbox entry rejected");
             }
         }
@@ -815,7 +810,11 @@ impl MailboxDispatcher {
 
             if last_gc.elapsed() >= gc_interval {
                 let cutoff = now_unix_millis().saturating_sub(DEFAULT_MAILBOX_GC_TTL_MS);
-                match self.mailbox_store.purge_terminal_mailbox_entries(cutoff).await {
+                match self
+                    .mailbox_store
+                    .purge_terminal_mailbox_entries(cutoff)
+                    .await
+                {
                     Ok(0) => {}
                     Ok(n) => tracing::debug!(purged = n, "mailbox GC purged terminal entries"),
                     Err(err) => tracing::warn!("mailbox GC failed: {err}"),
@@ -840,7 +839,9 @@ mod tests {
     use tirea_agentos::contracts::runtime::behavior::ReadOnlyContext;
     use tirea_agentos::contracts::runtime::phase::{ActionSet, BeforeInferenceAction};
     use tirea_agentos::contracts::{AgentBehavior, TerminationReason};
-    use tirea_contract::storage::{MailboxReader, MailboxWriter, RunReader, ThreadReader};
+    use tirea_contract::storage::{
+        MailboxEntryOrigin, MailboxReader, MailboxWriter, RunOrigin, RunReader, ThreadReader,
+    };
     use tirea_contract::testing::MailboxEntryBuilder;
     use tirea_store_adapters::MemoryStore;
 
@@ -878,6 +879,30 @@ mod tests {
                 .build()
                 .expect("build AgentOs"),
         )
+    }
+
+    #[test]
+    fn mailbox_entry_origin_follows_run_origin() {
+        let mut request = RunRequest {
+            agent_id: "test".to_string(),
+            thread_id: Some("mailbox-origin-thread".to_string()),
+            run_id: Some("mailbox-origin-run".to_string()),
+            parent_run_id: None,
+            parent_thread_id: None,
+            resource_id: None,
+            origin: RunOrigin::Internal,
+            state: None,
+            messages: vec![],
+            initial_decisions: vec![],
+            source_mailbox_entry_id: None,
+        };
+
+        let internal = mailbox_entry_from_request(&request, 0, &EnqueueOptions::default(), 1);
+        assert_eq!(internal.origin, MailboxEntryOrigin::Internal);
+
+        request.origin = RunOrigin::AgUi;
+        let external = mailbox_entry_from_request(&request, 0, &EnqueueOptions::default(), 1);
+        assert_eq!(external.origin, MailboxEntryOrigin::External);
     }
 
     #[tokio::test]
@@ -971,13 +996,7 @@ mod tests {
         .expect("enqueue background run");
 
         let claimed = mailbox_store
-            .claim_mailbox_entries(
-                None,
-                1,
-                "test-dispatcher",
-                now_unix_millis(),
-                5_000,
-            )
+            .claim_mailbox_entries(None, 1, "test-dispatcher", now_unix_millis(), 5_000)
             .await
             .expect("claim mailbox entry");
         assert_eq!(claimed.len(), 1);
@@ -1058,7 +1077,8 @@ mod tests {
         match receiver.receive(&entry).await {
             ReceiveOutcome::Reject(reason) => {
                 assert!(
-                    reason.contains("nonexistent-agent") || reason.contains("not found")
+                    reason.contains("nonexistent-agent")
+                        || reason.contains("not found")
                         || reason.contains("resolve"),
                     "expected resolve error, got: {reason}"
                 );
@@ -1140,19 +1160,15 @@ mod tests {
         let store = Arc::new(MemoryStore::new());
         let mailbox_store: Arc<dyn MailboxStore> = store.clone();
 
-        store
-            .ensure_mailbox_state("mbx-reject", 1)
-            .await
-            .unwrap();
+        store.ensure_mailbox_state("mbx-reject", 1).await.unwrap();
         let entry = MailboxEntryBuilder::queued("entry-reject", "mbx-reject")
             .with_payload(serde_json::json!({"test": true}))
             .build();
         store.enqueue_mailbox_entry(&entry).await.unwrap();
 
-        let receiver: Arc<dyn MailboxReceiver> =
-            Arc::new(MockReceiver::always(ReceiveOutcome::Reject(
-                "bad message".to_string(),
-            )));
+        let receiver: Arc<dyn MailboxReceiver> = Arc::new(MockReceiver::always(
+            ReceiveOutcome::Reject("bad message".to_string()),
+        ));
         MailboxDispatcher::new(mailbox_store.clone(), receiver)
             .with_consumer_id("test-dispatcher")
             .dispatch_ready_once()
@@ -1173,19 +1189,15 @@ mod tests {
         let store = Arc::new(MemoryStore::new());
         let mailbox_store: Arc<dyn MailboxStore> = store.clone();
 
-        store
-            .ensure_mailbox_state("mbx-retry", 1)
-            .await
-            .unwrap();
+        store.ensure_mailbox_state("mbx-retry", 1).await.unwrap();
         let entry = MailboxEntryBuilder::queued("entry-retry", "mbx-retry")
             .with_payload(serde_json::json!({"test": true}))
             .build();
         store.enqueue_mailbox_entry(&entry).await.unwrap();
 
-        let receiver: Arc<dyn MailboxReceiver> =
-            Arc::new(MockReceiver::always(ReceiveOutcome::Retry(
-                "try later".to_string(),
-            )));
+        let receiver: Arc<dyn MailboxReceiver> = Arc::new(MockReceiver::always(
+            ReceiveOutcome::Retry("try later".to_string()),
+        ));
         MailboxDispatcher::new(mailbox_store.clone(), receiver)
             .with_consumer_id("test-dispatcher")
             .dispatch_ready_once()
@@ -1207,20 +1219,16 @@ mod tests {
         let store = Arc::new(MemoryStore::new());
         let mailbox_store: Arc<dyn MailboxStore> = store.clone();
 
-        store
-            .ensure_mailbox_state("mbx-max", 1)
-            .await
-            .unwrap();
+        store.ensure_mailbox_state("mbx-max", 1).await.unwrap();
         let entry = MailboxEntryBuilder::queued("entry-max", "mbx-max")
             .with_payload(serde_json::json!({"test": true}))
             .with_attempt_count(10)
             .build(); // Already at max (DEFAULT_MAILBOX_MAX_ATTEMPTS = 10)
         store.enqueue_mailbox_entry(&entry).await.unwrap();
 
-        let receiver: Arc<dyn MailboxReceiver> =
-            Arc::new(MockReceiver::always(ReceiveOutcome::Retry(
-                "still failing".to_string(),
-            )));
+        let receiver: Arc<dyn MailboxReceiver> = Arc::new(MockReceiver::always(
+            ReceiveOutcome::Retry("still failing".to_string()),
+        ));
         let dispatcher = MailboxDispatcher::new(mailbox_store.clone(), receiver)
             .with_consumer_id("test-dispatcher");
         dispatcher
@@ -1250,10 +1258,7 @@ mod tests {
         let store = Arc::new(MemoryStore::new());
         let mailbox_store: Arc<dyn MailboxStore> = store.clone();
 
-        store
-            .ensure_mailbox_state("mbx-genm", 1)
-            .await
-            .unwrap();
+        store.ensure_mailbox_state("mbx-genm", 1).await.unwrap();
         let entry = MailboxEntryBuilder::queued("entry-genm", "mbx-genm")
             .with_payload(serde_json::json!({"test": true}))
             .build();
@@ -1573,18 +1578,13 @@ mod tests {
         .await
         .expect("enqueue");
 
-        let result =
-            try_cancel_active_or_queued_run_by_id(&os, &mailbox_store, &entry_id).await;
+        let result = try_cancel_active_or_queued_run_by_id(&os, &mailbox_store, &entry_id).await;
         assert!(matches!(
             result,
             Ok(Some(CancelBackgroundRunResult::Pending))
         ));
 
-        let entry = store
-            .load_mailbox_entry(&entry_id)
-            .await
-            .unwrap()
-            .unwrap();
+        let entry = store.load_mailbox_entry(&entry_id).await.unwrap().unwrap();
         assert_eq!(entry.status, MailboxEntryStatus::Cancelled);
     }
 
@@ -1650,13 +1650,10 @@ mod tests {
         .expect("enqueue 2");
 
         // Cancel all pending except entry1
-        let cancelled = cancel_pending_for_mailbox(
-            &mailbox_store,
-            "thread-cancel-pen",
-            Some(&entry1),
-        )
-        .await
-        .expect("cancel pending");
+        let cancelled =
+            cancel_pending_for_mailbox(&mailbox_store, "thread-cancel-pen", Some(&entry1))
+                .await
+                .expect("cancel pending");
         assert_eq!(cancelled.len(), 1);
         assert_eq!(cancelled[0].entry_id, entry2);
 

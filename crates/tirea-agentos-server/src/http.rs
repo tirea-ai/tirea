@@ -8,12 +8,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_json::Value;
 use tirea_agentos::contracts::storage::{
-    MailboxEntryStatus, MailboxQuery, ThreadListPage, ThreadListQuery,
+    MailboxEntryOrigin, MailboxEntryStatus, MailboxQuery, ThreadListPage, ThreadListQuery,
 };
-use tirea_agentos::contracts::thread::Message;
+use tirea_agentos::contracts::thread::{Message, Visibility};
 use tirea_agentos::contracts::{RunRequest, ToolCallDecision};
 use tirea_agentos::runtime::AgentOsRunError;
-use tirea_contract::storage::{MailboxPage, RunOrigin, RunPage, RunQuery, RunRecord, RunStatus};
+use tirea_contract::storage::{RunOrigin, RunPage, RunQuery, RunRecord, RunStatus};
 use tirea_contract::{AgentEvent, Identity};
 
 use crate::service::{
@@ -162,6 +162,15 @@ fn sanitize_public_message_page_value(mut value: Value) -> Value {
     value
 }
 
+fn sanitize_public_mailbox_page_value(mut value: Value, visibility: Option<Visibility>) -> Value {
+    if let Some(items) = value.get_mut("items").and_then(Value::as_array_mut) {
+        for entry in items {
+            strip_public_mailbox_payload_messages(entry, visibility);
+        }
+    }
+    value
+}
+
 fn strip_public_run_state(state: &mut Value) {
     if let Some(run_state) = state.get_mut("__run").and_then(Value::as_object_mut) {
         run_state.remove("id");
@@ -178,6 +187,32 @@ fn strip_public_message_run_metadata(message: &mut Value) {
         if remove_metadata {
             object.remove("metadata");
         }
+    }
+}
+
+fn strip_public_mailbox_payload_messages(entry: &mut Value, visibility: Option<Visibility>) {
+    let Some(payload) = entry.get_mut("payload").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let Some(messages) = payload.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+
+    messages.retain(|message| match visibility {
+        Some(Visibility::All) => mailbox_message_visibility(message) != Visibility::Internal,
+        Some(Visibility::Internal) => mailbox_message_visibility(message) == Visibility::Internal,
+        None => true,
+    });
+
+    for message in messages {
+        strip_public_message_run_metadata(message);
+    }
+}
+
+fn mailbox_message_visibility(message: &Value) -> Visibility {
+    match message.get("visibility").and_then(Value::as_str) {
+        Some("internal") => Visibility::Internal,
+        _ => Visibility::All,
     }
 }
 
@@ -271,6 +306,10 @@ struct MailboxListParams {
     limit: usize,
     #[serde(default)]
     status: Option<String>,
+    #[serde(default)]
+    origin: Option<String>,
+    #[serde(default)]
+    visibility: Option<String>,
 }
 
 fn parse_mailbox_status(raw: &str) -> Option<MailboxEntryStatus> {
@@ -285,22 +324,45 @@ fn parse_mailbox_status(raw: &str) -> Option<MailboxEntryStatus> {
     }
 }
 
+fn parse_mailbox_origin(raw: &str) -> Option<Option<MailboxEntryOrigin>> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "external" => Some(Some(MailboxEntryOrigin::External)),
+        "internal" => Some(Some(MailboxEntryOrigin::Internal)),
+        "none" => Some(None),
+        _ => None,
+    }
+}
+
+fn parse_mailbox_visibility(raw: Option<&str>) -> Option<Visibility> {
+    match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        Some("internal") => Some(Visibility::Internal),
+        Some("none") => None,
+        _ => Some(Visibility::All),
+    }
+}
+
 async fn list_thread_mailbox(
     State(st): State<AppState>,
     Path(id): Path<String>,
     Query(params): Query<MailboxListParams>,
-) -> Result<Json<MailboxPage>, ApiError> {
+) -> Result<Json<Value>, ApiError> {
+    let origin = parse_mailbox_origin(params.origin.as_deref().unwrap_or("external"))
+        .unwrap_or(Some(MailboxEntryOrigin::External));
+    let visibility = parse_mailbox_visibility(params.visibility.as_deref());
     let query = MailboxQuery {
         mailbox_id: Some(id),
+        origin,
         status: params.status.as_deref().and_then(parse_mailbox_status),
         offset: params.offset.unwrap_or(0),
         limit: params.limit.clamp(1, 200),
     };
-    st.mailbox_store()
+    let page = st
+        .mailbox_store()
         .list_mailbox_entries(&query)
         .await
-        .map(Json)
-        .map_err(|e| ApiError::Internal(e.to_string()))
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let value = serde_json::to_value(page).map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Json(sanitize_public_mailbox_page_value(value, visibility)))
 }
 
 #[derive(Debug, Serialize)]
@@ -611,14 +673,13 @@ async fn push_run_inputs(
         source_mailbox_entry_id: None,
     };
 
-    let (thread_id, _run_id, _entry_id) =
-        start_background_run(
-            &st.mailbox_service,
-            &agent_id,
-            run_request,
-            EnqueueOptions::default(),
-        )
-        .await?;
+    let (thread_id, _run_id, _entry_id) = start_background_run(
+        &st.mailbox_service,
+        &agent_id,
+        run_request,
+        EnqueueOptions::default(),
+    )
+    .await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({
@@ -714,5 +775,26 @@ mod tests {
         assert_eq!(parse_run_origin("a2a"), Some(RunOrigin::A2a));
         assert_eq!(parse_run_origin("ag-ui"), Some(RunOrigin::AgUi));
         assert_eq!(parse_run_origin("x"), None);
+    }
+
+    #[test]
+    fn parse_mailbox_filters_default_to_external_public_view() {
+        assert_eq!(
+            parse_mailbox_origin("external"),
+            Some(Some(MailboxEntryOrigin::External))
+        );
+        assert_eq!(
+            parse_mailbox_origin("internal"),
+            Some(Some(MailboxEntryOrigin::Internal))
+        );
+        assert_eq!(parse_mailbox_origin("none"), Some(None));
+        assert_eq!(parse_mailbox_origin("x"), None);
+
+        assert_eq!(parse_mailbox_visibility(None), Some(Visibility::All));
+        assert_eq!(
+            parse_mailbox_visibility(Some("internal")),
+            Some(Visibility::Internal)
+        );
+        assert_eq!(parse_mailbox_visibility(Some("none")), None);
     }
 }

@@ -13,8 +13,9 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers::ImageExt;
 use testcontainers_modules::postgres::Postgres;
 use tirea_contract::storage::{
-    MailboxEntryStatus, MailboxReader, MailboxWriter, RunOrigin, RunQuery, RunReader, RunRecord,
-    RunStatus, RunWriter, ThreadReader, ThreadStoreError, ThreadWriter, VersionPrecondition,
+    MailboxEntryOrigin, MailboxEntryStatus, MailboxQuery, MailboxReader, MailboxWriter, RunOrigin,
+    RunQuery, RunReader, RunRecord, RunStatus, RunWriter, ThreadReader, ThreadStoreError,
+    ThreadWriter, VersionPrecondition,
 };
 use tirea_contract::testing::MailboxEntryBuilder;
 use tirea_contract::thread::ThreadChangeSet;
@@ -300,6 +301,55 @@ async fn test_mailbox_interrupt_bumps_generation_and_supersedes_pending_entries(
         .expect("fresh entry should exist");
     assert_eq!(fresh_loaded.generation, 1);
     assert_eq!(fresh_loaded.status, MailboxEntryStatus::Queued);
+}
+
+#[tokio::test]
+async fn test_mailbox_list_filters_by_origin() {
+    let Some((_container, url)) = start_postgres().await else {
+        return;
+    };
+    let store = make_store(&url).await;
+
+    store
+        .enqueue_mailbox_entry(
+            &MailboxEntryBuilder::queued("entry-pg-external", "mailbox-pg-origin")
+                .with_origin(MailboxEntryOrigin::External)
+                .build(),
+        )
+        .await
+        .unwrap();
+    store
+        .enqueue_mailbox_entry(
+            &MailboxEntryBuilder::queued("entry-pg-internal", "mailbox-pg-origin")
+                .with_origin(MailboxEntryOrigin::Internal)
+                .build(),
+        )
+        .await
+        .unwrap();
+
+    let external = store
+        .list_mailbox_entries(&MailboxQuery {
+            mailbox_id: Some("mailbox-pg-origin".to_string()),
+            origin: Some(MailboxEntryOrigin::External),
+            limit: 50,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(external.total, 1);
+    assert_eq!(external.items[0].entry_id, "entry-pg-external");
+
+    let internal = store
+        .list_mailbox_entries(&MailboxQuery {
+            mailbox_id: Some("mailbox-pg-origin".to_string()),
+            origin: Some(MailboxEntryOrigin::Internal),
+            limit: 50,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(internal.total, 1);
+    assert_eq!(internal.items[0].entry_id, "entry-pg-internal");
 }
 
 #[tokio::test]

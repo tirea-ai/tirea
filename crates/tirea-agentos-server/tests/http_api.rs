@@ -12,14 +12,15 @@ use tirea_agentos::composition::AgentDefinition;
 use tirea_agentos::composition::AgentOsBuilder;
 use tirea_agentos::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_agentos::contracts::storage::{
-    Committed, MailboxStore, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore,
-    ThreadStoreError, ThreadWriter,
+    Committed, MailboxEntryOrigin, MailboxStore, MailboxWriter, RunOrigin, ThreadHead,
+    ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore, ThreadStoreError, ThreadWriter,
 };
 use tirea_agentos::contracts::thread::Thread;
-use tirea_agentos::contracts::ThreadChangeSet;
+use tirea_agentos::contracts::{RunRequest, ThreadChangeSet};
 use tirea_agentos::contracts::ToolCallContext;
 use tirea_agentos::runtime::AgentOs;
 use tirea_agentos_server::service::{AppState, MailboxService};
+use tirea_contract::testing::MailboxEntryBuilder;
 use tirea_store_adapters::MemoryStore;
 use tokio::sync::{Notify, RwLock};
 use tower::ServiceExt;
@@ -1475,6 +1476,108 @@ async fn test_messages_filter_by_visibility_and_run_id() {
     assert_eq!(page.messages.len(), 2);
     assert_eq!(page.messages[0].message.content, "visible-run-1");
     assert_eq!(page.messages[1].message.content, "internal-run-1");
+}
+
+#[tokio::test]
+async fn test_thread_mailbox_filters_origin_and_sanitizes_payload_messages() {
+    let os = Arc::new(make_os());
+    let storage = Arc::new(MemoryStore::new());
+    let mailbox_svc = test_mailbox_svc(&os, storage.clone());
+    let app = compose_http_app(AppState::new(os, storage.clone(), mailbox_svc));
+
+    let external_request = RunRequest {
+        agent_id: "test".to_string(),
+        thread_id: Some("mailbox-visibility".to_string()),
+        run_id: Some("queued-external".to_string()),
+        parent_run_id: None,
+        parent_thread_id: None,
+        resource_id: None,
+        origin: RunOrigin::AgUi,
+        state: None,
+        messages: vec![
+            tirea_agentos::contracts::thread::Message::user("visible-queued").with_metadata(
+                tirea_agentos::contracts::thread::MessageMetadata {
+                    run_id: Some("queued-run-1".to_string()),
+                    step_index: Some(0),
+                },
+            ),
+            tirea_agentos::contracts::thread::Message::internal_system("hidden-queued")
+                .with_metadata(tirea_agentos::contracts::thread::MessageMetadata {
+                    run_id: Some("queued-run-1".to_string()),
+                    step_index: Some(1),
+                }),
+        ],
+        initial_decisions: vec![],
+        source_mailbox_entry_id: None,
+    };
+    let internal_request = RunRequest {
+        agent_id: "test".to_string(),
+        thread_id: Some("mailbox-visibility".to_string()),
+        run_id: Some("queued-internal".to_string()),
+        parent_run_id: None,
+        parent_thread_id: None,
+        resource_id: None,
+        origin: RunOrigin::Internal,
+        state: None,
+        messages: vec![tirea_agentos::contracts::thread::Message::internal_system(
+            "internal-only-queued",
+        )],
+        initial_decisions: vec![],
+        source_mailbox_entry_id: None,
+    };
+
+    storage
+        .enqueue_mailbox_entry(
+            &MailboxEntryBuilder::queued("entry-external", "mailbox-visibility")
+                .with_origin(MailboxEntryOrigin::External)
+                .with_payload(serde_json::to_value(&external_request).unwrap())
+                .build(),
+        )
+        .await
+        .unwrap();
+    storage
+        .enqueue_mailbox_entry(
+            &MailboxEntryBuilder::queued("entry-internal", "mailbox-visibility")
+                .with_origin(MailboxEntryOrigin::Internal)
+                .with_payload(serde_json::to_value(&internal_request).unwrap())
+                .build(),
+        )
+        .await
+        .unwrap();
+
+    let (status, body) = get_json(app.clone(), "/v1/threads/mailbox-visibility/mailbox").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["total"], 1);
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["origin"], "external");
+    let payload_messages = items[0]["payload"]["messages"].as_array().unwrap();
+    assert_eq!(payload_messages.len(), 1);
+    assert_eq!(payload_messages[0]["content"], "visible-queued");
+    assert!(payload_messages[0]["metadata"].get("run_id").is_none());
+    assert_eq!(payload_messages[0]["metadata"]["step_index"], 0);
+
+    let (status, body) = get_json(
+        app,
+        "/v1/threads/mailbox-visibility/mailbox?origin=none&visibility=none",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["total"], 2);
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+
+    let external = items
+        .iter()
+        .find(|item| item["origin"] == "external")
+        .expect("external mailbox entry");
+    assert_eq!(external["payload"]["messages"].as_array().unwrap().len(), 2);
+
+    let internal = items
+        .iter()
+        .find(|item| item["origin"] == "internal")
+        .expect("internal mailbox entry");
+    assert_eq!(internal["payload"]["messages"].as_array().unwrap().len(), 1);
 }
 
 #[tokio::test]

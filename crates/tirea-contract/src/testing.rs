@@ -16,7 +16,7 @@ use crate::runtime::tool_call::ToolDescriptor;
 use crate::runtime::{
     PendingToolCall, StepContext, SuspendTicket, ToolCallContext, ToolCallResumeMode,
 };
-use crate::storage::{MailboxEntry, MailboxEntryStatus};
+use crate::storage::{MailboxEntry, MailboxEntryOrigin, MailboxEntryStatus};
 use crate::thread::Message;
 use crate::RunPolicy;
 use serde::{Deserialize, Serialize};
@@ -126,6 +126,7 @@ impl MailboxEntryBuilder {
             entry: MailboxEntry {
                 entry_id: entry_id.into(),
                 mailbox_id: mailbox_id.into(),
+                origin: MailboxEntryOrigin::External,
                 sender_id: None,
                 payload: Value::Null,
                 priority: 0,
@@ -153,6 +154,12 @@ impl MailboxEntryBuilder {
     /// Replace the sender identifier.
     pub fn with_sender_id(mut self, sender_id: impl Into<String>) -> Self {
         self.entry.sender_id = Some(sender_id.into());
+        self
+    }
+
+    /// Replace the coarse ingress origin classification.
+    pub fn with_origin(mut self, origin: MailboxEntryOrigin) -> Self {
+        self.entry.origin = origin;
         self
     }
 
