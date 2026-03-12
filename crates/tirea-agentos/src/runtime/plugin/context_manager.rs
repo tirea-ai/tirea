@@ -1324,6 +1324,42 @@ mod tests {
         assert_eq!(output.messages[2].content, "next");
     }
 
+    #[test]
+    fn transform_patches_dangling_tool_call_after_boundary() {
+        let state = ContextManagerState {
+            boundaries: vec![CompactBoundary {
+                covers_through_message_id: "msg-1".into(),
+                summary: "summary".into(),
+                original_token_count: 10,
+                created_at_ms: 1,
+            }],
+            artifact_refs: vec![],
+        };
+        let transform = ContextAssemblyTransform::new(state);
+        let messages = vec![
+            make_msg_with_id(Role::System, "sys", "sys-1"),
+            make_msg_with_id(Role::User, "earlier", "msg-1"),
+            assistant_with_tool_calls(
+                "msg-2",
+                vec![tirea_contract::thread::ToolCall::new(
+                    "call-1",
+                    "search",
+                    json!({"q": "rust"}),
+                )],
+            ),
+            make_msg_with_id(Role::User, "after", "msg-3"),
+        ];
+
+        let output = transform.transform(messages, &[]);
+        assert_eq!(output.messages.len(), 5);
+        assert!(output.messages[1].content.contains(SUMMARY_MESSAGE_OPEN));
+        assert_eq!(output.messages[2].role, Role::Assistant);
+        assert_eq!(output.messages[3].role, Role::Tool);
+        assert_eq!(output.messages[3].tool_call_id.as_deref(), Some("call-1"));
+        assert_eq!(output.messages[3].content, INTERRUPTED_TOOL_RESULT_NOTICE);
+        assert_eq!(output.messages[4].content, "after");
+    }
+
     // -- Planner tests --
 
     #[test]
@@ -1420,6 +1456,102 @@ mod tests {
         )
         .expect("frontier mode should stop at the latest safe boundary");
         assert_eq!(plan.boundary_message_id, "msg-1");
+    }
+
+    #[test]
+    fn planner_suffix_mode_respects_custom_raw_suffix_size() {
+        let messages = vec![
+            Arc::new(make_msg_with_id(Role::User, "older request", "msg-1")),
+            Arc::new(make_msg_with_id(Role::Assistant, "older reply", "msg-2")),
+            Arc::new(make_msg_with_id(Role::User, "recent request", "msg-3")),
+            Arc::new(make_msg_with_id(Role::Assistant, "recent reply", "msg-4")),
+        ];
+
+        let plan = find_compaction_plan(
+            &messages,
+            &ContextManagerState::default(),
+            &HashMap::new(),
+            &HashMap::new(),
+            ContextCompactionMode::KeepRecentRawSuffix,
+            3,
+        )
+        .expect("custom raw suffix should still leave an older prefix to compact");
+
+        assert_eq!(plan.boundary_message_id, "msg-1");
+        assert_eq!(plan.covered_message_ids, vec!["msg-1".to_string()]);
+    }
+
+    #[test]
+    fn planner_skips_messages_already_covered_by_existing_boundary() {
+        let messages = vec![
+            Arc::new(make_msg_with_id(Role::User, "first", "msg-1")),
+            Arc::new(make_msg_with_id(Role::Assistant, "second", "msg-2")),
+            Arc::new(make_msg_with_id(Role::User, "third", "msg-3")),
+            Arc::new(make_msg_with_id(Role::Assistant, "fourth", "msg-4")),
+        ];
+        let state = ContextManagerState {
+            boundaries: vec![CompactBoundary {
+                covers_through_message_id: "msg-2".into(),
+                summary: "prior summary".into(),
+                original_token_count: 20,
+                created_at_ms: 1,
+            }],
+            artifact_refs: vec![],
+        };
+
+        let plan = find_compaction_plan(
+            &messages,
+            &state,
+            &HashMap::new(),
+            &HashMap::new(),
+            ContextCompactionMode::CompactToSafeFrontier,
+            2,
+        )
+        .expect("unsummarized suffix should remain compactable");
+
+        assert_eq!(plan.start_index, 2);
+        assert_eq!(plan.boundary_message_id, "msg-4");
+        assert_eq!(
+            plan.covered_message_ids,
+            vec!["msg-3".to_string(), "msg-4".to_string()]
+        );
+    }
+
+    #[test]
+    fn planner_frontier_mode_advances_to_latest_closed_round_before_open_call() {
+        let messages = vec![
+            Arc::new(make_msg_with_id(Role::User, "start", "msg-1")),
+            Arc::new(assistant_with_tool_calls(
+                "msg-2",
+                vec![tirea_contract::thread::ToolCall::new(
+                    "call-1",
+                    "search",
+                    json!({"q": "rust"}),
+                )],
+            )),
+            Arc::new(tool_result_with_call("tool-1", "call-1", "done")),
+            Arc::new(assistant_with_tool_calls(
+                "msg-3",
+                vec![tirea_contract::thread::ToolCall::new(
+                    "call-2",
+                    "grep",
+                    json!({"pattern": "fn"}),
+                )],
+            )),
+            Arc::new(make_msg_with_id(Role::User, "later", "msg-4")),
+        ];
+
+        let plan = find_compaction_plan(
+            &messages,
+            &ContextManagerState::default(),
+            &HashMap::new(),
+            &HashMap::new(),
+            ContextCompactionMode::CompactToSafeFrontier,
+            2,
+        )
+        .expect("frontier mode should stop at the most recent closed round");
+
+        assert_eq!(plan.boundary_message_id, "tool-1");
     }
 
     // -- Plugin tests --
@@ -1567,6 +1699,171 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert!(calls[0].transcript.contains("old request"));
         assert!(calls[0].transcript.contains("current request"));
+    }
+
+    #[tokio::test]
+    async fn plugin_before_inference_suffix_mode_respects_custom_raw_suffix() {
+        use tirea_contract::runtime::AgentBehavior;
+
+        let summarizer = Arc::new(TestSummarizer::new("suffix summary"));
+        let plugin = ContextManagerPlugin::new(ContextWindowPolicy {
+            max_context_tokens: 4_000,
+            max_output_tokens: 512,
+            min_recent_messages: 4,
+            enable_prompt_cache: false,
+            autocompact_threshold: Some(30),
+            compaction_mode: ContextCompactionMode::KeepRecentRawSuffix,
+            compaction_raw_suffix_messages: 2,
+        })
+        .with_summarizer(summarizer.clone());
+
+        let messages: Vec<Arc<Message>> = vec![
+            Arc::new(make_msg_with_id(
+                Role::User,
+                &"old request with enough content to exceed the threshold ".repeat(120),
+                "msg-1",
+            )),
+            Arc::new(make_msg_with_id(
+                Role::Assistant,
+                &"old reply with enough content to exceed the threshold ".repeat(120),
+                "msg-2",
+            )),
+            Arc::new(make_msg_with_id(
+                Role::User,
+                &"recent request that should remain raw ".repeat(40),
+                "msg-3",
+            )),
+            Arc::new(make_msg_with_id(
+                Role::Assistant,
+                &"recent reply that should remain raw ".repeat(40),
+                "msg-4",
+            )),
+        ];
+        let config = RunPolicy::new();
+        let doc = DocCell::new(json!({}));
+        let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &messages, &config, &doc);
+
+        let actions = plugin.before_inference(&ctx).await.into_vec();
+        assert_eq!(actions.len(), 3);
+
+        let calls = summarizer.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].transcript.contains("old request"));
+        assert!(calls[0].transcript.contains("old reply"));
+        assert!(!calls[0].transcript.contains("recent request"));
+        assert!(!calls[0].transcript.contains("recent reply"));
+    }
+
+    #[tokio::test]
+    async fn plugin_before_inference_frontier_mode_uses_previous_summary_for_delta_only() {
+        use tirea_contract::runtime::AgentBehavior;
+
+        let summarizer = Arc::new(TestSummarizer::new("updated frontier summary"));
+        let plugin = ContextManagerPlugin::new(ContextWindowPolicy {
+            max_context_tokens: 4_000,
+            max_output_tokens: 512,
+            min_recent_messages: 4,
+            enable_prompt_cache: false,
+            autocompact_threshold: Some(30),
+            compaction_mode: ContextCompactionMode::CompactToSafeFrontier,
+            ..ContextWindowPolicy::default()
+        })
+        .with_summarizer(summarizer.clone());
+
+        let state = ContextManagerState {
+            boundaries: vec![CompactBoundary {
+                covers_through_message_id: "msg-2".into(),
+                summary: "previous summary".into(),
+                original_token_count: 100,
+                created_at_ms: 1,
+            }],
+            artifact_refs: vec![],
+        };
+        let state_value = serde_json::to_value(&state).unwrap();
+        let doc = DocCell::new(json!({ "__context": state_value }));
+        let messages: Vec<Arc<Message>> = vec![
+            Arc::new(make_msg_with_id(
+                Role::User,
+                &"old request already summarized ".repeat(80),
+                "msg-1",
+            )),
+            Arc::new(make_msg_with_id(
+                Role::Assistant,
+                &"old reply already summarized ".repeat(80),
+                "msg-2",
+            )),
+            Arc::new(make_msg_with_id(
+                Role::User,
+                &"new request to merge into summary ".repeat(120),
+                "msg-3",
+            )),
+            Arc::new(make_msg_with_id(
+                Role::Assistant,
+                &"new reply to merge into summary ".repeat(120),
+                "msg-4",
+            )),
+        ];
+        let config = RunPolicy::new();
+        let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &messages, &config, &doc);
+
+        let actions = plugin.before_inference(&ctx).await.into_vec();
+        assert_eq!(actions.len(), 3);
+
+        let calls = summarizer.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].previous_summary.as_deref(),
+            Some("previous summary")
+        );
+        assert!(!calls[0].transcript.contains("already summarized"));
+        assert!(calls[0].transcript.contains("new request"));
+        assert!(calls[0].transcript.contains("new reply"));
+    }
+
+    #[tokio::test]
+    async fn plugin_before_inference_frontier_mode_excludes_open_tool_round_from_summary() {
+        use tirea_contract::runtime::AgentBehavior;
+
+        let summarizer = Arc::new(TestSummarizer::new("frontier summary"));
+        let plugin = ContextManagerPlugin::new(ContextWindowPolicy {
+            max_context_tokens: 4_000,
+            max_output_tokens: 512,
+            min_recent_messages: 4,
+            enable_prompt_cache: false,
+            autocompact_threshold: Some(30),
+            compaction_mode: ContextCompactionMode::CompactToSafeFrontier,
+            ..ContextWindowPolicy::default()
+        })
+        .with_summarizer(summarizer.clone());
+
+        let messages: Vec<Arc<Message>> = vec![
+            Arc::new(make_msg_with_id(
+                Role::User,
+                &"very old request with enough content to exceed the threshold ".repeat(120),
+                "msg-1",
+            )),
+            Arc::new(assistant_with_tool_calls(
+                "msg-2",
+                vec![tirea_contract::thread::ToolCall::new(
+                    "call-1",
+                    "search",
+                    json!({"q": "rust"}),
+                )],
+            )),
+            Arc::new(make_msg_with_id(Role::User, "later user", "msg-3")),
+        ];
+        let config = RunPolicy::new();
+        let doc = DocCell::new(json!({}));
+        let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &messages, &config, &doc);
+
+        let actions = plugin.before_inference(&ctx).await.into_vec();
+        assert_eq!(actions.len(), 3);
+
+        let calls = summarizer.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].transcript.contains("very old request"));
+        assert!(!calls[0].transcript.contains("tool_calls:"));
+        assert!(!calls[0].transcript.contains("later user"));
     }
 
     #[tokio::test]

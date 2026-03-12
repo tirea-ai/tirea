@@ -143,6 +143,11 @@ mod tests {
         assert_eq!(plugin.policy.max_context_tokens, 200_000);
         assert_eq!(plugin.policy.max_output_tokens, 16_384);
         assert!(plugin.policy.enable_prompt_cache);
+        assert_eq!(
+            plugin.policy.compaction_mode,
+            ContextCompactionMode::KeepRecentRawSuffix
+        );
+        assert_eq!(plugin.policy.compaction_raw_suffix_messages, 2);
     }
 
     #[test]
@@ -150,6 +155,10 @@ mod tests {
         let plugin = ContextWindowPlugin::for_model("claude-3-opus");
         assert_eq!(plugin.policy.max_context_tokens, 200_000);
         assert!(plugin.policy.enable_prompt_cache);
+        assert_eq!(
+            plugin.policy.compaction_mode,
+            ContextCompactionMode::KeepRecentRawSuffix
+        );
     }
 
     #[test]
@@ -157,12 +166,20 @@ mod tests {
         let plugin = ContextWindowPlugin::for_model("gpt-4o-mini");
         assert_eq!(plugin.policy.max_context_tokens, 128_000);
         assert!(!plugin.policy.enable_prompt_cache);
+        assert_eq!(
+            plugin.policy.compaction_mode,
+            ContextCompactionMode::KeepRecentRawSuffix
+        );
     }
 
     #[test]
     fn for_model_unknown_uses_defaults() {
         let plugin = ContextWindowPlugin::for_model("some-custom-model");
         assert_eq!(plugin.policy.max_context_tokens, 200_000);
+        assert_eq!(
+            plugin.policy.compaction_mode,
+            ContextCompactionMode::KeepRecentRawSuffix
+        );
     }
 
     #[tokio::test]

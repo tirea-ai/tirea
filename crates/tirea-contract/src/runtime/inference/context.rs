@@ -87,3 +87,61 @@ impl std::fmt::Debug for InferenceContext {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn default_policy_uses_suffix_compaction_defaults() {
+        let policy = ContextWindowPolicy::default();
+        assert_eq!(
+            policy.compaction_mode,
+            ContextCompactionMode::KeepRecentRawSuffix
+        );
+        assert_eq!(policy.compaction_raw_suffix_messages, 2);
+    }
+
+    #[test]
+    fn policy_deserialization_backfills_new_compaction_fields() {
+        let value = json!({
+            "max_context_tokens": 4096,
+            "max_output_tokens": 512,
+            "min_recent_messages": 4,
+            "enable_prompt_cache": false,
+            "autocompact_threshold": 2048
+        });
+
+        let policy: ContextWindowPolicy = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            policy.compaction_mode,
+            ContextCompactionMode::KeepRecentRawSuffix
+        );
+        assert_eq!(policy.compaction_raw_suffix_messages, 2);
+    }
+
+    #[test]
+    fn policy_serialization_roundtrip_preserves_frontier_mode() {
+        let policy = ContextWindowPolicy {
+            max_context_tokens: 8192,
+            max_output_tokens: 1024,
+            min_recent_messages: 6,
+            enable_prompt_cache: false,
+            autocompact_threshold: Some(4096),
+            compaction_mode: ContextCompactionMode::CompactToSafeFrontier,
+            compaction_raw_suffix_messages: 5,
+        };
+
+        let encoded = serde_json::to_value(&policy).unwrap();
+        assert_eq!(encoded["compaction_mode"], "compact_to_safe_frontier");
+        assert_eq!(encoded["compaction_raw_suffix_messages"], 5);
+
+        let restored: ContextWindowPolicy = serde_json::from_value(encoded).unwrap();
+        assert_eq!(
+            restored.compaction_mode,
+            ContextCompactionMode::CompactToSafeFrontier
+        );
+        assert_eq!(restored.compaction_raw_suffix_messages, 5);
+    }
+}
