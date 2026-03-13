@@ -1,9 +1,13 @@
-//! Context manager: logical compression of conversation history.
+//! Context management: logical compression + hard truncation.
 //!
-//! Maintains [`ContextManagerState`] with compact boundaries and artifact
-//! references. Registers a [`ContextAssemblyTransform`] that replaces
-//! pre-boundary messages with a summary and swaps large artifact content
-//! with compact views — without modifying the persisted thread.
+//! Combines two concerns into a single plugin:
+//! 1. **Compaction** — LLM-based summarization of old messages and artifact
+//!    compaction via [`ContextState`].
+//! 2. **Truncation** — hard token-budget enforcement via [`truncate_to_budget`].
+//!
+//! Registers a single [`ContextTransform`] that first replaces pre-boundary
+//! messages with a summary and swaps large artifact content with compact
+//! views, then truncates history to fit the token budget.
 
 use async_trait::async_trait;
 use genai::chat::{ChatMessage, ChatOptions, ChatRequest};
@@ -25,13 +29,49 @@ use tirea_contract::runtime::tool_call::{
 use tirea_contract::thread::{Message, Role, Thread};
 use tirea_state::State;
 
+use crate::engine::context_window::truncate_to_budget;
 use crate::engine::token_estimator::{
-    estimate_message_tokens, estimate_messages_tokens, estimate_tokens,
+    estimate_message_tokens, estimate_messages_tokens, estimate_tokens, estimate_tool_tokens,
 };
 use crate::runtime::loop_runner::LlmExecutor;
 
 /// Behavior ID used for registration.
-pub const CONTEXT_MANAGER_PLUGIN_ID: &str = "context_manager";
+pub const CONTEXT_PLUGIN_ID: &str = "context";
+
+fn auto_compact_threshold(max_context_tokens: usize, max_output_tokens: usize) -> usize {
+    let available = max_context_tokens.saturating_sub(max_output_tokens);
+    available.saturating_mul(7) / 10
+}
+
+pub(crate) fn policy_for_model(model: &str) -> ContextWindowPolicy {
+    match model {
+        m if m.contains("claude") => ContextWindowPolicy {
+            max_context_tokens: 200_000,
+            max_output_tokens: 16_384,
+            enable_prompt_cache: true,
+            autocompact_threshold: Some(auto_compact_threshold(200_000, 16_384)),
+            compaction_mode: ContextCompactionMode::KeepRecentRawSuffix,
+            ..ContextWindowPolicy::default()
+        },
+        m if m.contains("gpt-4o") => ContextWindowPolicy {
+            max_context_tokens: 128_000,
+            max_output_tokens: 16_384,
+            enable_prompt_cache: false,
+            autocompact_threshold: Some(auto_compact_threshold(128_000, 16_384)),
+            compaction_mode: ContextCompactionMode::KeepRecentRawSuffix,
+            ..ContextWindowPolicy::default()
+        },
+        m if m.contains("gpt-4") => ContextWindowPolicy {
+            max_context_tokens: 128_000,
+            max_output_tokens: 4_096,
+            enable_prompt_cache: false,
+            autocompact_threshold: Some(auto_compact_threshold(128_000, 4_096)),
+            compaction_mode: ContextCompactionMode::KeepRecentRawSuffix,
+            ..ContextWindowPolicy::default()
+        },
+        _ => ContextWindowPolicy::default(),
+    }
+}
 
 const SUMMARY_MESSAGE_OPEN: &str = "<conversation-summary>";
 const SUMMARY_MESSAGE_CLOSE: &str = "</conversation-summary>";
@@ -88,17 +128,17 @@ pub struct ArtifactRef {
 
 /// Thread-scoped state persisting compact boundaries and artifact references.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-#[tirea(path = "__context", action = "ContextManagerAction", scope = "thread")]
-pub struct ContextManagerState {
+#[tirea(path = "__context", action = "ContextAction", scope = "thread")]
+pub struct ContextState {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub boundaries: Vec<CompactBoundary>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifact_refs: Vec<ArtifactRef>,
 }
 
-/// Actions that modify [`ContextManagerState`].
+/// Actions that modify [`ContextState`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ContextManagerAction {
+pub enum ContextAction {
     /// Add a new compact boundary. Boundaries are cumulative; the latest one
     /// supersedes any earlier boundary.
     AddBoundary(CompactBoundary),
@@ -113,14 +153,14 @@ pub enum ContextManagerAction {
     },
 }
 
-impl ContextManagerState {
-    fn reduce(&mut self, action: ContextManagerAction) {
+impl ContextState {
+    fn reduce(&mut self, action: ContextAction) {
         match action {
-            ContextManagerAction::AddBoundary(boundary) => {
+            ContextAction::AddBoundary(boundary) => {
                 self.boundaries.clear();
                 self.boundaries.push(boundary);
             }
-            ContextManagerAction::AddArtifact(artifact) => {
+            ContextAction::AddArtifact(artifact) => {
                 if let Some(existing) = self
                     .artifact_refs
                     .iter_mut()
@@ -131,7 +171,7 @@ impl ContextManagerState {
                     self.artifact_refs.push(artifact);
                 }
             }
-            ContextManagerAction::PruneArtifacts {
+            ContextAction::PruneArtifacts {
                 message_ids,
                 tool_call_ids,
             } => {
@@ -169,21 +209,23 @@ fn artifact_identity_matches(existing: &ArtifactRef, candidate: &ArtifactRef) ->
 // Transform
 // ---------------------------------------------------------------------------
 
-/// Inference request transform that applies logical compression.
+/// Inference request transform that applies logical compression then hard truncation.
 ///
 /// Constructed each step in `before_inference` with a snapshot of the current
-/// [`ContextManagerState`]. The transform:
+/// [`ContextState`] and the active [`ContextWindowPolicy`]. The transform:
 /// 1. Replaces messages before the latest boundary with a summary.
 /// 2. Repairs tool/result pairing after replacement.
 /// 3. Substitutes large artifact content with compact views.
-struct ContextAssemblyTransform {
-    state: ContextManagerState,
+/// 4. Truncates history to fit the token budget.
+struct ContextTransform {
+    state: ContextState,
+    policy: ContextWindowPolicy,
     artifact_by_message_id: HashMap<String, ArtifactRef>,
     artifact_by_tool_call_id: HashMap<String, ArtifactRef>,
 }
 
-impl ContextAssemblyTransform {
-    fn new(state: ContextManagerState) -> Self {
+impl ContextTransform {
+    fn new(state: ContextState, policy: ContextWindowPolicy) -> Self {
         let mut artifact_by_message_id = HashMap::new();
         let mut artifact_by_tool_call_id = HashMap::new();
         for artifact in &state.artifact_refs {
@@ -196,6 +238,7 @@ impl ContextAssemblyTransform {
         }
         Self {
             state,
+            policy,
             artifact_by_message_id,
             artifact_by_tool_call_id,
         }
@@ -259,17 +302,28 @@ impl ContextAssemblyTransform {
     }
 }
 
-impl InferenceRequestTransform for ContextAssemblyTransform {
+impl InferenceRequestTransform for ContextTransform {
     fn transform(
         &self,
         messages: Vec<Message>,
-        _tool_descriptors: &[ToolDescriptor],
+        tool_descriptors: &[ToolDescriptor],
     ) -> InferenceTransformOutput {
+        // Phase 1: Logical compression (boundary replacement + artifact substitution).
         let mut result = self.apply_boundaries(messages);
         self.apply_artifact_refs(&mut result);
+
+        // Phase 2: Hard truncation to token budget.
+        let tool_tokens = estimate_tool_tokens(tool_descriptors);
+        let system_end = result
+            .iter()
+            .position(|m| m.role != Role::System)
+            .unwrap_or(result.len());
+        let (system_msgs, history_msgs) = result.split_at(system_end);
+        let truncated = truncate_to_budget(system_msgs, history_msgs, tool_tokens, &self.policy);
+
         InferenceTransformOutput {
-            messages: result,
-            enable_prompt_cache: false,
+            messages: truncated.messages.into_iter().cloned().collect(),
+            enable_prompt_cache: self.policy.enable_prompt_cache,
         }
     }
 }
@@ -423,7 +477,7 @@ struct SummaryPayload {
 }
 
 #[derive(Debug, Error)]
-enum ContextManagerError {
+enum ContextError {
     #[error("summary model returned no text")]
     EmptySummary,
     #[error("failed to execute summary request: {0}")]
@@ -432,7 +486,7 @@ enum ContextManagerError {
 
 #[async_trait]
 trait ContextSummarizer: Send + Sync {
-    async fn summarize(&self, payload: SummaryPayload) -> Result<String, ContextManagerError>;
+    async fn summarize(&self, payload: SummaryPayload) -> Result<String, ContextError>;
 }
 
 #[derive(Clone)]
@@ -458,7 +512,7 @@ impl LlmContextSummarizer {
 
 #[async_trait]
 impl ContextSummarizer for LlmContextSummarizer {
-    async fn summarize(&self, payload: SummaryPayload) -> Result<String, ContextManagerError> {
+    async fn summarize(&self, payload: SummaryPayload) -> Result<String, ContextError> {
         let prompt = render_summary_prompt(&payload);
         let request = ChatRequest::new(vec![
             ChatMessage::system(SUMMARY_SYSTEM_PROMPT),
@@ -478,7 +532,7 @@ impl ContextSummarizer for LlmContextSummarizer {
             .first_text()
             .map(str::trim)
             .filter(|text| !text.is_empty())
-            .ok_or(ContextManagerError::EmptySummary)?;
+            .ok_or(ContextError::EmptySummary)?;
         Ok(summary.to_string())
     }
 }
@@ -506,7 +560,7 @@ fn estimate_arc_messages_tokens(messages: &[Arc<Message>]) -> usize {
 
 fn unsummarized_start_index(
     messages: &[Arc<Message>],
-    state: &ContextManagerState,
+    state: &ContextState,
 ) -> Option<usize> {
     let Some(boundary) = state.latest_boundary() else {
         return Some(0);
@@ -561,7 +615,7 @@ fn compaction_search_end(
 
 fn find_compaction_plan(
     messages: &[Arc<Message>],
-    state: &ContextManagerState,
+    state: &ContextState,
     tool_states: &HashMap<String, ToolCallState>,
     suspended_calls: &HashMap<String, SuspendedCall>,
     mode: ContextCompactionMode,
@@ -762,11 +816,11 @@ fn build_artifact_preview(result: &ToolResult) -> String {
 
 /// Trim pre-boundary messages from a thread at load time.
 ///
-/// Reads [`ContextManagerState`] from the thread's persisted state. If a
+/// Reads [`ContextState`] from the thread's persisted state. If a
 /// compaction boundary exists, replaces all messages up to (and including) the
 /// boundary message with a single summary message. This avoids carrying
 /// thousands of `Arc<Message>` references through `RunContext` that would be
-/// replaced by `ContextAssemblyTransform` at inference time anyway.
+/// replaced by `ContextTransform` at inference time anyway.
 ///
 /// Safe to call multiple times (idempotent): the second call finds no boundary
 /// message and returns without changes.
@@ -779,12 +833,12 @@ pub(crate) fn trim_thread_to_latest_boundary(thread: &mut Thread) {
         }
     };
 
-    let ctx_value = match state.get(<ContextManagerState as State>::PATH) {
+    let ctx_value = match state.get(<ContextState as State>::PATH) {
         Some(v) => v,
         None => return,
     };
 
-    let cm_state: ContextManagerState = match serde_json::from_value(ctx_value.clone()) {
+    let cm_state: ContextState = match serde_json::from_value(ctx_value.clone()) {
         Ok(s) => s,
         Err(_) => return,
     };
@@ -811,17 +865,17 @@ pub(crate) fn trim_thread_to_latest_boundary(thread: &mut Thread) {
 // Plugin
 // ---------------------------------------------------------------------------
 
-/// Behavior that registers context assembly transforms and performs auto-compaction.
+/// Unified context plugin: logical compression + hard truncation + prompt caching.
 #[derive(Clone)]
-pub struct ContextManagerPlugin {
+pub struct ContextPlugin {
     policy: ContextWindowPolicy,
     artifact_compact_threshold_tokens: usize,
     summarizer: Option<Arc<dyn ContextSummarizer>>,
 }
 
-impl std::fmt::Debug for ContextManagerPlugin {
+impl std::fmt::Debug for ContextPlugin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ContextManagerPlugin")
+        f.debug_struct("ContextPlugin")
             .field("policy", &self.policy)
             .field(
                 "artifact_compact_threshold_tokens",
@@ -832,19 +886,24 @@ impl std::fmt::Debug for ContextManagerPlugin {
     }
 }
 
-impl Default for ContextManagerPlugin {
+impl Default for ContextPlugin {
     fn default() -> Self {
         Self::new(ContextWindowPolicy::default())
     }
 }
 
-impl ContextManagerPlugin {
+impl ContextPlugin {
     pub fn new(policy: ContextWindowPolicy) -> Self {
         Self {
             policy,
             artifact_compact_threshold_tokens: DEFAULT_ARTIFACT_COMPACT_THRESHOLD_TOKENS,
             summarizer: None,
         }
+    }
+
+    /// Create with model-specific defaults.
+    pub fn for_model(model: &str) -> Self {
+        Self::new(policy_for_model(model))
     }
 
     pub fn with_artifact_compact_threshold_tokens(mut self, threshold: usize) -> Self {
@@ -875,17 +934,23 @@ impl ContextManagerPlugin {
     async fn maybe_compact(
         &self,
         ctx: &ReadOnlyContext<'_>,
-        state: &ContextManagerState,
-    ) -> Option<(CompactBoundary, Option<ContextManagerAction>)> {
+        state: &ContextState,
+    ) -> Option<(CompactBoundary, Option<ContextAction>)> {
         let threshold = self.policy.autocompact_threshold?;
         let raw_messages: Vec<Message> = ctx
             .messages()
             .iter()
             .map(|message| (**message).clone())
             .collect();
-        let effective_messages = ContextAssemblyTransform::new(state.clone())
-            .transform(raw_messages, &[])
-            .messages;
+        let effective_messages = ContextTransform::new(
+            state.clone(),
+            ContextWindowPolicy {
+                max_context_tokens: usize::MAX,
+                ..self.policy.clone()
+            },
+        )
+        .transform(raw_messages, &[])
+        .messages;
         let effective_tokens = estimate_messages_tokens(&effective_messages);
         if effective_tokens < threshold {
             return None;
@@ -912,7 +977,8 @@ impl ContextManagerPlugin {
             .iter()
             .map(|message| (**message).clone())
             .collect();
-        ContextAssemblyTransform::new(state.clone()).apply_artifact_refs(&mut delta_messages);
+        ContextTransform::new(state.clone(), ContextWindowPolicy::default())
+            .apply_artifact_refs(&mut delta_messages);
 
         let payload = SummaryPayload {
             previous_summary: state
@@ -947,7 +1013,7 @@ impl ContextManagerPlugin {
             if plan.covered_message_ids.is_empty() && plan.covered_tool_call_ids.is_empty() {
                 None
             } else {
-                Some(ContextManagerAction::PruneArtifacts {
+                Some(ContextAction::PruneArtifacts {
                     message_ids: plan.covered_message_ids,
                     tool_call_ids: plan.covered_tool_call_ids,
                 })
@@ -980,19 +1046,19 @@ impl ContextManagerPlugin {
 }
 
 #[async_trait]
-impl tirea_contract::runtime::AgentBehavior for ContextManagerPlugin {
+impl tirea_contract::runtime::AgentBehavior for ContextPlugin {
     fn id(&self) -> &str {
-        CONTEXT_MANAGER_PLUGIN_ID
+        CONTEXT_PLUGIN_ID
     }
 
-    tirea_contract::declare_plugin_states!(ContextManagerState);
+    tirea_contract::declare_plugin_states!(ContextState);
 
     async fn before_inference(
         &self,
         ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<BeforeInferenceAction> {
         let state = ctx
-            .scoped_state_of::<ContextManagerState>(StateScope::Thread)
+            .scoped_state_of::<ContextState>(StateScope::Thread)
             .ok()
             .unwrap_or_default();
 
@@ -1000,25 +1066,23 @@ impl tirea_contract::runtime::AgentBehavior for ContextManagerPlugin {
         let mut actions = ActionSet::empty();
 
         if let Some((boundary, prune_action)) = self.maybe_compact(ctx, &state).await {
-            let boundary_action = ContextManagerAction::AddBoundary(boundary.clone());
+            let boundary_action = ContextAction::AddBoundary(boundary.clone());
             effective_state.reduce(boundary_action.clone());
             actions = actions.and(BeforeInferenceAction::State(AnyStateAction::new::<
-                ContextManagerState,
+                ContextState,
             >(boundary_action)));
             if let Some(prune_action) = prune_action {
                 effective_state.reduce(prune_action.clone());
                 actions = actions.and(BeforeInferenceAction::State(AnyStateAction::new::<
-                    ContextManagerState,
+                    ContextState,
                 >(prune_action)));
             }
         }
 
-        if effective_state.boundaries.is_empty() && effective_state.artifact_refs.is_empty() {
-            return actions;
-        }
-
+        // Always register the combined transform: compaction is a no-op when
+        // state is empty, but truncation must always run.
         actions.and(BeforeInferenceAction::AddRequestTransform(Arc::new(
-            ContextAssemblyTransform::new(effective_state),
+            ContextTransform::new(effective_state, self.policy.clone()),
         )))
     }
 
@@ -1038,9 +1102,9 @@ impl tirea_contract::runtime::AgentBehavior for ContextManagerPlugin {
         };
 
         ActionSet::single(AfterToolExecuteAction::State(AnyStateAction::new::<
-            ContextManagerState,
+            ContextState,
         >(
-            ContextManagerAction::AddArtifact(artifact),
+            ContextAction::AddArtifact(artifact),
         )))
     }
 }
@@ -1099,9 +1163,18 @@ mod tests {
 
     #[async_trait]
     impl ContextSummarizer for TestSummarizer {
-        async fn summarize(&self, payload: SummaryPayload) -> Result<String, ContextManagerError> {
+        async fn summarize(&self, payload: SummaryPayload) -> Result<String, ContextError> {
             self.calls.lock().expect("lock poisoned").push(payload);
             Ok(self.response.clone())
+        }
+    }
+
+    /// Policy with a very large budget so truncation is a no-op in
+    /// compaction-focused tests.
+    fn large_budget_policy() -> ContextWindowPolicy {
+        ContextWindowPolicy {
+            max_context_tokens: 1_000_000,
+            ..ContextWindowPolicy::default()
         }
     }
 
@@ -1109,21 +1182,21 @@ mod tests {
 
     #[test]
     fn state_default() {
-        let state = ContextManagerState::default();
+        let state = ContextState::default();
         assert!(state.boundaries.is_empty());
         assert!(state.artifact_refs.is_empty());
     }
 
     #[test]
     fn reducer_add_boundary_replaces_latest() {
-        let mut state = ContextManagerState::default();
-        state.reduce(ContextManagerAction::AddBoundary(CompactBoundary {
+        let mut state = ContextState::default();
+        state.reduce(ContextAction::AddBoundary(CompactBoundary {
             covers_through_message_id: "msg-1".into(),
             summary: "First summary".into(),
             original_token_count: 100,
             created_at_ms: 1000,
         }));
-        state.reduce(ContextManagerAction::AddBoundary(CompactBoundary {
+        state.reduce(ContextAction::AddBoundary(CompactBoundary {
             covers_through_message_id: "msg-5".into(),
             summary: "Second summary".into(),
             original_token_count: 200,
@@ -1136,8 +1209,8 @@ mod tests {
 
     #[test]
     fn reducer_add_artifact_deduplicates_by_tool_call_id() {
-        let mut state = ContextManagerState::default();
-        state.reduce(ContextManagerAction::AddArtifact(ArtifactRef {
+        let mut state = ContextState::default();
+        state.reduce(ContextAction::AddArtifact(ArtifactRef {
             message_id: None,
             tool_call_id: Some("call-1".into()),
             label: "first".into(),
@@ -1145,7 +1218,7 @@ mod tests {
             original_size: 10,
             original_token_count: 3,
         }));
-        state.reduce(ContextManagerAction::AddArtifact(ArtifactRef {
+        state.reduce(ContextAction::AddArtifact(ArtifactRef {
             message_id: None,
             tool_call_id: Some("call-1".into()),
             label: "updated".into(),
@@ -1160,7 +1233,7 @@ mod tests {
 
     #[test]
     fn reducer_prune_artifacts_by_exact_ids() {
-        let mut state = ContextManagerState {
+        let mut state = ContextState {
             boundaries: vec![],
             artifact_refs: vec![
                 ArtifactRef {
@@ -1182,7 +1255,7 @@ mod tests {
             ],
         };
 
-        state.reduce(ContextManagerAction::PruneArtifacts {
+        state.reduce(ContextAction::PruneArtifacts {
             message_ids: vec!["msg-1".into()],
             tool_call_ids: vec![],
         });
@@ -1195,7 +1268,7 @@ mod tests {
 
     #[test]
     fn transform_no_boundaries_passthrough() {
-        let transform = ContextAssemblyTransform::new(ContextManagerState::default());
+        let transform = ContextTransform::new(ContextState::default(), large_budget_policy());
         let messages = vec![
             Message::system("sys"),
             Message::user("hello"),
@@ -1208,7 +1281,7 @@ mod tests {
 
     #[test]
     fn transform_replaces_pre_boundary_messages() {
-        let state = ContextManagerState {
+        let state = ContextState {
             boundaries: vec![CompactBoundary {
                 covers_through_message_id: "msg-2".into(),
                 summary: "User asked about weather, assistant replied sunny.".into(),
@@ -1217,7 +1290,7 @@ mod tests {
             }],
             artifact_refs: vec![],
         };
-        let transform = ContextAssemblyTransform::new(state);
+        let transform = ContextTransform::new(state, large_budget_policy());
 
         let messages = vec![
             make_msg_with_id(Role::System, "You are helpful.", "sys-1"),
@@ -1238,7 +1311,7 @@ mod tests {
 
     #[test]
     fn transform_frontier_boundary_can_replace_all_history() {
-        let state = ContextManagerState {
+        let state = ContextState {
             boundaries: vec![CompactBoundary {
                 covers_through_message_id: "msg-2".into(),
                 summary: "User asked about weather, assistant replied sunny.".into(),
@@ -1247,7 +1320,7 @@ mod tests {
             }],
             artifact_refs: vec![],
         };
-        let transform = ContextAssemblyTransform::new(state);
+        let transform = ContextTransform::new(state, large_budget_policy());
 
         let messages = vec![
             make_msg_with_id(Role::System, "You are helpful.", "sys-1"),
@@ -1264,7 +1337,7 @@ mod tests {
 
     #[test]
     fn transform_only_preserves_leading_system_messages() {
-        let state = ContextManagerState {
+        let state = ContextState {
             boundaries: vec![CompactBoundary {
                 covers_through_message_id: "msg-3".into(),
                 summary: "summary".into(),
@@ -1273,7 +1346,7 @@ mod tests {
             }],
             artifact_refs: vec![],
         };
-        let transform = ContextAssemblyTransform::new(state);
+        let transform = ContextTransform::new(state, large_budget_policy());
         let messages = vec![
             make_msg_with_id(Role::System, "system prompt", "sys-1"),
             make_msg_with_id(Role::User, "hello", "msg-1"),
@@ -1291,7 +1364,7 @@ mod tests {
 
     #[test]
     fn transform_boundary_message_not_found_passthrough() {
-        let state = ContextManagerState {
+        let state = ContextState {
             boundaries: vec![CompactBoundary {
                 covers_through_message_id: "nonexistent".into(),
                 summary: "Should not appear".into(),
@@ -1300,7 +1373,7 @@ mod tests {
             }],
             artifact_refs: vec![],
         };
-        let transform = ContextAssemblyTransform::new(state);
+        let transform = ContextTransform::new(state, large_budget_policy());
 
         let messages = vec![
             Message::system("sys"),
@@ -1314,7 +1387,7 @@ mod tests {
 
     #[test]
     fn transform_artifact_ref_replaces_content_by_tool_call_id() {
-        let state = ContextManagerState {
+        let state = ContextState {
             boundaries: vec![],
             artifact_refs: vec![ArtifactRef {
                 message_id: None,
@@ -1325,7 +1398,7 @@ mod tests {
                 original_token_count: 6_000,
             }],
         };
-        let transform = ContextAssemblyTransform::new(state);
+        let transform = ContextTransform::new(state, large_budget_policy());
 
         let messages = vec![
             Message::system("sys"),
@@ -1348,7 +1421,7 @@ mod tests {
 
     #[test]
     fn transform_repairs_orphaned_tool_result_after_manual_boundary() {
-        let state = ContextManagerState {
+        let state = ContextState {
             boundaries: vec![CompactBoundary {
                 covers_through_message_id: "msg-2".into(),
                 summary: "summary".into(),
@@ -1357,7 +1430,7 @@ mod tests {
             }],
             artifact_refs: vec![],
         };
-        let transform = ContextAssemblyTransform::new(state);
+        let transform = ContextTransform::new(state, large_budget_policy());
         let messages = vec![
             make_msg_with_id(Role::System, "sys", "sys-1"),
             assistant_with_tool_calls(
@@ -1380,7 +1453,7 @@ mod tests {
 
     #[test]
     fn transform_patches_dangling_tool_call_after_boundary() {
-        let state = ContextManagerState {
+        let state = ContextState {
             boundaries: vec![CompactBoundary {
                 covers_through_message_id: "msg-1".into(),
                 summary: "summary".into(),
@@ -1389,7 +1462,7 @@ mod tests {
             }],
             artifact_refs: vec![],
         };
-        let transform = ContextAssemblyTransform::new(state);
+        let transform = ContextTransform::new(state, large_budget_policy());
         let messages = vec![
             make_msg_with_id(Role::System, "sys", "sys-1"),
             make_msg_with_id(Role::User, "earlier", "msg-1"),
@@ -1426,7 +1499,7 @@ mod tests {
 
         let plan = find_compaction_plan(
             &messages,
-            &ContextManagerState::default(),
+            &ContextState::default(),
             &HashMap::new(),
             &HashMap::new(),
             ContextCompactionMode::KeepRecentRawSuffix,
@@ -1447,7 +1520,7 @@ mod tests {
 
         let plan = find_compaction_plan(
             &messages,
-            &ContextManagerState::default(),
+            &ContextState::default(),
             &HashMap::new(),
             &HashMap::new(),
             ContextCompactionMode::CompactToSafeFrontier,
@@ -1475,7 +1548,7 @@ mod tests {
 
         let plan = find_compaction_plan(
             &messages,
-            &ContextManagerState::default(),
+            &ContextState::default(),
             &HashMap::new(),
             &HashMap::new(),
             ContextCompactionMode::KeepRecentRawSuffix,
@@ -1502,7 +1575,7 @@ mod tests {
 
         let plan = find_compaction_plan(
             &messages,
-            &ContextManagerState::default(),
+            &ContextState::default(),
             &HashMap::new(),
             &HashMap::new(),
             ContextCompactionMode::CompactToSafeFrontier,
@@ -1523,7 +1596,7 @@ mod tests {
 
         let plan = find_compaction_plan(
             &messages,
-            &ContextManagerState::default(),
+            &ContextState::default(),
             &HashMap::new(),
             &HashMap::new(),
             ContextCompactionMode::KeepRecentRawSuffix,
@@ -1543,7 +1616,7 @@ mod tests {
             Arc::new(make_msg_with_id(Role::User, "third", "msg-3")),
             Arc::new(make_msg_with_id(Role::Assistant, "fourth", "msg-4")),
         ];
-        let state = ContextManagerState {
+        let state = ContextState {
             boundaries: vec![CompactBoundary {
                 covers_through_message_id: "msg-2".into(),
                 summary: "prior summary".into(),
@@ -1597,7 +1670,7 @@ mod tests {
 
         let plan = find_compaction_plan(
             &messages,
-            &ContextManagerState::default(),
+            &ContextState::default(),
             &HashMap::new(),
             &HashMap::new(),
             ContextCompactionMode::CompactToSafeFrontier,
@@ -1612,14 +1685,14 @@ mod tests {
 
     #[test]
     fn plugin_id() {
-        let plugin = ContextManagerPlugin::new(ContextWindowPolicy::default());
+        let plugin = ContextPlugin::new(ContextWindowPolicy::default());
         use tirea_contract::runtime::AgentBehavior;
-        assert_eq!(plugin.id(), "context_manager");
+        assert_eq!(plugin.id(), "context");
     }
 
     #[tokio::test]
     async fn plugin_before_inference_no_state_no_threshold() {
-        let plugin = ContextManagerPlugin::new(ContextWindowPolicy::default());
+        let plugin = ContextPlugin::new(ContextWindowPolicy::default());
         use tirea_contract::runtime::AgentBehavior;
 
         let config = RunPolicy::new();
@@ -1627,18 +1700,19 @@ mod tests {
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
 
         let actions = plugin.before_inference(&ctx).await;
-        assert!(
-            actions.is_empty(),
-            "no state and no threshold = no transform"
+        assert_eq!(
+            actions.len(),
+            1,
+            "always registers combined transform for truncation"
         );
     }
 
     #[tokio::test]
     async fn plugin_before_inference_with_boundary_registers_transform() {
-        let plugin = ContextManagerPlugin::new(ContextWindowPolicy::default());
+        let plugin = ContextPlugin::new(ContextWindowPolicy::default());
         use tirea_contract::runtime::AgentBehavior;
 
-        let state = ContextManagerState {
+        let state = ContextState {
             boundaries: vec![CompactBoundary {
                 covers_through_message_id: "msg-5".into(),
                 summary: "A summary".into(),
@@ -1665,7 +1739,7 @@ mod tests {
         use tirea_contract::runtime::AgentBehavior;
 
         let summarizer = Arc::new(TestSummarizer::new("compacted summary"));
-        let plugin = ContextManagerPlugin::new(ContextWindowPolicy {
+        let plugin = ContextPlugin::new(ContextWindowPolicy {
             max_context_tokens: 4_000,
             max_output_tokens: 512,
             min_recent_messages: 4,
@@ -1712,7 +1786,7 @@ mod tests {
         use tirea_contract::runtime::AgentBehavior;
 
         let summarizer = Arc::new(TestSummarizer::new("frontier summary"));
-        let plugin = ContextManagerPlugin::new(ContextWindowPolicy {
+        let plugin = ContextPlugin::new(ContextWindowPolicy {
             max_context_tokens: 4_000,
             max_output_tokens: 512,
             min_recent_messages: 4,
@@ -1760,7 +1834,7 @@ mod tests {
         use tirea_contract::runtime::AgentBehavior;
 
         let summarizer = Arc::new(TestSummarizer::new("suffix summary"));
-        let plugin = ContextManagerPlugin::new(ContextWindowPolicy {
+        let plugin = ContextPlugin::new(ContextWindowPolicy {
             max_context_tokens: 4_000,
             max_output_tokens: 512,
             min_recent_messages: 4,
@@ -1813,7 +1887,7 @@ mod tests {
         use tirea_contract::runtime::AgentBehavior;
 
         let summarizer = Arc::new(TestSummarizer::new("updated frontier summary"));
-        let plugin = ContextManagerPlugin::new(ContextWindowPolicy {
+        let plugin = ContextPlugin::new(ContextWindowPolicy {
             max_context_tokens: 4_000,
             max_output_tokens: 512,
             min_recent_messages: 4,
@@ -1824,7 +1898,7 @@ mod tests {
         })
         .with_summarizer(summarizer.clone());
 
-        let state = ContextManagerState {
+        let state = ContextState {
             boundaries: vec![CompactBoundary {
                 covers_through_message_id: "msg-2".into(),
                 summary: "previous summary".into(),
@@ -1879,7 +1953,7 @@ mod tests {
         use tirea_contract::runtime::AgentBehavior;
 
         let summarizer = Arc::new(TestSummarizer::new("frontier summary"));
-        let plugin = ContextManagerPlugin::new(ContextWindowPolicy {
+        let plugin = ContextPlugin::new(ContextWindowPolicy {
             max_context_tokens: 4_000,
             max_output_tokens: 512,
             min_recent_messages: 4,
@@ -1924,7 +1998,7 @@ mod tests {
     async fn plugin_after_tool_execute_adds_artifact_ref_for_large_result() {
         use tirea_contract::runtime::AgentBehavior;
 
-        let plugin = ContextManagerPlugin::new(ContextWindowPolicy::default())
+        let plugin = ContextPlugin::new(ContextWindowPolicy::default())
             .with_artifact_compact_threshold_tokens(10);
         let config = RunPolicy::new();
         let doc = DocCell::new(json!({}));
@@ -1946,7 +2020,7 @@ mod tests {
 
     #[test]
     fn latest_boundary_wins() {
-        let state = ContextManagerState {
+        let state = ContextState {
             boundaries: vec![CompactBoundary {
                 covers_through_message_id: "msg-4".into(),
                 summary: "New summary".into(),
@@ -1955,7 +2029,7 @@ mod tests {
             }],
             artifact_refs: vec![],
         };
-        let transform = ContextAssemblyTransform::new(state);
+        let transform = ContextTransform::new(state, large_budget_policy());
 
         let messages = vec![
             make_msg_with_id(Role::System, "sys", "sys-1"),
@@ -1976,10 +2050,10 @@ mod tests {
 
     fn thread_with_context_state(
         messages: Vec<Message>,
-        cm_state: &ContextManagerState,
+        cm_state: &ContextState,
     ) -> Thread {
         let state = json!({
-            <ContextManagerState as State>::PATH: serde_json::to_value(cm_state).unwrap()
+            <ContextState as State>::PATH: serde_json::to_value(cm_state).unwrap()
         });
         Thread::with_initial_state("test-thread", state).with_messages(messages)
     }
@@ -1990,7 +2064,7 @@ mod tests {
             Message::user("hello").with_id("msg-1".into()),
             Message::assistant("hi").with_id("msg-2".into()),
         ];
-        let mut thread = thread_with_context_state(messages, &ContextManagerState::default());
+        let mut thread = thread_with_context_state(messages, &ContextState::default());
         let original_len = thread.messages.len();
 
         trim_thread_to_latest_boundary(&mut thread);
@@ -2008,7 +2082,7 @@ mod tests {
             Message::user("q2").with_id("msg-3".into()),
             Message::assistant("a2").with_id("msg-4".into()),
         ];
-        let cm_state = ContextManagerState {
+        let cm_state = ContextState {
             boundaries: vec![CompactBoundary {
                 covers_through_message_id: "msg-2".into(),
                 summary: "Summary of q1/a1".into(),
@@ -2036,7 +2110,7 @@ mod tests {
             Message::user("q2").with_id("msg-3".into()),
             Message::assistant("a2").with_id("msg-4".into()),
         ];
-        let cm_state = ContextManagerState {
+        let cm_state = ContextState {
             boundaries: vec![CompactBoundary {
                 covers_through_message_id: "msg-2".into(),
                 summary: "Summary".into(),
@@ -2061,7 +2135,7 @@ mod tests {
             Message::user("q1").with_id("msg-1".into()),
             Message::assistant("a1").with_id("msg-2".into()),
         ];
-        let cm_state = ContextManagerState {
+        let cm_state = ContextState {
             boundaries: vec![CompactBoundary {
                 covers_through_message_id: "nonexistent-id".into(),
                 summary: "Summary".into(),
@@ -2080,7 +2154,7 @@ mod tests {
 
     #[test]
     fn trim_state_parse_failure_is_noop() {
-        let state = json!({ <ContextManagerState as State>::PATH: "not-valid-json-object" });
+        let state = json!({ <ContextState as State>::PATH: "not-valid-json-object" });
         let mut thread = Thread::with_initial_state("test-thread", state)
             .with_message(Message::user("q1").with_id("msg-1".into()));
 
@@ -2097,7 +2171,7 @@ mod tests {
             Message::assistant("a1").with_id("msg-2".into()),
             Message::user("q2").with_id("msg-3".into()),
         ];
-        let cm_state = ContextManagerState {
+        let cm_state = ContextState {
             boundaries: vec![CompactBoundary {
                 covers_through_message_id: "msg-2".into(),
                 summary: "Summary".into(),
@@ -2126,7 +2200,7 @@ mod tests {
         let messages = vec![summary, msg_a, msg_b];
 
         // State still has a boundary referencing a message that was trimmed.
-        let state = ContextManagerState {
+        let state = ContextState {
             boundaries: vec![CompactBoundary {
                 covers_through_message_id: "msg-2".into(),
                 summary: "old summary".into(),
@@ -2149,7 +2223,7 @@ mod tests {
         let msg_d = Arc::new(Message::assistant("a3").with_id("msg-6".into()));
         let messages = vec![summary, msg_a, msg_b, msg_c, msg_d];
 
-        let state = ContextManagerState {
+        let state = ContextState {
             boundaries: vec![CompactBoundary {
                 covers_through_message_id: "msg-2".into(),
                 summary: "old summary".into(),
@@ -2174,5 +2248,169 @@ mod tests {
         let plan = plan.unwrap();
         assert_eq!(plan.start_index, 0);
         assert!(plan.boundary_index > 0);
+    }
+
+    // -- Truncation / policy tests (migrated from context_window.rs) --
+
+    #[test]
+    fn default_policy_values() {
+        let plugin = ContextPlugin::new(ContextWindowPolicy::default());
+        assert_eq!(plugin.policy.max_context_tokens, 200_000);
+        assert_eq!(plugin.policy.max_output_tokens, 16_384);
+        assert!(plugin.policy.enable_prompt_cache);
+        assert_eq!(
+            plugin.policy.compaction_mode,
+            ContextCompactionMode::KeepRecentRawSuffix
+        );
+        assert_eq!(plugin.policy.compaction_raw_suffix_messages, 2);
+    }
+
+    #[test]
+    fn for_model_claude() {
+        let plugin = ContextPlugin::for_model("claude-3-opus");
+        assert_eq!(plugin.policy.max_context_tokens, 200_000);
+        assert!(plugin.policy.enable_prompt_cache);
+        assert_eq!(
+            plugin.policy.compaction_mode,
+            ContextCompactionMode::KeepRecentRawSuffix
+        );
+    }
+
+    #[test]
+    fn for_model_gpt4o() {
+        let plugin = ContextPlugin::for_model("gpt-4o-mini");
+        assert_eq!(plugin.policy.max_context_tokens, 128_000);
+        assert!(!plugin.policy.enable_prompt_cache);
+        assert_eq!(
+            plugin.policy.compaction_mode,
+            ContextCompactionMode::KeepRecentRawSuffix
+        );
+    }
+
+    #[test]
+    fn for_model_unknown_uses_defaults() {
+        let plugin = ContextPlugin::for_model("some-custom-model");
+        assert_eq!(plugin.policy.max_context_tokens, 200_000);
+        assert_eq!(
+            plugin.policy.compaction_mode,
+            ContextCompactionMode::KeepRecentRawSuffix
+        );
+    }
+
+    #[tokio::test]
+    async fn before_inference_emits_transform() {
+        let plugin = ContextPlugin::new(ContextWindowPolicy {
+            max_context_tokens: 100_000,
+            max_output_tokens: 8_192,
+            min_recent_messages: 5,
+            enable_prompt_cache: false,
+            autocompact_threshold: None,
+            ..ContextWindowPolicy::default()
+        });
+
+        use tirea_contract::runtime::AgentBehavior;
+        let config = RunPolicy::new();
+        let doc = DocCell::new(json!({}));
+        let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
+        let actions = plugin.before_inference(&ctx).await;
+        assert_eq!(actions.len(), 1);
+
+        // Verify the transform works by calling it directly.
+        let action = actions.into_vec().pop().unwrap();
+        match action {
+            BeforeInferenceAction::AddRequestTransform(transform) => {
+                let messages = vec![
+                    Message::system("You are helpful."),
+                    Message::user("Hello"),
+                    Message::assistant("Hi!"),
+                ];
+                let output = transform.transform(messages, &[]);
+                // With 100k budget and tiny messages, nothing should be truncated.
+                assert_eq!(output.messages.len(), 3);
+                assert!(!output.enable_prompt_cache);
+            }
+            _ => panic!("expected AddRequestTransform"),
+        }
+    }
+
+    #[test]
+    fn transform_with_tool_descriptors_reduces_budget() {
+        let policy = ContextWindowPolicy {
+            max_context_tokens: 300,
+            max_output_tokens: 50,
+            min_recent_messages: 1,
+            enable_prompt_cache: false,
+            autocompact_threshold: None,
+            ..ContextWindowPolicy::default()
+        };
+
+        let transform_no_tools =
+            ContextTransform::new(ContextState::default(), policy.clone());
+        let transform_with_tools =
+            ContextTransform::new(ContextState::default(), policy);
+
+        let mut messages = vec![Message::system("System.")];
+        for i in 0..30 {
+            messages.push(Message::user(format!("Question {i} with padding text")));
+            messages.push(Message::assistant(format!("Answer {i}")));
+        }
+
+        let tools = vec![
+            ToolDescriptor::new("search", "Search", "Search the web").with_parameters(
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" },
+                        "limit": { "type": "integer" }
+                    }
+                }),
+            ),
+            ToolDescriptor::new("calc", "Calculator", "Evaluate math").with_parameters(
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "expression": { "type": "string" }
+                    }
+                }),
+            ),
+        ];
+
+        let output_no_tools = transform_no_tools.transform(messages.clone(), &[]);
+        let output_with_tools = transform_with_tools.transform(messages, &tools);
+
+        assert!(
+            output_with_tools.messages.len() <= output_no_tools.messages.len(),
+            "tool descriptors should reduce available budget, keeping fewer messages"
+        );
+    }
+
+    #[test]
+    fn transform_truncates_when_over_budget() {
+        let transform = ContextTransform::new(
+            ContextState::default(),
+            ContextWindowPolicy {
+                max_context_tokens: 50, // Very small budget
+                max_output_tokens: 10,
+                min_recent_messages: 1,
+                enable_prompt_cache: true,
+                autocompact_threshold: None,
+                ..ContextWindowPolicy::default()
+            },
+        );
+
+        let mut messages = vec![Message::system("System prompt content here.")];
+        for i in 0..20 {
+            messages.push(Message::user(format!(
+                "Message number {i} with some content"
+            )));
+            messages.push(Message::assistant(format!("Response number {i}")));
+        }
+
+        let output = transform.transform(messages, &[]);
+        // With a 50-token budget, most messages should be truncated.
+        assert!(output.messages.len() < 42); // less than 1 system + 40 history
+        assert!(output.enable_prompt_cache);
+        // System message is always preserved.
+        assert_eq!(output.messages[0].role, Role::System);
     }
 }

@@ -6,10 +6,7 @@ use super::background_tasks::{
     BackgroundCapable, BackgroundTasksPlugin, TaskCancelTool, TaskOutputTool, TaskStatusTool,
     TaskStore, BACKGROUND_TASKS_PLUGIN_ID,
 };
-use super::plugin::context_manager::{ContextManagerPlugin, CONTEXT_MANAGER_PLUGIN_ID};
-use super::plugin::context_window::{
-    policy_for_model, ContextWindowPlugin, CONTEXT_WINDOW_PLUGIN_ID,
-};
+use super::plugin::context::{policy_for_model, ContextPlugin, CONTEXT_PLUGIN_ID};
 #[cfg(feature = "skills")]
 pub(crate) use super::plugin::skills_wiring::SkillsSystemWiring;
 use super::plugin::stop_policy::{StopPolicyPlugin, STOP_POLICY_PLUGIN_ID};
@@ -94,8 +91,7 @@ impl AgentOs {
             AGENT_TOOLS_PLUGIN_ID,
             AGENT_RECOVERY_PLUGIN_ID,
             BACKGROUND_TASKS_PLUGIN_ID,
-            CONTEXT_MANAGER_PLUGIN_ID,
-            CONTEXT_WINDOW_PLUGIN_ID,
+            CONTEXT_PLUGIN_ID,
             STOP_POLICY_PLUGIN_ID,
         ];
         for wiring in system_wirings {
@@ -316,17 +312,15 @@ impl AgentOs {
             .with_agent_default(resolved_plugins)
             .into_plugins()?;
 
-        // Context management plugins (context manager before context window so
-        // boundary-based compression runs before budget truncation).
+        // Context plugin: logical compression (compaction) + hard truncation.
         let context_policy = policy_for_model(&model_runtime.model);
         all_plugins.push(Arc::new(
-            ContextManagerPlugin::new(context_policy.clone()).with_llm_summarizer(
+            ContextPlugin::new(context_policy).with_llm_summarizer(
                 model_runtime.model.clone(),
                 model_runtime.llm_executor.clone(),
                 model_runtime.chat_options.clone(),
             ),
         ));
-        all_plugins.push(Arc::new(ContextWindowPlugin::new(context_policy)));
 
         // Resolve stop conditions from stop_condition_ids
         let stop_conditions =

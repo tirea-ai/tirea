@@ -35,8 +35,7 @@ pub use background_tasks::{
 };
 pub use behavior::compose_behaviors;
 pub use errors::{AgentOsResolveError, AgentOsRunError};
-pub use plugin::context_manager::{ContextManagerPlugin, CONTEXT_MANAGER_PLUGIN_ID};
-pub use plugin::context_window::{ContextWindowPlugin, CONTEXT_WINDOW_PLUGIN_ID};
+pub use plugin::context::{ContextPlugin, CONTEXT_PLUGIN_ID};
 pub use plugin::stop_policy::{
     ConsecutiveErrors, ContentMatch, LoopDetection, MaxRounds, StopOnTool, StopPolicy,
     StopPolicyInput, StopPolicyPlugin, StopPolicyStats, Timeout, TokenBudget,

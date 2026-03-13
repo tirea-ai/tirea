@@ -104,7 +104,7 @@ If a behavior must apply uniformly across many tools or every run, it belongs in
 
 | Plugin | Actions used | Scenario |
 |---|---|---|
-| `ContextWindowPlugin` | `BeforeInferenceAction::AddRequestTransform` | trim history or enable prompt caching before the provider request is sent |
+| `ContextPlugin` | `BeforeInferenceAction::AddRequestTransform` | compact + trim history and enable prompt caching before the provider request is sent |
 | `AG-UI ContextInjectionPlugin` | `BeforeInferenceAction::AddSystemContext` | inject frontend-provided context into the prompt |
 | `AG-UI FrontendToolPendingPlugin` | `BeforeToolExecuteAction::Suspend`, `BeforeToolExecuteAction::SetToolResult` | forward frontend tools to the UI, then resume with a frontend decision/result |
 
