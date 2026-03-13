@@ -139,7 +139,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tirea_contract::runtime::phase::Phase;
-    use tirea_contract::RunConfig;
+    use tirea_contract::RunPolicy;
     use tirea_state::DocCell;
 
     const TEST_CATALOG: &str = "https://a2ui.org/specification/v0_9/basic_catalog.json";
@@ -147,7 +147,7 @@ mod tests {
     #[tokio::test]
     async fn injects_schema_instructions_before_inference() {
         let plugin = A2uiPlugin::with_catalog_id(TEST_CATALOG);
-        let config = RunConfig::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
 
@@ -195,7 +195,7 @@ mod tests {
 ]"#;
         let plugin = A2uiPlugin::with_catalog_and_examples(TEST_CATALOG, examples);
 
-        let config = RunConfig::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
 

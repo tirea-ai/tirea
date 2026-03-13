@@ -1099,7 +1099,7 @@ async fn e2e_ag_ui_multistep_tool_with_deepseek() {
 const A2UI_CATALOG: &str = "https://a2ui.org/specification/v0_9/basic_catalog.json";
 
 /// Build AgentOs with A2UI tool + plugin for real LLM testing.
-fn make_a2ui_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::orchestrator::AgentOs {
+fn make_a2ui_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::AgentOs {
     let def = AgentDefinition {
         id: "a2ui".to_string(),
         model: "deepseek-chat".to_string(),
