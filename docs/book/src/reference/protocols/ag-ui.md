@@ -41,7 +41,7 @@ Minimal request:
 - `RunAgentInput` is converted to internal `RunRequest`.
 - `model` / `systemPrompt` override resolved agent defaults for this run.
 - `config` can override tool execution mode and selected chat options.
-- `forwardedProps` and `config` are preserved in run scope (`agui_forwarded_props`, `agui_config`).
+- `config` overrides are applied at runtime (tool execution mode, chat options) but not persisted to state. `forwardedProps` is a pass-through field on the request struct.
 
 ### Frontend tools
 

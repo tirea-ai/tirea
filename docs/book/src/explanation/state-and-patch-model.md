@@ -34,7 +34,7 @@ assert_eq!(state["count"], 0); // Original unchanged
 ## Key Types
 
 - **`Patch`** — A container of operations. Created via `Patch::new().with_op(...)` or collected automatically from typed state access.
-- **`Op`** — A single atomic operation: `Set`, `Delete`, `Append`, `MergeObject`, `Increment`, `Decrement`, `Insert`, `Remove`.
+- **`Op`** — A single atomic operation: `Set`, `Delete`, `Append`, `MergeObject`, `Increment`, `Decrement`, `Insert`, `Remove`, `LatticeMerge`.
 - **`Path`** — A path into a JSON document, e.g., `path!("users", 0, "name")`.
 - **`apply_patch`** / **`apply_patches`** — Pure functions that produce new state from old state + patches.
 

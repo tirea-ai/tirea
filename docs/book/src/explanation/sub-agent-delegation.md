@@ -30,8 +30,9 @@ Delegation state is tracked in two layers:
    - cancellation token
    - owner thread checks
 
-2. Persisted thread state (`BackgroundTaskState` at path `background_tasks`)
-   - `tasks: HashMap<task_id, BackgroundTask>`
+2. Persisted state in two locations:
+   - **Task thread**: `TaskState` at path `__task` (in dedicated `task:<task_id>` threads)
+   - **Owner thread**: `BackgroundTaskViewState` at path `__derived.background_tasks` (view cache)
    - status (`running`, `completed`, `failed`, `cancelled`, `stopped`)
    - lightweight metadata for child thread / agent identity
 
@@ -53,10 +54,10 @@ The in-memory manager drives active control; persisted state supports resume/rec
 
 Target-agent visibility is filtered by scope policy:
 
-- `__agent_policy_allowed_agents`
-- `__agent_policy_excluded_agents`
+- `RunPolicy.allowed_agents`
+- `RunPolicy.excluded_agents`
 
-`AgentDefinition::allowed_agents/excluded_agents` are projected into these scope keys when absent.
+`AgentDefinition::allowed_agents/excluded_agents` are projected into `RunPolicy` fields when absent (via `set_allowed_agents_if_absent`).
 
 ## Recovery Behavior
 

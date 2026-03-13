@@ -89,7 +89,7 @@ let os = AgentOsBuilder::new()
 
 ## Key Files
 
-- `crates/tirea-agentos/src/runtime/stop_policy_plugin.rs`
+- `crates/tirea-agentos/src/runtime/plugin/stop_policy.rs`
 - `crates/tirea-agentos/src/composition/wiring.rs`
 - `crates/tirea-agentos/src/composition/agent_definition.rs`
 - `crates/tirea-agentos/src/runtime/tests.rs`

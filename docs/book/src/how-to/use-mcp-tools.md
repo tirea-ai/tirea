@@ -5,6 +5,7 @@ Use this when you want to expose MCP server tools as regular agent tools.
 ## Prerequisites
 
 - `tirea-extension-mcp` dependency is available.
+- `mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"] }` in your `Cargo.toml`.
 - One or more reachable MCP servers.
 - Runtime uses Tokio.
 

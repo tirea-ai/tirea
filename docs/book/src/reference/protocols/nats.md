@@ -33,7 +33,6 @@ AI SDK payload (NATS path):
   "agentId": "assistant",
   "sessionId": "t1",
   "input": "hello",
-  "runId": "r1",
   "replySubject": "_INBOX.x"
 }
 ```

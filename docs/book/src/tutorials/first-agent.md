@@ -28,18 +28,18 @@ export DEEPSEEK_API_KEY=<your-key>
 ## 1. Create `src/main.rs`
 
 ```rust,ignore
-use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::{json, Value};
 use tirea::contracts::{AgentEvent, Message, RunOrigin, RunRequest, ToolCallContext};
 use tirea::composition::{tool_map, AgentDefinition, AgentOsBuilder};
+use tirea::prelude::*;
 
 struct EchoTool;
 
 #[async_trait]
-impl tirea::contracts::Tool for EchoTool {
-    fn descriptor(&self) -> tirea::contracts::ToolDescriptor {
-        tirea::contracts::ToolDescriptor::new("echo", "Echo", "Echo input")
+impl Tool for EchoTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("echo", "Echo", "Echo input")
             .with_parameters(json!({
                 "type": "object",
                 "properties": { "text": { "type": "string" } },
@@ -51,9 +51,9 @@ impl tirea::contracts::Tool for EchoTool {
         &self,
         args: Value,
         _ctx: &ToolCallContext<'_>,
-    ) -> Result<tirea::contracts::ToolResult, tirea::contracts::ToolError> {
+    ) -> Result<ToolResult, ToolError> {
         let text = args["text"].as_str().unwrap_or_default();
-        Ok(tirea::contracts::ToolResult::success("echo", json!({ "text": text })))
+        Ok(ToolResult::success("echo", json!({ "text": text })))
     }
 }
 

@@ -1,5 +1,283 @@
 # Migration Notes
 
+## 0.2 → 0.3
+
+### Behavior Trait Rename and Signature Overhaul
+
+`AgentPlugin` is renamed to `AgentBehavior`. Phase hooks now receive `&ReadOnlyContext<'_>`
+(immutable) instead of `&mut *Context` (mutable), and return `ActionSet<PhaseAction>` instead
+of mutating context directly.
+
+```rust,ignore
+// Before (0.2)
+use tirea::prelude::*; // imports AgentPlugin
+
+#[async_trait]
+impl AgentPlugin for MyPlugin {
+    fn id(&self) -> &str { "my_plugin" }
+    async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
+        ctx.add_system_context("Time: now".into());
+        ctx.exclude_tool("dangerous_tool");
+    }
+}
+
+// After (0.3)
+use tirea::prelude::*; // imports AgentBehavior, ActionSet, BeforeInferenceAction
+
+#[async_trait]
+impl AgentBehavior for MyPlugin {
+    fn id(&self) -> &str { "my_plugin" }
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+        ActionSet::single(BeforeInferenceAction::AddSystemContext("Time: now".into()))
+            .and(BeforeInferenceAction::ExcludeTool("dangerous_tool".into()))
+    }
+}
+```
+
+Registry types follow the rename:
+
+| 0.2 | 0.3 |
+|-----|-----|
+| `AgentPlugin` | `AgentBehavior` |
+| `PluginRegistry` | `BehaviorRegistry` |
+| `InMemoryPluginRegistry` | `InMemoryBehaviorRegistry` |
+| `builder.with_registered_plugin(...)` | `builder.with_registered_behavior(...)` |
+| `AgentDefinition.plugin_ids` | `AgentDefinition.behavior_ids` |
+
+New `AgentBehavior` methods (all have default implementations):
+
+- `behavior_ids()` — returns list of behavior IDs (default: `vec![self.id()]`)
+- `register_lattice_paths(registry)` — register CRDT merge paths
+- `register_state_scopes(registry)` — register state scope metadata
+- `register_state_action_deserializers(registry)` — register action deserialization
+
+### RunConfig → RunPolicy
+
+The JSON-bag `RunConfig` (alias for `SealedState`) is replaced by a strongly-typed `RunPolicy`.
+
+```rust,ignore
+// Before (0.2)
+pub type RunConfig = tirea_state::SealedState;
+// Access: run_config.value("allowed_tools")
+
+// After (0.3)
+pub struct RunPolicy {
+    allowed_tools: Option<Vec<String>>,
+    excluded_tools: Option<Vec<String>>,
+    allowed_skills: Option<Vec<String>>,
+    excluded_skills: Option<Vec<String>>,
+    allowed_agents: Option<Vec<String>>,
+    excluded_agents: Option<Vec<String>>,
+}
+// Access: run_policy.allowed_tools()
+```
+
+| 0.2 | 0.3 |
+|-----|-----|
+| `StepContext::run_config()` | `ReadOnlyContext::run_policy()` |
+| `ToolExecutionRequest` field `run_config` | field `run_policy` |
+| `RunContext::new(..., run_config)` | `RunContext::new(..., run_policy)` |
+
+### Module Restructuring
+
+The `orchestrator` module in `tirea-agentos` is split into `composition` and `runtime`.
+
+```rust,ignore
+// Before (0.2)
+use tirea_agentos::orchestrator::{AgentOsBuilder, AgentDefinition, AgentOs};
+use tirea::orchestrator::{AgentOsBuilder, AgentDefinition};
+
+// After (0.3)
+use tirea_agentos::composition::{AgentOsBuilder, AgentDefinition};
+use tirea_agentos::runtime::{AgentOs, RunStream};
+// or via umbrella:
+use tirea::composition::{AgentOsBuilder, AgentDefinition};
+use tirea::runtime::{AgentOs, RunStream};
+```
+
+`AgentOs`, `AgentOsBuilder`, and `AgentDefinition` are also re-exported at the crate root
+(`tirea_agentos::AgentOs`, etc.).
+
+### Phase Context Module Move
+
+```rust,ignore
+// Before (0.2)
+use tirea_contract::runtime::plugin::phase::{Phase, StepContext, ...};
+use tirea_contract::runtime::plugin::AgentPlugin;
+
+// After (0.3)
+use tirea_contract::runtime::phase::{Phase, ActionSet, BeforeInferenceAction, ...};
+use tirea_contract::runtime::behavior::AgentBehavior;
+```
+
+### Action Trait and ToolExecutionEffect
+
+Tools can now return typed state actions via `execute_effect()`:
+
+```rust,ignore
+// After (0.3)
+async fn execute_effect(&self, args: Value, ctx: &ToolCallContext<'_>)
+    -> Result<ToolExecutionEffect, ToolError>
+{
+    let effect = ToolExecutionEffect::new(ToolResult::success(json!("done")))
+        .with_action(AnyStateAction::new::<MyState>(MyAction::Increment));
+    Ok(effect)
+}
+```
+
+The default `execute_effect()` delegates to `execute()`, so existing tools work unchanged.
+
+### StateSpec and State Scopes
+
+New `StateSpec` trait for typed state with reducer pattern:
+
+```rust,ignore
+#[derive(State)]
+#[tirea(path = "__my_state", action = "MyAction", scope = "run")]
+pub struct MyState { pub count: i64 }
+
+impl MyState {
+    fn reduce(&mut self, action: MyAction) {
+        match action {
+            MyAction::Increment => self.count += 1,
+        }
+    }
+}
+```
+
+`StateScope` controls cleanup lifecycle:
+
+| Scope | Lifetime |
+|-------|----------|
+| `Thread` (default) | Persists across runs |
+| `Run` | Deleted at start of each new run |
+| `ToolCall` | Scoped to `__tool_call_scope.<call_id>`, cleaned after call completes |
+
+### CRDT / Lattice Support
+
+New lattice system for conflict-free replicated state:
+
+- `#[derive(Lattice)]` proc-macro
+- `#[tirea(lattice)]` field attribute on `#[derive(State)]` structs
+- `Op::LatticeMerge` operation variant
+- `LatticeRegistry` for merge dispatch
+- Primitives: `Flag`, `MaxReg`, `MinReg`, `GCounter`, `GSet`, `ORSet`, `ORMap`
+
+### New State Trait Methods
+
+`State` gains three new methods (all have default implementations):
+
+```rust,ignore
+fn register_lattice(_registry: &mut LatticeRegistry) {}
+fn lattice_keys() -> &'static [&'static str] { &[] }
+fn diff_ops(old: &Self, new: &Self, base_path: &Path) -> TireaResult<Vec<Op>> { ... }
+```
+
+Existing `#[derive(State)]` types remain compatible.
+
+### Sub-Agent System Redesign
+
+`Delegation*` types are renamed to `SubAgent*`. Child threads are now stored independently
+in `ThreadStore` rather than embedded in parent state.
+
+| 0.2 | 0.3 |
+|-----|-----|
+| `DelegationStatus` | `SubAgentStatus` |
+| `DelegationRecord` | `SubAgent` (lightweight metadata) |
+| `DelegationState` | `SubAgentState` |
+| `AgentRunManager` | `SubAgentHandleTable` |
+| State path `agent_runs` | State path `sub_agents` |
+| `DelegationRecord.thread` (embedded) | Independent `ThreadStore` entry at `sub-agent-{run_id}` |
+
+### Plugin Extension Context Changes
+
+Permission and reminder context extension traits are replaced by typed actions:
+
+```rust,ignore
+// Before (0.2)
+ctx.allow_tool("tool_name");       // PermissionContextExt
+ctx.add_reminder("text");          // ReminderContextExt
+
+// After (0.3) — use typed actions via ToolExecutionEffect
+ToolExecutionEffect::new(result)
+    .with_action(permission_state_action(PermissionAction::SetTool { ... }))
+    .with_action(add_reminder_action("text"))
+```
+
+| 0.2 | 0.3 |
+|-----|-----|
+| `PermissionContextExt` | `PermissionAction` + `permission_state_action()` |
+| `ReminderContextExt` | `ReminderAction` + `add_reminder_action()` / `clear_reminder_action()` |
+| `SkillPlugin` | `SkillDiscoveryPlugin` |
+
+### Type Renames
+
+| 0.2 | 0.3 |
+|-----|-----|
+| `RunState` | `RunLifecycleState` (with `#[tirea(scope = "run")]`) |
+| `ToolCallStatesMap` | Removed — `ToolCallState` is now per-call scoped |
+| `SuspendedToolCallsState` | `SuspendedCallState` (per-call scoped) |
+| `InferenceErrorState` | Removed — errors carried in `LLMResponse` |
+| `TerminationReason::PluginRequested` | `TerminationReason::BehaviorRequested` |
+
+### StreamResult Gains StopReason
+
+```rust,ignore
+pub struct StreamResult {
+    pub text: String,
+    pub tool_calls: Vec<ToolCall>,
+    pub usage: Option<TokenUsage>,
+    pub stop_reason: Option<StopReason>,  // new
+}
+
+pub enum StopReason { EndTurn, MaxTokens, ToolUse, StopSequence }
+```
+
+### ToolResult.suspension Boxing
+
+```rust,ignore
+// Before (0.2)
+pub suspension: Option<SuspendTicket>,
+
+// After (0.3)
+pub suspension: Option<Box<SuspendTicket>>,
+```
+
+### state_paths Module Removed
+
+```rust,ignore
+// Before (0.2)
+use tirea_contract::runtime::state_paths::{RUN_LIFECYCLE_STATE_PATH, ...};
+
+// After (0.3) — use PATH constants from state types directly
+RunLifecycleState::PATH  // "__run"
+```
+
+### Context Window Management
+
+New plugin-based context window management (optional):
+
+```rust,ignore
+use tirea_agentos::runtime::ContextWindowPlugin;
+
+let plugin = ContextWindowPlugin::for_model("claude");
+builder.with_registered_behavior("context_window", Arc::new(plugin));
+```
+
+### declare_plugin_states! Macro
+
+Replaces `impl_loop_config_builder_methods!`. Generates `register_lattice_paths`,
+`register_state_scopes`, and `register_state_action_deserializers` implementations
+for `AgentBehavior` types.
+
+### ThreadReader New Methods
+
+`ThreadReader` gains run query methods (all have default implementations):
+
+- `load_run(run_id)` — load a single run record
+- `list_runs(query)` — paginated run listing with filters
+- `active_run_for_thread(thread_id)` — find the active run for a thread
+
 ## 0.1 → 0.2
 
 ### Module Reorganization
@@ -44,7 +322,7 @@ impl AgentPlugin for MyPlugin {
 impl AgentPlugin for MyPlugin {
     fn id(&self) -> &str { "my_plugin" }
     async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
-        // ...
+        ctx.add_system_context("Time: now".into());
     }
     async fn after_inference(&self, ctx: &mut AfterInferenceContext<'_, '_>) {
         // ...
@@ -115,11 +393,9 @@ Deprecated aliases are provided for all renames. Update imports to suppress warn
 | 0.1 | 0.2 |
 |-----|-----|
 | `RunLifecycleStatus` | `RunStatus` |
-| `RunLifecycleState` | `RunState` |
-| `RunLifecycleAction` | `RunAction` |
-| `ToolCallLifecycleAction` | `ToolCallAction` |
+| `RunLifecycleAction` | `RunAction` (flow control: Continue/Terminate) |
+| `ToolCallLifecycleAction` | `ToolCallAction` (gate: Proceed/Suspend/Block) |
 | `ToolCallLifecycleState` | `ToolCallState` |
-| `ToolCallLifecycleStatesState` | `ToolCallStatesMap` |
 | `ToolSuspension` | `SuspendTicket` |
 
 ### Method Renames
@@ -137,14 +413,15 @@ Stop conditions moved from core config to `StopPolicyPlugin`. If you were passin
 to `BaseAgent`, register them as a plugin instead:
 
 ```rust,ignore
-use tirea::runtime::StopPolicyPlugin;
-use tirea::composition::StopConditionSpec;
+use tirea::composition::{AgentDefinition, StopConditionSpec};
 
-let stop_plugin = StopPolicyPlugin::from_specs(vec![
-    StopConditionSpec::MaxRounds { rounds: 10 },
-    StopConditionSpec::Timeout { seconds: 300 },
-]);
-// Register stop_plugin as an AgentPlugin
+// Stop conditions are now declared on AgentDefinition:
+let agent = AgentDefinition::new("deepseek-chat")
+    .with_stop_condition_specs(vec![
+        StopConditionSpec::MaxRounds { rounds: 10 },
+        StopConditionSpec::Timeout { seconds: 300 },
+    ]);
+// AgentOsBuilder wires the stop_policy behavior automatically
 ```
 
 ### `RunRequest` Changes
@@ -183,9 +460,9 @@ New durable state paths persisted in thread state:
 
 | Path | Type | Content |
 |------|------|---------|
-| `__run` | `RunState` | Run id, status, done_reason, updated_at |
-| `__tool_call_states` | `ToolCallStatesMap` | Per-call lifecycle status map |
-| `__suspended_tool_calls` | `SuspendedToolCallsState` | Suspended call payloads |
+| `__run` | `RunLifecycleState` | Run id, status, done_reason, updated_at |
+| `__tool_call_scope.<call_id>.tool_call_state` | `ToolCallState` | Per-call lifecycle status |
+| `__tool_call_scope.<call_id>.suspended_call` | `SuspendedCallState` | Suspended call payload |
 
 ### Deleted Crates
 

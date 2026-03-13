@@ -37,7 +37,7 @@ Loop is phase-driven:
 
 Termination is explicit in `RunFinish.termination`.
 
-## 4. Thread + State Engine
+## 3. Thread + State Engine
 
 State mutation is patch-based:
 

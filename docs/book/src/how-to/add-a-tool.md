@@ -68,7 +68,8 @@ Use this when argument shape is dynamic or you need manual JSON handling.
 ```rust,ignore
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use tirea::contracts::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult};
+use tirea::contracts::ToolCallContext;
+use tirea::prelude::{Tool, ToolDescriptor, ToolError, ToolResult};
 
 struct MyUntypedTool;
 

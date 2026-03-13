@@ -44,12 +44,12 @@ let os = AgentOsBuilder::new()
 
 ```rust,ignore
 let _ = os.run_stream(run_request).await?;
-let loaded = store.load_agent_state("thread-1").await?;
+let loaded = store.load_thread("thread-1").await?;
 ```
 
 ## Verify
 
-- `load_agent_state("thread-1")` returns `Some(Thread)` after a run.
+- `load_thread("thread-1")` returns `Some(Thread)` after a run.
 - `load_messages` returns stored messages in expected order.
 - Concurrent write conflicts surface as `VersionConflict` (not silent overwrite).
 

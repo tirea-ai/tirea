@@ -23,8 +23,11 @@ Health:
 Threads:
 
 - `GET /v1/threads`
+- `GET /v1/threads/summaries`
 - `GET /v1/threads/:id`
 - `GET /v1/threads/:id/messages`
+- `PATCH /v1/threads/:id/metadata`
+- `DELETE /v1/threads/:id`
 
 Canonical runs:
 
@@ -42,7 +45,7 @@ AG-UI:
 AI SDK v6:
 
 - `POST /v1/ai-sdk/agents/:agent_id/runs`
-- `GET /v1/ai-sdk/agents/:agent_id/runs/:chat_id/stream`
+- `GET /v1/ai-sdk/agents/:agent_id/chats/:chat_id/stream` (legacy: `/runs/:chat_id/stream`)
 - `GET /v1/ai-sdk/threads/:id/messages`
 
 A2A:
@@ -106,7 +109,7 @@ curl -X POST \
 AI SDK resume stream for active chat id:
 
 ```bash
-curl -N http://127.0.0.1:8080/v1/ai-sdk/agents/assistant/runs/thread-1/stream
+curl -N http://127.0.0.1:8080/v1/ai-sdk/agents/assistant/chats/thread-1/stream
 ```
 
 AG-UI stream:
@@ -132,7 +135,7 @@ curl -N \
 List runs:
 
 ```bash
-curl 'http://127.0.0.1:8080/v1/runs?thread_id=thread-1&status=completed&origin=ag_ui&limit=20'
+curl 'http://127.0.0.1:8080/v1/runs?thread_id=thread-1&status=done&origin=ag_ui&limit=20'
 ```
 
 Forward decisions or continue:

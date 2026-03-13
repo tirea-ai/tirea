@@ -24,14 +24,16 @@ Unlike protocol adapters (`ag-ui`, `ai-sdk`, `a2a`), this API exposes a stable t
 {
   "run_id": "run-1",
   "thread_id": "thread-1",
+  "agent_id": "assistant",
   "parent_run_id": "run-0",
   "parent_thread_id": "thread-0",
   "origin": "ag_ui",
-  "status": "completed",
+  "status": "done",
   "termination_code": "input_required",
   "termination_detail": "approval needed",
   "created_at": 1760000000000,
-  "updated_at": 1760000005000
+  "updated_at": 1760000005000,
+  "metadata": null
 }
 ```
 
@@ -46,14 +48,9 @@ Unlike protocol adapters (`ag-ui`, `ai-sdk`, `a2a`), this API exposes a stable t
 
 `status`:
 
-- `submitted`
-- `working`
-- `input_required`
-- `auth_required`
-- `completed`
-- `failed`
-- `canceled`
-- `rejected`
+- `running`
+- `waiting`
+- `done`
 
 ## List Runs
 
@@ -65,13 +62,14 @@ Unlike protocol adapters (`ag-ui`, `ai-sdk`, `a2a`), this API exposes a stable t
 - `parent_run_id`
 - `status`
 - `origin`
+- `termination_code`
 - `created_at_from`, `created_at_to` (unix millis, inclusive)
 - `updated_at_from`, `updated_at_to` (unix millis, inclusive)
 
 Example:
 
 ```bash
-curl 'http://127.0.0.1:8080/v1/runs?thread_id=t1&status=completed&origin=ag_ui&limit=20'
+curl 'http://127.0.0.1:8080/v1/runs?thread_id=t1&status=done&origin=ag_ui&limit=20'
 ```
 
 ## Start Run
@@ -150,8 +148,7 @@ Response (`202`):
 {
   "status": "continuation_started",
   "parent_run_id": "run-1",
-  "thread_id": "thread-1",
-  "run_id": "run-2"
+  "thread_id": "thread-1"
 }
 ```
 

@@ -76,7 +76,7 @@ let os = AgentOs::builder()
 ## Key Files
 
 - `crates/tirea-agentos/src/runtime/agent_tools/manager.rs`
-- `crates/tirea-agentos/src/runtime/agent_tools/tools.rs`
+- `crates/tirea-agentos/src/runtime/agent_tools/tools/`
 - `crates/tirea-agentos/tests/real_multi_subagent_deepseek.rs`
 
 ## Related

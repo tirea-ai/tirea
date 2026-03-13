@@ -72,8 +72,7 @@ Common constructors:
 
 Important:
 
-- `AnyStateAction::Patch(...)` exists so the runtime can materialize direct `ctx.state...` writes into the same effect pipeline
-- it is a framework/internal bridge, not the recommended authoring path for tools or plugins
+- direct `ctx.state...` writes are materialized into patches during tool execution and folded into the same effect pipeline
 - for business code, prefer `ctx.state...` for straightforward typed updates or `AnyStateAction::new...` for reducer-style domain actions
 
 ## What Plugins Can Emit
@@ -141,7 +140,7 @@ Choose based on which model fits the state update better:
 - direct field/setter patching for straightforward state edits
 - reducer action form when you want a domain action log or reducer semantics
 
-Avoid constructing raw `AnyStateAction::Patch(...)` in business code. That variant is for runtime bridging, replay plumbing, and other framework-level internals.
+Direct `ctx.state...` writes produce patches that the runtime handles internally. Business code should use either `ctx.state...` setters or `AnyStateAction::new...` constructors.
 
 ## Guidance By Scenario
 

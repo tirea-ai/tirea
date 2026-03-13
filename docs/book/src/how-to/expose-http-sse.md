@@ -18,13 +18,16 @@ Run streams:
 
 Run stream resume:
 
-- `GET /v1/ai-sdk/agents/:agent_id/runs/:chat_id/stream`
+- `GET /v1/ai-sdk/agents/:agent_id/chats/:chat_id/stream`
 
 Query APIs:
 
 - `GET /v1/threads`
+- `GET /v1/threads/summaries`
 - `GET /v1/threads/:id`
 - `GET /v1/threads/:id/messages`
+- `PATCH /v1/threads/:id/metadata`
+- `DELETE /v1/threads/:id`
 - `GET /v1/runs`
 - `GET /v1/runs/:id`
 

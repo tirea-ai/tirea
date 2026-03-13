@@ -16,7 +16,7 @@ Persisted at `state["__run"]`.
 stateDiagram-v2
     [*] --> Running
     Running --> Waiting: all tool calls suspended
-    Running --> Done: NaturalEnd / PluginRequested / Stopped / Cancelled / Error
+    Running --> Done: NaturalEnd / BehaviorRequested / Stopped / Cancelled / Error
     Waiting --> Running: resume decision received
     Waiting --> Done: Cancelled / Error
 ```
@@ -27,12 +27,12 @@ stateDiagram-v2
 | `Waiting` | Run is paused waiting for external resume decisions |
 | `Done` | Terminal — run finished with a `TerminationReason` |
 
-Terminal reasons: `NaturalEnd`, `PluginRequested`, `Stopped(code)`, `Cancelled`,
+Terminal reasons: `NaturalEnd`, `BehaviorRequested`, `Stopped(code)`, `Cancelled`,
 `Suspended`, `Error`.
 
 ### Layer 2: Tool Call Lifecycle (`ToolCallStatus`)
 
-Persisted per call at `state["__tool_call_states"]`.
+Persisted per call at `state["__tool_call_scope"]["<call_id>"]["tool_call_state"]`.
 
 ```mermaid
 stateDiagram-v2
@@ -78,9 +78,9 @@ stateDiagram-v2
 
 | Path | Content |
 |------|---------|
-| `__run` | `RunState` (id, status, done_reason, updated_at) |
-| `__tool_call_states` | `ToolCallStatesMap` (per-call status map) |
-| `__suspended_tool_calls` | `SuspendedToolCallsState` (suspended call payloads) |
+| `__run` | `RunLifecycleState` (id, status, done_reason, updated_at) |
+| `__tool_call_scope.<call_id>.tool_call_state` | `ToolCallState` (per-call status) |
+| `__tool_call_scope.<call_id>.suspended_call` | `SuspendedCallState` (suspended call payload) |
 
 ## Canonical Top-Level Flow
 

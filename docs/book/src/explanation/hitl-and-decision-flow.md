@@ -64,8 +64,8 @@ If your UI needs live progress, rich activity cards, or low-latency approval loo
 HITL depends on persisted runtime state:
 
 - `__run` tracks run lifecycle
-- `__tool_call_states` tracks per-call status
-- `__suspended_tool_calls` stores suspended call payloads
+- `__tool_call_scope.<call_id>.tool_call_state` tracks per-call status
+- `__tool_call_scope.<call_id>.suspended_call` stores suspended call payloads
 
 Lineage fields keep the larger execution graph understandable:
 

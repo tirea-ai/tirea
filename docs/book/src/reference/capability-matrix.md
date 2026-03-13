@@ -5,13 +5,13 @@ This matrix maps each framework capability to the authoritative docs and concret
 | Capability | Primary docs | Example / implementation paths |
 |---|---|---|
 | Agent composition (`AgentDefinition`, behaviors, stop specs) | `reference/config.md`, `how-to/build-an-agent.md` | `crates/tirea-agentos/src/composition/agent_definition.rs`, `examples/src/starter_backend/mod.rs` |
-| Stop policies and termination controls | `how-to/configure-stop-policies.md`, `reference/config.md`, `explanation/run-lifecycle-and-phases.md` | `crates/tirea-agentos/src/runtime/stop_policy_plugin.rs`, `examples/src/starter_backend/mod.rs`, `crates/tirea-agentos/src/runtime/tests.rs` |
+| Stop policies and termination controls | `how-to/configure-stop-policies.md`, `reference/config.md`, `explanation/run-lifecycle-and-phases.md` | `crates/tirea-agentos/src/runtime/plugin/stop_policy.rs`, `examples/src/starter_backend/mod.rs`, `crates/tirea-agentos/src/runtime/tests.rs` |
 | Tool execution modes | `reference/config.md`, `explanation/hitl-and-decision-flow.md` | `crates/tirea-agentos/src/composition/agent_definition.rs`, `examples/src/starter_backend/mod.rs` |
 | Tool authoring and registration | `tutorials/first-tool.md`, `how-to/add-a-tool.md`, `reference/typed-tool.md` | `examples/src/starter_backend/tools.rs`, `examples/src/travel/tools.rs` |
 | Plugin authoring and registration | `how-to/add-a-plugin.md`, `reference/derive-macro.md` | `crates/tirea-extension-reminder/src/lib.rs`, `crates/tirea-extension-permission/src/plugin.rs` |
 | State patch operations + conflict model | `reference/state-ops.md`, `explanation/state-and-patch-model.md` | `crates/tirea-state/src/op.rs`, `crates/tirea-state/src/apply.rs` |
 | Typed state derive (`#[derive(State)]`) | `reference/derive-macro.md` | `crates/tirea-state-derive/src/` |
-| State scopes + run-scoped cleanup | `explanation/persistence-and-versioning.md`, `reference/config.md` | `crates/tirea-contract/src/lib.rs`, `crates/tirea-agentos/src/runtime/tests.rs`, `crates/tirea-agentos/src/runtime/stop_policy_plugin.rs` |
+| State scopes + run-scoped cleanup | `explanation/persistence-and-versioning.md`, `reference/config.md` | `crates/tirea-contract/src/lib.rs`, `crates/tirea-agentos/src/runtime/tests.rs`, `crates/tirea-agentos/src/runtime/plugin/stop_policy.rs` |
 | HTTP SSE server surface | `reference/http-api.md`, `how-to/expose-http-sse.md` | `crates/tirea-agentos-server/src/http.rs`, `examples/src/starter_backend/mod.rs` |
 | Canonical Run API (list/get/start/inputs/cancel) | `reference/run-api.md` | `crates/tirea-agentos-server/src/http.rs`, `crates/tirea-agentos-server/tests/run_api.rs` |
 | Decision forwarding / suspend / replay | `explanation/hitl-and-decision-flow.md`, `reference/run-api.md`, `how-to/enable-tool-permission-hitl.md` | `crates/tirea-contract/src/io/decision.rs`, `crates/tirea-agentos/src/runtime/loop_runner/mod.rs`, `crates/tirea-agentos-server/tests/run_api.rs` |

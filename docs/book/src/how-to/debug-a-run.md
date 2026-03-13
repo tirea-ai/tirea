@@ -14,7 +14,7 @@ Use this when a run stops unexpectedly or tool behavior is incorrect.
 `termination` is authoritative and usually one of:
 
 - `NaturalEnd`
-- `PluginRequested`
+- `BehaviorRequested`
 - `Stopped(...)`
 - `Cancelled`
 - `Suspended`

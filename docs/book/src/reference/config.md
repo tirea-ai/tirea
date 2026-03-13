@@ -108,13 +108,10 @@ Stop-policy runtime bookkeeping lives in run-scoped state under `__kernel.stop_p
 
 Keep these fields close to your provider registry definitions so a single source of truth controls which model ids are valid in each environment.
 
-## Scope Keys (RunConfig)
+## Scope Filters (RunPolicy)
 
-Runtime policy filters are stored in `RunConfig` keys:
+Runtime policy filters are stored as `RunPolicy` fields (set via `set_*_if_absent` methods during agent resolution):
 
-- `__agent_policy_allowed_tools`
-- `__agent_policy_excluded_tools`
-- `__agent_policy_allowed_skills`
-- `__agent_policy_excluded_skills`
-- `__agent_policy_allowed_agents`
-- `__agent_policy_excluded_agents`
+- `allowed_tools` / `excluded_tools`
+- `allowed_skills` / `excluded_skills`
+- `allowed_agents` / `excluded_agents`

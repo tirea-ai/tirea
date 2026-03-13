@@ -11,7 +11,7 @@
 
 ## Common Calls
 
-- `RunContext::from_thread(thread, run_config)`
+- `RunContext::from_thread(thread, run_policy)`
 - `messages()` / `add_message(...)`
 - `add_thread_patch(...)`
 - `take_delta()`
