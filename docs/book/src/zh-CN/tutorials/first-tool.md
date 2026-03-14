@@ -19,8 +19,8 @@
 async-trait = "0.1"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
-tirea = "0.3.0"
-tirea-state-derive = "0.3.0"
+tirea = "0.4.0"
+tirea-state-derive = "0.4.0"
 ```
 
 ## 1. 定义带 Action 的类型化状态

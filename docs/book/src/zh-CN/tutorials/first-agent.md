@@ -10,9 +10,9 @@
 
 ```toml
 [dependencies]
-tirea = "0.3.0"
-tirea-agentos-server = "0.3.0"
-tirea-store-adapters = "0.3.0"
+tirea = "0.4.0"
+tirea-agentos-server = "0.4.0"
+tirea-store-adapters = "0.4.0"
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 futures = "0.3"
