@@ -1,0 +1,170 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 840 520">
+  <style>
+    @keyframes t1  { 0%,3%  { opacity:0 } 4%  { opacity:1 } }
+    @keyframes t2  { 0%,8%  { opacity:0 } 9%  { opacity:1 } }
+    @keyframes t3  { 0%,14% { opacity:0 } 15% { opacity:1 } }
+    @keyframes t4  { 0%,20% { opacity:0 } 21% { opacity:1 } }
+    @keyframes t5  { 0%,28% { opacity:0 } 29% { opacity:1 } }
+    @keyframes t6  { 0%,34% { opacity:0 } 35% { opacity:1 } }
+    @keyframes t7  { 0%,38% { opacity:0 } 39% { opacity:1 } }
+    @keyframes t8  { 0%,44% { opacity:0 } 45% { opacity:1 } }
+    @keyframes t9  { 0%,50% { opacity:0 } 51% { opacity:1 } }
+    @keyframes t10 { 0%,56% { opacity:0 } 57% { opacity:1 } }
+    @keyframes t11 { 0%,62% { opacity:0 } 63% { opacity:1 } }
+    @keyframes t12 { 0%,68% { opacity:0 } 69% { opacity:1 } }
+    @keyframes t13 { 0%,74% { opacity:0 } 75% { opacity:1 } }
+    @keyframes t14 { 0%,80% { opacity:0 } 81% { opacity:1 } }
+    @keyframes t15 { 0%,88% { opacity:0 } 89% { opacity:1 } }
+    @keyframes cur { 0%,49% { opacity:1 } 50%,100% { opacity:0 } }
+    text { font-family: 'SF Mono','Cascadia Code','Fira Code',monospace; font-size: 14px; }
+    .g { fill: #98c379 } .b { fill: #61afef } .y { fill: #e5c07b }
+    .r { fill: #e06c75 } .c { fill: #56b6c2 } .m { fill: #c678dd }
+    .w { fill: #abb2bf } .d { fill: #5c6370 }
+    .line { opacity: 0 }
+    .l1  { animation: t1  20s infinite }
+    .l2  { animation: t2  20s infinite }
+    .l3  { animation: t3  20s infinite }
+    .l4  { animation: t4  20s infinite }
+    .l5  { animation: t5  20s infinite }
+    .l6  { animation: t6  20s infinite }
+    .l7  { animation: t7  20s infinite }
+    .l8  { animation: t8  20s infinite }
+    .l9  { animation: t9  20s infinite }
+    .l10 { animation: t10 20s infinite }
+    .l11 { animation: t11 20s infinite }
+    .l12 { animation: t12 20s infinite }
+    .l13 { animation: t13 20s infinite }
+    .l14 { animation: t14 20s infinite }
+    .l15 { animation: t15 20s infinite }
+  </style>
+
+  <!-- Terminal chrome -->
+  <rect width="840" height="520" rx="10" fill="#282c34"/>
+  <circle cx="24" cy="18" r="6" fill="#e06c75"/>
+  <circle cx="44" cy="18" r="6" fill="#e5c07b"/>
+  <circle cx="64" cy="18" r="6" fill="#98c379"/>
+  <text x="380" y="22" text-anchor="middle" fill="#5c6370" font-size="13">tirea — AI Agent Demo</text>
+  <line x1="0" y1="34" x2="840" y2="34" stroke="#3e4451" stroke-width="1"/>
+
+  <!-- Terminal content -->
+  <g transform="translate(20, 52)">
+
+    <!-- Line 1: prompt + command -->
+    <g class="line l1">
+      <text y="0" class="g">❯</text>
+      <text x="16" y="0" class="w">cargo run --package tirea-agentos-server -- --http-addr 127.0.0.1:8080</text>
+    </g>
+
+    <!-- Line 2: compiling -->
+    <g class="line l2">
+      <text y="24" class="g">   Compiling</text>
+      <text x="112" y="24" class="w"> tirea-agentos-server v0.4.0</text>
+    </g>
+
+    <!-- Line 3: finished -->
+    <g class="line l3">
+      <text y="48" class="g">    Finished</text>
+      <text x="112" y="48" class="w"> `release` profile in 2.1s</text>
+    </g>
+
+    <!-- Line 4: listening -->
+    <g class="line l4">
+      <text y="72" class="c">     Running</text>
+      <text x="112" y="72" class="w"> `target/release/tirea-agentos-server`</text>
+    </g>
+
+    <!-- Line 5: server ready -->
+    <g class="line l5">
+      <text y="96" class="b">INFO</text>
+      <text x="40" y="96" class="w"> server listening on </text>
+      <text x="218" y="96" class="y">http://127.0.0.1:8080</text>
+    </g>
+
+    <!-- Line 6: protocols -->
+    <g class="line l6">
+      <text y="120" class="b">INFO</text>
+      <text x="40" y="120" class="w"> protocols: </text>
+      <text x="136" y="120" class="g">AG-UI</text>
+      <text x="186" y="120" class="w"> · </text>
+      <text x="198" y="120" class="g">AI SDK v6</text>
+      <text x="282" y="120" class="w"> · </text>
+      <text x="294" y="120" class="g">A2A</text>
+      <text x="328" y="120" class="w"> · </text>
+      <text x="340" y="120" class="g">MCP</text>
+    </g>
+
+    <!-- Line 7: agents loaded -->
+    <g class="line l7">
+      <text y="144" class="b">INFO</text>
+      <text x="40" y="144" class="w"> agents: </text>
+      <text x="112" y="144" class="m">orchestrator</text>
+      <text x="210" y="144" class="w">, </text>
+      <text x="220" y="144" class="m">researcher</text>
+      <text x="306" y="144" class="w">, </text>
+      <text x="316" y="144" class="m">writer</text>
+    </g>
+
+    <!-- Line 8: blank + new request -->
+    <g class="line l8">
+      <text y="180" class="d">─── incoming request ───</text>
+    </g>
+
+    <!-- Line 9: request details -->
+    <g class="line l9">
+      <text y="204" class="b">INFO</text>
+      <text x="40" y="204" class="w"> POST /v1/ai-sdk/agents/orchestrator/runs</text>
+    </g>
+
+    <!-- Line 10: inference -->
+    <g class="line l10">
+      <text y="228" class="y">⚡ inference</text>
+      <text x="112" y="228" class="w"> model=</text>
+      <text x="162" y="228" class="c">deepseek-chat</text>
+      <text x="276" y="228" class="w"> tokens=</text>
+      <text x="338" y="228" class="c">1,247</text>
+    </g>
+
+    <!-- Line 11: tool call -->
+    <g class="line l11">
+      <text y="252" class="m">🔧 tool_call</text>
+      <text x="112" y="252" class="w"> agent_run(agent_id=</text>
+      <text x="310" y="252" class="g">"researcher"</text>
+      <text x="406" y="252" class="w">)</text>
+    </g>
+
+    <!-- Line 12: sub-agent -->
+    <g class="line l12">
+      <text y="276" class="c">  ↳ sub-agent</text>
+      <text x="120" y="276" class="w"> researcher running... </text>
+      <text x="326" y="276" class="g">✓ done</text>
+      <text x="386" y="276" class="d"> (1.8s)</text>
+    </g>
+
+    <!-- Line 13: tool result -->
+    <g class="line l13">
+      <text y="300" class="m">🔧 tool_call</text>
+      <text x="112" y="300" class="w"> agent_run(agent_id=</text>
+      <text x="310" y="300" class="g">"writer"</text>
+      <text x="382" y="300" class="w">) → </text>
+      <text x="410" y="300" class="g">✓ done</text>
+      <text x="470" y="300" class="d"> (2.3s)</text>
+    </g>
+
+    <!-- Line 14: run finish -->
+    <g class="line l14">
+      <text y="336" class="g">✅ run_finish</text>
+      <text x="120" y="336" class="w"> termination=</text>
+      <text x="224" y="336" class="g">natural_end</text>
+      <text x="320" y="336" class="w"> steps=</text>
+      <text x="368" y="336" class="c">4</text>
+      <text x="384" y="336" class="w"> duration=</text>
+      <text x="454" y="336" class="c">6.2s</text>
+    </g>
+
+    <!-- Line 15: ready for next -->
+    <g class="line l15">
+      <text y="372" class="d">─── ready for next request ───</text>
+    </g>
+
+  </g>
+</svg>
