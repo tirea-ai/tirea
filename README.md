@@ -83,7 +83,7 @@ Connect a React frontend with `useChat()`, a CopilotKit app via AG-UI, or anothe
 | **State scoped to its lifetime** | Mark state as Thread-scoped (persists forever), Run-scoped (reset each run), or ToolCall-scoped (gone after the tool finishes). No stale data leaking between runs. |
 | **Compile-time plugin safety** | Plugins hook into 8 lifecycle phases. Wire a permission check to the wrong phase? Compiler catches it. |
 | **Replay any conversation** | Every state change is an immutable patch. Replay them to reconstruct the exact state at any point. |
-| **Rust performance** | No GC pauses. Low memory footprint. Native async concurrency. |
+| **Rust performance** | No GC pauses. ~170 KB RSS per agent run (10-turn conversation, mock LLM). 32 concurrent agents at ~1,000 runs/s. `cargo bench --package tirea-agentos --bench runtime_throughput` to reproduce. |
 
 ## Feature comparison
 
