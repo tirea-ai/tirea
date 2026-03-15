@@ -52,6 +52,8 @@ struct ToolApprovalResponsePart {
     approved: Option<bool>,
     #[serde(default)]
     reason: Option<String>,
+    #[serde(default)]
+    remember: Option<bool>,
 }
 
 impl TryFrom<AiSdkV6MessagesRunRequest> for AiSdkV6RunRequest {
@@ -288,7 +290,11 @@ fn parse_tool_approval_response_part(part: &Value) -> Option<(String, Value)> {
     let payload: ToolApprovalResponsePart = serde_json::from_value(part.clone()).ok()?;
     Some((
         payload.approval_id,
-        approval_response_value(payload.approved.unwrap_or(false), payload.reason),
+        approval_response_value(
+            payload.approved.unwrap_or(false),
+            payload.reason,
+            payload.remember,
+        ),
     ))
 }
 
@@ -312,7 +318,16 @@ fn parse_approval_responded_part(part: &Value) -> Option<(String, Value)> {
         .and_then(|v| v.get("reason"))
         .and_then(Value::as_str)
         .map(str::to_string);
-    Some((target_id, approval_response_value(approved, reason)))
+    Some((
+        target_id,
+        approval_response_value(
+            approved,
+            reason,
+            approval
+                .and_then(|v| v.get("remember"))
+                .and_then(Value::as_bool),
+        ),
+    ))
 }
 
 fn parse_tool_ui_part(part: &Value) -> Option<ToolUIPart> {
@@ -326,11 +341,18 @@ fn parse_tool_ui_part(part: &Value) -> Option<ToolUIPart> {
     serde_json::from_value(normalized).ok()
 }
 
-fn approval_response_value(approved: bool, reason: Option<String>) -> Value {
+fn approval_response_value(
+    approved: bool,
+    reason: Option<String>,
+    remember: Option<bool>,
+) -> Value {
     let mut result = serde_json::Map::new();
     result.insert("approved".to_string(), Value::Bool(approved));
     if let Some(reason) = reason {
         result.insert("reason".to_string(), Value::String(reason));
+    }
+    if let Some(remember) = remember {
+        result.insert("remember".to_string(), Value::Bool(remember));
     }
     Value::Object(result)
 }
@@ -457,6 +479,35 @@ mod tests {
         assert_eq!(responses[0].target_id, "fc_perm_1");
         assert_eq!(responses[0].result["approved"], true);
         assert_eq!(responses[0].result["reason"], "looks safe");
+    }
+
+    #[test]
+    fn extracts_approval_responded_remember_flag_as_interaction_response() {
+        let req: AiSdkV6RunRequest = serde_json::from_value(json!({
+            "id": "t1c",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "parts": [{
+                        "type": "tool-echo",
+                        "toolCallId": "call_echo_2",
+                        "state": "approval-responded",
+                        "approval": {
+                            "id": "fc_perm_2",
+                            "approved": true,
+                            "remember": true
+                        }
+                    }]
+                }
+            ]
+        }))
+        .expect("messages payload should deserialize");
+
+        let responses = req.interaction_responses();
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].target_id, "fc_perm_2");
+        assert_eq!(responses[0].result["approved"], true);
+        assert_eq!(responses[0].result["remember"], true);
     }
 
     #[test]
@@ -604,6 +655,31 @@ mod tests {
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0].target_id, "fc_perm_fallback");
         assert_eq!(responses[0].result["approved"], true);
+    }
+
+    #[test]
+    fn tool_approval_response_preserves_remember_flag() {
+        let req: AiSdkV6RunRequest = serde_json::from_value(json!({
+            "id": "t5c",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "parts": [{
+                        "type": "tool-approval-response",
+                        "approvalId": "fc_perm_11",
+                        "approved": true,
+                        "remember": true
+                    }]
+                }
+            ]
+        }))
+        .expect("messages payload should deserialize");
+
+        let responses = req.interaction_responses();
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].target_id, "fc_perm_11");
+        assert_eq!(responses[0].result["approved"], true);
+        assert_eq!(responses[0].result["remember"], true);
     }
 
     #[test]

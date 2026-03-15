@@ -1,6 +1,6 @@
 use super::actions::{apply_tool_policy, reject_out_of_scope};
 use super::mechanism::{enforce_permission, PermissionMechanismDecision, PermissionMechanismInput};
-use super::state::PermissionPolicy;
+use super::state::{PermissionOverrides, PermissionPolicy};
 use super::strategy::evaluate_tool_permission;
 use async_trait::async_trait;
 use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
@@ -22,7 +22,7 @@ impl AgentBehavior for PermissionPlugin {
         PERMISSION_PLUGIN_ID
     }
 
-    tirea_contract::declare_plugin_states!(PermissionPolicy);
+    tirea_contract::declare_plugin_states!(PermissionPolicy, PermissionOverrides);
 
     async fn before_tool_execute(
         &self,

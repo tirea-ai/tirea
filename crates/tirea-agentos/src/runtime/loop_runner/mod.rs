@@ -1607,6 +1607,62 @@ fn upsert_tool_call_lifecycle_state(
     Ok(true)
 }
 
+#[cfg(feature = "permission")]
+fn suspended_call_decision_state_actions(
+    suspended_call: &SuspendedCall,
+    response: &ToolCallDecision,
+) -> Vec<AnyStateAction> {
+    tirea_extension_permission::remembered_permission_state_action(suspended_call, response)
+        .into_iter()
+        .collect()
+}
+
+#[cfg(not(feature = "permission"))]
+fn suspended_call_decision_state_actions(
+    _suspended_call: &SuspendedCall,
+    _response: &ToolCallDecision,
+) -> Vec<AnyStateAction> {
+    Vec::new()
+}
+
+fn apply_decision_state_actions(
+    run_ctx: &mut RunContext,
+    actions: Vec<AnyStateAction>,
+) -> Result<bool, AgentLoopError> {
+    if actions.is_empty() {
+        return Ok(false);
+    }
+
+    let serialized_actions = actions
+        .iter()
+        .map(AnyStateAction::to_serialized_state_action)
+        .collect::<Vec<_>>();
+    run_ctx.add_serialized_state_actions(serialized_actions);
+
+    let base_state = run_ctx
+        .snapshot()
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    let patches = reduce_state_actions(
+        actions,
+        &base_state,
+        "agent_loop:decision",
+        &ScopeContext::run(),
+    )
+    .map_err(|e| {
+        AgentLoopError::StateError(format!("failed to reduce decision state actions: {e}"))
+    })?;
+
+    let mut changed = false;
+    for patch in patches {
+        if patch.patch().is_empty() {
+            continue;
+        }
+        changed = true;
+        run_ctx.add_thread_patch(patch);
+    }
+    Ok(changed)
+}
+
 pub(super) fn resolve_suspended_call(
     run_ctx: &mut RunContext,
     response: &ToolCallDecision,
@@ -1632,6 +1688,11 @@ pub(super) fn resolve_suspended_call(
     let Some(suspended_call) = suspended_call else {
         return Ok(None);
     };
+
+    let _ = apply_decision_state_actions(
+        run_ctx,
+        suspended_call_decision_state_actions(&suspended_call, response),
+    )?;
 
     let _ = upsert_tool_call_lifecycle_state(
         run_ctx,

@@ -63,6 +63,73 @@ pub struct PermissionPolicy {
     pub rules: HashMap<String, PermissionRule>,
 }
 
+/// Run-scoped permission overrides applied on top of thread-level [`PermissionPolicy`].
+///
+/// Automatically cleaned up by `prepare_run()` when the run ends. Used by skill
+/// activation to grant temporary tool permissions that do not leak across runs.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[serde(default)]
+#[tirea(
+    path = "permission_overrides",
+    action = "PermissionOverridesAction",
+    scope = "run"
+)]
+pub struct PermissionOverrides {
+    pub rules: HashMap<String, PermissionRule>,
+}
+
+/// Action type for the [`PermissionOverrides`] reducer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PermissionOverridesAction {
+    SetTool {
+        tool_id: String,
+        behavior: ToolPermissionBehavior,
+        #[serde(default)]
+        scope: PermissionRuleScope,
+        #[serde(default)]
+        source: PermissionRuleSource,
+    },
+    RemoveTool {
+        tool_id: String,
+    },
+    Clear,
+}
+
+impl PermissionOverrides {
+    fn upsert_tool_rule(
+        &mut self,
+        tool_id: String,
+        behavior: ToolPermissionBehavior,
+        scope: PermissionRuleScope,
+        source: PermissionRuleSource,
+    ) {
+        let rule = PermissionRule::new_tool(tool_id, behavior)
+            .with_scope(scope)
+            .with_source(source);
+        self.rules.insert(rule.subject.key(), rule);
+    }
+
+    pub(super) fn reduce(&mut self, action: PermissionOverridesAction) {
+        match action {
+            PermissionOverridesAction::SetTool {
+                tool_id,
+                behavior,
+                scope,
+                source,
+            } => self.upsert_tool_rule(tool_id, behavior, scope, source),
+            PermissionOverridesAction::RemoveTool { tool_id } => {
+                self.rules.remove(
+                    &PermissionRule::new_tool(tool_id, ToolPermissionBehavior::Ask)
+                        .subject
+                        .key(),
+                );
+            }
+            PermissionOverridesAction::Clear => self.rules.clear(),
+        }
+    }
+}
+
 impl PermissionPolicy {
     fn upsert_tool_rule(
         &mut self,
@@ -146,7 +213,40 @@ pub fn permission_state_action(
     AnyStateAction::new::<PermissionPolicy>(policy_action)
 }
 
+/// Route a [`PermissionAction`] to the run-scoped [`PermissionOverrides`] state.
+///
+/// Use this instead of [`permission_state_action`] when the permission change
+/// should be temporary and automatically cleaned up at the end of the current run
+/// (e.g., skill-granted tool permissions).
+pub fn permission_override_action(
+    action: PermissionAction,
+) -> tirea_contract::runtime::state::AnyStateAction {
+    use tirea_contract::runtime::state::AnyStateAction;
+    let overrides_action = match action {
+        PermissionAction::SetTool { tool_id, behavior } => PermissionOverridesAction::SetTool {
+            tool_id,
+            behavior,
+            scope: PermissionRuleScope::Thread,
+            source: PermissionRuleSource::Skill,
+        },
+        PermissionAction::RemoveTool { tool_id } => {
+            PermissionOverridesAction::RemoveTool { tool_id }
+        }
+        PermissionAction::ClearTools => PermissionOverridesAction::Clear,
+        // SetDefault has no run-scoped equivalent; route to thread-level policy.
+        PermissionAction::SetDefault { behavior } => {
+            return permission_state_action(PermissionAction::SetDefault { behavior });
+        }
+    };
+    AnyStateAction::new::<PermissionOverrides>(overrides_action)
+}
+
 /// Load resolved permission rules from a runtime snapshot.
+///
+/// Merges three layers with descending priority:
+/// 1. Run-scoped [`PermissionOverrides`] (highest — temporary skill grants)
+/// 2. Thread-level [`PermissionPolicy`] (base rules)
+/// 3. Legacy `permissions` snapshot (lowest — backward compat)
 #[must_use]
 pub fn permission_rules_from_snapshot(snapshot: &serde_json::Value) -> PermissionRuleset {
     let mut ruleset = PermissionRuleset::default();
@@ -190,6 +290,15 @@ pub fn permission_rules_from_snapshot(snapshot: &serde_json::Value) -> Permissio
                 let rule = PermissionRule::new_tool(tool_id, behavior)
                     .with_source(PermissionRuleSource::Runtime);
                 ruleset.rules.entry(rule.subject.key()).or_insert(rule);
+            }
+        }
+    }
+
+    // Apply run-scoped overrides last — they take highest priority.
+    if let Some(overrides_value) = snapshot.get(PermissionOverrides::PATH) {
+        if let Ok(overrides) = PermissionOverrides::from_value(overrides_value) {
+            for (key, rule) in overrides.rules {
+                ruleset.rules.insert(key, rule);
             }
         }
     }

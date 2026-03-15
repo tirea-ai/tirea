@@ -30,6 +30,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tirea_contract::testing::{apply_before_inference_for_test, TestFixture};
 use tirea_contract::TerminationReason;
+use tirea_extension_permission::{resolve_permission_behavior, ToolPermissionBehavior};
 
 fn decision_for(
     target_id: &str,
@@ -2488,6 +2489,168 @@ async fn run_stream_initial_decisions_denied_returns_tool_error_and_clears_suspe
     assert!(
         !suspended_calls_from_state(&rebuilt).contains_key("call_pending"),
         "resolved denied call must be removed from suspended map: {rebuilt:?}"
+    );
+}
+
+#[tokio::test]
+async fn run_stream_initial_decisions_remember_approval_persists_allow_rule() {
+    use futures::StreamExt;
+    use tirea_store_adapters::MemoryStore;
+
+    let storage = Arc::new(MemoryStore::new());
+    let os = make_decision_test_os(storage.clone());
+    let thread_id = "t-initial-remember-allow";
+
+    let pending_state = json!({
+        "__tool_call_scope": {
+            "call_pending": {
+                "suspended_call": {
+                    "call_id": "call_pending",
+                    "tool_name": "echo",
+                    "suspension": {
+                        "id": "fc_perm_pending",
+                        "action": "tool:PermissionConfirm",
+                        "parameters": {
+                            "tool_name": "echo",
+                            "tool_args": { "message": "remember-allow" }
+                        }
+                    },
+                    "arguments": { "message": "remember-allow" },
+                    "pending": {
+                        "id": "fc_perm_pending",
+                        "name": "PermissionConfirm",
+                        "arguments": {
+                            "tool_name": "echo",
+                            "tool_args": { "message": "remember-allow" }
+                        }
+                    },
+                    "resume_mode": "replay_tool_call"
+                }
+            }
+        }
+    });
+    let thread = Thread::with_initial_state(thread_id, pending_state)
+        .with_message(crate::contracts::thread::Message::user("resume"));
+    storage.create(&thread).await.unwrap();
+
+    let run = os
+        .run_stream(RunRequest {
+            agent_id: "a1".to_string(),
+            thread_id: Some(thread_id.to_string()),
+            run_id: Some("run-initial-remember-allow".to_string()),
+            parent_run_id: None,
+            parent_thread_id: None,
+            resource_id: None,
+            origin: RunOrigin::default(),
+            state: None,
+            messages: vec![],
+            initial_decisions: vec![decision_for(
+                "fc_perm_pending",
+                crate::contracts::io::ResumeDecisionAction::Resume,
+                json!({ "approved": true, "remember": true }),
+            )],
+            source_mailbox_entry_id: None,
+        })
+        .await
+        .unwrap();
+    let events: Vec<_> = run.events.collect().await;
+
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolCallDone { id, result, .. }
+                if id == "call_pending" && result.is_success()
+        )),
+        "remembered approval should still replay and execute the tool: {events:?}"
+    );
+
+    let saved = storage.load(thread_id).await.unwrap().unwrap();
+    let rebuilt = saved.thread.rebuild_state().unwrap();
+    assert_eq!(
+        resolve_permission_behavior(&rebuilt, "echo"),
+        ToolPermissionBehavior::Allow,
+        "remembered approval should persist allow rule: {rebuilt:?}"
+    );
+}
+
+#[tokio::test]
+async fn run_stream_initial_decisions_remember_denial_persists_deny_rule() {
+    use futures::StreamExt;
+    use tirea_store_adapters::MemoryStore;
+
+    let storage = Arc::new(MemoryStore::new());
+    let os = make_decision_test_os(storage.clone());
+    let thread_id = "t-initial-remember-deny";
+
+    let pending_state = json!({
+        "__tool_call_scope": {
+            "call_pending": {
+                "suspended_call": {
+                    "call_id": "call_pending",
+                    "tool_name": "echo",
+                    "suspension": {
+                        "id": "fc_perm_pending",
+                        "action": "tool:PermissionConfirm",
+                        "parameters": {
+                            "tool_name": "echo",
+                            "tool_args": { "message": "remember-deny" }
+                        }
+                    },
+                    "arguments": { "message": "remember-deny" },
+                    "pending": {
+                        "id": "fc_perm_pending",
+                        "name": "PermissionConfirm",
+                        "arguments": {
+                            "tool_name": "echo",
+                            "tool_args": { "message": "remember-deny" }
+                        }
+                    },
+                    "resume_mode": "replay_tool_call"
+                }
+            }
+        }
+    });
+    let thread = Thread::with_initial_state(thread_id, pending_state)
+        .with_message(crate::contracts::thread::Message::user("resume"));
+    storage.create(&thread).await.unwrap();
+
+    let run = os
+        .run_stream(RunRequest {
+            agent_id: "a1".to_string(),
+            thread_id: Some(thread_id.to_string()),
+            run_id: Some("run-initial-remember-deny".to_string()),
+            parent_run_id: None,
+            parent_thread_id: None,
+            resource_id: None,
+            origin: RunOrigin::default(),
+            state: None,
+            messages: vec![],
+            initial_decisions: vec![decision_for(
+                "fc_perm_pending",
+                crate::contracts::io::ResumeDecisionAction::Cancel,
+                json!({ "approved": false, "remember": true, "reason": "no" }),
+            )],
+            source_mailbox_entry_id: None,
+        })
+        .await
+        .unwrap();
+    let events: Vec<_> = run.events.collect().await;
+
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolCallDone { id, result, .. }
+                if id == "call_pending" && result.is_error()
+        )),
+        "remembered denial should preserve the original denied flow: {events:?}"
+    );
+
+    let saved = storage.load(thread_id).await.unwrap().unwrap();
+    let rebuilt = saved.thread.rebuild_state().unwrap();
+    assert_eq!(
+        resolve_permission_behavior(&rebuilt, "echo"),
+        ToolPermissionBehavior::Deny,
+        "remembered denial should persist deny rule: {rebuilt:?}"
     );
 }
 
