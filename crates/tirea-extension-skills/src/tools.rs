@@ -15,7 +15,7 @@ use tirea_contract::runtime::tool_call::{
 };
 use tirea_contract::scope::{is_scope_allowed, ScopeDomain};
 use tirea_extension_permission::{
-    permission_state_action, PermissionAction, ToolPermissionBehavior,
+    permission_override_action, PermissionAction, ToolPermissionBehavior,
 };
 use tracing::{debug, warn};
 
@@ -174,7 +174,7 @@ impl SkillActivateTool {
 
         let mut effect = ToolExecutionEffect::from(result).with_action(activate_action);
         for action in permission_actions {
-            effect = effect.with_action(permission_state_action(action));
+            effect = effect.with_action(permission_override_action(action));
         }
         if !instruction_for_message.trim().is_empty() {
             effect = effect.with_action(AfterToolExecuteAction::AddUserMessage(

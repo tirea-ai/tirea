@@ -79,6 +79,9 @@ pub struct ToolApproval {
     /// Optional reason from the approver.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Optional request to remember this decision.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remember: Option<bool>,
 }
 
 /// Text part.

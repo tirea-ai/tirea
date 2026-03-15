@@ -17,7 +17,8 @@ fn permission_response_schema() -> Value {
         "additionalProperties": true,
         "properties": {
             "approved": { "type": "boolean" },
-            "reason": { "type": "string" }
+            "reason": { "type": "string" },
+            "remember": { "type": "boolean" }
         },
         "required": ["approved"]
     })

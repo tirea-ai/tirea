@@ -16,14 +16,18 @@ pub use actions::{
     request_permission,
 };
 pub use form::{permission_confirmation_ticket, PERMISSION_CONFIRM_TOOL_NAME};
-pub use mechanism::{enforce_permission, PermissionMechanismDecision, PermissionMechanismInput};
+pub use mechanism::{
+    enforce_permission, remembered_permission_state_action, PermissionMechanismDecision,
+    PermissionMechanismInput,
+};
 pub use model::{
     PermissionEvaluation, PermissionRule, PermissionRuleScope, PermissionRuleSource,
     PermissionRuleset, PermissionSubject, ToolPermissionBehavior,
 };
 pub use plugin::{PermissionPlugin, ToolPolicyPlugin, PERMISSION_PLUGIN_ID};
 pub use state::{
-    permission_rules_from_snapshot, permission_state_action, PermissionAction, PermissionPolicy,
+    permission_override_action, permission_rules_from_snapshot, permission_state_action,
+    PermissionAction, PermissionOverrides, PermissionOverridesAction, PermissionPolicy,
     PermissionPolicyAction,
 };
 pub use strategy::{evaluate_tool_permission, resolve_permission_behavior};
@@ -37,7 +41,9 @@ mod tests {
     use tirea_contract::runtime::phase::Phase;
     use tirea_contract::runtime::phase::{ActionSet, BeforeToolExecuteAction};
     use tirea_contract::runtime::tool_call::ToolCallResume;
+    use tirea_contract::thread::ToolCall;
     use tirea_contract::RunPolicy;
+    use tirea_contract::{Suspension, ToolCallDecision};
     use tirea_state::{DocCell, State};
 
     fn has_block(actions: &ActionSet<BeforeToolExecuteAction>) -> bool {
@@ -182,6 +188,65 @@ mod tests {
     }
 
     #[test]
+    fn remembered_permission_state_action_persists_allow() {
+        let tool_call = ToolCall::new("call_1", "write_file", json!({"path": "a.txt"}));
+        let suspended_call = tirea_contract::runtime::SuspendedCall::new(
+            &tool_call,
+            permission_confirmation_ticket("call_1", "write_file", json!({"path": "a.txt"})),
+        );
+        let decision =
+            ToolCallDecision::resume("fc_call_1", json!({"approved": true, "remember": true}), 1);
+
+        let action = remembered_permission_state_action(&suspended_call, &decision)
+            .expect("remembered approval should persist a rule");
+        let serialized = action.to_serialized_state_action();
+        assert_eq!(serialized.base_path, PermissionPolicy::PATH);
+        assert_eq!(serialized.payload["behavior"], json!("allow"));
+    }
+
+    #[test]
+    fn remembered_permission_state_action_persists_deny() {
+        let tool_call = ToolCall::new("call_1", "write_file", json!({"path": "a.txt"}));
+        let suspended_call = tirea_contract::runtime::SuspendedCall::new(
+            &tool_call,
+            permission_confirmation_ticket("call_1", "write_file", json!({"path": "a.txt"})),
+        );
+        let decision = ToolCallDecision::cancel(
+            "fc_call_1",
+            json!({"approved": false, "remember": true}),
+            Some("denied".to_string()),
+            1,
+        );
+
+        let action = remembered_permission_state_action(&suspended_call, &decision)
+            .expect("remembered denial should persist a rule");
+        let serialized = action.to_serialized_state_action();
+        assert_eq!(serialized.base_path, PermissionPolicy::PATH);
+        assert_eq!(serialized.payload["behavior"], json!("deny"));
+    }
+
+    #[test]
+    fn remembered_permission_state_action_ignores_non_permission_suspensions() {
+        let tool_call = ToolCall::new("call_1", "write_file", json!({"path": "a.txt"}));
+        let suspended_call = tirea_contract::runtime::SuspendedCall::new(
+            &tool_call,
+            tirea_contract::runtime::SuspendTicket::new(
+                Suspension::new("call_1", "tool:askUserQuestion"),
+                tirea_contract::runtime::PendingToolCall::new(
+                    "call_1",
+                    "askUserQuestion",
+                    json!({}),
+                ),
+                tirea_contract::runtime::ToolCallResumeMode::ReplayToolCall,
+            ),
+        );
+        let decision =
+            ToolCallDecision::resume("call_1", json!({"approved": true, "remember": true}), 1);
+
+        assert!(remembered_permission_state_action(&suspended_call, &decision).is_none());
+    }
+
+    #[test]
     fn enforce_permission_ask_without_call_id_blocks() {
         let evaluation = PermissionEvaluation {
             subject: PermissionSubject::tool("write_file"),
@@ -308,5 +373,195 @@ mod tests {
         let ctx = read_only_ctx(&config, &doc, "blocked_tool", "call_1", &args);
         let actions = AgentBehavior::before_tool_execute(&ToolPolicyPlugin, &ctx).await;
         assert!(has_block(&actions));
+    }
+
+    // --- Run-scoped permission overrides ---
+
+    #[test]
+    fn permission_override_action_routes_to_overrides_state() {
+        let action = PermissionAction::SetTool {
+            tool_id: "Bash".to_string(),
+            behavior: ToolPermissionBehavior::Allow,
+        };
+        let serialized = permission_override_action(action).to_serialized_state_action();
+        assert_eq!(serialized.base_path, PermissionOverrides::PATH);
+        assert!(serialized.payload.is_object());
+    }
+
+    #[test]
+    fn permission_override_set_default_falls_through_to_policy() {
+        let action = PermissionAction::SetDefault {
+            behavior: ToolPermissionBehavior::Allow,
+        };
+        let serialized = permission_override_action(action).to_serialized_state_action();
+        // SetDefault has no run-scoped equivalent; must route to thread-level policy.
+        assert_eq!(serialized.base_path, PermissionPolicy::PATH);
+    }
+
+    #[test]
+    fn permission_overrides_take_precedence_over_policy() {
+        let snapshot = json!({
+            "permission_policy": {
+                "default_behavior": "deny",
+                "rules": {
+                    "tool:Bash": {
+                        "subject": { "kind": "tool", "tool_id": "Bash" },
+                        "behavior": "deny",
+                        "scope": "thread",
+                        "source": "runtime"
+                    }
+                }
+            },
+            "permission_overrides": {
+                "rules": {
+                    "tool:Bash": {
+                        "subject": { "kind": "tool", "tool_id": "Bash" },
+                        "behavior": "allow",
+                        "scope": "thread",
+                        "source": "skill"
+                    }
+                }
+            }
+        });
+
+        // Run-scoped override (allow) should win over thread-level policy (deny).
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "Bash"),
+            ToolPermissionBehavior::Allow
+        );
+    }
+
+    #[test]
+    fn permission_overrides_do_not_affect_unmatched_tools() {
+        let snapshot = json!({
+            "permission_policy": {
+                "default_behavior": "deny",
+                "rules": {}
+            },
+            "permission_overrides": {
+                "rules": {
+                    "tool:Bash": {
+                        "subject": { "kind": "tool", "tool_id": "Bash" },
+                        "behavior": "allow",
+                        "scope": "thread",
+                        "source": "skill"
+                    }
+                }
+            }
+        });
+
+        // Bash is overridden to allow.
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "Bash"),
+            ToolPermissionBehavior::Allow
+        );
+        // Other tools still fall through to the policy default (deny).
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "write_file"),
+            ToolPermissionBehavior::Deny
+        );
+    }
+
+    #[test]
+    fn permission_overrides_absent_leaves_policy_unchanged() {
+        let snapshot = json!({
+            "permission_policy": {
+                "default_behavior": "ask",
+                "rules": {
+                    "tool:read_file": {
+                        "subject": { "kind": "tool", "tool_id": "read_file" },
+                        "behavior": "allow",
+                        "scope": "thread",
+                        "source": "runtime"
+                    }
+                }
+            }
+        });
+
+        // No overrides present — behavior is unchanged.
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "read_file"),
+            ToolPermissionBehavior::Allow
+        );
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "unknown"),
+            ToolPermissionBehavior::Ask
+        );
+    }
+
+    #[tokio::test]
+    async fn permission_plugin_uses_run_scoped_overrides() {
+        let config = RunPolicy::new();
+        let doc = DocCell::new(json!({
+            "permission_policy": {
+                "default_behavior": "deny",
+                "rules": {}
+            },
+            "permission_overrides": {
+                "rules": {
+                    "tool:Bash": {
+                        "subject": { "kind": "tool", "tool_id": "Bash" },
+                        "behavior": "allow",
+                        "scope": "thread",
+                        "source": "skill"
+                    }
+                }
+            }
+        }));
+        let args = json!({});
+        let ctx = read_only_ctx(&config, &doc, "Bash", "call_1", &args);
+        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
+        // Override grants allow — no block, no suspend.
+        assert!(!has_block(&actions));
+        assert!(suspend_action(&actions).is_none());
+    }
+
+    #[tokio::test]
+    async fn permission_plugin_denies_non_overridden_tool_with_deny_default() {
+        let config = RunPolicy::new();
+        let doc = DocCell::new(json!({
+            "permission_policy": {
+                "default_behavior": "deny",
+                "rules": {}
+            },
+            "permission_overrides": {
+                "rules": {
+                    "tool:Bash": {
+                        "subject": { "kind": "tool", "tool_id": "Bash" },
+                        "behavior": "allow",
+                        "scope": "thread",
+                        "source": "skill"
+                    }
+                }
+            }
+        }));
+        let args = json!({});
+        let ctx = read_only_ctx(&config, &doc, "write_file", "call_1", &args);
+        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
+        // write_file has no override — falls through to policy default (deny).
+        assert!(has_block(&actions));
+    }
+
+    #[test]
+    fn permission_overrides_state_is_run_scoped() {
+        use tirea_state::StateSpec;
+        assert_eq!(PermissionOverrides::SCOPE, tirea_state::StateScope::Run,);
+    }
+
+    #[test]
+    fn permission_overrides_default_is_empty() {
+        let overrides = PermissionOverrides::default();
+        assert!(overrides.rules.is_empty());
+    }
+
+    #[test]
+    fn permission_override_action_marks_source_as_skill() {
+        let action = PermissionAction::SetTool {
+            tool_id: "Bash".to_string(),
+            behavior: ToolPermissionBehavior::Allow,
+        };
+        let serialized = permission_override_action(action).to_serialized_state_action();
+        // The override action should set source to "skill".
+        assert_eq!(serialized.payload["source"], "skill");
     }
 }
