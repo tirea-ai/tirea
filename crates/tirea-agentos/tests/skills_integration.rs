@@ -12,7 +12,9 @@ use tirea_agentos::contracts::thread::Thread;
 use tirea_agentos::contracts::thread::{Message, ToolCall};
 use tirea_agentos::engine::tool_execution::execute_single_tool_with_run_policy_and_behavior;
 use tirea_contract::testing::TestFixture;
-use tirea_extension_permission::PermissionPlugin;
+use tirea_extension_permission::{
+    resolve_permission_behavior, PermissionPlugin, ToolPermissionBehavior,
+};
 use tirea_extension_skills::{
     FsSkill, InMemorySkillRegistry, LoadSkillResourceTool, Skill, SkillActivateTool, SkillRegistry,
     SkillScriptTool,
@@ -471,13 +473,10 @@ async fn test_skill_activation_applies_allowed_tools_to_permission_state() {
     assert!(result.is_success());
 
     let state = thread.rebuild_state().unwrap();
-    // Allowed tools are now stored via CRDT GSet at permission_policy.allowed_tools
-    let allowed: Vec<String> =
-        serde_json::from_value(state["permission_policy"]["allowed_tools"].clone())
-            .unwrap_or_default();
-    assert!(
-        allowed.contains(&"read_file".to_string()),
-        "read_file should be in allowed_tools, got: {allowed:?}"
+    assert_eq!(
+        resolve_permission_behavior(&state, "read_file"),
+        ToolPermissionBehavior::Allow,
+        "read_file should be allowed after skill activation, state: {state:?}"
     );
 }
 
@@ -865,15 +864,14 @@ Body
 
     // Verify bare tool ids are applied but scoped ones are not widened.
     let state = thread.rebuild_state().unwrap();
-    let allowed: Vec<String> =
-        serde_json::from_value(state["permission_policy"]["allowed_tools"].clone())
-            .unwrap_or_default();
-    assert!(
-        allowed.contains(&"read_file".to_string()),
-        "read_file should be in allowed_tools, got: {allowed:?}"
+    assert_eq!(
+        resolve_permission_behavior(&state, "read_file"),
+        ToolPermissionBehavior::Allow,
+        "read_file should be allowed after skill activation, state: {state:?}"
     );
-    assert!(
-        !allowed.contains(&"Bash".to_string()),
+    assert_eq!(
+        resolve_permission_behavior(&state, "Bash"),
+        ToolPermissionBehavior::Ask,
         "scoped Bash permission must not be widened to plain Bash"
     );
 }

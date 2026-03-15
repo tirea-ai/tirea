@@ -4,20 +4,29 @@
 //! [`PermissionPlugin`], and [`ToolPolicyPlugin`].
 
 mod actions;
+mod form;
+mod mechanism;
+mod model;
 mod plugin;
 mod state;
+mod strategy;
 
 pub use actions::{
     apply_tool_policy, deny, deny_missing_call_id, deny_tool, reject_out_of_scope,
     request_permission,
 };
-pub use plugin::{
-    PermissionPlugin, ToolPolicyPlugin, PERMISSION_CONFIRM_TOOL_NAME, PERMISSION_PLUGIN_ID,
+pub use form::{permission_confirmation_ticket, PERMISSION_CONFIRM_TOOL_NAME};
+pub use mechanism::{enforce_permission, PermissionMechanismDecision, PermissionMechanismInput};
+pub use model::{
+    PermissionEvaluation, PermissionRule, PermissionRuleScope, PermissionRuleSource,
+    PermissionRuleset, PermissionSubject, ToolPermissionBehavior,
 };
+pub use plugin::{PermissionPlugin, ToolPolicyPlugin, PERMISSION_PLUGIN_ID};
 pub use state::{
-    permission_state_action, resolve_permission_behavior, PermissionAction, PermissionPolicy,
-    PermissionPolicyAction, ToolPermissionBehavior,
+    permission_rules_from_snapshot, permission_state_action, PermissionAction, PermissionPolicy,
+    PermissionPolicyAction,
 };
+pub use strategy::{evaluate_tool_permission, resolve_permission_behavior};
 
 #[cfg(test)]
 mod tests {
@@ -29,7 +38,7 @@ mod tests {
     use tirea_contract::runtime::phase::{ActionSet, BeforeToolExecuteAction};
     use tirea_contract::runtime::tool_call::ToolCallResume;
     use tirea_contract::RunPolicy;
-    use tirea_state::{DocCell, LatticeRegistry};
+    use tirea_state::{DocCell, State};
 
     fn has_block(actions: &ActionSet<BeforeToolExecuteAction>) -> bool {
         actions
@@ -38,562 +47,266 @@ mod tests {
             .any(|a| matches!(a, BeforeToolExecuteAction::Block(_)))
     }
 
-    fn has_suspend(actions: &ActionSet<BeforeToolExecuteAction>) -> bool {
-        actions
-            .as_slice()
-            .iter()
-            .any(|a| matches!(a, BeforeToolExecuteAction::Suspend(_)))
+    fn suspend_action(
+        actions: &ActionSet<BeforeToolExecuteAction>,
+    ) -> Option<&tirea_contract::runtime::phase::SuspendTicket> {
+        actions.as_slice().iter().find_map(|a| match a {
+            BeforeToolExecuteAction::Suspend(ticket) => Some(ticket),
+            _ => None,
+        })
     }
 
     #[test]
-    fn test_permission_state_default() {
-        let state = state::PermissionOverrides::default();
+    fn permission_policy_defaults_to_ask_with_no_rules() {
+        let state = PermissionPolicy::default();
         assert_eq!(state.default_behavior, ToolPermissionBehavior::Ask);
-        assert!(state.tools.is_empty());
+        assert!(state.rules.is_empty());
     }
 
     #[test]
-    fn test_permission_state_serialization() {
-        let mut s = state::PermissionOverrides::default();
-        s.tools
-            .insert("read".to_string(), ToolPermissionBehavior::Allow);
-
-        let json = serde_json::to_string(&s).unwrap();
-        let parsed: state::PermissionOverrides = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(
-            parsed.tools.get("read"),
-            Some(&ToolPermissionBehavior::Allow)
-        );
-    }
-
-    #[test]
-    fn test_resolve_permission_prefers_tool_override() {
-        let snapshot = json!({
-            "permissions": { "default_behavior": "deny", "tools": { "recover_agent_run": "allow" } }
-        });
-        assert_eq!(
-            resolve_permission_behavior(&snapshot, "recover_agent_run"),
-            ToolPermissionBehavior::Allow
-        );
-    }
-
-    #[test]
-    fn test_resolve_permission_falls_back_to_default() {
-        let snapshot = json!({ "permissions": { "default_behavior": "deny", "tools": {} } });
-        assert_eq!(
-            resolve_permission_behavior(&snapshot, "unknown_tool"),
-            ToolPermissionBehavior::Deny
-        );
-    }
-
-    #[test]
-    fn test_resolve_permission_missing_state_falls_back_to_ask() {
-        assert_eq!(
-            resolve_permission_behavior(&json!({}), "recover_agent_run"),
-            ToolPermissionBehavior::Ask
-        );
-    }
-
-    #[test]
-    fn test_permission_state_action_helper() {
-        let action = PermissionAction::SetDefault {
+    fn permission_state_action_routes_to_policy_state() {
+        let action = PermissionAction::SetTool {
+            tool_id: "read".to_string(),
             behavior: ToolPermissionBehavior::Allow,
         };
-        let state_action = permission_state_action(action);
-        assert!(state_action
-            .to_serialized_state_action()
-            .payload
-            .is_object());
+        let serialized = permission_state_action(action).to_serialized_state_action();
+        assert_eq!(serialized.base_path, PermissionPolicy::PATH);
+        assert!(serialized.payload.is_object());
     }
 
     #[test]
-    fn test_permission_plugin_id() {
-        assert_eq!(AgentBehavior::id(&PermissionPlugin), PERMISSION_PLUGIN_ID);
-    }
-
-    #[tokio::test]
-    async fn test_permission_plugin_allow() {
-        let config = RunPolicy::new();
-        let doc =
-            DocCell::new(json!({ "permissions": { "default_behavior": "allow", "tools": {} } }));
-        let args = json!({});
-        let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
-            Phase::BeforeToolExecute,
-            "t1",
-            &[],
-            &config,
-            &doc,
-        )
-        .with_tool_info("any_tool", "call_1", Some(&args));
-        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
-        assert!(!has_block(&actions));
-        assert!(!has_suspend(&actions));
-    }
-
-    #[tokio::test]
-    async fn test_permission_plugin_deny() {
-        let config = RunPolicy::new();
-        let doc =
-            DocCell::new(json!({ "permissions": { "default_behavior": "deny", "tools": {} } }));
-        let args = json!({});
-        let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
-            Phase::BeforeToolExecute,
-            "t1",
-            &[],
-            &config,
-            &doc,
-        )
-        .with_tool_info("any_tool", "call_1", Some(&args));
-        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
-        assert!(has_block(&actions));
-    }
-
-    #[tokio::test]
-    async fn test_permission_plugin_ask() {
-        let config = RunPolicy::new();
-        let doc =
-            DocCell::new(json!({ "permissions": { "default_behavior": "ask", "tools": {} } }));
-        let args = json!({"path": "a.txt"});
-        let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
-            Phase::BeforeToolExecute,
-            "t1",
-            &[],
-            &config,
-            &doc,
-        )
-        .with_tool_info("test_tool", "call_1", Some(&args));
-        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
-        assert!(has_suspend(&actions));
-    }
-
-    #[tokio::test]
-    async fn test_permission_plugin_ask_with_empty_call_id_blocks() {
-        let config = RunPolicy::new();
-        let doc =
-            DocCell::new(json!({ "permissions": { "default_behavior": "ask", "tools": {} } }));
-        let args = json!({"path": "a.txt"});
-        let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
-            Phase::BeforeToolExecute,
-            "t1",
-            &[],
-            &config,
-            &doc,
-        )
-        .with_tool_info("test_tool", "", Some(&args));
-        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
-        assert!(has_block(&actions));
-        assert!(!has_suspend(&actions));
-    }
-
-    #[test]
-    fn test_resolve_default_permission() {
-        let snapshot = json!({ "permissions": { "default_behavior": "allow", "tools": {} } });
-        assert_eq!(
-            resolve_permission_behavior(&snapshot, "unknown_tool"),
-            ToolPermissionBehavior::Allow
-        );
-    }
-
-    #[test]
-    fn test_resolve_default_permission_deny() {
-        let snapshot = json!({ "permissions": { "default_behavior": "deny", "tools": {} } });
-        assert_eq!(
-            resolve_permission_behavior(&snapshot, "unknown_tool"),
-            ToolPermissionBehavior::Deny
-        );
-    }
-
-    #[tokio::test]
-    async fn test_permission_plugin_tool_specific_allow() {
-        let config = RunPolicy::new();
-        let doc = DocCell::new(json!({
-            "permissions": { "default_behavior": "deny", "tools": { "allowed_tool": "allow" } }
-        }));
-        let args = json!({});
-        let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
-            Phase::BeforeToolExecute,
-            "t1",
-            &[],
-            &config,
-            &doc,
-        )
-        .with_tool_info("allowed_tool", "call_1", Some(&args));
-        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
-        assert!(!has_block(&actions));
-    }
-
-    #[tokio::test]
-    async fn test_permission_plugin_tool_specific_deny() {
-        let config = RunPolicy::new();
-        let doc = DocCell::new(json!({
-            "permissions": { "default_behavior": "allow", "tools": { "denied_tool": "deny" } }
-        }));
-        let args = json!({});
-        let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
-            Phase::BeforeToolExecute,
-            "t1",
-            &[],
-            &config,
-            &doc,
-        )
-        .with_tool_info("denied_tool", "call_1", Some(&args));
-        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
-        assert!(has_block(&actions));
-    }
-
-    #[tokio::test]
-    async fn test_permission_plugin_tool_specific_ask() {
-        let config = RunPolicy::new();
-        let doc = DocCell::new(json!({
-            "permissions": { "default_behavior": "allow", "tools": { "ask_tool": "ask" } }
-        }));
-        let args = json!({});
-        let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
-            Phase::BeforeToolExecute,
-            "t1",
-            &[],
-            &config,
-            &doc,
-        )
-        .with_tool_info("ask_tool", "call_1", Some(&args));
-        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
-        assert!(has_suspend(&actions));
-    }
-
-    #[tokio::test]
-    async fn test_permission_plugin_invalid_tool_behavior() {
-        let config = RunPolicy::new();
-        let doc = DocCell::new(json!({
-            "permissions": { "default_behavior": "allow", "tools": { "invalid_tool": "invalid_behavior" } }
-        }));
-        let args = json!({});
-        let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
-            Phase::BeforeToolExecute,
-            "t1",
-            &[],
-            &config,
-            &doc,
-        )
-        .with_tool_info("invalid_tool", "call_1", Some(&args));
-        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
-        assert!(!has_block(&actions));
-        assert!(!has_suspend(&actions));
-    }
-
-    #[tokio::test]
-    async fn test_permission_plugin_invalid_default_behavior() {
-        let config = RunPolicy::new();
-        let doc = DocCell::new(
-            json!({ "permissions": { "default_behavior": "invalid_default", "tools": {} } }),
-        );
-        let args = json!({});
-        let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
-            Phase::BeforeToolExecute,
-            "t1",
-            &[],
-            &config,
-            &doc,
-        )
-        .with_tool_info("any_tool", "call_1", Some(&args));
-        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
-        assert!(has_suspend(&actions));
-    }
-
-    #[tokio::test]
-    async fn test_permission_plugin_no_state() {
-        let config = RunPolicy::new();
-        let doc = DocCell::new(json!({}));
-        let args = json!({});
-        let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
-            Phase::BeforeToolExecute,
-            "t1",
-            &[],
-            &config,
-            &doc,
-        )
-        .with_tool_info("any_tool", "call_1", Some(&args));
-        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
-        assert!(has_suspend(&actions));
-    }
-
-    #[tokio::test]
-    async fn test_permission_plugin_tools_is_string_not_object() {
-        let config = RunPolicy::new();
-        let doc = DocCell::new(json!({
-            "permissions": { "default_behavior": "allow", "tools": "corrupted" }
-        }));
-        let args = json!({});
-        let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
-            Phase::BeforeToolExecute,
-            "t1",
-            &[],
-            &config,
-            &doc,
-        )
-        .with_tool_info("any_tool", "call_1", Some(&args));
-        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
-        assert!(!has_block(&actions));
-        assert!(!has_suspend(&actions));
-    }
-
-    #[tokio::test]
-    async fn test_permission_plugin_default_behavior_invalid_string() {
-        let config = RunPolicy::new();
-        let doc = DocCell::new(
-            json!({ "permissions": { "default_behavior": "invalid_value", "tools": {} } }),
-        );
-        let args = json!({});
-        let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
-            Phase::BeforeToolExecute,
-            "t1",
-            &[],
-            &config,
-            &doc,
-        )
-        .with_tool_info("any_tool", "call_1", Some(&args));
-        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
-        assert!(has_suspend(&actions));
-    }
-
-    #[tokio::test]
-    async fn test_permission_plugin_default_behavior_is_number() {
-        let config = RunPolicy::new();
-        let doc = DocCell::new(json!({ "permissions": { "default_behavior": 42, "tools": {} } }));
-        let args = json!({});
-        let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
-            Phase::BeforeToolExecute,
-            "t1",
-            &[],
-            &config,
-            &doc,
-        )
-        .with_tool_info("any_tool", "call_1", Some(&args));
-        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
-        assert!(has_suspend(&actions));
-    }
-
-    #[tokio::test]
-    async fn test_permission_plugin_tool_value_is_number() {
-        let config = RunPolicy::new();
-        let doc = DocCell::new(json!({
-            "permissions": { "default_behavior": "allow", "tools": { "my_tool": 123 } }
-        }));
-        let args = json!({});
-        let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
-            Phase::BeforeToolExecute,
-            "t1",
-            &[],
-            &config,
-            &doc,
-        )
-        .with_tool_info("my_tool", "call_1", Some(&args));
-        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
-        assert!(!has_block(&actions));
-        assert!(!has_suspend(&actions));
-    }
-
-    #[tokio::test]
-    async fn test_permission_plugin_permissions_is_array() {
-        let config = RunPolicy::new();
-        let doc = DocCell::new(json!({ "permissions": [1, 2, 3] }));
-        let args = json!({});
-        let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
-            Phase::BeforeToolExecute,
-            "t1",
-            &[],
-            &config,
-            &doc,
-        )
-        .with_tool_info("any_tool", "call_1", Some(&args));
-        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
-        assert!(has_suspend(&actions));
-    }
-
-    #[test]
-    fn test_tool_policy_plugin_id() {
-        assert_eq!(AgentBehavior::id(&ToolPolicyPlugin), "tool_policy");
-    }
-
-    #[tokio::test]
-    async fn test_tool_policy_blocks_out_of_scope() {
-        let mut config = RunPolicy::new();
-        config.set_allowed_tools_if_absent(Some(&["other_tool".to_string()]));
-        let doc = DocCell::new(json!({}));
-        let args = json!({});
-        let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
-            Phase::BeforeToolExecute,
-            "t1",
-            &[],
-            &config,
-            &doc,
-        )
-        .with_tool_info("blocked_tool", "call_1", Some(&args));
-        let actions = AgentBehavior::before_tool_execute(&ToolPolicyPlugin, &ctx).await;
-        assert!(has_block(&actions));
-    }
-
-    #[tokio::test]
-    async fn test_tool_policy_allows_in_scope() {
-        let mut config = RunPolicy::new();
-        config.set_allowed_tools_if_absent(Some(&["my_tool".to_string()]));
-        let doc = DocCell::new(json!({}));
-        let args = json!({});
-        let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
-            Phase::BeforeToolExecute,
-            "t1",
-            &[],
-            &config,
-            &doc,
-        )
-        .with_tool_info("my_tool", "call_1", Some(&args));
-        let actions = AgentBehavior::before_tool_execute(&ToolPolicyPlugin, &ctx).await;
-        assert!(!has_block(&actions));
-    }
-
-    #[tokio::test]
-    async fn test_tool_policy_no_filters_allows_all() {
-        let config = RunPolicy::new();
-        let doc = DocCell::new(json!({}));
-        let args = json!({});
-        let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
-            Phase::BeforeToolExecute,
-            "t1",
-            &[],
-            &config,
-            &doc,
-        )
-        .with_tool_info("any_tool", "call_1", Some(&args));
-        let actions = AgentBehavior::before_tool_execute(&ToolPolicyPlugin, &ctx).await;
-        assert!(!has_block(&actions));
-    }
-
-    #[tokio::test]
-    async fn test_tool_policy_excluded_tool_is_blocked() {
-        let mut config = RunPolicy::new();
-        config.set_excluded_tools_if_absent(Some(&["excluded_tool".to_string()]));
-        let doc = DocCell::new(json!({}));
-        let args = json!({});
-        let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
-            Phase::BeforeToolExecute,
-            "t1",
-            &[],
-            &config,
-            &doc,
-        )
-        .with_tool_info("excluded_tool", "call_1", Some(&args));
-        let actions = AgentBehavior::before_tool_execute(&ToolPolicyPlugin, &ctx).await;
-        assert!(has_block(&actions));
-    }
-
-    #[test]
-    fn test_permission_policy_denied_tools_wins() {
+    fn permission_rules_from_snapshot_reads_new_policy_rules() {
         let snapshot = json!({
-            "permission_policy": { "default_behavior": "allow", "allowed_tools": [], "denied_tools": ["bad_tool"] }
+            "permission_policy": {
+                "default_behavior": "deny",
+                "rules": {
+                    "tool:read_file": {
+                        "subject": { "kind": "tool", "tool_id": "read_file" },
+                        "behavior": "allow",
+                        "scope": "thread",
+                        "source": "runtime"
+                    }
+                }
+            }
         });
+
+        let ruleset = permission_rules_from_snapshot(&snapshot);
+        assert_eq!(ruleset.default_behavior, ToolPermissionBehavior::Deny);
         assert_eq!(
-            resolve_permission_behavior(&snapshot, "bad_tool"),
+            ruleset.rule_for_tool("read_file").map(|rule| rule.behavior),
+            Some(ToolPermissionBehavior::Allow)
+        );
+    }
+
+    #[test]
+    fn permission_rules_from_snapshot_reads_legacy_policy_shape() {
+        let snapshot = json!({
+            "permission_policy": {
+                "default_behavior": "ask",
+                "allowed_tools": ["read_file"],
+                "denied_tools": ["write_file"]
+            }
+        });
+
+        let ruleset = permission_rules_from_snapshot(&snapshot);
+        assert_eq!(
+            ruleset.rule_for_tool("read_file").map(|rule| rule.behavior),
+            Some(ToolPermissionBehavior::Allow)
+        );
+        assert_eq!(
+            ruleset
+                .rule_for_tool("write_file")
+                .map(|rule| rule.behavior),
+            Some(ToolPermissionBehavior::Deny)
+        );
+    }
+
+    #[test]
+    fn permission_rules_from_snapshot_falls_back_to_legacy_permissions() {
+        let snapshot = json!({
+            "permissions": {
+                "default_behavior": "deny",
+                "tools": {
+                    "recover_agent_run": "allow"
+                }
+            }
+        });
+
+        let ruleset = permission_rules_from_snapshot(&snapshot);
+        assert_eq!(ruleset.default_behavior, ToolPermissionBehavior::Deny);
+        assert_eq!(
+            ruleset
+                .rule_for_tool("recover_agent_run")
+                .map(|rule| rule.behavior),
+            Some(ToolPermissionBehavior::Allow)
+        );
+    }
+
+    #[test]
+    fn resolve_permission_prefers_new_policy_over_legacy_permissions() {
+        let snapshot = json!({
+            "permission_policy": {
+                "default_behavior": "ask",
+                "rules": {
+                    "tool:write_file": {
+                        "subject": { "kind": "tool", "tool_id": "write_file" },
+                        "behavior": "deny",
+                        "scope": "thread",
+                        "source": "runtime"
+                    }
+                }
+            },
+            "permissions": {
+                "default_behavior": "allow",
+                "tools": {
+                    "write_file": "allow"
+                }
+            }
+        });
+
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "write_file"),
             ToolPermissionBehavior::Deny
         );
     }
 
     #[test]
-    fn test_permission_policy_allowed_tools() {
-        let snapshot = json!({
-            "permission_policy": { "default_behavior": "deny", "allowed_tools": ["good_tool"], "denied_tools": [] }
-        });
-        assert_eq!(
-            resolve_permission_behavior(&snapshot, "good_tool"),
-            ToolPermissionBehavior::Allow
-        );
+    fn permission_confirmation_ticket_carries_message_and_schema() {
+        let ticket =
+            permission_confirmation_ticket("call_1", "write_file", json!({"path": "a.txt"}));
+        assert_eq!(ticket.suspension.action, "tool:PermissionConfirm");
+        assert_eq!(ticket.pending.name, "PermissionConfirm");
+        assert_eq!(ticket.pending.arguments["tool_name"], "write_file");
+        assert!(ticket.suspension.message.contains("write_file"));
+        assert!(ticket.suspension.response_schema.is_some());
     }
 
     #[test]
-    fn test_permission_policy_falls_back_to_legacy() {
-        let snapshot = json!({
-            "permission_policy": { "default_behavior": "ask", "allowed_tools": [], "denied_tools": [] },
-            "permissions": { "default_behavior": "allow", "tools": { "legacy_tool": "deny" } }
-        });
-        assert_eq!(
-            resolve_permission_behavior(&snapshot, "legacy_tool"),
-            ToolPermissionBehavior::Deny
-        );
-    }
-
-    #[test]
-    fn test_permission_policy_denied_overrides_legacy_allow() {
-        let snapshot = json!({
-            "permission_policy": { "default_behavior": "ask", "allowed_tools": [], "denied_tools": ["tool_x"] },
-            "permissions": { "default_behavior": "allow", "tools": { "tool_x": "allow" } }
-        });
-        assert_eq!(
-            resolve_permission_behavior(&snapshot, "tool_x"),
-            ToolPermissionBehavior::Deny
-        );
-    }
-
-    #[test]
-    fn test_permission_state_action_routes_allow_to_policy() {
-        let action = PermissionAction::SetTool {
-            tool_id: "my_tool".to_string(),
-            behavior: ToolPermissionBehavior::Allow,
+    fn enforce_permission_ask_without_call_id_blocks() {
+        let evaluation = PermissionEvaluation {
+            subject: PermissionSubject::tool("write_file"),
+            behavior: ToolPermissionBehavior::Ask,
+            matched_rule: None,
         };
-        let state_action = permission_state_action(action);
-        assert!(state_action
-            .to_serialized_state_action()
-            .payload
-            .is_object());
+        let outcome = enforce_permission(
+            PermissionMechanismInput {
+                tool_id: "write_file",
+                tool_args: json!({}),
+                call_id: None,
+                resume_action: None,
+            },
+            &evaluation,
+        );
+        assert!(matches!(
+            outcome,
+            PermissionMechanismDecision::Action(BeforeToolExecuteAction::Block(_))
+        ));
     }
 
-    #[test]
-    fn test_permission_state_action_routes_deny_to_policy() {
-        let action = PermissionAction::SetTool {
-            tool_id: "my_tool".to_string(),
-            behavior: ToolPermissionBehavior::Deny,
-        };
-        let state_action = permission_state_action(action);
-        assert!(state_action
-            .to_serialized_state_action()
-            .payload
-            .is_object());
-    }
-
-    #[test]
-    fn test_permission_plugin_registers_lattice_paths() {
-        let mut registry = LatticeRegistry::new();
-        PermissionPlugin.register_lattice_paths(&mut registry);
-        assert!(registry
-            .get(&tirea_state::parse_path("permission_policy.allowed_tools"))
-            .is_some());
-        assert!(registry
-            .get(&tirea_state::parse_path("permission_policy.denied_tools"))
-            .is_some());
+    fn read_only_ctx<'a>(
+        config: &'a RunPolicy,
+        doc: &'a DocCell,
+        tool_name: &'a str,
+        call_id: &'a str,
+        args: &'a serde_json::Value,
+    ) -> tirea_contract::runtime::behavior::ReadOnlyContext<'a> {
+        tirea_contract::runtime::behavior::ReadOnlyContext::new(
+            Phase::BeforeToolExecute,
+            "t1",
+            &[],
+            config,
+            doc,
+        )
+        .with_tool_info(tool_name, call_id, Some(args))
     }
 
     #[tokio::test]
-    async fn test_permission_resume_input_bypasses_ask() {
+    async fn permission_plugin_allow() {
         let config = RunPolicy::new();
-        let doc =
-            DocCell::new(json!({ "permissions": { "default_behavior": "ask", "tools": {} } }));
+        let doc = DocCell::new(json!({
+            "permission_policy": {
+                "default_behavior": "allow",
+                "rules": {}
+            }
+        }));
+        let args = json!({});
+        let ctx = read_only_ctx(&config, &doc, "any_tool", "call_1", &args);
+        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
+        assert!(!has_block(&actions));
+        assert!(suspend_action(&actions).is_none());
+    }
+
+    #[tokio::test]
+    async fn permission_plugin_deny() {
+        let config = RunPolicy::new();
+        let doc = DocCell::new(json!({
+            "permission_policy": {
+                "default_behavior": "deny",
+                "rules": {}
+            }
+        }));
+        let args = json!({});
+        let ctx = read_only_ctx(&config, &doc, "any_tool", "call_1", &args);
+        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
+        assert!(has_block(&actions));
+    }
+
+    #[tokio::test]
+    async fn permission_plugin_ask_suspends_with_tool_like_form() {
+        let config = RunPolicy::new();
+        let doc = DocCell::new(json!({
+            "permission_policy": {
+                "default_behavior": "ask",
+                "rules": {}
+            }
+        }));
+        let args = json!({"path": "a.txt"});
+        let ctx = read_only_ctx(&config, &doc, "test_tool", "call_1", &args);
+        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
+        let ticket = suspend_action(&actions).expect("permission ask should suspend");
+        assert_eq!(ticket.pending.name, "PermissionConfirm");
+        assert_eq!(ticket.pending.arguments["tool_name"], "test_tool");
+        assert!(ticket.suspension.message.contains("test_tool"));
+        assert!(ticket.suspension.response_schema.is_some());
+    }
+
+    #[tokio::test]
+    async fn permission_plugin_resume_bypasses_follow_up_prompt() {
+        let config = RunPolicy::new();
+        let doc = DocCell::new(json!({
+            "permission_policy": {
+                "default_behavior": "ask",
+                "rules": {}
+            }
+        }));
         let args = json!({});
         let resume = ToolCallResume {
-            decision_id: "fc_call_1".to_string(),
+            decision_id: "decision_fc_call_1".to_string(),
             action: ResumeDecisionAction::Resume,
             result: serde_json::Value::Bool(true),
             reason: None,
             updated_at: 1,
         };
-        let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
-            Phase::BeforeToolExecute,
-            "t1",
-            &[],
-            &config,
-            &doc,
-        )
-        .with_tool_info("test_tool", "call_1", Some(&args))
-        .with_resume_input(resume);
+        let ctx =
+            read_only_ctx(&config, &doc, "test_tool", "call_1", &args).with_resume_input(resume);
         let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
         assert!(!has_block(&actions));
-        assert!(!has_suspend(&actions));
+        assert!(suspend_action(&actions).is_none());
+    }
+
+    #[test]
+    fn tool_policy_plugin_id() {
+        assert_eq!(AgentBehavior::id(&ToolPolicyPlugin), "tool_policy");
+    }
+
+    #[tokio::test]
+    async fn tool_policy_blocks_out_of_scope() {
+        let mut config = RunPolicy::new();
+        config.set_allowed_tools_if_absent(Some(&["other_tool".to_string()]));
+        let doc = DocCell::new(json!({}));
+        let args = json!({});
+        let ctx = read_only_ctx(&config, &doc, "blocked_tool", "call_1", &args);
+        let actions = AgentBehavior::before_tool_execute(&ToolPolicyPlugin, &ctx).await;
+        assert!(has_block(&actions));
     }
 }

@@ -1,16 +1,10 @@
+use crate::model::{
+    PermissionRule, PermissionRuleScope, PermissionRuleSource, PermissionRuleset,
+    ToolPermissionBehavior,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tirea_state::{GSet, State};
-
-/// Tool permission behavior.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolPermissionBehavior {
-    Allow,
-    #[default]
-    Ask,
-    Deny,
-}
+use tirea_state::State;
 
 /// Public permission-domain action exposed to tools/plugins.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -33,36 +27,30 @@ pub enum PermissionAction {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PermissionPolicyAction {
-    SetDefault { behavior: ToolPermissionBehavior },
-    AllowTool { tool_id: String },
-    DenyTool { tool_id: String },
+    SetDefault {
+        behavior: ToolPermissionBehavior,
+    },
+    SetTool {
+        tool_id: String,
+        behavior: ToolPermissionBehavior,
+        #[serde(default)]
+        scope: PermissionRuleScope,
+        #[serde(default)]
+        source: PermissionRuleSource,
+    },
+    RemoveTool {
+        tool_id: String,
+    },
+    ClearTools,
+    AllowTool {
+        tool_id: String,
+    },
+    DenyTool {
+        tool_id: String,
+    },
 }
 
-/// Persisted sequential permission overrides (internal).
-#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-#[serde(default)]
-#[tirea(path = "permissions", action = "PermissionAction", scope = "thread")]
-pub(super) struct PermissionOverrides {
-    pub default_behavior: ToolPermissionBehavior,
-    pub tools: HashMap<String, ToolPermissionBehavior>,
-}
-
-impl PermissionOverrides {
-    pub(super) fn reduce(&mut self, action: PermissionAction) {
-        match action {
-            PermissionAction::SetDefault { behavior } => self.default_behavior = behavior,
-            PermissionAction::SetTool { tool_id, behavior } => {
-                self.tools.insert(tool_id, behavior);
-            }
-            PermissionAction::RemoveTool { tool_id } => {
-                self.tools.remove(&tool_id);
-            }
-            PermissionAction::ClearTools => self.tools.clear(),
-        }
-    }
-}
-
-/// Run-scoped CRDT permission policy.
+/// Persisted permission rules.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 #[serde(default)]
 #[tirea(
@@ -72,89 +60,139 @@ impl PermissionOverrides {
 )]
 pub struct PermissionPolicy {
     pub default_behavior: ToolPermissionBehavior,
-    #[tirea(lattice)]
-    pub allowed_tools: GSet<String>,
-    #[tirea(lattice)]
-    pub denied_tools: GSet<String>,
+    pub rules: HashMap<String, PermissionRule>,
 }
 
 impl PermissionPolicy {
+    fn upsert_tool_rule(
+        &mut self,
+        tool_id: String,
+        behavior: ToolPermissionBehavior,
+        scope: PermissionRuleScope,
+        source: PermissionRuleSource,
+    ) {
+        let rule = PermissionRule::new_tool(tool_id, behavior)
+            .with_scope(scope)
+            .with_source(source);
+        self.rules.insert(rule.subject.key(), rule);
+    }
+
     pub(super) fn reduce(&mut self, action: PermissionPolicyAction) {
         match action {
             PermissionPolicyAction::SetDefault { behavior } => self.default_behavior = behavior,
-            PermissionPolicyAction::AllowTool { tool_id } => {
-                self.allowed_tools.insert(tool_id);
+            PermissionPolicyAction::SetTool {
+                tool_id,
+                behavior,
+                scope,
+                source,
+            } => self.upsert_tool_rule(tool_id, behavior, scope, source),
+            PermissionPolicyAction::RemoveTool { tool_id } => {
+                self.rules.remove(
+                    &PermissionRule::new_tool(tool_id, ToolPermissionBehavior::Ask)
+                        .subject
+                        .key(),
+                );
             }
-            PermissionPolicyAction::DenyTool { tool_id } => {
-                self.denied_tools.insert(tool_id);
-            }
+            PermissionPolicyAction::ClearTools => self.rules.clear(),
+            PermissionPolicyAction::AllowTool { tool_id } => self.upsert_tool_rule(
+                tool_id,
+                ToolPermissionBehavior::Allow,
+                PermissionRuleScope::Thread,
+                PermissionRuleSource::Runtime,
+            ),
+            PermissionPolicyAction::DenyTool { tool_id } => self.upsert_tool_rule(
+                tool_id,
+                ToolPermissionBehavior::Deny,
+                PermissionRuleScope::Thread,
+                PermissionRuleSource::Runtime,
+            ),
         }
     }
 }
 
-/// Route a [`PermissionAction`] to the correct state type.
-///
-/// `SetTool { Allow/Deny }` go to the CRDT [`PermissionPolicy`];
-/// all other variants go through sequential [`PermissionOverrides`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct LegacyPermissionOverrides {
+    pub default_behavior: ToolPermissionBehavior,
+    pub tools: HashMap<String, ToolPermissionBehavior>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct LegacyPermissionPolicy {
+    pub default_behavior: ToolPermissionBehavior,
+    pub allowed_tools: Vec<String>,
+    pub denied_tools: Vec<String>,
+}
+
+/// Route a [`PermissionAction`] to the canonical [`PermissionPolicy`] state.
 pub fn permission_state_action(
     action: PermissionAction,
 ) -> tirea_contract::runtime::state::AnyStateAction {
     use tirea_contract::runtime::state::AnyStateAction;
-    match action {
-        PermissionAction::SetTool {
+    let policy_action = match action {
+        PermissionAction::SetDefault { behavior } => {
+            PermissionPolicyAction::SetDefault { behavior }
+        }
+        PermissionAction::SetTool { tool_id, behavior } => PermissionPolicyAction::SetTool {
             tool_id,
-            behavior: ToolPermissionBehavior::Allow,
-        } => AnyStateAction::new::<PermissionPolicy>(PermissionPolicyAction::AllowTool { tool_id }),
-        PermissionAction::SetTool {
-            tool_id,
-            behavior: ToolPermissionBehavior::Deny,
-        } => AnyStateAction::new::<PermissionPolicy>(PermissionPolicyAction::DenyTool { tool_id }),
-        other => AnyStateAction::new::<PermissionOverrides>(other),
-    }
+            behavior,
+            scope: PermissionRuleScope::Thread,
+            source: PermissionRuleSource::Runtime,
+        },
+        PermissionAction::RemoveTool { tool_id } => PermissionPolicyAction::RemoveTool { tool_id },
+        PermissionAction::ClearTools => PermissionPolicyAction::ClearTools,
+    };
+    AnyStateAction::new::<PermissionPolicy>(policy_action)
 }
 
-/// Resolve effective permission behavior from a state snapshot.
-///
-/// Resolution order:
-/// 1. CRDT policy (`permission_policy`): denied_tools → allowed_tools
-/// 2. Legacy per-tool overrides (`permissions.tools`)
-/// 3. `permission_policy.default_behavior` or `permissions.default_behavior`
-/// 4. Default: `Ask`
+/// Load resolved permission rules from a runtime snapshot.
 #[must_use]
-pub fn resolve_permission_behavior(
-    snapshot: &serde_json::Value,
-    tool_id: &str,
-) -> ToolPermissionBehavior {
-    if let Some(policy) = snapshot
-        .get(PermissionPolicy::PATH)
-        .and_then(|v| PermissionPolicy::from_value(v).ok())
-    {
-        let tool_id_owned = tool_id.to_string();
-        if policy.denied_tools.contains(&tool_id_owned) {
-            return ToolPermissionBehavior::Deny;
-        }
-        if policy.allowed_tools.contains(&tool_id_owned) {
-            return ToolPermissionBehavior::Allow;
+pub fn permission_rules_from_snapshot(snapshot: &serde_json::Value) -> PermissionRuleset {
+    let mut ruleset = PermissionRuleset::default();
+    let mut default_from_new_state = false;
+
+    if let Some(policy_value) = snapshot.get(PermissionPolicy::PATH) {
+        let prefers_legacy_shape = policy_value.get("allowed_tools").is_some()
+            || policy_value.get("denied_tools").is_some();
+        if prefers_legacy_shape {
+            if let Ok(legacy_policy) =
+                serde_json::from_value::<LegacyPermissionPolicy>(policy_value.clone())
+            {
+                default_from_new_state = true;
+                ruleset.default_behavior = legacy_policy.default_behavior;
+                for tool_id in legacy_policy.allowed_tools {
+                    let rule = PermissionRule::new_tool(tool_id, ToolPermissionBehavior::Allow)
+                        .with_source(PermissionRuleSource::Runtime);
+                    ruleset.rules.entry(rule.subject.key()).or_insert(rule);
+                }
+                for tool_id in legacy_policy.denied_tools {
+                    let rule = PermissionRule::new_tool(tool_id, ToolPermissionBehavior::Deny)
+                        .with_source(PermissionRuleSource::Runtime);
+                    ruleset.rules.insert(rule.subject.key(), rule);
+                }
+            }
+        } else if let Ok(policy) = PermissionPolicy::from_value(policy_value) {
+            default_from_new_state = true;
+            ruleset.default_behavior = policy.default_behavior;
+            ruleset.rules.extend(policy.rules);
         }
     }
 
-    let perms_value = snapshot.get(PermissionOverrides::PATH);
-    if let Some(perms) = perms_value.and_then(|v| PermissionOverrides::from_value(v).ok()) {
-        if let Some(&behavior) = perms.tools.get(tool_id) {
-            return behavior;
+    if let Some(legacy_value) = snapshot.get("permissions") {
+        if let Ok(legacy) =
+            serde_json::from_value::<LegacyPermissionOverrides>(legacy_value.clone())
+        {
+            if !default_from_new_state {
+                ruleset.default_behavior = legacy.default_behavior;
+            }
+            for (tool_id, behavior) in legacy.tools {
+                let rule = PermissionRule::new_tool(tool_id, behavior)
+                    .with_source(PermissionRuleSource::Runtime);
+                ruleset.rules.entry(rule.subject.key()).or_insert(rule);
+            }
         }
-        return perms.default_behavior;
     }
 
-    if let Some(policy) = snapshot
-        .get(PermissionPolicy::PATH)
-        .and_then(|v| PermissionPolicy::from_value(v).ok())
-    {
-        return policy.default_behavior;
-    }
-
-    perms_value
-        .and_then(|v| v.get("default_behavior"))
-        .and_then(|v| serde_json::from_value::<ToolPermissionBehavior>(v.clone()).ok())
-        .unwrap_or_default()
+    ruleset
 }
