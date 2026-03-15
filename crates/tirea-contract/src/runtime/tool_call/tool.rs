@@ -480,6 +480,19 @@ pub trait TypedTool: Send + Sync {
         args: Self::Args,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError>;
+
+    /// Execute with typed arguments and return structured effects.
+    ///
+    /// The default implementation delegates to [`TypedTool::execute`] and wraps
+    /// the result without any actions. Override this to emit state actions.
+    async fn execute_effect(
+        &self,
+        args: Self::Args,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolExecutionEffect, ToolError> {
+        let result = self.execute(args, ctx).await?;
+        Ok(ToolExecutionEffect::from(result))
+    }
 }
 
 #[async_trait]
@@ -503,6 +516,17 @@ impl<T: TypedTool> Tool for T {
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
         self.validate(&typed).map_err(ToolError::InvalidArguments)?;
         TypedTool::execute(self, typed, ctx).await
+    }
+
+    async fn execute_effect(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolExecutionEffect, ToolError> {
+        let typed: T::Args =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        self.validate(&typed).map_err(ToolError::InvalidArguments)?;
+        TypedTool::execute_effect(self, typed, ctx).await
     }
 }
 
@@ -1321,5 +1345,90 @@ mod tests {
             .into_state_action()
             .expect("is_state_action returned true");
         assert!(sa.state_type_name().contains("ToolEffectState"));
+    }
+
+    // -- TypedTool with execute_effect override --------------------------------
+
+    #[derive(Deserialize, JsonSchema)]
+    struct IncrementArgs {
+        amount: i64,
+    }
+
+    struct TypedEffectTool;
+
+    #[async_trait]
+    impl TypedTool for TypedEffectTool {
+        type Args = IncrementArgs;
+        fn tool_id(&self) -> &str {
+            "typed_effect"
+        }
+        fn name(&self) -> &str {
+            "TypedEffect"
+        }
+        fn description(&self) -> &str {
+            "Typed tool with execute_effect"
+        }
+
+        async fn execute(
+            &self,
+            args: IncrementArgs,
+            _ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success(
+                "typed_effect",
+                json!({"amount": args.amount}),
+            ))
+        }
+
+        async fn execute_effect(
+            &self,
+            args: IncrementArgs,
+            _ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolExecutionEffect, ToolError> {
+            Ok(ToolExecutionEffect::new(ToolResult::success(
+                "typed_effect",
+                json!({"amount": args.amount}),
+            ))
+            .with_action(AnyStateAction::new::<ToolEffectState>(args.amount)))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_typed_tool_execute_effect_override() {
+        let tool = TypedEffectTool;
+        let fixture = crate::testing::TestFixture::new();
+        let ctx = fixture.ctx_with("call_1", "test");
+
+        let effect = Tool::execute_effect(&tool, json!({"amount": 5}), &ctx)
+            .await
+            .expect("typed execute_effect should succeed");
+
+        assert!(effect.result.is_success());
+        assert_eq!(effect.result.data["amount"], 5);
+        let (_, actions) = effect.into_parts();
+        assert_eq!(actions.len(), 1);
+        let sa = actions
+            .into_iter()
+            .next()
+            .unwrap()
+            .into_state_action()
+            .expect("should be state action");
+        assert!(sa.state_type_name().contains("ToolEffectState"));
+    }
+
+    #[tokio::test]
+    async fn test_typed_tool_default_execute_effect_delegates_to_execute() {
+        let tool = GreetTool;
+        let fixture = crate::testing::TestFixture::new();
+        let ctx = fixture.ctx_with("call_1", "test");
+
+        let effect = Tool::execute_effect(&tool, json!({"name": "TypedDefault"}), &ctx)
+            .await
+            .expect("default execute_effect should succeed");
+
+        assert!(effect.result.is_success());
+        assert_eq!(effect.result.data["greeting"], "Hello, TypedDefault!");
+        let (_, actions) = effect.into_parts();
+        assert!(actions.is_empty());
     }
 }
