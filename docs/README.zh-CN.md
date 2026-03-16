@@ -17,7 +17,7 @@
 ## 30 秒心智模型
 
 1. **工具 (Tools)** — 类型化的函数，JSON Schema 从结构体自动生成
-2. **智能体 (Agents)** — 每个智能体拥有系统提示和允许使用的工具/子智能体；由 LLM 通过自然语言驱动所有编排——不需要像 LangGraph/ADK 那样编写 DAG 或状态机
+2. **智能体 (Agents)** — 每个智能体拥有系统提示和允许使用的工具/子智能体；由 LLM 通过自然语言驱动所有编排——无需预定义图或状态机
 3. **状态 (State)** — 类型化、按作用域划分（thread / run / tool_call），CRDT 字段支持安全并发写入
 4. **插件 (Plugins)** — 生命周期钩子，用于权限控制、可观测性、上下文窗口、提醒等
 
@@ -28,29 +28,37 @@
 | 特性 | 实现方式 |
 |---|---|
 | **一个后端服务所有前端** | 同一个二进制文件同时服务 React (AI SDK v6)、Next.js (AG-UI) 和其他智能体 (A2A)，无需单独部署。通过 MCP 连接外部工具服务器。 |
-| **让多个智能体写入同一状态** | CRDT 字段（`GSet`、`ORSet`、`GCounter`）自动合并并发写入——无锁、无冲突。这也为未来的插件和工具调用并行执行提供基础。 |
-| **按生命周期划分状态作用域** | 将状态标记为 Thread 作用域（跨对话持久化）、Run 作用域（每次运行时重置）或 ToolCall 作用域（工具执行结束后销毁），避免过期数据泄漏。 |
+| **LLM 驱动一切编排——无需 DAG** | 定义每个智能体的身份和工具权限，由 LLM 决定何时委派、委派给谁、如何组合结果。无需手写图或状态机。 |
+| **类型安全状态：CRDT + 作用域 + 回放** | 状态是 Rust 结构体，编译期检查类型。CRDT 字段无锁合并并行工具写入。按 thread / run / tool_call 划分作用域防止数据泄漏。每次变更都是可回放的不可变补丁。 |
 | **在编译期捕获插件接线错误** | 插件挂载到 8 个类型化生命周期阶段。将权限检查接到错误的阶段？编译器告诉你，而不是你的用户。 |
-| **回放任意对话到任意时间点** | 每次状态变更都是不可变补丁，可以重放以精确还原任意时间点的状态——用于调试、审计和测试。 |
-| **用最少资源运行数千个智能体** | 无 GC 停顿。每个 agent run 约 170 KB RSS（10 轮对话，mock LLM）。32 个并发智能体可达约 1,000 runs/s。（`cargo bench --package tirea-agentos --bench runtime_throughput` 可复现。） |
+| **用最少资源运行数千个智能体** | 无 GC 停顿。32 个并发智能体在 mock LLM 下可达约 1,000 runs/s。（`cargo bench --package tirea-agentos --bench runtime_throughput` 可复现。） |
 
 ### 功能对比
 
-|  | Tirea | LangGraph | CrewAI | OpenAI Agents | Mastra | PydanticAI | Letta |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| **语言** | Rust | Python | Python | Python/TS | TypeScript | Python | Python |
-| **多协议服务器** | AG-UI · AI SDK · A2A | ◐ | ◐ | ❌ | AG-UI · AI SDK · A2A | AG-UI | REST |
-| **类型化状态** | ✅ derive 宏 | ◐ | ❌ | ❌ | ◐ | ◐ | ❌ |
-| **并发状态 (CRDT)** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **状态生命周期作用域** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **状态回放** | ✅ | ◐ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **插件生命周期** | 8 个类型化阶段 | Middleware | ❌ | Guardrails | ❌ | ❌ | ❌ |
-| **子智能体** | ✅ | ✅ | ✅ | Handoffs | ✅ | ◐ | ✅ |
-| **MCP 支持** | ✅ | Adapter | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Human-in-the-loop** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **内置通用工具** | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ |
+|  | Tirea | LangGraph | AG2 | CrewAI | OpenAI Agents | Mastra |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **语言** | Rust | Python/TS | Python | Python | Python/TS | TypeScript |
+| **编排模型** | 工具委派 | 有状态图 | 会话驱动 | 角色驱动 | Handoffs + as_tool | Workflow + LLM |
+| **多协议服务器** | AG-UI · AI SDK · A2A | ◐ | ◐ | ◐ | ❌ | AG-UI · AI SDK · A2A |
+| **类型化状态** | ✅ CRDT + 作用域 + 回放 | ◐ | ❌ | ◐ | ❌ | ◐ |
+| **插件生命周期** | 8 个类型化阶段 | Middleware | ◐ | ◐ | Guardrails | ◐ |
+| **子智能体** | ✅ | ✅ | ✅ group chat | ✅ | ✅ | ✅ |
+| **MCP 支持** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Human-in-the-loop** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **可观测性** | ✅ OpenTelemetry | ✅ LangSmith | ✅ OpenTelemetry | ◐ | ✅ | ◐ |
+| **持久化** | ✅ | ✅ | ◐ | ◐ | ◐ | ✅ |
 
 ✅ = 原生支持  ◐ = 部分支持  ❌ = 不支持
+
+> **什么是"工具委派"？** Tirea 采用 [Claude Code](https://github.com/anthropics/claude-code) 风格的编排模式：LLM 通过工具调用（`agent_run`、`agent_stop`、`agent_output`）管理子智能体，而非手写图或单向移交。
+>
+> |  | 工具委派 (Tirea) | Handoffs + as_tool (OpenAI) | 会话驱动 (AG2) |
+> |---|---|---|---|
+> | **机制** | LLM 调用工具启动、停止、读取子智能体 | Handoffs 移交控制权；`as_tool()` 调用智能体并回传结果 | 智能体在 group chat 中轮流发言 |
+> | **并行执行** | ✅ background 模式，多个子智能体并发 | ◐ `as_tool()` 可 async 并行；handoffs 为顺序 | ❌ 顺序轮次 |
+> | **双向通信** | ✅ 父级可读取子级输出、可终止 | ◐ `as_tool()` 回传结果；handoffs 为单向 | ✅ 所有智能体共享对话上下文 |
+> | **状态感知** | ✅ 每轮自动注入 status reminder | ❌ 无自动状态注入 | ✅ 通过共享聊天历史 |
+> | **Agent 发现** | 动态 catalog 渲染到 system prompt | 代码层 `handoffs=[]` 硬编码 | 预定义 `participants=[]` |
 
 ## 快速开始
 
@@ -207,41 +215,6 @@ import { CopilotKit } from "@copilotkit/react-core";
 </CopilotKit>
 ```
 
-### 添加工具
-
-将参数定义为类型化结构体——JSON Schema 由 `JsonSchema` 自动生成，参数也会自动反序列化：
-
-```rust
-#[derive(Deserialize, JsonSchema)]
-struct MyToolArgs {
-    query: String,
-    limit: Option<u32>,
-}
-
-struct MyTool;
-
-#[async_trait]
-impl TypedTool for MyTool {
-    type Args = MyToolArgs;
-    fn tool_id(&self) -> &str { "my_tool" }
-    fn name(&self) -> &str { "My Tool" }
-    fn description(&self) -> &str { "Does something useful." }
-
-    async fn execute(&self, args: MyToolArgs, ctx: &ToolCallContext<'_>)
-        -> Result<ToolResult, ToolError>
-    {
-        // Read current state
-        let state = ctx.snapshot_of::<MyState>().unwrap_or_default();
-
-        // Do work
-        let result = my_api_call(&args.query, args.limit).await?;
-
-        // Return result (optionally with state updates)
-        Ok(ToolResult::success("my_tool", json!(result)))
-    }
-}
-```
-
 ### 内置工具
 
 Tirea 内置了用于子智能体、后台任务、技能、UI 渲染和 MCP 集成的工具。启用对应的 feature 后，它们会自动注册：
@@ -312,7 +285,7 @@ struct SearchProgress { /* ... */ }
 struct ToolWorkspace { /* ... */ }
 ```
 
-标记为 `#[tirea(lattice)]` 的字段使用 CRDT 类型（无冲突复制数据类型），当多个智能体并发写入时自动合并——无需加锁。
+标记为 `#[tirea(lattice)]` 的字段使用 CRDT 类型（无冲突复制数据类型），当并行工具调用并发写入时自动合并——无需加锁。非 CRDT 字段通过冲突检测保护。
 
 ### 持久化对话
 
@@ -330,7 +303,7 @@ struct ToolWorkspace { /* ... */ }
 
 | 插件 | 功能 | 启用方式 |
 |---|---|---|
-| **Context** | Token 预算、消息摘要、Prompt 缓存 | `ContextPlugin::for_model("claude-3-5-sonnet")` |
+| **Context** | Token 预算、消息摘要、Prompt 缓存 | `ContextPlugin::for_model("claude-sonnet-4-20250514")` |
 | **Stop Policy** | 按最大轮次、超时、Token 预算、循环检测终止 | `StopPolicyPlugin::new(conditions, specs)` |
 | **Permission** | 按工具 Allow/Deny/Ask，human-in-the-loop 暂停 | `PermissionPlugin` + `ToolPolicyPlugin` |
 | **Skills** | 从文件系统发现并激活技能包 | `skills` feature flag |
@@ -355,7 +328,7 @@ model: "claude-sonnet-4-20250514".into(), // Anthropic
 
 - 希望用 **Rust 后端**构建具备编译期安全性的 AI 智能体
 - 需要从一个服务器提供**多种前端协议**
-- 多个智能体需要**无需协调地并发共享状态**
+- 工具需要在并发执行中**安全共享状态**
 - 需要**可审计的状态历史**和回放能力
 - 面向**生产环境**构建——低内存占用、无 GC、支持数千个并发智能体
 
@@ -363,7 +336,7 @@ model: "claude-sonnet-4-20250514".into(), // Anthropic
 
 - 需要开箱即用的**文件/Shell/网页工具**——可以考虑 Dify、CrewAI
 - 想要**可视化工作流构建器**——可以考虑 Dify、LangGraph Studio
-- 偏好 **Python** 和快速原型开发——可以考虑 LangGraph、PydanticAI
+- 偏好 **Python** 和快速原型开发——可以考虑 LangGraph、AG2、PydanticAI
 - 需要 **LLM 管理的记忆**（由智能体决定记住什么）——可以考虑 Letta
 
 ## 设计灵感

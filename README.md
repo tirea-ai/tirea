@@ -17,7 +17,7 @@ Define agents, tools, and state in Rust — then serve them to any frontend over
 ## 30-second mental model
 
 1. **Tools** — typed functions your agent can call; JSON schema is generated from the struct
-2. **Agents** — each agent has a system prompt and a set of allowed tools/sub-agents; the LLM drives all orchestration through natural language — no DAGs or state machines like LangGraph/ADK
+2. **Agents** — each agent has a system prompt and a set of allowed tools/sub-agents; the LLM drives all orchestration through natural language — no predefined graphs or state machines
 3. **State** — typed, scoped (thread / run / tool_call), with CRDT fields for safe concurrent writes
 4. **Plugins** — lifecycle hooks for permissions, observability, context window, reminders, and more
 
@@ -28,29 +28,37 @@ Your agent picks tools, calls them, reads and updates state, and repeats — all
 | What you get | How it works |
 |---|---|
 | **Ship one backend for every frontend** | Serve React (AI SDK v6), Next.js (AG-UI), and other agents (A2A) from the same binary. No separate deployments. Connect to external tool servers via MCP. |
-| **Let multiple agents write to the same state** | CRDT fields (`GSet`, `ORSet`, `GCounter`) merge concurrent writes automatically — no locks, no conflicts. This also enables future parallel plugin and tool-call execution. |
-| **Scope state to its lifetime** | Mark state as Thread-scoped (persists across conversations), Run-scoped (reset each run), or ToolCall-scoped (gone after the tool finishes). No stale data leaks between runs. |
+| **LLM orchestrates everything — no DAGs** | Define each agent's identity and tool access; the LLM decides when to delegate, to whom, and how to combine results. No hand-coded graphs or state machines. |
+| **Type-safe state with CRDT, scoping, and replay** | State is a Rust struct with compile-time checks. CRDT fields merge concurrent tool writes without locks. Scope to thread, run, or tool_call to prevent stale data. Every change is an immutable patch you can replay. |
 | **Catch plugin wiring errors at compile time** | Plugins hook into 8 typed lifecycle phases. Wire a permission check to the wrong phase? The compiler tells you, not your users. |
-| **Replay any conversation to any point** | Every state change is an immutable patch. Replay them to reconstruct the exact state at any point — useful for debugging, auditing, and testing. |
-| **Run thousands of agents on minimal resources** | No GC pauses. ~170 KB RSS per agent run (10-turn conversation, mock LLM). 32 concurrent agents at ~1,000 runs/s. (`cargo bench --package tirea-agentos --bench runtime_throughput` to reproduce.) |
+| **Run thousands of agents on minimal resources** | No GC pauses. 32 concurrent agents sustain ~1,000 runs/s on mock LLM. (`cargo bench --package tirea-agentos --bench runtime_throughput` to reproduce.) |
 
 ### Feature comparison
 
-|  | Tirea | LangGraph | CrewAI | OpenAI Agents | Mastra | PydanticAI | Letta |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| **Language** | Rust | Python | Python | Python/TS | TypeScript | Python | Python |
-| **Multi-protocol server** | AG-UI · AI SDK · A2A | ◐ | ◐ | ❌ | AG-UI · AI SDK · A2A | AG-UI | REST |
-| **Typed state** | ✅ derive macros | ◐ | ❌ | ❌ | ◐ | ◐ | ❌ |
-| **Concurrent state (CRDT)** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **State lifecycle scoping** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **State replay** | ✅ | ◐ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Plugin lifecycle** | 8 typed phases | Middleware | ❌ | Guardrails | ❌ | ❌ | ❌ |
-| **Sub-agents** | ✅ | ✅ | ✅ | Handoffs | ✅ | ◐ | ✅ |
-| **MCP support** | ✅ | Adapter | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Human-in-the-loop** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Built-in general tools** | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ |
+|  | Tirea | LangGraph | AG2 | CrewAI | OpenAI Agents | Mastra |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **Language** | Rust | Python/TS | Python | Python | Python/TS | TypeScript |
+| **Orchestration** | Tool delegation | Stateful graph | Conversational | Role-based | Handoffs + as_tool | Workflow + LLM |
+| **Multi-protocol server** | AG-UI · AI SDK · A2A | ◐ | ◐ | ◐ | ❌ | AG-UI · AI SDK · A2A |
+| **Typed state** | ✅ CRDT + scoping + replay | ◐ | ❌ | ◐ | ❌ | ◐ |
+| **Plugin lifecycle** | 8 typed phases | Middleware | ◐ | ◐ | Guardrails | ◐ |
+| **Sub-agents** | ✅ | ✅ | ✅ group chat | ✅ | ✅ | ✅ |
+| **MCP support** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Human-in-the-loop** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Observability** | ✅ OpenTelemetry | ✅ LangSmith | ✅ OpenTelemetry | ◐ | ✅ | ◐ |
+| **Persistence** | ✅ | ✅ | ◐ | ◐ | ◐ | ✅ |
 
 ✅ = native  ◐ = partial  ❌ = not available
+
+> **What does "Tool delegation" mean?** Tirea follows the [Claude Code](https://github.com/anthropics/claude-code) orchestration pattern: the LLM manages sub-agents through tool calls (`agent_run`, `agent_stop`, `agent_output`) instead of hand-coded graphs or one-way handoffs.
+>
+> |  | Tool delegation (Tirea) | Handoffs + as_tool (OpenAI) | Conversational (AG2) |
+> |---|---|---|---|
+> | **Mechanism** | LLM calls tools to spawn, stop, and read sub-agents | Handoffs transfer control; `as_tool()` calls agent and returns result | Agents converse in a group chat with speaker selection |
+> | **Parallel execution** | ✅ background mode, multiple sub-agents | ◐ `as_tool()` via async; handoffs are sequential | ❌ sequential turns |
+> | **Bidirectional** | ✅ parent reads child output, can stop | ◐ `as_tool()` returns results; handoffs are one-way | ✅ all agents see shared conversation |
+> | **Status awareness** | ✅ auto-injected reminder each turn | ❌ no automatic status injection | ✅ via shared chat history |
+> | **Agent discovery** | Dynamic catalog rendered in system prompt | Hard-coded `handoffs=[]` in code | Predefined `participants=[]` |
 
 ## Quick start
 
@@ -207,41 +215,6 @@ import { CopilotKit } from "@copilotkit/react-core";
 </CopilotKit>
 ```
 
-### Add tools
-
-Define args as a typed struct — the JSON schema is generated automatically from `JsonSchema`, and args are deserialized for you:
-
-```rust
-#[derive(Deserialize, JsonSchema)]
-struct MyToolArgs {
-    query: String,
-    limit: Option<u32>,
-}
-
-struct MyTool;
-
-#[async_trait]
-impl TypedTool for MyTool {
-    type Args = MyToolArgs;
-    fn tool_id(&self) -> &str { "my_tool" }
-    fn name(&self) -> &str { "My Tool" }
-    fn description(&self) -> &str { "Does something useful." }
-
-    async fn execute(&self, args: MyToolArgs, ctx: &ToolCallContext<'_>)
-        -> Result<ToolResult, ToolError>
-    {
-        // Read current state
-        let state = ctx.snapshot_of::<MyState>().unwrap_or_default();
-
-        // Do work
-        let result = my_api_call(&args.query, args.limit).await?;
-
-        // Return result (optionally with state updates)
-        Ok(ToolResult::success("my_tool", json!(result)))
-    }
-}
-```
-
 ### Built-in tools
 
 Tirea ships with tools for sub-agents, background tasks, skills, UI rendering, and MCP integration. They're auto-registered when you enable the corresponding feature:
@@ -312,7 +285,7 @@ struct SearchProgress { /* ... */ }
 struct ToolWorkspace { /* ... */ }
 ```
 
-Fields marked `#[tirea(lattice)]` use CRDT types (conflict-free replicated data types) that merge automatically when multiple agents write concurrently — no locks needed.
+Fields marked `#[tirea(lattice)]` use CRDT types (conflict-free replicated data types) that merge automatically when parallel tool calls write concurrently — no locks needed. Non-CRDT fields are guarded by conflict detection.
 
 ### Persist conversations
 
@@ -330,7 +303,7 @@ Plugins hook into 8 lifecycle phases. Use built-in plugins or write your own:
 
 | Plugin | What it does | How to enable |
 |---|---|---|
-| **Context** | Token budget, message summarization, prompt caching | `ContextPlugin::for_model("claude-3-5-sonnet")` |
+| **Context** | Token budget, message summarization, prompt caching | `ContextPlugin::for_model("claude-sonnet-4-20250514")` |
 | **Stop Policy** | Terminate on max rounds, timeout, token budget, loop detection | `StopPolicyPlugin::new(conditions, specs)` |
 | **Permission** | Allow/Deny/Ask per tool, human-in-the-loop suspension | `PermissionPlugin` + `ToolPolicyPlugin` |
 | **Skills** | Discover and activate skill packages from filesystem | `skills` feature flag |
@@ -355,7 +328,7 @@ model: "claude-sonnet-4-20250514".into(), // Anthropic
 
 - You want a **Rust backend** for AI agents with compile-time safety
 - You need to serve **multiple frontend protocols** from one server
-- Your agents need to **share state concurrently** without coordination
+- Your tools need to **safely share state** during concurrent execution
 - You need **auditable state history** and replay
 - You're building for **production** — low memory, no GC, thousands of concurrent agents
 
@@ -363,7 +336,7 @@ model: "claude-sonnet-4-20250514".into(), // Anthropic
 
 - You need **built-in file/shell/web tools** out of the box — consider Dify, CrewAI
 - You want a **visual workflow builder** — consider Dify, LangGraph Studio
-- You want **Python** and rapid prototyping — consider LangGraph, PydanticAI
+- You want **Python** and rapid prototyping — consider LangGraph, AG2, PydanticAI
 - You need **LLM-managed memory** (agent decides what to remember) — consider Letta
 
 ## Design inspirations
