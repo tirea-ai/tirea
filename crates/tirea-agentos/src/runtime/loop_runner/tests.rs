@@ -3643,7 +3643,9 @@ fn test_execute_tools_with_config_denied_response_is_applied_via_tool_call_state
 }
 
 #[test]
-fn test_execute_tools_with_config_rejects_illegal_terminal_to_running_transition() {
+fn test_execute_tools_with_config_allows_terminal_id_reuse_for_provider_retry() {
+    // Some providers (e.g., Gemini) reuse the same tool call ID when retrying.
+    // A terminal (Succeeded/Failed) call ID should start a fresh lifecycle.
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let thread = Thread::with_initial_state(
@@ -3667,7 +3669,7 @@ fn test_execute_tools_with_config_rejects_illegal_terminal_to_running_transition
             tool_calls: vec![crate::contracts::thread::ToolCall::new(
                 "call_1",
                 "echo",
-                json!({"message": "should-fail"}),
+                json!({"message": "retry-attempt"}),
             )],
             usage: None,
             stop_reason: None,
@@ -3675,19 +3677,19 @@ fn test_execute_tools_with_config_rejects_illegal_terminal_to_running_transition
         let tools = tool_map([EchoTool]);
         let config = BaseAgent::new("gpt-4");
 
-        let err = execute_tools_with_config(thread, &result, &tools, &config)
+        let outcome = execute_tools_with_config(thread, &result, &tools, &config)
             .await
-            .expect_err("terminal->running transition should fail");
-        let AgentLoopError::StateError(message) = err else {
-            panic!("unexpected error variant");
-        };
-        assert!(
-            message.contains("invalid tool call status transition"),
-            "unexpected error message: {message}"
+            .expect("terminal ID reuse should succeed as a fresh lifecycle");
+        let thread = outcome.into_thread();
+        // The tool result message should be present (tool executed successfully)
+        assert_eq!(thread.messages.len(), 1);
+        assert_eq!(
+            thread.messages[0].role,
+            crate::contracts::thread::Role::Tool
         );
         assert!(
-            message.contains("Succeeded") && message.contains("Running"),
-            "error should include transition details: {message}"
+            thread.messages[0].content.contains("retry-attempt"),
+            "tool result should reflect the retried call arguments"
         );
     });
 }

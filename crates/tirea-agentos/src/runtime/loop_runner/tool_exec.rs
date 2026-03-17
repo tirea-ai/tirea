@@ -167,6 +167,14 @@ fn persist_tool_call_status(
         | ToolCallStatus::Resuming => (current_resume_token, current_resume),
     };
 
+    // Some providers (e.g., Gemini) reuse the same tool call ID when retrying
+    // a failed call. Reset terminal state so the call starts a fresh lifecycle.
+    let current_state = if previous_status.is_terminal() && status == ToolCallStatus::Running {
+        None
+    } else {
+        current_state
+    };
+
     let Some(runtime_state) = transition_tool_call_state(
         current_state,
         ToolCallStateSeed {
