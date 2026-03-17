@@ -301,7 +301,13 @@ async fn wire_skills_inserts_tools_and_plugin() {
     let apply_fixture = TestFixture::new();
     let mut apply_step = apply_fixture.step(vec![]);
     apply_before_inference_for_test(&mut apply_step, actions);
-    let merged: String = apply_step.inference.system_context.join("\n");
+    let merged: String = apply_step
+        .inference
+        .context_messages
+        .iter()
+        .map(|cm| cm.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(merged.contains("<available_skills>"));
     assert!(
         !merged.contains("<skill_instructions skill=\"s1\">"),
@@ -1394,10 +1400,14 @@ impl AgentBehavior for TestPlugin {
         &self,
         _ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<BeforeInferenceAction> {
-        ActionSet::single(BeforeInferenceAction::AddSystemContext(format!(
-            "<plugin id=\"{}\"/>",
-            self.0
-        )))
+        ActionSet::single(BeforeInferenceAction::AddContextMessage(
+            tirea_contract::runtime::inference::ContextMessage {
+                key: format!("plugin_{}", self.0),
+                content: format!("<plugin id=\"{}\"/>", self.0),
+                cooldown_turns: 0,
+                target: Default::default(),
+            },
+        ))
     }
 }
 
@@ -1430,9 +1440,9 @@ async fn resolve_wires_plugins_from_registry() {
     apply_before_inference_for_test(&mut apply_step, actions);
     assert!(apply_step
         .inference
-        .system_context
+        .context_messages
         .iter()
-        .any(|s| s.contains("p1")));
+        .any(|cm| cm.content.contains("p1")));
 }
 
 #[tokio::test]

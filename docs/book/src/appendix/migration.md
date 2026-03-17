@@ -28,7 +28,14 @@ use tirea::prelude::*; // imports AgentBehavior, ActionSet, BeforeInferenceActio
 impl AgentBehavior for MyPlugin {
     fn id(&self) -> &str { "my_plugin" }
     async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-        ActionSet::single(BeforeInferenceAction::AddSystemContext("Time: now".into()))
+        ActionSet::single(BeforeInferenceAction::AddContextMessage(
+            tirea_contract::runtime::inference::ContextMessage {
+                key: "time".into(),
+                content: "Time: now".into(),
+                cooldown_turns: 0,
+                target: Default::default(),
+            },
+        ))
             .and(BeforeInferenceAction::ExcludeTool("dangerous_tool".into()))
     }
 }

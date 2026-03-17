@@ -84,9 +84,17 @@ pub struct BeforeInferenceContext<'s, 'a> {
 impl_phase_context!(BeforeInferenceContext, Phase::BeforeInference);
 
 impl<'s, 'a> BeforeInferenceContext<'s, 'a> {
-    /// Append a system context line.
-    pub fn add_system_context(&mut self, text: impl Into<String>) {
-        self.step.inference.system_context.push(text.into());
+    /// Append a context message with the given key.
+    pub fn add_context_message(&mut self, key: impl Into<String>, content: impl Into<String>) {
+        self.step
+            .inference
+            .context_messages
+            .push(crate::runtime::inference::ContextMessage {
+                key: key.into(),
+                content: content.into(),
+                cooldown_turns: 0,
+                target: Default::default(),
+            });
     }
 
     /// Append a session message.

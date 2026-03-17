@@ -341,7 +341,14 @@ mod tests {
                 &self,
                 _ctx: &ReadOnlyContext<'_>,
             ) -> ActionSet<BeforeInferenceAction> {
-                ActionSet::single(BeforeInferenceAction::AddSystemContext("from agent".into()))
+                ActionSet::single(BeforeInferenceAction::AddContextMessage(
+                    crate::runtime::inference::ContextMessage {
+                        key: "from_agent".into(),
+                        content: "from agent".into(),
+                        cooldown_turns: 0,
+                        target: Default::default(),
+                    },
+                ))
             }
         }
 

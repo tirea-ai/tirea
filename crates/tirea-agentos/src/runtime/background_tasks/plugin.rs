@@ -169,7 +169,16 @@ impl AgentBehavior for BackgroundTasksPlugin {
     ) -> ActionSet<BeforeInferenceAction> {
         let view = derived_task_view_from_doc(&ctx.snapshot());
         Self::render_task_view(&view.tasks)
-            .map(BeforeInferenceAction::AddSystemContext)
+            .map(|content| {
+                BeforeInferenceAction::AddContextMessage(
+                    tirea_contract::runtime::inference::ContextMessage {
+                        key: "background_tasks".into(),
+                        content,
+                        cooldown_turns: 0,
+                        target: Default::default(),
+                    },
+                )
+            })
             .map(ActionSet::single)
             .unwrap_or_else(ActionSet::empty)
     }
@@ -346,7 +355,7 @@ mod tests {
         for action in actions {
             match action {
                 BeforeInferenceAction::State(action) => state_actions.push(action),
-                BeforeInferenceAction::AddSystemContext(text) => contexts.push(text),
+                BeforeInferenceAction::AddContextMessage(entry) => contexts.push(entry.content),
                 BeforeInferenceAction::AddSessionContext(_)
                 | BeforeInferenceAction::ExcludeTool(_)
                 | BeforeInferenceAction::IncludeOnlyTools(_)

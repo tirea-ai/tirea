@@ -326,7 +326,7 @@ Each agent definition maps to a `HandoffRuntimeOverlay`:
 | AgentDefinition field | Overlay effect |
 |---|---|
 | `model` | `OverrideModel` — switch the LLM model (empty = inherit base) |
-| `system_prompt` | `AddSystemContext` — append to system prompt |
+| `system_prompt` | `AddContextMessage` — append to system prompt |
 | `allowed_tools` | `IncludeOnlyTools` + hard gate in `before_tool_execute` |
 | `excluded_tools` | `ExcludeTool` — hide specific tools |
 | `fallback_models` | Fallback model chain for the override |

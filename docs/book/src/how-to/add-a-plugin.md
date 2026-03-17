@@ -33,8 +33,13 @@ impl AgentBehavior for AuditBehavior {
         &self,
         _ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<BeforeInferenceAction> {
-        ActionSet::single(BeforeInferenceAction::AddSystemContext(
-            "Audit: request entering inference".to_string(),
+        ActionSet::single(BeforeInferenceAction::AddContextMessage(
+            tirea_contract::runtime::inference::ContextMessage {
+                key: "audit".into(),
+                content: "Audit: request entering inference".into(),
+                cooldown_turns: 0,
+                target: Default::default(),
+            },
         ))
     }
 }

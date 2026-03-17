@@ -74,8 +74,13 @@ impl AgentBehavior for A2uiPlugin {
         &self,
         _ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<BeforeInferenceAction> {
-        ActionSet::single(BeforeInferenceAction::AddSystemContext(
-            self.instructions.clone(),
+        ActionSet::single(BeforeInferenceAction::AddContextMessage(
+            tirea_contract::runtime::inference::ContextMessage {
+                key: "a2ui_instructions".into(),
+                content: self.instructions.clone(),
+                cooldown_turns: 0,
+                target: Default::default(),
+            },
         ))
     }
 }
@@ -156,7 +161,9 @@ mod tests {
 
         let action = actions.into_iter().next().unwrap();
         match action {
-            BeforeInferenceAction::AddSystemContext(text) => {
+            BeforeInferenceAction::AddContextMessage(cm) => {
+                let text = &cm.content;
+                assert_eq!(cm.key, "a2ui_instructions");
                 assert!(text.contains("render_a2ui"), "should mention tool name");
                 assert!(
                     text.contains("createSurface"),
@@ -180,7 +187,7 @@ mod tests {
                     "template should be resolved"
                 );
             }
-            _ => panic!("expected AddSystemContext"),
+            _ => panic!("expected AddContextMessage"),
         }
     }
 
@@ -202,12 +209,12 @@ mod tests {
         let actions = plugin.before_inference(&ctx).await;
         let action = actions.into_iter().next().unwrap();
         match action {
-            BeforeInferenceAction::AddSystemContext(text) => {
-                assert!(text.contains("---BEGIN A2UI EXAMPLES---"));
-                assert!(text.contains("---END A2UI EXAMPLES---"));
-                assert!(text.contains("Demo"));
+            BeforeInferenceAction::AddContextMessage(cm) => {
+                assert!(cm.content.contains("---BEGIN A2UI EXAMPLES---"));
+                assert!(cm.content.contains("---END A2UI EXAMPLES---"));
+                assert!(cm.content.contains("Demo"));
             }
-            _ => panic!("expected AddSystemContext"),
+            _ => panic!("expected AddContextMessage"),
         }
     }
 

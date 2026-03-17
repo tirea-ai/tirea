@@ -23,7 +23,7 @@ The authoritative definitions live in [`crates/tirea-contract/src/runtime/phase/
 | Phase action enum | Valid phase | What it can do | Typical use |
 |---|---|---|---|
 | `LifecycleAction` | `RunStart`, `StepStart`, `StepEnd`, `RunEnd` | `State(AnyStateAction)` | lifecycle bookkeeping, run metadata |
-| `BeforeInferenceAction` | `BeforeInference` | `AddSystemContext`, `AddSessionContext`, `ExcludeTool`, `IncludeOnlyTools`, `AddRequestTransform`, `Terminate`, `State` | prompt injection, tool filtering, context-window shaping, early termination |
+| `BeforeInferenceAction` | `BeforeInference` | `AddContextMessage`, `AddSessionContext`, `ExcludeTool`, `IncludeOnlyTools`, `AddRequestTransform`, `Terminate`, `State` | prompt injection, tool filtering, context-window shaping, early termination |
 | `AfterInferenceAction` | `AfterInference` | `Terminate`, `State` | inspect model response and stop or persist derived state |
 | `BeforeToolExecuteAction` | `BeforeToolExecute` | `Block`, `Suspend`, `SetToolResult`, `State` | permission checks, frontend approval, short-circuiting tool execution |
 | `AfterToolExecuteAction` | `AfterToolExecute` | `AddSystemReminder`, `AddUserMessage`, `State` | append follow-up context, inject skill instructions, persist post-tool state |
@@ -97,7 +97,7 @@ If a behavior must apply uniformly across many tools or every run, it belongs in
 | `ReminderPlugin` | `BeforeInferenceAction::AddSessionContext`, `BeforeInferenceAction::State` | inject reminder text into the next inference and optionally clear reminder state |
 | `PermissionPlugin` | `BeforeToolExecuteAction::Block`, `BeforeToolExecuteAction::Suspend` | deny a tool or suspend for permission approval |
 | `ToolPolicyPlugin` | `BeforeInferenceAction::IncludeOnlyTools`, `BeforeInferenceAction::ExcludeTool`, `BeforeToolExecuteAction::Block` | constrain visible tools up front and enforce scope at execution time |
-| `SkillDiscoveryPlugin` | `BeforeInferenceAction::AddSystemContext` | inject the active skill catalog or skill usage instructions into the prompt |
+| `SkillDiscoveryPlugin` | `BeforeInferenceAction::AddContextMessage` | inject the active skill catalog or skill usage instructions into the prompt |
 | `LLMMetryPlugin` | no runtime-mutating actions; returns empty `ActionSet` | observability only, collects spans and metrics without changing behavior |
 
 ### Built-in runtime / integration plugins
@@ -105,7 +105,7 @@ If a behavior must apply uniformly across many tools or every run, it belongs in
 | Plugin | Actions used | Scenario |
 |---|---|---|
 | `ContextPlugin` | `BeforeInferenceAction::AddRequestTransform` | compact + trim history and enable prompt caching before the provider request is sent |
-| `AG-UI ContextInjectionPlugin` | `BeforeInferenceAction::AddSystemContext` | inject frontend-provided context into the prompt |
+| `AG-UI ContextInjectionPlugin` | `BeforeInferenceAction::AddContextMessage` | inject frontend-provided context into the prompt |
 | `AG-UI FrontendToolPendingPlugin` | `BeforeToolExecuteAction::Suspend`, `BeforeToolExecuteAction::SetToolResult` | forward frontend tools to the UI, then resume with a frontend decision/result |
 
 ## Tool Examples That Emit Actions
@@ -146,7 +146,7 @@ Direct `ctx.state...` writes produce patches that the runtime handles internally
 
 | Scenario | Recommended action form |
 |---|---|
-| Add prompt context before the next model call | `BeforeInferenceAction::AddSystemContext` or `AddSessionContext` |
+| Add prompt context before the next model call | `BeforeInferenceAction::AddContextMessage` or `AddSessionContext` |
 | Hide or narrow tools for one run | `BeforeInferenceAction::IncludeOnlyTools` / `ExcludeTool` |
 | Enforce approval before a tool executes | `BeforeToolExecuteAction::Suspend` |
 | Reject tool execution with an explicit reason | `BeforeToolExecuteAction::Block` |

@@ -379,6 +379,9 @@ pub(super) fn run_stream(
             finish_run!(TerminationReason::Suspended, None);
         }
 
+        let mut context_tracker = ContextThrottleTracker::new();
+        let mut step_counter: usize = 0;
+
         'step: loop {
             let decision_events = match apply_decisions_and_replay(
                 &mut run_ctx,
@@ -426,10 +429,20 @@ pub(super) fn run_stream(
             };
             run_ctx.add_thread_patches(prepared.pending_patches);
             run_ctx.add_serialized_state_actions(prepared.serialized_state_actions);
-            let messages = prepared.messages;
+            let mut messages = prepared.messages;
             let filtered_tools = prepared.filtered_tools;
             let request_transforms = prepared.request_transforms;
             let step_inference_override = prepared.inference_override;
+
+            // Apply throttle-filtered context entries.
+            for entry in context_tracker.filter(prepared.context_messages, step_counter) {
+                use tirea_contract::runtime::inference::ContextMessageTarget;
+                messages.push(match entry.target {
+                    ContextMessageTarget::System => Message::system(entry.content),
+                    ContextMessageTarget::Session => Message::system(entry.content),
+                });
+            }
+            step_counter = step_counter.saturating_add(1);
 
             match prepared.run_action {
                 RunAction::Continue => {}

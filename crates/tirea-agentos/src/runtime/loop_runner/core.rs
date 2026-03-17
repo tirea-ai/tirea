@@ -35,18 +35,14 @@ fn is_pending_approval_placeholder(msg: &Message) -> bool {
 pub(super) fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec<Message> {
     let mut messages = Vec::new();
 
-    let system_ctx = &step.inference.system_context[..];
     let session_ctx = &step.inference.session_context[..];
 
-    // Emit base system prompt and each plugin-injected context as separate
-    // system messages. Keeping them separate improves prompt cache hit rates:
-    // the static base prompt stays cached even when dynamic plugin segments
-    // change between turns.
+    // Emit base system prompt as the first system message. Plugin-injected
+    // context (via AddContextMessage) is inserted after this by the loop
+    // runner, keeping each segment as a separate system message for
+    // independent prompt cache boundaries.
     if !system_prompt.is_empty() {
         messages.push(Message::system(system_prompt.to_string()));
-    }
-    for ctx in system_ctx.iter().filter(|s| !s.is_empty()) {
-        messages.push(Message::system(ctx.clone()));
     }
 
     for ctx in session_ctx {
@@ -183,6 +179,7 @@ pub(super) type InferenceInputs = (
     RunAction,
     Vec<std::sync::Arc<dyn tirea_contract::runtime::inference::InferenceRequestTransform>>,
     Option<tirea_contract::runtime::inference::InferenceOverride>,
+    Vec<tirea_contract::runtime::inference::ContextMessage>,
 );
 
 pub(super) fn inference_inputs_from_step(
@@ -195,12 +192,14 @@ pub(super) fn inference_inputs_from_step(
     let run_action = step.run_action();
     let transforms = std::mem::take(&mut step.inference.request_transforms);
     let inference_override = step.inference.inference_override.take();
+    let context_messages = std::mem::take(&mut step.inference.context_messages);
     (
         messages,
         filtered_tools,
         run_action,
         transforms,
         inference_override,
+        context_messages,
     )
 }
 
@@ -245,6 +244,70 @@ pub(super) fn build_request_for_filtered_tools(
 #[allow(dead_code)]
 pub(super) fn suspended_calls_from_ctx(run_ctx: &RunContext) -> HashMap<String, SuspendedCall> {
     run_ctx.suspended_calls()
+}
+
+// =========================================================================
+// Context throttle tracker
+// =========================================================================
+
+/// Per-run tracker that filters [`ContextMessage`]s based on cooldown.
+///
+/// An attachment is injected when:
+/// 1. It has never been seen before, OR
+/// 2. Its `cooldown_turns` have elapsed since last injection, OR
+/// 3. Its content has changed (regardless of cooldown)
+pub(super) struct ContextThrottleTracker {
+    /// key → (last injected step, content hash at that time)
+    last_injected: HashMap<String, (usize, u64)>,
+}
+
+impl ContextThrottleTracker {
+    pub fn new() -> Self {
+        Self {
+            last_injected: HashMap::new(),
+        }
+    }
+
+    /// Filter context entries by cooldown, returning those that pass throttle.
+    /// Updates internal tracking state for injected entries.
+    pub fn filter(
+        &mut self,
+        entries: Vec<tirea_contract::runtime::inference::ContextMessage>,
+        current_step: usize,
+    ) -> Vec<tirea_contract::runtime::inference::ContextMessage> {
+        let mut result = Vec::new();
+        for entry in entries {
+            let content_hash = Self::hash_content(&entry.content);
+            let should_inject = match self.last_injected.get(&entry.key) {
+                None => true,
+                Some((last_step, last_hash)) => {
+                    // Content changed → inject immediately
+                    if *last_hash != content_hash {
+                        true
+                    } else if entry.cooldown_turns == 0 {
+                        // No cooldown → inject every turn
+                        true
+                    } else {
+                        // Cooldown elapsed?
+                        current_step.saturating_sub(*last_step) > entry.cooldown_turns as usize
+                    }
+                }
+            };
+            if should_inject {
+                self.last_injected
+                    .insert(entry.key.clone(), (current_step, content_hash));
+                result.push(entry);
+            }
+        }
+        result
+    }
+
+    fn hash_content(content: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        content.hash(&mut hasher);
+        hasher.finish()
+    }
 }
 
 pub(super) fn tool_call_states_from_ctx(run_ctx: &RunContext) -> HashMap<String, ToolCallState> {
@@ -563,5 +626,82 @@ mod tests {
         assert!(!is_pending_approval_placeholder_content(
             "Tool '' is awaiting approval. Execution paused."
         ));
+    }
+
+    // ===================================================================
+    // ContextThrottleTracker tests
+    // ===================================================================
+
+    fn entry(
+        key: &str,
+        content: &str,
+        cooldown: u32,
+    ) -> tirea_contract::runtime::inference::ContextMessage {
+        tirea_contract::runtime::inference::ContextMessage {
+            key: key.into(),
+            content: content.into(),
+            cooldown_turns: cooldown,
+            target: tirea_contract::runtime::inference::ContextMessageTarget::System,
+        }
+    }
+
+    #[test]
+    fn throttle_first_injection_always_passes() {
+        let mut tracker = ContextThrottleTracker::new();
+        let result = tracker.filter(vec![entry("a", "hello", 5)], 0);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content, "hello");
+    }
+
+    #[test]
+    fn throttle_skips_during_cooldown() {
+        let mut tracker = ContextThrottleTracker::new();
+        // Step 0: inject
+        let r = tracker.filter(vec![entry("a", "hello", 3)], 0);
+        assert_eq!(r.len(), 1);
+        // Steps 1-3: skip (cooldown = 3 → skip turns 1, 2, 3)
+        for step in 1..=3 {
+            let r = tracker.filter(vec![entry("a", "hello", 3)], step);
+            assert!(r.is_empty(), "should be throttled at step {step}");
+        }
+        // Step 4: inject again (cooldown elapsed)
+        let r = tracker.filter(vec![entry("a", "hello", 3)], 4);
+        assert_eq!(r.len(), 1);
+    }
+
+    #[test]
+    fn throttle_content_change_bypasses_cooldown() {
+        let mut tracker = ContextThrottleTracker::new();
+        // Step 0: inject "v1"
+        let r = tracker.filter(vec![entry("a", "v1", 10)], 0);
+        assert_eq!(r.len(), 1);
+        // Step 1: same content → throttled
+        let r = tracker.filter(vec![entry("a", "v1", 10)], 1);
+        assert!(r.is_empty());
+        // Step 2: content changed → inject immediately
+        let r = tracker.filter(vec![entry("a", "v2", 10)], 2);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].content, "v2");
+    }
+
+    #[test]
+    fn throttle_zero_cooldown_injects_every_turn() {
+        let mut tracker = ContextThrottleTracker::new();
+        for step in 0..5 {
+            let r = tracker.filter(vec![entry("a", "always", 0)], step);
+            assert_eq!(r.len(), 1, "should inject at step {step}");
+        }
+    }
+
+    #[test]
+    fn throttle_multiple_keys_independent() {
+        let mut tracker = ContextThrottleTracker::new();
+        // Step 0: inject both
+        let r = tracker.filter(vec![entry("a", "alpha", 2), entry("b", "beta", 4)], 0);
+        assert_eq!(r.len(), 2);
+        // Step 3: a's cooldown elapsed (2 < 3), b's not (4 >= 3)
+        let r = tracker.filter(vec![entry("a", "alpha", 2), entry("b", "beta", 4)], 3);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].key, "a");
     }
 }

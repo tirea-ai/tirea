@@ -17,7 +17,7 @@ const ALWAYS_ALLOWED_TOOLS: &[&str] = &["agent_handoff"];
 /// Applies agent overlays dynamically within the running agent loop:
 ///
 /// 1. `before_inference`: reads active agent variant, decomposes the
-///    [`AgentOverlay`] into `OverrideInference`, `AddSystemContext`,
+///    [`AgentOverlay`] into `OverrideInference`, `AddContextMessage`,
 ///    `ExcludeTool`, `IncludeOnlyTools` actions
 /// 2. `before_tool_execute`: enforces `allowed_tools` whitelist as a hard gate
 ///
@@ -215,11 +215,11 @@ mod tests {
             |a| matches!(a, BeforeInferenceAction::OverrideInference(ovr) if ovr.model.as_deref() == Some("claude-haiku")),
         );
         let has_system = actions.iter().any(
-            |a| matches!(a, BeforeInferenceAction::AddSystemContext(s) if s.contains("fast mode")),
+            |a| matches!(a, BeforeInferenceAction::AddContextMessage(cm) if cm.content.contains("fast mode")),
         );
         assert!(has_state, "should emit Activate state action");
         assert!(has_override, "should emit OverrideInference");
-        assert!(has_system, "should emit AddSystemContext");
+        assert!(has_system, "should emit AddContextMessage");
     }
 
     #[tokio::test]
