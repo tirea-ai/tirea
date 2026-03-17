@@ -62,7 +62,7 @@ use crate::contracts::runtime::{
     ToolExecutionResult,
 };
 use crate::contracts::thread::CheckpointReason;
-use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
+use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, Role, ToolCall};
 use crate::contracts::RunContext;
 use crate::contracts::{AgentEvent, RunAction, TerminationReason, ToolCallDecision};
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
@@ -96,7 +96,7 @@ use core::build_messages;
 use core::{
     build_request_for_filtered_tools, inference_inputs_from_step, suspended_calls_from_ctx,
     tool_call_states_from_ctx, transition_tool_call_state, upsert_tool_call_state,
-    ToolCallStateSeed, ToolCallStateTransition,
+    ContextThrottleTracker, ToolCallStateSeed, ToolCallStateTransition,
 };
 pub use outcome::{tool_map, tool_map_from_arc, AgentLoopError};
 pub use outcome::{LoopOutcome, LoopStats, LoopUsage};
@@ -918,28 +918,33 @@ pub(super) async fn run_step_prepare_phases(
         RunAction,
         Vec<std::sync::Arc<dyn tirea_contract::runtime::inference::InferenceRequestTransform>>,
         Option<tirea_contract::runtime::inference::InferenceOverride>,
+        Vec<tirea_contract::runtime::inference::ContextMessage>,
         Vec<TrackedPatch>,
         Vec<tirea_contract::SerializedStateAction>,
     ),
     AgentLoopError,
 > {
     let system_prompt = agent.system_prompt().to_string();
-    let ((messages, filtered_tools, run_action, transforms, inference_override), pending, actions) =
-        plugin_runtime::run_phase_block(
-            run_ctx,
-            tool_descriptors,
-            agent,
-            &[Phase::StepStart, Phase::BeforeInference],
-            |_| {},
-            |step| inference_inputs_from_step(step, &system_prompt),
-        )
-        .await?;
+    let (
+        (messages, filtered_tools, run_action, transforms, inference_override, context_messages),
+        pending,
+        actions,
+    ) = plugin_runtime::run_phase_block(
+        run_ctx,
+        tool_descriptors,
+        agent,
+        &[Phase::StepStart, Phase::BeforeInference],
+        |_| {},
+        |step| inference_inputs_from_step(step, &system_prompt),
+    )
+    .await?;
     Ok((
         messages,
         filtered_tools,
         run_action,
         transforms,
         inference_override,
+        context_messages,
         pending,
         actions,
     ))
@@ -954,6 +959,7 @@ pub(super) struct PreparedStep {
     pub(super) request_transforms:
         Vec<std::sync::Arc<dyn tirea_contract::runtime::inference::InferenceRequestTransform>>,
     pub(super) inference_override: Option<tirea_contract::runtime::inference::InferenceOverride>,
+    pub(super) context_messages: Vec<tirea_contract::runtime::inference::ContextMessage>,
 }
 
 pub(super) async fn prepare_step_execution(
@@ -961,8 +967,16 @@ pub(super) async fn prepare_step_execution(
     tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
     agent: &dyn Agent,
 ) -> Result<PreparedStep, AgentLoopError> {
-    let (messages, filtered_tools, run_action, transforms, inference_override, pending, actions) =
-        run_step_prepare_phases(run_ctx, tool_descriptors, agent).await?;
+    let (
+        messages,
+        filtered_tools,
+        run_action,
+        transforms,
+        inference_override,
+        context_messages,
+        pending,
+        actions,
+    ) = run_step_prepare_phases(run_ctx, tool_descriptors, agent).await?;
     Ok(PreparedStep {
         messages,
         filtered_tools,
@@ -971,6 +985,7 @@ pub(super) async fn prepare_step_execution(
         serialized_state_actions: actions,
         request_transforms: transforms,
         inference_override,
+        context_messages,
     })
 }
 
@@ -2116,6 +2131,8 @@ pub async fn run_loop_with_context(
     if !run_start_new_suspended.is_empty() {
         terminate_run!(TerminationReason::Suspended, None, None);
     }
+    let mut context_tracker = ContextThrottleTracker::new();
+    let mut step_counter: usize = 0;
     loop {
         if let Err(error) = apply_decisions_and_replay(
             &mut run_ctx,
@@ -2180,10 +2197,28 @@ pub async fn run_loop_with_context(
         }
 
         // Call LLM with unified retry + fallback model strategy.
-        let messages = prepared.messages;
+        let mut messages = prepared.messages;
         let filtered_tools = prepared.filtered_tools;
         let request_transforms = prepared.request_transforms;
         let step_inference_override = prepared.inference_override;
+
+        // Insert throttle-filtered context entries after the base system
+        // prompt but before session context and conversation history.  This
+        // ordering maximises prompt-cache hit rates: the static base prompt
+        // stays cached even when dynamic plugin segments change.
+        let insert_pos = if messages.first().map_or(false, |m| m.role == Role::System) {
+            1
+        } else {
+            0
+        };
+        for (i, entry) in context_tracker
+            .filter(prepared.context_messages, step_counter)
+            .into_iter()
+            .enumerate()
+        {
+            messages.insert(insert_pos + i, Message::system(entry.content));
+        }
+        step_counter = step_counter.saturating_add(1);
         let chat_options =
             apply_inference_override(agent.chat_options(), step_inference_override.as_ref());
         let attempt_outcome = run_llm_with_retry_and_fallback(

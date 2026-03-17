@@ -1,3 +1,4 @@
+use crate::runtime::inference::context_message::ContextMessage;
 use crate::runtime::inference::transform::InferenceRequestTransform;
 use crate::runtime::tool_call::ToolDescriptor;
 use serde::{Deserialize, Serialize};
@@ -149,13 +150,11 @@ impl From<InferenceModelOverride> for InferenceOverride {
 
 /// Inference-phase extension: system/session context and tool descriptors.
 ///
-/// Populated by `AddSystemContext`, `AddSessionContext`, `ExcludeTool`,
+/// Populated by `AddSessionContext`, `AddContextMessage`, `ExcludeTool`,
 /// `IncludeOnlyTools`, `AddRequestTransform`, `OverrideModel`,
 /// `OverrideInference` actions during `BeforeInference`.
 #[derive(Default, Clone)]
 pub struct InferenceContext {
-    /// System context lines appended to the system prompt.
-    pub system_context: Vec<String>,
     /// Session context messages injected before user messages.
     pub session_context: Vec<String>,
     /// Available tool descriptors (can be filtered by actions).
@@ -167,16 +166,20 @@ pub struct InferenceContext {
     /// `OverrideInference`. When `Some`, the loop runner uses these values
     /// instead of the agent's defaults.
     pub inference_override: Option<InferenceOverride>,
+    /// Structured context entries with throttle metadata.
+    /// Collected via `AddContext` actions; the loop runner applies
+    /// throttle filtering before injecting into the message sequence.
+    pub context_messages: Vec<ContextMessage>,
 }
 
 impl std::fmt::Debug for InferenceContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InferenceContext")
-            .field("system_context", &self.system_context)
             .field("session_context", &self.session_context)
             .field("tools", &self.tools)
             .field("request_transforms", &self.request_transforms.len())
             .field("inference_override", &self.inference_override)
+            .field("context_messages", &self.context_messages.len())
             .finish()
     }
 }

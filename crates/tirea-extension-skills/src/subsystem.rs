@@ -347,7 +347,7 @@ mod tests {
         let system_context_count = actions
             .as_slice()
             .iter()
-            .filter(|a| matches!(a, BeforeInferenceAction::AddSystemContext(_)))
+            .filter(|a| matches!(a, BeforeInferenceAction::AddContextMessage(_)))
             .count();
         assert_eq!(system_context_count, 1);
     }

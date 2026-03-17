@@ -141,7 +141,14 @@ impl AgentBehavior for SkillDiscoveryPlugin {
             return ActionSet::empty();
         }
 
-        ActionSet::single(BeforeInferenceAction::AddSystemContext(rendered))
+        ActionSet::single(BeforeInferenceAction::AddContextMessage(
+            tirea_contract::runtime::inference::ContextMessage {
+                key: "skill_catalog".into(),
+                content: rendered,
+                cooldown_turns: 0,
+                target: Default::default(),
+            },
+        ))
     }
 }
 
@@ -180,20 +187,20 @@ mod tests {
         (td, skills)
     }
 
-    fn count_system_context_actions(actions: &ActionSet<BeforeInferenceAction>) -> usize {
+    fn count_context_message_actions(actions: &ActionSet<BeforeInferenceAction>) -> usize {
         actions
             .as_slice()
             .iter()
-            .filter(|a| matches!(a, BeforeInferenceAction::AddSystemContext(_)))
+            .filter(|a| matches!(a, BeforeInferenceAction::AddContextMessage(_)))
             .count()
     }
 
-    /// Extract system context strings from AddSystemContext actions.
+    /// Extract content strings from AddContextMessage actions.
     fn apply_and_extract_system_contexts(actions: ActionSet<BeforeInferenceAction>) -> Vec<String> {
         actions
             .into_iter()
             .filter_map(|a| match a {
-                BeforeInferenceAction::AddSystemContext(s) => Some(s),
+                BeforeInferenceAction::AddContextMessage(cm) => Some(cm.content),
                 _ => None,
             })
             .collect()
@@ -207,7 +214,7 @@ mod tests {
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
         let actions = AgentBehavior::before_inference(&p, &ctx).await;
-        assert_eq!(count_system_context_actions(&actions), 1);
+        assert_eq!(count_context_message_actions(&actions), 1);
         let contexts = apply_and_extract_system_contexts(actions);
         assert_eq!(contexts.len(), 1);
         let s = &contexts[0];

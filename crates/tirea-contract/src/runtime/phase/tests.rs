@@ -9,6 +9,15 @@ use serde_json::json;
 
 use super::*;
 
+fn test_cm(key: &str, content: &str) -> crate::runtime::inference::ContextMessage {
+    crate::runtime::inference::ContextMessage {
+        key: key.into(),
+        content: content.into(),
+        cooldown_turns: 0,
+        target: Default::default(),
+    }
+}
+
 // =========================================================================
 // Phase tests
 // =========================================================================
@@ -68,7 +77,7 @@ fn test_step_context_new() {
     let fix = TestFixture::new();
     let ctx = fix.step(mock_tools());
 
-    assert!(ctx.inference.system_context.is_empty());
+    assert!(ctx.inference.context_messages.is_empty());
     assert!(ctx.inference.session_context.is_empty());
     assert_eq!(ctx.inference.tools.len(), 3);
     assert!(ctx.gate.is_none());
@@ -82,14 +91,14 @@ fn test_step_context_reset() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(mock_tools());
 
-    ctx.inference.system_context.push("test".into());
+    ctx.inference.context_messages.push(test_cm("test", "test"));
     ctx.inference.session_context.push("test".into());
     ctx.messaging.reminders.push("test".into());
     ctx.flow.run_action = Some(RunAction::Terminate(TerminationReason::BehaviorRequested));
 
     ctx.reset();
 
-    assert!(ctx.inference.system_context.is_empty());
+    assert!(ctx.inference.context_messages.is_empty());
     assert!(ctx.inference.session_context.is_empty());
     assert_eq!(ctx.inference.tools.len(), 3); // tools preserved
     assert!(ctx.messaging.reminders.is_empty() && ctx.messaging.user_messages.is_empty());
@@ -116,40 +125,50 @@ fn test_after_inference_request_termination_sets_run_action() {
 // =========================================================================
 
 #[test]
-fn test_system_context() {
+fn test_context_messages() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.inference.system_context.push("Context 1".into());
-    ctx.inference.system_context.push("Context 2".into());
+    ctx.inference
+        .context_messages
+        .push(test_cm("k1", "Context 1"));
+    ctx.inference
+        .context_messages
+        .push(test_cm("k2", "Context 2"));
 
-    assert_eq!(ctx.inference.system_context.len(), 2);
-    assert_eq!(ctx.inference.system_context[0], "Context 1");
-    assert_eq!(ctx.inference.system_context[1], "Context 2");
+    assert_eq!(ctx.inference.context_messages.len(), 2);
+    assert_eq!(ctx.inference.context_messages[0].content, "Context 1");
+    assert_eq!(ctx.inference.context_messages[1].content, "Context 2");
 }
 
 #[test]
-fn test_set_system_context() {
+fn test_replace_context_messages() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.inference.system_context.push("Context 1".into());
-    ctx.inference.system_context.push("Context 2".into());
-    ctx.inference.system_context = vec!["Replaced".to_string()];
+    ctx.inference
+        .context_messages
+        .push(test_cm("k1", "Context 1"));
+    ctx.inference
+        .context_messages
+        .push(test_cm("k2", "Context 2"));
+    ctx.inference.context_messages = vec![test_cm("k3", "Replaced")];
 
-    assert_eq!(ctx.inference.system_context.len(), 1);
-    assert_eq!(ctx.inference.system_context[0], "Replaced");
+    assert_eq!(ctx.inference.context_messages.len(), 1);
+    assert_eq!(ctx.inference.context_messages[0].content, "Replaced");
 }
 
 #[test]
-fn test_clear_system_context() {
+fn test_clear_context_messages() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.inference.system_context.push("Context 1".into());
-    ctx.inference.system_context.clear();
+    ctx.inference
+        .context_messages
+        .push(test_cm("k1", "Context 1"));
+    ctx.inference.context_messages.clear();
 
-    assert!(ctx.inference.system_context.is_empty());
+    assert!(ctx.inference.context_messages.is_empty());
 }
 
 #[test]
@@ -546,22 +565,28 @@ fn test_step_context_empty_session() {
     let ctx = fix.step(vec![]);
 
     assert!(ctx.inference.tools.is_empty());
-    assert!(ctx.inference.system_context.is_empty());
+    assert!(ctx.inference.context_messages.is_empty());
     assert_eq!(ctx.result(), StepOutcome::Continue);
 }
 
 #[test]
-fn test_step_context_multiple_system_contexts() {
+fn test_step_context_multiple_context_messages() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.inference.system_context.push("Context 1".into());
-    ctx.inference.system_context.push("Context 2".into());
-    ctx.inference.system_context.push("Context 3".into());
+    ctx.inference
+        .context_messages
+        .push(test_cm("k1", "Context 1"));
+    ctx.inference
+        .context_messages
+        .push(test_cm("k2", "Context 2"));
+    ctx.inference
+        .context_messages
+        .push(test_cm("k3", "Context 3"));
 
-    assert_eq!(ctx.inference.system_context.len(), 3);
-    assert_eq!(ctx.inference.system_context[0], "Context 1");
-    assert_eq!(ctx.inference.system_context[2], "Context 3");
+    assert_eq!(ctx.inference.context_messages.len(), 3);
+    assert_eq!(ctx.inference.context_messages[0].content, "Context 1");
+    assert_eq!(ctx.inference.context_messages[2].content, "Context 3");
 }
 
 #[test]

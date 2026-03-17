@@ -291,7 +291,14 @@ impl AgentBehavior for AgentToolsPlugin {
         if rendered.is_empty() {
             ActionSet::empty()
         } else {
-            ActionSet::single(BeforeInferenceAction::AddSystemContext(rendered))
+            ActionSet::single(BeforeInferenceAction::AddContextMessage(
+                tirea_contract::runtime::inference::ContextMessage {
+                    key: "agent_catalog".into(),
+                    content: rendered,
+                    cooldown_turns: 0,
+                    target: Default::default(),
+                },
+            ))
         }
     }
 

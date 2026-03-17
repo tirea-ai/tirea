@@ -24,7 +24,7 @@ pub struct AgentOverlay {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inference: Option<InferenceOverride>,
 
-    /// System prompt appended via `AddSystemContext`.
+    /// System prompt appended via `AddContextMessage`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
 
@@ -68,7 +68,7 @@ impl AgentOverlay {
     ///
     /// Only fields that have corresponding actions are decomposed:
     /// - `inference` → `OverrideInference`
-    /// - `system_prompt` → `AddSystemContext`
+    /// - `system_prompt` → `AddContextMessage`
     /// - `excluded_tools` → `ExcludeTool` (one per entry)
     /// - `allowed_tools` → `IncludeOnlyTools`
     ///
@@ -85,8 +85,13 @@ impl AgentOverlay {
         }
 
         if let Some(prompt) = self.system_prompt {
-            actions = actions.and(ActionSet::single(BeforeInferenceAction::AddSystemContext(
-                prompt,
+            actions = actions.and(ActionSet::single(BeforeInferenceAction::AddContextMessage(
+                crate::runtime::inference::ContextMessage {
+                    key: "handoff_prompt".into(),
+                    content: prompt,
+                    cooldown_turns: 0,
+                    target: Default::default(),
+                },
             )));
         }
 
@@ -192,7 +197,7 @@ mod tests {
         assert_eq!(actions.len(), 1);
         assert!(matches!(
             &actions[0],
-            BeforeInferenceAction::AddSystemContext(s) if s.contains("helpful")
+            BeforeInferenceAction::AddContextMessage(ref cm) if cm.content.contains("helpful")
         ));
     }
 
@@ -235,7 +240,7 @@ mod tests {
             .into_before_inference_actions()
             .into_iter()
             .collect();
-        // OverrideInference + AddSystemContext + ExcludeTool + IncludeOnlyTools = 4
+        // OverrideInference + AddContextMessage + ExcludeTool + IncludeOnlyTools = 4
         assert_eq!(actions.len(), 4);
     }
 

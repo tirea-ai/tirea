@@ -173,7 +173,14 @@ mod tests {
             &self,
             _ctx: &ReadOnlyContext<'_>,
         ) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::AddSystemContext(self.text.clone()))
+            ActionSet::single(BeforeInferenceAction::AddContextMessage(
+                tirea_contract::runtime::inference::ContextMessage {
+                    key: self.id.clone(),
+                    content: self.text.clone(),
+                    cooldown_turns: 0,
+                    target: Default::default(),
+                },
+            ))
         }
     }
 
@@ -226,8 +233,8 @@ mod tests {
 
         assert_eq!(actions.len(), 2);
         let v = actions.into_vec();
-        assert!(matches!(v[0], BeforeInferenceAction::AddSystemContext(_)));
-        assert!(matches!(v[1], BeforeInferenceAction::AddSystemContext(_)));
+        assert!(matches!(v[0], BeforeInferenceAction::AddContextMessage(_)));
+        assert!(matches!(v[1], BeforeInferenceAction::AddContextMessage(_)));
     }
 
     #[tokio::test]
@@ -264,8 +271,8 @@ mod tests {
         // BlockBehavior returns empty for BeforeInference, so 2 actions
         assert_eq!(actions.len(), 2);
         let v = actions.into_vec();
-        assert!(matches!(v[0], BeforeInferenceAction::AddSystemContext(_)));
-        assert!(matches!(v[1], BeforeInferenceAction::AddSystemContext(_)));
+        assert!(matches!(v[0], BeforeInferenceAction::AddContextMessage(_)));
+        assert!(matches!(v[1], BeforeInferenceAction::AddContextMessage(_)));
     }
 
     #[test]

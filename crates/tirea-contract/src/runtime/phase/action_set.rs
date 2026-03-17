@@ -1,5 +1,5 @@
 use crate::runtime::inference::{
-    InferenceModelOverride, InferenceOverride, InferenceRequestTransform,
+    ContextMessage, InferenceModelOverride, InferenceOverride, InferenceRequestTransform,
 };
 use crate::runtime::run::TerminationReason;
 use crate::runtime::state::AnyStateAction;
@@ -111,10 +111,14 @@ impl From<AnyStateAction> for ActionSet<LifecycleAction> {
 
 /// Actions valid in `BeforeInference`.
 pub enum BeforeInferenceAction {
-    /// Append a system-prompt context block.
-    AddSystemContext(String),
     /// Append a session message.
     AddSessionContext(String),
+    /// Inject a structured context message with throttle metadata.
+    ///
+    /// Messages are tracked by `key` and subject to `cooldown_turns`
+    /// throttling by the loop runner. Use this for all system-prompt
+    /// context injection.
+    AddContextMessage(ContextMessage),
     /// Remove one tool by id.
     ExcludeTool(String),
     /// Keep only the listed tool ids.
