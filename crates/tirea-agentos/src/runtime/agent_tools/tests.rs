@@ -5397,3 +5397,33 @@ async fn recovery_plugin_fallback_always_approves_despite_deny_state() {
         json!("resume"),
     );
 }
+
+// ---------------------------------------------------------------------------
+// extract_permission_seed
+// ---------------------------------------------------------------------------
+
+#[test]
+fn extract_permission_seed_returns_policy_when_present() {
+    let snapshot = json!({
+        "permission_policy": {
+            "default_behavior": "ask",
+            "rules": {"bash": {"subject": {"kind": "tool", "id": "bash"}, "behavior": "allow"}}
+        },
+        "other_state": "ignored"
+    });
+    let seed = super::tools::extract_permission_seed(&snapshot).unwrap();
+    assert!(seed.get("permission_policy").is_some());
+    assert!(seed.get("other_state").is_none());
+}
+
+#[test]
+fn extract_permission_seed_returns_none_when_absent() {
+    let snapshot = json!({"other_state": "value"});
+    assert!(super::tools::extract_permission_seed(&snapshot).is_none());
+}
+
+#[test]
+fn extract_permission_seed_returns_none_for_null_policy() {
+    let snapshot = json!({"permission_policy": null});
+    assert!(super::tools::extract_permission_seed(&snapshot).is_none());
+}

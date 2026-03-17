@@ -179,6 +179,16 @@ fn filtered_fork_messages(messages: Vec<Message>) -> Vec<Message> {
         .collect()
 }
 
+/// Extract the parent's permission policy from a state snapshot so sub-agents
+/// inherit remembered allow/deny rules even when `fork_context` is false.
+pub(super) fn extract_permission_seed(snapshot: &Value) -> Option<Value> {
+    let policy = snapshot.get("permission_policy")?;
+    if policy.is_null() {
+        return None;
+    }
+    Some(serde_json::json!({ "permission_policy": policy }))
+}
+
 fn is_target_visible(
     catalog: &dyn AgentCatalog,
     target_id: &str,
@@ -824,7 +834,8 @@ impl Tool for AgentRunTool {
             messages.push(Message::user(prompt));
             (messages, Some(fork_state))
         } else {
-            (vec![Message::user(prompt)], None)
+            let permission_seed = extract_permission_seed(&ctx.snapshot());
+            (vec![Message::user(prompt)], permission_seed)
         };
         Ok(backend
             .start_effect(
