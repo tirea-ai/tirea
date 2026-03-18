@@ -68,6 +68,7 @@ use crate::contracts::{AgentEvent, RunAction, TerminationReason, ToolCallDecisio
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
 use crate::runtime::activity::ActivityHub;
 
+use crate::runtime::loop_runner::state_commit::RunTokenTotals;
 use crate::runtime::streaming::StreamCollector;
 use async_stream::stream;
 use futures::{Stream, StreamExt};
@@ -1063,11 +1064,12 @@ async fn persist_run_termination(
     agent: &dyn Agent,
     run_identity: &RunIdentity,
     pending_delta_commit: &PendingDeltaCommitContext<'_>,
+    token_totals: RunTokenTotals,
 ) -> Result<(), AgentLoopError> {
     sync_run_lifecycle_for_termination_with_context(run_ctx, run_identity, termination)?;
     finalize_run_end(run_ctx, tool_descriptors, agent).await;
     pending_delta_commit
-        .commit_run_finished(run_ctx, termination)
+        .commit_run_finished(run_ctx, termination, token_totals)
         .await?;
     Ok(())
 }
@@ -1967,6 +1969,7 @@ pub async fn run_loop_with_context(
                 agent,
                 &run_identity,
                 &pending_delta_commit,
+                run_state.token_totals(),
             )
             .await
             {

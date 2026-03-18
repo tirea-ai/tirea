@@ -48,6 +48,10 @@ pub struct RunRecord {
     pub source_mailbox_entry_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
 }
 
 impl RunRecord {
@@ -74,6 +78,8 @@ impl RunRecord {
             updated_at: now_ms,
             source_mailbox_entry_id: None,
             metadata: None,
+            input_tokens: 0,
+            output_tokens: 0,
         }
     }
 }

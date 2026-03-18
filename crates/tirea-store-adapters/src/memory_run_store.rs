@@ -66,7 +66,7 @@ mod tests {
     #[tokio::test]
     async fn upsert_load_and_list_runs() {
         let store = MemoryRunStore::new();
-        let r1 = RunRecord::new(
+        let mut r1 = RunRecord::new(
             "run-1",
             "thread-1",
             "",
@@ -74,6 +74,8 @@ mod tests {
             RunStatus::Running,
             1,
         );
+        r1.input_tokens = 123;
+        r1.output_tokens = 45;
         let r2 = RunRecord::new(
             "run-2",
             "thread-2",
@@ -91,6 +93,8 @@ mod tests {
             .expect("load")
             .expect("exists");
         assert_eq!(loaded.thread_id, "thread-1");
+        assert_eq!(loaded.input_tokens, 123);
+        assert_eq!(loaded.output_tokens, 45);
 
         let page = store
             .list_runs(&RunQuery {

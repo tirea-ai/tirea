@@ -11012,6 +11012,7 @@ async fn test_commit_pending_delta_noops_when_empty() {
         Some(&committer),
         &run_identity,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -11037,6 +11038,7 @@ async fn test_commit_pending_delta_force_persists_empty() {
         true, // forced
         Some(&committer),
         &run_identity,
+        None,
         None,
     )
     .await
@@ -11072,6 +11074,7 @@ async fn test_commit_pending_delta_version_advancement() {
         Some(&committer),
         &run_identity,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -11090,6 +11093,7 @@ async fn test_commit_pending_delta_version_advancement() {
         false,
         Some(&committer),
         &run_identity,
+        None,
         None,
     )
     .await
@@ -11147,6 +11151,7 @@ async fn test_commit_pending_delta_precondition_exactness() {
         Some(&committer),
         &run_identity,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -11189,6 +11194,7 @@ async fn test_commit_pending_delta_error_propagation() {
         Some(&committer),
         &run_identity,
         None,
+        None,
     )
     .await;
 
@@ -11216,6 +11222,7 @@ async fn test_commit_pending_delta_no_committer() {
         false,
         None,
         &run_identity,
+        None,
         None,
     )
     .await
@@ -11247,6 +11254,7 @@ async fn test_consecutive_checkpoints_disjoint_deltas() {
         Some(&committer),
         &run_identity,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -11263,6 +11271,7 @@ async fn test_consecutive_checkpoints_disjoint_deltas() {
         Some(&committer),
         &run_identity,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -11278,6 +11287,7 @@ async fn test_consecutive_checkpoints_disjoint_deltas() {
         false,
         Some(&committer),
         &run_identity,
+        None,
         None,
     )
     .await
@@ -11328,6 +11338,7 @@ async fn test_run_end_checkpoint_captures_remaining() {
         Some(&committer),
         &run_identity,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -11359,6 +11370,7 @@ async fn test_all_deltas_consumed_final_checkpoint_empty() {
         Some(&committer),
         &run_identity,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -11371,6 +11383,7 @@ async fn test_all_deltas_consumed_final_checkpoint_empty() {
         true,
         Some(&committer),
         &run_identity,
+        None,
         None,
     )
     .await

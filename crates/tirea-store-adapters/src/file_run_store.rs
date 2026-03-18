@@ -123,6 +123,8 @@ mod tests {
             100,
         );
         record.updated_at = 120;
+        record.input_tokens = 123;
+        record.output_tokens = 45;
 
         store.upsert_run(&record).await.expect("upsert");
         let loaded = store
@@ -132,6 +134,8 @@ mod tests {
             .expect("exists");
         assert_eq!(loaded.thread_id, "thread-1");
         assert_eq!(loaded.updated_at, 120);
+        assert_eq!(loaded.input_tokens, 123);
+        assert_eq!(loaded.output_tokens, 45);
 
         let page = store.list_runs(&RunQuery::default()).await.expect("list");
         assert_eq!(page.total, 1);

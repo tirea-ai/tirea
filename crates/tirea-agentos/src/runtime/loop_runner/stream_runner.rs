@@ -255,6 +255,7 @@ pub(super) fn run_stream(
                     agent.as_ref(),
                     &run_identity,
                     &pending_delta_commit,
+                    run_state.token_totals(),
                 )
                 .await
                 {
@@ -295,6 +296,7 @@ pub(super) fn run_stream(
                     agent.as_ref(),
                     &run_identity,
                     &pending_delta_commit,
+                    run_state.token_totals(),
                 )
                 .await
                 {

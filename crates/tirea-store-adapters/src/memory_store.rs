@@ -485,6 +485,8 @@ impl ThreadWriter for MemoryStore {
                         now,
                     )
                 });
+                record.input_tokens = meta.input_tokens;
+                record.output_tokens = meta.output_tokens;
                 record.status = meta.status;
                 record.agent_id.clone_from(&meta.agent_id);
                 record.origin = meta.origin;

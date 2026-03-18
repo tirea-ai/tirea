@@ -342,6 +342,8 @@ impl AgentOs {
                 termination_code: None,
                 termination_detail: None,
                 source_mailbox_entry_id: request.source_mailbox_entry_id.clone(),
+                input_tokens: 0,
+                output_tokens: 0,
             });
         }
         let committed = agent_state_store

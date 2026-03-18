@@ -4069,6 +4069,101 @@ async fn prepare_run_cleans_up_tool_call_scope_between_consecutive_runs() {
     );
 }
 
+#[tokio::test]
+async fn run_persists_token_totals_after_inference() {
+    use futures::StreamExt;
+    use genai::chat::{ChatStreamEvent, StreamChunk, StreamEnd, Usage};
+    use tirea_contract::storage::RunReader;
+    use tirea_store_adapters::MemoryStore;
+
+    #[derive(Debug)]
+    struct TokenUsageLlm;
+
+    #[async_trait]
+    impl crate::runtime::loop_runner::LlmExecutor for TokenUsageLlm {
+        async fn exec_chat_response(
+            &self,
+            _model: &str,
+            _chat_req: genai::chat::ChatRequest,
+            _options: Option<&genai::chat::ChatOptions>,
+        ) -> genai::Result<genai::chat::ChatResponse> {
+            unreachable!("streaming path only")
+        }
+
+        async fn exec_chat_stream_events(
+            &self,
+            _model: &str,
+            _chat_req: genai::chat::ChatRequest,
+            _options: Option<&genai::chat::ChatOptions>,
+        ) -> genai::Result<crate::runtime::loop_runner::LlmEventStream> {
+            Ok(Box::pin(futures::stream::iter(vec![
+                Ok(ChatStreamEvent::Start),
+                Ok(ChatStreamEvent::Chunk(StreamChunk {
+                    content: "ok".to_string(),
+                })),
+                Ok(ChatStreamEvent::End(StreamEnd {
+                    captured_usage: Some(Usage {
+                        prompt_tokens: Some(123),
+                        prompt_tokens_details: None,
+                        completion_tokens: Some(45),
+                        completion_tokens_details: None,
+                        total_tokens: Some(168),
+                    }),
+                    ..Default::default()
+                })),
+            ])))
+        }
+
+        fn name(&self) -> &'static str {
+            "token_usage_llm"
+        }
+    }
+
+    let storage = Arc::new(MemoryStore::new());
+    let os = AgentOs::builder()
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
+        .build()
+        .unwrap();
+
+    let mut resolved = os.resolve("a1").unwrap();
+    resolved.agent = resolved.agent.with_llm_executor(
+        Arc::new(TokenUsageLlm) as Arc<dyn crate::runtime::loop_runner::LlmExecutor>
+    );
+
+    let prepared = os
+        .prepare_run(
+            RunRequest {
+                agent_id: "a1".to_string(),
+                thread_id: Some("t-token-usage".to_string()),
+                run_id: Some("run-token-usage".to_string()),
+                parent_run_id: None,
+                parent_thread_id: None,
+                resource_id: None,
+                origin: RunOrigin::default(),
+                state: None,
+                messages: vec![crate::contracts::thread::Message::user("go")],
+                initial_decisions: vec![],
+                source_mailbox_entry_id: None,
+            },
+            resolved,
+        )
+        .await
+        .unwrap();
+    let run = AgentOs::execute_prepared(prepared).unwrap();
+    let _events: Vec<_> = run.events.collect().await;
+
+    let record = RunReader::load_run(storage.as_ref(), "run-token-usage")
+        .await
+        .expect("load run")
+        .expect("run should exist");
+    assert_eq!(record.input_tokens, 123);
+    assert_eq!(record.output_tokens, 45);
+}
+
 // ── SystemWiring tests ───────────────────────────────────────────────────────
 
 /// A minimal test SystemWiring that contributes a tool and a behavior.

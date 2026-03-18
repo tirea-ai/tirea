@@ -121,6 +121,8 @@ async fn test_auto_initializes_schema_on_first_run_access() {
         100,
     );
     run.updated_at = 120;
+    run.input_tokens = 123;
+    run.output_tokens = 45;
 
     store
         .upsert_run(&run)
@@ -132,6 +134,8 @@ async fn test_auto_initializes_schema_on_first_run_access() {
         .expect("load run")
         .expect("run should exist");
     assert_eq!(loaded.thread_id, "thread-auto-init");
+    assert_eq!(loaded.input_tokens, 123);
+    assert_eq!(loaded.output_tokens, 45);
 
     let current = store
         .load_current_run("thread-auto-init")
@@ -139,6 +143,8 @@ async fn test_auto_initializes_schema_on_first_run_access() {
         .expect("load current run")
         .expect("current run should exist");
     assert_eq!(current.run_id, "run-auto-init");
+    assert_eq!(current.input_tokens, 123);
+    assert_eq!(current.output_tokens, 45);
 }
 
 #[tokio::test]

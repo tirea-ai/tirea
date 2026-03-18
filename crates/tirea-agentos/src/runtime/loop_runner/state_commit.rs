@@ -21,6 +21,12 @@ impl ChannelStateCommitter {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct RunTokenTotals {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
 #[async_trait]
 impl StateCommitter for ChannelStateCommitter {
     async fn commit(
@@ -44,6 +50,7 @@ pub(super) async fn commit_pending_delta(
     state_committer: Option<&Arc<dyn StateCommitter>>,
     run_identity: &RunIdentity,
     termination: Option<&TerminationReason>,
+    token_totals: Option<RunTokenTotals>,
 ) -> Result<(), AgentLoopError> {
     let Some(committer) = state_committer else {
         return Ok(());
@@ -86,6 +93,7 @@ pub(super) async fn commit_pending_delta(
         let origin: RunOrigin = run_identity.origin;
         let parent_thread_id = None; // Already set on the initial changeset.
         let (status, termination_code, termination_detail) = map_termination(termination);
+        let token_totals = token_totals.unwrap_or_default();
         changeset.run_meta = Some(RunMeta {
             agent_id,
             origin,
@@ -94,6 +102,8 @@ pub(super) async fn commit_pending_delta(
             termination_code,
             termination_detail,
             source_mailbox_entry_id: None,
+            input_tokens: token_totals.input_tokens,
+            output_tokens: token_totals.output_tokens,
         });
     }
 
@@ -161,6 +171,7 @@ impl<'a> PendingDeltaCommitContext<'a> {
             self.state_committer,
             self.run_identity,
             None,
+            None,
         )
         .await
     }
@@ -169,6 +180,7 @@ impl<'a> PendingDeltaCommitContext<'a> {
         &self,
         run_ctx: &mut RunContext,
         termination: &TerminationReason,
+        token_totals: RunTokenTotals,
     ) -> Result<(), AgentLoopError> {
         commit_pending_delta(
             run_ctx,
@@ -177,6 +189,7 @@ impl<'a> PendingDeltaCommitContext<'a> {
             self.state_committer,
             self.run_identity,
             Some(termination),
+            Some(token_totals),
         )
         .await
     }

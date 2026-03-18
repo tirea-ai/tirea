@@ -1,5 +1,6 @@
 use super::outcome::{LoopStats, LoopUsage};
 use crate::contracts::runtime::StreamResult;
+use crate::runtime::loop_runner::state_commit::RunTokenTotals;
 use std::collections::VecDeque;
 use std::time::Instant;
 
@@ -39,6 +40,12 @@ impl LoopRunState {
             tool_call_history: VecDeque::new(),
             truncation_retries: 0,
             stream_event_retries: 0,
+        }
+    }
+    pub(super) fn token_totals(&self) -> RunTokenTotals {
+        RunTokenTotals {
+            input_tokens: self.total_input_tokens as u64,
+            output_tokens: self.total_output_tokens as u64,
         }
     }
 

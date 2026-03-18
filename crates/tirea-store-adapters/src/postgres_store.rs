@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 #[cfg(feature = "postgres")]
 use sqlx::{Postgres, QueryBuilder};
+#[cfg(feature = "postgres")]
 use tirea_contract::storage::{
     paginate_mailbox_entries, Committed, MailboxEntry, MailboxEntryOrigin, MailboxInterrupt,
     MailboxPage, MailboxQuery, MailboxReader, MailboxState, MailboxStoreError, MailboxWriter,
@@ -60,105 +61,115 @@ impl PostgresStore {
 
     fn schema_statements(&self) -> Vec<String> {
         vec![
-            format!(
-                "CREATE TABLE IF NOT EXISTS {} (id TEXT PRIMARY KEY, data JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now())",
-                self.table
-            ),
-            format!(
-                "CREATE TABLE IF NOT EXISTS {} (seq BIGSERIAL PRIMARY KEY, session_id TEXT NOT NULL REFERENCES {}(id) ON DELETE CASCADE, message_id TEXT, run_id TEXT, step_index INTEGER, data JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now())",
-                self.messages_table, self.table
-            ),
-            format!(
-                "CREATE INDEX IF NOT EXISTS idx_{}_session_seq ON {} (session_id, seq)",
-                self.messages_table, self.messages_table
-            ),
-            format!(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_{}_message_id ON {} (message_id) WHERE message_id IS NOT NULL",
-                self.messages_table, self.messages_table
-            ),
-            format!(
-                "CREATE INDEX IF NOT EXISTS idx_{}_session_run ON {} (session_id, run_id) WHERE run_id IS NOT NULL",
-                self.messages_table, self.messages_table
-            ),
-            format!(
-                "CREATE INDEX IF NOT EXISTS idx_{}_resource_id ON {} ((data->>'resource_id')) WHERE data ? 'resource_id'",
-                self.table, self.table
-            ),
-            format!(
-                "CREATE INDEX IF NOT EXISTS idx_{}_parent_thread_id ON {} ((data->>'parent_thread_id')) WHERE data ? 'parent_thread_id'",
-                self.table, self.table
-            ),
-            format!(
-                "CREATE TABLE IF NOT EXISTS {} (run_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, agent_id TEXT NOT NULL DEFAULT '', parent_run_id TEXT, parent_thread_id TEXT, origin TEXT NOT NULL, status TEXT NOT NULL, termination_code TEXT, termination_detail TEXT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, source_mailbox_entry_id TEXT, metadata JSONB)",
-                self.runs_table
-            ),
-            format!(
-                "CREATE INDEX IF NOT EXISTS idx_{}_thread_id ON {} (thread_id)",
-                self.runs_table, self.runs_table
-            ),
-            format!(
-                "CREATE INDEX IF NOT EXISTS idx_{}_thread_active ON {} (thread_id, created_at DESC) WHERE status != 'done'",
-                self.runs_table, self.runs_table
-            ),
-            format!(
-                "CREATE INDEX IF NOT EXISTS idx_{}_parent_run_id ON {} (parent_run_id) WHERE parent_run_id IS NOT NULL",
-                self.runs_table, self.runs_table
-            ),
-            format!(
-                "CREATE INDEX IF NOT EXISTS idx_{}_status ON {} (status)",
-                self.runs_table, self.runs_table
-            ),
-            format!(
-                "CREATE INDEX IF NOT EXISTS idx_{}_termination_code ON {} (termination_code) WHERE termination_code IS NOT NULL",
-                self.runs_table, self.runs_table
-            ),
-            format!(
-                "CREATE INDEX IF NOT EXISTS idx_{}_origin ON {} (origin)",
-                self.runs_table, self.runs_table
-            ),
-            format!(
-                "CREATE INDEX IF NOT EXISTS idx_{}_created_at ON {} (created_at, run_id)",
-                self.runs_table, self.runs_table
-            ),
-            format!(
-                "CREATE TABLE IF NOT EXISTS {} (entry_id TEXT PRIMARY KEY, mailbox_id TEXT NOT NULL, origin TEXT NOT NULL DEFAULT 'external', sender_id TEXT, payload JSONB NOT NULL, priority SMALLINT NOT NULL DEFAULT 0, dedupe_key TEXT, generation BIGINT NOT NULL DEFAULT 0, status TEXT NOT NULL, available_at BIGINT NOT NULL, attempt_count INTEGER NOT NULL DEFAULT 0, last_error TEXT, claim_token TEXT, claimed_by TEXT, lease_until BIGINT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)",
-                self.mailbox_table
-            ),
-            format!(
-                "CREATE TABLE IF NOT EXISTS {} (mailbox_id TEXT PRIMARY KEY, current_generation BIGINT NOT NULL DEFAULT 0, updated_at BIGINT NOT NULL)",
-                self.mailbox_threads_table
-            ),
-            format!(
-                "CREATE INDEX IF NOT EXISTS idx_{}_status_available ON {} (status, available_at, created_at)",
-                self.mailbox_table, self.mailbox_table
-            ),
-            format!(
-                "CREATE INDEX IF NOT EXISTS idx_{}_mailbox_status ON {} (mailbox_id, status, created_at)",
-                self.mailbox_table, self.mailbox_table
-            ),
-            format!(
-                "CREATE INDEX IF NOT EXISTS idx_{}_mailbox_origin_status ON {} (mailbox_id, origin, status, created_at)",
-                self.mailbox_table, self.mailbox_table
-            ),
-            format!(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_{}_mailbox_dedupe ON {} (mailbox_id, dedupe_key) WHERE dedupe_key IS NOT NULL",
-                self.mailbox_table, self.mailbox_table
-            ),
-            // Migration: add agent_id column to existing tables.
-            format!(
-                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS agent_id TEXT NOT NULL DEFAULT ''",
-                self.runs_table
-            ),
-            format!(
-                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'external'",
-                self.mailbox_table
-            ),
-            // Enforce at most one non-terminal run per thread.
-            format!(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_{}_thread_active_unique ON {} (thread_id) WHERE status != 'done'",
-                self.runs_table, self.runs_table
-            ),
-        ]
+                    format!(
+                        "CREATE TABLE IF NOT EXISTS {} (id TEXT PRIMARY KEY, data JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+                        self.table
+                    ),
+                    format!(
+                        "CREATE TABLE IF NOT EXISTS {} (seq BIGSERIAL PRIMARY KEY, session_id TEXT NOT NULL REFERENCES {}(id) ON DELETE CASCADE, message_id TEXT, run_id TEXT, step_index INTEGER, data JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+                        self.messages_table, self.table
+                    ),
+                    format!(
+                        "CREATE INDEX IF NOT EXISTS idx_{}_session_seq ON {} (session_id, seq)",
+                        self.messages_table, self.messages_table
+                    ),
+                    format!(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS idx_{}_message_id ON {} (message_id) WHERE message_id IS NOT NULL",
+                        self.messages_table, self.messages_table
+                    ),
+                    format!(
+                        "CREATE INDEX IF NOT EXISTS idx_{}_session_run ON {} (session_id, run_id) WHERE run_id IS NOT NULL",
+                        self.messages_table, self.messages_table
+                    ),
+                    format!(
+                        "CREATE INDEX IF NOT EXISTS idx_{}_resource_id ON {} ((data->>'resource_id')) WHERE data ? 'resource_id'",
+                        self.table, self.table
+                    ),
+                    format!(
+                        "CREATE INDEX IF NOT EXISTS idx_{}_parent_thread_id ON {} ((data->>'parent_thread_id')) WHERE data ? 'parent_thread_id'",
+                        self.table, self.table
+                    ),
+                    format!(
+                        "CREATE TABLE IF NOT EXISTS {} (run_id TEXT PRIMARY KEY,thread_id TEXT NOT NULL,agent_id TEXT NOT NULL DEFAULT '',parent_run_id TEXT,parent_thread_id TEXT,origin TEXT NOT NULL,status TEXT NOT NULL,termination_code TEXT,termination_detail TEXT,created_at BIGINT NOT NULL,updated_at BIGINT NOT NULL,source_mailbox_entry_id TEXT,metadata JSONB,input_tokens BIGINT NOT NULL DEFAULT 0,output_tokens BIGINT NOT NULL DEFAULT 0)",
+                        self.runs_table
+                    ),
+                    format!(
+                        "CREATE INDEX IF NOT EXISTS idx_{}_thread_id ON {} (thread_id)",
+                        self.runs_table, self.runs_table
+                    ),
+                    format!(
+                        "CREATE INDEX IF NOT EXISTS idx_{}_thread_active ON {} (thread_id, created_at DESC) WHERE status != 'done'",
+                        self.runs_table, self.runs_table
+                    ),
+                    format!(
+                        "CREATE INDEX IF NOT EXISTS idx_{}_parent_run_id ON {} (parent_run_id) WHERE parent_run_id IS NOT NULL",
+                        self.runs_table, self.runs_table
+                    ),
+                    format!(
+                        "CREATE INDEX IF NOT EXISTS idx_{}_status ON {} (status)",
+                        self.runs_table, self.runs_table
+                    ),
+                    format!(
+                        "CREATE INDEX IF NOT EXISTS idx_{}_termination_code ON {} (termination_code) WHERE termination_code IS NOT NULL",
+                        self.runs_table, self.runs_table
+                    ),
+                    format!(
+                        "CREATE INDEX IF NOT EXISTS idx_{}_origin ON {} (origin)",
+                        self.runs_table, self.runs_table
+                    ),
+                    format!(
+                        "CREATE INDEX IF NOT EXISTS idx_{}_created_at ON {} (created_at, run_id)",
+                        self.runs_table, self.runs_table
+                    ),
+                    format!(
+                        "CREATE TABLE IF NOT EXISTS {} (entry_id TEXT PRIMARY KEY, mailbox_id TEXT NOT NULL, origin TEXT NOT NULL DEFAULT 'external', sender_id TEXT, payload JSONB NOT NULL, priority SMALLINT NOT NULL DEFAULT 0, dedupe_key TEXT, generation BIGINT NOT NULL DEFAULT 0, status TEXT NOT NULL, available_at BIGINT NOT NULL, attempt_count INTEGER NOT NULL DEFAULT 0, last_error TEXT, claim_token TEXT, claimed_by TEXT, lease_until BIGINT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)",
+                        self.mailbox_table
+                    ),
+                    format!(
+                        "CREATE TABLE IF NOT EXISTS {} (mailbox_id TEXT PRIMARY KEY, current_generation BIGINT NOT NULL DEFAULT 0, updated_at BIGINT NOT NULL)",
+                        self.mailbox_threads_table
+                    ),
+                    format!(
+                        "CREATE INDEX IF NOT EXISTS idx_{}_status_available ON {} (status, available_at, created_at)",
+                        self.mailbox_table, self.mailbox_table
+                    ),
+                    format!(
+                        "CREATE INDEX IF NOT EXISTS idx_{}_mailbox_status ON {} (mailbox_id, status, created_at)",
+                        self.mailbox_table, self.mailbox_table
+                    ),
+                    format!(
+                        "CREATE INDEX IF NOT EXISTS idx_{}_mailbox_origin_status ON {} (mailbox_id, origin, status, created_at)",
+                        self.mailbox_table, self.mailbox_table
+                    ),
+                    format!(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS idx_{}_mailbox_dedupe ON {} (mailbox_id, dedupe_key) WHERE dedupe_key IS NOT NULL",
+                        self.mailbox_table, self.mailbox_table
+                    ),
+                    // Migration: add agent_id column to existing tables.
+                    format!(
+                        "ALTER TABLE {} ADD COLUMN IF NOT EXISTS agent_id TEXT NOT NULL DEFAULT ''",
+                        self.runs_table
+                    ),
+                    format!(
+                        "ALTER TABLE {} ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'external'",
+                        self.mailbox_table
+                    ),
+
+                    // Migration: add input_tokens and output_tokens columns to existing tables.
+                    format!(
+                        "ALTER TABLE {} ADD COLUMN IF NOT EXISTS input_tokens BIGINT NOT NULL DEFAULT 0",
+                        self.runs_table
+                    ),
+                    format!(
+                        "ALTER TABLE {} ADD COLUMN IF NOT EXISTS output_tokens BIGINT NOT NULL DEFAULT 0",
+                        self.runs_table
+                    ),
+                    // Enforce at most one non-terminal run per thread.
+                    format!(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS idx_{}_thread_active_unique ON {} (thread_id) WHERE status != 'done'",
+                        self.runs_table, self.runs_table
+                    ),
+                ]
     }
 
     async fn ensure_schema_ready(&self) -> Result<(), sqlx::Error> {
@@ -1629,6 +1640,8 @@ type RunRowTuple = (
     i64,
     Option<String>,
     Option<serde_json::Value>,
+    i64,
+    i64,
 );
 
 #[cfg(feature = "postgres")]
@@ -1696,6 +1709,8 @@ impl PostgresStore {
             updated_at,
             source_mailbox_entry_id,
             metadata,
+            input_tokens,
+            output_tokens,
         ) = row;
         Ok(RunRecord {
             run_id,
@@ -1711,6 +1726,8 @@ impl PostgresStore {
             updated_at: Self::from_db_timestamp(updated_at, "updated_at")?,
             source_mailbox_entry_id,
             metadata,
+            input_tokens: Self::from_db_timestamp(input_tokens, "input_tokens")?,
+            output_tokens: Self::from_db_timestamp(output_tokens, "output_tokens")?,
         })
     }
 
@@ -1763,7 +1780,7 @@ impl RunReader for PostgresStore {
         self.ensure_run_schema_ready().await?;
 
         let sql = format!(
-            "SELECT run_id, thread_id, agent_id, parent_run_id, parent_thread_id, origin, status, termination_code, termination_detail, created_at, updated_at, source_mailbox_entry_id, metadata FROM {} WHERE run_id = $1",
+            "SELECT run_id, thread_id, agent_id, parent_run_id, parent_thread_id, origin, status, termination_code, termination_detail, created_at, updated_at, source_mailbox_entry_id, metadata,input_tokens,output_tokens FROM {} WHERE run_id = $1",
             self.runs_table
         );
         let row = sqlx::query_as::<_, RunRowTuple>(&sql)
@@ -1848,7 +1865,7 @@ impl RunReader for PostgresStore {
             .map_err(Self::run_sql_err)?;
 
         let mut data_qb = QueryBuilder::<Postgres>::new(format!(
-            "SELECT run_id, thread_id, agent_id, parent_run_id, parent_thread_id, origin, status, termination_code, termination_detail, created_at, updated_at, source_mailbox_entry_id, metadata FROM {}",
+            "SELECT run_id, thread_id, agent_id, parent_run_id, parent_thread_id, origin, status, termination_code, termination_detail, created_at, updated_at, source_mailbox_entry_id, metadata,input_tokens,output_tokens FROM {}",
             self.runs_table
         ));
         let mut has_where = false;
@@ -1951,7 +1968,7 @@ impl RunReader for PostgresStore {
 
         let sql = format!(
             "SELECT run_id, thread_id, agent_id, parent_run_id, parent_thread_id, origin, status, \
-             termination_code, termination_detail, created_at, updated_at, source_mailbox_entry_id, metadata \
+             termination_code, termination_detail, created_at, updated_at, source_mailbox_entry_id, metadata,input_tokens,output_tokens \
              FROM {} WHERE thread_id = $1 AND status != $2 \
              ORDER BY created_at DESC, updated_at DESC, run_id DESC LIMIT 1",
             self.runs_table
@@ -1974,16 +1991,18 @@ impl RunWriter for PostgresStore {
 
         let created_at = Self::to_db_timestamp(record.created_at, "created_at")?;
         let updated_at = Self::to_db_timestamp(record.updated_at, "updated_at")?;
+        let input_tokens = Self::to_db_timestamp(record.input_tokens, "input_tokens")?;
+        let output_tokens = Self::to_db_timestamp(record.output_tokens, "output_tokens")?;
         let sql = format!(
             "INSERT INTO {} (run_id, thread_id, agent_id, parent_run_id, parent_thread_id, origin, status, \
-             termination_code, termination_detail, created_at, updated_at, source_mailbox_entry_id, metadata) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
+             termination_code, termination_detail, created_at, updated_at, source_mailbox_entry_id, metadata,input_tokens,output_tokens) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,$14,$15) \
              ON CONFLICT (run_id) DO UPDATE SET thread_id = EXCLUDED.thread_id, agent_id = EXCLUDED.agent_id, \
              parent_run_id = EXCLUDED.parent_run_id, parent_thread_id = EXCLUDED.parent_thread_id, \
              origin = EXCLUDED.origin, status = EXCLUDED.status, termination_code = EXCLUDED.termination_code, \
              termination_detail = EXCLUDED.termination_detail, created_at = EXCLUDED.created_at, \
              updated_at = EXCLUDED.updated_at, source_mailbox_entry_id = EXCLUDED.source_mailbox_entry_id, \
-             metadata = EXCLUDED.metadata",
+             metadata = EXCLUDED.metadata,input_tokens=EXCLUDED.input_tokens,output_tokens=EXCLUDED.output_tokens",
             self.runs_table
         );
         sqlx::query(&sql)
@@ -2000,6 +2019,8 @@ impl RunWriter for PostgresStore {
             .bind(updated_at)
             .bind(record.source_mailbox_entry_id.as_deref())
             .bind(&record.metadata)
+            .bind(input_tokens)
+            .bind(output_tokens)
             .execute(&self.pool)
             .await
             .map_err(Self::run_sql_err)?;
