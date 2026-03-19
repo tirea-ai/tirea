@@ -16,8 +16,8 @@ pub use bundle::{
 };
 pub use config::{
     A2aAgentConfig, AgentConfig, AgentConfigEntry, AgentConfigError, AgentToolsConfig,
-    LocalAgentConfig, RemoteAuthConfig, SkillsConfig, TaggedAgentConfigEntry,
-    ToolExecutionModeConfig,
+    LocalAgentConfig, ModelConfig, ProviderAuthConfig, ProviderConfig, RemoteAuthConfig,
+    SkillsConfig, TaggedAgentConfigEntry, ToolExecutionModeConfig,
 };
 pub use delegation::{
     A2aAgentBinding, AgentBinding, AgentCatalog, AgentCatalogError, AgentDefinitionSpec,
