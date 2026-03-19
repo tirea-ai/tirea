@@ -4583,6 +4583,11 @@ dependencies = [
  "serde_json",
  "tirea-agentos",
  "tirea-contract",
+ "tirea-extension-handoff",
+ "tirea-extension-mcp",
+ "tirea-extension-observability",
+ "tirea-extension-permission",
+ "tirea-extension-reminder",
  "tirea-extension-skills",
  "tirea-protocol-acp",
  "tirea-protocol-ag-ui",
@@ -4616,11 +4621,10 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tirea-contract",
+ "tirea-extension-handoff",
  "tirea-extension-mcp",
- "tirea-extension-mode",
  "tirea-extension-observability",
  "tirea-extension-permission",
- "tirea-extension-plan",
  "tirea-extension-reminder",
  "tirea-extension-skills",
  "tirea-state",
@@ -4658,6 +4662,7 @@ dependencies = [
  "tirea-agentos",
  "tirea-contract",
  "tirea-extension-a2ui",
+ "tirea-extension-observability",
  "tirea-extension-permission",
  "tirea-protocol-acp",
  "tirea-protocol-ag-ui",
@@ -4704,6 +4709,7 @@ dependencies = [
  "tirea-agentos-server",
  "tirea-extension-a2ui",
  "tirea-extension-mcp",
+ "tirea-extension-observability",
  "tirea-extension-permission",
  "tirea-state",
  "tirea-state-derive",
@@ -4729,6 +4735,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tirea-extension-handoff"
+version = "0.5.0-alpha.1"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tirea-contract",
+ "tirea-state",
+ "tokio",
+]
+
+[[package]]
 name = "tirea-extension-mcp"
 version = "0.5.0-alpha.1"
 dependencies = [
@@ -4741,18 +4759,6 @@ dependencies = [
  "tirea-state",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "tirea-extension-mode"
-version = "0.5.0-alpha.1"
-dependencies = [
- "async-trait",
- "serde",
- "serde_json",
- "tirea-contract",
- "tirea-state",
- "tokio",
 ]
 
 [[package]]
@@ -4776,18 +4782,6 @@ dependencies = [
 
 [[package]]
 name = "tirea-extension-permission"
-version = "0.5.0-alpha.1"
-dependencies = [
- "async-trait",
- "serde",
- "serde_json",
- "tirea-contract",
- "tirea-state",
- "tokio",
-]
-
-[[package]]
-name = "tirea-extension-plan"
 version = "0.5.0-alpha.1"
 dependencies = [
  "async-trait",
@@ -4852,6 +4846,10 @@ dependencies = [
  "tempfile",
  "tirea-agentos",
  "tirea-contract",
+ "tirea-extension-observability",
+ "tirea-extension-permission",
+ "tirea-extension-reminder",
+ "tirea-extension-skills",
  "tirea-state",
  "tirea-store-adapters",
  "tokio",

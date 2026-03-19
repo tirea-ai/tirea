@@ -3,15 +3,7 @@ use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::runtime::AgentBehavior;
 use crate::contracts::storage::ThreadStore;
 #[cfg(feature = "skills")]
-use crate::extensions::skills::{
-    CompositeSkillRegistry, InMemorySkillRegistry, Skill, SkillRegistry, SkillRegistryManagerError,
-};
-#[cfg(feature = "mode")]
-use crate::runtime::mode_wiring::ModeSystemWiring;
-#[cfg(feature = "plan")]
-use crate::runtime::plan_wiring::PlanSystemWiring;
-#[cfg(feature = "skills")]
-use crate::runtime::resolve::SkillsSystemWiring;
+use crate::runtime::wiring::SkillsSystemWiring;
 use crate::runtime::StopPolicy;
 use crate::runtime::{AgentOs, RuntimeServices};
 use genai::Client;
@@ -19,6 +11,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 #[cfg(feature = "skills")]
 use std::time::Duration;
+#[cfg(feature = "skills")]
+use tirea_extension_skills::{
+    CompositeSkillRegistry, InMemorySkillRegistry, Skill, SkillRegistry, SkillRegistryManagerError,
+};
 
 pub struct AgentOsBuilder {
     pub(crate) client: Option<Client>,
@@ -45,10 +41,6 @@ pub struct AgentOsBuilder {
     pub(crate) skills_refresh_interval: Option<Duration>,
     #[cfg(feature = "skills")]
     pub(crate) skills_config: SkillsConfig,
-    #[cfg(feature = "mode")]
-    pub(crate) mode_config: ModeConfig,
-    #[cfg(feature = "plan")]
-    pub(crate) plan_config: PlanConfig,
     pub(crate) system_wirings: Vec<Arc<dyn SystemWiring>>,
     pub(crate) agent_tools: AgentToolsConfig,
     pub(crate) agent_state_store: Option<Arc<dyn ThreadStore>>,
@@ -184,10 +176,6 @@ impl AgentOsBuilder {
             skills_refresh_interval: None,
             #[cfg(feature = "skills")]
             skills_config: SkillsConfig::default(),
-            #[cfg(feature = "mode")]
-            mode_config: ModeConfig::default(),
-            #[cfg(feature = "plan")]
-            plan_config: PlanConfig::default(),
             system_wirings: Vec::new(),
             agent_tools: AgentToolsConfig::default(),
             agent_state_store: None,
@@ -312,20 +300,6 @@ impl AgentOsBuilder {
         self
     }
 
-    /// Configure the mode switching extension.
-    #[cfg(feature = "mode")]
-    pub fn with_mode_config(mut self, cfg: ModeConfig) -> Self {
-        self.mode_config = cfg;
-        self
-    }
-
-    /// Configure the plan mode extension.
-    #[cfg(feature = "plan")]
-    pub fn with_plan_config(mut self, cfg: PlanConfig) -> Self {
-        self.plan_config = cfg;
-        self
-    }
-
     /// Register a [`SystemWiring`] implementation for generic extension wiring.
     pub fn with_system_wiring(mut self, wiring: Arc<dyn SystemWiring>) -> Self {
         self.system_wirings.push(wiring);
@@ -368,10 +342,6 @@ impl AgentOsBuilder {
             skills_refresh_interval,
             #[cfg(feature = "skills")]
             skills_config,
-            #[cfg(feature = "mode")]
-            mode_config,
-            #[cfg(feature = "plan")]
-            plan_config,
             system_wirings,
             agent_tools,
             agent_state_store,
@@ -436,18 +406,6 @@ impl AgentOsBuilder {
 
             registry
         };
-
-        // --- Mode switching setup (feature-gated) ---
-        #[cfg(feature = "mode")]
-        if mode_config.enabled {
-            system_wirings.push(Arc::new(ModeSystemWiring::new()));
-        }
-
-        // --- Plan mode setup (feature-gated) ---
-        #[cfg(feature = "plan")]
-        if plan_config.enabled {
-            system_wirings.push(Arc::new(PlanSystemWiring::new()));
-        }
 
         let mut base_tools = InMemoryToolRegistry::new();
         base_tools.extend_named(base_tools_defs)?;
