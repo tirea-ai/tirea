@@ -185,6 +185,32 @@ fn build_os(
         tools
     });
 
+    // Register config-declared providers and models.
+    if let Some(ref c) = cfg {
+        match c.into_provider_clients() {
+            Ok(clients) => {
+                for (id, client) in clients {
+                    builder = builder.with_provider(id, client);
+                }
+            }
+            Err(err) => {
+                report_agent_config_error(err);
+                std::process::exit(2);
+            }
+        }
+        match c.into_model_definitions() {
+            Ok(defs) => {
+                for (id, def) in defs {
+                    builder = builder.with_model(id, def);
+                }
+            }
+            Err(err) => {
+                report_agent_config_error(err);
+                std::process::exit(2);
+            }
+        }
+    }
+
     let agents = match cfg {
         Some(c) => c.agents,
         None => vec![AgentConfigEntry::LegacyLocal(LocalAgentConfig {
@@ -397,6 +423,8 @@ mod tests {
     fn build_os_accepts_remote_a2a_agents_from_config() {
         let os = build_os(
             Some(AgentConfig {
+                providers: HashMap::new(),
+                models: HashMap::new(),
                 agents: serde_json::from_value(json!([
                     {
                         "kind": "a2a",

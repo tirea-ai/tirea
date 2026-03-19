@@ -1,6 +1,6 @@
 use super::{
-    A2aAgentBinding, AgentDefinition, AgentDefinitionSpec, AgentDescriptor, RemoteSecurityConfig,
-    StopConditionSpec, ToolExecutionMode,
+    A2aAgentBinding, AgentDefinition, AgentDefinitionSpec, AgentDescriptor, ModelDefinition,
+    RemoteSecurityConfig, StopConditionSpec, ToolExecutionMode,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -42,8 +42,74 @@ impl Default for AgentToolsConfig {
     }
 }
 
+/// Authentication method for a declared provider.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProviderAuthConfig {
+    /// Read the API key from an environment variable.
+    Env { name: String },
+    /// Use a literal token value.
+    Token { value: String },
+}
+
+/// A provider endpoint declaration in agent config JSON.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderConfig {
+    pub endpoint: String,
+    #[serde(default)]
+    pub auth: Option<ProviderAuthConfig>,
+}
+
+impl ProviderConfig {
+    /// Build a `genai::Client` configured for this provider.
+    pub fn into_client(&self, provider_id: &str) -> Result<genai::Client, AgentConfigError> {
+        let endpoint =
+            normalize_required_field(Some(provider_id), "endpoint", self.endpoint.clone())?;
+        let auth = match &self.auth {
+            None => genai::resolver::AuthData::None,
+            Some(ProviderAuthConfig::Env { name }) => {
+                let name = normalize_required_field(Some(provider_id), "auth.name", name.clone())?;
+                genai::resolver::AuthData::from_env(name)
+            }
+            Some(ProviderAuthConfig::Token { value }) => {
+                let value =
+                    normalize_required_field(Some(provider_id), "auth.value", value.clone())?;
+                genai::resolver::AuthData::from_single(value)
+            }
+        };
+        let client = genai::Client::builder()
+            .with_service_target_resolver_fn(move |mut t: genai::ServiceTarget| {
+                t.endpoint = genai::resolver::Endpoint::from_owned(&*endpoint);
+                t.auth = auth.clone();
+                Ok(t)
+            })
+            .build();
+        Ok(client)
+    }
+}
+
+/// A model alias declaration in agent config JSON.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ModelConfig {
+    pub provider: String,
+    pub model: String,
+}
+
+impl ModelConfig {
+    /// Convert into a [`ModelDefinition`] suitable for the model registry.
+    pub fn into_definition(&self, model_id: &str) -> Result<ModelDefinition, AgentConfigError> {
+        let provider = normalize_required_field(Some(model_id), "provider", self.provider.clone())?;
+        let model = normalize_required_field(Some(model_id), "model", self.model.clone())?;
+        Ok(ModelDefinition::new(provider, model))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AgentConfig {
+    #[serde(default)]
+    pub providers: HashMap<String, ProviderConfig>,
+    #[serde(default)]
+    pub models: HashMap<String, ModelConfig>,
     pub agents: Vec<AgentConfigEntry>,
 }
 
@@ -73,6 +139,36 @@ impl AgentConfig {
             specs.push(spec);
         }
         Ok(specs)
+    }
+
+    /// Build `genai::Client` instances for every declared provider.
+    pub fn into_provider_clients(
+        &self,
+    ) -> Result<HashMap<String, genai::Client>, AgentConfigError> {
+        let mut clients = HashMap::with_capacity(self.providers.len());
+        for (id, cfg) in &self.providers {
+            let id = normalize_required_field(None, "provider id", id.clone())?;
+            if clients.contains_key(&id) {
+                return Err(AgentConfigError::DuplicateProviderId(id));
+            }
+            clients.insert(id.clone(), cfg.into_client(&id)?);
+        }
+        Ok(clients)
+    }
+
+    /// Build [`ModelDefinition`] instances for every declared model.
+    pub fn into_model_definitions(
+        &self,
+    ) -> Result<HashMap<String, ModelDefinition>, AgentConfigError> {
+        let mut defs = HashMap::with_capacity(self.models.len());
+        for (id, cfg) in &self.models {
+            let id = normalize_required_field(None, "model id", id.clone())?;
+            if defs.contains_key(&id) {
+                return Err(AgentConfigError::DuplicateModelId(id));
+            }
+            defs.insert(id.clone(), cfg.into_definition(&id)?);
+        }
+        Ok(defs)
     }
 }
 
@@ -247,6 +343,10 @@ pub enum AgentConfigError {
     ParseJson(#[from] serde_json::Error),
     #[error("agent id already configured: {0}")]
     DuplicateAgentId(String),
+    #[error("provider id already configured: {0}")]
+    DuplicateProviderId(String),
+    #[error("model id already configured: {0}")]
+    DuplicateModelId(String),
     #[error("field '{field}' must not be blank")]
     BlankField { field: &'static str },
     #[error("agent '{agent_id}' field '{field}' must not be blank")]
@@ -407,5 +507,183 @@ mod tests {
         let schema_json = serde_json::to_value(&schema).expect("schema should serialize");
         assert_eq!(schema_json["type"], serde_json::json!("object"));
         assert!(schema_json["properties"]["agents"].is_object());
+        assert!(schema_json["properties"]["providers"].is_object());
+        assert!(schema_json["properties"]["models"].is_object());
+    }
+
+    #[test]
+    fn parses_config_with_providers_models_and_agents() {
+        let cfg: AgentConfig = serde_json::from_value(serde_json::json!({
+            "providers": {
+                "oauth-proxy": { "endpoint": "http://127.0.0.1:10531/v1" },
+                "openai": {
+                    "endpoint": "https://api.openai.com/v1",
+                    "auth": { "kind": "env", "name": "OPENAI_API_KEY" }
+                }
+            },
+            "models": {
+                "gpt-5": { "provider": "oauth-proxy", "model": "gpt-5.4" }
+            },
+            "agents": [
+                { "id": "coder", "model": "gpt-5" }
+            ]
+        }))
+        .expect("config should parse");
+
+        assert_eq!(cfg.providers.len(), 2);
+        assert_eq!(cfg.models.len(), 1);
+        assert_eq!(cfg.agents.len(), 1);
+    }
+
+    #[test]
+    fn parses_config_with_only_agents_backward_compat() {
+        let cfg: AgentConfig = serde_json::from_value(serde_json::json!({
+            "agents": [{ "id": "default" }]
+        }))
+        .expect("config should parse without providers/models");
+
+        assert!(cfg.providers.is_empty());
+        assert!(cfg.models.is_empty());
+        assert_eq!(cfg.agents.len(), 1);
+    }
+
+    #[test]
+    fn rejects_blank_provider_endpoint() {
+        let cfg: AgentConfig = serde_json::from_value(serde_json::json!({
+            "providers": {
+                "bad": { "endpoint": "   " }
+            },
+            "agents": [{ "id": "default" }]
+        }))
+        .expect("config should parse");
+
+        let err = cfg
+            .into_provider_clients()
+            .expect_err("blank endpoint should fail");
+        assert!(matches!(
+            err,
+            AgentConfigError::BlankAgentField { agent_id, field }
+                if agent_id == "bad" && field == "endpoint"
+        ));
+    }
+
+    #[test]
+    fn rejects_blank_auth_env_name() {
+        let cfg: AgentConfig = serde_json::from_value(serde_json::json!({
+            "providers": {
+                "bad": {
+                    "endpoint": "http://localhost:8080",
+                    "auth": { "kind": "env", "name": "  " }
+                }
+            },
+            "agents": [{ "id": "default" }]
+        }))
+        .expect("config should parse");
+
+        let err = cfg
+            .into_provider_clients()
+            .expect_err("blank auth env name should fail");
+        assert!(matches!(
+            err,
+            AgentConfigError::BlankAgentField { agent_id, field }
+                if agent_id == "bad" && field == "auth.name"
+        ));
+    }
+
+    #[test]
+    fn rejects_blank_auth_token_value() {
+        let cfg: AgentConfig = serde_json::from_value(serde_json::json!({
+            "providers": {
+                "bad": {
+                    "endpoint": "http://localhost:8080",
+                    "auth": { "kind": "token", "value": "" }
+                }
+            },
+            "agents": [{ "id": "default" }]
+        }))
+        .expect("config should parse");
+
+        let err = cfg
+            .into_provider_clients()
+            .expect_err("blank auth token value should fail");
+        assert!(matches!(
+            err,
+            AgentConfigError::BlankAgentField { agent_id, field }
+                if agent_id == "bad" && field == "auth.value"
+        ));
+    }
+
+    #[test]
+    fn rejects_blank_model_provider_or_model_name() {
+        let cfg: AgentConfig = serde_json::from_value(serde_json::json!({
+            "models": {
+                "bad": { "provider": "  ", "model": "gpt-4" }
+            },
+            "agents": [{ "id": "default" }]
+        }))
+        .expect("config should parse");
+
+        let err = cfg
+            .into_model_definitions()
+            .expect_err("blank model provider should fail");
+        assert!(matches!(
+            err,
+            AgentConfigError::BlankAgentField { agent_id, field }
+                if agent_id == "bad" && field == "provider"
+        ));
+
+        let cfg: AgentConfig = serde_json::from_value(serde_json::json!({
+            "models": {
+                "bad": { "provider": "openai", "model": "" }
+            },
+            "agents": [{ "id": "default" }]
+        }))
+        .expect("config should parse");
+
+        let err = cfg
+            .into_model_definitions()
+            .expect_err("blank model name should fail");
+        assert!(matches!(
+            err,
+            AgentConfigError::BlankAgentField { agent_id, field }
+                if agent_id == "bad" && field == "model"
+        ));
+    }
+
+    #[test]
+    fn into_client_returns_genai_client() {
+        let cfg = ProviderConfig {
+            endpoint: "http://127.0.0.1:10531/v1".to_string(),
+            auth: None,
+        };
+        let _client = cfg
+            .into_client("test-proxy")
+            .expect("should build a genai client");
+    }
+
+    #[test]
+    fn into_client_with_token_auth() {
+        let cfg = ProviderConfig {
+            endpoint: "https://api.openai.com/v1".to_string(),
+            auth: Some(ProviderAuthConfig::Token {
+                value: "sk-test-key".to_string(),
+            }),
+        };
+        let _client = cfg
+            .into_client("openai")
+            .expect("should build a genai client with token auth");
+    }
+
+    #[test]
+    fn into_definition_returns_correct_model_definition() {
+        let cfg = ModelConfig {
+            provider: "my-proxy".to_string(),
+            model: "gpt-5.4".to_string(),
+        };
+        let def = cfg
+            .into_definition("gpt-5")
+            .expect("should build a model definition");
+        assert_eq!(def.provider, "my-proxy");
+        assert_eq!(def.model, "gpt-5.4");
     }
 }
