@@ -12,6 +12,7 @@ use tirea_extension_permission::resolve_permission_behavior;
 fn resolve_permission_behavior(
     _state: &serde_json::Value,
     _action: &str,
+    _tool_args: &serde_json::Value,
 ) -> ToolPermissionBehavior {
     ToolPermissionBehavior::Allow
 }
@@ -82,7 +83,11 @@ impl AgentBehavior for AgentRecoveryPlugin {
             return actions;
         };
 
-        let behavior = resolve_permission_behavior(&state, AGENT_RECOVERY_INTERACTION_ACTION);
+        let behavior = resolve_permission_behavior(
+            &state,
+            AGENT_RECOVERY_INTERACTION_ACTION,
+            &serde_json::Value::Null,
+        );
 
         let make_suspended_call = |interaction: &Suspension| -> SuspendedCall {
             let call_id = interaction.id.clone();

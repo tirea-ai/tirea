@@ -2577,7 +2577,7 @@ async fn run_stream_initial_decisions_remember_approval_persists_allow_rule() {
     let saved = storage.load(thread_id).await.unwrap().unwrap();
     let rebuilt = saved.thread.rebuild_state().unwrap();
     assert_eq!(
-        resolve_permission_behavior(&rebuilt, "echo"),
+        resolve_permission_behavior(&rebuilt, "echo", &serde_json::Value::Null),
         ToolPermissionBehavior::Allow,
         "remembered approval should persist allow rule: {rebuilt:?}"
     );
@@ -2658,7 +2658,7 @@ async fn run_stream_initial_decisions_remember_denial_persists_deny_rule() {
     let saved = storage.load(thread_id).await.unwrap().unwrap();
     let rebuilt = saved.thread.rebuild_state().unwrap();
     assert_eq!(
-        resolve_permission_behavior(&rebuilt, "echo"),
+        resolve_permission_behavior(&rebuilt, "echo", &serde_json::Value::Null),
         ToolPermissionBehavior::Deny,
         "remembered denial should persist deny rule: {rebuilt:?}"
     );

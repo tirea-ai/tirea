@@ -24,6 +24,23 @@ impl AgentBehavior for PermissionPlugin {
 
     tirea_contract::declare_plugin_states!(PermissionPolicy, PermissionOverrides);
 
+    async fn before_inference(
+        &self,
+        ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeInferenceAction> {
+        let snapshot = ctx.snapshot();
+        let ruleset = super::state::permission_rules_from_snapshot(&snapshot);
+        let denied = ruleset.unconditionally_denied_tools();
+        if denied.is_empty() {
+            return ActionSet::empty();
+        }
+        denied
+            .into_iter()
+            .map(|id| BeforeInferenceAction::ExcludeTool(id.to_string()))
+            .collect::<Vec<_>>()
+            .into()
+    }
+
     async fn before_tool_execute(
         &self,
         ctx: &ReadOnlyContext<'_>,
@@ -34,7 +51,8 @@ impl AgentBehavior for PermissionPlugin {
 
         let snapshot = ctx.snapshot();
         let ruleset = super::state::permission_rules_from_snapshot(&snapshot);
-        let evaluation = evaluate_tool_permission(&ruleset, tool_id);
+        let tool_args = ctx.tool_args().cloned().unwrap_or_default();
+        let evaluation = evaluate_tool_permission(&ruleset, tool_id, &tool_args);
         let decision = enforce_permission(
             PermissionMechanismInput {
                 tool_id,

@@ -31,11 +31,25 @@ pub fn permission_confirmation_ticket(
     tool_id: &str,
     tool_args: Value,
 ) -> SuspendTicket {
+    permission_confirmation_ticket_with_rule(call_id, tool_id, tool_args, None)
+}
+
+/// Build a permission confirmation form, optionally including the matched rule pattern.
+#[must_use]
+pub fn permission_confirmation_ticket_with_rule(
+    call_id: &str,
+    tool_id: &str,
+    tool_args: Value,
+    matched_rule: Option<&str>,
+) -> SuspendTicket {
     let pending_call_id = format!("fc_{call_id}");
-    let arguments = json!({
+    let mut arguments = json!({
         "tool_name": tool_id,
         "tool_args": tool_args,
     });
+    if let Some(rule) = matched_rule {
+        arguments["matched_rule"] = json!(rule);
+    }
     let suspension = Suspension::new(&pending_call_id, PERMISSION_CONFIRM_ACTION)
         .with_message(permission_message(tool_id))
         .with_parameters(arguments.clone())
