@@ -474,7 +474,7 @@ async fn test_skill_activation_applies_allowed_tools_to_permission_state() {
 
     let state = thread.rebuild_state().unwrap();
     assert_eq!(
-        resolve_permission_behavior(&state, "read_file"),
+        resolve_permission_behavior(&state, "read_file", &serde_json::Value::Null),
         ToolPermissionBehavior::Allow,
         "read_file should be allowed after skill activation, state: {state:?}"
     );
@@ -865,12 +865,12 @@ Body
     // Verify bare tool ids are applied but scoped ones are not widened.
     let state = thread.rebuild_state().unwrap();
     assert_eq!(
-        resolve_permission_behavior(&state, "read_file"),
+        resolve_permission_behavior(&state, "read_file", &serde_json::Value::Null),
         ToolPermissionBehavior::Allow,
         "read_file should be allowed after skill activation, state: {state:?}"
     );
     assert_eq!(
-        resolve_permission_behavior(&state, "Bash"),
+        resolve_permission_behavior(&state, "Bash", &serde_json::Value::Null),
         ToolPermissionBehavior::Ask,
         "scoped Bash permission must not be widened to plain Bash"
     );
