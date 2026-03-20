@@ -1,8 +1,6 @@
-//! Tool descriptor and result types.
-//!
-//! The async `Tool` trait is defined in a later commit (Stage 6) to avoid
-//! pulling in `async-trait` and `futures` before the loop exists.
+//! Tool descriptor, result types, and async execution trait.
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -213,6 +211,21 @@ impl ToolDescriptor {
     }
 }
 
+/// Async trait for implementing agent tools.
+#[async_trait]
+pub trait Tool: Send + Sync {
+    /// Return metadata describing this tool.
+    fn descriptor(&self) -> ToolDescriptor;
+
+    /// Validate arguments before execution. Default: accept all.
+    fn validate_args(&self, _args: &Value) -> Result<(), ToolError> {
+        Ok(())
+    }
+
+    /// Execute the tool with the given arguments.
+    async fn execute(&self, args: Value) -> Result<ToolResult, ToolError>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,6 +292,14 @@ mod tests {
     }
 
     #[test]
+    fn tool_result_serialization_preserves_null_message_field() {
+        let json = serde_json::to_string(&ToolResult::success("calc", json!(42))).unwrap();
+
+        assert!(json.contains("\"message\":null"));
+        assert!(json.contains("metadata"));
+    }
+
+    #[test]
     fn tool_descriptor_builder() {
         let desc = ToolDescriptor::new("calc", "calculator", "Math operations")
             .with_parameters(json!({"type": "object", "properties": {"expr": {"type": "string"}}}))
@@ -301,10 +322,111 @@ mod tests {
     }
 
     #[test]
+    fn tool_descriptor_defaults_to_empty_object_schema() {
+        let desc = ToolDescriptor::new("search", "web_search", "Search the web");
+
+        assert_eq!(desc.parameters["type"], "object");
+        assert_eq!(desc.parameters["properties"], json!({}));
+        assert!(desc.category.is_none());
+        assert!(desc.metadata.is_empty());
+    }
+
+    #[test]
     fn tool_result_to_json() {
         let result = ToolResult::success("calc", json!(42));
         let value = result.to_json();
         assert_eq!(value["tool_name"], "calc");
         assert_eq!(value["status"], "success");
+    }
+
+    #[test]
+    fn tool_error_display_strings_are_stable() {
+        assert_eq!(
+            ToolError::InvalidArguments("bad input".into()).to_string(),
+            "Invalid arguments: bad input"
+        );
+        assert_eq!(
+            ToolError::ExecutionFailed("boom".into()).to_string(),
+            "Execution failed: boom"
+        );
+        assert_eq!(ToolError::Denied("nope".into()).to_string(), "Denied: nope");
+        assert_eq!(
+            ToolError::NotFound("missing".into()).to_string(),
+            "Not found: missing"
+        );
+        assert_eq!(
+            ToolError::Internal("oops".into()).to_string(),
+            "Internal error: oops"
+        );
+    }
+
+    struct EchoTool;
+
+    #[async_trait]
+    impl Tool for EchoTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("echo", "echo", "Echoes input")
+        }
+
+        async fn execute(&self, args: Value) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("echo", args))
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_trait_execute() {
+        let tool = EchoTool;
+        let result = tool.execute(json!({"msg": "hello"})).await.unwrap();
+        assert!(result.is_success());
+        assert_eq!(result.data["msg"], "hello");
+    }
+
+    #[test]
+    fn tool_trait_descriptor() {
+        let tool = EchoTool;
+        let desc = tool.descriptor();
+        assert_eq!(desc.id, "echo");
+    }
+
+    #[test]
+    fn tool_trait_validate_args_default_accepts() {
+        let tool = EchoTool;
+        assert!(tool.validate_args(&json!({})).is_ok());
+    }
+
+    struct ValidatingTool;
+
+    #[async_trait]
+    impl Tool for ValidatingTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("v", "v", "validates")
+        }
+
+        fn validate_args(&self, args: &Value) -> Result<(), ToolError> {
+            if args.get("required").is_none() {
+                return Err(ToolError::InvalidArguments("missing required".into()));
+            }
+            Ok(())
+        }
+
+        async fn execute(&self, _args: Value) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("v", json!(null)))
+        }
+    }
+
+    #[test]
+    fn tool_validate_args_rejects_invalid() {
+        let tool = ValidatingTool;
+        assert!(tool.validate_args(&json!({})).is_err());
+        assert!(tool.validate_args(&json!({"required": true})).is_ok());
+    }
+
+    #[tokio::test]
+    async fn tool_as_dyn_trait_object() {
+        let tool: Box<dyn Tool> = Box::new(EchoTool);
+        let desc = tool.descriptor();
+        assert_eq!(desc.id, "echo");
+        let result = tool.execute(json!("test")).await.unwrap();
+        assert!(result.is_success());
     }
 }

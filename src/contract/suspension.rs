@@ -248,6 +248,50 @@ mod tests {
     }
 
     #[test]
+    fn suspend_ticket_helpers_apply_expected_fields() {
+        let suspension = Suspension {
+            id: "s1".into(),
+            action: "approve".into(),
+            message: "Approve tool call".into(),
+            parameters: json!({"tool": "delete_file"}),
+            response_schema: Some(json!({"type": "object"})),
+        };
+        let pending = PendingToolCall::new("c1", "delete_file", json!({"path": "/tmp/x"}));
+
+        let ticket =
+            SuspendTicket::use_decision_as_tool_result(suspension.clone(), pending.clone())
+                .with_resume_mode(ToolCallResumeMode::PassDecisionToTool)
+                .with_pending(PendingToolCall::new(
+                    "c2",
+                    "move_file",
+                    json!({"path": "/tmp/y"}),
+                ));
+
+        assert_eq!(ticket.suspension, suspension);
+        assert_eq!(ticket.resume_mode, ToolCallResumeMode::PassDecisionToTool);
+        assert_eq!(ticket.pending.id, "c2");
+        assert_eq!(ticket.pending.name, "move_file");
+    }
+
+    #[test]
+    fn pending_tool_call_roundtrip() {
+        let pending = PendingToolCall::new("c1", "search", json!({"q": "rust"}));
+        let json = serde_json::to_string(&pending).unwrap();
+        let parsed: PendingToolCall = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed, pending);
+    }
+
+    #[test]
+    fn tool_call_action_block_preserves_reason() {
+        let action = ToolCallAction::Block {
+            reason: "denied".into(),
+        };
+
+        assert!(matches!(action, ToolCallAction::Block { reason } if reason == "denied"));
+    }
+
+    #[test]
     fn tool_call_status_transitions() {
         assert!(ToolCallStatus::New.can_transition_to(ToolCallStatus::Running));
         assert!(ToolCallStatus::Running.can_transition_to(ToolCallStatus::Suspended));
@@ -283,8 +327,23 @@ mod tests {
     }
 
     #[test]
+    fn tool_call_resume_omits_empty_optional_fields() {
+        let resume = ToolCallResume {
+            decision_id: "d1".into(),
+            action: ResumeDecisionAction::Cancel,
+            result: Value::Null,
+            reason: None,
+            updated_at: 0,
+        };
+        let json = serde_json::to_string(&resume).unwrap();
+
+        assert!(!json.contains("reason"));
+        assert!(!json.contains("result"));
+    }
+
+    #[test]
     fn tool_call_outcome_from_result() {
-        use super::super::tool::{ToolResult, ToolStatus};
+        use super::super::tool::ToolResult;
 
         let success = ToolResult::success("t", json!(null));
         assert_eq!(
@@ -321,6 +380,15 @@ mod tests {
             let json = serde_json::to_string(&mode).unwrap();
             let parsed: ToolCallResumeMode = serde_json::from_str(&json).unwrap();
             assert_eq!(parsed, mode);
+        }
+    }
+
+    #[test]
+    fn resume_decision_action_serde_roundtrip() {
+        for action in [ResumeDecisionAction::Resume, ResumeDecisionAction::Cancel] {
+            let json = serde_json::to_string(&action).unwrap();
+            let parsed: ResumeDecisionAction = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, action);
         }
     }
 

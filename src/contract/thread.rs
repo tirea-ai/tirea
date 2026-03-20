@@ -152,9 +152,53 @@ mod tests {
     }
 
     #[test]
+    fn thread_with_messages_preserves_order() {
+        let t = Thread::new("t1").with_messages([
+            Message::system("sys"),
+            Message::user("user"),
+            Message::assistant("assistant"),
+        ]);
+
+        assert_eq!(t.messages[0].content, "sys");
+        assert_eq!(t.messages[1].content, "user");
+        assert_eq!(t.messages[2].content, "assistant");
+    }
+
+    #[test]
     fn thread_metadata_extra_fields() {
         let json = r#"{"id":"t1","messages":[],"metadata":{"custom_key":"value"}}"#;
         let t: Thread = serde_json::from_str(json).unwrap();
         assert_eq!(t.metadata.extra.get("custom_key").unwrap(), "value");
+    }
+
+    #[test]
+    fn thread_serialization_omits_absent_optional_fields() {
+        let json = serde_json::to_string(&Thread::new("t1")).unwrap();
+
+        assert!(!json.contains("resource_id"));
+        assert!(!json.contains("parent_thread_id"));
+    }
+
+    #[test]
+    fn thread_metadata_roundtrip_preserves_timestamps_and_extra() {
+        let mut thread = Thread::new("t1");
+        thread.metadata.created_at = Some(1);
+        thread.metadata.updated_at = Some(2);
+        thread.metadata.version = Some(3);
+        thread
+            .metadata
+            .extra
+            .insert("source".into(), Value::String("imported".into()));
+
+        let json = serde_json::to_string(&thread).unwrap();
+        let restored: Thread = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.metadata.created_at, Some(1));
+        assert_eq!(restored.metadata.updated_at, Some(2));
+        assert_eq!(restored.metadata.version, Some(3));
+        assert_eq!(
+            restored.metadata.extra.get("source"),
+            Some(&Value::String("imported".into()))
+        );
     }
 }

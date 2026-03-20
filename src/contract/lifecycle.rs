@@ -145,6 +145,13 @@ mod tests {
     }
 
     #[test]
+    fn run_status_terminal_matches_done_only() {
+        assert!(!RunStatus::Running.is_terminal());
+        assert!(!RunStatus::Waiting.is_terminal());
+        assert!(RunStatus::Done.is_terminal());
+    }
+
+    #[test]
     fn termination_reason_to_run_status_mapping() {
         let cases = vec![
             (TerminationReason::Suspended, RunStatus::Waiting, None),
@@ -200,6 +207,26 @@ mod tests {
             let parsed: TerminationReason = serde_json::from_str(&json).unwrap();
             assert_eq!(parsed, reason);
         }
+    }
+
+    #[test]
+    fn stopped_reason_helpers_build_expected_values() {
+        let simple = StoppedReason::new("budget");
+        assert_eq!(simple.code, "budget");
+        assert!(simple.detail.is_none());
+
+        let detailed = StoppedReason::with_detail("budget", "limit reached");
+        assert_eq!(detailed.code, "budget");
+        assert_eq!(detailed.detail.as_deref(), Some("limit reached"));
+
+        assert_eq!(
+            TerminationReason::stopped("budget"),
+            TerminationReason::Stopped(simple)
+        );
+        assert_eq!(
+            TerminationReason::stopped_with_detail("budget", "limit reached"),
+            TerminationReason::Stopped(detailed)
+        );
     }
 
     #[test]

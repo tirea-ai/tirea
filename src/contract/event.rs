@@ -152,6 +152,50 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_delta_serde_roundtrip() {
+        let event = AgentEvent::ReasoningDelta {
+            delta: "think".into(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: AgentEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, AgentEvent::ReasoningDelta { delta } if delta == "think"));
+    }
+
+    #[test]
+    fn tool_call_start_delta_and_ready_roundtrip() {
+        let start = AgentEvent::ToolCallStart {
+            id: "c1".into(),
+            name: "search".into(),
+        };
+        let start_json = serde_json::to_string(&start).unwrap();
+        let start_parsed: AgentEvent = serde_json::from_str(&start_json).unwrap();
+        assert!(
+            matches!(start_parsed, AgentEvent::ToolCallStart { id, name } if id == "c1" && name == "search")
+        );
+
+        let delta = AgentEvent::ToolCallDelta {
+            id: "c1".into(),
+            args_delta: "{\"q\":\"rust\"}".into(),
+        };
+        let delta_json = serde_json::to_string(&delta).unwrap();
+        let delta_parsed: AgentEvent = serde_json::from_str(&delta_json).unwrap();
+        assert!(
+            matches!(delta_parsed, AgentEvent::ToolCallDelta { id, args_delta } if id == "c1" && args_delta.contains("rust"))
+        );
+
+        let ready = AgentEvent::ToolCallReady {
+            id: "c1".into(),
+            name: "search".into(),
+            arguments: json!({"q": "rust"}),
+        };
+        let ready_json = serde_json::to_string(&ready).unwrap();
+        let ready_parsed: AgentEvent = serde_json::from_str(&ready_json).unwrap();
+        assert!(
+            matches!(ready_parsed, AgentEvent::ToolCallReady { id, name, arguments } if id == "c1" && name == "search" && arguments["q"] == "rust")
+        );
+    }
+
+    #[test]
     fn tool_call_done_serde_roundtrip() {
         let event = AgentEvent::ToolCallDone {
             id: "c1".into(),
@@ -169,6 +213,16 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         let parsed: AgentEvent = serde_json::from_str(&json).unwrap();
         assert!(matches!(parsed, AgentEvent::StepEnd));
+    }
+
+    #[test]
+    fn step_start_serde_roundtrip() {
+        let event = AgentEvent::StepStart {
+            message_id: "m1".into(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: AgentEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, AgentEvent::StepStart { message_id } if message_id == "m1"));
     }
 
     #[test]
@@ -221,6 +275,46 @@ mod tests {
             AgentEvent::extract_response(&Some(json!({"other": "data"}))),
             ""
         );
+    }
+
+    #[test]
+    fn extract_response_from_non_string_field() {
+        assert_eq!(
+            AgentEvent::extract_response(&Some(json!({"response": {"text": "hello"}}))),
+            ""
+        );
+    }
+
+    #[test]
+    fn state_snapshot_and_delta_roundtrip() {
+        let snapshot = AgentEvent::StateSnapshot {
+            snapshot: json!({"messages": 2}),
+        };
+        let snapshot_json = serde_json::to_string(&snapshot).unwrap();
+        let snapshot_parsed: AgentEvent = serde_json::from_str(&snapshot_json).unwrap();
+        assert!(
+            matches!(snapshot_parsed, AgentEvent::StateSnapshot { snapshot } if snapshot["messages"] == 2)
+        );
+
+        let delta = AgentEvent::StateDelta {
+            delta: vec![json!({"op": "replace", "path": "/messages", "value": 3})],
+        };
+        let delta_json = serde_json::to_string(&delta).unwrap();
+        let delta_parsed: AgentEvent = serde_json::from_str(&delta_json).unwrap();
+        assert!(
+            matches!(delta_parsed, AgentEvent::StateDelta { delta } if delta.len() == 1 && delta[0]["op"] == "replace")
+        );
+    }
+
+    #[test]
+    fn error_event_omits_none_code() {
+        let json = serde_json::to_string(&AgentEvent::Error {
+            message: "failed".into(),
+            code: None,
+        })
+        .unwrap();
+
+        assert!(!json.contains("code"));
     }
 
     #[test]

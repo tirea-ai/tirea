@@ -1,4 +1,5 @@
 pub mod event;
+pub mod executor;
 pub mod identity;
 pub mod inference;
 pub mod lifecycle;

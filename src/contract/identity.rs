@@ -240,11 +240,29 @@ mod tests {
     fn run_identity_opt_methods_trim_whitespace() {
         let identity = RunIdentity {
             thread_id: "  ".into(),
+            parent_thread_id: Some(" p1 ".into()),
             run_id: " r1 ".into(),
+            parent_run_id: Some(" pr1 ".into()),
+            agent_id: " agent-1 ".into(),
+            parent_tool_call_id: Some(" tc1 ".into()),
             ..Default::default()
         };
         assert!(identity.thread_id_opt().is_none());
+        assert_eq!(identity.parent_thread_id_opt(), Some("p1"));
         assert_eq!(identity.run_id_opt(), Some("r1"));
+        assert_eq!(identity.parent_run_id_opt(), Some("pr1"));
+        assert_eq!(identity.agent_id_opt(), Some("agent-1"));
+        assert_eq!(identity.parent_tool_call_id_opt(), Some("tc1"));
+    }
+
+    #[test]
+    fn run_policy_empty_values_normalize_to_none() {
+        let mut policy = RunPolicy::new();
+        policy.set_excluded_tools_if_absent(Some(&[" ".to_string(), "".to_string()]));
+        policy.set_allowed_agents_if_absent(None);
+
+        assert!(policy.excluded_tools().is_none());
+        assert!(policy.allowed_agents().is_none());
     }
 
     #[test]
