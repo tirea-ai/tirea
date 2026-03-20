@@ -1,10 +1,7 @@
-//! Minimal sequential agent loop.
+//! Minimal sequential agent loop driven by state machines.
 //!
-//! Implements: RunStart → [StepStart → BeforeInference → LLM → AfterInference
-//! → (for each tool call) BeforeToolExecute → execute → AfterToolExecute
-//! → StepEnd] × N → RunEnd
-//!
-//! State transitions tracked via `RunLifecycleSlot`.
+//! Run lifecycle: RunLifecycleSlot (Running → StepCompleted → Done/Waiting)
+//! Tool call lifecycle: ToolCallStatesSlot (New → Running → Succeeded/Failed/Suspended)
 
 use std::sync::Arc;
 
@@ -12,23 +9,25 @@ use crate::contract::event::AgentEvent;
 use crate::contract::executor::InferenceRequest;
 use crate::contract::identity::RunIdentity;
 use crate::contract::lifecycle::TerminationReason;
-use crate::contract::message::{Message, ToolCall, gen_message_id};
+use crate::contract::message::{Message, Role, ToolCall, gen_message_id};
+use crate::contract::suspension::{ToolCallOutcome, ToolCallStatus};
 use crate::contract::tool::ToolResult;
 use crate::model::Phase;
-use crate::state::{MutationBatch, StateStore};
+use crate::runtime::PhaseRuntime;
+use crate::state::MutationBatch;
 
 use super::config::AgentConfig;
-use super::state::{RunLifecycleSlot, RunLifecycleUpdate};
+use super::state::{
+    RunLifecycleSlot, RunLifecycleUpdate, ToolCallStatesSlot, ToolCallStatesUpdate,
+};
 
 /// Errors from the agent loop.
 #[derive(Debug, thiserror::Error)]
 pub enum AgentLoopError {
     #[error("inference failed: {0}")]
     InferenceFailed(String),
-    #[error("tool execution failed: {tool_name}: {message}")]
-    ToolExecutionFailed { tool_name: String, message: String },
-    #[error("state error: {0}")]
-    StateError(#[from] crate::error::StateError),
+    #[error("phase error: {0}")]
+    PhaseError(#[from] crate::error::StateError),
 }
 
 /// Result of running the agent loop.
@@ -48,18 +47,22 @@ fn now_ms() -> u64 {
 }
 
 /// Run the agent loop to completion.
+///
+/// State-machine driven: every lifecycle transition is committed via StateStore.
+/// Phase hooks are dispatched through PhaseRuntime.
 pub async fn run_agent_loop(
     agent: &AgentConfig,
-    store: &StateStore,
+    runtime: &PhaseRuntime,
     initial_messages: Vec<Message>,
     run_identity: RunIdentity,
 ) -> Result<AgentRunResult, AgentLoopError> {
+    let store = runtime.store();
     let mut events = Vec::new();
     let mut messages: Vec<Arc<Message>> = initial_messages.into_iter().map(Arc::new).collect();
     let mut steps: usize = 0;
 
-    // --- State transition: Start ---
-    commit_lifecycle(
+    // --- Run lifecycle: Start ---
+    commit_update::<RunLifecycleSlot>(
         store,
         RunLifecycleUpdate::Start {
             run_id: run_identity.run_id.clone(),
@@ -73,8 +76,7 @@ pub async fn run_agent_loop(
         parent_run_id: run_identity.parent_run_id.clone(),
     });
 
-    // RunStart phase hooks (placeholder — will be wired through PhaseRuntime)
-    run_phase_hooks(store, Phase::RunStart)?;
+    runtime.run_phase(Phase::RunStart)?;
 
     let termination = loop {
         steps += 1;
@@ -85,13 +87,15 @@ pub async fn run_agent_loop(
             );
         }
 
-        let step_message_id = gen_message_id();
         events.push(AgentEvent::StepStart {
-            message_id: step_message_id,
+            message_id: gen_message_id(),
         });
 
-        run_phase_hooks(store, Phase::StepStart)?;
-        run_phase_hooks(store, Phase::BeforeInference)?;
+        // Clear tool call states from previous step
+        commit_update::<ToolCallStatesSlot>(store, ToolCallStatesUpdate::Clear)?;
+
+        runtime.run_phase(Phase::StepStart)?;
+        runtime.run_phase(Phase::BeforeInference)?;
 
         // LLM inference
         let start = std::time::Instant::now();
@@ -116,20 +120,11 @@ pub async fn run_agent_loop(
             duration_ms,
         });
 
-        // AfterInference phase
-        run_phase_hooks(store, Phase::AfterInference)?;
+        runtime.run_phase(Phase::AfterInference)?;
 
         if !stream_result.needs_tools() {
             messages.push(Arc::new(Message::assistant(&stream_result.text)));
-            // --- State transition: StepCompleted ---
-            commit_lifecycle(
-                store,
-                RunLifecycleUpdate::StepCompleted {
-                    updated_at: now_ms(),
-                },
-            )?;
-            run_phase_hooks(store, Phase::StepEnd)?;
-            events.push(AgentEvent::StepEnd);
+            complete_step(store, runtime, &mut events)?;
             break TerminationReason::NaturalEnd;
         }
 
@@ -139,45 +134,46 @@ pub async fn run_agent_loop(
             stream_result.tool_calls.clone(),
         )));
 
-        // Execute each tool call sequentially
+        // Execute each tool call sequentially with state machine transitions
         for call in &stream_result.tool_calls {
             events.push(AgentEvent::ToolCallStart {
                 id: call.id.clone(),
                 name: call.name.clone(),
             });
 
-            run_phase_hooks(store, Phase::BeforeToolExecute)?;
+            // Tool call lifecycle: New → Running
+            commit_tool_call_transition(store, call, ToolCallStatus::Running)?;
 
-            let tool_result = execute_tool(agent, call).await?;
+            runtime.run_phase(Phase::BeforeToolExecute)?;
+
+            let tool_result = execute_tool(agent, call).await;
+
+            // Tool call lifecycle: Running → Succeeded/Failed
+            let terminal_status = if tool_result.is_success() {
+                ToolCallStatus::Succeeded
+            } else {
+                ToolCallStatus::Failed
+            };
+            commit_tool_call_transition(store, call, terminal_status)?;
 
             events.push(AgentEvent::ToolCallDone {
                 id: call.id.clone(),
                 result: tool_result.clone(),
-                outcome: crate::contract::suspension::ToolCallOutcome::from_tool_result(
-                    &tool_result,
-                ),
+                outcome: ToolCallOutcome::from_tool_result(&tool_result),
             });
 
-            run_phase_hooks(store, Phase::AfterToolExecute)?;
+            runtime.run_phase(Phase::AfterToolExecute)?;
 
             let tool_content = tool_result_to_content(&tool_result);
             messages.push(Arc::new(Message::tool(&call.id, tool_content)));
         }
 
-        // --- State transition: StepCompleted ---
-        commit_lifecycle(
-            store,
-            RunLifecycleUpdate::StepCompleted {
-                updated_at: now_ms(),
-            },
-        )?;
-        run_phase_hooks(store, Phase::StepEnd)?;
-        events.push(AgentEvent::StepEnd);
+        complete_step(store, runtime, &mut events)?;
     };
 
-    // --- State transition: Done ---
+    // --- Run lifecycle: Done ---
     let (_, done_reason) = termination.to_run_status();
-    commit_lifecycle(
+    commit_update::<RunLifecycleSlot>(
         store,
         RunLifecycleUpdate::Done {
             done_reason: done_reason.unwrap_or_else(|| "unknown".into()),
@@ -185,12 +181,12 @@ pub async fn run_agent_loop(
         },
     )?;
 
-    run_phase_hooks(store, Phase::RunEnd)?;
+    runtime.run_phase(Phase::RunEnd)?;
 
     let response = messages
         .iter()
         .rev()
-        .find(|m| m.role == crate::contract::message::Role::Assistant)
+        .find(|m| m.role == Role::Assistant)
         .map(|m| m.content.clone())
         .unwrap_or_default();
 
@@ -211,37 +207,62 @@ pub async fn run_agent_loop(
 
 // -- Helpers --
 
-fn commit_lifecycle(
-    store: &StateStore,
-    update: RunLifecycleUpdate,
+fn complete_step(
+    store: &crate::state::StateStore,
+    runtime: &PhaseRuntime,
+    events: &mut Vec<AgentEvent>,
+) -> Result<(), AgentLoopError> {
+    commit_update::<RunLifecycleSlot>(
+        store,
+        RunLifecycleUpdate::StepCompleted {
+            updated_at: now_ms(),
+        },
+    )?;
+    runtime.run_phase(Phase::StepEnd)?;
+    events.push(AgentEvent::StepEnd);
+    Ok(())
+}
+
+fn commit_update<S: crate::state::StateSlot>(
+    store: &crate::state::StateStore,
+    update: S::Update,
 ) -> Result<(), crate::error::StateError> {
     let mut patch = MutationBatch::new();
-    patch.update::<RunLifecycleSlot>(update);
+    patch.update::<S>(update);
     store.commit(patch)?;
     Ok(())
 }
 
-fn run_phase_hooks(_store: &StateStore, _phase: Phase) -> Result<(), AgentLoopError> {
-    // Phase hooks will be wired through PhaseRuntime in a follow-up commit.
-    Ok(())
+fn commit_tool_call_transition(
+    store: &crate::state::StateStore,
+    call: &ToolCall,
+    status: ToolCallStatus,
+) -> Result<(), crate::error::StateError> {
+    commit_update::<ToolCallStatesSlot>(
+        store,
+        ToolCallStatesUpdate::Upsert {
+            call_id: call.id.clone(),
+            tool_name: call.name.clone(),
+            arguments: call.arguments.clone(),
+            status,
+            updated_at: now_ms(),
+        },
+    )
 }
 
-async fn execute_tool(agent: &AgentConfig, call: &ToolCall) -> Result<ToolResult, AgentLoopError> {
-    let tool = agent
-        .tools
-        .get(&call.name)
-        .ok_or_else(|| AgentLoopError::ToolExecutionFailed {
-            tool_name: call.name.clone(),
-            message: format!("tool '{}' not found", call.name),
-        })?;
+/// Execute a tool, returning ToolResult (never crashes the loop).
+async fn execute_tool(agent: &AgentConfig, call: &ToolCall) -> ToolResult {
+    let Some(tool) = agent.tools.get(&call.name) else {
+        return ToolResult::error(&call.name, format!("tool '{}' not found", call.name));
+    };
 
     if let Err(e) = tool.validate_args(&call.arguments) {
-        return Ok(ToolResult::error(&call.name, e.to_string()));
+        return ToolResult::error(&call.name, e.to_string());
     }
 
     match tool.execute(call.arguments.clone()).await {
-        Ok(result) => Ok(result),
-        Err(e) => Ok(ToolResult::error(&call.name, e.to_string())),
+        Ok(result) => result,
+        Err(e) => ToolResult::error(&call.name, e.to_string()),
     }
 }
 

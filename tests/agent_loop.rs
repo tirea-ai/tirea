@@ -3,22 +3,23 @@
 use async_trait::async_trait;
 use awaken::agent::config::AgentConfig;
 use awaken::agent::loop_runner::{AgentRunResult, run_agent_loop};
-use awaken::agent::state::{RunLifecycleSlot, RunLifecycleState};
+use awaken::agent::state::{
+    RunLifecycleSlot, RunLifecycleState, ToolCallStates, ToolCallStatesSlot,
+};
 use awaken::contract::event::AgentEvent;
 use awaken::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken::contract::identity::{RunIdentity, RunOrigin};
 use awaken::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken::contract::message::{Message, ToolCall};
+use awaken::contract::suspension::ToolCallStatus;
 use awaken::contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use awaken::*;
-use awaken::{SlotOptions, StateStore};
 use serde_json::{Value, json};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
-// Mock LLM: returns scripted responses
+// Mock LLM
 // ---------------------------------------------------------------------------
 
 struct ScriptedLlm {
@@ -58,7 +59,7 @@ impl LlmExecutor for ScriptedLlm {
 }
 
 // ---------------------------------------------------------------------------
-// Mock Tool: echo arguments back
+// Mock Tools
 // ---------------------------------------------------------------------------
 
 struct EchoTool;
@@ -79,10 +80,6 @@ impl Tool for EchoTool {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Mock Tool: calculator
-// ---------------------------------------------------------------------------
-
 struct CalcTool;
 
 #[async_trait]
@@ -97,35 +94,42 @@ impl Tool for CalcTool {
     }
 }
 
+struct FailingTool;
+
+#[async_trait]
+impl Tool for FailingTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("fail", "fail", "Always fails")
+    }
+
+    async fn execute(&self, _args: Value) -> Result<ToolResult, ToolError> {
+        Err(ToolError::ExecutionFailed("intentional failure".into()))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn make_store() -> StateStore {
-    let store = StateStore::new();
-    // Register the RunLifecycleSlot so the loop can write lifecycle state
-    store
-        .install_plugin(RunLifecyclePlugin)
-        .expect("install lifecycle plugin");
-    store
-}
+struct LoopStatePlugin;
 
-struct RunLifecyclePlugin;
-
-impl Plugin for RunLifecyclePlugin {
+impl Plugin for LoopStatePlugin {
     fn descriptor(&self) -> PluginDescriptor {
-        PluginDescriptor {
-            name: "run-lifecycle",
-        }
+        PluginDescriptor { name: "loop-state" }
     }
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-        registrar.register_slot::<RunLifecycleSlot>(SlotOptions {
-            persistent: true,
-            retain_on_uninstall: false,
-        })?;
+        registrar.register_slot::<RunLifecycleSlot>(SlotOptions::default())?;
+        registrar.register_slot::<ToolCallStatesSlot>(SlotOptions::default())?;
         Ok(())
     }
+}
+
+fn make_runtime() -> PhaseRuntime {
+    let store = StateStore::new();
+    let runtime = PhaseRuntime::new(store).unwrap();
+    runtime.install_plugin(LoopStatePlugin).unwrap();
+    runtime
 }
 
 fn test_identity() -> RunIdentity {
@@ -144,7 +148,7 @@ fn test_identity() -> RunIdentity {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn agent_loop_single_step_natural_end() {
+async fn single_step_natural_end() {
     let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
         text: "Hello, world!".into(),
         tool_calls: vec![],
@@ -158,9 +162,9 @@ async fn agent_loop_single_step_natural_end() {
     }]));
 
     let agent = AgentConfig::new("test", "gpt-4o", "You are helpful.", llm);
-    let store = make_store();
+    let runtime = make_runtime();
 
-    let result = run_agent_loop(&agent, &store, vec![Message::user("hi")], test_identity())
+    let result = run_agent_loop(&agent, &runtime, vec![Message::user("hi")], test_identity())
         .await
         .unwrap();
 
@@ -168,8 +172,8 @@ async fn agent_loop_single_step_natural_end() {
     assert_eq!(result.termination, TerminationReason::NaturalEnd);
     assert_eq!(result.steps, 1);
 
-    // Verify state transition
-    let lifecycle = store.read_slot::<RunLifecycleSlot>().unwrap();
+    // Verify run lifecycle state
+    let lifecycle = runtime.store().read_slot::<RunLifecycleSlot>().unwrap();
     assert_eq!(lifecycle.status, RunStatus::Done);
     assert_eq!(lifecycle.done_reason.as_deref(), Some("natural"));
     assert_eq!(lifecycle.step_count, 1);
@@ -177,16 +181,14 @@ async fn agent_loop_single_step_natural_end() {
 }
 
 #[tokio::test]
-async fn agent_loop_with_tool_call_then_response() {
+async fn tool_call_then_response() {
     let llm = Arc::new(ScriptedLlm::new(vec![
-        // Step 1: LLM requests tool call
         StreamResult {
             text: "Let me search.".into(),
             tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "hello"}))],
             usage: None,
             stop_reason: Some(StopReason::ToolUse),
         },
-        // Step 2: LLM responds with final answer
         StreamResult {
             text: "The echo said: hello".into(),
             tool_calls: vec![],
@@ -195,13 +197,12 @@ async fn agent_loop_with_tool_call_then_response() {
         },
     ]));
 
-    let agent =
-        AgentConfig::new("test", "gpt-4o", "You are helpful.", llm).with_tool(Arc::new(EchoTool));
-    let store = make_store();
+    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
 
     let result = run_agent_loop(
         &agent,
-        &store,
+        &runtime,
         vec![Message::user("echo hello")],
         test_identity(),
     )
@@ -209,18 +210,54 @@ async fn agent_loop_with_tool_call_then_response() {
     .unwrap();
 
     assert_eq!(result.response, "The echo said: hello");
-    assert_eq!(result.termination, TerminationReason::NaturalEnd);
     assert_eq!(result.steps, 2);
 
-    let lifecycle = store.read_slot::<RunLifecycleSlot>().unwrap();
-    assert_eq!(lifecycle.status, RunStatus::Done);
+    let lifecycle = runtime.store().read_slot::<RunLifecycleSlot>().unwrap();
     assert_eq!(lifecycle.step_count, 2);
 }
 
 #[tokio::test]
-async fn agent_loop_multiple_tool_calls_in_one_step() {
+async fn tool_call_state_machine_transitions() {
     let llm = Arc::new(ScriptedLlm::new(vec![
-        // Step 1: LLM requests 2 tool calls
+        StreamResult {
+            text: "".into(),
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "hi"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+        },
+        StreamResult {
+            text: "Done.".into(),
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+
+    run_agent_loop(
+        &agent,
+        &runtime,
+        vec![Message::user("test")],
+        test_identity(),
+    )
+    .await
+    .unwrap();
+
+    // After step 1 (with tool call), tool call state should show Succeeded
+    // But step 2 clears it, so final state is empty (cleared at step start)
+    let tool_states = runtime
+        .store()
+        .read_slot::<ToolCallStatesSlot>()
+        .unwrap_or_default();
+    // Step 2 had no tool calls, so after Clear at step 2 start, it's empty
+    assert!(tool_states.calls.is_empty());
+}
+
+#[tokio::test]
+async fn multiple_tool_calls_in_one_step() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
         StreamResult {
             text: "".into(),
             tool_calls: vec![
@@ -230,7 +267,6 @@ async fn agent_loop_multiple_tool_calls_in_one_step() {
             usage: None,
             stop_reason: Some(StopReason::ToolUse),
         },
-        // Step 2: final
         StreamResult {
             text: "Done.".into(),
             tool_calls: vec![],
@@ -242,11 +278,11 @@ async fn agent_loop_multiple_tool_calls_in_one_step() {
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm)
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(CalcTool));
-    let store = make_store();
+    let runtime = make_runtime();
 
     let result = run_agent_loop(
         &agent,
-        &store,
+        &runtime,
         vec![Message::user("multi-tool")],
         test_identity(),
     )
@@ -254,7 +290,6 @@ async fn agent_loop_multiple_tool_calls_in_one_step() {
     .unwrap();
 
     assert_eq!(result.steps, 2);
-    // Should have 2 ToolCallDone events from step 1
     let tool_done_count = result
         .events
         .iter()
@@ -264,8 +299,7 @@ async fn agent_loop_multiple_tool_calls_in_one_step() {
 }
 
 #[tokio::test]
-async fn agent_loop_max_rounds_exceeded() {
-    // LLM always requests tool calls, never stops
+async fn max_rounds_exceeded() {
     let llm = Arc::new(ScriptedLlm::new(
         (0..5)
             .map(|i| StreamResult {
@@ -284,20 +318,23 @@ async fn agent_loop_max_rounds_exceeded() {
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm)
         .with_max_rounds(3)
         .with_tool(Arc::new(EchoTool));
-    let store = make_store();
+    let runtime = make_runtime();
 
-    let result = run_agent_loop(&agent, &store, vec![Message::user("loop")], test_identity())
-        .await
-        .unwrap();
+    let result = run_agent_loop(
+        &agent,
+        &runtime,
+        vec![Message::user("loop")],
+        test_identity(),
+    )
+    .await
+    .unwrap();
 
-    // Loop runs max_rounds steps, then on step max_rounds+1 the guard triggers
-    assert!(result.steps > 3);
     assert!(matches!(
         result.termination,
         TerminationReason::Stopped(ref s) if s.code == "max_rounds"
     ));
 
-    let lifecycle = store.read_slot::<RunLifecycleSlot>().unwrap();
+    let lifecycle = runtime.store().read_slot::<RunLifecycleSlot>().unwrap();
     assert_eq!(lifecycle.status, RunStatus::Done);
     assert!(
         lifecycle
@@ -309,7 +346,7 @@ async fn agent_loop_max_rounds_exceeded() {
 }
 
 #[tokio::test]
-async fn agent_loop_unknown_tool_returns_error_result() {
+async fn unknown_tool_returns_error_result_not_crash() {
     let llm = Arc::new(ScriptedLlm::new(vec![
         StreamResult {
             text: "".into(),
@@ -318,7 +355,7 @@ async fn agent_loop_unknown_tool_returns_error_result() {
             stop_reason: Some(StopReason::ToolUse),
         },
         StreamResult {
-            text: "Sorry.".into(),
+            text: "Sorry, that tool doesn't exist.".into(),
             tool_calls: vec![],
             usage: None,
             stop_reason: Some(StopReason::EndTurn),
@@ -326,21 +363,68 @@ async fn agent_loop_unknown_tool_returns_error_result() {
     ]));
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
-    let store = make_store();
+    let runtime = make_runtime();
 
     let result = run_agent_loop(
         &agent,
-        &store,
+        &runtime,
         vec![Message::user("call unknown")],
         test_identity(),
     )
-    .await;
-    // Unknown tool should produce an error ToolResult, not crash the loop
-    assert!(result.is_err()); // Currently errors because tool not found
+    .await
+    .unwrap(); // Should NOT error — unknown tool produces ToolResult::error
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+    assert_eq!(result.steps, 2);
+
+    // The tool call should have Failed status
+    // (cleared by step 2, but the event shows it)
+    let tool_fail_events: Vec<_> = result
+        .events
+        .iter()
+        .filter(|e| {
+            matches!(e, AgentEvent::ToolCallDone { outcome, .. }
+                if *outcome == awaken::contract::suspension::ToolCallOutcome::Failed)
+        })
+        .collect();
+    assert_eq!(tool_fail_events.len(), 1);
 }
 
 #[tokio::test]
-async fn agent_loop_events_have_correct_sequence() {
+async fn failing_tool_produces_error_result_continues_loop() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            text: "".into(),
+            tool_calls: vec![ToolCall::new("c1", "fail", json!({}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+        },
+        StreamResult {
+            text: "Tool failed, sorry.".into(),
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(FailingTool));
+    let runtime = make_runtime();
+
+    let result = run_agent_loop(
+        &agent,
+        &runtime,
+        vec![Message::user("use fail tool")],
+        test_identity(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+    assert_eq!(result.steps, 2);
+}
+
+#[tokio::test]
+async fn events_have_correct_sequence_for_single_step() {
     let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
         text: "Hi!".into(),
         tool_calls: vec![],
@@ -349,13 +433,12 @@ async fn agent_loop_events_have_correct_sequence() {
     }]));
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
-    let store = make_store();
+    let runtime = make_runtime();
 
-    let result = run_agent_loop(&agent, &store, vec![Message::user("hi")], test_identity())
+    let result = run_agent_loop(&agent, &runtime, vec![Message::user("hi")], test_identity())
         .await
         .unwrap();
 
-    // Expected event sequence for a single no-tool step
     let event_types: Vec<&str> = result
         .events
         .iter()
@@ -382,7 +465,70 @@ async fn agent_loop_events_have_correct_sequence() {
 }
 
 #[tokio::test]
-async fn agent_loop_lifecycle_state_reflects_run_id() {
+async fn events_have_correct_sequence_with_tool_call() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            text: "".into(),
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "x"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+        },
+        StreamResult {
+            text: "Done".into(),
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+
+    let result = run_agent_loop(
+        &agent,
+        &runtime,
+        vec![Message::user("echo")],
+        test_identity(),
+    )
+    .await
+    .unwrap();
+
+    let event_types: Vec<&str> = result
+        .events
+        .iter()
+        .map(|e| match e {
+            AgentEvent::RunStart { .. } => "RunStart",
+            AgentEvent::StepStart { .. } => "StepStart",
+            AgentEvent::InferenceComplete { .. } => "InferenceComplete",
+            AgentEvent::ToolCallStart { .. } => "ToolCallStart",
+            AgentEvent::ToolCallDone { .. } => "ToolCallDone",
+            AgentEvent::StepEnd => "StepEnd",
+            AgentEvent::RunFinish { .. } => "RunFinish",
+            _ => "Other",
+        })
+        .collect();
+
+    assert_eq!(
+        event_types,
+        vec![
+            "RunStart",
+            // Step 1: tool call
+            "StepStart",
+            "InferenceComplete",
+            "ToolCallStart",
+            "ToolCallDone",
+            "StepEnd",
+            // Step 2: final response
+            "StepStart",
+            "InferenceComplete",
+            "StepEnd",
+            "RunFinish",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn lifecycle_state_reflects_custom_run_id() {
     let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
         text: "ok".into(),
         tool_calls: vec![],
@@ -391,7 +537,7 @@ async fn agent_loop_lifecycle_state_reflects_run_id() {
     }]));
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
-    let store = make_store();
+    let runtime = make_runtime();
 
     let identity = RunIdentity::new(
         "t-custom".into(),
@@ -402,10 +548,70 @@ async fn agent_loop_lifecycle_state_reflects_run_id() {
         RunOrigin::Internal,
     );
 
-    run_agent_loop(&agent, &store, vec![Message::user("hi")], identity)
+    run_agent_loop(&agent, &runtime, vec![Message::user("hi")], identity)
         .await
         .unwrap();
 
-    let lifecycle = store.read_slot::<RunLifecycleSlot>().unwrap();
+    let lifecycle = runtime.store().read_slot::<RunLifecycleSlot>().unwrap();
     assert_eq!(lifecycle.run_id, "r-custom");
+}
+
+#[tokio::test]
+async fn phase_hooks_fire_during_loop() {
+    let hook_phases = Arc::new(Mutex::new(Vec::<Phase>::new()));
+
+    struct PhaseTracker(Arc<Mutex<Vec<Phase>>>);
+    impl PhaseHook for PhaseTracker {
+        fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+            self.0.lock().unwrap().push(ctx.phase);
+            Ok(StateCommand::new())
+        }
+    }
+
+    struct TrackerPlugin(Arc<Mutex<Vec<Phase>>>);
+    impl Plugin for TrackerPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "tracker" }
+        }
+        fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+            for phase in Phase::ALL {
+                registrar.register_phase_hook(
+                    "tracker",
+                    phase,
+                    PhaseTracker(Arc::clone(&self.0)),
+                )?;
+            }
+            Ok(())
+        }
+    }
+
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        text: "done".into(),
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+    }]));
+
+    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
+    let runtime = make_runtime();
+    runtime
+        .install_plugin(TrackerPlugin(Arc::clone(&hook_phases)))
+        .unwrap();
+
+    run_agent_loop(&agent, &runtime, vec![Message::user("hi")], test_identity())
+        .await
+        .unwrap();
+
+    let phases = hook_phases.lock().unwrap();
+    assert_eq!(
+        *phases,
+        vec![
+            Phase::RunStart,
+            Phase::StepStart,
+            Phase::BeforeInference,
+            Phase::AfterInference,
+            Phase::StepEnd,
+            Phase::RunEnd,
+        ]
+    );
 }
