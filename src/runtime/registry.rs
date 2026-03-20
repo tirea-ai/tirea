@@ -1,8 +1,14 @@
-use crate::foundation::*;
-use crate::plugin::{PluginRegistrar, StatePlugin};
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+use crate::error::StateError;
+use crate::model::{
+    EffectLog, EffectSpec, FailedScheduledActions, PendingScheduledActions, ScheduledActionLog,
+    ScheduledActionSpec,
+};
+use crate::plugins::{PluginMeta, PluginRegistrar, StatePlugin};
+use crate::state::SlotOptions;
 
 use super::handlers::{
     EffectHandlerArc, ScheduledActionHandlerArc, TypedEffectAdapter, TypedEffectHandler,

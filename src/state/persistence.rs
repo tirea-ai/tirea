@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use crate::foundation::*;
+use crate::error::{StateError, UnknownSlotPolicy};
 
-use super::core::StateStore;
+use super::{PersistedState, SlotMap, StateStore};
 
 impl StateStore {
     pub fn export_persisted(&self) -> Result<PersistedState, StateError> {

@@ -1,8 +1,10 @@
-use crate::foundation::*;
-use crate::patch::MutationBatch;
-use crate::plugin::{InstalledPlugin, PluginRegistrar, PluginRegistry, StatePlugin};
 use std::any::TypeId;
 use std::sync::{Arc, Mutex, RwLock};
+
+use crate::error::StateError;
+use crate::plugins::{InstalledPlugin, PluginRegistrar, PluginRegistry, StatePlugin};
+
+use super::{MutationBatch, SlotMap, Snapshot, StateSlot};
 
 #[derive(Clone)]
 pub struct CommitEvent {

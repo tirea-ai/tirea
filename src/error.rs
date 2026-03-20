@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use super::runtime_types::Phase;
+use crate::model::Phase;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnknownSlotPolicy {

@@ -1,4 +1,4 @@
-use crate::foundation::Phase;
+use crate::model::Phase;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectDispatchReport {

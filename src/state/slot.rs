@@ -4,7 +4,8 @@ use std::marker::PhantomData;
 use typedmap::clone::SyncCloneBounds;
 use typedmap::{TypedMap, TypedMapKey};
 
-use super::{JsonValue, StateError, decode_json, encode_json};
+use crate::error::StateError;
+use crate::model::{JsonValue, decode_json, encode_json};
 
 struct ExtensionMarker;
 

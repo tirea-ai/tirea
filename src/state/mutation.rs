@@ -1,6 +1,8 @@
 use std::marker::PhantomData;
 
-use crate::foundation::*;
+use crate::error::StateError;
+
+use super::{SlotMap, Snapshot, StateSlot};
 
 pub(crate) trait MutationOp: Send {
     fn apply(self: Box<Self>, state: &mut Snapshot);
@@ -137,7 +139,6 @@ impl Default for MutationBatch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     struct Counter;
 
@@ -184,7 +185,7 @@ mod tests {
 
         let mut snapshot = Snapshot {
             revision: 0,
-            ext: Arc::new(SlotMap::default()),
+            ext: std::sync::Arc::new(SlotMap::default()),
         };
 
         for op in batch.ops.drain(..) {

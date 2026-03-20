@@ -1,6 +1,6 @@
 use serde::{Serialize, de::DeserializeOwned};
 
-use super::StateError;
+use crate::error::StateError;
 
 pub use serde_json::Value as JsonValue;
 

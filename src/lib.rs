@@ -2,14 +2,14 @@
 
 //! Awaken framework primitives.
 
-mod foundation;
-mod patch;
-mod plugin;
+mod error;
+mod model;
+mod plugins;
 mod runtime;
-mod store;
+mod state;
 
-pub use foundation::*;
-pub use patch::*;
-pub use plugin::*;
+pub use error::*;
+pub use model::*;
+pub use plugins::*;
 pub use runtime::*;
-pub use store::*;
+pub use state::*;

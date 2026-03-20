@@ -1,6 +1,7 @@
 use std::ops::{Deref, DerefMut};
 
-use crate::foundation::*;
+use crate::error::StateError;
+use crate::model::{EffectSpec, RuntimeEffect, ScheduledAction, ScheduledActionSpec, TypedEffect};
 
 use super::MutationBatch;
 
@@ -81,6 +82,8 @@ impl DerefMut for StateCommand {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::{Phase, ScheduledActionSpec};
+
     use super::*;
 
     struct TestAction;

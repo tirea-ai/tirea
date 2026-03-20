@@ -1,6 +1,6 @@
-use crate::foundation::{Phase, Snapshot, StateError};
-use crate::patch::StateCommand;
-use crate::store::StateStore;
+use crate::error::StateError;
+use crate::model::Phase;
+use crate::state::{Snapshot, StateCommand, StateStore};
 
 use super::engine::PhaseRuntime;
 use super::registry::RuntimePlugin;

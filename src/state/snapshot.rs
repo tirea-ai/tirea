@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::{JsonValue, SlotMap, StateSlot};
+use crate::model::JsonValue;
+
+use super::{SlotMap, StateSlot};
 
 #[derive(Clone)]
 pub struct Snapshot {
@@ -22,11 +24,6 @@ impl Snapshot {
     pub fn ext(&self) -> &SlotMap {
         self.ext.as_ref()
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PluginMeta {
-    pub name: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

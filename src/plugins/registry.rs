@@ -1,8 +1,12 @@
-use crate::foundation::*;
-use crate::patch::MutationBatch;
 use std::any::TypeId;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+
+use crate::error::StateError;
+use crate::model::JsonValue;
+use crate::state::{SlotMap, SlotOptions, StateSlot};
+
+use super::StatePlugin;
 
 #[derive(Clone)]
 pub(crate) struct SlotRegistration {
@@ -37,13 +41,13 @@ impl SlotRegistration {
 }
 
 #[derive(Default)]
-pub(crate) struct PluginRegistry {
+pub struct PluginRegistry {
     pub(crate) plugins: HashMap<TypeId, InstalledPlugin>,
     pub(crate) slots_by_type: HashMap<TypeId, SlotRegistration>,
     pub(crate) slots_by_key: HashMap<String, SlotRegistration>,
 }
 
-pub(crate) struct InstalledPlugin {
+pub struct InstalledPlugin {
     pub(crate) plugin: Arc<dyn StatePlugin>,
     pub(crate) owned_slot_type_ids: Vec<TypeId>,
 }
@@ -85,22 +89,6 @@ impl PluginRegistrar {
         }
 
         self.slots.push(SlotRegistration::new::<K>(options));
-        Ok(())
-    }
-}
-
-pub trait StatePlugin: Send + Sync + 'static {
-    fn meta(&self) -> PluginMeta;
-
-    fn register(&self, _registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-        Ok(())
-    }
-
-    fn on_install(&self, _patch: &mut MutationBatch) -> Result<(), StateError> {
-        Ok(())
-    }
-
-    fn on_uninstall(&self, _patch: &mut MutationBatch) -> Result<(), StateError> {
         Ok(())
     }
 }

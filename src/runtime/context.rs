@@ -1,4 +1,5 @@
-use crate::foundation::*;
+use crate::model::Phase;
+use crate::state::{Snapshot, StateSlot};
 
 #[derive(Clone)]
 pub struct PhaseContext {
