@@ -1,9 +1,9 @@
 use crate::error::StateError;
 use crate::model::Phase;
+use crate::plugins::Plugin;
 use crate::state::{Snapshot, StateCommand, StateStore};
 
 use super::engine::PhaseRuntime;
-use super::registry::RuntimePlugin;
 use super::reports::{PhaseRunReport, SubmitCommandReport};
 
 #[derive(Clone)]
@@ -64,14 +64,14 @@ impl AppRuntime {
 
     pub fn install_plugin<P>(&self, plugin: P) -> Result<(), StateError>
     where
-        P: RuntimePlugin,
+        P: Plugin,
     {
         self.phase_runtime.install_plugin(plugin)
     }
 
     pub fn uninstall_plugin<P>(&self) -> Result<(), StateError>
     where
-        P: RuntimePlugin,
+        P: Plugin,
     {
         self.phase_runtime.uninstall_plugin::<P>()
     }

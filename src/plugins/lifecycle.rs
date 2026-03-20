@@ -1,17 +1,10 @@
-use serde::{Deserialize, Serialize};
-
 use crate::error::StateError;
 use crate::state::MutationBatch;
 
-use super::PluginRegistrar;
+use super::{PluginDescriptor, PluginRegistrar};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PluginMeta {
-    pub name: &'static str,
-}
-
-pub trait StatePlugin: Send + Sync + 'static {
-    fn meta(&self) -> PluginMeta;
+pub trait Plugin: Send + Sync + 'static {
+    fn descriptor(&self) -> PluginDescriptor;
 
     fn register(&self, _registrar: &mut PluginRegistrar) -> Result<(), StateError> {
         Ok(())

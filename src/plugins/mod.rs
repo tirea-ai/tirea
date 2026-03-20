@@ -1,5 +1,8 @@
+mod descriptor;
 mod lifecycle;
 mod registry;
 
-pub use lifecycle::{PluginMeta, StatePlugin};
+pub use descriptor::PluginDescriptor;
+pub use lifecycle::Plugin;
+pub(crate) use registry::SlotRegistration;
 pub use registry::{InstalledPlugin, PluginRegistrar, PluginRegistry};

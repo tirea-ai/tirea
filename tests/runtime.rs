@@ -50,21 +50,15 @@ impl StateSlot for HandoffChannel {
 #[derive(Clone)]
 struct HandoffPlugin;
 
-impl StatePlugin for HandoffPlugin {
-    fn meta(&self) -> PluginMeta {
-        PluginMeta {
+impl Plugin for HandoffPlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
             name: "handoff-plugin",
         }
     }
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
         registrar.register_slot::<HandoffChannel>(SlotOptions::default())?;
-        Ok(())
-    }
-}
-
-impl RuntimePlugin for HandoffPlugin {
-    fn register_runtime(&self, registrar: &mut RuntimePluginRegistrar) -> Result<(), StateError> {
         registrar.register_scheduled_action::<ActivateRequested, _>(ActivateRequestedHandler)?;
         Ok(())
     }
@@ -776,4 +770,210 @@ fn malformed_effect_payloads_are_reported_as_failed_dispatch() {
     assert_eq!(report.effect_report.attempted, 1);
     assert_eq!(report.effect_report.dispatched, 0);
     assert_eq!(report.effect_report.failed, 1);
+}
+
+// --- Phase hook tests ---
+
+struct CountingHook(Arc<std::sync::atomic::AtomicUsize>);
+
+impl PhaseHook for CountingHook {
+    fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(StateCommand::new())
+    }
+}
+
+struct MutatingHook;
+
+impl PhaseHook for MutatingHook {
+    fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+        let mut cmd = StateCommand::new().with_base_revision(ctx.snapshot.revision());
+        cmd.update::<HandoffChannel>(HandoffAction::Request {
+            agent: "from-hook".into(),
+        });
+        Ok(cmd)
+    }
+}
+
+struct ActionEnqueuingHook;
+
+impl PhaseHook for ActionEnqueuingHook {
+    fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+        let mut cmd = StateCommand::new();
+        cmd.schedule_action::<LogOnlyAction>(()).unwrap();
+        Ok(cmd)
+    }
+}
+
+struct HookPlugin {
+    hook_count: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Plugin for HookPlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
+            name: "hook-plugin",
+        }
+    }
+
+    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+        registrar.register_phase_hook(
+            Phase::BeforeInference,
+            CountingHook(Arc::clone(&self.hook_count)),
+        )?;
+        Ok(())
+    }
+}
+
+#[test]
+fn phase_hook_runs_during_run_phase() {
+    let app = AppRuntime::new().unwrap();
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    app.install_plugin(HookPlugin {
+        hook_count: Arc::clone(&count),
+    })
+    .unwrap();
+
+    app.run_phase(Phase::BeforeInference).unwrap();
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn phase_hook_can_mutate_state() {
+    let app = AppRuntime::new().unwrap();
+    app.install_plugin(HandoffPlugin).unwrap();
+
+    struct MutatingHookPlugin;
+    impl Plugin for MutatingHookPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "mutating-hook-plugin",
+            }
+        }
+        fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+            registrar.register_phase_hook(Phase::BeforeInference, MutatingHook)?;
+            Ok(())
+        }
+    }
+    app.install_plugin(MutatingHookPlugin).unwrap();
+
+    app.run_phase(Phase::BeforeInference).unwrap();
+
+    let state = app.store().read_slot::<HandoffChannel>().unwrap();
+    assert_eq!(state.requested_agent.as_deref(), Some("from-hook"));
+}
+
+#[test]
+fn phase_hook_can_enqueue_actions() {
+    let app = AppRuntime::new().unwrap();
+    app.phase_runtime()
+        .register_scheduled_action::<LogOnlyAction, _>(LogOnlyHandler)
+        .unwrap();
+
+    struct EnqueuePlugin;
+    impl Plugin for EnqueuePlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "enqueue-plugin",
+            }
+        }
+        fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+            registrar.register_phase_hook(Phase::BeforeInference, ActionEnqueuingHook)?;
+            Ok(())
+        }
+    }
+    app.install_plugin(EnqueuePlugin).unwrap();
+
+    let report = app.run_phase(Phase::BeforeInference).unwrap();
+    assert_eq!(report.processed_scheduled_actions, 1);
+    assert_eq!(
+        app.store()
+            .read_slot::<PendingScheduledActions>()
+            .unwrap_or_default()
+            .len(),
+        0
+    );
+}
+
+#[test]
+fn phase_hooks_execute_in_registration_order() {
+    let order = Arc::new(Mutex::new(Vec::<&str>::new()));
+
+    struct OrderHook {
+        label: &'static str,
+        order: Arc<Mutex<Vec<&'static str>>>,
+    }
+    impl PhaseHook for OrderHook {
+        fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+            self.order.lock().unwrap().push(self.label);
+            Ok(StateCommand::new())
+        }
+    }
+
+    let order_clone = Arc::clone(&order);
+    struct OrderPlugin {
+        order: Arc<Mutex<Vec<&'static str>>>,
+    }
+    impl Plugin for OrderPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "order-plugin",
+            }
+        }
+        fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+            registrar.register_phase_hook(
+                Phase::BeforeInference,
+                OrderHook {
+                    label: "first",
+                    order: Arc::clone(&self.order),
+                },
+            )?;
+            registrar.register_phase_hook(
+                Phase::BeforeInference,
+                OrderHook {
+                    label: "second",
+                    order: Arc::clone(&self.order),
+                },
+            )?;
+            Ok(())
+        }
+    }
+
+    let app = AppRuntime::new().unwrap();
+    app.install_plugin(OrderPlugin { order: order_clone })
+        .unwrap();
+
+    app.run_phase(Phase::BeforeInference).unwrap();
+    assert_eq!(*order.lock().unwrap(), vec!["first", "second"]);
+}
+
+#[test]
+fn phase_hooks_are_cleaned_up_on_uninstall() {
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let app = AppRuntime::new().unwrap();
+    app.install_plugin(HookPlugin {
+        hook_count: Arc::clone(&count),
+    })
+    .unwrap();
+
+    app.run_phase(Phase::BeforeInference).unwrap();
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    app.uninstall_plugin::<HookPlugin>().unwrap();
+
+    app.run_phase(Phase::BeforeInference).unwrap();
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn phase_hook_does_not_fire_for_other_phases() {
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let app = AppRuntime::new().unwrap();
+    app.install_plugin(HookPlugin {
+        hook_count: Arc::clone(&count),
+    })
+    .unwrap();
+
+    app.run_phase(Phase::AfterInference).unwrap();
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
 }

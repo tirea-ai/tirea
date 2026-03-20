@@ -1,38 +1,47 @@
 use std::any::TypeId;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use crate::error::StateError;
 use crate::model::{
-    EffectLog, EffectSpec, FailedScheduledActions, PendingScheduledActions, ScheduledActionLog,
-    ScheduledActionSpec,
+    EffectLog, FailedScheduledActions, PendingScheduledActions, Phase, ScheduledActionLog,
 };
-use crate::plugins::{PluginMeta, PluginRegistrar, StatePlugin};
+use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use crate::state::SlotOptions;
 
-use super::handlers::{
-    EffectHandlerArc, ScheduledActionHandlerArc, TypedEffectAdapter, TypedEffectHandler,
-    TypedScheduledActionAdapter, TypedScheduledActionHandler,
-};
+use super::{EffectHandlerArc, PhaseHookArc, ScheduledActionHandlerArc};
 
 #[derive(Default)]
 pub(crate) struct InstalledRuntimePlugin {
     pub(crate) scheduled_action_keys: Vec<String>,
     pub(crate) effect_keys: Vec<String>,
+    pub(crate) phase_hook_ids: Vec<(Phase, u64)>,
 }
 
-#[derive(Default)]
 pub(crate) struct RuntimeRegistry {
     pub(crate) scheduled_action_handlers: HashMap<String, ScheduledActionHandlerArc>,
     pub(crate) effect_handlers: HashMap<String, EffectHandlerArc>,
+    pub(crate) phase_hooks: HashMap<Phase, Vec<(u64, PhaseHookArc)>>,
     pub(crate) installed_plugins: HashMap<TypeId, InstalledRuntimePlugin>,
+    pub(crate) next_hook_id: u64,
+}
+
+impl Default for RuntimeRegistry {
+    fn default() -> Self {
+        Self {
+            scheduled_action_handlers: HashMap::new(),
+            effect_handlers: HashMap::new(),
+            phase_hooks: HashMap::new(),
+            installed_plugins: HashMap::new(),
+            next_hook_id: 1,
+        }
+    }
 }
 
 pub(crate) struct RuntimeQueuePlugin;
 
-impl StatePlugin for RuntimeQueuePlugin {
-    fn meta(&self) -> PluginMeta {
-        PluginMeta {
+impl Plugin for RuntimeQueuePlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
             name: "phase-runtime",
         }
     }
@@ -46,78 +55,6 @@ impl StatePlugin for RuntimeQueuePlugin {
         registrar.register_slot::<FailedScheduledActions>(runtime_options)?;
         registrar.register_slot::<ScheduledActionLog>(runtime_options)?;
         registrar.register_slot::<EffectLog>(runtime_options)?;
-        Ok(())
-    }
-}
-
-pub(crate) struct ScheduledActionHandlerRegistration {
-    pub(crate) key: String,
-    pub(crate) handler: ScheduledActionHandlerArc,
-}
-
-pub(crate) struct EffectHandlerRegistration {
-    pub(crate) key: String,
-    pub(crate) handler: EffectHandlerArc,
-}
-
-pub struct RuntimePluginRegistrar {
-    pub(crate) scheduled_actions: Vec<ScheduledActionHandlerRegistration>,
-    pub(crate) effects: Vec<EffectHandlerRegistration>,
-}
-
-impl RuntimePluginRegistrar {
-    pub(crate) fn new() -> Self {
-        Self {
-            scheduled_actions: Vec::new(),
-            effects: Vec::new(),
-        }
-    }
-
-    pub fn register_scheduled_action<A, H>(&mut self, handler: H) -> Result<(), StateError>
-    where
-        A: ScheduledActionSpec,
-        H: TypedScheduledActionHandler<A>,
-    {
-        let key = A::KEY.to_string();
-        if self.scheduled_actions.iter().any(|entry| entry.key == key) {
-            return Err(StateError::HandlerAlreadyRegistered { key });
-        }
-
-        self.scheduled_actions
-            .push(ScheduledActionHandlerRegistration {
-                key: A::KEY.to_string(),
-                handler: Arc::new(TypedScheduledActionAdapter::<A, H> {
-                    handler,
-                    _marker: std::marker::PhantomData,
-                }),
-            });
-        Ok(())
-    }
-
-    pub fn register_effect<E, H>(&mut self, handler: H) -> Result<(), StateError>
-    where
-        E: EffectSpec,
-        H: TypedEffectHandler<E>,
-    {
-        let key = E::KEY.to_string();
-        if self.effects.iter().any(|entry| entry.key == key) {
-            return Err(StateError::EffectHandlerAlreadyRegistered { key });
-        }
-
-        self.effects.push(EffectHandlerRegistration {
-            key: E::KEY.to_string(),
-            handler: Arc::new(TypedEffectAdapter::<E, H> {
-                handler,
-                _marker: std::marker::PhantomData,
-            }),
-        });
-        Ok(())
-    }
-}
-
-pub trait RuntimePlugin: StatePlugin {
-    fn register_runtime(&self, registrar: &mut RuntimePluginRegistrar) -> Result<(), StateError> {
-        let _ = registrar;
         Ok(())
     }
 }

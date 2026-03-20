@@ -9,13 +9,12 @@ use crate::model::{
     ScheduledActionEnvelope, ScheduledActionLog, ScheduledActionLogEntry, ScheduledActionLogUpdate,
     ScheduledActionQueueUpdate, ScheduledActionSpec, TypedEffect,
 };
+use crate::plugins::{Plugin, PluginRegistrar};
 use crate::state::{MutationBatch, Snapshot, StateCommand, StateStore};
 
 use super::PhaseContext;
-use super::registry::{
-    InstalledRuntimePlugin, RuntimePlugin, RuntimePluginRegistrar, RuntimeQueuePlugin,
-    RuntimeRegistry,
-};
+use super::handlers::{TypedEffectHandler, TypedScheduledActionHandler};
+use super::registry::{InstalledRuntimePlugin, RuntimeQueuePlugin, RuntimeRegistry};
 use super::reports::{
     DEFAULT_MAX_PHASE_ROUNDS, EffectDispatchReport, PhaseRunReport, SubmitCommandReport,
 };
@@ -51,13 +50,13 @@ impl PhaseRuntime {
     pub fn register_scheduled_action<A, H>(&self, handler: H) -> Result<(), StateError>
     where
         A: ScheduledActionSpec,
-        H: super::handlers::TypedScheduledActionHandler<A>,
+        H: TypedScheduledActionHandler<A>,
     {
         let _guard = self
             .execution_lock
             .lock()
             .expect("runtime execution lock poisoned");
-        let mut registrar = RuntimePluginRegistrar::new();
+        let mut registrar = PluginRegistrar::new();
         registrar.register_scheduled_action::<A, H>(handler)?;
         self.commit_runtime_registrations(None, registrar)
     }
@@ -65,30 +64,35 @@ impl PhaseRuntime {
     pub fn register_effect<E, H>(&self, handler: H) -> Result<(), StateError>
     where
         E: EffectSpec,
-        H: super::handlers::TypedEffectHandler<E>,
+        H: TypedEffectHandler<E>,
     {
         let _guard = self
             .execution_lock
             .lock()
             .expect("runtime execution lock poisoned");
-        let mut registrar = RuntimePluginRegistrar::new();
+        let mut registrar = PluginRegistrar::new();
         registrar.register_effect::<E, H>(handler)?;
         self.commit_runtime_registrations(None, registrar)
     }
 
     pub fn install_plugin<P>(&self, plugin: P) -> Result<(), StateError>
     where
-        P: RuntimePlugin,
+        P: Plugin,
     {
         let _guard = self
             .execution_lock
             .lock()
             .expect("runtime execution lock poisoned");
-        let mut registrar = RuntimePluginRegistrar::new();
-        plugin.register_runtime(&mut registrar)?;
+        let mut registrar = PluginRegistrar::new();
+        plugin.register(&mut registrar)?;
         let plugin_type_id = TypeId::of::<P>();
         self.ensure_runtime_registrations_available(Some(plugin_type_id), &registrar)?;
-        self.store.install_plugin(plugin)?;
+
+        let slots = std::mem::take(&mut registrar.slots);
+        let plugin_arc: Arc<dyn Plugin> = Arc::new(plugin);
+        self.store
+            .install_plugin_with_slots(plugin_type_id, plugin_arc, slots)?;
+
         if let Err(err) = self.commit_runtime_registrations(Some(plugin_type_id), registrar) {
             let _ = self.store.uninstall_plugin::<P>();
             return Err(err);
@@ -98,7 +102,7 @@ impl PhaseRuntime {
 
     pub fn uninstall_plugin<P>(&self) -> Result<(), StateError>
     where
-        P: RuntimePlugin,
+        P: Plugin,
     {
         let _guard = self
             .execution_lock
@@ -162,6 +166,34 @@ impl PhaseRuntime {
             failed: 0,
         };
         let mut rounds = 0;
+
+        // Phase hooks run once before the action processing loop
+        let hooks: Vec<_> = {
+            let registry = self
+                .runtime_registry
+                .read()
+                .expect("runtime registry lock poisoned");
+            registry
+                .phase_hooks
+                .get(&phase)
+                .map(|hooks| hooks.iter().map(|(_, hook)| Arc::clone(hook)).collect())
+                .unwrap_or_default()
+        };
+
+        for hook in hooks {
+            let ctx = PhaseContext {
+                phase,
+                snapshot: self.store.snapshot(),
+            };
+            let command = hook.run(&ctx)?;
+            if !command.is_empty() {
+                total_effects += command.effects.len();
+                let report = self.submit_command_inner(command)?;
+                effect_report.attempted += report.effect_report.attempted;
+                effect_report.dispatched += report.effect_report.dispatched;
+                effect_report.failed += report.effect_report.failed;
+            }
+        }
 
         loop {
             rounds += 1;
@@ -325,7 +357,7 @@ impl PhaseRuntime {
     fn ensure_runtime_registrations_available(
         &self,
         plugin_type_id: Option<TypeId>,
-        registrar: &RuntimePluginRegistrar,
+        registrar: &PluginRegistrar,
     ) -> Result<(), StateError> {
         let registry = self
             .runtime_registry
@@ -362,7 +394,7 @@ impl PhaseRuntime {
     fn commit_runtime_registrations(
         &self,
         plugin_type_id: Option<TypeId>,
-        mut registrar: RuntimePluginRegistrar,
+        mut registrar: PluginRegistrar,
     ) -> Result<(), StateError> {
         let mut registry = self
             .runtime_registry
@@ -408,6 +440,17 @@ impl PhaseRuntime {
             registry.effect_handlers.insert(entry.key, entry.handler);
         }
 
+        for entry in registrar.phase_hooks.drain(..) {
+            let hook_id = registry.next_hook_id;
+            registry.next_hook_id += 1;
+            installed_plugin.phase_hook_ids.push((entry.phase, hook_id));
+            registry
+                .phase_hooks
+                .entry(entry.phase)
+                .or_default()
+                .push((hook_id, entry.hook));
+        }
+
         if let Some(plugin_type_id) = plugin_type_id {
             registry
                 .installed_plugins
@@ -419,7 +462,7 @@ impl PhaseRuntime {
 
     fn remove_runtime_plugin<P>(&self)
     where
-        P: RuntimePlugin,
+        P: Plugin,
     {
         let plugin_type_id = TypeId::of::<P>();
         let mut registry = self
@@ -434,6 +477,11 @@ impl PhaseRuntime {
         }
         for key in installed.effect_keys {
             registry.effect_handlers.remove(&key);
+        }
+        for (phase, hook_id) in installed.phase_hook_ids {
+            if let Some(hooks) = registry.phase_hooks.get_mut(&phase) {
+                hooks.retain(|(id, _)| *id != hook_id);
+            }
         }
     }
 

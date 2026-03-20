@@ -2,7 +2,7 @@ use std::any::TypeId;
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::error::StateError;
-use crate::plugins::{InstalledPlugin, PluginRegistrar, PluginRegistry, StatePlugin};
+use crate::plugins::{InstalledPlugin, Plugin, PluginRegistrar, PluginRegistry, SlotRegistration};
 
 use super::{MutationBatch, SlotMap, Snapshot, StateSlot};
 
@@ -125,24 +125,31 @@ impl StateStore {
 
     pub fn install_plugin<P>(&self, plugin: P) -> Result<(), StateError>
     where
-        P: StatePlugin,
+        P: Plugin,
     {
-        let meta = plugin.meta();
         let mut registrar = PluginRegistrar::new();
         plugin.register(&mut registrar)?;
-
         let plugin_type_id = TypeId::of::<P>();
-        let plugin_arc: Arc<dyn StatePlugin> = Arc::new(plugin);
+        self.install_plugin_with_slots(plugin_type_id, Arc::new(plugin), registrar.slots)
+    }
+
+    pub(crate) fn install_plugin_with_slots(
+        &self,
+        plugin_type_id: TypeId,
+        plugin: Arc<dyn Plugin>,
+        slots: Vec<SlotRegistration>,
+    ) -> Result<(), StateError> {
+        let descriptor = plugin.descriptor();
 
         {
             let mut registry = self.registry.lock().expect("registry lock poisoned");
             if registry.plugins.contains_key(&plugin_type_id) {
                 return Err(StateError::PluginAlreadyInstalled {
-                    name: meta.name.to_string(),
+                    name: descriptor.name.to_string(),
                 });
             }
 
-            for slot in &registrar.slots {
+            for slot in &slots {
                 if registry.slots_by_key.contains_key(&slot.key) {
                     return Err(StateError::SlotAlreadyRegistered {
                         key: slot.key.clone(),
@@ -150,7 +157,7 @@ impl StateStore {
                 }
             }
 
-            for slot in &registrar.slots {
+            for slot in &slots {
                 registry.slots_by_key.insert(slot.key.clone(), slot.clone());
                 registry.slots_by_type.insert(slot.type_id, slot.clone());
             }
@@ -158,14 +165,14 @@ impl StateStore {
             registry.plugins.insert(
                 plugin_type_id,
                 InstalledPlugin {
-                    plugin: Arc::clone(&plugin_arc),
-                    owned_slot_type_ids: registrar.slots.iter().map(|slot| slot.type_id).collect(),
+                    plugin: Arc::clone(&plugin),
+                    owned_slot_type_ids: slots.iter().map(|slot| slot.type_id).collect(),
                 },
             );
         }
 
         let mut patch = MutationBatch::new().with_base_revision(self.revision());
-        plugin_arc.on_install(&mut patch)?;
+        plugin.on_install(&mut patch)?;
         self.commit(patch).map(|_| ()).inspect_err(|_| {
             let _ = self.unregister_plugin_type_id(plugin_type_id, true);
         })
@@ -173,7 +180,7 @@ impl StateStore {
 
     pub fn uninstall_plugin<P>(&self) -> Result<(), StateError>
     where
-        P: StatePlugin,
+        P: Plugin,
     {
         let plugin_type_id = TypeId::of::<P>();
         let (plugin, slots) =

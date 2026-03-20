@@ -73,3 +73,9 @@ where
 
 pub(crate) type ScheduledActionHandlerArc = Arc<dyn ErasedTypedScheduledActionHandler>;
 pub(crate) type EffectHandlerArc = Arc<dyn ErasedTypedEffectHandler>;
+
+pub trait PhaseHook: Send + Sync + 'static {
+    fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError>;
+}
+
+pub(crate) type PhaseHookArc = Arc<dyn PhaseHook>;

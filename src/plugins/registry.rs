@@ -3,10 +3,14 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::error::StateError;
-use crate::model::JsonValue;
+use crate::model::{EffectSpec, JsonValue, Phase, ScheduledActionSpec};
+use crate::runtime::{
+    EffectHandlerArc, PhaseHook, PhaseHookArc, ScheduledActionHandlerArc, TypedEffectAdapter,
+    TypedEffectHandler, TypedScheduledActionAdapter, TypedScheduledActionHandler,
+};
 use crate::state::{SlotMap, SlotOptions, StateSlot};
 
-use super::StatePlugin;
+use super::Plugin;
 
 #[derive(Clone)]
 pub(crate) struct SlotRegistration {
@@ -40,6 +44,21 @@ impl SlotRegistration {
     }
 }
 
+pub(crate) struct ScheduledActionHandlerRegistration {
+    pub(crate) key: String,
+    pub(crate) handler: ScheduledActionHandlerArc,
+}
+
+pub(crate) struct EffectHandlerRegistration {
+    pub(crate) key: String,
+    pub(crate) handler: EffectHandlerArc,
+}
+
+pub(crate) struct PhaseHookRegistration {
+    pub(crate) phase: Phase,
+    pub(crate) hook: PhaseHookArc,
+}
+
 #[derive(Default)]
 pub struct PluginRegistry {
     pub(crate) plugins: HashMap<TypeId, InstalledPlugin>,
@@ -48,7 +67,7 @@ pub struct PluginRegistry {
 }
 
 pub struct InstalledPlugin {
-    pub(crate) plugin: Arc<dyn StatePlugin>,
+    pub(crate) plugin: Arc<dyn Plugin>,
     pub(crate) owned_slot_type_ids: Vec<TypeId>,
 }
 
@@ -66,6 +85,11 @@ pub struct PluginRegistrar {
     pub(crate) slots: Vec<SlotRegistration>,
     slot_type_ids: HashSet<TypeId>,
     slot_keys: HashSet<String>,
+    pub(crate) scheduled_actions: Vec<ScheduledActionHandlerRegistration>,
+    scheduled_action_keys: HashSet<String>,
+    pub(crate) effects: Vec<EffectHandlerRegistration>,
+    effect_keys: HashSet<String>,
+    pub(crate) phase_hooks: Vec<PhaseHookRegistration>,
 }
 
 impl PluginRegistrar {
@@ -74,6 +98,11 @@ impl PluginRegistrar {
             slots: Vec::new(),
             slot_type_ids: HashSet::new(),
             slot_keys: HashSet::new(),
+            scheduled_actions: Vec::new(),
+            scheduled_action_keys: HashSet::new(),
+            effects: Vec::new(),
+            effect_keys: HashSet::new(),
+            phase_hooks: Vec::new(),
         }
     }
 
@@ -89,6 +118,58 @@ impl PluginRegistrar {
         }
 
         self.slots.push(SlotRegistration::new::<K>(options));
+        Ok(())
+    }
+
+    pub fn register_scheduled_action<A, H>(&mut self, handler: H) -> Result<(), StateError>
+    where
+        A: ScheduledActionSpec,
+        H: TypedScheduledActionHandler<A>,
+    {
+        let key = A::KEY.to_string();
+        if !self.scheduled_action_keys.insert(key.clone()) {
+            return Err(StateError::HandlerAlreadyRegistered { key });
+        }
+
+        self.scheduled_actions
+            .push(ScheduledActionHandlerRegistration {
+                key,
+                handler: Arc::new(TypedScheduledActionAdapter::<A, H> {
+                    handler,
+                    _marker: std::marker::PhantomData,
+                }),
+            });
+        Ok(())
+    }
+
+    pub fn register_effect<E, H>(&mut self, handler: H) -> Result<(), StateError>
+    where
+        E: EffectSpec,
+        H: TypedEffectHandler<E>,
+    {
+        let key = E::KEY.to_string();
+        if !self.effect_keys.insert(key.clone()) {
+            return Err(StateError::EffectHandlerAlreadyRegistered { key });
+        }
+
+        self.effects.push(EffectHandlerRegistration {
+            key,
+            handler: Arc::new(TypedEffectAdapter::<E, H> {
+                handler,
+                _marker: std::marker::PhantomData,
+            }),
+        });
+        Ok(())
+    }
+
+    pub fn register_phase_hook<H>(&mut self, phase: Phase, hook: H) -> Result<(), StateError>
+    where
+        H: PhaseHook,
+    {
+        self.phase_hooks.push(PhaseHookRegistration {
+            phase,
+            hook: Arc::new(hook),
+        });
         Ok(())
     }
 }

@@ -108,9 +108,9 @@ impl StateSlot for RetainedSummary {
 
 struct ChatPlugin;
 
-impl StatePlugin for ChatPlugin {
-    fn meta(&self) -> PluginMeta {
-        PluginMeta {
+impl Plugin for ChatPlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
             name: "chat-plugin",
         }
     }
@@ -137,9 +137,9 @@ impl StatePlugin for ChatPlugin {
 
 struct SharedPlugin;
 
-impl StatePlugin for SharedPlugin {
-    fn meta(&self) -> PluginMeta {
-        PluginMeta {
+impl Plugin for SharedPlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
             name: "shared-plugin",
         }
     }
@@ -152,9 +152,9 @@ impl StatePlugin for SharedPlugin {
 
 struct EphemeralPlugin;
 
-impl StatePlugin for EphemeralPlugin {
-    fn meta(&self) -> PluginMeta {
-        PluginMeta {
+impl Plugin for EphemeralPlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
             name: "ephemeral-plugin",
         }
     }
@@ -170,9 +170,9 @@ impl StatePlugin for EphemeralPlugin {
 
 struct RetainedPlugin;
 
-impl StatePlugin for RetainedPlugin {
-    fn meta(&self) -> PluginMeta {
-        PluginMeta {
+impl Plugin for RetainedPlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
             name: "retained-plugin",
         }
     }
@@ -193,9 +193,9 @@ impl StatePlugin for RetainedPlugin {
 
 struct DuplicateSlotPlugin;
 
-impl StatePlugin for DuplicateSlotPlugin {
-    fn meta(&self) -> PluginMeta {
-        PluginMeta {
+impl Plugin for DuplicateSlotPlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
             name: "duplicate-slot-plugin",
         }
     }
