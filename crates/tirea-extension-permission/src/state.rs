@@ -1,7 +1,8 @@
 use crate::model::{
     PermissionRule, PermissionRuleScope, PermissionRuleSource, PermissionRuleset,
-    ToolPermissionBehavior,
+    PermissionSubject, ToolPermissionBehavior,
 };
+use crate::parser::parse_pattern;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tirea_state::State;
@@ -17,8 +18,17 @@ pub enum PermissionAction {
         tool_id: String,
         behavior: ToolPermissionBehavior,
     },
+    /// Set a pattern-based rule (function-call syntax string).
+    SetRule {
+        pattern: String,
+        behavior: ToolPermissionBehavior,
+    },
     RemoveTool {
         tool_id: String,
+    },
+    /// Remove a pattern-based rule by its canonical pattern string.
+    RemoveRule {
+        pattern: String,
     },
     ClearTools,
 }
@@ -38,8 +48,21 @@ pub enum PermissionPolicyAction {
         #[serde(default)]
         source: PermissionRuleSource,
     },
+    /// Set a pattern-based permission rule.
+    SetRule {
+        pattern: String,
+        behavior: ToolPermissionBehavior,
+        #[serde(default)]
+        scope: PermissionRuleScope,
+        #[serde(default)]
+        source: PermissionRuleSource,
+    },
     RemoveTool {
         tool_id: String,
+    },
+    /// Remove a pattern-based rule.
+    RemoveRule {
+        pattern: String,
     },
     ClearTools,
     AllowTool {
@@ -90,8 +113,21 @@ pub enum PermissionOverridesAction {
         #[serde(default)]
         source: PermissionRuleSource,
     },
+    /// Set a pattern-based override rule.
+    SetRule {
+        pattern: String,
+        behavior: ToolPermissionBehavior,
+        #[serde(default)]
+        scope: PermissionRuleScope,
+        #[serde(default)]
+        source: PermissionRuleSource,
+    },
     RemoveTool {
         tool_id: String,
+    },
+    /// Remove a pattern-based override rule.
+    RemoveRule {
+        pattern: String,
     },
     Clear,
 }
@@ -110,6 +146,21 @@ impl PermissionOverrides {
         self.rules.insert(rule.subject.key(), rule);
     }
 
+    fn upsert_pattern_rule(
+        &mut self,
+        pattern_str: String,
+        behavior: ToolPermissionBehavior,
+        scope: PermissionRuleScope,
+        source: PermissionRuleSource,
+    ) {
+        if let Ok(pattern) = parse_pattern(&pattern_str) {
+            let rule = PermissionRule::new_pattern(pattern, behavior)
+                .with_scope(scope)
+                .with_source(source);
+            self.rules.insert(rule.subject.key(), rule);
+        }
+    }
+
     pub(super) fn reduce(&mut self, action: PermissionOverridesAction) {
         match action {
             PermissionOverridesAction::SetTool {
@@ -118,12 +169,23 @@ impl PermissionOverrides {
                 scope,
                 source,
             } => self.upsert_tool_rule(tool_id, behavior, scope, source),
+            PermissionOverridesAction::SetRule {
+                pattern,
+                behavior,
+                scope,
+                source,
+            } => self.upsert_pattern_rule(pattern, behavior, scope, source),
             PermissionOverridesAction::RemoveTool { tool_id } => {
                 self.rules.remove(
                     &PermissionRule::new_tool(tool_id, ToolPermissionBehavior::Ask)
                         .subject
                         .key(),
                 );
+            }
+            PermissionOverridesAction::RemoveRule { pattern } => {
+                if let Ok(parsed) = parse_pattern(&pattern) {
+                    self.rules.remove(&PermissionSubject::pattern(parsed).key());
+                }
             }
             PermissionOverridesAction::Clear => self.rules.clear(),
         }
@@ -144,6 +206,21 @@ impl PermissionPolicy {
         self.rules.insert(rule.subject.key(), rule);
     }
 
+    fn upsert_pattern_rule(
+        &mut self,
+        pattern_str: String,
+        behavior: ToolPermissionBehavior,
+        scope: PermissionRuleScope,
+        source: PermissionRuleSource,
+    ) {
+        if let Ok(pattern) = parse_pattern(&pattern_str) {
+            let rule = PermissionRule::new_pattern(pattern, behavior)
+                .with_scope(scope)
+                .with_source(source);
+            self.rules.insert(rule.subject.key(), rule);
+        }
+    }
+
     pub(super) fn reduce(&mut self, action: PermissionPolicyAction) {
         match action {
             PermissionPolicyAction::SetDefault { behavior } => self.default_behavior = behavior,
@@ -153,12 +230,23 @@ impl PermissionPolicy {
                 scope,
                 source,
             } => self.upsert_tool_rule(tool_id, behavior, scope, source),
+            PermissionPolicyAction::SetRule {
+                pattern,
+                behavior,
+                scope,
+                source,
+            } => self.upsert_pattern_rule(pattern, behavior, scope, source),
             PermissionPolicyAction::RemoveTool { tool_id } => {
                 self.rules.remove(
                     &PermissionRule::new_tool(tool_id, ToolPermissionBehavior::Ask)
                         .subject
                         .key(),
                 );
+            }
+            PermissionPolicyAction::RemoveRule { pattern } => {
+                if let Ok(parsed) = parse_pattern(&pattern) {
+                    self.rules.remove(&PermissionSubject::pattern(parsed).key());
+                }
             }
             PermissionPolicyAction::ClearTools => self.rules.clear(),
             PermissionPolicyAction::AllowTool { tool_id } => self.upsert_tool_rule(
@@ -192,6 +280,41 @@ struct LegacyPermissionPolicy {
     pub denied_tools: Vec<String>,
 }
 
+/// Concrete [`tirea_contract::runtime::tool_call::ToolAccessGranter`] that creates
+/// run-scoped permission overrides. Injected into skill tools via DI.
+pub struct PermissionOverrideGranter;
+
+impl tirea_contract::runtime::tool_call::ToolAccessGranter for PermissionOverrideGranter {
+    fn grant_tool_override(&self, tool_id: &str) -> tirea_contract::runtime::state::AnyStateAction {
+        permission_override_action(PermissionAction::SetTool {
+            tool_id: tool_id.to_string(),
+            behavior: ToolPermissionBehavior::Allow,
+        })
+    }
+}
+
+/// Target state for a permission rule change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionDestination {
+    /// Thread-scoped [`PermissionPolicy`] state (persistent across runs).
+    Policy,
+    /// Run-scoped [`PermissionOverrides`] state (auto-cleared at run end).
+    Override,
+}
+
+/// Unified dispatch: routes a [`PermissionAction`] to the specified destination.
+///
+/// Replaces direct calls to [`permission_state_action()`] / [`permission_override_action()`].
+pub fn permission_update(
+    action: PermissionAction,
+    destination: PermissionDestination,
+) -> tirea_contract::runtime::state::AnyStateAction {
+    match destination {
+        PermissionDestination::Policy => permission_state_action(action),
+        PermissionDestination::Override => permission_override_action(action),
+    }
+}
+
 /// Route a [`PermissionAction`] to the canonical [`PermissionPolicy`] state.
 pub fn permission_state_action(
     action: PermissionAction,
@@ -207,7 +330,14 @@ pub fn permission_state_action(
             scope: PermissionRuleScope::Thread,
             source: PermissionRuleSource::Runtime,
         },
+        PermissionAction::SetRule { pattern, behavior } => PermissionPolicyAction::SetRule {
+            pattern,
+            behavior,
+            scope: PermissionRuleScope::Thread,
+            source: PermissionRuleSource::Runtime,
+        },
         PermissionAction::RemoveTool { tool_id } => PermissionPolicyAction::RemoveTool { tool_id },
+        PermissionAction::RemoveRule { pattern } => PermissionPolicyAction::RemoveRule { pattern },
         PermissionAction::ClearTools => PermissionPolicyAction::ClearTools,
     };
     AnyStateAction::new::<PermissionPolicy>(policy_action)
@@ -229,8 +359,17 @@ pub fn permission_override_action(
             scope: PermissionRuleScope::Thread,
             source: PermissionRuleSource::Skill,
         },
+        PermissionAction::SetRule { pattern, behavior } => PermissionOverridesAction::SetRule {
+            pattern,
+            behavior,
+            scope: PermissionRuleScope::Thread,
+            source: PermissionRuleSource::Skill,
+        },
         PermissionAction::RemoveTool { tool_id } => {
             PermissionOverridesAction::RemoveTool { tool_id }
+        }
+        PermissionAction::RemoveRule { pattern } => {
+            PermissionOverridesAction::RemoveRule { pattern }
         }
         PermissionAction::ClearTools => PermissionOverridesAction::Clear,
         // SetDefault has no run-scoped equivalent; route to thread-level policy.

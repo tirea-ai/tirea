@@ -5,6 +5,7 @@ use crate::runtime::phase::{
     ActionSet, AfterInferenceAction, AfterToolExecuteAction, BeforeInferenceAction,
     BeforeToolExecuteAction, LifecycleAction,
 };
+use crate::runtime::run::config::AgentRunConfig;
 use crate::runtime::run::RunIdentity;
 use crate::runtime::state::StateScopeRegistry;
 use crate::runtime::state::{ScopeContext, StateActionDeserializerRegistry, StateScope, StateSpec};
@@ -25,7 +26,7 @@ pub struct ReadOnlyContext<'a> {
     phase: Phase,
     thread_id: &'a str,
     messages: &'a [Arc<Message>],
-    run_policy: &'a RunPolicy,
+    run_config: Arc<AgentRunConfig>,
     run_identity: RunIdentity,
     doc: &'a DocCell,
     llm_response: Option<&'a LLMResponse>,
@@ -39,18 +40,36 @@ pub struct ReadOnlyContext<'a> {
 }
 
 impl<'a> ReadOnlyContext<'a> {
+    /// Backward-compatible constructor. Wraps `RunPolicy` in a default `AgentRunConfig`.
     pub fn new(
         phase: Phase,
         thread_id: &'a str,
         messages: &'a [Arc<Message>],
-        run_policy: &'a RunPolicy,
+        run_policy: &RunPolicy,
+        doc: &'a DocCell,
+    ) -> Self {
+        Self::with_run_config(
+            phase,
+            thread_id,
+            messages,
+            Arc::new(AgentRunConfig::new(run_policy.clone())),
+            doc,
+        )
+    }
+
+    /// Config-aware constructor for production paths.
+    pub fn with_run_config(
+        phase: Phase,
+        thread_id: &'a str,
+        messages: &'a [Arc<Message>],
+        run_config: Arc<AgentRunConfig>,
         doc: &'a DocCell,
     ) -> Self {
         Self {
             phase,
             thread_id,
             messages,
-            run_policy,
+            run_config,
             run_identity: RunIdentity::default(),
             doc,
             llm_response: None,
@@ -118,8 +137,14 @@ impl<'a> ReadOnlyContext<'a> {
         self.initial_message_count
     }
 
+    /// Layered runtime configuration.
+    pub fn run_config(&self) -> &AgentRunConfig {
+        &self.run_config
+    }
+
+    /// Backward-compatible accessor — delegates to `run_config().policy()`.
     pub fn run_policy(&self) -> &RunPolicy {
-        self.run_policy
+        self.run_config.policy()
     }
 
     pub fn run_identity(&self) -> &RunIdentity {
@@ -193,6 +218,43 @@ impl<'a> ReadOnlyContext<'a> {
     }
 }
 
+/// Declarative execution ordering constraints for a plugin.
+#[derive(Debug, Clone, Default)]
+pub struct PluginOrdering {
+    /// This plugin's phase hooks execute AFTER the listed plugin IDs.
+    pub after: &'static [&'static str],
+    /// This plugin's phase hooks execute BEFORE the listed plugin IDs.
+    pub before: &'static [&'static str],
+}
+
+impl PluginOrdering {
+    pub const NONE: Self = Self {
+        after: &[],
+        before: &[],
+    };
+
+    #[must_use]
+    pub const fn after(ids: &'static [&'static str]) -> Self {
+        Self {
+            after: ids,
+            before: &[],
+        }
+    }
+
+    #[must_use]
+    pub const fn before(ids: &'static [&'static str]) -> Self {
+        Self {
+            after: &[],
+            before: ids,
+        }
+    }
+
+    #[must_use]
+    pub fn is_constrained(&self) -> bool {
+        !self.after.is_empty() || !self.before.is_empty()
+    }
+}
+
 /// Behavioral abstraction for agent phase hooks.
 ///
 /// Each hook receives an immutable [`ReadOnlyContext`] snapshot and returns a
@@ -208,6 +270,14 @@ pub trait AgentBehavior: Send + Sync {
     fn behavior_ids(&self) -> Vec<&str> {
         vec![self.id()]
     }
+
+    /// Declare execution ordering constraints relative to other plugins.
+    fn ordering(&self) -> PluginOrdering {
+        PluginOrdering::NONE
+    }
+
+    /// Self-configuration hook called once during resolve, before the loop starts.
+    fn configure(&self, _config: &mut AgentRunConfig) {}
 
     /// Register lattice (CRDT) paths with the registry.
     fn register_lattice_paths(&self, _registry: &mut LatticeRegistry) {}
@@ -341,7 +411,14 @@ mod tests {
                 &self,
                 _ctx: &ReadOnlyContext<'_>,
             ) -> ActionSet<BeforeInferenceAction> {
-                ActionSet::single(BeforeInferenceAction::AddSystemContext("from agent".into()))
+                ActionSet::single(BeforeInferenceAction::AddContextMessage(
+                    crate::runtime::inference::ContextMessage {
+                        key: "from_agent".into(),
+                        content: "from agent".into(),
+                        cooldown_turns: 0,
+                        target: Default::default(),
+                    },
+                ))
             }
         }
 

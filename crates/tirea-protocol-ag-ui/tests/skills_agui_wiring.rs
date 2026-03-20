@@ -47,7 +47,8 @@ async fn test_skill_tool_result_is_emitted_as_agui_tool_call_result() {
     let state = thread.rebuild_state().unwrap();
     let call = ToolCall::new("call_1", "skill", json!({"skill": "docx"}));
 
-    let behavior = compose_behaviors("skills_test_router", vec![Arc::new(PermissionPlugin)]);
+    let behavior =
+        compose_behaviors("skills_test_router", vec![Arc::new(PermissionPlugin)]).unwrap();
     let exec = execute_single_tool_with_run_policy_and_behavior(
         Some(tool.as_ref()),
         &call,
@@ -171,10 +172,12 @@ async fn test_skills_plugin_injection_is_in_system_context_before_inference() {
     use tirea_agentos::contracts::runtime::phase::BeforeInferenceAction;
     let actions = plugin.before_inference(&ctx).await;
     for action in actions {
-        if let BeforeInferenceAction::AddSystemContext(s) = action {
-            step.inference.system_context.push(s);
+        if let BeforeInferenceAction::AddContextMessage(cm) = action {
+            step.inference.context_messages.push(cm);
         }
     }
-    assert_eq!(step.inference.system_context.len(), 1);
-    assert!(step.inference.system_context[0].contains("<available_skills>"));
+    assert_eq!(step.inference.context_messages.len(), 1);
+    assert!(step.inference.context_messages[0]
+        .content
+        .contains("<available_skills>"));
 }

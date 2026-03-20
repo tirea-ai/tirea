@@ -1,7 +1,7 @@
 use crate::actions::{deny_missing_call_id, deny_tool, request_permission};
 use crate::form::{permission_confirmation_ticket, PERMISSION_CONFIRM_TOOL_NAME};
 use crate::model::{PermissionEvaluation, ToolPermissionBehavior};
-use crate::state::{permission_state_action, PermissionAction};
+use crate::state::{permission_update, PermissionAction, PermissionDestination};
 use serde_json::Value;
 use tirea_contract::io::ResumeDecisionAction;
 use tirea_contract::runtime::phase::BeforeToolExecuteAction;
@@ -62,10 +62,13 @@ pub fn remembered_permission_state_action(
         ResumeDecisionAction::Cancel => ToolPermissionBehavior::Deny,
     };
 
-    Some(permission_state_action(PermissionAction::SetTool {
-        tool_id: suspended_call.tool_name.clone(),
-        behavior,
-    }))
+    Some(permission_update(
+        PermissionAction::SetTool {
+            tool_id: suspended_call.tool_name.clone(),
+            behavior,
+        },
+        PermissionDestination::Policy,
+    ))
 }
 
 /// Apply runtime permission mechanism to a strategy verdict.

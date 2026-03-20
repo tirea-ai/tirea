@@ -5,6 +5,7 @@ pub mod activity;
 pub mod behavior;
 pub mod extensions;
 pub mod inference;
+pub mod overlay;
 pub mod phase;
 pub mod run;
 pub mod state;
@@ -13,7 +14,7 @@ pub mod tool_call;
 pub use action::Action;
 pub use activity::{ActivityManager, NoOpActivityManager};
 pub use behavior::{
-    build_read_only_context_from_step, AgentBehavior, NoOpBehavior, ReadOnlyContext,
+    build_read_only_context_from_step, AgentBehavior, NoOpBehavior, PluginOrdering, ReadOnlyContext,
 };
 pub use extensions::Extensions;
 pub use inference::{StopReason, StreamResult, TokenUsage};
@@ -24,8 +25,9 @@ pub use phase::{
     ToolCallAction,
 };
 pub use run::{
-    run_lifecycle_from_state, FlowControl, InferenceError, RunContext, RunDelta, RunIdentity,
-    RunLifecycleAction, RunLifecycleState, RunPolicy, RunStatus, StoppedReason, TerminationReason,
+    run_lifecycle_from_state, AgentRunConfig, FlowControl, InferenceError, RunContext, RunDelta,
+    RunIdentity, RunLifecycleAction, RunLifecycleState, RunPolicy, RunStatus, StoppedReason,
+    TerminationReason,
 };
 pub use state::{
     reduce_state_actions, AnyStateAction, ScopeContext, SerializedStateAction,

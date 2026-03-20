@@ -1963,8 +1963,13 @@ impl AgentBehavior for TestPhasePlugin {
         &self,
         _ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<BeforeInferenceAction> {
-        ActionSet::single(BeforeInferenceAction::AddSystemContext(
-            "Test system context".into(),
+        ActionSet::single(BeforeInferenceAction::AddContextMessage(
+            tirea_contract::runtime::inference::ContextMessage {
+                key: "test_system".into(),
+                content: "Test system context".into(),
+                cooldown_turns: 0,
+                target: Default::default(),
+            },
         ))
         .and(ActionSet::single(BeforeInferenceAction::AddSessionContext(
             "Test thread context".into(),
@@ -2263,20 +2268,15 @@ fn test_build_messages_with_context() {
     fixture.messages = thread.messages.clone();
     let mut step = fixture.step(tool_descriptors);
 
-    step.inference
-        .system_context
-        .push("System context 1".into());
-    step.inference
-        .system_context
-        .push("System context 2".into());
+    // Context messages are now injected by the loop runner after
+    // build_messages, so only session context is set here.
     step.inference.session_context.push("Thread context".into());
 
     let messages = build_messages(&step, "Base system prompt");
 
+    // Base prompt + session context + user message.
     assert_eq!(messages.len(), 3);
-    assert!(messages[0].content.contains("Base system prompt"));
-    assert!(messages[0].content.contains("System context 1"));
-    assert!(messages[0].content.contains("System context 2"));
+    assert_eq!(messages[0].content, "Base system prompt");
     assert_eq!(messages[1].content, "Thread context");
     assert_eq!(messages[2].content, "Hello");
 }
@@ -2783,8 +2783,13 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
             _ctx: &ReadOnlyContext<'_>,
         ) -> ActionSet<BeforeInferenceAction> {
             self.phases.lock().unwrap().push(Phase::BeforeInference);
-            ActionSet::single(BeforeInferenceAction::AddSystemContext(
-                "from_before_inference".into(),
+            ActionSet::single(BeforeInferenceAction::AddContextMessage(
+                tirea_contract::runtime::inference::ContextMessage {
+                    key: "from_before_inference".into(),
+                    content: "from_before_inference".into(),
+                    cooldown_turns: 0,
+                    target: Default::default(),
+                },
             ))
             .and(ActionSet::single(BeforeInferenceAction::Terminate(
                 TerminationReason::BehaviorRequested,
@@ -5479,7 +5484,7 @@ async fn test_stream_step_start_run_action_mutation_is_type_safe() {
 #[tokio::test]
 async fn test_run_loop_step_start_prompt_context_mutation_is_type_safe() {
     // With typed ActionSet<LifecycleAction>, step_start can only emit State actions.
-    // AddSystemContext cannot be placed in LifecycleAction (compile-time type safety).
+    // AddContextMessage cannot be placed in LifecycleAction (compile-time type safety).
     // Verify that the loop completes normally with a no-op step_start plugin.
     struct NoOpStepStartPlugin;
 
@@ -5531,11 +5536,17 @@ async fn test_run_loop_multiple_prompt_context_behaviors_are_additive() {
             &self,
             _ctx: &ReadOnlyContext<'_>,
         ) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::AddSystemContext("base".into())).and(
-                ActionSet::single(BeforeInferenceAction::Terminate(
-                    TerminationReason::BehaviorRequested,
-                )),
-            )
+            ActionSet::single(BeforeInferenceAction::AddContextMessage(
+                tirea_contract::runtime::inference::ContextMessage {
+                    key: "base".into(),
+                    content: "base".into(),
+                    cooldown_turns: 0,
+                    target: Default::default(),
+                },
+            ))
+            .and(ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            )))
         }
     }
 
@@ -5550,7 +5561,14 @@ async fn test_run_loop_multiple_prompt_context_behaviors_are_additive() {
             &self,
             _ctx: &ReadOnlyContext<'_>,
         ) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::AddSystemContext("replaced".into()))
+            ActionSet::single(BeforeInferenceAction::AddContextMessage(
+                tirea_contract::runtime::inference::ContextMessage {
+                    key: "replaced".into(),
+                    content: "replaced".into(),
+                    cooldown_turns: 0,
+                    target: Default::default(),
+                },
+            ))
         }
     }
 
@@ -5563,7 +5581,7 @@ async fn test_run_loop_multiple_prompt_context_behaviors_are_additive() {
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
-    // Both behaviors append system_context. The first also requests termination,
+    // Both behaviors append context_messages. The first also requests termination,
     // so the loop terminates before inference without hitting the LLM.
     assert_eq!(
         outcome.termination,

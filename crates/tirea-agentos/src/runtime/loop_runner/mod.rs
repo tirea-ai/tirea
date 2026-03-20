@@ -62,7 +62,7 @@ use crate::contracts::runtime::{
     ToolExecutionResult,
 };
 use crate::contracts::thread::CheckpointReason;
-use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
+use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, Role, ToolCall};
 use crate::contracts::RunContext;
 use crate::contracts::{AgentEvent, RunAction, TerminationReason, ToolCallDecision};
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
@@ -96,7 +96,7 @@ use core::build_messages;
 use core::{
     build_request_for_filtered_tools, inference_inputs_from_step, suspended_calls_from_ctx,
     tool_call_states_from_ctx, transition_tool_call_state, upsert_tool_call_state,
-    ToolCallStateSeed, ToolCallStateTransition,
+    ContextThrottleTracker, ToolCallStateSeed, ToolCallStateTransition,
 };
 pub use outcome::{tool_map, tool_map_from_arc, AgentLoopError};
 pub use outcome::{LoopOutcome, LoopStats, LoopUsage};
@@ -140,6 +140,8 @@ pub struct ResolvedRun {
     pub tools: HashMap<String, Arc<dyn Tool>>,
     /// Typed per-run policy.
     pub run_policy: crate::contracts::RunPolicy,
+    /// Layered runtime configuration with typed extensions.
+    pub run_config: std::sync::Arc<tirea_contract::AgentRunConfig>,
     /// Optional lineage seed for nested tool-driven runs.
     pub parent_tool_call_id: Option<String>,
 }
@@ -240,6 +242,53 @@ pub(super) fn append_cancellation_user_message(run_ctx: &mut RunContext, stage: 
     run_ctx.add_message(Arc::new(Message::user(content)));
 }
 
+/// Merge per-inference override options on top of the agent's base `ChatOptions`.
+///
+/// Returns the merged options, or the agent's base options if no override is set.
+pub(super) fn apply_inference_override(
+    base: Option<&genai::chat::ChatOptions>,
+    ovr: Option<&tirea_contract::runtime::inference::InferenceOverride>,
+) -> Option<genai::chat::ChatOptions> {
+    let Some(ovr) = ovr else {
+        return base.cloned();
+    };
+    let has_option_overrides = ovr.temperature.is_some()
+        || ovr.max_tokens.is_some()
+        || ovr.top_p.is_some()
+        || ovr.reasoning_effort.is_some();
+    if !has_option_overrides {
+        return base.cloned();
+    }
+    let mut opts = base.cloned().unwrap_or_default();
+    if let Some(t) = ovr.temperature {
+        opts.temperature = Some(t);
+    }
+    if let Some(t) = ovr.max_tokens {
+        opts.max_tokens = Some(t);
+    }
+    if let Some(t) = ovr.top_p {
+        opts.top_p = Some(t);
+    }
+    if let Some(ref r) = ovr.reasoning_effort {
+        opts.reasoning_effort = Some(to_genai_reasoning_effort(r));
+    }
+    Some(opts)
+}
+
+fn to_genai_reasoning_effort(
+    r: &tirea_contract::runtime::inference::ReasoningEffort,
+) -> genai::chat::ReasoningEffort {
+    use tirea_contract::runtime::inference::ReasoningEffort as R;
+    match r {
+        R::None => genai::chat::ReasoningEffort::None,
+        R::Low => genai::chat::ReasoningEffort::Low,
+        R::Medium => genai::chat::ReasoningEffort::Medium,
+        R::High => genai::chat::ReasoningEffort::High,
+        R::Max => genai::chat::ReasoningEffort::Max,
+        R::Budget(n) => genai::chat::ReasoningEffort::Budget(*n),
+    }
+}
+
 pub(super) fn effective_llm_models(agent: &dyn Agent) -> Vec<String> {
     let mut models = Vec::with_capacity(1 + agent.fallback_models().len());
     models.push(agent.model().to_string());
@@ -269,19 +318,21 @@ pub(super) fn effective_llm_models_from(
 }
 
 pub(super) fn effective_llm_models_from_override(
-    ovr: &tirea_contract::runtime::inference::InferenceModelOverride,
-) -> Vec<String> {
-    let mut models = Vec::with_capacity(1 + ovr.fallback_models.len());
-    models.push(ovr.model.clone());
-    for model in &ovr.fallback_models {
-        if model.trim().is_empty() {
+    ovr: &tirea_contract::runtime::inference::InferenceOverride,
+) -> Option<Vec<String>> {
+    let model = ovr.model.as_ref()?;
+    let fallbacks = ovr.fallback_models.as_deref().unwrap_or(&[]);
+    let mut models = Vec::with_capacity(1 + fallbacks.len());
+    models.push(model.clone());
+    for m in fallbacks {
+        if m.trim().is_empty() {
             continue;
         }
-        if !models.iter().any(|m| m == model) {
-            models.push(model.clone());
+        if !models.iter().any(|existing| existing == m) {
+            models.push(m.clone());
         }
     }
-    models
+    Some(models)
 }
 
 pub(super) fn next_llm_model_after(agent: &dyn Agent, current_model: &str) -> Option<String> {
@@ -752,7 +803,7 @@ pub(super) async fn run_llm_with_retry_and_fallback<T, Invoke, Fut>(
     run_cancellation_token: Option<&RunCancellationToken>,
     retry_current_model: bool,
     start_model: Option<&str>,
-    model_override: Option<&tirea_contract::runtime::inference::InferenceModelOverride>,
+    inference_override: Option<&tirea_contract::runtime::inference::InferenceOverride>,
     unknown_error: &str,
     mut invoke: Invoke,
 ) -> LlmAttemptOutcome<T>
@@ -762,20 +813,17 @@ where
 {
     let mut last_llm_error = unknown_error.to_string();
     let mut last_error_class: Option<&'static str> = None;
-    let model_candidates = match model_override {
-        Some(ovr) => {
-            let base = effective_llm_models_from_override(ovr);
-            match start_model.map(str::trim).filter(|s| !s.is_empty()) {
-                Some(sm) => {
-                    if let Some(idx) = base.iter().position(|m| m == sm) {
-                        base.into_iter().skip(idx).collect()
-                    } else {
-                        base
-                    }
+    let model_candidates = match inference_override.and_then(effective_llm_models_from_override) {
+        Some(base) => match start_model.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(sm) => {
+                if let Some(idx) = base.iter().position(|m| m == sm) {
+                    base.into_iter().skip(idx).collect()
+                } else {
+                    base
                 }
-                None => base,
             }
-        }
+            None => base,
+        },
         None => effective_llm_models_from(agent, start_model),
     };
     let max_attempts = llm_retry_attempts(agent);
@@ -871,29 +919,34 @@ pub(super) async fn run_step_prepare_phases(
         Vec<String>,
         RunAction,
         Vec<std::sync::Arc<dyn tirea_contract::runtime::inference::InferenceRequestTransform>>,
-        Option<tirea_contract::runtime::inference::InferenceModelOverride>,
+        Option<tirea_contract::runtime::inference::InferenceOverride>,
+        Vec<tirea_contract::runtime::inference::ContextMessage>,
         Vec<TrackedPatch>,
         Vec<tirea_contract::SerializedStateAction>,
     ),
     AgentLoopError,
 > {
     let system_prompt = agent.system_prompt().to_string();
-    let ((messages, filtered_tools, run_action, transforms, model_override), pending, actions) =
-        plugin_runtime::run_phase_block(
-            run_ctx,
-            tool_descriptors,
-            agent,
-            &[Phase::StepStart, Phase::BeforeInference],
-            |_| {},
-            |step| inference_inputs_from_step(step, &system_prompt),
-        )
-        .await?;
+    let (
+        (messages, filtered_tools, run_action, transforms, inference_override, context_messages),
+        pending,
+        actions,
+    ) = plugin_runtime::run_phase_block(
+        run_ctx,
+        tool_descriptors,
+        agent,
+        &[Phase::StepStart, Phase::BeforeInference],
+        |_| {},
+        |step| inference_inputs_from_step(step, &system_prompt),
+    )
+    .await?;
     Ok((
         messages,
         filtered_tools,
         run_action,
         transforms,
-        model_override,
+        inference_override,
+        context_messages,
         pending,
         actions,
     ))
@@ -907,7 +960,8 @@ pub(super) struct PreparedStep {
     pub(super) serialized_state_actions: Vec<tirea_contract::SerializedStateAction>,
     pub(super) request_transforms:
         Vec<std::sync::Arc<dyn tirea_contract::runtime::inference::InferenceRequestTransform>>,
-    pub(super) model_override: Option<tirea_contract::runtime::inference::InferenceModelOverride>,
+    pub(super) inference_override: Option<tirea_contract::runtime::inference::InferenceOverride>,
+    pub(super) context_messages: Vec<tirea_contract::runtime::inference::ContextMessage>,
 }
 
 pub(super) async fn prepare_step_execution(
@@ -915,8 +969,16 @@ pub(super) async fn prepare_step_execution(
     tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
     agent: &dyn Agent,
 ) -> Result<PreparedStep, AgentLoopError> {
-    let (messages, filtered_tools, run_action, transforms, model_override, pending, actions) =
-        run_step_prepare_phases(run_ctx, tool_descriptors, agent).await?;
+    let (
+        messages,
+        filtered_tools,
+        run_action,
+        transforms,
+        inference_override,
+        context_messages,
+        pending,
+        actions,
+    ) = run_step_prepare_phases(run_ctx, tool_descriptors, agent).await?;
     Ok(PreparedStep {
         messages,
         filtered_tools,
@@ -924,7 +986,8 @@ pub(super) async fn prepare_step_execution(
         pending_patches: pending,
         serialized_state_actions: actions,
         request_transforms: transforms,
-        model_override,
+        inference_override,
+        context_messages,
     })
 }
 
@@ -2070,6 +2133,8 @@ pub async fn run_loop_with_context(
     if !run_start_new_suspended.is_empty() {
         terminate_run!(TerminationReason::Suspended, None, None);
     }
+    let mut context_tracker = ContextThrottleTracker::new();
+    let mut step_counter: usize = 0;
     loop {
         if let Err(error) = apply_decisions_and_replay(
             &mut run_ctx,
@@ -2134,17 +2199,36 @@ pub async fn run_loop_with_context(
         }
 
         // Call LLM with unified retry + fallback model strategy.
-        let messages = prepared.messages;
+        let mut messages = prepared.messages;
         let filtered_tools = prepared.filtered_tools;
         let request_transforms = prepared.request_transforms;
-        let step_model_override = prepared.model_override;
-        let chat_options = agent.chat_options().cloned();
+        let step_inference_override = prepared.inference_override;
+
+        // Insert throttle-filtered context entries after the base system
+        // prompt but before session context and conversation history.  This
+        // ordering maximises prompt-cache hit rates: the static base prompt
+        // stays cached even when dynamic plugin segments change.
+        let insert_pos = if messages.first().map_or(false, |m| m.role == Role::System) {
+            1
+        } else {
+            0
+        };
+        for (i, entry) in context_tracker
+            .filter(prepared.context_messages, step_counter)
+            .into_iter()
+            .enumerate()
+        {
+            messages.insert(insert_pos + i, Message::system(entry.content));
+        }
+        step_counter = step_counter.saturating_add(1);
+        let chat_options =
+            apply_inference_override(agent.chat_options(), step_inference_override.as_ref());
         let attempt_outcome = run_llm_with_retry_and_fallback(
             agent,
             run_cancellation_token.as_ref(),
             true,
             None,
-            step_model_override.as_ref(),
+            step_inference_override.as_ref(),
             "unknown llm error",
             |model| {
                 let request = build_request_for_filtered_tools(

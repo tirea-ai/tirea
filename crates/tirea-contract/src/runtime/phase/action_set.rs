@@ -1,4 +1,6 @@
-use crate::runtime::inference::{InferenceModelOverride, InferenceRequestTransform};
+use crate::runtime::inference::{
+    ContextMessage, InferenceModelOverride, InferenceOverride, InferenceRequestTransform,
+};
 use crate::runtime::run::TerminationReason;
 use crate::runtime::state::AnyStateAction;
 use crate::runtime::tool_call::gate::{SuspendTicket, ToolCallAction};
@@ -109,10 +111,14 @@ impl From<AnyStateAction> for ActionSet<LifecycleAction> {
 
 /// Actions valid in `BeforeInference`.
 pub enum BeforeInferenceAction {
-    /// Append a system-prompt context block.
-    AddSystemContext(String),
     /// Append a session message.
     AddSessionContext(String),
+    /// Inject a structured context message with throttle metadata.
+    ///
+    /// Messages are tracked by `key` and subject to `cooldown_turns`
+    /// throttling by the loop runner. Use this for all system-prompt
+    /// context injection.
+    AddContextMessage(ContextMessage),
     /// Remove one tool by id.
     ExcludeTool(String),
     /// Keep only the listed tool ids.
@@ -122,9 +128,16 @@ pub enum BeforeInferenceAction {
     /// Override the model for this inference call.
     ///
     /// When emitted, the loop runner uses the specified model and fallback
-    /// models instead of the base agent's configuration. If multiple
-    /// `OverrideModel` actions are emitted, the last one wins.
+    /// models instead of the base agent's configuration. Converted internally
+    /// to [`InferenceOverride`]; prefer `OverrideInference` for new code.
     OverrideModel(InferenceModelOverride),
+    /// Override model and/or inference parameters for this call.
+    ///
+    /// Subsumes `OverrideModel` with additional fields for temperature,
+    /// max_tokens, top_p, and reasoning_effort. All fields are `Option` —
+    /// `None` means "use the agent-level default". If multiple plugins emit
+    /// this action, fields are merged with last-wins semantics.
+    OverrideInference(InferenceOverride),
     /// Request run termination before inference fires.
     Terminate(TerminationReason),
     /// Emit a persistent state change.

@@ -31,11 +31,11 @@ fn apply_before_inference_actions(
 ) {
     for action in actions {
         match action {
-            BeforeInferenceAction::AddSystemContext(text) => {
-                step.inference.system_context.push(text);
-            }
             BeforeInferenceAction::AddSessionContext(text) => {
                 step.inference.session_context.push(text);
+            }
+            BeforeInferenceAction::AddContextMessage(entry) => {
+                step.inference.context_messages.push(entry);
             }
             BeforeInferenceAction::ExcludeTool(id) => {
                 step.inference.tools.retain(|t| t.id != id);
@@ -47,7 +47,17 @@ fn apply_before_inference_actions(
                 step.inference.request_transforms.push(transform);
             }
             BeforeInferenceAction::OverrideModel(ovr) => {
-                step.inference.model_override = Some(ovr);
+                let converted: tirea_contract::runtime::inference::InferenceOverride = ovr.into();
+                match &mut step.inference.inference_override {
+                    Some(existing) => existing.merge(converted),
+                    slot => *slot = Some(converted),
+                }
+            }
+            BeforeInferenceAction::OverrideInference(ovr) => {
+                match &mut step.inference.inference_override {
+                    Some(existing) => existing.merge(ovr),
+                    slot => *slot = Some(ovr),
+                }
             }
             BeforeInferenceAction::Terminate(reason) => {
                 step.flow.run_action = Some(RunAction::Terminate(reason));
@@ -456,8 +466,13 @@ mod tests {
             &self,
             _ctx: &ReadOnlyContext<'_>,
         ) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::AddSystemContext(
-                "injected by action".into(),
+            ActionSet::single(BeforeInferenceAction::AddContextMessage(
+                tirea_contract::runtime::inference::ContextMessage {
+                    key: "test_action".into(),
+                    content: "injected by action".into(),
+                    cooldown_turns: 0,
+                    target: Default::default(),
+                },
             ))
         }
     }
@@ -472,7 +487,11 @@ mod tests {
             .await
             .expect("actions should be applied");
 
-        assert_eq!(step.inference.system_context, vec!["injected by action"]);
+        assert_eq!(step.inference.context_messages.len(), 1);
+        assert_eq!(
+            step.inference.context_messages[0].content,
+            "injected by action"
+        );
     }
 
     #[tokio::test]

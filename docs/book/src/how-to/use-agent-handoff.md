@@ -46,7 +46,7 @@ The LLM sees `agent_handoff` in its tool set and can call it:
 1. LLM calls `agent_handoff("researcher")` → writes `HandoffAction::Request` to thread state
 2. Next `before_inference` phase: `HandoffPlugin` reads the request, applies the overlay:
    - `OverrideModel` if the target has a different model
-   - `AddSystemContext` with the target's system prompt
+   - `AddContextMessage` with the target's system prompt
    - `IncludeOnlyTools` / `ExcludeTool` from `allowed_tools` / `excluded_tools`
 3. The LLM now operates under the target agent's configuration
 4. To return: call `agent_handoff("assistant")` or any other registered agent

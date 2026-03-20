@@ -3,7 +3,7 @@ use super::state::HandoffState;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
-use tirea_contract::runtime::inference::InferenceModelOverride;
+use tirea_contract::runtime::overlay::AgentOverlay;
 use tirea_contract::runtime::phase::{ActionSet, BeforeInferenceAction, BeforeToolExecuteAction};
 
 /// Stable plugin id for handoff behavior.
@@ -12,38 +12,23 @@ pub const HANDOFF_PLUGIN_ID: &str = "agent_handoff";
 /// Tools that are always allowed regardless of handoff tool restrictions.
 const ALWAYS_ALLOWED_TOOLS: &[&str] = &["agent_handoff"];
 
-/// Runtime handoff overlay — the configuration delta applied when switching
-/// to an agent variant. Constructed by `HandoffSystemWiring` from `HandoffOverlay`.
-#[derive(Debug, Clone, Default)]
-pub struct HandoffRuntimeOverlay {
-    /// Override model identifier for inference calls.
-    pub model: Option<String>,
-    /// Override system prompt (appended as system context).
-    pub system_prompt: Option<String>,
-    /// Fallback models when the primary model fails.
-    pub fallback_models: Option<Vec<String>>,
-    /// Tool whitelist — only these tools are available after handoff.
-    pub allowed_tools: Option<Vec<String>>,
-    /// Tool blacklist — these tools are hidden after handoff.
-    pub excluded_tools: Option<Vec<String>>,
-}
-
 /// Dynamic agent handoff plugin.
 ///
-/// Applies handoff overlays dynamically within the running agent loop:
+/// Applies agent overlays dynamically within the running agent loop:
 ///
-/// 1. `before_inference`: reads active agent variant, emits `OverrideModel`,
-///    `AddSystemContext`, `ExcludeTool` actions as needed
+/// 1. `before_inference`: reads active agent variant, decomposes the
+///    [`AgentOverlay`] into `OverrideInference`, `AddContextMessage`,
+///    `ExcludeTool`, `IncludeOnlyTools` actions
 /// 2. `before_tool_execute`: enforces `allowed_tools` whitelist as a hard gate
 ///
 /// No termination or re-resolution occurs — handoff is instant.
 pub struct HandoffPlugin {
-    overlays: HashMap<String, HandoffRuntimeOverlay>,
+    overlays: HashMap<String, AgentOverlay>,
 }
 
 impl HandoffPlugin {
     /// Create a new handoff plugin with the given agent variant overlays.
-    pub fn new(overlays: HashMap<String, HandoffRuntimeOverlay>) -> Self {
+    pub fn new(overlays: HashMap<String, AgentOverlay>) -> Self {
         Self { overlays }
     }
 }
@@ -87,46 +72,19 @@ impl AgentBehavior for HandoffPlugin {
             return actions;
         };
 
-        // Model override
-        if let Some(ref model) = overlay.model {
-            actions = actions.and(ActionSet::single(BeforeInferenceAction::OverrideModel(
-                InferenceModelOverride {
-                    model: model.clone(),
-                    fallback_models: overlay.fallback_models.clone().unwrap_or_default(),
-                },
-            )));
-        }
-
-        // System prompt (additive — appended after base system prompt)
-        if let Some(ref prompt) = overlay.system_prompt {
-            actions = actions.and(ActionSet::single(BeforeInferenceAction::AddSystemContext(
-                prompt.clone(),
-            )));
-        }
-
-        // Excluded tools
-        if let Some(ref excluded) = overlay.excluded_tools {
-            for tool_id in excluded {
-                actions = actions.and(ActionSet::single(BeforeInferenceAction::ExcludeTool(
-                    tool_id.clone(),
-                )));
-            }
-        }
-
-        // Allowed tools (whitelist) — hide everything not in the list
-        if let Some(ref allowed) = overlay.allowed_tools {
-            let mut effective_allowed = allowed.clone();
+        // Inject always-allowed tools into the overlay's allowed_tools
+        // before decomposition, so agent_handoff is never filtered out.
+        let mut effective_overlay = overlay.clone();
+        if let Some(ref mut allowed) = effective_overlay.allowed_tools {
             for tool in ALWAYS_ALLOWED_TOOLS {
-                if !effective_allowed.iter().any(|t| t == tool) {
-                    effective_allowed.push(tool.to_string());
+                if !allowed.iter().any(|t| t == tool) {
+                    allowed.push(tool.to_string());
                 }
             }
-            actions = actions.and(ActionSet::single(BeforeInferenceAction::IncludeOnlyTools(
-                effective_allowed,
-            )));
         }
 
-        actions
+        // Decompose overlay into standard BeforeInferenceAction variants.
+        actions.and(effective_overlay.into_before_inference_actions())
     }
 
     async fn before_tool_execute(
@@ -170,6 +128,7 @@ impl AgentBehavior for HandoffPlugin {
 mod tests {
     use super::*;
     use serde_json::json;
+    use tirea_contract::runtime::inference::InferenceOverride;
     use tirea_contract::runtime::phase::Phase;
     use tirea_contract::RunPolicy;
     use tirea_state::DocCell;
@@ -178,15 +137,18 @@ mod tests {
         let mut overlays = HashMap::new();
         overlays.insert(
             "fast".to_string(),
-            HandoffRuntimeOverlay {
-                model: Some("claude-haiku".to_string()),
+            AgentOverlay {
+                inference: Some(InferenceOverride {
+                    model: Some("claude-haiku".to_string()),
+                    ..Default::default()
+                }),
                 system_prompt: Some("You are in fast mode.".to_string()),
                 ..Default::default()
             },
         );
         overlays.insert(
             "readonly".to_string(),
-            HandoffRuntimeOverlay {
+            AgentOverlay {
                 allowed_tools: Some(vec![
                     "Read".to_string(),
                     "Glob".to_string(),
@@ -249,15 +211,15 @@ mod tests {
         let has_state = actions
             .iter()
             .any(|a| matches!(a, BeforeInferenceAction::State(_)));
-        let has_model = actions
-            .iter()
-            .any(|a| matches!(a, BeforeInferenceAction::OverrideModel(ovr) if ovr.model == "claude-haiku"));
+        let has_override = actions.iter().any(
+            |a| matches!(a, BeforeInferenceAction::OverrideInference(ovr) if ovr.model.as_deref() == Some("claude-haiku")),
+        );
         let has_system = actions.iter().any(
-            |a| matches!(a, BeforeInferenceAction::AddSystemContext(s) if s.contains("fast mode")),
+            |a| matches!(a, BeforeInferenceAction::AddContextMessage(cm) if cm.content.contains("fast mode")),
         );
         assert!(has_state, "should emit Activate state action");
-        assert!(has_model, "should emit OverrideModel");
-        assert!(has_system, "should emit AddSystemContext");
+        assert!(has_override, "should emit OverrideInference");
+        assert!(has_system, "should emit AddContextMessage");
     }
 
     #[tokio::test]
@@ -280,11 +242,11 @@ mod tests {
         let has_state = actions
             .iter()
             .any(|a| matches!(a, BeforeInferenceAction::State(_)));
-        let has_model = actions
+        let has_override = actions
             .iter()
-            .any(|a| matches!(a, BeforeInferenceAction::OverrideModel(_)));
+            .any(|a| matches!(a, BeforeInferenceAction::OverrideInference(_)));
         assert!(!has_state, "should NOT emit Activate (already active)");
-        assert!(has_model, "should still emit OverrideModel");
+        assert!(has_override, "should still emit OverrideInference");
     }
 
     #[tokio::test]

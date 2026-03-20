@@ -281,8 +281,16 @@ pub fn test_suspend_ticket(interaction: Suspension) -> SuspendTicket {
 // Typed phase action helpers for new tests
 // =============================================================================
 
-pub fn typed_system_context(text: impl Into<String>) -> BeforeInferenceAction {
-    BeforeInferenceAction::AddSystemContext(text.into())
+pub fn typed_context_message(
+    key: impl Into<String>,
+    content: impl Into<String>,
+) -> BeforeInferenceAction {
+    BeforeInferenceAction::AddContextMessage(crate::runtime::inference::ContextMessage {
+        key: key.into(),
+        content: content.into(),
+        cooldown_turns: 0,
+        target: Default::default(),
+    })
 }
 
 pub fn typed_block_tool(reason: impl Into<String>) -> BeforeToolExecuteAction {
@@ -327,11 +335,11 @@ pub fn apply_before_inference_for_test(
 ) {
     for action in actions {
         match action {
-            BeforeInferenceAction::AddSystemContext(text) => {
-                step.inference.system_context.push(text);
-            }
             BeforeInferenceAction::AddSessionContext(text) => {
                 step.inference.session_context.push(text);
+            }
+            BeforeInferenceAction::AddContextMessage(entry) => {
+                step.inference.context_messages.push(entry);
             }
             BeforeInferenceAction::ExcludeTool(id) => {
                 step.inference.tools.retain(|t| t.id != id);
@@ -343,7 +351,17 @@ pub fn apply_before_inference_for_test(
                 step.inference.request_transforms.push(transform);
             }
             BeforeInferenceAction::OverrideModel(ovr) => {
-                step.inference.model_override = Some(ovr);
+                let converted: crate::runtime::inference::InferenceOverride = ovr.into();
+                match &mut step.inference.inference_override {
+                    Some(existing) => existing.merge(converted),
+                    slot => *slot = Some(converted),
+                }
+            }
+            BeforeInferenceAction::OverrideInference(ovr) => {
+                match &mut step.inference.inference_override {
+                    Some(existing) => existing.merge(ovr),
+                    slot => *slot = Some(ovr),
+                }
             }
             BeforeInferenceAction::Terminate(reason) => {
                 step.flow.run_action = Some(RunAction::Terminate(reason));

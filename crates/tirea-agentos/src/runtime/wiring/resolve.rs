@@ -22,7 +22,9 @@ use crate::runtime::loop_runner::{
     BaseAgent, GenaiLlmExecutor, LlmExecutor, ParallelToolExecutor, ResolvedRun,
     SequentialToolExecutor,
 };
-use crate::runtime::policy::{filter_tools_in_place, set_runtime_policy_from_definition_if_absent};
+use crate::runtime::policy::{
+    filter_tools_in_place, populate_permission_config, set_runtime_policy_from_definition_if_absent,
+};
 use crate::runtime::stop_policy::{StopPolicyPlugin, STOP_POLICY_PLUGIN_ID};
 use crate::runtime::{AgentOs, AgentOsResolveError, StopPolicy};
 use genai::{chat::ChatOptions, Client};
@@ -286,9 +288,7 @@ impl AgentOs {
         // Handoff plugin: auto-compute overlays from all agents in the registry.
         #[cfg(feature = "handoff")]
         {
-            use tirea_extension_handoff::{
-                HandoffPlugin, HandoffRuntimeOverlay, HANDOFF_PLUGIN_ID,
-            };
+            use tirea_extension_handoff::{AgentOverlay, HandoffPlugin, HANDOFF_PLUGIN_ID};
 
             let all_agents = agents_registry.snapshot();
             if all_agents.len() > 1 {
@@ -297,28 +297,7 @@ impl AgentOs {
                     if id == &_current_definition.id {
                         continue;
                     }
-                    overlays.insert(
-                        id.clone(),
-                        HandoffRuntimeOverlay {
-                            model: if def.model.is_empty() {
-                                None
-                            } else {
-                                Some(def.model.clone())
-                            },
-                            system_prompt: if def.system_prompt.is_empty() {
-                                None
-                            } else {
-                                Some(def.system_prompt.clone())
-                            },
-                            fallback_models: if def.fallback_models.is_empty() {
-                                None
-                            } else {
-                                Some(def.fallback_models.clone())
-                            },
-                            allowed_tools: def.allowed_tools.clone(),
-                            excluded_tools: def.excluded_tools.clone(),
-                        },
-                    );
+                    overlays.insert(id.clone(), agent_overlay_from_definition(def));
                 }
                 let handoff_bundle: Arc<dyn RegistryBundle> = Arc::new(
                     ToolBehaviorBundle::new(HANDOFF_PLUGIN_ID)
@@ -400,7 +379,7 @@ impl AgentOs {
             ensure_unique_behavior_ids(&all_plugins)?;
         }
 
-        Ok(build_base_agent_from_definition(definition, all_plugins))
+        build_base_agent_from_definition(definition, all_plugins)
     }
 
     fn resolve_model_runtime(
@@ -471,7 +450,7 @@ impl AgentOs {
             ensure_unique_behavior_ids(&all_plugins)?;
         }
 
-        Ok(build_base_agent_from_definition(definition, all_plugins))
+        build_base_agent_from_definition(definition, all_plugins)
     }
 
     /// Check whether an agent with the given ID is registered.
@@ -502,6 +481,7 @@ impl AgentOs {
         let model_runtime = self.resolve_model_runtime(&definition)?;
         let allowed_tools = definition.allowed_tools.clone();
         let excluded_tools = definition.excluded_tools.clone();
+        let permission_rules = definition.permission_rules.clone();
         let mut tools = self.base_tools.snapshot();
         let mut cfg = self.wire_into(definition, &mut tools, &model_runtime)?;
         filter_tools_in_place(
@@ -512,10 +492,16 @@ impl AgentOs {
         cfg.model = model_runtime.model;
         cfg.chat_options = model_runtime.chat_options;
         cfg.llm_executor = Some(model_runtime.llm_executor);
+        let mut run_config = tirea_contract::AgentRunConfig::new(run_policy.clone());
+        run_config.set_model(&cfg.model);
+        run_config.set_agent_id(&cfg.id);
+        populate_permission_config(&mut run_config, &permission_rules);
+
         Ok(ResolvedRun {
             agent: cfg,
             tools,
             run_policy,
+            run_config: std::sync::Arc::new(run_config),
             parent_tool_call_id: None,
         })
     }
@@ -540,7 +526,7 @@ fn synthesize_stop_specs(definition: &AgentDefinition) -> Vec<StopConditionSpec>
 fn build_base_agent_from_definition(
     definition: AgentDefinition,
     behaviors: Vec<Arc<dyn AgentBehavior>>,
-) -> BaseAgent {
+) -> Result<BaseAgent, AgentOsWiringError> {
     let definition = normalize_definition_models(definition);
     let tool_executor: Arc<dyn ToolExecutor> = match definition.tool_execution_mode {
         ToolExecutionMode::Sequential => Arc::new(SequentialToolExecutor),
@@ -568,10 +554,10 @@ fn build_base_agent_from_definition(
     let behavior: Arc<dyn AgentBehavior> = if behaviors.is_empty() {
         Arc::new(NoOpBehavior)
     } else {
-        Arc::new(CompositeBehavior::new(definition.id.clone(), behaviors))
+        Arc::new(CompositeBehavior::new(definition.id.clone(), behaviors)?)
     };
 
-    BaseAgent {
+    Ok(BaseAgent {
         id: definition.id,
         model: definition.model,
         system_prompt: definition.system_prompt,
@@ -586,7 +572,7 @@ fn build_base_agent_from_definition(
         step_tool_provider: None,
         llm_executor: None,
         state_action_deserializer_registry: Arc::new(state_action_deserializer_registry),
-    }
+    })
 }
 
 fn normalize_definition_models(mut definition: AgentDefinition) -> AgentDefinition {
@@ -598,6 +584,83 @@ fn normalize_definition_models(mut definition: AgentDefinition) -> AgentDefiniti
         .filter(|model| !model.is_empty())
         .collect();
     definition
+}
+
+/// Build an [`AgentOverlay`] from an [`AgentDefinition`], extracting all
+/// overridable configuration dimensions including inference parameters
+/// from `chat_options`.
+#[cfg(feature = "handoff")]
+fn agent_overlay_from_definition(
+    def: &AgentDefinition,
+) -> tirea_contract::runtime::overlay::AgentOverlay {
+    use tirea_contract::runtime::inference::{InferenceOverride, ReasoningEffort};
+
+    let (temperature, max_tokens, top_p, reasoning_effort) =
+        def.chat_options
+            .as_ref()
+            .map_or((None, None, None, None), |opts| {
+                (
+                    opts.temperature,
+                    opts.max_tokens,
+                    opts.top_p,
+                    opts.reasoning_effort.as_ref().map(|r| {
+                        use genai::chat::ReasoningEffort as G;
+                        match r {
+                            G::None => ReasoningEffort::None,
+                            G::Low | G::Minimal => ReasoningEffort::Low,
+                            G::Medium => ReasoningEffort::Medium,
+                            G::High => ReasoningEffort::High,
+                            G::Max => ReasoningEffort::Max,
+                            G::Budget(n) => ReasoningEffort::Budget(*n),
+                        }
+                    }),
+                )
+            });
+
+    let model = if def.model.is_empty() {
+        None
+    } else {
+        Some(def.model.clone())
+    };
+    let fallback_models = if def.fallback_models.is_empty() {
+        None
+    } else {
+        Some(def.fallback_models.clone())
+    };
+
+    let has_inference = model.is_some()
+        || fallback_models.is_some()
+        || temperature.is_some()
+        || max_tokens.is_some()
+        || top_p.is_some()
+        || reasoning_effort.is_some();
+
+    tirea_contract::runtime::overlay::AgentOverlay {
+        inference: if has_inference {
+            Some(InferenceOverride {
+                model,
+                fallback_models,
+                temperature,
+                max_tokens,
+                top_p,
+                reasoning_effort,
+            })
+        } else {
+            None
+        },
+        system_prompt: if def.system_prompt.is_empty() {
+            None
+        } else {
+            Some(def.system_prompt.clone())
+        },
+        allowed_tools: def.allowed_tools.clone(),
+        excluded_tools: def.excluded_tools.clone(),
+        allowed_skills: def.allowed_skills.clone(),
+        excluded_skills: def.excluded_skills.clone(),
+        allowed_agents: def.allowed_agents.clone(),
+        excluded_agents: def.excluded_agents.clone(),
+        ..Default::default()
+    }
 }
 
 #[cfg(test)]

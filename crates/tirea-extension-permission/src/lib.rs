@@ -4,9 +4,13 @@
 //! [`PermissionPlugin`], and [`ToolPolicyPlugin`].
 
 mod actions;
+mod config;
 mod form;
+pub mod matcher;
 mod mechanism;
 mod model;
+pub mod parser;
+pub mod pattern;
 mod plugin;
 mod state;
 mod strategy;
@@ -15,7 +19,11 @@ pub use actions::{
     apply_tool_policy, deny, deny_missing_call_id, deny_tool, reject_out_of_scope,
     request_permission,
 };
-pub use form::{permission_confirmation_ticket, PERMISSION_CONFIRM_TOOL_NAME};
+pub use config::PermissionRulesConfig;
+pub use form::{
+    permission_confirmation_ticket, permission_confirmation_ticket_with_rule,
+    PERMISSION_CONFIRM_TOOL_NAME,
+};
 pub use mechanism::{
     enforce_permission, remembered_permission_state_action, PermissionMechanismDecision,
     PermissionMechanismInput,
@@ -24,11 +32,13 @@ pub use model::{
     PermissionEvaluation, PermissionRule, PermissionRuleScope, PermissionRuleSource,
     PermissionRuleset, PermissionSubject, ToolPermissionBehavior,
 };
+pub use parser::parse_pattern;
+pub use pattern::{ArgMatcher, FieldCondition, MatchOp, PathSegment, ToolCallPattern, ToolMatcher};
 pub use plugin::{PermissionPlugin, ToolPolicyPlugin, PERMISSION_PLUGIN_ID};
 pub use state::{
     permission_override_action, permission_rules_from_snapshot, permission_state_action,
-    PermissionAction, PermissionOverrides, PermissionOverridesAction, PermissionPolicy,
-    PermissionPolicyAction,
+    permission_update, PermissionAction, PermissionDestination, PermissionOverrideGranter,
+    PermissionOverrides, PermissionOverridesAction, PermissionPolicy, PermissionPolicyAction,
 };
 pub use strategy::{evaluate_tool_permission, resolve_permission_behavior};
 
@@ -171,7 +181,7 @@ mod tests {
         });
 
         assert_eq!(
-            resolve_permission_behavior(&snapshot, "write_file"),
+            resolve_permission_behavior(&snapshot, "write_file", &json!({})),
             ToolPermissionBehavior::Deny
         );
     }
@@ -426,7 +436,7 @@ mod tests {
 
         // Run-scoped override (allow) should win over thread-level policy (deny).
         assert_eq!(
-            resolve_permission_behavior(&snapshot, "Bash"),
+            resolve_permission_behavior(&snapshot, "Bash", &json!({})),
             ToolPermissionBehavior::Allow
         );
     }
@@ -452,12 +462,12 @@ mod tests {
 
         // Bash is overridden to allow.
         assert_eq!(
-            resolve_permission_behavior(&snapshot, "Bash"),
+            resolve_permission_behavior(&snapshot, "Bash", &json!({})),
             ToolPermissionBehavior::Allow
         );
         // Other tools still fall through to the policy default (deny).
         assert_eq!(
-            resolve_permission_behavior(&snapshot, "write_file"),
+            resolve_permission_behavior(&snapshot, "write_file", &json!({})),
             ToolPermissionBehavior::Deny
         );
     }
@@ -480,11 +490,11 @@ mod tests {
 
         // No overrides present — behavior is unchanged.
         assert_eq!(
-            resolve_permission_behavior(&snapshot, "read_file"),
+            resolve_permission_behavior(&snapshot, "read_file", &json!({})),
             ToolPermissionBehavior::Allow
         );
         assert_eq!(
-            resolve_permission_behavior(&snapshot, "unknown"),
+            resolve_permission_behavior(&snapshot, "unknown", &json!({})),
             ToolPermissionBehavior::Ask
         );
     }
@@ -563,5 +573,408 @@ mod tests {
         let serialized = permission_override_action(action).to_serialized_state_action();
         // The override action should set source to "skill".
         assert_eq!(serialized.payload["source"], "skill");
+    }
+
+    // --- Pattern-based permission rules ---
+
+    #[test]
+    fn pattern_rule_allows_matching_args() {
+        let snapshot = json!({
+            "permission_policy": {
+                "default_behavior": "deny",
+                "rules": {
+                    "pattern:Bash(npm *)": {
+                        "subject": { "kind": "pattern", "pattern": "Bash(npm *)" },
+                        "behavior": "allow",
+                        "scope": "thread",
+                        "source": "runtime"
+                    }
+                }
+            }
+        });
+
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "Bash", &json!({"command": "npm install"})),
+            ToolPermissionBehavior::Allow
+        );
+        // Non-matching args fall through to default deny.
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "Bash", &json!({"command": "rm -rf /"})),
+            ToolPermissionBehavior::Deny
+        );
+    }
+
+    #[test]
+    fn pattern_rule_denies_dangerous_commands() {
+        let snapshot = json!({
+            "permission_policy": {
+                "default_behavior": "allow",
+                "rules": {
+                    "pattern:Bash(rm *)": {
+                        "subject": { "kind": "pattern", "pattern": "Bash(rm *)" },
+                        "behavior": "deny"
+                    }
+                }
+            }
+        });
+
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "Bash", &json!({"command": "rm -rf /tmp"})),
+            ToolPermissionBehavior::Deny
+        );
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "Bash", &json!({"command": "ls"})),
+            ToolPermissionBehavior::Allow
+        );
+    }
+
+    #[test]
+    fn pattern_rule_glob_tool_name() {
+        let snapshot = json!({
+            "permission_policy": {
+                "default_behavior": "deny",
+                "rules": {
+                    "pattern:mcp__github__*": {
+                        "subject": { "kind": "pattern", "pattern": "mcp__github__*" },
+                        "behavior": "allow"
+                    }
+                }
+            }
+        });
+
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "mcp__github__create_issue", &json!({})),
+            ToolPermissionBehavior::Allow
+        );
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "mcp__slack__post", &json!({})),
+            ToolPermissionBehavior::Deny
+        );
+    }
+
+    #[test]
+    fn pattern_rule_named_field_glob() {
+        let snapshot = json!({
+            "permission_policy": {
+                "default_behavior": "deny",
+                "rules": {
+                    "pattern:Edit(file_path ~ \"src/**\")": {
+                        "subject": {
+                            "kind": "pattern",
+                            "pattern": "Edit(file_path ~ \"src/**\")"
+                        },
+                        "behavior": "allow"
+                    }
+                }
+            }
+        });
+
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "Edit", &json!({"file_path": "src/main.rs"})),
+            ToolPermissionBehavior::Allow
+        );
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "Edit", &json!({"file_path": "tests/test.rs"})),
+            ToolPermissionBehavior::Deny
+        );
+    }
+
+    #[test]
+    fn deny_pattern_beats_allow_pattern_same_specificity() {
+        let snapshot = json!({
+            "permission_policy": {
+                "default_behavior": "ask",
+                "rules": {
+                    "pattern:Bash(npm *)": {
+                        "subject": { "kind": "pattern", "pattern": "Bash(npm *)" },
+                        "behavior": "allow"
+                    },
+                    "pattern:Bash(npm audit *)": {
+                        "subject": { "kind": "pattern", "pattern": "Bash(npm audit *)" },
+                        "behavior": "deny"
+                    }
+                }
+            }
+        });
+
+        // "npm install" matches allow rule only
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "Bash", &json!({"command": "npm install"})),
+            ToolPermissionBehavior::Allow
+        );
+        // "npm audit fix" matches both → deny wins
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "Bash", &json!({"command": "npm audit fix"})),
+            ToolPermissionBehavior::Deny
+        );
+    }
+
+    #[test]
+    fn set_rule_action_persists_pattern() {
+        let action = PermissionAction::SetRule {
+            pattern: "Bash(npm *)".to_string(),
+            behavior: ToolPermissionBehavior::Allow,
+        };
+        let serialized = permission_state_action(action).to_serialized_state_action();
+        assert_eq!(serialized.base_path, PermissionPolicy::PATH);
+        assert_eq!(serialized.payload["pattern"], "Bash(npm *)");
+    }
+
+    #[tokio::test]
+    async fn permission_plugin_pattern_allows_matching_args() {
+        let config = RunPolicy::new();
+        let doc = DocCell::new(json!({
+            "permission_policy": {
+                "default_behavior": "deny",
+                "rules": {
+                    "pattern:Bash(npm *)": {
+                        "subject": { "kind": "pattern", "pattern": "Bash(npm *)" },
+                        "behavior": "allow"
+                    }
+                }
+            }
+        }));
+        let args = json!({"command": "npm install"});
+        let ctx = read_only_ctx(&config, &doc, "Bash", "call_1", &args);
+        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
+        // Pattern matches → allow.
+        assert!(!has_block(&actions));
+        assert!(suspend_action(&actions).is_none());
+    }
+
+    #[tokio::test]
+    async fn permission_plugin_pattern_denies_non_matching_args() {
+        let config = RunPolicy::new();
+        let doc = DocCell::new(json!({
+            "permission_policy": {
+                "default_behavior": "deny",
+                "rules": {
+                    "pattern:Bash(npm *)": {
+                        "subject": { "kind": "pattern", "pattern": "Bash(npm *)" },
+                        "behavior": "allow"
+                    }
+                }
+            }
+        }));
+        let args = json!({"command": "rm -rf /"});
+        let ctx = read_only_ctx(&config, &doc, "Bash", "call_1", &args);
+        let actions = AgentBehavior::before_tool_execute(&PermissionPlugin, &ctx).await;
+        // Pattern doesn't match → falls to default deny.
+        assert!(has_block(&actions));
+    }
+
+    #[test]
+    fn mixed_old_and_new_rules_coexist() {
+        let snapshot = json!({
+            "permission_policy": {
+                "default_behavior": "deny",
+                "rules": {
+                    "tool:Read": {
+                        "subject": { "kind": "tool", "tool_id": "Read" },
+                        "behavior": "allow"
+                    },
+                    "pattern:Bash(npm *)": {
+                        "subject": { "kind": "pattern", "pattern": "Bash(npm *)" },
+                        "behavior": "allow"
+                    }
+                }
+            }
+        });
+
+        // Old tool rule works
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "Read", &json!({})),
+            ToolPermissionBehavior::Allow
+        );
+        // New pattern rule works
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "Bash", &json!({"command": "npm install"})),
+            ToolPermissionBehavior::Allow
+        );
+        // Non-matching tool falls to default
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "Write", &json!({})),
+            ToolPermissionBehavior::Deny
+        );
+    }
+
+    // --- Evaluation order: Deny > Allow > Ask ---
+
+    #[test]
+    fn allow_beats_ask_when_both_match() {
+        let snapshot = json!({
+            "permission_policy": {
+                "default_behavior": "ask",
+                "rules": {
+                    "pattern:Bash(npm *)": {
+                        "subject": { "kind": "pattern", "pattern": "Bash(npm *)" },
+                        "behavior": "allow"
+                    },
+                    "pattern:Bash(npm install *)": {
+                        "subject": { "kind": "pattern", "pattern": "Bash(npm install *)" },
+                        "behavior": "ask"
+                    }
+                }
+            }
+        });
+
+        // "npm install foo" matches both allow and ask → allow wins (Allow > Ask).
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "Bash", &json!({"command": "npm install foo"})),
+            ToolPermissionBehavior::Allow
+        );
+    }
+
+    #[test]
+    fn deny_beats_allow_when_both_match() {
+        let snapshot = json!({
+            "permission_policy": {
+                "default_behavior": "ask",
+                "rules": {
+                    "pattern:Bash(npm *)": {
+                        "subject": { "kind": "pattern", "pattern": "Bash(npm *)" },
+                        "behavior": "allow"
+                    },
+                    "pattern:Bash(npm audit *)": {
+                        "subject": { "kind": "pattern", "pattern": "Bash(npm audit *)" },
+                        "behavior": "deny"
+                    }
+                }
+            }
+        });
+
+        // "npm audit fix" matches both allow and deny → deny wins (Deny > Allow).
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "Bash", &json!({"command": "npm audit fix"})),
+            ToolPermissionBehavior::Deny
+        );
+    }
+
+    // --- Unconditionally denied tools → visibility filtering ---
+
+    #[test]
+    fn unconditionally_denied_tools_from_legacy_rules() {
+        let snapshot = json!({
+            "permission_policy": {
+                "default_behavior": "ask",
+                "rules": {
+                    "tool:Write": {
+                        "subject": { "kind": "tool", "tool_id": "Write" },
+                        "behavior": "deny"
+                    },
+                    "tool:Read": {
+                        "subject": { "kind": "tool", "tool_id": "Read" },
+                        "behavior": "allow"
+                    }
+                }
+            }
+        });
+
+        let ruleset = permission_rules_from_snapshot(&snapshot);
+        let denied = ruleset.unconditionally_denied_tools();
+        assert!(denied.contains(&"Write"));
+        assert!(!denied.contains(&"Read"));
+    }
+
+    #[test]
+    fn unconditionally_denied_tools_from_pattern_rules() {
+        let snapshot = json!({
+            "permission_policy": {
+                "default_behavior": "ask",
+                "rules": {
+                    "pattern:mcp__untrusted__*": {
+                        "subject": { "kind": "pattern", "pattern": "mcp__untrusted__*" },
+                        "behavior": "deny"
+                    },
+                    "pattern:Bash": {
+                        "subject": { "kind": "pattern", "pattern": "Bash" },
+                        "behavior": "deny"
+                    },
+                    "pattern:Bash(rm *)": {
+                        "subject": { "kind": "pattern", "pattern": "Bash(rm *)" },
+                        "behavior": "deny"
+                    }
+                }
+            }
+        });
+
+        let ruleset = permission_rules_from_snapshot(&snapshot);
+        let denied = ruleset.unconditionally_denied_tools();
+        // "Bash" exact + no args → unconditionally denied → excluded from LLM.
+        assert!(denied.contains(&"Bash"));
+        // "Bash(rm *)" has arg condition → conditional deny → stays visible.
+        // "mcp__untrusted__*" is glob → not exact → not in unconditional list.
+        assert!(!denied.contains(&"mcp__untrusted__*"));
+    }
+
+    // --- Definition source + unified dispatch ---
+
+    #[test]
+    fn config_layer_rules_carry_definition_source_through_merge() {
+        let rule = PermissionRule::new_tool("echo", ToolPermissionBehavior::Allow)
+            .with_source(PermissionRuleSource::Definition);
+        let config_rules = PermissionRulesConfig::new(vec![rule]);
+
+        let mut ruleset = permission_rules_from_snapshot(&json!({}));
+        // Simulate what PermissionPlugin.merged_ruleset does for config-layer.
+        for rule in config_rules.rules() {
+            ruleset
+                .rules
+                .entry(rule.subject.key())
+                .or_insert_with(|| rule.clone());
+        }
+
+        let found = ruleset.rule_for_tool("echo").expect("rule must exist");
+        assert_eq!(found.source, PermissionRuleSource::Definition);
+    }
+
+    #[test]
+    fn permission_update_policy_routes_to_permission_policy() {
+        let action = PermissionAction::SetTool {
+            tool_id: "write".to_string(),
+            behavior: ToolPermissionBehavior::Allow,
+        };
+        let serialized =
+            permission_update(action, PermissionDestination::Policy).to_serialized_state_action();
+        assert_eq!(serialized.base_path, PermissionPolicy::PATH);
+    }
+
+    #[test]
+    fn permission_update_override_routes_to_permission_overrides() {
+        let action = PermissionAction::SetTool {
+            tool_id: "Bash".to_string(),
+            behavior: ToolPermissionBehavior::Allow,
+        };
+        let serialized =
+            permission_update(action, PermissionDestination::Override).to_serialized_state_action();
+        assert_eq!(serialized.base_path, PermissionOverrides::PATH);
+    }
+
+    #[test]
+    fn permission_update_matches_direct_state_action() {
+        let action_a = PermissionAction::SetTool {
+            tool_id: "read".to_string(),
+            behavior: ToolPermissionBehavior::Allow,
+        };
+        let action_b = action_a.clone();
+        let via_update =
+            permission_update(action_a, PermissionDestination::Policy).to_serialized_state_action();
+        let via_direct = permission_state_action(action_b).to_serialized_state_action();
+        assert_eq!(via_update.base_path, via_direct.base_path);
+        assert_eq!(via_update.payload, via_direct.payload);
+    }
+
+    #[test]
+    fn permission_update_override_matches_direct_override_action() {
+        let action_a = PermissionAction::SetTool {
+            tool_id: "Bash".to_string(),
+            behavior: ToolPermissionBehavior::Allow,
+        };
+        let action_b = action_a.clone();
+        let via_update = permission_update(action_a, PermissionDestination::Override)
+            .to_serialized_state_action();
+        let via_direct = permission_override_action(action_b).to_serialized_state_action();
+        assert_eq!(via_update.base_path, via_direct.base_path);
+        assert_eq!(via_update.payload, via_direct.payload);
     }
 }

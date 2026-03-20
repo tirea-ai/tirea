@@ -301,7 +301,13 @@ async fn wire_skills_inserts_tools_and_plugin() {
     let apply_fixture = TestFixture::new();
     let mut apply_step = apply_fixture.step(vec![]);
     apply_before_inference_for_test(&mut apply_step, actions);
-    let merged: String = apply_step.inference.system_context.join("\n");
+    let merged: String = apply_step
+        .inference
+        .context_messages
+        .iter()
+        .map(|cm| cm.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(merged.contains("<available_skills>"));
     assert!(
         !merged.contains("<skill_instructions skill=\"s1\">"),
@@ -1394,10 +1400,14 @@ impl AgentBehavior for TestPlugin {
         &self,
         _ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<BeforeInferenceAction> {
-        ActionSet::single(BeforeInferenceAction::AddSystemContext(format!(
-            "<plugin id=\"{}\"/>",
-            self.0
-        )))
+        ActionSet::single(BeforeInferenceAction::AddContextMessage(
+            tirea_contract::runtime::inference::ContextMessage {
+                key: format!("plugin_{}", self.0),
+                content: format!("<plugin id=\"{}\"/>", self.0),
+                cooldown_turns: 0,
+                target: Default::default(),
+            },
+        ))
     }
 }
 
@@ -1430,9 +1440,9 @@ async fn resolve_wires_plugins_from_registry() {
     apply_before_inference_for_test(&mut apply_step, actions);
     assert!(apply_step
         .inference
-        .system_context
+        .context_messages
         .iter()
-        .any(|s| s.contains("p1")));
+        .any(|cm| cm.content.contains("p1")));
 }
 
 #[tokio::test]
@@ -2567,7 +2577,7 @@ async fn run_stream_initial_decisions_remember_approval_persists_allow_rule() {
     let saved = storage.load(thread_id).await.unwrap().unwrap();
     let rebuilt = saved.thread.rebuild_state().unwrap();
     assert_eq!(
-        resolve_permission_behavior(&rebuilt, "echo"),
+        resolve_permission_behavior(&rebuilt, "echo", &serde_json::Value::Null),
         ToolPermissionBehavior::Allow,
         "remembered approval should persist allow rule: {rebuilt:?}"
     );
@@ -2648,7 +2658,7 @@ async fn run_stream_initial_decisions_remember_denial_persists_deny_rule() {
     let saved = storage.load(thread_id).await.unwrap().unwrap();
     let rebuilt = saved.thread.rebuild_state().unwrap();
     assert_eq!(
-        resolve_permission_behavior(&rebuilt, "echo"),
+        resolve_permission_behavior(&rebuilt, "echo", &serde_json::Value::Null),
         ToolPermissionBehavior::Deny,
         "remembered denial should persist deny rule: {rebuilt:?}"
     );
@@ -3509,7 +3519,7 @@ async fn prepare_run_scope_appends_plugins() {
     let new_b = Arc::new(RunScopedPlugin) as Arc<dyn AgentBehavior>;
     let id = format!("{}+{}", resolved.agent.behavior.id(), new_b.id());
     resolved.agent.behavior =
-        super::compose_behaviors(id, vec![resolved.agent.behavior.clone(), new_b]);
+        super::compose_behaviors(id, vec![resolved.agent.behavior.clone(), new_b]).unwrap();
 
     let prepared = os
         .prepare_run(
@@ -3563,7 +3573,7 @@ async fn prepare_run_scope_rejects_duplicate_plugin_id() {
     let new_b = Arc::new(DupPlugin) as Arc<dyn AgentBehavior>;
     let id = format!("{}+{}", resolved.agent.behavior.id(), new_b.id());
     resolved.agent.behavior =
-        super::compose_behaviors(id, vec![resolved.agent.behavior.clone(), new_b]);
+        super::compose_behaviors(id, vec![resolved.agent.behavior.clone(), new_b]).unwrap();
 
     let result = os
         .prepare_run(

@@ -81,7 +81,7 @@ fn add_behavior_mut(agent: &mut BaseAgent, behavior: Arc<dyn AgentBehavior>) {
         agent.behavior = behavior;
     } else {
         let id = format!("{}+{}", agent.behavior.id(), behavior.id());
-        agent.behavior = compose_behaviors(id, vec![agent.behavior.clone(), behavior]);
+        agent.behavior = compose_behaviors(id, vec![agent.behavior.clone(), behavior]).unwrap();
     }
 }
 
@@ -213,8 +213,13 @@ impl AgentBehavior for ContextInjectionPlugin {
         &self,
         _ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<BeforeInferenceAction> {
-        ActionSet::single(BeforeInferenceAction::AddSystemContext(
-            self.addendum.clone(),
+        ActionSet::single(BeforeInferenceAction::AddContextMessage(
+            tirea_contract::runtime::inference::ContextMessage {
+                key: "ag_ui_addendum".into(),
+                content: self.addendum.clone(),
+                cooldown_turns: 0,
+                target: Default::default(),
+            },
         ))
     }
 }
@@ -293,10 +298,14 @@ mod tests {
     use tirea_protocol_ag_ui::{Context, Message, ToolExecutionLocation};
 
     fn empty_resolved() -> ResolvedRun {
+        let run_policy = tirea_contract::RunPolicy::new();
         ResolvedRun {
             agent: BaseAgent::default(),
             tools: HashMap::new(),
-            run_policy: tirea_contract::RunPolicy::new(),
+            run_config: std::sync::Arc::new(tirea_contract::AgentRunConfig::new(
+                run_policy.clone(),
+            )),
+            run_policy,
             parent_tool_call_id: None,
         }
     }
@@ -707,8 +716,14 @@ mod tests {
         let actions = behavior.before_inference(&ctx).await;
         tirea_contract::testing::apply_before_inference_for_test(&mut step, actions);
 
-        assert!(!step.inference.system_context.is_empty());
-        let merged = step.inference.system_context.join("\n");
+        assert!(!step.inference.context_messages.is_empty());
+        let merged: String = step
+            .inference
+            .context_messages
+            .iter()
+            .map(|cm| cm.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
             merged.contains("Task list"),
             "should contain context description"
