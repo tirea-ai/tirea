@@ -19,6 +19,9 @@ pub struct AgentConfig {
     pub tool_executor: Arc<dyn ToolExecutor>,
     /// Context window management policy. `None` disables compaction and truncation.
     pub context_policy: Option<ContextWindowPolicy>,
+    /// Context summarizer for LLM-based compaction. `None` disables LLM compaction
+    /// (hard truncation still works if `context_policy` is set).
+    pub context_summarizer: Option<Arc<dyn super::context::ContextSummarizer>>,
 }
 
 impl AgentConfig {
@@ -37,6 +40,7 @@ impl AgentConfig {
             llm_executor,
             tool_executor: Arc::new(SequentialToolExecutor),
             context_policy: None,
+            context_summarizer: None,
         }
     }
 
@@ -71,6 +75,15 @@ impl AgentConfig {
     #[must_use]
     pub fn with_context_policy(mut self, policy: ContextWindowPolicy) -> Self {
         self.context_policy = Some(policy);
+        self
+    }
+
+    #[must_use]
+    pub fn with_context_summarizer(
+        mut self,
+        summarizer: Arc<dyn super::context::ContextSummarizer>,
+    ) -> Self {
+        self.context_summarizer = Some(summarizer);
         self
     }
 

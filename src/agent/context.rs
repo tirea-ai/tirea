@@ -1,12 +1,113 @@
-//! Built-in context management: hard truncation to token budget.
+//! Built-in context management: hard truncation, LLM compaction, summarizer trait.
 
+use async_trait::async_trait;
+
+use crate::contract::executor::LlmExecutor;
 use crate::contract::inference::ContextWindowPolicy;
-use crate::contract::message::{Message, Role};
+use crate::contract::message::{Message, Role, Visibility};
 use crate::contract::tool::ToolDescriptor;
 use crate::contract::transform::{
     InferenceRequestTransform, TransformOutput, estimate_message_tokens, estimate_tokens,
     estimate_tool_tokens, patch_dangling_tool_calls,
 };
+
+// ---------------------------------------------------------------------------
+// ContextSummarizer trait
+// ---------------------------------------------------------------------------
+
+/// Abstraction for generating conversation summaries during compaction.
+///
+/// The framework provides token estimation, boundary finding, and transcript rendering.
+/// Implementors decide the summarization strategy (prompt, model, parameters).
+#[async_trait]
+pub trait ContextSummarizer: Send + Sync {
+    /// Generate a summary from a conversation transcript.
+    ///
+    /// - `transcript`: rendered text of the messages to summarize (Internal messages already filtered)
+    /// - `previous_summary`: if a prior compaction summary exists, passed here for cumulative updates
+    /// - `executor`: LLM executor to use for summarization
+    async fn summarize(
+        &self,
+        transcript: &str,
+        previous_summary: Option<&str>,
+        executor: &dyn LlmExecutor,
+    ) -> Result<String, String>;
+}
+
+/// Default summarizer with a domain-agnostic prompt.
+///
+/// Uses cumulative summarization: if a previous summary exists, the prompt asks
+/// the LLM to update it with the new conversation span rather than re-summarize everything.
+pub struct DefaultSummarizer {
+    /// Maximum output tokens for the summary.
+    pub max_tokens: u32,
+}
+
+impl Default for DefaultSummarizer {
+    fn default() -> Self {
+        Self { max_tokens: 1024 }
+    }
+}
+
+const DEFAULT_SYSTEM_PROMPT: &str = "\
+You maintain a durable conversation summary for an agent runtime. \
+Produce a concise but lossless working summary for future turns. \
+Preserve user goals, constraints, preferences, decisions, completed work, \
+important findings, identifiers, and unresolved follow-ups. \
+Output plain text only; do not mention the summarization process.";
+
+#[async_trait]
+impl ContextSummarizer for DefaultSummarizer {
+    async fn summarize(
+        &self,
+        transcript: &str,
+        previous_summary: Option<&str>,
+        executor: &dyn LlmExecutor,
+    ) -> Result<String, String> {
+        let user_prompt = match previous_summary {
+            Some(prev) if !prev.trim().is_empty() => format!(
+                "Update the cumulative summary with the new conversation span.\n\n\
+                 <existing-summary>\n{}\n</existing-summary>\n\n\
+                 <new-conversation>\n{}\n</new-conversation>",
+                prev.trim(),
+                transcript.trim(),
+            ),
+            _ => format!(
+                "Summarize the following conversation:\n\n\
+                 <conversation>\n{}\n</conversation>",
+                transcript.trim(),
+            ),
+        };
+
+        let request = crate::contract::executor::InferenceRequest {
+            model: String::new(), // executor decides the model
+            messages: vec![
+                Message::system(DEFAULT_SYSTEM_PROMPT),
+                Message::user(user_prompt),
+            ],
+            tools: vec![],
+            system: vec![],
+            overrides: Some(crate::contract::inference::InferenceOverride {
+                max_tokens: Some(self.max_tokens),
+                ..Default::default()
+            }),
+        };
+
+        let result = executor
+            .execute(request)
+            .await
+            .map_err(|e| format!("summarization failed: {e}"))?;
+
+        let text = result.text();
+        if text.is_empty() {
+            return Err("empty summary".into());
+        }
+        Ok(text)
+    }
+}
+
+/// Minimum token savings required to justify a compaction LLM call.
+pub const MIN_COMPACTION_GAIN_TOKENS: usize = 1024;
 
 /// Built-in request transform: truncate messages to fit the token budget.
 ///
@@ -171,21 +272,76 @@ pub fn find_compaction_boundary(
 }
 
 /// Render messages as a text transcript for LLM summarization.
+///
+/// Filters out `Visibility::Internal` messages — system-injected context that
+/// gets re-injected each turn should not be included in the summary.
 pub fn render_transcript(messages: &[std::sync::Arc<Message>]) -> String {
-    let mut lines = Vec::new();
+    messages
+        .iter()
+        .filter(|m| m.visibility != Visibility::Internal)
+        .filter_map(|m| {
+            let text = m.text();
+            if text.is_empty() {
+                return None;
+            }
+            let role = match m.role {
+                Role::System => "System",
+                Role::User => "User",
+                Role::Assistant => "Assistant",
+                Role::Tool => "Tool",
+            };
+            Some(format!("[{role}]: {text}"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// Extract a previous compaction summary from the message list.
+///
+/// Looks for the first `internal_system` message containing `<conversation-summary>` tags.
+pub fn extract_previous_summary(messages: &[std::sync::Arc<Message>]) -> Option<String> {
     for msg in messages {
-        let role = match msg.role {
-            Role::System => "System",
-            Role::User => "User",
-            Role::Assistant => "Assistant",
-            Role::Tool => "Tool",
-        };
+        if msg.role != Role::System || msg.visibility != Visibility::Internal {
+            continue;
+        }
         let text = msg.text();
-        if !text.is_empty() {
-            lines.push(format!("[{role}]: {text}"));
+        if let Some(start) = text.find("<conversation-summary>") {
+            if let Some(end) = text.find("</conversation-summary>") {
+                let inner = &text[start + "<conversation-summary>".len()..end];
+                let trimmed = inner.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
         }
     }
-    lines.join("\n\n")
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Load-time trim
+// ---------------------------------------------------------------------------
+
+/// Trim loaded messages to the latest compaction boundary.
+///
+/// If the message list contains a `<conversation-summary>` internal_system message,
+/// all messages before it are dropped. The summary message becomes the first message.
+/// This avoids loading already-summarized history into the context window.
+///
+/// Idempotent: if no summary exists or messages are already trimmed, this is a no-op.
+pub fn trim_to_compaction_boundary(messages: &mut Vec<std::sync::Arc<Message>>) {
+    // Find the last summary message (in case of multiple compactions)
+    let last_summary_idx = messages.iter().rposition(|m| {
+        m.role == Role::System
+            && m.visibility == Visibility::Internal
+            && m.text().contains("<conversation-summary>")
+    });
+
+    if let Some(idx) = last_summary_idx {
+        if idx > 0 {
+            messages.drain(..idx);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -306,5 +462,74 @@ mod tests {
         let transcript = render_transcript(&messages);
         assert!(transcript.contains("[User]: hello"));
         assert!(transcript.contains("[Assistant]: hi there"));
+    }
+
+    #[test]
+    fn render_transcript_excludes_internal_messages() {
+        use std::sync::Arc;
+
+        let messages = vec![
+            Arc::new(Message::internal_system("you are helpful")),
+            Arc::new(Message::user("hello")),
+            Arc::new(Message::assistant("hi")),
+        ];
+        let transcript = render_transcript(&messages);
+        assert!(!transcript.contains("you are helpful"));
+        assert!(transcript.contains("[User]: hello"));
+    }
+
+    #[test]
+    fn trim_to_compaction_boundary_drops_pre_summary() {
+        use std::sync::Arc;
+
+        let mut messages = vec![
+            Arc::new(Message::user("old msg 1")),
+            Arc::new(Message::assistant("old reply")),
+            Arc::new(Message::internal_system(
+                "<conversation-summary>\nSummary of old messages\n</conversation-summary>",
+            )),
+            Arc::new(Message::user("new msg")),
+            Arc::new(Message::assistant("new reply")),
+        ];
+
+        trim_to_compaction_boundary(&mut messages);
+        assert_eq!(messages.len(), 3);
+        assert!(messages[0].text().contains("conversation-summary"));
+        assert_eq!(messages[1].text(), "new msg");
+    }
+
+    #[test]
+    fn trim_to_compaction_boundary_noop_without_summary() {
+        use std::sync::Arc;
+
+        let mut messages = vec![
+            Arc::new(Message::user("hello")),
+            Arc::new(Message::assistant("hi")),
+        ];
+        let len_before = messages.len();
+        trim_to_compaction_boundary(&mut messages);
+        assert_eq!(messages.len(), len_before);
+    }
+
+    #[test]
+    fn extract_previous_summary_finds_summary() {
+        use std::sync::Arc;
+
+        let messages = vec![
+            Arc::new(Message::internal_system(
+                "<conversation-summary>\nPrevious summary text\n</conversation-summary>",
+            )),
+            Arc::new(Message::user("new msg")),
+        ];
+        let summary = extract_previous_summary(&messages);
+        assert_eq!(summary.as_deref(), Some("Previous summary text"));
+    }
+
+    #[test]
+    fn extract_previous_summary_none_without_summary() {
+        use std::sync::Arc;
+
+        let messages = vec![Arc::new(Message::user("hello"))];
+        assert!(extract_previous_summary(&messages).is_none());
     }
 }

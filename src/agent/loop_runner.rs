@@ -89,6 +89,12 @@ pub async fn run_agent_loop(
 ) -> Result<AgentRunResult, AgentLoopError> {
     let store = runtime.store();
     let mut messages: Vec<Arc<Message>> = initial_messages.into_iter().map(Arc::new).collect();
+
+    // Trim to latest compaction boundary — skip already-summarized history
+    if agent.context_policy.is_some() {
+        super::context::trim_to_compaction_boundary(&mut messages);
+    }
+
     let mut steps: usize = 0;
 
     // Helper to build PhaseContext with current state
@@ -891,16 +897,27 @@ fn apply_context_messages(
     messages.extend(suffix);
 }
 
-/// Compact messages by calling LLM to generate a summary.
+/// Compact messages using the configured ContextSummarizer.
 ///
-/// Finds a safe compaction boundary, renders messages as transcript,
-/// calls LLM to summarize, and replaces the old messages with the summary.
+/// Finds a safe compaction boundary, renders messages as transcript (filtering
+/// Internal messages), extracts any previous summary for cumulative updates,
+/// calls the summarizer, and replaces old messages with the summary.
+///
+/// Skips compaction if the estimated token savings are below `MIN_COMPACTION_GAIN_TOKENS`.
 async fn compact_with_llm(
     agent: &super::config::AgentConfig,
     messages: &mut Vec<Arc<Message>>,
     policy: &crate::contract::inference::ContextWindowPolicy,
 ) -> Result<(), AgentLoopError> {
-    use super::context::{find_compaction_boundary, render_transcript};
+    use super::context::{
+        MIN_COMPACTION_GAIN_TOKENS, extract_previous_summary, find_compaction_boundary,
+        render_transcript,
+    };
+
+    let summarizer = match agent.context_summarizer {
+        Some(ref s) => s,
+        None => return Ok(()),
+    };
 
     if messages.len() < 2 {
         return Ok(());
@@ -917,41 +934,32 @@ async fn compact_with_llm(
         None => return Ok(()),
     };
 
+    // Check minimum gain threshold
+    let compactable_tokens: usize = messages[..=boundary]
+        .iter()
+        .map(|m| crate::contract::transform::estimate_message_tokens(m))
+        .sum();
+    if compactable_tokens < MIN_COMPACTION_GAIN_TOKENS {
+        return Ok(());
+    }
+
+    // Render transcript (excludes Internal messages)
     let transcript = render_transcript(&messages[..=boundary]);
     if transcript.is_empty() {
         return Ok(());
     }
 
-    let summary_request = crate::contract::executor::InferenceRequest {
-        model: agent.model.clone(),
-        messages: vec![
-            Message::system(
-                "You maintain a durable conversation summary. \
-                 Produce a concise summary of the conversation that preserves \
-                 key decisions, file paths, code changes, and action items.",
-            ),
-            Message::user(format!(
-                "Summarize the following conversation:\n\n<conversation>\n{transcript}\n</conversation>"
-            )),
-        ],
-        tools: vec![],
-        system: vec![],
-        overrides: Some(crate::contract::inference::InferenceOverride {
-            max_tokens: Some(1024),
-            ..Default::default()
-        }),
-    };
+    // Extract previous summary for cumulative update
+    let previous_summary = extract_previous_summary(messages);
 
-    let result = agent
-        .llm_executor
-        .execute(summary_request)
+    let summary_text = summarizer
+        .summarize(
+            &transcript,
+            previous_summary.as_deref(),
+            agent.llm_executor.as_ref(),
+        )
         .await
         .map_err(|e| AgentLoopError::InferenceFailed(format!("compaction failed: {e}")))?;
-
-    let summary_text = result.text();
-    if summary_text.is_empty() {
-        return Ok(());
-    }
 
     // Replace messages up to boundary with the summary
     messages.drain(..=boundary);
