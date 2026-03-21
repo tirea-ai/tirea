@@ -11,8 +11,6 @@ use crate::runtime::{
 };
 use crate::state::{MergeStrategy, StateKey, StateKeyOptions, StateMap};
 
-use super::Plugin;
-
 #[derive(Clone)]
 pub(crate) struct KeyRegistration {
     pub(crate) type_id: TypeId,
@@ -77,8 +75,6 @@ pub struct PluginRegistry {
 }
 
 pub struct InstalledPlugin {
-    #[allow(dead_code)]
-    pub(crate) plugin: Arc<dyn Plugin>,
     pub(crate) owned_key_type_ids: Vec<TypeId>,
 }
 

@@ -1,7 +1,6 @@
 //! Inference response types and override configuration.
 
 use super::message::ToolCall;
-use super::tool::ToolDescriptor;
 use serde::{Deserialize, Serialize};
 
 /// Why the LLM stopped generating output.
@@ -215,27 +214,6 @@ impl From<InferenceModelOverride> for InferenceOverride {
             },
             ..Default::default()
         }
-    }
-}
-
-/// Inference-phase extension context populated during BeforeInference.
-#[derive(Default, Clone)]
-pub struct InferenceContext {
-    /// Session context messages injected before user messages.
-    pub session_context: Vec<String>,
-    /// Available tool descriptors (can be filtered by actions).
-    pub tools: Vec<ToolDescriptor>,
-    /// Unified inference override.
-    pub inference_override: Option<InferenceOverride>,
-}
-
-impl std::fmt::Debug for InferenceContext {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("InferenceContext")
-            .field("session_context", &self.session_context)
-            .field("tools", &self.tools)
-            .field("inference_override", &self.inference_override)
-            .finish()
     }
 }
 

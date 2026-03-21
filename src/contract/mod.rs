@@ -8,5 +8,4 @@ pub mod profile;
 pub mod storage;
 pub mod storage_mem;
 pub mod suspension;
-pub mod thread;
 pub mod tool;

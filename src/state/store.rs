@@ -188,7 +188,6 @@ impl StateStore {
             registry.plugins.insert(
                 plugin_type_id,
                 InstalledPlugin {
-                    plugin: Arc::clone(&plugin),
                     owned_key_type_ids: registrations.iter().map(|r| r.type_id).collect(),
                 },
             );

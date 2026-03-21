@@ -103,15 +103,6 @@ impl RunStatus {
     }
 }
 
-/// Run-level control action emitted by plugins.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RunAction {
-    /// Continue normal execution.
-    Continue,
-    /// Terminate run with specific reason.
-    Terminate(TerminationReason),
-}
-
 /// Declarative stop-condition configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

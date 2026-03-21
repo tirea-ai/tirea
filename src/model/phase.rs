@@ -35,53 +35,6 @@ impl Phase {
     pub fn is_step_level(self) -> bool {
         !self.is_run_level()
     }
-
-    /// Return mutation policy for this phase.
-    pub const fn policy(self) -> PhasePolicy {
-        match self {
-            Self::BeforeInference => PhasePolicy {
-                allow_tool_filter_mutation: true,
-                allow_run_action_mutation: true,
-                allow_tool_gate_mutation: false,
-            },
-            Self::AfterInference => PhasePolicy {
-                allow_tool_filter_mutation: false,
-                allow_run_action_mutation: true,
-                allow_tool_gate_mutation: false,
-            },
-            Self::BeforeToolExecute => PhasePolicy {
-                allow_tool_filter_mutation: false,
-                allow_run_action_mutation: false,
-                allow_tool_gate_mutation: true,
-            },
-            Self::RunStart
-            | Self::StepStart
-            | Self::AfterToolExecute
-            | Self::StepEnd
-            | Self::RunEnd => PhasePolicy::read_only(),
-        }
-    }
-}
-
-/// Mutation policy enforced for each phase.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PhasePolicy {
-    /// Whether tool filtering can be mutated.
-    pub allow_tool_filter_mutation: bool,
-    /// Whether run action (continue/terminate) can be mutated.
-    pub allow_run_action_mutation: bool,
-    /// Whether tool execution gate (blocked/pending) can be mutated.
-    pub allow_tool_gate_mutation: bool,
-}
-
-impl PhasePolicy {
-    pub const fn read_only() -> Self {
-        Self {
-            allow_tool_filter_mutation: false,
-            allow_run_action_mutation: false,
-            allow_tool_gate_mutation: false,
-        }
-    }
 }
 
 impl std::fmt::Display for Phase {
@@ -201,44 +154,5 @@ mod tests {
         let phase = Phase::BeforeInference;
         let cloned = phase;
         assert_eq!(phase, cloned);
-    }
-
-    #[test]
-    fn phase_policy_before_inference_allows_tool_filter_and_run_action() {
-        let p = Phase::BeforeInference.policy();
-        assert!(p.allow_tool_filter_mutation);
-        assert!(p.allow_run_action_mutation);
-        assert!(!p.allow_tool_gate_mutation);
-    }
-
-    #[test]
-    fn phase_policy_after_inference_allows_run_action_only() {
-        let p = Phase::AfterInference.policy();
-        assert!(!p.allow_tool_filter_mutation);
-        assert!(p.allow_run_action_mutation);
-        assert!(!p.allow_tool_gate_mutation);
-    }
-
-    #[test]
-    fn phase_policy_before_tool_execute_allows_gate_only() {
-        let p = Phase::BeforeToolExecute.policy();
-        assert!(!p.allow_tool_filter_mutation);
-        assert!(!p.allow_run_action_mutation);
-        assert!(p.allow_tool_gate_mutation);
-    }
-
-    #[test]
-    fn phase_policy_read_only_phases() {
-        let read_only_phases = [
-            Phase::RunStart,
-            Phase::StepStart,
-            Phase::AfterToolExecute,
-            Phase::StepEnd,
-            Phase::RunEnd,
-        ];
-        for phase in read_only_phases {
-            let p = phase.policy();
-            assert_eq!(p, PhasePolicy::read_only(), "{phase} should be read-only");
-        }
     }
 }
