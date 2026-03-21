@@ -205,6 +205,18 @@ impl InferenceOverride {
     }
 }
 
+/// Effect spec for per-inference parameter overrides.
+///
+/// Emitted by `BeforeInference` hooks via `cmd.emit::<InferenceOverrideEffect>(...)`.
+/// The loop runner collects all emitted overrides and merges them (last-wins per field)
+/// into `InferenceRequest.overrides` before calling the LLM executor.
+pub struct InferenceOverrideEffect;
+
+impl crate::model::EffectSpec for InferenceOverrideEffect {
+    const KEY: &'static str = "runtime.inference_override";
+    type Payload = InferenceOverride;
+}
+
 impl From<InferenceModelOverride> for InferenceOverride {
     fn from(m: InferenceModelOverride) -> Self {
         Self {

@@ -194,14 +194,14 @@ async fn single_step_natural_end() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "You are helpful.", llm);
     let runtime = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let (env, collectors) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     let sink = NullEventSink;
     let result = run_agent_loop(
         &agent,
         &runtime,
         &env,
-        &flag,
+        &collectors,
         &sink,
         vec![Message::user("hi")],
         test_identity(),
@@ -240,14 +240,14 @@ async fn tool_call_then_response() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let (env, collectors) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     let sink = NullEventSink;
     let result = run_agent_loop(
         &agent,
         &runtime,
         &env,
-        &flag,
+        &collectors,
         &sink,
         vec![Message::user("echo hello")],
         test_identity(),
@@ -281,14 +281,14 @@ async fn tool_call_state_machine_transitions() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let (env, collectors) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     let sink = NullEventSink;
     run_agent_loop(
         &agent,
         &runtime,
         &env,
-        &flag,
+        &collectors,
         &sink,
         vec![Message::user("test")],
         test_identity(),
@@ -327,14 +327,14 @@ async fn multiple_tool_calls_in_one_step() {
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(CalcTool));
     let runtime = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let (env, collectors) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     let sink = VecEventSink::new();
     let result = run_agent_loop(
         &agent,
         &runtime,
         &env,
-        &flag,
+        &collectors,
         &sink,
         vec![Message::user("multi-tool")],
         test_identity(),
@@ -372,14 +372,14 @@ async fn max_rounds_exceeded() {
         .with_max_rounds(3)
         .with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let (env, collectors) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     let sink = NullEventSink;
     let result = run_agent_loop(
         &agent,
         &runtime,
         &env,
-        &flag,
+        &collectors,
         &sink,
         vec![Message::user("loop")],
         test_identity(),
@@ -422,14 +422,14 @@ async fn unknown_tool_returns_error_result_not_crash() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
     let runtime = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let (env, collectors) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     let sink = VecEventSink::new();
     let result = run_agent_loop(
         &agent,
         &runtime,
         &env,
-        &flag,
+        &collectors,
         &sink,
         vec![Message::user("call unknown")],
         test_identity(),
@@ -472,14 +472,14 @@ async fn failing_tool_produces_error_result_continues_loop() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(FailingTool));
     let runtime = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let (env, collectors) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     let sink = NullEventSink;
     let result = run_agent_loop(
         &agent,
         &runtime,
         &env,
-        &flag,
+        &collectors,
         &sink,
         vec![Message::user("use fail tool")],
         test_identity(),
@@ -502,14 +502,14 @@ async fn events_have_correct_sequence_for_single_step() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
     let runtime = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let (env, collectors) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     let sink = VecEventSink::new();
     let result = run_agent_loop(
         &agent,
         &runtime,
         &env,
-        &flag,
+        &collectors,
         &sink,
         vec![Message::user("hi")],
         test_identity(),
@@ -561,14 +561,14 @@ async fn events_have_correct_sequence_with_tool_call() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let (env, collectors) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     let sink = VecEventSink::new();
     let result = run_agent_loop(
         &agent,
         &runtime,
         &env,
-        &flag,
+        &collectors,
         &sink,
         vec![Message::user("echo")],
         test_identity(),
@@ -621,7 +621,7 @@ async fn lifecycle_state_reflects_custom_run_id() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
     let runtime = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let (env, collectors) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     let identity = RunIdentity::new(
         "t-custom".into(),
@@ -637,7 +637,7 @@ async fn lifecycle_state_reflects_custom_run_id() {
         &agent,
         &runtime,
         &env,
-        &flag,
+        &collectors,
         &sink,
         vec![Message::user("hi")],
         identity,
@@ -691,14 +691,14 @@ async fn phase_hooks_fire_during_loop() {
 
     let tracker_plugin = Arc::new(TrackerPlugin(Arc::clone(&hook_phases)));
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![tracker_plugin];
-    let (env, flag) = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
+    let (env, collectors) = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
 
     let sink = NullEventSink;
     run_agent_loop(
         &agent,
         &runtime,
         &env,
-        &flag,
+        &collectors,
         &sink,
         vec![Message::user("hi")],
         test_identity(),
@@ -743,14 +743,14 @@ async fn tool_suspension_transitions_run_to_waiting() {
 
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let (env, collectors) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     let sink = NullEventSink;
     let result = run_agent_loop(
         &agent,
         &runtime,
         &env,
-        &flag,
+        &collectors,
         &sink,
         vec![Message::user("do it")],
         test_identity(),
@@ -779,7 +779,7 @@ async fn resume_with_use_decision_as_tool_result() {
 
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let (env, collectors) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     // Run until suspension
     let sink = NullEventSink;
@@ -787,7 +787,7 @@ async fn resume_with_use_decision_as_tool_result() {
         &agent,
         &runtime,
         &env,
-        &flag,
+        &collectors,
         &sink,
         vec![Message::user("do it")],
         test_identity(),
@@ -815,7 +815,7 @@ async fn resume_with_use_decision_as_tool_result() {
         &agent,
         &runtime,
         &env,
-        &flag,
+        &collectors,
         &sink,
         messages,
         test_identity(),
@@ -857,7 +857,7 @@ async fn resume_with_cancel_marks_tool_cancelled() {
 
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let (env, collectors) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     // Run until suspension
     let sink = NullEventSink;
@@ -865,7 +865,7 @@ async fn resume_with_cancel_marks_tool_cancelled() {
         &agent,
         &runtime,
         &env,
-        &flag,
+        &collectors,
         &sink,
         vec![Message::user("do it")],
         test_identity(),
@@ -892,7 +892,7 @@ async fn resume_with_cancel_marks_tool_cancelled() {
         &agent,
         &runtime,
         &env,
-        &flag,
+        &collectors,
         &sink,
         messages,
         test_identity(),
@@ -932,7 +932,7 @@ async fn resume_with_replay_tool_call() {
         .with_tool(Arc::new(SuspendingTool))
         .with_tool(Arc::new(EchoTool)); // echo registered for replay
     let runtime = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let (env, collectors) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     // Run until suspension
     let sink = NullEventSink;
@@ -940,7 +940,7 @@ async fn resume_with_replay_tool_call() {
         &agent,
         &runtime,
         &env,
-        &flag,
+        &collectors,
         &sink,
         vec![Message::user("do it")],
         test_identity(),
@@ -968,7 +968,7 @@ async fn resume_with_replay_tool_call() {
 
     let llm2 = Arc::new(ScriptedLlm::new(vec![]));
     let agent2 = AgentConfig::new("test", "m", "sys", llm2).with_tool(Arc::new(DangerousEcho));
-    let (env2, flag2) = build_agent_env(&[], agent2.max_rounds).unwrap();
+    let (env2, collectors2) = build_agent_env(&[], agent2.max_rounds).unwrap();
 
     let messages = vec![
         Message::user("do it"),
@@ -987,7 +987,7 @@ async fn resume_with_replay_tool_call() {
         &agent2,
         &runtime,
         &env2,
-        &flag2,
+        &collectors2,
         &sink,
         messages,
         test_identity(),
@@ -1021,7 +1021,7 @@ async fn resume_with_pass_decision_to_tool() {
 
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let (env, collectors) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     // Hack: register passthrough as "dangerous" initially for suspension
     // Actually, let's use a different approach: SuspendingTool is "dangerous"
@@ -1034,7 +1034,7 @@ async fn resume_with_pass_decision_to_tool() {
         &agent,
         &runtime,
         &env,
-        &flag,
+        &collectors,
         &sink,
         vec![Message::user("do it")],
         test_identity(),
@@ -1052,13 +1052,13 @@ async fn resume_with_pass_decision_to_tool() {
         json!({"original": true}),
     )]));
     let agent2 = AgentConfig::new("test", "m", "sys", llm2).with_tool(Arc::new(SuspendingTool));
-    let (env2, flag2) = build_agent_env(&[], agent2.max_rounds).unwrap();
+    let (env2, collectors2) = build_agent_env(&[], agent2.max_rounds).unwrap();
 
     let result = run_agent_loop(
         &agent2,
         &runtime2,
         &env2,
-        &flag2,
+        &collectors2,
         &sink,
         vec![Message::user("do it")],
         test_identity(),
@@ -1086,7 +1086,7 @@ async fn resume_with_pass_decision_to_tool() {
     let llm3 = Arc::new(ScriptedLlm::new(vec![]));
     let agent3 =
         AgentConfig::new("test", "m", "sys", llm3).with_tool(Arc::new(DangerousPassthrough));
-    let (env3, flag3) = build_agent_env(&[], agent3.max_rounds).unwrap();
+    let (env3, collectors3) = build_agent_env(&[], agent3.max_rounds).unwrap();
 
     let messages = vec![
         Message::user("do it"),
@@ -1101,7 +1101,7 @@ async fn resume_with_pass_decision_to_tool() {
         &agent3,
         &runtime2,
         &env3,
-        &flag3,
+        &collectors3,
         &sink,
         messages,
         test_identity(),
@@ -1130,7 +1130,7 @@ async fn resume_rejects_non_waiting_run() {
     let llm = Arc::new(ScriptedLlm::new(vec![]));
     let agent = AgentConfig::new("test", "m", "sys", llm);
     let runtime = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let (env, collectors) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     // Run to completion (not suspended)
     let sink = NullEventSink;
@@ -1138,7 +1138,7 @@ async fn resume_rejects_non_waiting_run() {
         &agent,
         &runtime,
         &env,
-        &flag,
+        &collectors,
         &sink,
         vec![Message::user("hi")],
         test_identity(),
@@ -1151,7 +1151,7 @@ async fn resume_rejects_non_waiting_run() {
         &agent,
         &runtime,
         &env,
-        &flag,
+        &collectors,
         &sink,
         vec![Message::user("hi")],
         test_identity(),
@@ -1176,14 +1176,14 @@ async fn resume_rejects_unknown_call_id() {
 
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let (env, collectors) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     let sink = NullEventSink;
     run_agent_loop(
         &agent,
         &runtime,
         &env,
-        &flag,
+        &collectors,
         &sink,
         vec![Message::user("do it")],
         test_identity(),
@@ -1197,7 +1197,7 @@ async fn resume_rejects_unknown_call_id() {
         &agent,
         &runtime,
         &env,
-        &flag,
+        &collectors,
         &sink,
         messages,
         test_identity(),

@@ -11,7 +11,7 @@ use crate::contract::event::AgentEvent;
 use crate::contract::event_sink::EventSink;
 use crate::contract::executor::InferenceRequest;
 use crate::contract::identity::RunIdentity;
-use crate::contract::inference::LLMResponse;
+use crate::contract::inference::{InferenceOverride, InferenceOverrideEffect, LLMResponse};
 use crate::contract::lifecycle::{RunStatus, TerminationReason};
 use crate::contract::message::{Message, Role, ToolCall, gen_message_id};
 use crate::contract::suspension::{
@@ -106,38 +106,111 @@ impl crate::plugins::Plugin for TerminationFlagHandler {
     }
 }
 
-/// Run the agent loop to completion.
+// ---------------------------------------------------------------------------
+// Inference override collector — set by InferenceOverrideEffect handler
+// ---------------------------------------------------------------------------
+
+/// Collects `InferenceOverrideEffect` payloads emitted by `BeforeInference` hooks.
 ///
-/// State-machine driven: every lifecycle transition is committed via StateStore.
-/// Phase hooks are dispatched through PhaseRuntime.
+/// Multiple overrides are merged with last-wins semantics per field.
+/// The loop runner calls `take()` once per inference to consume the accumulated override.
+#[derive(Clone, Default)]
+pub struct InferenceOverrideCollector {
+    inner: Arc<Mutex<Option<InferenceOverride>>>,
+}
+
+impl InferenceOverrideCollector {
+    pub(crate) fn take(&self) -> Option<InferenceOverride> {
+        self.inner
+            .lock()
+            .expect("inference override collector poisoned")
+            .take()
+    }
+}
+
+struct InferenceOverrideHandler(InferenceOverrideCollector);
+
+#[async_trait]
+impl TypedEffectHandler<InferenceOverrideEffect> for InferenceOverrideHandler {
+    async fn handle_typed(
+        &self,
+        payload: InferenceOverride,
+        _snapshot: &Snapshot,
+    ) -> Result<(), String> {
+        let mut guard = self
+            .0
+            .inner
+            .lock()
+            .expect("inference override collector poisoned");
+        match guard.as_mut() {
+            Some(existing) => existing.merge(payload),
+            None => *guard = Some(payload),
+        }
+        Ok(())
+    }
+}
+
+impl crate::plugins::Plugin for InferenceOverrideHandler {
+    fn descriptor(&self) -> crate::plugins::PluginDescriptor {
+        crate::plugins::PluginDescriptor {
+            name: "__inference_override",
+        }
+    }
+
+    fn register(
+        &self,
+        registrar: &mut crate::plugins::PluginRegistrar,
+    ) -> Result<(), crate::error::StateError> {
+        registrar
+            .register_effect::<InferenceOverrideEffect, _>(InferenceOverrideHandler(self.0.clone()))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Runtime collectors — shared state read by the loop, written by effect handlers
+// ---------------------------------------------------------------------------
+
+/// Shared collectors passed from `build_agent_env` to the loop runner.
+pub struct RuntimeCollectors {
+    pub termination: TerminationFlag,
+    pub inference_override: InferenceOverrideCollector,
+}
+
 /// Build an execution environment for the agent loop from a list of plugins.
 ///
-/// Adds internal plugins (termination handler, stop conditions, default permission).
-/// Returns the env and a termination flag that the loop reads.
+/// Adds internal plugins (termination handler, inference override collector,
+/// stop conditions, default permission).
 pub fn build_agent_env(
     plugins: &[Arc<dyn crate::plugins::Plugin>],
     max_rounds: usize,
-) -> Result<(ExecutionEnv, TerminationFlag), StateError> {
+) -> Result<(ExecutionEnv, RuntimeCollectors), StateError> {
     use super::stop_conditions::MaxRoundsPlugin;
     use super::tool_permission::AllowAllToolsPlugin;
 
-    let flag = TerminationFlag::default();
+    let collectors = RuntimeCollectors {
+        termination: TerminationFlag::default(),
+        inference_override: InferenceOverrideCollector::default(),
+    };
 
-    // Combine user plugins with internal plugins
     let mut all_plugins: Vec<Arc<dyn crate::plugins::Plugin>> = plugins.to_vec();
-    all_plugins.push(Arc::new(TerminationFlagHandler(flag.clone())));
+    all_plugins.push(Arc::new(TerminationFlagHandler(
+        collectors.termination.clone(),
+    )));
+    all_plugins.push(Arc::new(InferenceOverrideHandler(
+        collectors.inference_override.clone(),
+    )));
     all_plugins.push(Arc::new(MaxRoundsPlugin::new(max_rounds)));
     all_plugins.push(Arc::new(AllowAllToolsPlugin));
 
     let env = ExecutionEnv::from_plugins(&all_plugins)?;
-    Ok((env, flag))
+    Ok((env, collectors))
 }
 
 pub async fn run_agent_loop(
     agent: &AgentConfig,
     runtime: &PhaseRuntime,
     env: &ExecutionEnv,
-    termination_flag: &TerminationFlag,
+    collectors: &RuntimeCollectors,
     sink: &dyn EventSink,
     initial_messages: Vec<Message>,
     run_identity: RunIdentity,
@@ -187,7 +260,7 @@ pub async fn run_agent_loop(
         runtime
             .run_phase_with_context(env, make_ctx(Phase::StepStart, &messages, &run_identity))
             .await?;
-        if let Some(reason) = termination_flag.take() {
+        if let Some(reason) = collectors.termination.take() {
             break reason;
         }
 
@@ -197,7 +270,7 @@ pub async fn run_agent_loop(
                 make_ctx(Phase::BeforeInference, &messages, &run_identity),
             )
             .await?;
-        if let Some(reason) = termination_flag.take() {
+        if let Some(reason) = collectors.termination.take() {
             break reason;
         }
 
@@ -208,7 +281,7 @@ pub async fn run_agent_loop(
             messages: messages.iter().map(|m| (**m).clone()).collect(),
             tools: agent.tool_descriptors(),
             system_prompt: Some(agent.system_prompt.clone()),
-            overrides: None,
+            overrides: collectors.inference_override.take(),
         };
 
         let stream_result = agent
@@ -229,7 +302,7 @@ pub async fn run_agent_loop(
         let after_inf_ctx = make_ctx(Phase::AfterInference, &messages, &run_identity)
             .with_llm_response(llm_response);
         runtime.run_phase_with_context(env, after_inf_ctx).await?;
-        if let Some(reason) = termination_flag.take() {
+        if let Some(reason) = collectors.termination.take() {
             break reason;
         }
 
@@ -385,7 +458,7 @@ pub async fn run_agent_loop(
         }
 
         // Check termination after tool execution
-        if let Some(reason) = termination_flag.take() {
+        if let Some(reason) = collectors.termination.take() {
             break reason;
         }
 
@@ -402,7 +475,7 @@ pub async fn run_agent_loop(
         }
 
         complete_step(store, runtime, env, sink, &messages, &run_identity).await?;
-        if let Some(reason) = termination_flag.take() {
+        if let Some(reason) = collectors.termination.take() {
             break reason;
         }
     };
@@ -464,7 +537,7 @@ pub async fn resume_agent_loop(
     agent: &AgentConfig,
     runtime: &PhaseRuntime,
     env: &ExecutionEnv,
-    termination_flag: &TerminationFlag,
+    collectors: &RuntimeCollectors,
     sink: &dyn EventSink,
     messages: Vec<Message>,
     run_identity: RunIdentity,
@@ -638,7 +711,7 @@ pub async fn resume_agent_loop(
         agent,
         runtime,
         env,
-        termination_flag,
+        collectors,
         sink,
         resume_messages.into_iter().map(|m| (*m).clone()).collect(),
         run_identity,
