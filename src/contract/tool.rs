@@ -3,7 +3,6 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
 use thiserror::Error;
 
 /// Tool execution status.
@@ -31,8 +30,6 @@ pub struct ToolResult {
     pub data: Value,
     /// Optional message.
     pub message: Option<String>,
-    /// Metadata.
-    pub metadata: HashMap<String, Value>,
 }
 
 impl ToolResult {
@@ -43,7 +40,6 @@ impl ToolResult {
             status: ToolStatus::Success,
             data: data.into(),
             message: None,
-            metadata: HashMap::new(),
         }
     }
 
@@ -58,7 +54,6 @@ impl ToolResult {
             status: ToolStatus::Success,
             data: data.into(),
             message: Some(message.into()),
-            metadata: HashMap::new(),
         }
     }
 
@@ -69,7 +64,6 @@ impl ToolResult {
             status: ToolStatus::Error,
             data: Value::Null,
             message: Some(message.into()),
-            metadata: HashMap::new(),
         }
     }
 
@@ -91,7 +85,6 @@ impl ToolResult {
                 }
             }),
             message: Some(format!("[{code}] {message}")),
-            metadata: HashMap::new(),
         }
     }
 
@@ -102,7 +95,6 @@ impl ToolResult {
             status: ToolStatus::Pending,
             data: Value::Null,
             message: Some(message.into()),
-            metadata: HashMap::new(),
         }
     }
 
@@ -117,15 +109,7 @@ impl ToolResult {
             status: ToolStatus::Warning,
             data: data.into(),
             message: Some(message.into()),
-            metadata: HashMap::new(),
         }
-    }
-
-    /// Add metadata.
-    #[must_use]
-    pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
-        self.metadata.insert(key.into(), value.into());
-        self
     }
 
     /// Check if execution succeeded.
@@ -164,7 +148,7 @@ pub enum ToolError {
     Internal(String),
 }
 
-/// Tool descriptor with metadata.
+/// Tool descriptor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDescriptor {
     pub id: String,
@@ -173,7 +157,6 @@ pub struct ToolDescriptor {
     /// JSON Schema for parameters.
     pub parameters: Value,
     pub category: Option<String>,
-    pub metadata: HashMap<String, Value>,
 }
 
 impl ToolDescriptor {
@@ -188,7 +171,6 @@ impl ToolDescriptor {
             description: description.into(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
             category: None,
-            metadata: HashMap::new(),
         }
     }
 
@@ -203,18 +185,12 @@ impl ToolDescriptor {
         self.category = Some(category.into());
         self
     }
-
-    #[must_use]
-    pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
-        self.metadata.insert(key.into(), value.into());
-        self
-    }
 }
 
 /// Async trait for implementing agent tools.
 #[async_trait]
 pub trait Tool: Send + Sync {
-    /// Return metadata describing this tool.
+    /// Return the descriptor for this tool.
     fn descriptor(&self) -> ToolDescriptor;
 
     /// Validate arguments before execution. Default: accept all.
@@ -275,12 +251,6 @@ mod tests {
     }
 
     #[test]
-    fn tool_result_with_metadata() {
-        let result = ToolResult::success("calc", json!(42)).with_metadata("duration_ms", json!(15));
-        assert_eq!(result.metadata["duration_ms"], json!(15));
-    }
-
-    #[test]
     fn tool_result_serde_roundtrip() {
         let result = ToolResult::success_with_message("calc", json!(42), "done");
         let json = serde_json::to_string(&result).unwrap();
@@ -292,24 +262,14 @@ mod tests {
     }
 
     #[test]
-    fn tool_result_serialization_preserves_null_message_field() {
-        let json = serde_json::to_string(&ToolResult::success("calc", json!(42))).unwrap();
-
-        assert!(json.contains("\"message\":null"));
-        assert!(json.contains("metadata"));
-    }
-
-    #[test]
     fn tool_descriptor_builder() {
         let desc = ToolDescriptor::new("calc", "calculator", "Math operations")
             .with_parameters(json!({"type": "object", "properties": {"expr": {"type": "string"}}}))
-            .with_category("math")
-            .with_metadata("version", json!("1.0"));
+            .with_category("math");
 
         assert_eq!(desc.id, "calc");
         assert_eq!(desc.name, "calculator");
         assert_eq!(desc.category.as_deref(), Some("math"));
-        assert_eq!(desc.metadata["version"], json!("1.0"));
     }
 
     #[test]
@@ -328,7 +288,6 @@ mod tests {
         assert_eq!(desc.parameters["type"], "object");
         assert_eq!(desc.parameters["properties"], json!({}));
         assert!(desc.category.is_none());
-        assert!(desc.metadata.is_empty());
     }
 
     #[test]
