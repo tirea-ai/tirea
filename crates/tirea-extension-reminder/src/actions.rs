@@ -3,7 +3,6 @@ use tirea_contract::runtime::inference::{
     clear_prompt_segment_namespace_action, upsert_prompt_segment_action,
     PromptSegmentConsumePolicy, StoredPromptSegment,
 };
-use tirea_contract::runtime::phase::{ActionSet, BeforeInferenceAction};
 
 /// Create a state action that adds a reminder item.
 pub fn add_reminder_action(
@@ -34,22 +33,6 @@ fn reminder_action(
             .with_target(tirea_contract::runtime::inference::ContextMessageTarget::Session)
             .with_consume_policy(consume),
     )
-}
-
-/// Inject reminder texts as session-context prompt segments.
-pub fn inject_reminders(texts: Vec<String>) -> ActionSet<BeforeInferenceAction> {
-    texts
-        .into_iter()
-        .map(|text| {
-            BeforeInferenceAction::AddContextMessage(
-                tirea_contract::runtime::inference::ContextMessage::session(
-                    reminder_key(&text),
-                    format!("Reminder: {text}"),
-                ),
-            )
-        })
-        .collect::<Vec<_>>()
-        .into()
 }
 
 /// Create a state action that clears reminder state.
