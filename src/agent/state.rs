@@ -1,8 +1,8 @@
-//! Agent loop state slots — run lifecycle and tool call lifecycle tracking.
+//! Agent loop state keys — run lifecycle and tool call lifecycle tracking.
 
 use crate::contract::lifecycle::RunStatus;
 use crate::contract::suspension::ToolCallStatus;
-use crate::state::StateSlot;
+use crate::state::StateKey;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -22,7 +22,7 @@ pub struct RunLifecycleState {
     pub step_count: u32,
 }
 
-/// Update for RunLifecycleSlot.
+/// Update for the run lifecycle state key.
 pub enum RunLifecycleUpdate {
     Start {
         run_id: String,
@@ -51,10 +51,10 @@ impl RunLifecycleUpdate {
     }
 }
 
-/// StateSlot for run lifecycle tracking.
-pub struct RunLifecycleSlot;
+/// State key for run lifecycle tracking.
+pub struct RunLifecycle;
 
-impl StateSlot for RunLifecycleSlot {
+impl StateKey for RunLifecycle {
     const KEY: &'static str = "__runtime.run_lifecycle";
 
     type Value = RunLifecycleState;
@@ -112,11 +112,11 @@ pub struct ToolCallState {
 
 /// Keyed collection of tool call states for the current step.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolCallStates {
+pub struct ToolCallStateMap {
     pub calls: HashMap<String, ToolCallState>,
 }
 
-/// Update for ToolCallStatesSlot.
+/// Update for the tool call states key.
 pub enum ToolCallStatesUpdate {
     /// Upsert a tool call's lifecycle state (validates transition).
     Upsert {
@@ -130,13 +130,13 @@ pub enum ToolCallStatesUpdate {
     Clear,
 }
 
-/// StateSlot for tool call lifecycle tracking within a step.
-pub struct ToolCallStatesSlot;
+/// State key for tool call lifecycle tracking within a step.
+pub struct ToolCallStates;
 
-impl StateSlot for ToolCallStatesSlot {
+impl StateKey for ToolCallStates {
     const KEY: &'static str = "__runtime.tool_call_states";
 
-    type Value = ToolCallStates;
+    type Value = ToolCallStateMap;
     type Update = ToolCallStatesUpdate;
 
     fn apply(value: &mut Self::Value, update: Self::Update) {
@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn run_lifecycle_start_sets_running() {
         let mut state = RunLifecycleState::default();
-        RunLifecycleSlot::apply(
+        RunLifecycle::apply(
             &mut state,
             RunLifecycleUpdate::Start {
                 run_id: "r1".into(),
@@ -203,18 +203,18 @@ mod tests {
     #[test]
     fn run_lifecycle_step_completed_increments() {
         let mut state = RunLifecycleState::default();
-        RunLifecycleSlot::apply(
+        RunLifecycle::apply(
             &mut state,
             RunLifecycleUpdate::Start {
                 run_id: "r1".into(),
                 updated_at: 100,
             },
         );
-        RunLifecycleSlot::apply(
+        RunLifecycle::apply(
             &mut state,
             RunLifecycleUpdate::StepCompleted { updated_at: 200 },
         );
-        RunLifecycleSlot::apply(
+        RunLifecycle::apply(
             &mut state,
             RunLifecycleUpdate::StepCompleted { updated_at: 300 },
         );
@@ -225,14 +225,14 @@ mod tests {
     #[test]
     fn run_lifecycle_done_sets_terminal() {
         let mut state = RunLifecycleState::default();
-        RunLifecycleSlot::apply(
+        RunLifecycle::apply(
             &mut state,
             RunLifecycleUpdate::Start {
                 run_id: "r1".into(),
                 updated_at: 100,
             },
         );
-        RunLifecycleSlot::apply(
+        RunLifecycle::apply(
             &mut state,
             RunLifecycleUpdate::Done {
                 done_reason: "natural".into(),
@@ -247,14 +247,14 @@ mod tests {
     #[test]
     fn run_lifecycle_waiting_transition() {
         let mut state = RunLifecycleState::default();
-        RunLifecycleSlot::apply(
+        RunLifecycle::apply(
             &mut state,
             RunLifecycleUpdate::Start {
                 run_id: "r1".into(),
                 updated_at: 100,
             },
         );
-        RunLifecycleSlot::apply(
+        RunLifecycle::apply(
             &mut state,
             RunLifecycleUpdate::SetWaiting { updated_at: 150 },
         );
@@ -267,7 +267,7 @@ mod tests {
         let t = now_ms();
 
         // Start
-        RunLifecycleSlot::apply(
+        RunLifecycle::apply(
             &mut state,
             RunLifecycleUpdate::Start {
                 run_id: "run-42".into(),
@@ -277,22 +277,22 @@ mod tests {
         assert_eq!(state.status, RunStatus::Running);
 
         // Steps
-        RunLifecycleSlot::apply(
+        RunLifecycle::apply(
             &mut state,
             RunLifecycleUpdate::StepCompleted { updated_at: t + 1 },
         );
-        RunLifecycleSlot::apply(
+        RunLifecycle::apply(
             &mut state,
             RunLifecycleUpdate::StepCompleted { updated_at: t + 2 },
         );
-        RunLifecycleSlot::apply(
+        RunLifecycle::apply(
             &mut state,
             RunLifecycleUpdate::StepCompleted { updated_at: t + 3 },
         );
         assert_eq!(state.step_count, 3);
 
         // Done
-        RunLifecycleSlot::apply(
+        RunLifecycle::apply(
             &mut state,
             RunLifecycleUpdate::Done {
                 done_reason: "stopped:max_turns".into(),
@@ -314,7 +314,7 @@ mod tests {
             step_count: 1,
         };
         // Done -> Running is an invalid transition
-        RunLifecycleSlot::apply(
+        RunLifecycle::apply(
             &mut state,
             RunLifecycleUpdate::Start {
                 run_id: "r2".into(),
@@ -334,7 +334,7 @@ mod tests {
             step_count: 1,
         };
         // Done -> Waiting is an invalid transition
-        RunLifecycleSlot::apply(
+        RunLifecycle::apply(
             &mut state,
             RunLifecycleUpdate::SetWaiting { updated_at: 200 },
         );
@@ -351,7 +351,7 @@ mod tests {
             step_count: 1,
         };
         // Done -> Running (via StepCompleted) is invalid
-        RunLifecycleSlot::apply(
+        RunLifecycle::apply(
             &mut state,
             RunLifecycleUpdate::StepCompleted { updated_at: 200 },
         );
@@ -367,7 +367,7 @@ mod tests {
             step_count: 1,
         };
         // Waiting -> Running is valid
-        RunLifecycleSlot::apply(
+        RunLifecycle::apply(
             &mut state,
             RunLifecycleUpdate::Start {
                 run_id: "r2".into(),
@@ -396,13 +396,13 @@ mod tests {
     // -------------------------------------------------------------------
 
     fn upsert(
-        states: &mut ToolCallStates,
+        states: &mut ToolCallStateMap,
         call_id: &str,
         tool: &str,
         status: ToolCallStatus,
         ts: u64,
     ) {
-        ToolCallStatesSlot::apply(
+        ToolCallStates::apply(
             states,
             ToolCallStatesUpdate::Upsert {
                 call_id: call_id.into(),
@@ -416,14 +416,14 @@ mod tests {
 
     #[test]
     fn tool_call_new_to_running() {
-        let mut states = ToolCallStates::default();
+        let mut states = ToolCallStateMap::default();
         upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
         assert_eq!(states.calls["c1"].status, ToolCallStatus::Running);
     }
 
     #[test]
     fn tool_call_running_to_succeeded() {
-        let mut states = ToolCallStates::default();
+        let mut states = ToolCallStateMap::default();
         upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
         upsert(&mut states, "c1", "echo", ToolCallStatus::Succeeded, 200);
         assert_eq!(states.calls["c1"].status, ToolCallStatus::Succeeded);
@@ -431,7 +431,7 @@ mod tests {
 
     #[test]
     fn tool_call_running_to_failed() {
-        let mut states = ToolCallStates::default();
+        let mut states = ToolCallStateMap::default();
         upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
         upsert(&mut states, "c1", "echo", ToolCallStatus::Failed, 200);
         assert_eq!(states.calls["c1"].status, ToolCallStatus::Failed);
@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn tool_call_running_to_suspended_to_resuming() {
-        let mut states = ToolCallStates::default();
+        let mut states = ToolCallStateMap::default();
         upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
         upsert(&mut states, "c1", "echo", ToolCallStatus::Suspended, 200);
         upsert(&mut states, "c1", "echo", ToolCallStatus::Resuming, 300);
@@ -448,7 +448,7 @@ mod tests {
 
     #[test]
     fn tool_call_suspended_to_cancelled() {
-        let mut states = ToolCallStates::default();
+        let mut states = ToolCallStateMap::default();
         upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
         upsert(&mut states, "c1", "echo", ToolCallStatus::Suspended, 200);
         upsert(&mut states, "c1", "echo", ToolCallStatus::Cancelled, 300);
@@ -459,7 +459,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "invalid tool call transition")]
     fn tool_call_rejects_succeeded_to_running() {
-        let mut states = ToolCallStates::default();
+        let mut states = ToolCallStateMap::default();
         upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
         upsert(&mut states, "c1", "echo", ToolCallStatus::Succeeded, 200);
         // Terminal -> Running is invalid
@@ -469,7 +469,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "invalid tool call transition")]
     fn tool_call_rejects_failed_to_running() {
-        let mut states = ToolCallStates::default();
+        let mut states = ToolCallStateMap::default();
         upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
         upsert(&mut states, "c1", "echo", ToolCallStatus::Failed, 200);
         upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 300);
@@ -477,7 +477,7 @@ mod tests {
 
     #[test]
     fn tool_call_multiple_calls_independent() {
-        let mut states = ToolCallStates::default();
+        let mut states = ToolCallStateMap::default();
         upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
         upsert(&mut states, "c2", "calc", ToolCallStatus::Running, 100);
         upsert(&mut states, "c1", "echo", ToolCallStatus::Succeeded, 200);
@@ -489,26 +489,26 @@ mod tests {
 
     #[test]
     fn tool_call_clear_removes_all() {
-        let mut states = ToolCallStates::default();
+        let mut states = ToolCallStateMap::default();
         upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
         upsert(&mut states, "c2", "calc", ToolCallStatus::Running, 100);
-        ToolCallStatesSlot::apply(&mut states, ToolCallStatesUpdate::Clear);
+        ToolCallStates::apply(&mut states, ToolCallStatesUpdate::Clear);
         assert!(states.calls.is_empty());
     }
 
     #[test]
     fn tool_call_state_serde_roundtrip() {
-        let mut states = ToolCallStates::default();
+        let mut states = ToolCallStateMap::default();
         upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
         upsert(&mut states, "c1", "echo", ToolCallStatus::Succeeded, 200);
         let json = serde_json::to_string(&states).unwrap();
-        let parsed: ToolCallStates = serde_json::from_str(&json).unwrap();
+        let parsed: ToolCallStateMap = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, states);
     }
 
     #[test]
     fn tool_call_full_lifecycle_suspend_resume_succeed() {
-        let mut states = ToolCallStates::default();
+        let mut states = ToolCallStateMap::default();
         // New -> Running
         upsert(&mut states, "c1", "dangerous", ToolCallStatus::Running, 100);
         // Running -> Suspended

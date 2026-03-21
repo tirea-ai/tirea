@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::error::StateError;
-use crate::state::StateSlot;
+use crate::state::StateKey;
 
 use super::{JsonValue, Phase, decode_json, encode_json};
 
@@ -59,7 +59,7 @@ pub enum ScheduledActionQueueUpdate {
 
 pub struct PendingScheduledActions;
 
-impl StateSlot for PendingScheduledActions {
+impl StateKey for PendingScheduledActions {
     const KEY: &'static str = "__runtime.pending_scheduled_actions";
 
     type Value = Vec<ScheduledActionEnvelope>;
@@ -82,7 +82,7 @@ pub enum FailedScheduledActionUpdate {
 
 pub struct FailedScheduledActions;
 
-impl StateSlot for FailedScheduledActions {
+impl StateKey for FailedScheduledActions {
     const KEY: &'static str = "__runtime.failed_scheduled_actions";
 
     type Value = Vec<FailedScheduledAction>;

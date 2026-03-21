@@ -4,16 +4,16 @@ use std::sync::Arc;
 
 use crate::model::JsonValue;
 
-use super::{SlotMap, StateSlot};
+use super::{StateKey, StateMap};
 
 #[derive(Clone)]
 pub struct Snapshot {
     pub(crate) revision: u64,
-    pub(crate) ext: Arc<SlotMap>,
+    pub(crate) ext: Arc<StateMap>,
 }
 
 impl Snapshot {
-    pub fn new(revision: u64, ext: Arc<SlotMap>) -> Self {
+    pub fn new(revision: u64, ext: Arc<StateMap>) -> Self {
         Self { revision, ext }
     }
 
@@ -21,11 +21,11 @@ impl Snapshot {
         self.revision
     }
 
-    pub fn get<K: StateSlot>(&self) -> Option<&K::Value> {
+    pub fn get<K: StateKey>(&self) -> Option<&K::Value> {
         self.ext.get::<K>()
     }
 
-    pub fn ext(&self) -> &SlotMap {
+    pub fn ext(&self) -> &StateMap {
         self.ext.as_ref()
     }
 }

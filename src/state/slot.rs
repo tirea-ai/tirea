@@ -9,48 +9,48 @@ use crate::model::{JsonValue, decode_json, encode_json};
 
 struct ExtensionMarker;
 
-struct SlotKey<K>(PhantomData<fn() -> K>);
+struct TypedKey<K>(PhantomData<fn() -> K>);
 
-impl<K> SlotKey<K> {
+impl<K> TypedKey<K> {
     const fn new() -> Self {
         Self(PhantomData)
     }
 }
 
-impl<K> Clone for SlotKey<K> {
+impl<K> Clone for TypedKey<K> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<K> Copy for SlotKey<K> {}
+impl<K> Copy for TypedKey<K> {}
 
-impl<K> PartialEq for SlotKey<K> {
+impl<K> PartialEq for TypedKey<K> {
     fn eq(&self, _other: &Self) -> bool {
         true
     }
 }
 
-impl<K> Eq for SlotKey<K> {}
+impl<K> Eq for TypedKey<K> {}
 
-impl<K: 'static> Hash for SlotKey<K> {
+impl<K: 'static> Hash for TypedKey<K> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         std::any::TypeId::of::<K>().hash(state);
     }
 }
 
-impl<K> TypedMapKey<ExtensionMarker> for SlotKey<K>
+impl<K> TypedMapKey<ExtensionMarker> for TypedKey<K>
 where
-    K: StateSlot,
+    K: StateKey,
 {
     type Value = K::Value;
 }
 
-pub struct SlotMap {
+pub struct StateMap {
     values: TypedMap<ExtensionMarker, SyncCloneBounds, SyncCloneBounds>,
 }
 
-impl Default for SlotMap {
+impl Default for StateMap {
     fn default() -> Self {
         Self {
             values: TypedMap::new_with_bounds(),
@@ -58,7 +58,7 @@ impl Default for SlotMap {
     }
 }
 
-impl Clone for SlotMap {
+impl Clone for StateMap {
     fn clone(&self) -> Self {
         let mut values = TypedMap::new_with_bounds();
         for entry in self.values.iter() {
@@ -68,44 +68,44 @@ impl Clone for SlotMap {
     }
 }
 
-impl SlotMap {
-    pub fn contains<K: StateSlot>(&self) -> bool {
-        self.values.contains_key(&SlotKey::<K>::new())
+impl StateMap {
+    pub fn contains<K: StateKey>(&self) -> bool {
+        self.values.contains_key(&TypedKey::<K>::new())
     }
 
-    pub fn get<K: StateSlot>(&self) -> Option<&K::Value> {
-        self.values.get(&SlotKey::<K>::new())
+    pub fn get<K: StateKey>(&self) -> Option<&K::Value> {
+        self.values.get(&TypedKey::<K>::new())
     }
 
-    pub fn get_mut<K: StateSlot>(&mut self) -> Option<&mut K::Value> {
-        self.values.get_mut(&SlotKey::<K>::new())
+    pub fn get_mut<K: StateKey>(&mut self) -> Option<&mut K::Value> {
+        self.values.get_mut(&TypedKey::<K>::new())
     }
 
-    pub fn insert<K: StateSlot>(&mut self, value: K::Value) {
-        self.values.insert(SlotKey::<K>::new(), value);
+    pub fn insert<K: StateKey>(&mut self, value: K::Value) {
+        self.values.insert(TypedKey::<K>::new(), value);
     }
 
-    pub fn remove<K: StateSlot>(&mut self) -> Option<K::Value> {
-        self.values.remove(&SlotKey::<K>::new())
+    pub fn remove<K: StateKey>(&mut self) -> Option<K::Value> {
+        self.values.remove(&TypedKey::<K>::new())
     }
 
-    pub fn get_or_insert_default<K: StateSlot>(&mut self) -> &mut K::Value {
+    pub fn get_or_insert_default<K: StateKey>(&mut self) -> &mut K::Value {
         if !self.contains::<K>() {
             self.insert::<K>(K::Value::default());
         }
 
         self.get_mut::<K>()
-            .expect("slot value should exist after insertion")
+            .expect("value should exist after insertion")
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotOptions {
+pub struct StateKeyOptions {
     pub persistent: bool,
     pub retain_on_uninstall: bool,
 }
 
-impl Default for SlotOptions {
+impl Default for StateKeyOptions {
     fn default() -> Self {
         Self {
             persistent: true,
@@ -114,7 +114,7 @@ impl Default for SlotOptions {
     }
 }
 
-pub trait StateSlot: 'static + Send + Sync {
+pub trait StateKey: 'static + Send + Sync {
     const KEY: &'static str;
 
     type Value: Clone + Default + Serialize + DeserializeOwned + Send + Sync + 'static;
@@ -137,7 +137,7 @@ mod tests {
 
     struct Counter;
 
-    impl StateSlot for Counter {
+    impl StateKey for Counter {
         const KEY: &'static str = "counter";
         type Value = usize;
         type Update = usize;
@@ -148,8 +148,8 @@ mod tests {
     }
 
     #[test]
-    fn slot_map_can_store_and_update_typed_values() {
-        let mut slots = SlotMap::default();
+    fn state_map_can_store_and_update_typed_values() {
+        let mut slots = StateMap::default();
         Counter::apply(slots.get_or_insert_default::<Counter>(), 2);
         Counter::apply(slots.get_or_insert_default::<Counter>(), 3);
 

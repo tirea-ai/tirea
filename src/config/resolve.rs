@@ -3,16 +3,16 @@
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
-use crate::state::{Snapshot, StateSlot};
+use crate::state::{Snapshot, StateKey};
 
 use super::profile::{ActiveConfig, OsConfig, RunOverrides};
 use super::spec::ConfigMap;
 
-/// Built-in StateSlot: plugins write this via StateCommand to switch active profile.
+/// Built-in StateKey: plugins write this via StateCommand to switch active profile.
 /// Read during resolve_config to determine which profile to use.
 pub struct ActiveProfileOverride;
 
-impl StateSlot for ActiveProfileOverride {
+impl StateKey for ActiveProfileOverride {
     const KEY: &'static str = "__runtime.active_profile_override";
     type Value = Option<String>;
     type Update = Option<String>;
@@ -99,7 +99,7 @@ pub fn resolve_config(
 mod tests {
     use super::*;
     use crate::config::profile::AgentProfile;
-    use crate::state::SlotMap;
+    use crate::state::StateMap;
     use serde::{Deserialize, Serialize};
 
     struct ModelConfig;
@@ -125,11 +125,11 @@ mod tests {
     }
 
     fn empty_snapshot() -> Snapshot {
-        Snapshot::new(0, Arc::new(SlotMap::default()))
+        Snapshot::new(0, Arc::new(StateMap::default()))
     }
 
     fn snapshot_with_profile_override(profile_id: &str) -> Snapshot {
-        let mut map = SlotMap::default();
+        let mut map = StateMap::default();
         map.insert::<ActiveProfileOverride>(Some(profile_id.to_string()));
         Snapshot::new(0, Arc::new(map))
     }
@@ -293,7 +293,7 @@ mod tests {
         active.activate("base-plugin");
 
         // State has None (no override)
-        let mut map = SlotMap::default();
+        let mut map = StateMap::default();
         map.insert::<ActiveProfileOverride>(None);
         let snap = Snapshot::new(0, Arc::new(map));
 

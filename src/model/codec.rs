@@ -5,14 +5,14 @@ use crate::error::StateError;
 pub use serde_json::Value as JsonValue;
 
 pub fn encode_json<T: Serialize>(key: &str, value: &T) -> Result<JsonValue, StateError> {
-    serde_json::to_value(value).map_err(|err| StateError::SlotEncode {
+    serde_json::to_value(value).map_err(|err| StateError::KeyEncode {
         key: key.to_string(),
         message: err.to_string(),
     })
 }
 
 pub fn decode_json<T: DeserializeOwned>(key: &str, value: JsonValue) -> Result<T, StateError> {
-    serde_json::from_value(value).map_err(|err| StateError::SlotDecode {
+    serde_json::from_value(value).map_err(|err| StateError::KeyDecode {
         key: key.to_string(),
         message: err.to_string(),
     })

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use crate::error::{StateError, UnknownSlotPolicy};
+use crate::error::{StateError, UnknownKeyPolicy};
 
-use super::{PersistedState, SlotMap, StateStore};
+use super::{PersistedState, StateMap, StateStore};
 
 impl StateStore {
     pub fn export_persisted(&self) -> Result<PersistedState, StateError> {
@@ -10,19 +10,19 @@ impl StateStore {
         let state = self.inner.read().expect("state lock poisoned");
         let mut extensions = std::collections::HashMap::new();
 
-        for slot in registry.slots_by_type.values() {
-            if !slot.options.persistent {
+        for reg in registry.keys_by_type.values() {
+            if !reg.options.persistent {
                 continue;
             }
 
-            if let Some(json) = (slot.export)(state.ext.as_ref()).map_err(|err| match err {
-                StateError::SlotEncode { key, message } => StateError::SlotEncode { key, message },
-                other => StateError::SlotEncode {
-                    key: slot.key.clone(),
+            if let Some(json) = (reg.export)(state.ext.as_ref()).map_err(|err| match err {
+                StateError::KeyEncode { key, message } => StateError::KeyEncode { key, message },
+                other => StateError::KeyEncode {
+                    key: reg.key.clone(),
                     message: other.to_string(),
                 },
             })? {
-                extensions.insert(slot.key.clone(), json);
+                extensions.insert(reg.key.clone(), json);
             }
         }
 
@@ -35,23 +35,23 @@ impl StateStore {
     pub fn restore_persisted(
         &self,
         persisted: PersistedState,
-        unknown_policy: UnknownSlotPolicy,
+        unknown_policy: UnknownKeyPolicy,
     ) -> Result<(), StateError> {
         let registry = self.registry.lock().expect("registry lock poisoned");
-        let mut next_ext = SlotMap::default();
+        let mut next_ext = StateMap::default();
 
         for (key, json) in persisted.extensions {
-            let Some(slot) = registry.slots_by_key.get(&key) else {
+            let Some(reg) = registry.keys_by_name.get(&key) else {
                 match unknown_policy {
-                    UnknownSlotPolicy::Error => return Err(StateError::UnknownSlot { key }),
-                    UnknownSlotPolicy::Skip => continue,
+                    UnknownKeyPolicy::Error => return Err(StateError::UnknownKey { key }),
+                    UnknownKeyPolicy::Skip => continue,
                 }
             };
 
-            (slot.import)(&mut next_ext, json).map_err(|err| match err {
-                StateError::SlotDecode { key, message } => StateError::SlotDecode { key, message },
-                other => StateError::SlotDecode {
-                    key: slot.key.clone(),
+            (reg.import)(&mut next_ext, json).map_err(|err| match err {
+                StateError::KeyDecode { key, message } => StateError::KeyDecode { key, message },
+                other => StateError::KeyDecode {
+                    key: reg.key.clone(),
                     message: other.to_string(),
                 },
             })?;

@@ -21,7 +21,7 @@ enum CoreAction {
 
 struct CoreChannel;
 
-impl StateSlot for CoreChannel {
+impl StateKey for CoreChannel {
     const KEY: &'static str = "app.core";
     type Value = CoreState;
     type Update = CoreAction;
@@ -36,7 +36,7 @@ impl StateSlot for CoreChannel {
 
 struct Messages;
 
-impl StateSlot for Messages {
+impl StateKey for Messages {
     const KEY: &'static str = "chat.messages";
     type Value = Vec<String>;
     type Update = String;
@@ -48,7 +48,7 @@ impl StateSlot for Messages {
 
 struct TokenUsage;
 
-impl StateSlot for TokenUsage {
+impl StateKey for TokenUsage {
     const KEY: &'static str = "chat.token_usage";
     type Value = u64;
     type Update = u64;
@@ -60,7 +60,7 @@ impl StateSlot for TokenUsage {
 
 struct Summary;
 
-impl StateSlot for Summary {
+impl StateKey for Summary {
     const KEY: &'static str = "chat.summary";
     type Value = Option<String>;
     type Update = String;
@@ -72,7 +72,7 @@ impl StateSlot for Summary {
 
 struct SharedCounter;
 
-impl StateSlot for SharedCounter {
+impl StateKey for SharedCounter {
     const KEY: &'static str = "shared.counter";
     type Value = usize;
     type Update = usize;
@@ -84,7 +84,7 @@ impl StateSlot for SharedCounter {
 
 struct EphemeralCounter;
 
-impl StateSlot for EphemeralCounter {
+impl StateKey for EphemeralCounter {
     const KEY: &'static str = "ephemeral.counter";
     type Value = usize;
     type Update = usize;
@@ -96,7 +96,7 @@ impl StateSlot for EphemeralCounter {
 
 struct RetainedSummary;
 
-impl StateSlot for RetainedSummary {
+impl StateKey for RetainedSummary {
     const KEY: &'static str = "retained.summary";
     type Value = Option<String>;
     type Update = String;
@@ -116,10 +116,10 @@ impl Plugin for ChatPlugin {
     }
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-        registrar.register_slot::<CoreChannel>(SlotOptions::default())?;
-        registrar.register_slot::<Messages>(SlotOptions::default())?;
-        registrar.register_slot::<TokenUsage>(SlotOptions::default())?;
-        registrar.register_slot::<Summary>(SlotOptions::default())?;
+        registrar.register_key::<CoreChannel>(StateKeyOptions::default())?;
+        registrar.register_key::<Messages>(StateKeyOptions::default())?;
+        registrar.register_key::<TokenUsage>(StateKeyOptions::default())?;
+        registrar.register_key::<Summary>(StateKeyOptions::default())?;
         Ok(())
     }
 
@@ -145,7 +145,7 @@ impl Plugin for SharedPlugin {
     }
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-        registrar.register_slot::<SharedCounter>(SlotOptions::default())?;
+        registrar.register_key::<SharedCounter>(StateKeyOptions::default())?;
         Ok(())
     }
 }
@@ -160,7 +160,7 @@ impl Plugin for EphemeralPlugin {
     }
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-        registrar.register_slot::<EphemeralCounter>(SlotOptions {
+        registrar.register_key::<EphemeralCounter>(StateKeyOptions {
             persistent: false,
             retain_on_uninstall: false,
         })?;
@@ -178,7 +178,7 @@ impl Plugin for RetainedPlugin {
     }
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-        registrar.register_slot::<RetainedSummary>(SlotOptions {
+        registrar.register_key::<RetainedSummary>(StateKeyOptions {
             persistent: true,
             retain_on_uninstall: true,
         })?;
@@ -191,18 +191,18 @@ impl Plugin for RetainedPlugin {
     }
 }
 
-struct DuplicateSlotPlugin;
+struct DuplicateKeyPlugin;
 
-impl Plugin for DuplicateSlotPlugin {
+impl Plugin for DuplicateKeyPlugin {
     fn descriptor(&self) -> PluginDescriptor {
         PluginDescriptor {
-            name: "duplicate-slot-plugin",
+            name: "duplicate-key-plugin",
         }
     }
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-        registrar.register_slot::<Messages>(SlotOptions::default())?;
-        registrar.register_slot::<Messages>(SlotOptions::default())?;
+        registrar.register_key::<Messages>(StateKeyOptions::default())?;
+        registrar.register_key::<Messages>(StateKeyOptions::default())?;
         Ok(())
     }
 }
@@ -357,7 +357,7 @@ fn persistence_roundtrip_works() {
     restored.install_plugin(ChatPlugin).unwrap();
     restored.install_plugin(SharedPlugin).unwrap();
     restored
-        .restore_persisted(persisted, UnknownSlotPolicy::Error)
+        .restore_persisted(persisted, UnknownKeyPolicy::Error)
         .unwrap();
 
     let snapshot = restored.snapshot();
@@ -372,7 +372,7 @@ fn unregistered_slot_is_rejected() {
     let mut patch = MutationBatch::new();
     patch.update::<TokenUsage>(1);
     let err = store.commit(patch).unwrap_err();
-    assert!(matches!(err, StateError::UnknownSlot { .. }));
+    assert!(matches!(err, StateError::UnknownKey { .. }));
 }
 
 #[test]
@@ -395,8 +395,8 @@ fn uninstalling_unknown_plugin_is_rejected() {
 #[test]
 fn duplicate_slot_registration_within_plugin_is_rejected() {
     let store = StateStore::new();
-    let err = store.install_plugin(DuplicateSlotPlugin).unwrap_err();
-    assert!(matches!(err, StateError::SlotAlreadyRegistered { .. }));
+    let err = store.install_plugin(DuplicateKeyPlugin).unwrap_err();
+    assert!(matches!(err, StateError::KeyAlreadyRegistered { .. }));
 }
 
 #[test]
@@ -405,14 +405,14 @@ fn retained_slots_survive_plugin_uninstall() {
     store.install_plugin(RetainedPlugin).unwrap();
 
     assert_eq!(
-        store.read_slot::<RetainedSummary>(),
+        store.read::<RetainedSummary>(),
         Some(Some("seed".to_string()))
     );
 
     store.uninstall_plugin::<RetainedPlugin>().unwrap();
 
     assert_eq!(
-        store.read_slot::<RetainedSummary>(),
+        store.read::<RetainedSummary>(),
         Some(Some("seed".to_string()))
     );
 }
@@ -434,12 +434,12 @@ fn restore_persisted_can_skip_unknown_slots() {
     };
 
     store
-        .restore_persisted(persisted, UnknownSlotPolicy::Skip)
+        .restore_persisted(persisted, UnknownKeyPolicy::Skip)
         .unwrap();
 
     assert_eq!(store.revision(), 7);
-    assert_eq!(store.read_slot::<TokenUsage>(), Some(99));
-    assert!(store.read_slot::<Messages>().is_none());
+    assert_eq!(store.read::<TokenUsage>(), Some(99));
+    assert!(store.read::<Messages>().is_none());
 }
 
 #[test]
@@ -473,7 +473,7 @@ fn restore_persisted_reports_decode_errors() {
     };
 
     let err = store
-        .restore_persisted(persisted, UnknownSlotPolicy::Error)
+        .restore_persisted(persisted, UnknownKeyPolicy::Error)
         .unwrap_err();
-    assert!(matches!(err, StateError::SlotDecode { .. }));
+    assert!(matches!(err, StateError::KeyDecode { .. }));
 }

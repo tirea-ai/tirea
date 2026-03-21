@@ -2,21 +2,21 @@ use std::marker::PhantomData;
 
 use crate::error::StateError;
 
-use super::{SlotMap, Snapshot, StateSlot};
+use super::{Snapshot, StateKey, StateMap};
 
 pub(crate) trait MutationOp: Send {
     fn apply(self: Box<Self>, state: &mut Snapshot);
 }
 
-pub(crate) trait SlotMutationTarget {
+pub(crate) trait MutationTarget {
     type Update: Send + 'static;
 
     fn apply(state: &mut Snapshot, update: Self::Update);
 }
 
-impl<K> SlotMutationTarget for K
+impl<K> MutationTarget for K
 where
-    K: StateSlot,
+    K: StateKey,
 {
     type Update = K::Update;
 
@@ -26,14 +26,14 @@ where
     }
 }
 
-struct SlotPatch<S: SlotMutationTarget> {
+struct KeyPatch<S: MutationTarget> {
     update: Option<S::Update>,
     _marker: PhantomData<S>,
 }
 
-impl<S> SlotPatch<S>
+impl<S> KeyPatch<S>
 where
-    S: SlotMutationTarget,
+    S: MutationTarget,
 {
     fn new(update: S::Update) -> Self {
         Self {
@@ -43,27 +43,27 @@ where
     }
 }
 
-impl<S> MutationOp for SlotPatch<S>
+impl<S> MutationOp for KeyPatch<S>
 where
-    S: SlotMutationTarget + Send,
+    S: MutationTarget + Send,
 {
     fn apply(mut self: Box<Self>, state: &mut Snapshot) {
-        let update = self.update.take().expect("slot patch already applied");
+        let update = self.update.take().expect("key patch already applied");
         S::apply(state, update);
     }
 }
 
-struct ClearSlotMutation {
-    clear: fn(&mut SlotMap),
+struct ClearKeyMutation {
+    clear: fn(&mut StateMap),
 }
 
-impl ClearSlotMutation {
-    fn new(clear: fn(&mut SlotMap)) -> Self {
+impl ClearKeyMutation {
+    fn new(clear: fn(&mut StateMap)) -> Self {
         Self { clear }
     }
 }
 
-impl MutationOp for ClearSlotMutation {
+impl MutationOp for ClearKeyMutation {
     fn apply(self: Box<Self>, state: &mut Snapshot) {
         (self.clear)(std::sync::Arc::make_mut(&mut state.ext));
     }
@@ -72,7 +72,7 @@ impl MutationOp for ClearSlotMutation {
 pub struct MutationBatch {
     pub(crate) base_revision: Option<u64>,
     pub(crate) ops: Vec<Box<dyn MutationOp>>,
-    pub(crate) touched_slot_keys: Vec<String>,
+    pub(crate) touched_keys: Vec<String>,
 }
 
 impl MutationBatch {
@@ -80,7 +80,7 @@ impl MutationBatch {
         Self {
             base_revision: None,
             ops: Vec::new(),
-            touched_slot_keys: Vec::new(),
+            touched_keys: Vec::new(),
         }
     }
 
@@ -99,15 +99,19 @@ impl MutationBatch {
 
     pub fn update<K>(&mut self, update: K::Update)
     where
-        K: StateSlot,
+        K: StateKey,
     {
-        self.ops.push(Box::new(SlotPatch::<K>::new(update)));
-        self.touched_slot_keys.push(K::KEY.to_string());
+        self.ops.push(Box::new(KeyPatch::<K>::new(update)));
+        self.touched_keys.push(K::KEY.to_string());
     }
 
-    pub(crate) fn clear_extension_with(&mut self, key: impl Into<String>, clear: fn(&mut SlotMap)) {
-        self.ops.push(Box::new(ClearSlotMutation::new(clear)));
-        self.touched_slot_keys.push(key.into());
+    pub(crate) fn clear_extension_with(
+        &mut self,
+        key: impl Into<String>,
+        clear: fn(&mut StateMap),
+    ) {
+        self.ops.push(Box::new(ClearKeyMutation::new(clear)));
+        self.touched_keys.push(key.into());
     }
 
     pub fn extend(&mut self, mut other: Self) -> Result<(), StateError> {
@@ -121,7 +125,7 @@ impl MutationBatch {
         };
 
         self.ops.append(&mut other.ops);
-        self.touched_slot_keys.append(&mut other.touched_slot_keys);
+        self.touched_keys.append(&mut other.touched_keys);
         Ok(())
     }
 
@@ -142,7 +146,7 @@ mod tests {
 
     struct Counter;
 
-    impl StateSlot for Counter {
+    impl StateKey for Counter {
         const KEY: &'static str = "counter";
         type Value = usize;
         type Update = usize;
@@ -185,7 +189,7 @@ mod tests {
 
         let mut snapshot = Snapshot {
             revision: 0,
-            ext: std::sync::Arc::new(SlotMap::default()),
+            ext: std::sync::Arc::new(StateMap::default()),
         };
 
         for op in batch.ops.drain(..) {

@@ -38,7 +38,7 @@ impl HandoffState {
 
 struct HandoffChannel;
 
-impl StateSlot for HandoffChannel {
+impl StateKey for HandoffChannel {
     const KEY: &'static str = "handoff.state";
     type Value = HandoffState;
     type Update = HandoffAction;
@@ -59,7 +59,7 @@ impl Plugin for HandoffPlugin {
     }
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-        registrar.register_slot::<HandoffChannel>(SlotOptions::default())?;
+        registrar.register_key::<HandoffChannel>(StateKeyOptions::default())?;
         registrar.register_scheduled_action::<ActivateRequested, _>(ActivateRequestedHandler)?;
         Ok(())
     }
@@ -142,7 +142,7 @@ impl TypedScheduledActionHandler<AlwaysFailingAction> for AlwaysFailingHandler {
         _ctx: &PhaseContext,
         _payload: (),
     ) -> Result<StateCommand, StateError> {
-        Err(StateError::UnknownSlot {
+        Err(StateError::UnknownKey {
             key: "synthetic".into(),
         })
     }
@@ -384,7 +384,7 @@ async fn phase_runtime_stages_and_reduces_actions() {
 
     assert_eq!(
         store
-            .read_slot::<PendingScheduledActions>()
+            .read::<PendingScheduledActions>()
             .unwrap_or_default()
             .len(),
         1
@@ -394,12 +394,12 @@ async fn phase_runtime_stages_and_reduces_actions() {
     assert_eq!(report.processed_scheduled_actions, 1);
     assert_eq!(report.effect_report.dispatched, 1);
 
-    let handoff = store.read_slot::<HandoffChannel>().unwrap();
+    let handoff = store.read::<HandoffChannel>().unwrap();
     assert_eq!(handoff.active_agent.as_deref(), Some("fast"));
     assert_eq!(handoff.requested_agent, None);
     assert_eq!(
         store
-            .read_slot::<PendingScheduledActions>()
+            .read::<PendingScheduledActions>()
             .unwrap_or_default()
             .len(),
         0
@@ -450,7 +450,7 @@ async fn app_runtime_wraps_store_and_phase_runtime() {
     assert_eq!(report.processed_scheduled_actions, 1);
     assert_eq!(
         app.store()
-            .read_slot::<HandoffChannel>()
+            .read::<HandoffChannel>()
             .unwrap()
             .active_agent
             .as_deref(),
@@ -512,7 +512,7 @@ async fn runtime_plugin_can_be_uninstalled_and_reinstalled() {
         .register_effect::<RuntimeEffect, _>(RuntimeEffectRecorder::default())
         .unwrap();
     app.uninstall_plugin::<HandoffPlugin>().unwrap();
-    assert!(app.store().read_slot::<HandoffChannel>().is_none());
+    assert!(app.store().read::<HandoffChannel>().is_none());
 
     app.install_plugin(HandoffPlugin).unwrap();
 
@@ -527,7 +527,7 @@ async fn runtime_plugin_can_be_uninstalled_and_reinstalled() {
     assert_eq!(report.processed_scheduled_actions, 1);
     assert_eq!(
         app.store()
-            .read_slot::<HandoffChannel>()
+            .read::<HandoffChannel>()
             .unwrap()
             .active_agent
             .as_deref(),
@@ -550,14 +550,14 @@ async fn failed_scheduled_actions_are_dead_lettered() {
     assert_eq!(report.failed_scheduled_actions, 1);
     assert_eq!(
         app.store()
-            .read_slot::<PendingScheduledActions>()
+            .read::<PendingScheduledActions>()
             .unwrap_or_default()
             .len(),
         0
     );
     let failed = app
         .store()
-        .read_slot::<FailedScheduledActions>()
+        .read::<FailedScheduledActions>()
         .unwrap_or_default();
     assert_eq!(failed.len(), 1);
     assert_eq!(failed[0].action.key, AlwaysFailingAction::KEY);
@@ -582,7 +582,7 @@ async fn run_phase_processes_same_phase_actions_across_rounds() {
     assert_eq!(report.processed_scheduled_actions, 2);
     assert_eq!(
         app.store()
-            .read_slot::<PendingScheduledActions>()
+            .read::<PendingScheduledActions>()
             .unwrap_or_default()
             .len(),
         0
@@ -605,7 +605,7 @@ async fn run_phase_reports_skipped_actions_from_other_phases() {
     assert_eq!(report.skipped_scheduled_actions, 1);
     assert_eq!(
         app.store()
-            .read_slot::<PendingScheduledActions>()
+            .read::<PendingScheduledActions>()
             .unwrap_or_default()
             .len(),
         1
@@ -674,7 +674,7 @@ async fn malformed_action_payloads_are_dead_lettered() {
     assert_eq!(report.failed_scheduled_actions, 1);
     let failed = app
         .store()
-        .read_slot::<FailedScheduledActions>()
+        .read::<FailedScheduledActions>()
         .unwrap_or_default();
     assert_eq!(failed.len(), 1);
     assert_eq!(failed[0].action.key, BadlyEncodedAction::KEY);
@@ -791,7 +791,7 @@ async fn phase_hook_can_mutate_state() {
 
     app.run_phase(Phase::BeforeInference).await.unwrap();
 
-    let state = app.store().read_slot::<HandoffChannel>().unwrap();
+    let state = app.store().read::<HandoffChannel>().unwrap();
     assert_eq!(state.requested_agent.as_deref(), Some("from-hook"));
 }
 
@@ -824,7 +824,7 @@ async fn phase_hook_can_enqueue_actions() {
     assert_eq!(report.processed_scheduled_actions, 1);
     assert_eq!(
         app.store()
-            .read_slot::<PendingScheduledActions>()
+            .read::<PendingScheduledActions>()
             .unwrap_or_default()
             .len(),
         0

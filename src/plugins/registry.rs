@@ -8,22 +8,22 @@ use crate::runtime::{
     EffectHandlerArc, PhaseHook, PhaseHookArc, ScheduledActionHandlerArc, TypedEffectAdapter,
     TypedEffectHandler, TypedScheduledActionAdapter, TypedScheduledActionHandler,
 };
-use crate::state::{SlotMap, SlotOptions, StateSlot};
+use crate::state::{StateKey, StateKeyOptions, StateMap};
 
 use super::Plugin;
 
 #[derive(Clone)]
-pub(crate) struct SlotRegistration {
+pub(crate) struct KeyRegistration {
     pub(crate) type_id: TypeId,
     pub(crate) key: String,
-    pub(crate) options: SlotOptions,
-    pub(crate) export: fn(&SlotMap) -> Result<Option<JsonValue>, StateError>,
-    pub(crate) import: fn(&mut SlotMap, JsonValue) -> Result<(), StateError>,
-    pub(crate) clear: fn(&mut SlotMap),
+    pub(crate) options: StateKeyOptions,
+    pub(crate) export: fn(&StateMap) -> Result<Option<JsonValue>, StateError>,
+    pub(crate) import: fn(&mut StateMap, JsonValue) -> Result<(), StateError>,
+    pub(crate) clear: fn(&mut StateMap),
 }
 
-impl SlotRegistration {
-    pub(crate) fn new<K: StateSlot>(options: SlotOptions) -> Self {
+impl KeyRegistration {
+    pub(crate) fn new<K: StateKey>(options: StateKeyOptions) -> Self {
         Self {
             type_id: TypeId::of::<K>(),
             key: K::KEY.into(),
@@ -63,29 +63,29 @@ pub(crate) struct PhaseHookRegistration {
 #[derive(Default)]
 pub struct PluginRegistry {
     pub(crate) plugins: HashMap<TypeId, InstalledPlugin>,
-    pub(crate) slots_by_type: HashMap<TypeId, SlotRegistration>,
-    pub(crate) slots_by_key: HashMap<String, SlotRegistration>,
+    pub(crate) keys_by_type: HashMap<TypeId, KeyRegistration>,
+    pub(crate) keys_by_name: HashMap<String, KeyRegistration>,
 }
 
 pub struct InstalledPlugin {
     pub(crate) plugin: Arc<dyn Plugin>,
-    pub(crate) owned_slot_type_ids: Vec<TypeId>,
+    pub(crate) owned_key_type_ids: Vec<TypeId>,
 }
 
 impl PluginRegistry {
-    pub(crate) fn ensure_slot(&self, key: &str) -> Result<(), StateError> {
-        if self.slots_by_key.contains_key(key) {
+    pub(crate) fn ensure_key(&self, key: &str) -> Result<(), StateError> {
+        if self.keys_by_name.contains_key(key) {
             Ok(())
         } else {
-            Err(StateError::UnknownSlot { key: key.into() })
+            Err(StateError::UnknownKey { key: key.into() })
         }
     }
 }
 
 pub struct PluginRegistrar {
-    pub(crate) slots: Vec<SlotRegistration>,
-    slot_type_ids: HashSet<TypeId>,
-    slot_keys: HashSet<String>,
+    pub(crate) keys: Vec<KeyRegistration>,
+    key_type_ids: HashSet<TypeId>,
+    key_names: HashSet<String>,
     pub(crate) scheduled_actions: Vec<ScheduledActionHandlerRegistration>,
     scheduled_action_keys: HashSet<String>,
     pub(crate) effects: Vec<EffectHandlerRegistration>,
@@ -96,9 +96,9 @@ pub struct PluginRegistrar {
 impl PluginRegistrar {
     pub(crate) fn new() -> Self {
         Self {
-            slots: Vec::new(),
-            slot_type_ids: HashSet::new(),
-            slot_keys: HashSet::new(),
+            keys: Vec::new(),
+            key_type_ids: HashSet::new(),
+            key_names: HashSet::new(),
             scheduled_actions: Vec::new(),
             scheduled_action_keys: HashSet::new(),
             effects: Vec::new(),
@@ -107,18 +107,18 @@ impl PluginRegistrar {
         }
     }
 
-    pub fn register_slot<K>(&mut self, options: SlotOptions) -> Result<(), StateError>
+    pub fn register_key<K>(&mut self, options: StateKeyOptions) -> Result<(), StateError>
     where
-        K: StateSlot,
+        K: StateKey,
     {
         let type_id = TypeId::of::<K>();
-        if !self.slot_type_ids.insert(type_id) || !self.slot_keys.insert(K::KEY.to_string()) {
-            return Err(StateError::SlotAlreadyRegistered {
+        if !self.key_type_ids.insert(type_id) || !self.key_names.insert(K::KEY.to_string()) {
+            return Err(StateError::KeyAlreadyRegistered {
                 key: K::KEY.to_string(),
             });
         }
 
-        self.slots.push(SlotRegistration::new::<K>(options));
+        self.keys.push(KeyRegistration::new::<K>(options));
         Ok(())
     }
 

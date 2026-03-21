@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use awaken::agent::config::AgentConfig;
 use awaken::agent::executor::{ParallelToolExecutor, SequentialToolExecutor, ToolExecutor};
 use awaken::agent::loop_runner::run_agent_loop;
-use awaken::agent::state::{RunLifecycleSlot, ToolCallStates, ToolCallStatesSlot};
+use awaken::agent::state::{RunLifecycle, ToolCallStates};
 use awaken::config::spec::ConfigSlot;
 use awaken::contract::event::AgentEvent;
 use awaken::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
@@ -128,8 +128,8 @@ impl Plugin for LoopStatePlugin {
         PluginDescriptor { name: "loop-state" }
     }
     fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
-        r.register_slot::<RunLifecycleSlot>(SlotOptions::default())?;
-        r.register_slot::<ToolCallStatesSlot>(SlotOptions::default())?;
+        r.register_key::<RunLifecycle>(StateKeyOptions::default())?;
+        r.register_key::<ToolCallStates>(StateKeyOptions::default())?;
         Ok(())
     }
 }
@@ -222,7 +222,7 @@ async fn sequential_stops_after_first_suspension_in_loop() {
         .unwrap();
 
     assert_eq!(result.termination, TerminationReason::Suspended);
-    let lifecycle = rt.store().read_slot::<RunLifecycleSlot>().unwrap();
+    let lifecycle = rt.store().read::<RunLifecycle>().unwrap();
     assert_eq!(lifecycle.status, RunStatus::Waiting);
 
     // Only 1 ToolCallDone (second tool should not have executed)
@@ -349,7 +349,7 @@ async fn suspension_sets_run_to_waiting() {
         .unwrap();
 
     assert_eq!(result.termination, TerminationReason::Suspended);
-    let lifecycle = rt.store().read_slot::<RunLifecycleSlot>().unwrap();
+    let lifecycle = rt.store().read::<RunLifecycle>().unwrap();
     assert_eq!(lifecycle.status, RunStatus::Waiting);
 }
 
@@ -366,10 +366,7 @@ async fn suspension_tool_call_state_is_suspended() {
         .await
         .unwrap();
 
-    let tool_states = rt
-        .store()
-        .read_slot::<ToolCallStatesSlot>()
-        .unwrap_or_default();
+    let tool_states = rt.store().read::<ToolCallStates>().unwrap_or_default();
     let c1 = tool_states.calls.get("c1").expect("c1 should exist");
     assert_eq!(c1.status, ToolCallStatus::Suspended);
 }
@@ -386,7 +383,7 @@ async fn hook_state_mutation_visible_to_next_hook() {
     impl PhaseHook for WriterHook {
         async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
             let mut cmd = StateCommand::new();
-            cmd.update::<TestCounterSlot>(1);
+            cmd.update::<TestCounter>(1);
             Ok(cmd)
         }
     }
@@ -397,14 +394,14 @@ async fn hook_state_mutation_visible_to_next_hook() {
     #[async_trait]
     impl PhaseHook for ReaderHook {
         async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
-            let val = ctx.state::<TestCounterSlot>().copied().unwrap_or(0);
+            let val = ctx.state::<TestCounter>().copied().unwrap_or(0);
             *self.observed.lock().unwrap() = Some(val);
             Ok(StateCommand::new())
         }
     }
 
-    struct TestCounterSlot;
-    impl StateSlot for TestCounterSlot {
+    struct TestCounter;
+    impl StateKey for TestCounter {
         const KEY: &'static str = "test.counter";
         type Value = usize;
         type Update = usize;
@@ -421,7 +418,7 @@ async fn hook_state_mutation_visible_to_next_hook() {
             PluginDescriptor { name: "hook-test" }
         }
         fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
-            r.register_slot::<TestCounterSlot>(SlotOptions::default())?;
+            r.register_key::<TestCounter>(StateKeyOptions::default())?;
             // Writer first, then reader
             r.register_phase_hook("hook-test", Phase::BeforeInference, WriterHook)?;
             r.register_phase_hook(
@@ -480,7 +477,7 @@ async fn max_rounds_precise_count() {
     assert!(
         matches!(result.termination, TerminationReason::Stopped(ref s) if s.code == "max_rounds")
     );
-    let lifecycle = rt.store().read_slot::<RunLifecycleSlot>().unwrap();
+    let lifecycle = rt.store().read::<RunLifecycle>().unwrap();
     assert_eq!(
         lifecycle.step_count, 3,
         "should complete exactly 3 steps before stopping"
@@ -528,7 +525,7 @@ async fn terminate_via_effect_in_after_inference_hook() {
     assert!(
         matches!(result.termination, TerminationReason::Stopped(ref s) if s.code == "custom_stop")
     );
-    let lifecycle = rt.store().read_slot::<RunLifecycleSlot>().unwrap();
+    let lifecycle = rt.store().read::<RunLifecycle>().unwrap();
     assert_eq!(lifecycle.status, RunStatus::Done);
 }
 
@@ -745,7 +742,7 @@ async fn multiple_steps_accumulate_messages() {
 
     assert_eq!(result.steps, 3);
     assert_eq!(result.response, "Final answer.");
-    let lifecycle = rt.store().read_slot::<RunLifecycleSlot>().unwrap();
+    let lifecycle = rt.store().read::<RunLifecycle>().unwrap();
     assert_eq!(lifecycle.step_count, 3);
 }
 
@@ -765,7 +762,7 @@ async fn run_lifecycle_run_id_matches_identity() {
     run_agent_loop(&agent, &rt, vec![Message::user("hi")], custom_id)
         .await
         .unwrap();
-    let lifecycle = rt.store().read_slot::<RunLifecycleSlot>().unwrap();
+    let lifecycle = rt.store().read::<RunLifecycle>().unwrap();
     assert_eq!(lifecycle.run_id, "r-x");
 }
 

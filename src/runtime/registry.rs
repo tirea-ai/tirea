@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use crate::error::StateError;
 use crate::model::{FailedScheduledActions, PendingScheduledActions, Phase};
 use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
-use crate::state::SlotOptions;
+use crate::state::StateKeyOptions;
 
 use super::{EffectHandlerArc, PhaseHookArc, ScheduledActionHandlerArc};
 
@@ -80,12 +80,12 @@ impl Plugin for RuntimeQueuePlugin {
     }
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-        let runtime_options = SlotOptions {
+        let runtime_options = StateKeyOptions {
             persistent: true,
             retain_on_uninstall: false,
         };
-        registrar.register_slot::<PendingScheduledActions>(runtime_options)?;
-        registrar.register_slot::<FailedScheduledActions>(runtime_options)?;
+        registrar.register_key::<PendingScheduledActions>(runtime_options)?;
+        registrar.register_key::<FailedScheduledActions>(runtime_options)?;
         Ok(())
     }
 }

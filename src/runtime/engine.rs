@@ -111,10 +111,10 @@ impl PhaseRuntime {
         plugin.register(&mut registrar)?;
         let plugin_type_id = TypeId::of::<P>();
 
-        let slots = std::mem::take(&mut registrar.slots);
+        let keys = std::mem::take(&mut registrar.keys);
         let plugin_arc: Arc<dyn Plugin> = Arc::new(plugin);
         self.store
-            .install_plugin_with_slots(plugin_type_id, plugin_arc, slots)?;
+            .install_plugin_with_keys(plugin_type_id, plugin_arc, keys)?;
 
         if let Err(err) = self.commit_runtime_registrations(Some(plugin_type_id), registrar) {
             let _ = self.store.uninstall_plugin::<P>();
@@ -229,7 +229,7 @@ impl PhaseRuntime {
 
             let queued = self
                 .store
-                .read_slot::<PendingScheduledActions>()
+                .read::<PendingScheduledActions>()
                 .unwrap_or_default();
 
             let matching: Vec<_> = queued
@@ -241,7 +241,7 @@ impl PhaseRuntime {
                 if rounds == 1 {
                     total_skipped = self
                         .store
-                        .read_slot::<PendingScheduledActions>()
+                        .read::<PendingScheduledActions>()
                         .unwrap_or_default()
                         .iter()
                         .filter(|envelope| envelope.action.phase != phase)

@@ -2,9 +2,9 @@ use std::any::TypeId;
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::error::StateError;
-use crate::plugins::{InstalledPlugin, Plugin, PluginRegistrar, PluginRegistry, SlotRegistration};
+use crate::plugins::{InstalledPlugin, KeyRegistration, Plugin, PluginRegistrar, PluginRegistry};
 
-use super::{MutationBatch, SlotMap, Snapshot, StateSlot};
+use super::{MutationBatch, Snapshot, StateKey, StateMap};
 
 #[derive(Clone)]
 pub struct CommitEvent {
@@ -39,7 +39,7 @@ impl StateStore {
         Self {
             inner: Arc::new(RwLock::new(Snapshot {
                 revision: 0,
-                ext: Arc::new(SlotMap::default()),
+                ext: Arc::new(StateMap::default()),
             })),
             registry: Arc::new(Mutex::new(PluginRegistry::default())),
             hooks: Arc::new(RwLock::new(Vec::new())),
@@ -54,9 +54,9 @@ impl StateStore {
         self.inner.read().expect("state lock poisoned").revision
     }
 
-    pub fn read_slot<K>(&self) -> Option<K::Value>
+    pub fn read<K>(&self) -> Option<K::Value>
     where
-        K: StateSlot,
+        K: StateKey,
     {
         let guard = self.inner.read().expect("state lock poisoned");
         guard.get::<K>().cloned()
@@ -96,8 +96,8 @@ impl StateStore {
             });
         }
 
-        for key in &patch.touched_slot_keys {
-            registry.ensure_slot(key)?;
+        for key in &patch.touched_keys {
+            registry.ensure_key(key)?;
         }
 
         let previous_revision = state.revision;
@@ -130,14 +130,14 @@ impl StateStore {
         let mut registrar = PluginRegistrar::new();
         plugin.register(&mut registrar)?;
         let plugin_type_id = TypeId::of::<P>();
-        self.install_plugin_with_slots(plugin_type_id, Arc::new(plugin), registrar.slots)
+        self.install_plugin_with_keys(plugin_type_id, Arc::new(plugin), registrar.keys)
     }
 
-    pub(crate) fn install_plugin_with_slots(
+    pub(crate) fn install_plugin_with_keys(
         &self,
         plugin_type_id: TypeId,
         plugin: Arc<dyn Plugin>,
-        slots: Vec<SlotRegistration>,
+        registrations: Vec<KeyRegistration>,
     ) -> Result<(), StateError> {
         let descriptor = plugin.descriptor();
 
@@ -149,24 +149,24 @@ impl StateStore {
                 });
             }
 
-            for slot in &slots {
-                if registry.slots_by_key.contains_key(&slot.key) {
-                    return Err(StateError::SlotAlreadyRegistered {
-                        key: slot.key.clone(),
+            for reg in &registrations {
+                if registry.keys_by_name.contains_key(&reg.key) {
+                    return Err(StateError::KeyAlreadyRegistered {
+                        key: reg.key.clone(),
                     });
                 }
             }
 
-            for slot in &slots {
-                registry.slots_by_key.insert(slot.key.clone(), slot.clone());
-                registry.slots_by_type.insert(slot.type_id, slot.clone());
+            for reg in &registrations {
+                registry.keys_by_name.insert(reg.key.clone(), reg.clone());
+                registry.keys_by_type.insert(reg.type_id, reg.clone());
             }
 
             registry.plugins.insert(
                 plugin_type_id,
                 InstalledPlugin {
                     plugin: Arc::clone(&plugin),
-                    owned_slot_type_ids: slots.iter().map(|slot| slot.type_id).collect(),
+                    owned_key_type_ids: registrations.iter().map(|r| r.type_id).collect(),
                 },
             );
         }
@@ -183,7 +183,7 @@ impl StateStore {
         P: Plugin,
     {
         let plugin_type_id = TypeId::of::<P>();
-        let (plugin, slots) =
+        let (plugin, registrations) =
             {
                 let registry = self.registry.lock().expect("registry lock poisoned");
                 let installed = registry.plugins.get(&plugin_type_id).ok_or(
@@ -191,19 +191,19 @@ impl StateStore {
                         type_name: std::any::type_name::<P>(),
                     },
                 )?;
-                let slots = installed
-                    .owned_slot_type_ids
+                let regs = installed
+                    .owned_key_type_ids
                     .iter()
-                    .filter_map(|type_id| registry.slots_by_type.get(type_id).cloned())
+                    .filter_map(|type_id| registry.keys_by_type.get(type_id).cloned())
                     .collect::<Vec<_>>();
-                (Arc::clone(&installed.plugin), slots)
+                (Arc::clone(&installed.plugin), regs)
             };
 
         let mut patch = MutationBatch::new().with_base_revision(self.revision());
         plugin.on_uninstall(&mut patch)?;
-        for slot in &slots {
-            if !slot.options.retain_on_uninstall {
-                patch.clear_extension_with(slot.key.clone(), slot.clear);
+        for reg in &registrations {
+            if !reg.options.retain_on_uninstall {
+                patch.clear_extension_with(reg.key.clone(), reg.clear);
             }
         }
         self.commit(patch).map(|_| ())?;
@@ -225,10 +225,10 @@ impl StateStore {
                 )?;
 
                 let mut removed = Vec::new();
-                for type_id in &installed.owned_slot_type_ids {
-                    if let Some(slot) = registry.slots_by_type.remove(type_id) {
-                        registry.slots_by_key.remove(&slot.key);
-                        removed.push(slot);
+                for type_id in &installed.owned_key_type_ids {
+                    if let Some(reg) = registry.keys_by_type.remove(type_id) {
+                        registry.keys_by_name.remove(&reg.key);
+                        removed.push(reg);
                     }
                 }
                 removed

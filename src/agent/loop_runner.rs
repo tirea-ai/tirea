@@ -1,7 +1,7 @@
 //! Minimal sequential agent loop driven by state machines.
 //!
-//! Run lifecycle: RunLifecycleSlot (Running → StepCompleted → Done/Waiting)
-//! Tool call lifecycle: ToolCallStatesSlot (New → Running → Succeeded/Failed/Suspended)
+//! Run lifecycle: RunLifecycle (Running → StepCompleted → Done/Waiting)
+//! Tool call lifecycle: ToolCallStates (New → Running → Succeeded/Failed/Suspended)
 
 use std::sync::{Arc, Mutex};
 
@@ -22,9 +22,7 @@ use crate::runtime::{PhaseContext, PhaseRuntime, TypedEffectHandler};
 use crate::state::{MutationBatch, Snapshot};
 
 use super::config::AgentConfig;
-use super::state::{
-    RunLifecycleSlot, RunLifecycleUpdate, ToolCallStatesSlot, ToolCallStatesUpdate,
-};
+use super::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate};
 use super::stop_conditions::MaxRoundsPlugin;
 
 /// Errors from the agent loop.
@@ -129,7 +127,7 @@ pub async fn run_agent_loop(
     };
 
     // --- Run lifecycle: Start ---
-    commit_update::<RunLifecycleSlot>(
+    commit_update::<RunLifecycle>(
         store,
         RunLifecycleUpdate::Start {
             run_id: run_identity.run_id.clone(),
@@ -155,7 +153,7 @@ pub async fn run_agent_loop(
         });
 
         // Clear tool call states from previous step
-        commit_update::<ToolCallStatesSlot>(store, ToolCallStatesUpdate::Clear)?;
+        commit_update::<ToolCallStates>(store, ToolCallStatesUpdate::Clear)?;
 
         runtime
             .run_phase_with_context(make_ctx(Phase::StepStart, &messages, &run_identity))
@@ -280,7 +278,7 @@ pub async fn run_agent_loop(
 
         if suspended {
             // Transition run to Waiting
-            commit_update::<RunLifecycleSlot>(
+            commit_update::<RunLifecycle>(
                 store,
                 RunLifecycleUpdate::SetWaiting {
                     updated_at: now_ms(),
@@ -299,7 +297,7 @@ pub async fn run_agent_loop(
     // --- Run lifecycle: Done (unless Suspended → Waiting, not Done) ---
     let (target_status, done_reason) = termination.to_run_status();
     if target_status.is_terminal() {
-        commit_update::<RunLifecycleSlot>(
+        commit_update::<RunLifecycle>(
             store,
             RunLifecycleUpdate::Done {
                 done_reason: done_reason.unwrap_or_else(|| "unknown".into()),
@@ -360,7 +358,7 @@ pub async fn resume_agent_loop(
 
     // Validate: run must be in Waiting state
     let lifecycle = store
-        .read_slot::<RunLifecycleSlot>()
+        .read::<RunLifecycle>()
         .ok_or_else(|| AgentLoopError::InvalidResume("no run lifecycle state found".into()))?;
     if lifecycle.status != RunStatus::Waiting {
         return Err(AgentLoopError::InvalidResume(format!(
@@ -370,7 +368,7 @@ pub async fn resume_agent_loop(
     }
 
     // Transition Waiting → Running
-    commit_update::<RunLifecycleSlot>(
+    commit_update::<RunLifecycle>(
         store,
         RunLifecycleUpdate::Start {
             run_id: run_identity.run_id.clone(),
@@ -379,7 +377,7 @@ pub async fn resume_agent_loop(
     )?;
 
     // Apply decisions: transition each suspended tool call
-    let tool_call_states = store.read_slot::<ToolCallStatesSlot>().unwrap_or_default();
+    let tool_call_states = store.read::<ToolCallStates>().unwrap_or_default();
 
     let mut resume_messages: Vec<Arc<Message>> = messages.into_iter().map(Arc::new).collect();
 
@@ -397,7 +395,7 @@ pub async fn resume_agent_loop(
         match decision.action {
             ResumeDecisionAction::Cancel => {
                 // Suspended → Cancelled
-                commit_update::<ToolCallStatesSlot>(
+                commit_update::<ToolCallStates>(
                     store,
                     ToolCallStatesUpdate::Upsert {
                         call_id: call_id.clone(),
@@ -417,7 +415,7 @@ pub async fn resume_agent_loop(
             }
             ResumeDecisionAction::Resume => {
                 // Suspended → Resuming
-                commit_update::<ToolCallStatesSlot>(
+                commit_update::<ToolCallStates>(
                     store,
                     ToolCallStatesUpdate::Upsert {
                         call_id: call_id.clone(),
@@ -438,7 +436,7 @@ pub async fn resume_agent_loop(
                             serde_json::to_string(&decision.result).unwrap_or_default()
                         };
 
-                        commit_update::<ToolCallStatesSlot>(
+                        commit_update::<ToolCallStates>(
                             store,
                             ToolCallStatesUpdate::Upsert {
                                 call_id: call_id.clone(),
@@ -465,7 +463,7 @@ pub async fn resume_agent_loop(
                         } else {
                             ToolCallStatus::Failed
                         };
-                        commit_update::<ToolCallStatesSlot>(
+                        commit_update::<ToolCallStates>(
                             store,
                             ToolCallStatesUpdate::Upsert {
                                 call_id: call_id.clone(),
@@ -489,7 +487,7 @@ pub async fn resume_agent_loop(
                         } else {
                             ToolCallStatus::Failed
                         };
-                        commit_update::<ToolCallStatesSlot>(
+                        commit_update::<ToolCallStates>(
                             store,
                             ToolCallStatesUpdate::Upsert {
                                 call_id: call_id.clone(),
@@ -544,7 +542,7 @@ async fn complete_step(
     messages: &[Arc<Message>],
     run_identity: &RunIdentity,
 ) -> Result<(), AgentLoopError> {
-    commit_update::<RunLifecycleSlot>(
+    commit_update::<RunLifecycle>(
         store,
         RunLifecycleUpdate::StepCompleted {
             updated_at: now_ms(),
@@ -558,7 +556,7 @@ async fn complete_step(
     Ok(())
 }
 
-fn commit_update<S: crate::state::StateSlot>(
+fn commit_update<S: crate::state::StateKey>(
     store: &crate::state::StateStore,
     update: S::Update,
 ) -> Result<(), crate::error::StateError> {
@@ -573,7 +571,7 @@ fn commit_tool_call_transition(
     call: &ToolCall,
     status: ToolCallStatus,
 ) -> Result<(), crate::error::StateError> {
-    commit_update::<ToolCallStatesSlot>(
+    commit_update::<ToolCallStates>(
         store,
         ToolCallStatesUpdate::Upsert {
             call_id: call.id.clone(),

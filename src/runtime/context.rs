@@ -8,7 +8,7 @@ use crate::contract::inference::LLMResponse;
 use crate::contract::message::Message;
 use crate::contract::tool::ToolResult;
 use crate::model::Phase;
-use crate::state::{Snapshot, StateSlot};
+use crate::state::{Snapshot, StateKey};
 
 /// Execution context passed to phase hooks and action handlers.
 ///
@@ -56,8 +56,8 @@ impl PhaseContext {
         }
     }
 
-    /// Read a state slot from the snapshot.
-    pub fn state<K: StateSlot>(&self) -> Option<&K::Value> {
+    /// Read a state key from the snapshot.
+    pub fn state<K: StateKey>(&self) -> Option<&K::Value> {
         self.snapshot.get::<K>()
     }
 
@@ -124,7 +124,7 @@ impl PhaseContext {
 
 // Backward compat: keep `get` as alias for `state`
 impl PhaseContext {
-    pub fn get<K: StateSlot>(&self) -> Option<&K::Value> {
+    pub fn get<K: StateKey>(&self) -> Option<&K::Value> {
         self.state::<K>()
     }
 }
@@ -135,10 +135,10 @@ mod tests {
     use crate::contract::identity::RunOrigin;
     use crate::contract::inference::{StopReason, StreamResult, TokenUsage};
     use crate::contract::tool::ToolResult;
-    use crate::state::SlotMap;
+    use crate::state::StateMap;
 
     fn empty_snapshot() -> Snapshot {
-        Snapshot::new(0, std::sync::Arc::new(SlotMap::default()))
+        Snapshot::new(0, std::sync::Arc::new(StateMap::default()))
     }
 
     #[test]

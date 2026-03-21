@@ -3,9 +3,7 @@
 use async_trait::async_trait;
 use awaken::agent::config::AgentConfig;
 use awaken::agent::loop_runner::{AgentRunResult, ResumeInput, resume_agent_loop, run_agent_loop};
-use awaken::agent::state::{
-    RunLifecycleSlot, RunLifecycleState, ToolCallStates, ToolCallStatesSlot,
-};
+use awaken::agent::state::{RunLifecycle, RunLifecycleState, ToolCallStates};
 use awaken::contract::event::AgentEvent;
 use awaken::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken::contract::identity::{RunIdentity, RunOrigin};
@@ -149,8 +147,8 @@ impl Plugin for LoopStatePlugin {
     }
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-        registrar.register_slot::<RunLifecycleSlot>(SlotOptions::default())?;
-        registrar.register_slot::<ToolCallStatesSlot>(SlotOptions::default())?;
+        registrar.register_key::<RunLifecycle>(StateKeyOptions::default())?;
+        registrar.register_key::<ToolCallStates>(StateKeyOptions::default())?;
         Ok(())
     }
 }
@@ -203,7 +201,7 @@ async fn single_step_natural_end() {
     assert_eq!(result.steps, 1);
 
     // Verify run lifecycle state
-    let lifecycle = runtime.store().read_slot::<RunLifecycleSlot>().unwrap();
+    let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
     assert_eq!(lifecycle.status, RunStatus::Done);
     assert_eq!(lifecycle.done_reason.as_deref(), Some("natural"));
     assert_eq!(lifecycle.step_count, 1);
@@ -242,7 +240,7 @@ async fn tool_call_then_response() {
     assert_eq!(result.response, "The echo said: hello");
     assert_eq!(result.steps, 2);
 
-    let lifecycle = runtime.store().read_slot::<RunLifecycleSlot>().unwrap();
+    let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
     assert_eq!(lifecycle.step_count, 2);
 }
 
@@ -277,10 +275,7 @@ async fn tool_call_state_machine_transitions() {
 
     // After step 1 (with tool call), tool call state should show Succeeded
     // But step 2 clears it, so final state is empty (cleared at step start)
-    let tool_states = runtime
-        .store()
-        .read_slot::<ToolCallStatesSlot>()
-        .unwrap_or_default();
+    let tool_states = runtime.store().read::<ToolCallStates>().unwrap_or_default();
     // Step 2 had no tool calls, so after Clear at step 2 start, it's empty
     assert!(tool_states.calls.is_empty());
 }
@@ -364,7 +359,7 @@ async fn max_rounds_exceeded() {
         TerminationReason::Stopped(ref s) if s.code == "max_rounds"
     ));
 
-    let lifecycle = runtime.store().read_slot::<RunLifecycleSlot>().unwrap();
+    let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
     assert_eq!(lifecycle.status, RunStatus::Done);
     assert!(
         lifecycle
@@ -582,7 +577,7 @@ async fn lifecycle_state_reflects_custom_run_id() {
         .await
         .unwrap();
 
-    let lifecycle = runtime.store().read_slot::<RunLifecycleSlot>().unwrap();
+    let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
     assert_eq!(lifecycle.run_id, "r-custom");
 }
 
@@ -683,11 +678,11 @@ async fn tool_suspension_transitions_run_to_waiting() {
     assert_eq!(result.termination, TerminationReason::Suspended);
 
     // Run should be in Waiting state
-    let lifecycle = runtime.store().read_slot::<RunLifecycleSlot>().unwrap();
+    let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
     assert_eq!(lifecycle.status, RunStatus::Waiting);
 
     // Tool call should be Suspended
-    let tc_states = runtime.store().read_slot::<ToolCallStatesSlot>().unwrap();
+    let tc_states = runtime.store().read::<ToolCallStates>().unwrap();
     assert_eq!(tc_states.calls["c1"].status, ToolCallStatus::Suspended);
 }
 
@@ -754,13 +749,10 @@ async fn resume_with_use_decision_as_tool_result() {
     assert_eq!(resume_result.termination, TerminationReason::NaturalEnd);
 
     // Tool call should be terminal
-    let tc_states = runtime
-        .store()
-        .read_slot::<ToolCallStatesSlot>()
-        .unwrap_or_default();
+    let tc_states = runtime.store().read::<ToolCallStates>().unwrap_or_default();
     // After resume, tool call states were cleared by the new step
     // The run completed normally
-    let lifecycle = runtime.store().read_slot::<RunLifecycleSlot>().unwrap();
+    let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
     assert_eq!(lifecycle.status, RunStatus::Done);
 }
 

@@ -7,7 +7,7 @@
 use async_trait::async_trait;
 use awaken::agent::config::AgentConfig;
 use awaken::agent::loop_runner::run_agent_loop;
-use awaken::agent::state::{RunLifecycleSlot, ToolCallStatesSlot};
+use awaken::agent::state::{RunLifecycle, ToolCallStates};
 use awaken::config::profile::{AgentProfile, OsConfig};
 use awaken::config::resolve::ActiveProfileOverride;
 use awaken::config::spec::ConfigSlot;
@@ -133,9 +133,9 @@ impl Plugin for LoopStatePlugin {
         PluginDescriptor { name: "loop-state" }
     }
     fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
-        r.register_slot::<RunLifecycleSlot>(SlotOptions::default())?;
-        r.register_slot::<ToolCallStatesSlot>(SlotOptions::default())?;
-        r.register_slot::<ActiveProfileOverride>(SlotOptions::default())?;
+        r.register_key::<RunLifecycle>(StateKeyOptions::default())?;
+        r.register_key::<ToolCallStates>(StateKeyOptions::default())?;
+        r.register_key::<ActiveProfileOverride>(StateKeyOptions::default())?;
         Ok(())
     }
 }
