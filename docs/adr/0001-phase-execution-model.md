@@ -28,17 +28,23 @@ Invariants:
 
 ### Action: deferred one-shot work
 
-Actions are the mechanism for scheduling work at a specific phase. They are enqueued via `StateCommand.schedule_action::<A>(payload)` and stored in the `PendingScheduledActions` queue (itself a `StateKey`). Each action carries a `phase` field that determines when it becomes eligible for processing.
+Actions are the single mechanism for scheduling work at a specific phase. All actions use the same API, the same queue, and the same lifecycle — the only difference is who consumes them.
 
-There are two classes of actions, distinguished by whether a handler is registered:
+Every action is:
 
-- **Handler-consumed actions**: A `TypedScheduledActionHandler` is registered via `PluginRegistrar`. During the EXECUTE stage of the target phase, the runtime dequeues matching actions, calls their handlers, commits the resulting `StateCommand`, and removes the action from the queue. Handlers may have side effects (I/O, tokens, external calls).
-- **Loop-consumed actions**: No handler is registered. EXECUTE skips these actions — they remain in the queue. The loop runner reads and removes them at a specific point in its execution path (e.g., before building `InferenceRequest`). This is for operations that require loop-runner-local context (message assembly, request construction) that action handlers cannot access.
+- Created via `StateCommand.schedule_action::<A>(payload)`.
+- Stored in the `PendingScheduledActions` queue (itself a `StateKey`).
+- Tagged with a `phase` field that determines when it becomes eligible.
+- Declared in `ExecutionEnv` at setup time — either via `PluginRegistrar::register_scheduled_action` (handler-consumed) or `ExecutionEnv::register_loop_consumed_action` (loop-consumed).
+- Rejected at `submit_command` if the action key is neither handler-registered nor loop-consumed. This catches typos and misconfigurations immediately.
+
+**Consumption**: during the EXECUTE stage of the target phase, the runtime processes actions that have a registered handler — dequeuing them, calling the handler, and committing the resulting `StateCommand`. Actions declared as loop-consumed are skipped by EXECUTE and remain in the queue; the loop runner reads and removes them at the appropriate point in its execution path (e.g., before building `InferenceRequest`). Loop-consumed actions exist for operations that require loop-runner-local context (message assembly, request construction) that generic action handlers cannot access.
 
 Invariants:
 
-- EXECUTE only processes actions that have a registered handler AND match the current phase. Unhandled actions stay in the queue.
-- Actions are consumed exactly once. After processing, the action is removed from `PendingScheduledActions` (either by the EXECUTE stage or by the loop runner).
+- All action keys must be declared at setup time. Unknown keys are rejected at `submit_command`.
+- EXECUTE only processes actions that have a registered handler AND match the current phase.
+- Actions are consumed exactly once. After processing, the action is removed from `PendingScheduledActions` (by EXECUTE or by the loop runner).
 - The convergence loop terminates when no processable actions remain for the current phase, or after `max_rounds` (default 16).
 - Action handlers return `StateCommand`, which can contain further state mutations, new actions, and effects. This enables action chaining within a phase.
 
