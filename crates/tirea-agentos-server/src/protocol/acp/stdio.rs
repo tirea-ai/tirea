@@ -6,7 +6,7 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tirea_agentos::contracts::{Message, Role, RunRequest, ToolCallDecision};
-use tirea_agentos::runtime::AgentOs;
+use tirea_agentos::runtime::{AgentOs, RunLaunchSpec};
 use tirea_contract::transport::Transcoder;
 use tirea_protocol_acp::{AcpEncoder, AcpEvent};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -565,12 +565,11 @@ where
                 };
 
                 let run = match os
-                    .start_active_run_with_persistence(
+                    .start_active_run_with_spec(
                         &agent_id,
                         run_request,
                         resolved,
-                        true,
-                        false,
+                        RunLaunchSpec::DURABLE_PRESERVE_LINEAGE,
                     )
                     .await
                 {
@@ -712,12 +711,11 @@ where
                 };
 
                 let run = match os
-                    .start_active_run_with_persistence(
+                    .start_active_run_with_spec(
                         &agent_id,
                         run_request,
                         resolved,
-                        true,
-                        false,
+                        RunLaunchSpec::DURABLE_PRESERVE_LINEAGE,
                     )
                     .await
                 {

@@ -288,7 +288,7 @@ impl AgentOs {
         // Handoff plugin: auto-compute overlays from all agents in the registry.
         #[cfg(feature = "handoff")]
         {
-            use tirea_extension_handoff::{AgentOverlay, HandoffPlugin, HANDOFF_PLUGIN_ID};
+            use tirea_extension_handoff::{HandoffPlugin, HANDOFF_PLUGIN_ID};
 
             let all_agents = agents_registry.snapshot();
             if all_agents.len() > 1 {

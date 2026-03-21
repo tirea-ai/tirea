@@ -9,7 +9,7 @@ use tirea_agentos::contracts::storage::{
     MailboxEntry, MailboxEntryStatus, MailboxQuery, MailboxStore,
 };
 use tirea_agentos::contracts::RunRequest;
-use tirea_agentos::runtime::{AgentOs, RunStream};
+use tirea_agentos::runtime::{AgentOs, RunLaunchSpec, RunStream};
 use tirea_contract::storage::RunOrigin;
 
 use super::mailbox::{
@@ -380,7 +380,14 @@ impl MailboxService {
             inner.lease_renewal = Some(renewal);
         }
 
-        match start_agent_run_for_entry(&self.os, &self.mailbox_store, &claimed, false).await {
+        match start_agent_run_for_entry(
+            &self.os,
+            &self.mailbox_store,
+            &claimed,
+            RunLaunchSpec::THREAD_ONLY_STRIP_LINEAGE,
+        )
+        .await
+        {
             Ok(run) => {
                 // Defer ack until stream exhausts via wrap_with_completion.
                 Ok(self.wrap_with_completion(thread_id, run))
@@ -490,7 +497,14 @@ impl MailboxService {
                 return;
             }
 
-            match start_agent_run_for_entry(&self.os, &self.mailbox_store, &claimed, true).await {
+            match start_agent_run_for_entry(
+                &self.os,
+                &self.mailbox_store,
+                &claimed,
+                RunLaunchSpec::BACKGROUND_TASK,
+            )
+            .await
+            {
                 Ok(run) => {
                     // Defer ack until run completes — the Claimed status with
                     // active lease serves as a distributed lock preventing
@@ -910,7 +924,7 @@ impl MailboxService {
                                 &self.os,
                                 &self.mailbox_store,
                                 &entry,
-                                true,
+                                RunLaunchSpec::BACKGROUND_TASK,
                             )
                             .await
                             {

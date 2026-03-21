@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -5,22 +6,23 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
 use std::convert::Infallible;
-use tirea_agentos::runtime::AgentOsRunError;
+use std::sync::Arc;
 use tirea_protocol_ai_sdk_v6::{
     AiSdkEncoder, AiSdkTrigger, AiSdkV6HistoryEncoder, AiSdkV6RunRequest, UIStreamEvent,
     AI_SDK_VERSION,
 };
 
 use super::runtime::apply_ai_sdk_extensions;
+use crate::protocol::http_dialog::{
+    handle_dialog_run, DialogRelayPlan, DialogRunAdapter, ErrorFormatter, RelayDoneCallback,
+};
 use tokio::sync::broadcast;
 
 use crate::service::{
-    current_run_id_for_thread, encode_message_page, forward_dialog_decisions_by_thread,
-    load_message_page, start_http_dialog_run, truncate_thread_at_message, ApiError, AppState,
-    MessageQueryParams,
+    current_run_id_for_thread, encode_message_page, load_message_page, truncate_thread_at_message,
+    ApiError, AppState, MessageQueryParams, PreparedHttpRun,
 };
-use crate::transport::http_run::{wire_http_sse_relay, HttpSseRelayConfig};
-use crate::transport::http_sse::{sse_body_stream, sse_response};
+use crate::transport::http_sse::sse_response;
 
 const RUN_PATH: &str = "/agents/:agent_id/runs";
 const RESUME_STREAM_PATH: &str = "/agents/:agent_id/chats/:chat_id/stream";
@@ -59,72 +61,7 @@ async fn run(
             .await?;
     }
 
-    let suspension_decisions = req.suspension_decisions();
-    let maybe_forwarded = forward_dialog_decisions_by_thread(
-        &st.os,
-        &agent_id,
-        &req.thread_id,
-        req.has_user_input(),
-        None,
-        &suspension_decisions,
-    )
-    .await?;
-    if let Some(forwarded) = maybe_forwarded {
-        return Ok((
-            StatusCode::ACCEPTED,
-            Json(serde_json::json!({
-                "status": "decision_forwarded",
-                "threadId": forwarded.thread_id,
-            })),
-        )
-            .into_response());
-    }
-
-    let mut resolved = st.os.resolve(&agent_id).map_err(AgentOsRunError::from)?;
-    apply_ai_sdk_extensions(&mut resolved, &req);
-    let run_request = req.into_runtime_run_request(agent_id.clone());
-    let prepared = start_http_dialog_run(&st.os, resolved, run_request, &agent_id).await?;
-    let (fanout, _) = broadcast::channel::<Bytes>(128);
-    if !st
-        .os
-        .bind_thread_run_stream_fanout(&prepared.run_id, fanout.clone())
-        .await
-    {
-        return Err(ApiError::Internal(format!(
-            "active run handle missing for run '{}'",
-            prepared.run_id
-        )));
-    }
-    let run_id_for_cleanup = prepared.run_id.clone();
-    let os_for_cleanup = st.os.clone();
-
-    let encoder = AiSdkEncoder::new();
-    let sse_rx = wire_http_sse_relay(
-        prepared.starter,
-        encoder,
-        prepared.ingress_rx,
-        HttpSseRelayConfig {
-            thread_id: prepared.thread_id,
-            fanout: Some(fanout.clone()),
-            resumable_downstream: true,
-            protocol_label: "ai-sdk",
-            on_relay_done: move |sse_tx: tokio::sync::mpsc::Sender<Bytes>| async move {
-                let trailer = Bytes::from("data: [DONE]\n\n");
-                let _ = fanout.send(trailer.clone());
-                if sse_tx.send(trailer).await.is_err() {
-                    let _ = os_for_cleanup
-                        .cancel_active_run_by_id(&run_id_for_cleanup)
-                        .await;
-                }
-            },
-            error_formatter: |msg| {
-                let json = serde_json::to_string(&UIStreamEvent::error(&msg)).unwrap_or_default();
-                Bytes::from(format!("data: {json}\n\n"))
-            },
-        },
-    );
-
-    Ok(ai_sdk_sse_response(sse_body_stream(sse_rx)))
+    handle_dialog_run::<AiSdkDialogAdapter>(st, agent_id, req).await
 }
 
 async fn resume_stream(
@@ -168,9 +105,114 @@ where
     response
 }
 
+struct AiSdkDialogAdapter;
+
+#[async_trait]
+impl DialogRunAdapter for AiSdkDialogAdapter {
+    type Request = AiSdkV6RunRequest;
+    type Encoder = AiSdkEncoder;
+
+    fn validate(req: &Self::Request) -> Result<(), ApiError> {
+        req.validate().map_err(ApiError::BadRequest)
+    }
+
+    fn thread_id(req: &Self::Request) -> &str {
+        &req.thread_id
+    }
+
+    fn has_user_input(req: &Self::Request) -> bool {
+        req.has_user_input()
+    }
+
+    fn suspension_decisions(
+        req: &Self::Request,
+    ) -> Vec<tirea_agentos::contracts::ToolCallDecision> {
+        req.suspension_decisions()
+    }
+
+    fn apply_extensions(resolved: &mut tirea_agentos::runtime::ResolvedRun, req: &Self::Request) {
+        apply_ai_sdk_extensions(resolved, req);
+    }
+
+    fn into_run_request(
+        req: Self::Request,
+        agent_id: String,
+    ) -> tirea_agentos::contracts::RunRequest {
+        req.into_runtime_run_request(agent_id)
+    }
+
+    async fn build_relay_plan(
+        st: &AppState,
+        prepared: &PreparedHttpRun,
+        _req: &Self::Request,
+    ) -> Result<DialogRelayPlan<Self::Encoder>, ApiError> {
+        let run_id = prepared.run_id.clone();
+        let (fanout, _) = broadcast::channel::<Bytes>(128);
+        if !st
+            .os
+            .bind_thread_run_stream_fanout(&run_id, fanout.clone())
+            .await
+        {
+            return Err(ApiError::Internal(format!(
+                "active run handle missing for run '{run_id}'"
+            )));
+        }
+        let run_id_for_cleanup = run_id;
+        let os_for_cleanup = st.os.clone();
+        let fanout_for_done = fanout.clone();
+
+        let on_relay_done: RelayDoneCallback = Box::new(move |sse_tx| {
+            Box::pin(async move {
+                let trailer = Bytes::from("data: [DONE]\n\n");
+                let _ = fanout_for_done.send(trailer.clone());
+                if sse_tx.send(trailer).await.is_err() {
+                    let _ = os_for_cleanup
+                        .cancel_active_run_by_id(&run_id_for_cleanup)
+                        .await;
+                }
+            })
+        });
+        let error_formatter: ErrorFormatter = Arc::new(|msg| {
+            let json = serde_json::to_string(&UIStreamEvent::error(&msg)).unwrap_or_default();
+            Bytes::from(format!("data: {json}\n\n"))
+        });
+
+        Ok(DialogRelayPlan {
+            encoder: AiSdkEncoder::new(),
+            fanout: Some(fanout),
+            resumable_downstream: true,
+            protocol_label: "ai-sdk",
+            on_relay_done,
+            error_formatter,
+        })
+    }
+
+    fn into_response<S>(stream: S) -> Response
+    where
+        S: futures::Stream<Item = Result<Bytes, std::convert::Infallible>> + Send + 'static,
+    {
+        ai_sdk_sse_response(stream)
+    }
+
+    fn forwarded_decision_response(
+        forwarded: tirea_agentos::runtime::ForwardedDecision,
+        _frontend_run_id: Option<&str>,
+    ) -> Response {
+        (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({
+                "status": "decision_forwarded",
+                "threadId": forwarded.thread_id,
+            })),
+        )
+            .into_response()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::http_run::{wire_http_sse_relay, HttpSseRelayConfig};
     use crate::transport::runtime_endpoint::RunStarter;
     use std::pin::Pin;
     use tirea_agentos::contracts::{AgentEvent, RunRequest, ToolCallDecision};

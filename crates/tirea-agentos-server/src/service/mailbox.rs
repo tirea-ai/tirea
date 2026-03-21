@@ -13,7 +13,7 @@ use tirea_agentos::contracts::storage::{
 };
 use tirea_agentos::contracts::thread::Message;
 use tirea_agentos::contracts::RunRequest;
-use tirea_agentos::{AgentOs, AgentOsRunError, RunStream};
+use tirea_agentos::{AgentOs, AgentOsRunError, RunLaunchSpec, RunStream};
 use tirea_contract::storage::{MailboxReceiver, ReceiveOutcome, RunRecord};
 
 use super::ApiError;
@@ -270,7 +270,12 @@ impl MailboxReceiver for AgentReceiver {
 
         match self
             .os
-            .start_active_run_with_persistence(&agent_id, request, resolved, true, false)
+            .start_active_run_with_spec(
+                &agent_id,
+                request,
+                resolved,
+                RunLaunchSpec::BACKGROUND_TASK,
+            )
             .await
         {
             Ok(run) => {
@@ -299,7 +304,7 @@ pub(crate) async fn start_agent_run_for_entry(
     os: &Arc<AgentOs>,
     mailbox_store: &Arc<dyn MailboxStore>,
     entry: &MailboxEntry,
-    persist_run: bool,
+    launch: RunLaunchSpec,
 ) -> Result<RunStream, MailboxRunStartError> {
     // Verify entry still claimed with our token
     if let Some(current) = mailbox_store
@@ -357,7 +362,7 @@ pub(crate) async fn start_agent_run_for_entry(
         .resolve(&agent_id)
         .map_err(|err| MailboxRunStartError::Permanent(err.to_string()))?;
 
-    os.start_active_run_with_persistence(&agent_id, request, resolved, persist_run, !persist_run)
+    os.start_active_run_with_spec(&agent_id, request, resolved, launch)
         .await
         .map_err(|err| {
             if is_permanent_dispatch_error(&err) {
@@ -496,7 +501,14 @@ pub async fn start_streaming_run_via_mailbox(
         ))
     })?;
 
-    match start_agent_run_for_entry(os, mailbox_store, &entry, false).await {
+    match start_agent_run_for_entry(
+        os,
+        mailbox_store,
+        &entry,
+        RunLaunchSpec::THREAD_ONLY_STRIP_LINEAGE,
+    )
+    .await
+    {
         Ok(run) => {
             ack_claimed_entry(mailbox_store, &entry.entry_id, &claim_token).await?;
             Ok(run)

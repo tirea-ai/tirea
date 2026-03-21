@@ -1,6 +1,7 @@
 // ── Modules from the former tirea-agent-loop crate ──────────────────────
 pub mod activity;
 pub mod control;
+pub mod launch;
 pub mod loop_runner;
 pub mod run_context;
 pub mod streaming;
@@ -34,6 +35,7 @@ pub use background_tasks::{
 };
 pub use context::{ContextPlugin, CONTEXT_PLUGIN_ID};
 pub use errors::{AgentOsResolveError, AgentOsRunError};
+pub use launch::{RunLaunchSpec, RunLineageMode, RunPersistence};
 pub use stop_policy::{
     ConsecutiveErrors, ContentMatch, LoopDetection, MaxRounds, StopOnTool, StopPolicy,
     StopPolicyInput, StopPolicyPlugin, StopPolicyStats, Timeout, TokenBudget,

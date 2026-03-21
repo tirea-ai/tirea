@@ -2,7 +2,9 @@ use std::sync::Arc;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
 use tirea_agentos::contracts::RunRequest;
 use tirea_agentos::contracts::ToolCallDecision;
-use tirea_agentos::runtime::{AgentOs, AgentOsRunError, ForwardedDecision, ResolvedRun};
+use tirea_agentos::runtime::{
+    AgentOs, AgentOsRunError, ForwardedDecision, ResolvedRun, RunLaunchSpec,
+};
 use tirea_contract::storage::RunRecord;
 use tirea_contract::RuntimeInput;
 use tokio::sync::mpsc;
@@ -118,10 +120,10 @@ pub fn require_agent_state_store(os: &Arc<AgentOs>) -> Result<Arc<dyn ThreadStor
 /// The run is already started via AgentOS lifecycle API; this payload only
 /// adapts it to transport wiring (`RunStarter` + ingress channel).
 pub struct PreparedHttpRun {
-    pub starter: RunStarter,
+    pub starter: std::sync::Mutex<Option<RunStarter>>,
     pub thread_id: String,
     pub run_id: String,
-    pub ingress_rx: mpsc::UnboundedReceiver<RuntimeInput>,
+    pub ingress_rx: std::sync::Mutex<Option<mpsc::UnboundedReceiver<RuntimeInput>>>,
 }
 
 pub async fn start_http_run(
@@ -130,7 +132,14 @@ pub async fn start_http_run(
     run_request: RunRequest,
     agent_id: &str,
 ) -> Result<PreparedHttpRun, ApiError> {
-    start_http_run_with_persistence(os, resolved, run_request, agent_id, true).await
+    start_http_run_with_launch_spec(
+        os,
+        resolved,
+        run_request,
+        agent_id,
+        RunLaunchSpec::HTTP_RUN_API,
+    )
+    .await
 }
 
 pub async fn start_http_dialog_run(
@@ -139,25 +148,26 @@ pub async fn start_http_dialog_run(
     run_request: RunRequest,
     agent_id: &str,
 ) -> Result<PreparedHttpRun, ApiError> {
-    start_http_run_with_persistence(os, resolved, run_request, agent_id, false).await
+    start_http_run_with_launch_spec(
+        os,
+        resolved,
+        run_request,
+        agent_id,
+        RunLaunchSpec::HTTP_DIALOG,
+    )
+    .await
 }
 
-async fn start_http_run_with_persistence(
+async fn start_http_run_with_launch_spec(
     os: &Arc<AgentOs>,
     resolved: ResolvedRun,
     run_request: RunRequest,
     agent_id: &str,
-    persist_run: bool,
+    launch: RunLaunchSpec,
 ) -> Result<PreparedHttpRun, ApiError> {
     let run_request_for_ingress = run_request.clone();
     let run = os
-        .start_active_run_with_persistence(
-            agent_id,
-            run_request,
-            resolved,
-            persist_run,
-            !persist_run,
-        )
+        .start_active_run_with_spec(agent_id, run_request, resolved, launch)
         .await
         .map_err(ApiError::from)?;
     let thread_id = run.thread_id.clone();
@@ -171,10 +181,10 @@ async fn start_http_run_with_persistence(
     let starter: RunStarter = Box::new(move |_request| Box::pin(async move { Ok(run) }));
 
     Ok(PreparedHttpRun {
-        starter,
+        starter: std::sync::Mutex::new(Some(starter)),
         thread_id,
         run_id,
-        ingress_rx,
+        ingress_rx: std::sync::Mutex::new(Some(ingress_rx)),
     })
 }
 
