@@ -1969,8 +1969,11 @@ impl AgentBehavior for TestPhasePlugin {
                 consume_after_emit: false,
             },
         ))
-        .and(ActionSet::single(BeforeInferenceAction::AddSessionContext(
-            "Test thread context".into(),
+        .and(ActionSet::single(BeforeInferenceAction::AddContextMessage(
+            tirea_contract::runtime::inference::ContextMessage::session(
+                "test_thread",
+                "Test thread context",
+            ),
         )))
     }
 
@@ -1979,8 +1982,10 @@ impl AgentBehavior for TestPhasePlugin {
         ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<AfterToolExecuteAction> {
         if ctx.tool_name() == Some("echo") {
-            ActionSet::single(AfterToolExecuteAction::AddSystemReminder(
-                "Check the echo result".into(),
+            ActionSet::single(AfterToolExecuteAction::AddMessage(
+                tirea_contract::runtime::inference::ContextMessage::system_reminder(
+                    "Check the echo result",
+                ),
             ))
         } else {
             ActionSet::empty()
@@ -2220,8 +2225,10 @@ impl AgentBehavior for ReminderPhasePlugin {
         &self,
         _ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<AfterToolExecuteAction> {
-        ActionSet::single(AfterToolExecuteAction::AddSystemReminder(
-            "Tool execution completed".into(),
+        ActionSet::single(AfterToolExecuteAction::AddMessage(
+            tirea_contract::runtime::inference::ContextMessage::system_reminder(
+                "Tool execution completed",
+            ),
         ))
     }
 }
@@ -2266,9 +2273,14 @@ fn test_build_messages_with_context() {
     fixture.messages = thread.messages.clone();
     let mut step = fixture.step(tool_descriptors);
 
-    // All injected context is normalized after build_messages, so this helper
-    // only returns the base system prompt plus conversation history.
-    step.inference.session_context.push("Thread context".into());
+    // Prompt-only context is applied after build_messages, so this helper only
+    // returns the base system prompt plus conversation history.
+    step.inference.context_messages.push(
+        tirea_contract::runtime::inference::ContextMessage::session(
+            "thread_context",
+            "Thread context",
+        ),
+    );
 
     let messages = build_messages(&step, "Base system prompt");
 
@@ -5663,7 +5675,7 @@ async fn test_stream_rejects_prompt_context_mutation_outside_before_inference() 
     .await;
 
     // With typed ActionSet<LifecycleAction>, step_start can only emit State actions.
-    // AddSessionContext cannot be placed there (compile-time type safety).
+    // AddContextMessage cannot be placed there (compile-time type safety).
     // The stream should complete normally.
     assert!(
         matches!(events.last(), Some(AgentEvent::RunFinish { .. })),
@@ -5682,7 +5694,7 @@ impl AgentBehavior for BlockBeforeToolPlugin {
         &self,
         _ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<BeforeToolExecuteAction> {
-        // With typed ActionSet<BeforeToolExecuteAction>, AddSystemReminder cannot be placed here
+        // With typed ActionSet<BeforeToolExecuteAction>, AddMessage cannot be placed here
         // (it belongs to AfterToolExecuteAction). This is type-safe by construction.
         // Block is the valid before_tool_execute action that prevents tool execution.
         ActionSet::single(BeforeToolExecuteAction::Block(
@@ -5693,7 +5705,7 @@ impl AgentBehavior for BlockBeforeToolPlugin {
 
 #[test]
 fn test_execute_tools_reminder_mutation_outside_after_tool_execute_is_type_safe() {
-    // With typed ActionSet, AddSystemReminder cannot be placed in BeforeToolExecuteAction
+    // With typed ActionSet, AddMessage cannot be placed in BeforeToolExecuteAction
     // at compile time. Verify that Block (a valid BeforeToolExecute action) works correctly.
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -5740,7 +5752,9 @@ impl AgentBehavior for ReminderAppendPlugin {
         &self,
         _ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<AfterToolExecuteAction> {
-        ActionSet::single(AfterToolExecuteAction::AddSystemReminder("first".into()))
+        ActionSet::single(AfterToolExecuteAction::AddMessage(
+            tirea_contract::runtime::inference::ContextMessage::system_reminder("first"),
+        ))
     }
 }
 
@@ -5755,7 +5769,9 @@ impl AgentBehavior for ReminderReplacePlugin {
         &self,
         _ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<AfterToolExecuteAction> {
-        ActionSet::single(AfterToolExecuteAction::AddSystemReminder("second".into()))
+        ActionSet::single(AfterToolExecuteAction::AddMessage(
+            tirea_contract::runtime::inference::ContextMessage::system_reminder("second"),
+        ))
     }
 }
 

@@ -187,12 +187,7 @@ pub(super) fn inference_inputs_from_step(
     let run_action = step.run_action();
     let transforms = std::mem::take(&mut step.inference.request_transforms);
     let inference_override = step.inference.inference_override.take();
-    let mut context_messages = std::mem::take(&mut step.inference.context_messages);
-    context_messages.extend(
-        std::mem::take(&mut step.inference.session_context)
-            .into_iter()
-            .map(tirea_contract::runtime::inference::ContextMessage::session_text),
-    );
+    let context_messages = std::mem::take(&mut step.inference.context_messages);
     (
         messages,
         filtered_tools,

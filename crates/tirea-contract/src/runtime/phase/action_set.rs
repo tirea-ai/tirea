@@ -111,12 +111,6 @@ impl From<AnyStateAction> for ActionSet<LifecycleAction> {
 
 /// Actions valid in `BeforeInference`.
 pub enum BeforeInferenceAction {
-    /// Legacy alias for injecting session-band context.
-    ///
-    /// New code should prefer `AddContextMessage(ContextMessage::session(...))`
-    /// so placement and throttling always flow through the unified prompt
-    /// segment mechanism.
-    AddSessionContext(String),
     /// Inject a structured context message with throttle metadata.
     ///
     /// Messages are tracked by `key` and subject to `cooldown_turns`
@@ -249,10 +243,6 @@ pub enum AfterToolExecuteAction {
     /// `newMessages`. Conversation messages are not subject to prompt context
     /// throttling.
     AddMessage(ContextMessage),
-    /// Append a system-role reminder after the tool result.
-    AddSystemReminder(String),
-    /// Append a user-role message after the tool result.
-    AddUserMessage(String),
     /// Emit a persistent state change.
     State(AnyStateAction),
 }
@@ -262,8 +252,6 @@ impl AfterToolExecuteAction {
     pub fn label(&self) -> &'static str {
         match self {
             Self::AddMessage(_) => "add_message",
-            Self::AddSystemReminder(_) => "add_system_reminder",
-            Self::AddUserMessage(_) => "add_user_message",
             Self::State(_) => "state_action",
         }
     }

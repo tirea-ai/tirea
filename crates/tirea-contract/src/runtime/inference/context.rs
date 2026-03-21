@@ -148,21 +148,13 @@ impl From<InferenceModelOverride> for InferenceOverride {
     }
 }
 
-/// Inference-phase extension: system/session context and tool descriptors.
+/// Inference-phase extension: context messages and tool descriptors.
 ///
-/// Populated by `AddSessionContext`, `AddContextMessage`, `ExcludeTool`,
-/// `IncludeOnlyTools`, `AddRequestTransform`, `OverrideModel`,
-/// `OverrideInference` actions during `BeforeInference`.
+/// Populated by `AddContextMessage`, `ExcludeTool`, `IncludeOnlyTools`,
+/// `AddRequestTransform`, `OverrideModel`, and `OverrideInference` actions
+/// during `BeforeInference`.
 #[derive(Default, Clone)]
 pub struct InferenceContext {
-    /// Legacy session-context messages injected before user messages.
-    ///
-    /// Prefer `context_messages` with `ContextMessageTarget::Session`. This
-    /// field remains only to preserve backwards compatibility for older action
-    /// producers and stored test fixtures; the loop runner normalizes these
-    /// strings into `context_messages` before prompt assembly so they share the
-    /// same placement and throttle pipeline.
-    pub session_context: Vec<String>,
     /// Available tool descriptors (can be filtered by actions).
     pub tools: Vec<ToolDescriptor>,
     /// Request transforms registered by plugins. Applied in order after
@@ -181,7 +173,6 @@ pub struct InferenceContext {
 impl std::fmt::Debug for InferenceContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InferenceContext")
-            .field("session_context", &self.session_context)
             .field("tools", &self.tools)
             .field("request_transforms", &self.request_transforms.len())
             .field("inference_override", &self.inference_override)
