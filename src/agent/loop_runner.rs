@@ -12,7 +12,7 @@ use crate::contract::inference::LLMResponse;
 use crate::contract::lifecycle::TerminationReason;
 use crate::contract::message::{Message, Role, ToolCall, gen_message_id};
 use crate::contract::suspension::{ToolCallOutcome, ToolCallStatus};
-use crate::contract::tool::{ToolResult, ToolStatus};
+use crate::contract::tool::ToolResult;
 use crate::model::{Phase, RuntimeEffect};
 use crate::runtime::{PhaseContext, PhaseRuntime, TypedEffectHandler};
 use crate::state::{MutationBatch, Snapshot};
@@ -193,9 +193,18 @@ pub async fn run_agent_loop(
             stream_result.tool_calls.clone(),
         )));
 
-        // Execute each tool call sequentially with state machine transitions
+        // Execute tool calls via ToolExecutor
+        let exec_results = agent
+            .tool_executor
+            .execute(&agent.tools, &stream_result.tool_calls)
+            .await
+            .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
+
+        // Process each result: state transitions, phase hooks, events, messages
         let mut suspended = false;
-        for call in &stream_result.tool_calls {
+        for exec_result in &exec_results {
+            let call = &exec_result.call;
+
             events.push(AgentEvent::ToolCallStart {
                 id: call.id.clone(),
                 name: call.name.clone(),
@@ -211,42 +220,20 @@ pub async fn run_agent_loop(
                 break;
             }
 
-            let tool_result = execute_tool(agent, call).await;
+            let tool_result = &exec_result.result;
 
-            // Handle suspension: tool returned Pending
-            if tool_result.status == ToolStatus::Pending {
-                commit_tool_call_transition(store, call, ToolCallStatus::Suspended)?;
-
-                events.push(AgentEvent::ToolCallDone {
-                    id: call.id.clone(),
-                    result: tool_result.clone(),
-                    outcome: ToolCallOutcome::Suspended,
-                });
-
-                let after_ctx = make_ctx(Phase::AfterToolExecute, &messages, &run_identity)
-                    .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()))
-                    .with_tool_result(tool_result.clone());
-                runtime.run_phase_with_context(after_ctx)?;
-
-                let tool_content = tool_result_to_content(&tool_result);
-                messages.push(Arc::new(Message::tool(&call.id, tool_content)));
-
-                suspended = true;
-                break;
-            }
-
-            // Tool call lifecycle: Running → Succeeded/Failed
-            let terminal_status = if tool_result.is_success() {
-                ToolCallStatus::Succeeded
-            } else {
-                ToolCallStatus::Failed
+            // Tool call lifecycle: Running → terminal status
+            let status = match exec_result.outcome {
+                ToolCallOutcome::Suspended => ToolCallStatus::Suspended,
+                ToolCallOutcome::Succeeded => ToolCallStatus::Succeeded,
+                ToolCallOutcome::Failed => ToolCallStatus::Failed,
             };
-            commit_tool_call_transition(store, call, terminal_status)?;
+            commit_tool_call_transition(store, call, status)?;
 
             events.push(AgentEvent::ToolCallDone {
                 id: call.id.clone(),
                 result: tool_result.clone(),
-                outcome: ToolCallOutcome::from_tool_result(&tool_result),
+                outcome: exec_result.outcome,
             });
 
             let after_ctx = make_ctx(Phase::AfterToolExecute, &messages, &run_identity)
@@ -257,8 +244,12 @@ pub async fn run_agent_loop(
                 break;
             }
 
-            let tool_content = tool_result_to_content(&tool_result);
+            let tool_content = tool_result_to_content(tool_result);
             messages.push(Arc::new(Message::tool(&call.id, tool_content)));
+
+            if exec_result.outcome == ToolCallOutcome::Suspended {
+                suspended = true;
+            }
         }
 
         // Check termination after tool loop
@@ -368,22 +359,6 @@ fn commit_tool_call_transition(
             updated_at: now_ms(),
         },
     )
-}
-
-/// Execute a tool, returning ToolResult (never crashes the loop).
-async fn execute_tool(agent: &AgentConfig, call: &ToolCall) -> ToolResult {
-    let Some(tool) = agent.tools.get(&call.name) else {
-        return ToolResult::error(&call.name, format!("tool '{}' not found", call.name));
-    };
-
-    if let Err(e) = tool.validate_args(&call.arguments) {
-        return ToolResult::error(&call.name, e.to_string());
-    }
-
-    match tool.execute(call.arguments.clone()).await {
-        Ok(result) => result,
-        Err(e) => ToolResult::error(&call.name, e.to_string()),
-    }
 }
 
 fn tool_result_to_content(result: &ToolResult) -> String {

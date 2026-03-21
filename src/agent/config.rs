@@ -1,9 +1,11 @@
 //! Agent definition and configuration.
 
-use crate::contract::executor::{LlmExecutor, ToolExecutionMode};
+use crate::contract::executor::LlmExecutor;
 use crate::contract::tool::Tool;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+use super::executor::{SequentialToolExecutor, ToolExecutor};
 
 /// The sole interface the agent loop sees.
 pub struct AgentConfig {
@@ -11,9 +13,9 @@ pub struct AgentConfig {
     pub model: String,
     pub system_prompt: String,
     pub max_rounds: usize,
-    pub tool_execution_mode: ToolExecutionMode,
     pub tools: HashMap<String, Arc<dyn Tool>>,
     pub llm_executor: Arc<dyn LlmExecutor>,
+    pub tool_executor: Arc<dyn ToolExecutor>,
 }
 
 impl AgentConfig {
@@ -28,10 +30,16 @@ impl AgentConfig {
             model: model.into(),
             system_prompt: system_prompt.into(),
             max_rounds: 16,
-            tool_execution_mode: ToolExecutionMode::Sequential,
             tools: HashMap::new(),
             llm_executor,
+            tool_executor: Arc::new(SequentialToolExecutor),
         }
+    }
+
+    #[must_use]
+    pub fn with_tool_executor(mut self, executor: Arc<dyn ToolExecutor>) -> Self {
+        self.tool_executor = executor;
+        self
     }
 
     #[must_use]
