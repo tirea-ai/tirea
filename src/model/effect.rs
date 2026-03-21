@@ -46,19 +46,6 @@ impl TypedEffect {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EffectLogEntry {
-    pub id: u64,
-    pub key: String,
-}
-
-super::define_log_slot! {
-    slot = EffectLog,
-    update = EffectLogUpdate,
-    entry = EffectLogEntry,
-    key = "__runtime.effect_log",
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2,9 +2,7 @@ use std::any::TypeId;
 use std::collections::HashMap;
 
 use crate::error::StateError;
-use crate::model::{
-    EffectLog, FailedScheduledActions, PendingScheduledActions, Phase, ScheduledActionLog,
-};
+use crate::model::{FailedScheduledActions, PendingScheduledActions, Phase};
 use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use crate::state::SlotOptions;
 
@@ -88,8 +86,6 @@ impl Plugin for RuntimeQueuePlugin {
         };
         registrar.register_slot::<PendingScheduledActions>(runtime_options)?;
         registrar.register_slot::<FailedScheduledActions>(runtime_options)?;
-        registrar.register_slot::<ScheduledActionLog>(runtime_options)?;
-        registrar.register_slot::<EffectLog>(runtime_options)?;
         Ok(())
     }
 }

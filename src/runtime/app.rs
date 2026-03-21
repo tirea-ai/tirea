@@ -59,14 +59,6 @@ impl AppRuntime {
         self.phase_runtime.run_phase_with_limit(phase, max_rounds)
     }
 
-    pub fn trim_logs(&self, keep: usize) -> Result<(), StateError> {
-        self.phase_runtime.trim_logs(keep)
-    }
-
-    pub fn clear_logs(&self) -> Result<(), StateError> {
-        self.phase_runtime.clear_logs()
-    }
-
     pub fn install_plugin<P>(&self, plugin: P) -> Result<(), StateError>
     where
         P: Plugin,

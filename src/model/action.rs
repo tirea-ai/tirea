@@ -96,24 +96,9 @@ impl StateSlot for FailedScheduledActions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ScheduledActionLogEntry {
-    pub id: u64,
-    pub phase: Phase,
-    pub key: String,
-}
-
-super::define_log_slot! {
-    slot = ScheduledActionLog,
-    update = ScheduledActionLogUpdate,
-    entry = ScheduledActionLogEntry,
-    key = "__runtime.scheduled_action_log",
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::trim_to_last;
 
     struct TestAction;
 
@@ -130,15 +115,5 @@ mod tests {
         let decoded = TestAction::decode_payload(encoded).expect("decode should succeed");
 
         assert_eq!(decoded, payload);
-    }
-
-    #[test]
-    fn trim_to_last_keeps_latest_entries() {
-        let mut values = vec![1, 2, 3, 4];
-        trim_to_last(&mut values, 2);
-        assert_eq!(values, vec![3, 4]);
-
-        trim_to_last(&mut values, 0);
-        assert!(values.is_empty());
     }
 }

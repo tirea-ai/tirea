@@ -381,7 +381,6 @@ fn effect_failures_are_reported_immediately() {
     let report = runtime.submit_command(cmd).unwrap();
     assert_eq!(report.effect_report.attempted, 1);
     assert_eq!(report.effect_report.failed, 1);
-    assert_eq!(store.read_slot::<EffectLog>().unwrap_or_default().len(), 1);
 }
 
 #[test]
@@ -409,38 +408,6 @@ fn app_runtime_wraps_store_and_phase_runtime() {
             .as_deref(),
         Some("planner")
     );
-}
-
-#[test]
-fn runtime_logs_actions_and_effects() {
-    let app = AppRuntime::new().unwrap();
-    app.install_plugin(HandoffPlugin).unwrap();
-    app.phase_runtime()
-        .register_effect::<RuntimeEffect, _>(RuntimeEffectRecorder::default())
-        .unwrap();
-
-    let mut cmd = StateCommand::new().with_base_revision(app.revision());
-    cmd.update::<HandoffChannel>(HandoffAction::Request {
-        agent: "logger".into(),
-    });
-    cmd.schedule_action::<ActivateRequested>(()).unwrap();
-    cmd.effect(RuntimeEffect::PublishJson {
-        topic: "demo".into(),
-        payload: serde_json::json!({"kind":"log"}),
-    })
-    .unwrap();
-    app.submit_command(cmd).unwrap();
-
-    let scheduled_action_log = app
-        .store()
-        .read_slot::<ScheduledActionLog>()
-        .unwrap_or_default();
-    let effect_log = app.store().read_slot::<EffectLog>().unwrap_or_default();
-
-    assert_eq!(scheduled_action_log.len(), 1);
-    assert_eq!(scheduled_action_log[0].key, ActivateRequested::KEY);
-    assert_eq!(effect_log.len(), 1);
-    assert_eq!(effect_log[0].key, RuntimeEffect::KEY);
 }
 
 #[test]
@@ -640,98 +607,6 @@ fn run_phase_with_custom_limit() {
             max_rounds: 3,
         }
     ));
-}
-
-#[test]
-fn runtime_logs_can_be_trimmed() {
-    let app = AppRuntime::new().unwrap();
-    app.phase_runtime()
-        .register_effect::<RuntimeEffect, _>(RuntimeEffectRecorder::default())
-        .unwrap();
-
-    for index in 0..3 {
-        let mut cmd = StateCommand::new();
-        cmd.effect(RuntimeEffect::PublishJson {
-            topic: format!("demo-{index}"),
-            payload: serde_json::json!({"i": index}),
-        })
-        .unwrap();
-        app.submit_command(cmd).unwrap();
-    }
-
-    app.trim_logs(2).unwrap();
-
-    let effect_log = app.store().read_slot::<EffectLog>().unwrap_or_default();
-    let scheduled_action_log = app
-        .store()
-        .read_slot::<ScheduledActionLog>()
-        .unwrap_or_default();
-
-    assert_eq!(effect_log.len(), 2);
-    assert_eq!(scheduled_action_log.len(), 0);
-    assert!(
-        effect_log
-            .iter()
-            .all(|entry| entry.key == RuntimeEffect::KEY)
-    );
-}
-
-#[test]
-fn runtime_logs_can_be_cleared() {
-    let app = AppRuntime::new().unwrap();
-    app.phase_runtime()
-        .register_effect::<RuntimeEffect, _>(RuntimeEffectRecorder::default())
-        .unwrap();
-
-    let mut cmd = StateCommand::new();
-    cmd.effect(RuntimeEffect::PublishJson {
-        topic: "demo".into(),
-        payload: serde_json::json!({"ok": true}),
-    })
-    .unwrap();
-    app.submit_command(cmd).unwrap();
-
-    app.clear_logs().unwrap();
-
-    assert!(
-        app.store()
-            .read_slot::<EffectLog>()
-            .unwrap_or_default()
-            .is_empty()
-    );
-    assert!(
-        app.store()
-            .read_slot::<ScheduledActionLog>()
-            .unwrap_or_default()
-            .is_empty()
-    );
-}
-
-#[test]
-fn scheduled_action_logs_can_be_trimmed() {
-    let app = AppRuntime::new().unwrap();
-    app.phase_runtime()
-        .register_scheduled_action::<LogOnlyAction, _>(LogOnlyHandler)
-        .unwrap();
-
-    for _ in 0..3 {
-        let mut cmd = StateCommand::new();
-        cmd.schedule_action::<LogOnlyAction>(()).unwrap();
-        app.submit_command(cmd).unwrap();
-    }
-
-    app.trim_logs(2).unwrap();
-
-    let scheduled_action_log = app
-        .store()
-        .read_slot::<ScheduledActionLog>()
-        .unwrap_or_default();
-    assert_eq!(scheduled_action_log.len(), 2);
-    assert!(
-        scheduled_action_log
-            .iter()
-            .all(|entry| entry.key == LogOnlyAction::KEY)
-    );
 }
 
 #[test]

@@ -6,10 +6,9 @@ use crate::config::profile::{ActiveConfig, OsConfig, RunOverrides};
 use crate::config::resolve::{ResolvedPhaseConfig, resolve_config};
 use crate::error::StateError;
 use crate::model::{
-    EffectLog, EffectLogEntry, EffectLogUpdate, EffectSpec, FailedScheduledAction,
-    FailedScheduledActionUpdate, FailedScheduledActions, PendingScheduledActions, Phase,
-    ScheduledActionEnvelope, ScheduledActionLog, ScheduledActionLogEntry, ScheduledActionLogUpdate,
-    ScheduledActionQueueUpdate, ScheduledActionSpec, TypedEffect,
+    EffectSpec, FailedScheduledAction, FailedScheduledActionUpdate, FailedScheduledActions,
+    PendingScheduledActions, Phase, ScheduledActionEnvelope, ScheduledActionQueueUpdate,
+    ScheduledActionSpec, TypedEffect,
 };
 use crate::plugins::{Plugin, PluginRegistrar};
 use crate::state::{MutationBatch, Snapshot, StateCommand, StateStore};
@@ -157,28 +156,6 @@ impl PhaseRuntime {
             .lock()
             .expect("runtime execution lock poisoned");
         self.submit_command_inner(command)
-    }
-
-    pub fn trim_logs(&self, keep: usize) -> Result<(), StateError> {
-        let _guard = self
-            .execution_lock
-            .lock()
-            .expect("runtime execution lock poisoned");
-        let mut patch = MutationBatch::new();
-        patch.update::<ScheduledActionLog>(ScheduledActionLogUpdate::TrimToLast { keep });
-        patch.update::<EffectLog>(EffectLogUpdate::TrimToLast { keep });
-        self.store.commit(patch).map(|_| ())
-    }
-
-    pub fn clear_logs(&self) -> Result<(), StateError> {
-        let _guard = self
-            .execution_lock
-            .lock()
-            .expect("runtime execution lock poisoned");
-        let mut patch = MutationBatch::new();
-        patch.update::<ScheduledActionLog>(ScheduledActionLogUpdate::Clear);
-        patch.update::<EffectLog>(EffectLogUpdate::Clear);
-        self.store.commit(patch).map(|_| ())
     }
 
     pub fn run_phase(&self, phase: Phase) -> Result<PhaseRunReport, StateError> {
@@ -381,29 +358,21 @@ impl PhaseRuntime {
                 id: self.next_id.fetch_add(1, Ordering::SeqCst),
                 action,
             };
-            let log_entry = ScheduledActionLogEntry {
-                id: entry.id,
-                phase: entry.action.phase,
-                key: entry.action.key.clone(),
-            };
+            tracing::debug!(
+                id = entry.id,
+                phase = ?entry.action.phase,
+                key = %entry.action.key,
+                "scheduled action enqueued"
+            );
             command
                 .patch
                 .update::<PendingScheduledActions>(ScheduledActionQueueUpdate::Push(entry));
-            command
-                .patch
-                .update::<ScheduledActionLog>(ScheduledActionLogUpdate::Append(log_entry));
         }
 
         let mut effects = Vec::new();
         for effect in command.effects.drain(..) {
             let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-            let log_entry = EffectLogEntry {
-                id,
-                key: effect.key.clone(),
-            };
-            command
-                .patch
-                .update::<EffectLog>(EffectLogUpdate::Append(log_entry));
+            tracing::debug!(id, key = %effect.key, "effect dispatching");
             effects.push(effect);
         }
 
