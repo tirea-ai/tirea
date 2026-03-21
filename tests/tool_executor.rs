@@ -249,7 +249,7 @@ async fn parallel_both_tools_execute() {
     ]));
     let agent = AgentConfig::new("test", "m", "sys", llm)
         .with_tool(Arc::new(EchoTool))
-        .with_tool_executor(Arc::new(ParallelToolExecutor));
+        .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
     let result = run_agent_loop(&agent, &rt, vec![Message::user("go")], id())
         .await
@@ -276,7 +276,7 @@ async fn parallel_partial_failure() {
     let agent = AgentConfig::new("test", "m", "sys", llm)
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(FailingTool))
-        .with_tool_executor(Arc::new(ParallelToolExecutor));
+        .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
     let result = run_agent_loop(&agent, &rt, vec![Message::user("go")], id())
         .await
@@ -309,7 +309,7 @@ async fn parallel_does_not_stop_on_suspension() {
         .with_tool(Arc::new(CountingTool {
             call_count: call_count.clone(),
         }))
-        .with_tool_executor(Arc::new(ParallelToolExecutor));
+        .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
     let result = run_agent_loop(&agent, &rt, vec![Message::user("go")], id())
         .await
@@ -761,4 +761,98 @@ async fn run_lifecycle_run_id_matches_identity() {
         .unwrap();
     let lifecycle = rt.store().read_slot::<RunLifecycleSlot>().unwrap();
     assert_eq!(lifecycle.run_id, "r-x");
+}
+
+// ===========================================================================
+// PARALLEL BATCH APPROVAL INTEGRATION TESTS
+// ===========================================================================
+
+#[tokio::test]
+async fn batch_approval_both_tools_execute_in_loop() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        tool_step(vec![
+            ToolCall::new("c1", "echo", json!({"message": "a"})),
+            ToolCall::new("c2", "echo", json!({"message": "b"})),
+        ]),
+        text_step("Done."),
+    ]));
+    let agent = AgentConfig::new("test", "m", "sys", llm)
+        .with_tool(Arc::new(EchoTool))
+        .with_tool_executor(Arc::new(ParallelToolExecutor::batch_approval()));
+    let rt = make_runtime();
+    let result = run_agent_loop(&agent, &rt, vec![Message::user("go")], id())
+        .await
+        .unwrap();
+
+    let tool_dones: Vec<_> = result
+        .events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::ToolCallDone { .. }))
+        .collect();
+    assert_eq!(tool_dones.len(), 2);
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+}
+
+#[tokio::test]
+async fn batch_approval_suspension_still_executes_all() {
+    let call_count = Arc::new(AtomicUsize::new(0));
+    let llm = Arc::new(ScriptedLlm::new(vec![tool_step(vec![
+        ToolCall::new("c1", "suspending", json!({})),
+        ToolCall::new("c2", "counting", json!({})),
+    ])]));
+    let agent = AgentConfig::new("test", "m", "sys", llm)
+        .with_tool(Arc::new(SuspendingTool))
+        .with_tool(Arc::new(CountingTool {
+            call_count: call_count.clone(),
+        }))
+        .with_tool_executor(Arc::new(ParallelToolExecutor::batch_approval()));
+    let rt = make_runtime();
+    let result = run_agent_loop(&agent, &rt, vec![Message::user("go")], id())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        1,
+        "counting tool should have executed even with batch approval"
+    );
+    assert_eq!(result.termination, TerminationReason::Suspended);
+}
+
+// ===========================================================================
+// PARALLEL STREAMING INTEGRATION TESTS
+// ===========================================================================
+
+#[tokio::test]
+async fn streaming_partial_failure_in_loop() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        tool_step(vec![
+            ToolCall::new("c1", "echo", json!({"message": "ok"})),
+            ToolCall::new("c2", "failing", json!({})),
+        ]),
+        text_step("Done."),
+    ]));
+    let agent = AgentConfig::new("test", "m", "sys", llm)
+        .with_tool(Arc::new(EchoTool))
+        .with_tool(Arc::new(FailingTool))
+        .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
+    let rt = make_runtime();
+    let result = run_agent_loop(&agent, &rt, vec![Message::user("go")], id())
+        .await
+        .unwrap();
+
+    let outcomes: Vec<_> = result
+        .events
+        .iter()
+        .filter_map(|e| {
+            if let AgentEvent::ToolCallDone { outcome, .. } = e {
+                Some(*outcome)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(outcomes.contains(&ToolCallOutcome::Succeeded));
+    assert!(outcomes.contains(&ToolCallOutcome::Failed));
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
 }

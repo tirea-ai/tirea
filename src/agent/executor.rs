@@ -80,9 +80,66 @@ impl ToolExecutor for SequentialToolExecutor {
     }
 }
 
+/// Policy controlling when resume decisions are replayed into tool execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecisionReplayPolicy {
+    /// Replay each resolved suspended call as soon as its decision arrives.
+    Immediate,
+    /// Replay only when all currently suspended calls have decisions.
+    BatchAllSuspended,
+}
+
+/// Parallel execution mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParallelMode {
+    /// All concurrently, batch approval gate — wait for all decisions.
+    BatchApproval,
+    /// All concurrently, streaming results — replay decisions immediately.
+    Streaming,
+}
+
 /// Execute all tool calls concurrently. All tools see the same frozen snapshot.
+///
+/// Two modes differ in how suspension decisions are replayed:
+/// - `BatchApproval`: wait for all suspended calls to have decisions before replay
+/// - `Streaming`: replay each decision immediately as it arrives
 #[derive(Debug, Clone, Copy)]
-pub struct ParallelToolExecutor;
+pub struct ParallelToolExecutor {
+    mode: ParallelMode,
+}
+
+impl ParallelToolExecutor {
+    pub const fn batch_approval() -> Self {
+        Self {
+            mode: ParallelMode::BatchApproval,
+        }
+    }
+
+    pub const fn streaming() -> Self {
+        Self {
+            mode: ParallelMode::Streaming,
+        }
+    }
+
+    /// How the runtime should replay resolved suspend decisions.
+    pub fn decision_replay_policy(&self) -> DecisionReplayPolicy {
+        match self.mode {
+            ParallelMode::BatchApproval => DecisionReplayPolicy::BatchAllSuspended,
+            ParallelMode::Streaming => DecisionReplayPolicy::Immediate,
+        }
+    }
+
+    /// Whether the runtime should enforce parallel patch conflict checks.
+    pub fn requires_conflict_check(&self) -> bool {
+        true
+    }
+}
+
+impl Default for ParallelToolExecutor {
+    fn default() -> Self {
+        Self::streaming()
+    }
+}
 
 #[async_trait]
 impl ToolExecutor for ParallelToolExecutor {
@@ -114,7 +171,10 @@ impl ToolExecutor for ParallelToolExecutor {
     }
 
     fn name(&self) -> &'static str {
-        "parallel"
+        match self.mode {
+            ParallelMode::BatchApproval => "parallel_batch_approval",
+            ParallelMode::Streaming => "parallel_streaming",
+        }
     }
 }
 
@@ -264,7 +324,7 @@ mod tests {
             ToolCall::new("c1", "echo", json!({"message": "first"})),
             ToolCall::new("c2", "echo", json!({"message": "second"})),
         ];
-        let executor = ParallelToolExecutor;
+        let executor = ParallelToolExecutor::streaming();
 
         let results = executor.execute(&tools, &calls).await.unwrap();
         assert_eq!(results.len(), 2);
@@ -282,7 +342,7 @@ mod tests {
             ToolCall::new("c1", "echo", json!({"message": "ok"})),
             ToolCall::new("c2", "failing", json!({})),
         ];
-        let executor = ParallelToolExecutor;
+        let executor = ParallelToolExecutor::streaming();
 
         let results = executor.execute(&tools, &calls).await.unwrap();
         assert_eq!(results.len(), 2);
@@ -305,7 +365,7 @@ mod tests {
             ToolCall::new("c1", "suspending", json!({})),
             ToolCall::new("c2", "echo", json!({"message": "runs anyway"})),
         ];
-        let executor = ParallelToolExecutor;
+        let executor = ParallelToolExecutor::streaming();
 
         let results = executor.execute(&tools, &calls).await.unwrap();
         // Parallel executes ALL tools regardless of suspension
@@ -325,7 +385,7 @@ mod tests {
     #[tokio::test]
     async fn parallel_empty_calls() {
         let tools = tool_map(vec![Arc::new(EchoTool)]);
-        let executor = ParallelToolExecutor;
+        let executor = ParallelToolExecutor::streaming();
 
         let results = executor.execute(&tools, &[]).await.unwrap();
         assert!(results.is_empty());
@@ -334,6 +394,74 @@ mod tests {
     #[test]
     fn executor_names() {
         assert_eq!(SequentialToolExecutor.name(), "sequential");
-        assert_eq!(ParallelToolExecutor.name(), "parallel");
+        assert_eq!(
+            ParallelToolExecutor::streaming().name(),
+            "parallel_streaming"
+        );
+        assert_eq!(
+            ParallelToolExecutor::batch_approval().name(),
+            "parallel_batch_approval"
+        );
+    }
+
+    #[test]
+    fn parallel_default_is_streaming() {
+        let executor = ParallelToolExecutor::default();
+        assert_eq!(executor.name(), "parallel_streaming");
+        assert_eq!(
+            executor.decision_replay_policy(),
+            DecisionReplayPolicy::Immediate
+        );
+    }
+
+    #[test]
+    fn parallel_batch_approval_policy() {
+        let executor = ParallelToolExecutor::batch_approval();
+        assert_eq!(
+            executor.decision_replay_policy(),
+            DecisionReplayPolicy::BatchAllSuspended
+        );
+        assert!(executor.requires_conflict_check());
+    }
+
+    #[test]
+    fn parallel_streaming_policy() {
+        let executor = ParallelToolExecutor::streaming();
+        assert_eq!(
+            executor.decision_replay_policy(),
+            DecisionReplayPolicy::Immediate
+        );
+        assert!(executor.requires_conflict_check());
+    }
+
+    #[tokio::test]
+    async fn batch_approval_executes_all_concurrently() {
+        let tools = tool_map(vec![Arc::new(EchoTool)]);
+        let calls = vec![
+            ToolCall::new("c1", "echo", json!({"message": "a"})),
+            ToolCall::new("c2", "echo", json!({"message": "b"})),
+        ];
+        let executor = ParallelToolExecutor::batch_approval();
+
+        let results = executor.execute(&tools, &calls).await.unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(
+            results
+                .iter()
+                .all(|r| r.outcome == ToolCallOutcome::Succeeded)
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_approval_does_not_stop_on_suspension() {
+        let tools = tool_map(vec![Arc::new(SuspendingTool), Arc::new(EchoTool)]);
+        let calls = vec![
+            ToolCall::new("c1", "suspending", json!({})),
+            ToolCall::new("c2", "echo", json!({"message": "runs anyway"})),
+        ];
+        let executor = ParallelToolExecutor::batch_approval();
+
+        let results = executor.execute(&tools, &calls).await.unwrap();
+        assert_eq!(results.len(), 2);
     }
 }
