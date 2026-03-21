@@ -9,5 +9,5 @@ pub use action::{
     ScheduledActionSpec,
 };
 pub use codec::{JsonValue, decode_json, encode_json};
-pub use effect::{EffectSpec, RuntimeEffect, TypedEffect};
+pub use effect::{EffectSpec, TypedEffect};
 pub use phase::Phase;

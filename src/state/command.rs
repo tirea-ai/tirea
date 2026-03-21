@@ -1,7 +1,7 @@
 use std::ops::{Deref, DerefMut};
 
 use crate::error::StateError;
-use crate::model::{EffectSpec, RuntimeEffect, ScheduledAction, ScheduledActionSpec, TypedEffect};
+use crate::model::{EffectSpec, ScheduledAction, ScheduledActionSpec, TypedEffect};
 
 use super::{MergeStrategy, MutationBatch};
 
@@ -27,12 +27,6 @@ impl StateCommand {
 
     pub fn is_empty(&self) -> bool {
         self.patch.is_empty() && self.scheduled_actions.is_empty() && self.effects.is_empty()
-    }
-
-    pub fn effect(&mut self, effect: RuntimeEffect) -> Result<(), StateError> {
-        self.effects
-            .push(TypedEffect::from_spec::<RuntimeEffect>(&effect)?);
-        Ok(())
     }
 
     pub fn emit<E: EffectSpec>(&mut self, payload: E::Payload) -> Result<(), StateError> {
@@ -111,6 +105,13 @@ mod tests {
         type Payload = String;
     }
 
+    struct CustomEffect;
+
+    impl EffectSpec for CustomEffect {
+        const KEY: &'static str = "test.custom_effect";
+        type Payload = String;
+    }
+
     #[test]
     fn state_command_accumulates_actions_and_effects() {
         let mut command = StateCommand::new();
@@ -118,21 +119,12 @@ mod tests {
             .schedule_action::<TestAction>("go".into())
             .expect("schedule should succeed");
         command
-            .effect(RuntimeEffect::Terminate {
-                reason: crate::contract::lifecycle::TerminationReason::NaturalEnd,
-            })
+            .emit::<CustomEffect>("payload".into())
             .expect("effect should encode");
 
         assert!(!command.is_empty());
         assert_eq!(command.scheduled_actions.len(), 1);
         assert_eq!(command.effects.len(), 1);
-    }
-
-    struct CustomEffect;
-
-    impl EffectSpec for CustomEffect {
-        const KEY: &'static str = "test.custom_effect";
-        type Payload = String;
     }
 
     #[test]
@@ -143,9 +135,7 @@ mod tests {
 
         let mut right = StateCommand::new().with_base_revision(5);
         right
-            .effect(RuntimeEffect::Suspend {
-                reason: "wait".into(),
-            })
+            .emit::<CustomEffect>("effect".into())
             .expect("right effect should encode");
 
         left.extend(right).expect("commands should merge");

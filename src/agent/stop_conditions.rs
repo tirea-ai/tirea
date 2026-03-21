@@ -7,10 +7,12 @@ use async_trait::async_trait;
 
 use crate::contract::lifecycle::{StopConditionSpec, TerminationReason};
 use crate::error::StateError;
-use crate::model::{Phase, RuntimeEffect};
+use crate::model::Phase;
 use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use crate::runtime::{PhaseContext, PhaseHook};
 use crate::state::StateCommand;
+
+use super::state::{RunLifecycle, RunLifecycleUpdate};
 
 // ---------------------------------------------------------------------------
 // StopPolicy trait and StopDecision
@@ -344,10 +346,13 @@ impl PhaseHook for StopConditionHook {
 
         for policy in &self.policies {
             if let StopDecision::Stop { code, detail } = policy.evaluate(&stats) {
+                let reason = TerminationReason::stopped_with_detail(code, detail);
+                let (_, done_reason) = reason.to_run_status();
                 let mut cmd = StateCommand::new();
-                cmd.effect(RuntimeEffect::Terminate {
-                    reason: TerminationReason::stopped_with_detail(code, detail),
-                })?;
+                cmd.update::<RunLifecycle>(RunLifecycleUpdate::Done {
+                    done_reason: done_reason.unwrap_or_default(),
+                    updated_at: Self::now_ms(),
+                });
                 return Ok(cmd);
             }
         }
@@ -406,78 +411,73 @@ mod tests {
     use crate::contract::inference::{
         InferenceError, LLMResponse, StopReason, StreamResult, TokenUsage,
     };
-    use crate::runtime::{ExecutionEnv, PhaseRuntime, TypedEffectHandler};
-    use crate::state::{Snapshot, StateStore};
-    use std::sync::{Arc, Mutex};
+    use crate::contract::lifecycle::RunStatus;
+    use crate::runtime::{ExecutionEnv, PhaseRuntime};
+    use crate::state::StateStore;
 
-    #[derive(Clone, Default)]
-    struct Recorder {
-        effects: Arc<Mutex<Vec<RuntimeEffect>>>,
-    }
+    use super::super::state::RunLifecycle;
 
-    impl Plugin for Recorder {
+    /// Plugin that registers the RunLifecycle key needed by stop condition hooks.
+    struct LifecycleKeyPlugin;
+    impl Plugin for LifecycleKeyPlugin {
         fn descriptor(&self) -> PluginDescriptor {
             PluginDescriptor {
-                name: "test-recorder",
+                name: "lifecycle-key",
             }
         }
         fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-            registrar.register_effect::<RuntimeEffect, _>(RecorderHandler(self.effects.clone()))
+            registrar.register_key::<RunLifecycle>(crate::StateKeyOptions::default())
         }
     }
 
-    struct RecorderHandler(Arc<Mutex<Vec<RuntimeEffect>>>);
-
-    #[async_trait]
-    impl TypedEffectHandler<RuntimeEffect> for RecorderHandler {
-        async fn handle_typed(&self, payload: RuntimeEffect, _: &Snapshot) -> Result<(), String> {
-            self.0.lock().unwrap().push(payload);
-            Ok(())
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // MaxRoundsPlugin tests (preserved from original)
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn max_rounds_plugin_installs_and_registers_hook() {
+    fn make_test_env(
+        policies: Vec<Arc<dyn StopPolicy>>,
+    ) -> (StateStore, PhaseRuntime, ExecutionEnv) {
         let store = StateStore::new();
-        let runtime = PhaseRuntime::new(store).unwrap();
-        let recorder = Recorder::default();
+        let runtime = PhaseRuntime::new(store.clone()).unwrap();
+        store.install_plugin(LifecycleKeyPlugin).unwrap();
+
+        // Initialize RunLifecycle to Running so Done transitions are valid
+        let mut patch = crate::state::MutationBatch::new();
+        patch.update::<RunLifecycle>(super::super::state::RunLifecycleUpdate::Start {
+            run_id: "test".into(),
+            updated_at: 0,
+        });
+        store.commit(patch).unwrap();
 
         let plugins: Vec<Arc<dyn Plugin>> = vec![
-            Arc::new(recorder.clone()),
-            Arc::new(MaxRoundsPlugin::new(5)),
+            Arc::new(LifecycleKeyPlugin),
+            Arc::new(StopConditionPlugin::new(policies)),
         ];
         let env = ExecutionEnv::from_plugins(&plugins).unwrap();
-
-        for _ in 0..5 {
-            runtime
-                .run_phase(&env, Phase::AfterInference)
-                .await
-                .unwrap();
-        }
-        let report = runtime
-            .run_phase(&env, Phase::AfterInference)
-            .await
-            .unwrap();
-        assert_eq!(report.effect_report.attempted, 1);
-        assert_eq!(report.effect_report.dispatched, 1);
+        (store, runtime, env)
     }
 
+    // -----------------------------------------------------------------------
+    // MaxRoundsPlugin tests — now check RunLifecycle state
+    // -----------------------------------------------------------------------
+
     #[tokio::test]
-    async fn max_rounds_plugin_emits_terminate_with_correct_reason() {
+    async fn max_rounds_plugin_sets_done_after_exceeding_limit() {
         let store = StateStore::new();
-        let runtime = PhaseRuntime::new(store).unwrap();
-        let recorder = Recorder::default();
+        let runtime = PhaseRuntime::new(store.clone()).unwrap();
+        store.install_plugin(LifecycleKeyPlugin).unwrap();
+
+        // Initialize to Running
+        let mut patch = crate::state::MutationBatch::new();
+        patch.update::<RunLifecycle>(super::super::state::RunLifecycleUpdate::Start {
+            run_id: "test".into(),
+            updated_at: 0,
+        });
+        store.commit(patch).unwrap();
 
         let plugins: Vec<Arc<dyn Plugin>> = vec![
-            Arc::new(recorder.clone()),
+            Arc::new(LifecycleKeyPlugin),
             Arc::new(MaxRoundsPlugin::new(2)),
         ];
         let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
+        // Round 1 and 2: still Running
         runtime
             .run_phase(&env, Phase::AfterInference)
             .await
@@ -486,20 +486,23 @@ mod tests {
             .run_phase(&env, Phase::AfterInference)
             .await
             .unwrap();
-        assert!(recorder.effects.lock().unwrap().is_empty());
+        let lifecycle = store.read::<RunLifecycle>().unwrap();
+        assert_eq!(lifecycle.status, RunStatus::Running);
 
+        // Round 3: exceeds limit → Done
         runtime
             .run_phase(&env, Phase::AfterInference)
             .await
             .unwrap();
-        let effects = recorder.effects.lock().unwrap();
-        assert_eq!(effects.len(), 1);
-        match &effects[0] {
-            RuntimeEffect::Terminate { reason } => {
-                assert!(matches!(reason, TerminationReason::Stopped(s) if s.code == "max_rounds"));
-            }
-            other => panic!("expected Terminate, got {other:?}"),
-        }
+        let lifecycle = store.read::<RunLifecycle>().unwrap();
+        assert_eq!(lifecycle.status, RunStatus::Done);
+        assert!(
+            lifecycle
+                .done_reason
+                .as_ref()
+                .unwrap()
+                .contains("max_rounds")
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -723,54 +726,35 @@ mod tests {
 
     #[tokio::test]
     async fn stop_condition_plugin_token_budget_fires() {
-        let store = StateStore::new();
-        let runtime = PhaseRuntime::new(store).unwrap();
-        let recorder = Recorder::default();
-
-        let policies: Vec<Arc<dyn StopPolicy>> = vec![Arc::new(TokenBudgetPolicy::new(1000))];
-
-        let plugins: Vec<Arc<dyn Plugin>> = vec![
-            Arc::new(recorder.clone()),
-            Arc::new(StopConditionPlugin::new(policies)),
-        ];
-        let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+        let (store, runtime, env) = make_test_env(vec![Arc::new(TokenBudgetPolicy::new(1000))]);
 
         // First call: 600 tokens, under budget
         let ctx = PhaseContext::new(Phase::AfterInference, runtime.store().snapshot())
             .with_llm_response(make_llm_response_with_tokens(300, 300));
         runtime.run_phase_with_context(&env, ctx).await.unwrap();
-        assert!(recorder.effects.lock().unwrap().is_empty());
+        assert_eq!(
+            store.read::<RunLifecycle>().unwrap().status,
+            RunStatus::Running
+        );
 
-        // Second call: adds 600 more => 1200 total, over budget
+        // Second call: adds 600 more => 1200 total, over budget → Done
         let ctx = PhaseContext::new(Phase::AfterInference, runtime.store().snapshot())
             .with_llm_response(make_llm_response_with_tokens(300, 300));
         runtime.run_phase_with_context(&env, ctx).await.unwrap();
-
-        let effects = recorder.effects.lock().unwrap();
-        assert_eq!(effects.len(), 1);
-        match &effects[0] {
-            RuntimeEffect::Terminate { reason } => {
-                assert!(
-                    matches!(reason, TerminationReason::Stopped(s) if s.code == "token_budget")
-                );
-            }
-            other => panic!("expected Terminate, got {other:?}"),
-        }
+        let lifecycle = store.read::<RunLifecycle>().unwrap();
+        assert_eq!(lifecycle.status, RunStatus::Done);
+        assert!(
+            lifecycle
+                .done_reason
+                .as_ref()
+                .unwrap()
+                .contains("token_budget")
+        );
     }
 
     #[tokio::test]
     async fn stop_condition_plugin_consecutive_errors_fires() {
-        let store = StateStore::new();
-        let runtime = PhaseRuntime::new(store).unwrap();
-        let recorder = Recorder::default();
-
-        let policies: Vec<Arc<dyn StopPolicy>> = vec![Arc::new(ConsecutiveErrorsPolicy::new(3))];
-
-        let plugins: Vec<Arc<dyn Plugin>> = vec![
-            Arc::new(recorder.clone()),
-            Arc::new(StopConditionPlugin::new(policies)),
-        ];
-        let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+        let (store, runtime, env) = make_test_env(vec![Arc::new(ConsecutiveErrorsPolicy::new(3))]);
 
         // 2 errors: should not fire
         for _ in 0..2 {
@@ -778,38 +762,29 @@ mod tests {
                 .with_llm_response(make_llm_error());
             runtime.run_phase_with_context(&env, ctx).await.unwrap();
         }
-        assert!(recorder.effects.lock().unwrap().is_empty());
+        assert_eq!(
+            store.read::<RunLifecycle>().unwrap().status,
+            RunStatus::Running
+        );
 
-        // 3rd error: should fire
+        // 3rd error: should fire → Done
         let ctx = PhaseContext::new(Phase::AfterInference, runtime.store().snapshot())
             .with_llm_response(make_llm_error());
         runtime.run_phase_with_context(&env, ctx).await.unwrap();
-
-        let effects = recorder.effects.lock().unwrap();
-        assert_eq!(effects.len(), 1);
-        match &effects[0] {
-            RuntimeEffect::Terminate { reason } => {
-                assert!(
-                    matches!(reason, TerminationReason::Stopped(s) if s.code == "consecutive_errors")
-                );
-            }
-            other => panic!("expected Terminate, got {other:?}"),
-        }
+        let lifecycle = store.read::<RunLifecycle>().unwrap();
+        assert_eq!(lifecycle.status, RunStatus::Done);
+        assert!(
+            lifecycle
+                .done_reason
+                .as_ref()
+                .unwrap()
+                .contains("consecutive_errors")
+        );
     }
 
     #[tokio::test]
     async fn stop_condition_plugin_success_resets_consecutive_errors() {
-        let store = StateStore::new();
-        let runtime = PhaseRuntime::new(store).unwrap();
-        let recorder = Recorder::default();
-
-        let policies: Vec<Arc<dyn StopPolicy>> = vec![Arc::new(ConsecutiveErrorsPolicy::new(3))];
-
-        let plugins: Vec<Arc<dyn Plugin>> = vec![
-            Arc::new(recorder.clone()),
-            Arc::new(StopConditionPlugin::new(policies)),
-        ];
-        let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+        let (store, runtime, env) = make_test_env(vec![Arc::new(ConsecutiveErrorsPolicy::new(3))]);
 
         // 2 errors
         for _ in 0..2 {
@@ -830,6 +805,9 @@ mod tests {
             runtime.run_phase_with_context(&env, ctx).await.unwrap();
         }
 
-        assert!(recorder.effects.lock().unwrap().is_empty());
+        assert_eq!(
+            store.read::<RunLifecycle>().unwrap().status,
+            RunStatus::Running
+        );
     }
 }

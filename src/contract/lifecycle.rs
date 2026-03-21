@@ -58,6 +58,20 @@ impl TerminationReason {
         Self::Stopped(StoppedReason::with_detail(code, detail))
     }
 
+    /// Reconstruct a `TerminationReason` from the `done_reason` string stored in `RunLifecycleState`.
+    pub fn from_done_reason(reason: &str) -> Self {
+        match reason {
+            "natural" => Self::NaturalEnd,
+            "behavior_requested" => Self::BehaviorRequested,
+            "cancelled" => Self::Cancelled,
+            s if s.starts_with("stopped:") => {
+                Self::Stopped(StoppedReason::new(s.trim_start_matches("stopped:")))
+            }
+            s if s.starts_with("error:") => Self::Error(s.trim_start_matches("error:").to_string()),
+            other => Self::Error(other.to_string()),
+        }
+    }
+
     /// Map termination reason to durable run status and optional done_reason string.
     pub fn to_run_status(&self) -> (RunStatus, Option<String>) {
         match self {

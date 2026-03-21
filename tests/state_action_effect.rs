@@ -13,6 +13,21 @@ use std::sync::{Arc, Mutex};
 
 use awaken::ExecutionEnv;
 
+// ---------------------------------------------------------------------------
+// Test effect type (replaces the deleted RuntimeEffect enum)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum TestEffect {
+    Ping { message: String },
+}
+
+impl awaken::EffectSpec for TestEffect {
+    const KEY: &'static str = "test.effect";
+    type Payload = Self;
+}
+
 // ===========================================================================
 // Test keys
 // ===========================================================================
@@ -339,10 +354,14 @@ fn state_command_extend_mismatched_revisions_fails() {
 #[test]
 fn state_command_multiple_effects_accumulate() {
     let mut cmd = StateCommand::new();
-    cmd.effect(RuntimeEffect::Suspend { reason: "a".into() })
-        .unwrap();
-    cmd.effect(RuntimeEffect::Suspend { reason: "b".into() })
-        .unwrap();
+    cmd.emit::<TestEffect>(TestEffect::Ping {
+        message: "a".into(),
+    })
+    .unwrap();
+    cmd.emit::<TestEffect>(TestEffect::Ping {
+        message: "b".into(),
+    })
+    .unwrap();
     assert!(!cmd.is_empty());
 }
 
@@ -967,15 +986,11 @@ async fn phase_hook_state_mutation_visible_to_action_handler() {
 // ===========================================================================
 
 #[derive(Clone, Default)]
-struct EffectRecorder(Arc<Mutex<Vec<RuntimeEffect>>>);
+struct EffectRecorder(Arc<Mutex<Vec<TestEffect>>>);
 
 #[async_trait]
-impl TypedEffectHandler<RuntimeEffect> for EffectRecorder {
-    async fn handle_typed(
-        &self,
-        payload: RuntimeEffect,
-        _snapshot: &Snapshot,
-    ) -> Result<(), String> {
+impl TypedEffectHandler<TestEffect> for EffectRecorder {
+    async fn handle_typed(&self, payload: TestEffect, _snapshot: &Snapshot) -> Result<(), String> {
         self.0.lock().unwrap().push(payload);
         Ok(())
     }
@@ -989,7 +1004,7 @@ async fn effect_dispatch_preserves_order() {
             PluginDescriptor { name: "recorder" }
         }
         fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
-            r.register_effect::<RuntimeEffect, _>(self.0.clone())
+            r.register_effect::<TestEffect, _>(self.0.clone())
         }
     }
 
@@ -999,35 +1014,35 @@ async fn effect_dispatch_preserves_order() {
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
-    cmd.effect(RuntimeEffect::Suspend {
-        reason: "first".into(),
+    cmd.emit::<TestEffect>(TestEffect::Ping {
+        message: "first".into(),
     })
     .unwrap();
-    cmd.effect(RuntimeEffect::Suspend {
-        reason: "second".into(),
+    cmd.emit::<TestEffect>(TestEffect::Ping {
+        message: "second".into(),
     })
     .unwrap();
-    cmd.effect(RuntimeEffect::Block {
-        reason: "third".into(),
+    cmd.emit::<TestEffect>(TestEffect::Ping {
+        message: "third".into(),
     })
     .unwrap();
     app.submit_command(&env, cmd).await.unwrap();
 
     let effects = recorder.0.lock().unwrap();
     assert_eq!(effects.len(), 3);
-    assert!(matches!(&effects[0], RuntimeEffect::Suspend { reason } if reason == "first"));
-    assert!(matches!(&effects[1], RuntimeEffect::Suspend { reason } if reason == "second"));
-    assert!(matches!(&effects[2], RuntimeEffect::Block { reason } if reason == "third"));
+    assert!(matches!(&effects[0], TestEffect::Ping { message } if message == "first"));
+    assert!(matches!(&effects[1], TestEffect::Ping { message } if message == "second"));
+    assert!(matches!(&effects[2], TestEffect::Ping { message } if message == "third"));
 }
 
 #[tokio::test]
 async fn effect_handler_failure_does_not_block_other_effects() {
     struct FailingHandler;
     #[async_trait]
-    impl TypedEffectHandler<RuntimeEffect> for FailingHandler {
+    impl TypedEffectHandler<TestEffect> for FailingHandler {
         async fn handle_typed(
             &self,
-            _payload: RuntimeEffect,
+            _payload: TestEffect,
             _snapshot: &Snapshot,
         ) -> Result<(), String> {
             Err("boom".into())
@@ -1042,7 +1057,7 @@ async fn effect_handler_failure_does_not_block_other_effects() {
             }
         }
         fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
-            r.register_effect::<RuntimeEffect, _>(FailingHandler)
+            r.register_effect::<TestEffect, _>(FailingHandler)
         }
     }
 
@@ -1051,10 +1066,14 @@ async fn effect_handler_failure_does_not_block_other_effects() {
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
-    cmd.effect(RuntimeEffect::Suspend { reason: "a".into() })
-        .unwrap();
-    cmd.effect(RuntimeEffect::Block { reason: "b".into() })
-        .unwrap();
+    cmd.emit::<TestEffect>(TestEffect::Ping {
+        message: "a".into(),
+    })
+    .unwrap();
+    cmd.emit::<TestEffect>(TestEffect::Ping {
+        message: "b".into(),
+    })
+    .unwrap();
     let report = app.submit_command(&env, cmd).await.unwrap();
 
     assert_eq!(report.effect_report.attempted, 2);
@@ -1066,11 +1085,11 @@ async fn effect_handler_failure_does_not_block_other_effects() {
 async fn effect_with_no_handler_rejected_at_submit() {
     let app = AppRuntime::new().unwrap();
     let env = ExecutionEnv::empty();
-    // No handler registered for RuntimeEffect
+    // No handler registered for TestEffect
 
     let mut cmd = StateCommand::new();
-    cmd.effect(RuntimeEffect::Suspend {
-        reason: "test".into(),
+    cmd.emit::<TestEffect>(TestEffect::Ping {
+        message: "test".into(),
     })
     .unwrap();
     let err = app.submit_command(&env, cmd).await.unwrap_err();
@@ -1083,10 +1102,10 @@ async fn effect_handler_sees_post_commit_snapshot() {
 
     struct SnapshotReader(Arc<Mutex<Option<i64>>>);
     #[async_trait]
-    impl TypedEffectHandler<RuntimeEffect> for SnapshotReader {
+    impl TypedEffectHandler<TestEffect> for SnapshotReader {
         async fn handle_typed(
             &self,
-            _payload: RuntimeEffect,
+            _payload: TestEffect,
             snapshot: &Snapshot,
         ) -> Result<(), String> {
             *self.0.lock().unwrap() = snapshot.get::<Counter>().copied();
@@ -1102,7 +1121,7 @@ async fn effect_handler_sees_post_commit_snapshot() {
             }
         }
         fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
-            r.register_effect::<RuntimeEffect, _>(SnapshotReader(Arc::clone(&self.0)))
+            r.register_effect::<TestEffect, _>(SnapshotReader(Arc::clone(&self.0)))
         }
     }
 
@@ -1113,8 +1132,8 @@ async fn effect_handler_sees_post_commit_snapshot() {
 
     let mut cmd = StateCommand::new();
     cmd.update::<Counter>(77);
-    cmd.effect(RuntimeEffect::Suspend {
-        reason: "check".into(),
+    cmd.emit::<TestEffect>(TestEffect::Ping {
+        message: "check".into(),
     })
     .unwrap();
     app.submit_command(&env, cmd).await.unwrap();
@@ -1666,9 +1685,8 @@ async fn exclusive_fallback_effects_still_dispatched() {
         async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
             let mut cmd = StateCommand::new();
             cmd.update::<Counter>(1);
-            cmd.effect(awaken::RuntimeEffect::PublishJson {
-                topic: "test".into(),
-                payload: serde_json::json!({}),
+            cmd.emit::<TestEffect>(TestEffect::Ping {
+                message: "test".into(),
             })?;
             Ok(cmd)
         }
@@ -1699,10 +1717,10 @@ async fn exclusive_fallback_effects_still_dispatched() {
     struct EffectCounter(Arc<AtomicUsize>);
 
     #[async_trait]
-    impl awaken::TypedEffectHandler<awaken::RuntimeEffect> for EffectCounter {
+    impl awaken::TypedEffectHandler<TestEffect> for EffectCounter {
         async fn handle_typed(
             &self,
-            _payload: awaken::RuntimeEffect,
+            _payload: TestEffect,
             _snapshot: &awaken::Snapshot,
         ) -> Result<(), String> {
             self.0.fetch_add(1, Ordering::SeqCst);
@@ -1718,7 +1736,7 @@ async fn exclusive_fallback_effects_still_dispatched() {
             }
         }
         fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
-            r.register_effect::<awaken::RuntimeEffect, _>(EffectCounter(self.0.clone()))?;
+            r.register_effect::<TestEffect, _>(EffectCounter(self.0.clone()))?;
             Ok(())
         }
     }
@@ -1865,7 +1883,7 @@ async fn hook_emitted_effects_dispatched_during_phase() {
     impl PhaseHook for EffectHook {
         async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
             let mut cmd = StateCommand::new();
-            cmd.effect(RuntimeEffect::AddSystemReminder {
+            cmd.emit::<TestEffect>(TestEffect::Ping {
                 message: "from hook".into(),
             })?;
             Ok(cmd)
@@ -1891,7 +1909,7 @@ async fn hook_emitted_effects_dispatched_during_phase() {
             PluginDescriptor { name: "recorder2" }
         }
         fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
-            r.register_effect::<RuntimeEffect, _>(self.0.clone())
+            r.register_effect::<TestEffect, _>(self.0.clone())
         }
     }
 
@@ -1909,7 +1927,7 @@ async fn hook_emitted_effects_dispatched_during_phase() {
     assert_eq!(effects.len(), 1);
     assert!(matches!(
         &effects[0],
-        RuntimeEffect::AddSystemReminder { message } if message == "from hook"
+        TestEffect::Ping { message } if message == "from hook"
     ));
 }
 
@@ -2292,12 +2310,16 @@ fn command_merge_parallel_exclusive_conflict() {
 #[test]
 fn command_merge_parallel_accumulates_effects() {
     let mut a = StateCommand::new();
-    a.effect(RuntimeEffect::Suspend { reason: "a".into() })
-        .unwrap();
+    a.emit::<TestEffect>(TestEffect::Ping {
+        message: "a".into(),
+    })
+    .unwrap();
 
     let mut b = StateCommand::new();
-    b.effect(RuntimeEffect::Block { reason: "b".into() })
-        .unwrap();
+    b.emit::<TestEffect>(TestEffect::Ping {
+        message: "b".into(),
+    })
+    .unwrap();
 
     let merged = a.merge_parallel(b, |_| MergeStrategy::Commutative).unwrap();
     assert!(!merged.is_empty());
@@ -2484,12 +2506,12 @@ async fn parallel_tool_calls_merge_hook_commands() {
 #[tokio::test]
 async fn parallel_pipeline_with_effects() {
     #[derive(Clone, Default)]
-    struct Recorder(Arc<Mutex<Vec<RuntimeEffect>>>);
+    struct Recorder(Arc<Mutex<Vec<TestEffect>>>);
     #[async_trait]
-    impl TypedEffectHandler<RuntimeEffect> for Recorder {
+    impl TypedEffectHandler<TestEffect> for Recorder {
         async fn handle_typed(
             &self,
-            payload: RuntimeEffect,
+            payload: TestEffect,
             _snapshot: &Snapshot,
         ) -> Result<(), String> {
             self.0.lock().unwrap().push(payload);
@@ -2504,7 +2526,7 @@ async fn parallel_pipeline_with_effects() {
     impl PhaseHook for EffectHook {
         async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
             let mut cmd = StateCommand::new();
-            cmd.effect(RuntimeEffect::AddSystemReminder {
+            cmd.emit::<TestEffect>(TestEffect::Ping {
                 message: self.msg.into(),
             })?;
             Ok(cmd)
@@ -2534,7 +2556,7 @@ async fn parallel_pipeline_with_effects() {
             PluginDescriptor { name: "recorder3" }
         }
         fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
-            r.register_effect::<RuntimeEffect, _>(self.0.clone())
+            r.register_effect::<TestEffect, _>(self.0.clone())
         }
     }
 
@@ -2569,11 +2591,7 @@ async fn parallel_pipeline_with_effects() {
 
     let effects = recorder.0.lock().unwrap();
     assert_eq!(effects.len(), 2);
-    assert!(
-        effects
-            .iter()
-            .all(|e| matches!(e, RuntimeEffect::AddSystemReminder { .. }))
-    );
+    assert!(effects.iter().all(|e| matches!(e, TestEffect::Ping { .. })));
 }
 
 #[test]

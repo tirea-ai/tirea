@@ -130,9 +130,16 @@ impl PhaseRuntime {
                 .read::<PendingScheduledActions>()
                 .unwrap_or_default();
 
+            // Only process actions matching this phase AND having a registered handler.
+            // Actions without handlers stay in the queue for loop-level consumption.
             let matching: Vec<_> = queued
                 .into_iter()
-                .filter(|envelope| envelope.action.phase == phase)
+                .filter(|envelope| {
+                    envelope.action.phase == phase
+                        && env
+                            .scheduled_action_handlers
+                            .contains_key(&envelope.action.key)
+                })
                 .collect();
 
             if matching.is_empty() {
@@ -152,14 +159,8 @@ impl PhaseRuntime {
                 let handler = env
                     .scheduled_action_handlers
                     .get(&envelope.action.key)
-                    .cloned();
-
-                let Some(handler) = handler else {
-                    let key = envelope.action.key.clone();
-                    self.dead_letter(envelope, format!("no action handler registered for {key}"))?;
-                    total_failed += 1;
-                    continue;
-                };
+                    .cloned()
+                    .expect("handler existence verified in filter above");
 
                 let ctx = base_ctx.clone().with_snapshot(self.store.snapshot());
                 let mut command = match handler
@@ -211,14 +212,9 @@ impl PhaseRuntime {
         env: &ExecutionEnv,
         mut command: StateCommand,
     ) -> Result<SubmitCommandReport, StateError> {
-        // Validate all action/effect keys have registered handlers
-        for action in &command.scheduled_actions {
-            if !env.scheduled_action_handlers.contains_key(&action.key) {
-                return Err(StateError::UnknownScheduledActionHandler {
-                    key: action.key.clone(),
-                });
-            }
-        }
+        // Validate effect keys have registered handlers.
+        // Actions without handlers are allowed — they stay in the queue
+        // for loop-level consumption (e.g. SetInferenceOverride).
         for effect in &command.effects {
             if !env.effect_handlers.contains_key(&effect.key) {
                 return Err(StateError::UnknownEffectHandler {

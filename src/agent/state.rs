@@ -177,35 +177,20 @@ impl StateKey for ToolCallStates {
 }
 
 // ---------------------------------------------------------------------------
-// Inference override state
+// Loop-consumed action specs
 // ---------------------------------------------------------------------------
 
-/// Update for inference overrides state key.
-pub enum InferenceOverridesUpdate {
-    /// Merge an override (last-wins per field).
-    Merge(InferenceOverride),
-    /// Clear all overrides.
-    Clear,
-}
-
-/// State key for per-inference parameter overrides.
+/// Action spec for per-inference parameter overrides.
 ///
-/// `BeforeInference` hooks write overrides via `cmd.update::<InferenceOverrides>(...)`.
-/// The loop runner reads and clears this key before each inference call.
-pub struct InferenceOverrides;
+/// Scheduled by `BeforeInference` hooks via `cmd.schedule_action::<SetInferenceOverride>(...)`.
+/// The loop runner consumes all matching actions before building the `InferenceRequest`,
+/// merging payloads with last-wins semantics per field. No handler registration needed.
+pub struct SetInferenceOverride;
 
-impl StateKey for InferenceOverrides {
-    const KEY: &'static str = "__runtime.inference_overrides";
-
-    type Value = InferenceOverride;
-    type Update = InferenceOverridesUpdate;
-
-    fn apply(value: &mut Self::Value, update: Self::Update) {
-        match update {
-            InferenceOverridesUpdate::Merge(incoming) => value.merge(incoming),
-            InferenceOverridesUpdate::Clear => *value = InferenceOverride::default(),
-        }
-    }
+impl crate::model::ScheduledActionSpec for SetInferenceOverride {
+    const KEY: &'static str = "runtime.set_inference_override";
+    const PHASE: crate::model::Phase = crate::model::Phase::BeforeInference;
+    type Payload = InferenceOverride;
 }
 
 #[cfg(test)]

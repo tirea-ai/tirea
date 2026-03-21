@@ -3,9 +3,7 @@
 //! Run lifecycle: RunLifecycle (Running → StepCompleted → Done/Waiting)
 //! Tool call lifecycle: ToolCallStates (New → Running → Succeeded/Failed/Suspended)
 
-use std::sync::{Arc, Mutex};
-
-use async_trait::async_trait;
+use std::sync::Arc;
 
 use crate::contract::event::AgentEvent;
 use crate::contract::event_sink::EventSink;
@@ -19,9 +17,9 @@ use crate::contract::suspension::{
 };
 use crate::contract::tool::{ToolCallContext, ToolResult};
 use crate::error::StateError;
-use crate::model::{Phase, RuntimeEffect};
-use crate::runtime::{ExecutionEnv, PhaseContext, PhaseRuntime, TypedEffectHandler};
-use crate::state::{MutationBatch, Snapshot, StateCommand};
+use crate::model::{PendingScheduledActions, Phase, ScheduledActionQueueUpdate};
+use crate::runtime::{ExecutionEnv, PhaseContext, PhaseRuntime};
+use crate::state::{MutationBatch, StateCommand};
 
 use super::config::AgentConfig;
 use super::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate};
@@ -52,87 +50,27 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-// ---------------------------------------------------------------------------
-// Termination flag — set by RuntimeEffect::Terminate effect handler
-// ---------------------------------------------------------------------------
-
-/// Shared termination flag. Checked at phase boundaries to break the step loop.
-///
-/// Implements `Plugin` so it can be included in `ExecutionEnv::from_plugins()`.
-/// The loop runner creates one and reads it; the effect handler sets it when
-/// `RuntimeEffect::Terminate` is dispatched.
-#[derive(Clone, Default)]
-pub struct TerminationFlag {
-    inner: Arc<Mutex<Option<TerminationReason>>>,
-}
-
-impl TerminationFlag {
-    pub(crate) fn take(&self) -> Option<TerminationReason> {
-        self.inner.lock().expect("termination flag poisoned").take()
-    }
-}
-
-struct TerminationFlagHandler(TerminationFlag);
-
-#[async_trait]
-impl TypedEffectHandler<RuntimeEffect> for TerminationFlagHandler {
-    async fn handle_typed(
-        &self,
-        payload: RuntimeEffect,
-        _snapshot: &Snapshot,
-    ) -> Result<(), String> {
-        if let RuntimeEffect::Terminate { reason } = payload {
-            let mut guard = self.0.inner.lock().expect("termination flag poisoned");
-            if guard.is_none() {
-                *guard = Some(reason);
-            }
-        }
-        Ok(())
-    }
-}
-
-impl crate::plugins::Plugin for TerminationFlagHandler {
-    fn descriptor(&self) -> crate::plugins::PluginDescriptor {
-        crate::plugins::PluginDescriptor {
-            name: "__termination_flag",
-        }
-    }
-
-    fn register(
-        &self,
-        registrar: &mut crate::plugins::PluginRegistrar,
-    ) -> Result<(), crate::error::StateError> {
-        registrar.register_effect::<RuntimeEffect, _>(TerminationFlagHandler(self.0.clone()))
-    }
-}
-
 /// Build an execution environment for the agent loop from a list of plugins.
 ///
-/// Adds internal plugins (termination handler, stop conditions, default permission).
-/// Returns the env and a termination flag that the loop reads.
+/// Adds internal plugins (stop conditions, default permission).
 pub fn build_agent_env(
     plugins: &[Arc<dyn crate::plugins::Plugin>],
     max_rounds: usize,
-) -> Result<(ExecutionEnv, TerminationFlag), StateError> {
+) -> Result<ExecutionEnv, StateError> {
     use super::stop_conditions::MaxRoundsPlugin;
     use super::tool_permission::AllowAllToolsPlugin;
 
-    let flag = TerminationFlag::default();
-
     let mut all_plugins: Vec<Arc<dyn crate::plugins::Plugin>> = plugins.to_vec();
-    all_plugins.push(Arc::new(TerminationFlagHandler(flag.clone())));
     all_plugins.push(Arc::new(MaxRoundsPlugin::new(max_rounds)));
     all_plugins.push(Arc::new(AllowAllToolsPlugin));
 
-    let env = ExecutionEnv::from_plugins(&all_plugins)?;
-    Ok((env, flag))
+    ExecutionEnv::from_plugins(&all_plugins)
 }
 
 pub async fn run_agent_loop(
     agent: &AgentConfig,
     runtime: &PhaseRuntime,
     env: &ExecutionEnv,
-    termination_flag: &TerminationFlag,
     sink: &dyn EventSink,
     initial_messages: Vec<Message>,
     run_identity: RunIdentity,
@@ -182,7 +120,7 @@ pub async fn run_agent_loop(
         runtime
             .run_phase_with_context(env, make_ctx(Phase::StepStart, &messages, &run_identity))
             .await?;
-        if let Some(reason) = termination_flag.take() {
+        if let Some(reason) = check_termination(store) {
             break reason;
         }
 
@@ -192,20 +130,12 @@ pub async fn run_agent_loop(
                 make_ctx(Phase::BeforeInference, &messages, &run_identity),
             )
             .await?;
-        if let Some(reason) = termination_flag.take() {
+        if let Some(reason) = check_termination(store) {
             break reason;
         }
 
-        // LLM inference — read per-inference overrides from state, then clear
-        let overrides = store
-            .read::<super::state::InferenceOverrides>()
-            .filter(|o| !o.is_empty());
-        if overrides.is_some() {
-            commit_update::<super::state::InferenceOverrides>(
-                store,
-                super::state::InferenceOverridesUpdate::Clear,
-            )?;
-        }
+        // Consume loop actions from PendingScheduledActions before building request
+        let overrides = consume_inference_overrides(store)?;
 
         let start = std::time::Instant::now();
         let request = InferenceRequest {
@@ -234,7 +164,7 @@ pub async fn run_agent_loop(
         let after_inf_ctx = make_ctx(Phase::AfterInference, &messages, &run_identity)
             .with_llm_response(llm_response);
         runtime.run_phase_with_context(env, after_inf_ctx).await?;
-        if let Some(reason) = termination_flag.take() {
+        if let Some(reason) = check_termination(store) {
             break reason;
         }
 
@@ -390,7 +320,7 @@ pub async fn run_agent_loop(
         }
 
         // Check termination after tool execution
-        if let Some(reason) = termination_flag.take() {
+        if let Some(reason) = check_termination(store) {
             break reason;
         }
 
@@ -407,7 +337,7 @@ pub async fn run_agent_loop(
         }
 
         complete_step(store, runtime, env, sink, &messages, &run_identity).await?;
-        if let Some(reason) = termination_flag.take() {
+        if let Some(reason) = check_termination(store) {
             break reason;
         }
     };
@@ -469,7 +399,6 @@ pub async fn resume_agent_loop(
     agent: &AgentConfig,
     runtime: &PhaseRuntime,
     env: &ExecutionEnv,
-    termination_flag: &TerminationFlag,
     sink: &dyn EventSink,
     messages: Vec<Message>,
     run_identity: RunIdentity,
@@ -643,7 +572,6 @@ pub async fn resume_agent_loop(
         agent,
         runtime,
         env,
-        termination_flag,
         sink,
         resume_messages.into_iter().map(|m| (*m).clone()).collect(),
         run_identity,
@@ -703,6 +631,64 @@ fn commit_update<S: crate::state::StateKey>(
     patch.update::<S>(update);
     store.commit(patch)?;
     Ok(())
+}
+
+/// Check if the run lifecycle has left Running state.
+///
+/// Returns `Some(TerminationReason)` if the run should stop.
+fn check_termination(store: &crate::state::StateStore) -> Option<TerminationReason> {
+    let lifecycle = store.read::<RunLifecycle>()?;
+    match lifecycle.status {
+        RunStatus::Running => None,
+        RunStatus::Done => {
+            let reason = lifecycle.done_reason.as_deref().unwrap_or("unknown");
+            Some(TerminationReason::from_done_reason(reason))
+        }
+        RunStatus::Waiting => Some(TerminationReason::Suspended),
+    }
+}
+
+/// Consume `SetInferenceOverride` actions from the pending queue.
+///
+/// Loop-consumed action: no handler registered, EXECUTE skips it.
+/// Multiple overrides are merged with last-wins semantics per field.
+fn consume_inference_overrides(
+    store: &crate::state::StateStore,
+) -> Result<Option<crate::contract::inference::InferenceOverride>, crate::error::StateError> {
+    use super::state::SetInferenceOverride;
+    use crate::model::ScheduledActionSpec;
+
+    let pending = store.read::<PendingScheduledActions>().unwrap_or_default();
+
+    let matching: Vec<_> = pending
+        .iter()
+        .filter(|e| e.action.key == SetInferenceOverride::KEY)
+        .collect();
+
+    if matching.is_empty() {
+        return Ok(None);
+    }
+
+    let mut merged = crate::contract::inference::InferenceOverride::default();
+    let mut ids = Vec::new();
+    for envelope in matching {
+        let payload = SetInferenceOverride::decode_payload(envelope.action.payload.clone())?;
+        merged.merge(payload);
+        ids.push(envelope.id);
+    }
+
+    // Dequeue consumed actions
+    let mut patch = MutationBatch::new();
+    for id in ids {
+        patch.update::<PendingScheduledActions>(ScheduledActionQueueUpdate::Remove { id });
+    }
+    store.commit(patch)?;
+
+    if merged.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(merged))
+    }
 }
 
 fn tool_result_to_content(result: &ToolResult) -> String {

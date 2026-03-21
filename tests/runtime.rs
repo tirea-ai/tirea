@@ -7,6 +7,21 @@ use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::sync::{Arc, Mutex};
 
+// ---------------------------------------------------------------------------
+// Test effect type (replaces the deleted RuntimeEffect enum)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum TestEffect {
+    Ping { message: String },
+}
+
+impl awaken::EffectSpec for TestEffect {
+    const KEY: &'static str = "test.effect";
+    type Payload = Self;
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct HandoffState {
     active_agent: Option<String>,
@@ -89,7 +104,7 @@ impl TypedScheduledActionHandler<ActivateRequested> for ActivateRequestedHandler
             cmd.update::<HandoffChannel>(HandoffAction::Activate {
                 agent: agent.clone(),
             });
-            cmd.effect(RuntimeEffect::AddSystemReminder {
+            cmd.emit::<TestEffect>(TestEffect::Ping {
                 message: format!("handoff activated: {agent}"),
             })?;
         }
@@ -98,24 +113,20 @@ impl TypedScheduledActionHandler<ActivateRequested> for ActivateRequestedHandler
 }
 
 #[derive(Clone, Default)]
-struct RuntimeEffectRecorder(Arc<Mutex<Vec<RuntimeEffect>>>);
+struct RuntimeEffectRecorder(Arc<Mutex<Vec<TestEffect>>>);
 
 #[async_trait]
-impl TypedEffectHandler<RuntimeEffect> for RuntimeEffectRecorder {
-    async fn handle_typed(
-        &self,
-        payload: RuntimeEffect,
-        _snapshot: &Snapshot,
-    ) -> Result<(), String> {
+impl TypedEffectHandler<TestEffect> for RuntimeEffectRecorder {
+    async fn handle_typed(&self, payload: TestEffect, _snapshot: &Snapshot) -> Result<(), String> {
         self.0.lock().expect("lock poisoned").push(payload);
         Ok(())
     }
 }
 
-/// Plugin wrapper for RuntimeEffect handler.
-struct RuntimeEffectPlugin<H: TypedEffectHandler<RuntimeEffect> + Clone + Send + Sync + 'static>(H);
+/// Plugin wrapper for TestEffect handler.
+struct RuntimeEffectPlugin<H: TypedEffectHandler<TestEffect> + Clone + Send + Sync + 'static>(H);
 
-impl<H: TypedEffectHandler<RuntimeEffect> + Clone + Send + Sync + 'static> Plugin
+impl<H: TypedEffectHandler<TestEffect> + Clone + Send + Sync + 'static> Plugin
     for RuntimeEffectPlugin<H>
 {
     fn descriptor(&self) -> PluginDescriptor {
@@ -125,7 +136,7 @@ impl<H: TypedEffectHandler<RuntimeEffect> + Clone + Send + Sync + 'static> Plugi
     }
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-        registrar.register_effect::<RuntimeEffect, _>(self.0.clone())?;
+        registrar.register_effect::<TestEffect, _>(self.0.clone())?;
         Ok(())
     }
 }
@@ -134,12 +145,8 @@ impl<H: TypedEffectHandler<RuntimeEffect> + Clone + Send + Sync + 'static> Plugi
 struct FailingRuntimeEffectHandler;
 
 #[async_trait]
-impl TypedEffectHandler<RuntimeEffect> for FailingRuntimeEffectHandler {
-    async fn handle_typed(
-        &self,
-        _payload: RuntimeEffect,
-        _snapshot: &Snapshot,
-    ) -> Result<(), String> {
+impl TypedEffectHandler<TestEffect> for FailingRuntimeEffectHandler {
+    async fn handle_typed(&self, _payload: TestEffect, _snapshot: &Snapshot) -> Result<(), String> {
         Err("synthetic failure".into())
     }
 }
@@ -473,16 +480,16 @@ impl Plugin for MismatchedEffectPlugin {
 }
 
 #[tokio::test]
-async fn unregistered_action_handler_is_rejected_on_submit() {
+async fn unregistered_action_handler_is_accepted_on_submit() {
+    // Actions without handlers are allowed — they stay in the queue
+    // for loop-level consumption.
     let app = AppRuntime::new().unwrap();
     let env = ExecutionEnv::empty();
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<ActivateRequested>(()).unwrap();
-    let err = app.submit_command(&env, cmd).await.unwrap_err();
-    assert!(matches!(
-        err,
-        StateError::UnknownScheduledActionHandler { .. }
-    ));
+    app.submit_command(&env, cmd)
+        .await
+        .expect("unhandled actions should be accepted");
 }
 
 #[tokio::test]
@@ -490,9 +497,8 @@ async fn unregistered_effect_handler_is_rejected_on_submit() {
     let app = AppRuntime::new().unwrap();
     let env = ExecutionEnv::empty();
     let mut cmd = StateCommand::new();
-    cmd.effect(RuntimeEffect::PublishJson {
-        topic: "test".into(),
-        payload: serde_json::json!(null),
+    cmd.emit::<TestEffect>(TestEffect::Ping {
+        message: "test".into(),
     })
     .unwrap();
     let err = app.submit_command(&env, cmd).await.unwrap_err();
@@ -545,7 +551,7 @@ async fn phase_runtime_stages_and_reduces_actions() {
     );
     assert_eq!(
         recorder.0.lock().expect("lock poisoned").clone(),
-        vec![RuntimeEffect::AddSystemReminder {
+        vec![TestEffect::Ping {
             message: "handoff activated: fast".into(),
         }]
     );
@@ -560,9 +566,8 @@ async fn effect_failures_are_reported_immediately() {
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
-    cmd.effect(RuntimeEffect::PublishJson {
-        topic: "demo".into(),
-        payload: serde_json::json!({"ok": true}),
+    cmd.emit::<TestEffect>(TestEffect::Ping {
+        message: "demo".into(),
     })
     .unwrap();
     let report = runtime.submit_command(&env, cmd).await.unwrap();
@@ -636,7 +641,7 @@ fn duplicate_effect_handler_registration_is_rejected() {
             PluginDescriptor { name: "effect1" }
         }
         fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
-            r.register_effect::<RuntimeEffect, _>(RuntimeEffectRecorder::default())
+            r.register_effect::<TestEffect, _>(RuntimeEffectRecorder::default())
         }
     }
     struct EffectPlugin2;
@@ -645,7 +650,7 @@ fn duplicate_effect_handler_registration_is_rejected() {
             PluginDescriptor { name: "effect2" }
         }
         fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
-            r.register_effect::<RuntimeEffect, _>(RuntimeEffectRecorder::default())
+            r.register_effect::<TestEffect, _>(RuntimeEffectRecorder::default())
         }
     }
 

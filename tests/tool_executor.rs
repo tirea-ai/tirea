@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use awaken::agent::config::AgentConfig;
 use awaken::agent::executor::{ParallelToolExecutor, SequentialToolExecutor, ToolExecutor};
 use awaken::agent::loop_runner::{build_agent_env, run_agent_loop};
-use awaken::agent::state::{InferenceOverrides, RunLifecycle, ToolCallStates};
+use awaken::agent::state::{RunLifecycle, SetInferenceOverride, ToolCallStates};
 use awaken::contract::event::AgentEvent;
 use awaken::contract::event_sink::{NullEventSink, VecEventSink};
 use awaken::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
@@ -131,7 +131,6 @@ impl Plugin for LoopStatePlugin {
     fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
         r.register_key::<RunLifecycle>(StateKeyOptions::default())?;
         r.register_key::<ToolCallStates>(StateKeyOptions::default())?;
-        r.register_key::<InferenceOverrides>(StateKeyOptions::default())?;
         Ok(())
     }
 }
@@ -189,19 +188,11 @@ async fn sequential_partial_failure_both_produce_results() {
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(FailingTool));
     let rt = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], agent.max_rounds).unwrap();
     let sink = VecEventSink::new();
-    let result = run_agent_loop(
-        &agent,
-        &rt,
-        &env,
-        &flag,
-        &sink,
-        vec![Message::user("go")],
-        id(),
-    )
-    .await
-    .unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
+        .await
+        .unwrap();
 
     let events = sink.take();
     let tool_dones: Vec<_> = events
@@ -229,19 +220,11 @@ async fn sequential_stops_after_first_suspension_in_loop() {
         .with_tool(Arc::new(SuspendingTool))
         .with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], agent.max_rounds).unwrap();
     let sink = VecEventSink::new();
-    let result = run_agent_loop(
-        &agent,
-        &rt,
-        &env,
-        &flag,
-        &sink,
-        vec![Message::user("go")],
-        id(),
-    )
-    .await
-    .unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
+        .await
+        .unwrap();
 
     assert_eq!(result.termination, TerminationReason::Suspended);
     let lifecycle = rt.store().read::<RunLifecycle>().unwrap();
@@ -273,19 +256,11 @@ async fn parallel_both_tools_execute() {
         .with_tool(Arc::new(EchoTool))
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], agent.max_rounds).unwrap();
     let sink = VecEventSink::new();
-    let result = run_agent_loop(
-        &agent,
-        &rt,
-        &env,
-        &flag,
-        &sink,
-        vec![Message::user("go")],
-        id(),
-    )
-    .await
-    .unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
+        .await
+        .unwrap();
 
     let events = sink.take();
     let tool_dones: Vec<_> = events
@@ -310,19 +285,11 @@ async fn parallel_partial_failure() {
         .with_tool(Arc::new(FailingTool))
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], agent.max_rounds).unwrap();
     let sink = VecEventSink::new();
-    let result = run_agent_loop(
-        &agent,
-        &rt,
-        &env,
-        &flag,
-        &sink,
-        vec![Message::user("go")],
-        id(),
-    )
-    .await
-    .unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
+        .await
+        .unwrap();
 
     let events = sink.take();
     let outcomes: Vec<_> = events
@@ -353,19 +320,11 @@ async fn parallel_does_not_stop_on_suspension() {
         }))
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], agent.max_rounds).unwrap();
     let sink = VecEventSink::new();
-    let result = run_agent_loop(
-        &agent,
-        &rt,
-        &env,
-        &flag,
-        &sink,
-        vec![Message::user("go")],
-        id(),
-    )
-    .await
-    .unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
+        .await
+        .unwrap();
 
     // Both tools executed (parallel doesn't stop on suspension)
     assert_eq!(
@@ -396,19 +355,11 @@ async fn suspension_sets_run_to_waiting() {
     )])]));
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let rt = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], agent.max_rounds).unwrap();
     let sink = NullEventSink;
-    let result = run_agent_loop(
-        &agent,
-        &rt,
-        &env,
-        &flag,
-        &sink,
-        vec![Message::user("go")],
-        id(),
-    )
-    .await
-    .unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
+        .await
+        .unwrap();
 
     assert_eq!(result.termination, TerminationReason::Suspended);
     let lifecycle = rt.store().read::<RunLifecycle>().unwrap();
@@ -424,19 +375,11 @@ async fn suspension_tool_call_state_is_suspended() {
     )])]));
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let rt = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], agent.max_rounds).unwrap();
     let sink = NullEventSink;
-    run_agent_loop(
-        &agent,
-        &rt,
-        &env,
-        &flag,
-        &sink,
-        vec![Message::user("go")],
-        id(),
-    )
-    .await
-    .unwrap();
+    run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
+        .await
+        .unwrap();
 
     let tool_states = rt.store().read::<ToolCallStates>().unwrap_or_default();
     let c1 = tool_states.calls.get("c1").expect("c1 should exist");
@@ -518,20 +461,11 @@ async fn hook_state_mutation_is_not_visible_to_sibling_hook() {
         observed: observed.clone(),
     });
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![hook_plugin];
-    let (env, flag) = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
-
+    let env = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
     let sink = NullEventSink;
-    run_agent_loop(
-        &agent,
-        &rt,
-        &env,
-        &flag,
-        &sink,
-        vec![Message::user("hi")],
-        id(),
-    )
-    .await
-    .unwrap();
+    run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("hi")], id())
+        .await
+        .unwrap();
 
     assert_eq!(*observed.lock().unwrap(), Some(0));
     assert_eq!(rt.store().read::<TestCounter>(), Some(1));
@@ -558,19 +492,11 @@ async fn max_rounds_precise_count() {
         .with_max_rounds(3)
         .with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], agent.max_rounds).unwrap();
     let sink = NullEventSink;
-    let result = run_agent_loop(
-        &agent,
-        &rt,
-        &env,
-        &flag,
-        &sink,
-        vec![Message::user("go")],
-        id(),
-    )
-    .await
-    .unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
+        .await
+        .unwrap();
 
     assert!(
         matches!(result.termination, TerminationReason::Stopped(ref s) if s.code == "max_rounds")
@@ -583,16 +509,18 @@ async fn max_rounds_precise_count() {
 }
 
 #[tokio::test]
-async fn terminate_via_effect_in_after_inference_hook() {
+async fn terminate_via_state_in_after_inference_hook() {
+    use awaken::agent::state::{RunLifecycle, RunLifecycleUpdate};
+
     struct TerminateHook;
     #[async_trait]
     impl PhaseHook for TerminateHook {
         async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
             let mut cmd = StateCommand::new();
-            cmd.effect(RuntimeEffect::Terminate {
-                reason: TerminationReason::stopped("custom_stop"),
-            })
-            .unwrap();
+            cmd.update::<RunLifecycle>(RunLifecycleUpdate::Done {
+                done_reason: "stopped:custom_stop".into(),
+                updated_at: 0,
+            });
             Ok(cmd)
         }
     }
@@ -616,20 +544,11 @@ async fn terminate_via_effect_in_after_inference_hook() {
     let rt = make_runtime();
 
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(TermHookPlugin)];
-    let (env, flag) = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
-
+    let env = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
     let sink = NullEventSink;
-    let result = run_agent_loop(
-        &agent,
-        &rt,
-        &env,
-        &flag,
-        &sink,
-        vec![Message::user("go")],
-        id(),
-    )
-    .await
-    .unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
+        .await
+        .unwrap();
 
     assert!(
         matches!(result.termination, TerminationReason::Stopped(ref s) if s.code == "custom_stop")
@@ -675,20 +594,11 @@ async fn phase_sequence_with_tool_call() {
     let rt = make_runtime();
 
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(LogPlugin(phases.clone()))];
-    let (env, flag) = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
-
+    let env = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
     let sink = NullEventSink;
-    run_agent_loop(
-        &agent,
-        &rt,
-        &env,
-        &flag,
-        &sink,
-        vec![Message::user("go")],
-        id(),
-    )
-    .await
-    .unwrap();
+    run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
+        .await
+        .unwrap();
 
     let p = phases.lock().unwrap();
     assert_eq!(p[0], Phase::RunStart);
@@ -740,20 +650,11 @@ async fn phase_sequence_on_suspension() {
     let rt = make_runtime();
 
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(LogPlugin(phases.clone()))];
-    let (env, flag) = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
-
+    let env = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
     let sink = NullEventSink;
-    run_agent_loop(
-        &agent,
-        &rt,
-        &env,
-        &flag,
-        &sink,
-        vec![Message::user("go")],
-        id(),
-    )
-    .await
-    .unwrap();
+    run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
+        .await
+        .unwrap();
 
     let p = phases.lock().unwrap();
     assert_eq!(p[0], Phase::RunStart);
@@ -840,19 +741,11 @@ async fn empty_tool_calls_treated_as_natural_end() {
     }]));
     let agent = AgentConfig::new("test", "m", "sys", llm);
     let rt = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], agent.max_rounds).unwrap();
     let sink = NullEventSink;
-    let result = run_agent_loop(
-        &agent,
-        &rt,
-        &env,
-        &flag,
-        &sink,
-        vec![Message::user("hi")],
-        id(),
-    )
-    .await
-    .unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("hi")], id())
+        .await
+        .unwrap();
 
     assert_eq!(result.termination, TerminationReason::NaturalEnd);
     assert_eq!(result.response, "Just text.");
@@ -875,19 +768,11 @@ async fn multiple_steps_accumulate_messages() {
     ]));
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], agent.max_rounds).unwrap();
     let sink = NullEventSink;
-    let result = run_agent_loop(
-        &agent,
-        &rt,
-        &env,
-        &flag,
-        &sink,
-        vec![Message::user("go")],
-        id(),
-    )
-    .await
-    .unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
+        .await
+        .unwrap();
 
     assert_eq!(result.steps, 3);
     assert_eq!(result.response, "Final answer.");
@@ -900,7 +785,7 @@ async fn run_lifecycle_run_id_matches_identity() {
     let llm = Arc::new(ScriptedLlm::new(vec![text_step("ok")]));
     let agent = AgentConfig::new("test", "m", "sys", llm);
     let rt = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], agent.max_rounds).unwrap();
     let custom_id = RunIdentity::new(
         "t-x".into(),
         None,
@@ -914,7 +799,6 @@ async fn run_lifecycle_run_id_matches_identity() {
         &agent,
         &rt,
         &env,
-        &flag,
         &sink,
         vec![Message::user("hi")],
         custom_id,
@@ -942,19 +826,11 @@ async fn batch_approval_both_tools_execute_in_loop() {
         .with_tool(Arc::new(EchoTool))
         .with_tool_executor(Arc::new(ParallelToolExecutor::batch_approval()));
     let rt = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], agent.max_rounds).unwrap();
     let sink = VecEventSink::new();
-    let result = run_agent_loop(
-        &agent,
-        &rt,
-        &env,
-        &flag,
-        &sink,
-        vec![Message::user("go")],
-        id(),
-    )
-    .await
-    .unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
+        .await
+        .unwrap();
 
     let events = sink.take();
     let tool_dones: Vec<_> = events
@@ -979,19 +855,11 @@ async fn batch_approval_suspension_still_executes_all() {
         }))
         .with_tool_executor(Arc::new(ParallelToolExecutor::batch_approval()));
     let rt = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], agent.max_rounds).unwrap();
     let sink = NullEventSink;
-    let result = run_agent_loop(
-        &agent,
-        &rt,
-        &env,
-        &flag,
-        &sink,
-        vec![Message::user("go")],
-        id(),
-    )
-    .await
-    .unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
+        .await
+        .unwrap();
 
     assert_eq!(
         call_count.load(Ordering::SeqCst),
@@ -1019,19 +887,11 @@ async fn streaming_partial_failure_in_loop() {
         .with_tool(Arc::new(FailingTool))
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], agent.max_rounds).unwrap();
     let sink = VecEventSink::new();
-    let result = run_agent_loop(
-        &agent,
-        &rt,
-        &env,
-        &flag,
-        &sink,
-        vec![Message::user("go")],
-        id(),
-    )
-    .await
-    .unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
+        .await
+        .unwrap();
 
     let events = sink.take();
     let outcomes: Vec<_> = events
@@ -1055,7 +915,6 @@ async fn streaming_partial_failure_in_loop() {
 
 #[tokio::test]
 async fn before_inference_hook_override_reaches_request() {
-    use awaken::agent::state::InferenceOverridesUpdate;
     use awaken::contract::inference::InferenceOverride;
 
     // LLM that captures the InferenceRequest
@@ -1096,13 +955,11 @@ async fn before_inference_hook_override_reaches_request() {
             impl PhaseHook for Hook {
                 async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
                     let mut cmd = StateCommand::new();
-                    cmd.update::<InferenceOverrides>(InferenceOverridesUpdate::Merge(
-                        InferenceOverride {
-                            temperature: Some(0.0),
-                            max_tokens: Some(256),
-                            ..Default::default()
-                        },
-                    ));
+                    cmd.schedule_action::<SetInferenceOverride>(InferenceOverride {
+                        temperature: Some(0.0),
+                        max_tokens: Some(256),
+                        ..Default::default()
+                    })?;
                     Ok(cmd)
                 }
             }
@@ -1118,20 +975,11 @@ async fn before_inference_hook_override_reaches_request() {
     let rt = make_runtime();
 
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(OverridePlugin)];
-    let (env, flag) = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
-
+    let env = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
     let sink = NullEventSink;
-    let _result = run_agent_loop(
-        &agent,
-        &rt,
-        &env,
-        &flag,
-        &sink,
-        vec![Message::user("go")],
-        id(),
-    )
-    .await
-    .unwrap();
+    let _result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
+        .await
+        .unwrap();
 
     let captured = llm.captured.lock().unwrap();
     assert_eq!(captured.len(), 1);
@@ -1143,7 +991,6 @@ async fn before_inference_hook_override_reaches_request() {
 
 #[tokio::test]
 async fn multiple_hooks_merge_inference_overrides_last_wins() {
-    use awaken::agent::state::InferenceOverridesUpdate;
     use awaken::contract::inference::InferenceOverride;
 
     struct CapturingLlm {
@@ -1181,13 +1028,11 @@ async fn multiple_hooks_merge_inference_overrides_last_wins() {
             impl PhaseHook for Hook {
                 async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
                     let mut cmd = StateCommand::new();
-                    cmd.update::<InferenceOverrides>(InferenceOverridesUpdate::Merge(
-                        InferenceOverride {
-                            temperature: Some(0.5),
-                            model: Some("model-a".into()),
-                            ..Default::default()
-                        },
-                    ));
+                    cmd.schedule_action::<SetInferenceOverride>(InferenceOverride {
+                        temperature: Some(0.5),
+                        model: Some("model-a".into()),
+                        ..Default::default()
+                    })?;
                     Ok(cmd)
                 }
             }
@@ -1208,13 +1053,11 @@ async fn multiple_hooks_merge_inference_overrides_last_wins() {
             impl PhaseHook for Hook {
                 async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
                     let mut cmd = StateCommand::new();
-                    cmd.update::<InferenceOverrides>(InferenceOverridesUpdate::Merge(
-                        InferenceOverride {
-                            temperature: Some(0.9),
-                            max_tokens: Some(512),
-                            ..Default::default()
-                        },
-                    ));
+                    cmd.schedule_action::<SetInferenceOverride>(InferenceOverride {
+                        temperature: Some(0.9),
+                        max_tokens: Some(512),
+                        ..Default::default()
+                    })?;
                     Ok(cmd)
                 }
             }
@@ -1231,13 +1074,12 @@ async fn multiple_hooks_merge_inference_overrides_last_wins() {
 
     let user_plugins: Vec<Arc<dyn Plugin>> =
         vec![Arc::new(OverridePluginA), Arc::new(OverridePluginB)];
-    let (env, flag) = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
+    let env = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
 
     let _result = run_agent_loop(
         &agent,
         &rt,
         &env,
-        &flag,
         &NullEventSink,
         vec![Message::user("go")],
         id(),
@@ -1290,13 +1132,12 @@ async fn no_override_hook_leaves_overrides_none() {
     let rt = make_runtime();
 
     // No override plugins
-    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], agent.max_rounds).unwrap();
 
     let _result = run_agent_loop(
         &agent,
         &rt,
         &env,
-        &flag,
         &NullEventSink,
         vec![Message::user("go")],
         id(),
@@ -1314,7 +1155,6 @@ async fn no_override_hook_leaves_overrides_none() {
 
 #[tokio::test]
 async fn override_consumed_each_step_not_leaked() {
-    use awaken::agent::state::InferenceOverridesUpdate;
     use awaken::contract::inference::InferenceOverride;
 
     struct CapturingLlm {
@@ -1369,12 +1209,10 @@ async fn override_consumed_each_step_not_leaked() {
                     let mut cmd = StateCommand::new();
                     // Only emit on first call
                     if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
-                        cmd.update::<InferenceOverrides>(InferenceOverridesUpdate::Merge(
-                            InferenceOverride {
-                                temperature: Some(0.0),
-                                ..Default::default()
-                            },
-                        ));
+                        cmd.schedule_action::<SetInferenceOverride>(InferenceOverride {
+                            temperature: Some(0.0),
+                            ..Default::default()
+                        })?;
                     }
                     Ok(cmd)
                 }
@@ -1398,13 +1236,12 @@ async fn override_consumed_each_step_not_leaked() {
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(OnceOverridePlugin {
         emitted: emitted.clone(),
     })];
-    let (env, flag) = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
+    let env = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
 
     let _result = run_agent_loop(
         &agent,
         &rt,
         &env,
-        &flag,
         &NullEventSink,
         vec![Message::user("go")],
         id(),
