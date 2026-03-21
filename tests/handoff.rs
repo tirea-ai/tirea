@@ -6,7 +6,7 @@
 //! - Changing active_plugins between phases via different profiles
 
 use async_trait::async_trait;
-use awaken::agent::state::{RunLifecycle, ToolCallStates};
+use awaken::agent::state::{ContextThrottleState, RunLifecycle, ToolCallStates};
 use awaken::contract::profile::{ActiveAgentKey, AgentProfile, AgentRegistry, MapAgentRegistry};
 use awaken::*;
 use serde_json::json;
@@ -93,6 +93,7 @@ impl Plugin for LoopStatePlugin {
     fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
         r.register_key::<RunLifecycle>(StateKeyOptions::default())?;
         r.register_key::<ToolCallStates>(StateKeyOptions::default())?;
+        r.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
         r.register_key::<ActiveAgentKey>(StateKeyOptions::default())?;
         Ok(())
     }

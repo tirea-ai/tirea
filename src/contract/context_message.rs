@@ -1,8 +1,8 @@
 //! Context message injection types for prompt assembly.
 //!
-//! Plugins schedule `AddContextMessage` actions during `BeforeInference` to inject
-//! content at specific positions in the prompt. The loop runner consumes these actions
-//! and assembles the final message list before building the `InferenceRequest`.
+//! Plugins schedule `AddContextMessage` actions to inject content at specific positions
+//! in the prompt. The loop runner consumes these actions before building the
+//! `InferenceRequest`, applying system-level throttling based on `key` and `cooldown_turns`.
 
 use serde::{Deserialize, Serialize};
 
@@ -27,10 +27,13 @@ pub enum ContextMessageTarget {
 /// A context message to be injected into the prompt.
 ///
 /// Scheduled by plugins via `cmd.schedule_action::<AddContextMessage>(...)`.
-/// Throttling and deduplication are the plugin's responsibility — by the time
-/// a `ContextMessage` reaches the loop runner, it is guaranteed to be injected.
+/// The loop runner applies throttling: if `cooldown_turns > 0`, the message is
+/// skipped unless enough steps have passed since the last injection of the same `key`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextMessage {
+    /// Deduplication and throttle identifier. Messages with the same key share
+    /// throttle state. Typically `"plugin_name.purpose"`.
+    pub key: String,
     /// Message role (typically `System` or `User`).
     pub role: Role,
     /// Content blocks.
@@ -39,47 +42,65 @@ pub struct ContextMessage {
     pub visibility: Visibility,
     /// Where in the prompt to insert this message.
     pub target: ContextMessageTarget,
+    /// Minimum number of steps between injections of this key.
+    /// `0` means inject every time (no throttling).
+    pub cooldown_turns: u32,
 }
 
 impl ContextMessage {
     /// Create a system-target context message (injected after base system prompt).
-    pub fn system(text: impl Into<String>) -> Self {
+    pub fn system(key: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
+            key: key.into(),
             role: Role::System,
             content: vec![ContentBlock::text(text)],
             visibility: Visibility::Internal,
             target: ContextMessageTarget::System,
+            cooldown_turns: 0,
         }
     }
 
     /// Create a suffix system message (appended after conversation history).
-    pub fn suffix_system(text: impl Into<String>) -> Self {
+    pub fn suffix_system(key: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
+            key: key.into(),
             role: Role::System,
             content: vec![ContentBlock::text(text)],
             visibility: Visibility::Internal,
             target: ContextMessageTarget::SuffixSystem,
+            cooldown_turns: 0,
         }
     }
 
     /// Create a session-level context message.
-    pub fn session(role: Role, text: impl Into<String>) -> Self {
+    pub fn session(key: impl Into<String>, role: Role, text: impl Into<String>) -> Self {
         Self {
+            key: key.into(),
             role,
             content: vec![ContentBlock::text(text)],
             visibility: Visibility::Internal,
             target: ContextMessageTarget::Session,
+            cooldown_turns: 0,
         }
     }
 
     /// Create a conversation-level context message.
-    pub fn conversation(role: Role, text: impl Into<String>) -> Self {
+    pub fn conversation(key: impl Into<String>, role: Role, text: impl Into<String>) -> Self {
         Self {
+            key: key.into(),
             role,
             content: vec![ContentBlock::text(text)],
             visibility: Visibility::All,
             target: ContextMessageTarget::Conversation,
+            cooldown_turns: 0,
         }
+    }
+
+    /// Set cooldown turns (builder pattern).
+    #[must_use]
+    pub fn with_cooldown(mut self, turns: u32) -> Self {
+        self.cooldown_turns = turns;
+        self
     }
 }
 
@@ -89,25 +110,29 @@ mod tests {
 
     #[test]
     fn system_context_message_defaults() {
-        let msg = ContextMessage::system("remember this");
+        let msg = ContextMessage::system("my.key", "remember this");
+        assert_eq!(msg.key, "my.key");
         assert_eq!(msg.role, Role::System);
         assert_eq!(msg.target, ContextMessageTarget::System);
         assert_eq!(msg.visibility, Visibility::Internal);
+        assert_eq!(msg.cooldown_turns, 0);
     }
 
     #[test]
-    fn suffix_system_target() {
-        let msg = ContextMessage::suffix_system("final instruction");
-        assert_eq!(msg.target, ContextMessageTarget::SuffixSystem);
+    fn with_cooldown_builder() {
+        let msg = ContextMessage::system("k", "text").with_cooldown(5);
+        assert_eq!(msg.cooldown_turns, 5);
     }
 
     #[test]
     fn context_message_serde_roundtrip() {
         let msg = ContextMessage {
+            key: "test.key".into(),
             role: Role::User,
             content: vec![ContentBlock::text("hello")],
             visibility: Visibility::All,
             target: ContextMessageTarget::Conversation,
+            cooldown_turns: 3,
         };
         let json = serde_json::to_value(&msg).unwrap();
         let parsed: ContextMessage = serde_json::from_value(json).unwrap();

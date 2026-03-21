@@ -139,7 +139,7 @@ pub async fn run_agent_loop(
 
         // Consume loop actions from PendingScheduledActions before building request
         let overrides = consume_inference_overrides(store)?;
-        let context_msgs = consume_context_messages(store)?;
+        let context_msgs = consume_context_messages(store, steps)?;
 
         // Build message list: system prompt + conversation history
         let has_system_prompt = !agent.system_prompt.is_empty();
@@ -708,14 +708,23 @@ fn consume_inference_overrides(
     }
 }
 
-/// Consume `AddContextMessage` actions from the pending queue.
+/// Consume `AddContextMessage` actions from the pending queue with throttle filtering.
 ///
-/// Returns context messages grouped by target, ready for insertion.
+/// Reads `ContextThrottleState` to enforce cooldown rules:
+/// - `cooldown_turns == 0`: always inject
+/// - Content hash changed since last injection: inject
+/// - Steps since last injection >= cooldown_turns: inject
+/// - Otherwise: skip (throttled)
+///
+/// All matching actions are dequeued regardless of throttle outcome.
 fn consume_context_messages(
     store: &crate::state::StateStore,
+    current_step: usize,
 ) -> Result<Vec<crate::contract::context_message::ContextMessage>, crate::error::StateError> {
-    use super::state::AddContextMessage;
+    use super::state::{AddContextMessage, ContextThrottleState, ContextThrottleUpdate};
     use crate::model::ScheduledActionSpec;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
 
     let pending = store.read::<PendingScheduledActions>().unwrap_or_default();
 
@@ -728,21 +737,71 @@ fn consume_context_messages(
         return Ok(vec![]);
     }
 
-    let mut messages = Vec::new();
-    let mut ids = Vec::new();
+    // Decode all payloads and collect action IDs
+    let mut candidates = Vec::new();
+    let mut action_ids = Vec::new();
     for envelope in matching {
         let payload = AddContextMessage::decode_payload(envelope.action.payload.clone())?;
-        messages.push(payload);
-        ids.push(envelope.id);
+        candidates.push(payload);
+        action_ids.push(envelope.id);
     }
 
+    // Dequeue all matching actions (consumed regardless of throttle)
     let mut patch = MutationBatch::new();
-    for id in ids {
-        patch.update::<PendingScheduledActions>(ScheduledActionQueueUpdate::Remove { id });
+    for id in &action_ids {
+        patch.update::<PendingScheduledActions>(ScheduledActionQueueUpdate::Remove { id: *id });
     }
     store.commit(patch)?;
 
-    Ok(messages)
+    // Apply throttle filtering
+    let throttle_state = store.read::<ContextThrottleState>().unwrap_or_default();
+
+    let mut accepted = Vec::new();
+    let mut throttle_updates = Vec::new();
+
+    for msg in candidates {
+        let content_hash = {
+            let mut hasher = DefaultHasher::new();
+            // Hash the serialized content for change detection
+            if let Ok(json) = serde_json::to_string(&msg.content) {
+                json.hash(&mut hasher);
+            }
+            hasher.finish()
+        };
+
+        let should_inject = if msg.cooldown_turns == 0 {
+            true
+        } else {
+            match throttle_state.entries.get(&msg.key) {
+                None => true,
+                Some(entry) => {
+                    entry.content_hash != content_hash
+                        || current_step.saturating_sub(entry.last_step)
+                            >= msg.cooldown_turns as usize
+                }
+            }
+        };
+
+        if should_inject {
+            throttle_updates.push(ContextThrottleUpdate::Injected {
+                key: msg.key.clone(),
+                step: current_step,
+                content_hash,
+            });
+            accepted.push(msg);
+        }
+    }
+
+    // Update throttle state
+    if !throttle_updates.is_empty() {
+        let mut patch = MutationBatch::new();
+        for update in throttle_updates {
+            patch.update::<ContextThrottleState>(update);
+        }
+        store.commit(patch)?;
+    }
+
+    Ok(accepted)
 }
 
 /// Insert context messages into the message list at their declared target positions.

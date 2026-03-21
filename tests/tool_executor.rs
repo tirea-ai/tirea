@@ -7,7 +7,9 @@ use async_trait::async_trait;
 use awaken::agent::config::AgentConfig;
 use awaken::agent::executor::{ParallelToolExecutor, SequentialToolExecutor, ToolExecutor};
 use awaken::agent::loop_runner::{build_agent_env, run_agent_loop};
-use awaken::agent::state::{RunLifecycle, SetInferenceOverride, ToolCallStates};
+use awaken::agent::state::{
+    ContextThrottleState, RunLifecycle, SetInferenceOverride, ToolCallStates,
+};
 use awaken::contract::content::ContentBlock;
 use awaken::contract::event::AgentEvent;
 use awaken::contract::event_sink::{NullEventSink, VecEventSink};
@@ -132,6 +134,7 @@ impl Plugin for LoopStatePlugin {
     fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
         r.register_key::<RunLifecycle>(StateKeyOptions::default())?;
         r.register_key::<ToolCallStates>(StateKeyOptions::default())?;
+        r.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
         Ok(())
     }
 }
@@ -1310,9 +1313,11 @@ async fn context_message_injected_into_request() {
                 async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
                     let mut cmd = StateCommand::new();
                     cmd.schedule_action::<AddContextMessage>(ContextMessage::system(
+                        "ctx.assistant",
                         "You are a helpful assistant",
                     ))?;
                     cmd.schedule_action::<AddContextMessage>(ContextMessage::suffix_system(
+                        "ctx.concise",
                         "Remember: be concise",
                     ))?;
                     Ok(cmd)
@@ -1433,6 +1438,7 @@ async fn context_messages_not_leaked_to_next_step() {
                     let mut cmd = StateCommand::new();
                     if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
                         cmd.schedule_action::<AddContextMessage>(ContextMessage::suffix_system(
+                            "ctx.once",
                             "first step only",
                         ))?;
                     }

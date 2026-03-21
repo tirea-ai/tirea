@@ -5,7 +5,7 @@ use awaken::agent::config::AgentConfig;
 use awaken::agent::loop_runner::{
     AgentRunResult, ResumeInput, build_agent_env, resume_agent_loop, run_agent_loop,
 };
-use awaken::agent::state::{RunLifecycle, RunLifecycleState, ToolCallStates};
+use awaken::agent::state::{ContextThrottleState, RunLifecycle, RunLifecycleState, ToolCallStates};
 use awaken::contract::content::ContentBlock;
 use awaken::contract::event::AgentEvent;
 use awaken::contract::event_sink::{NullEventSink, VecEventSink};
@@ -153,6 +153,7 @@ impl Plugin for LoopStatePlugin {
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
         registrar.register_key::<RunLifecycle>(StateKeyOptions::default())?;
         registrar.register_key::<ToolCallStates>(StateKeyOptions::default())?;
+        registrar.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
         Ok(())
     }
 }
