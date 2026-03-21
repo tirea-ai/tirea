@@ -1039,12 +1039,6 @@ async fn execute_single_tool_with_phases_impl(
                         .with_consume_after_emit(false),
                 );
             }
-            AfterToolExecuteAction::AddSystemReminder(text) => {
-                step.messaging.add_system_reminder(text);
-            }
-            AfterToolExecuteAction::AddUserMessage(text) => {
-                step.messaging.add_user_message(text);
-            }
         }
     }
 

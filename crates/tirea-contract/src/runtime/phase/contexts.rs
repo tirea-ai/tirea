@@ -100,10 +100,10 @@ impl<'s, 'a> BeforeInferenceContext<'s, 'a> {
             });
     }
 
-    /// Append a session message.
-    pub fn add_session_message(&mut self, text: impl Into<String>) {
+    /// Append a session-band context message.
+    pub fn add_session_message(&mut self, key: impl Into<String>, text: impl Into<String>) {
         self.step.inference.context_messages.push(
-            crate::runtime::inference::ContextMessage::session_text(text.into()),
+            crate::runtime::inference::ContextMessage::session(key.into(), text.into()),
         );
     }
 
@@ -282,14 +282,6 @@ impl<'s, 'a> AfterToolExecuteContext<'s, 'a> {
             .as_ref()
             .and_then(|g| g.result.as_ref())
             .expect("AfterToolExecuteContext.tool_result() requires tool result")
-    }
-
-    pub fn add_system_reminder(&mut self, text: impl Into<String>) {
-        self.step.messaging.add_system_reminder(text);
-    }
-
-    pub fn add_user_message(&mut self, text: impl Into<String>) {
-        self.step.messaging.add_user_message(text);
     }
 
     pub fn add_message(&mut self, message: crate::runtime::inference::ContextMessage) {

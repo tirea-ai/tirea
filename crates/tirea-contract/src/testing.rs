@@ -304,14 +304,6 @@ pub fn typed_suspend_tool(ticket: SuspendTicket) -> BeforeToolExecuteAction {
     BeforeToolExecuteAction::Suspend(ticket)
 }
 
-pub fn typed_system_reminder(text: impl Into<String>) -> AfterToolExecuteAction {
-    AfterToolExecuteAction::AddSystemReminder(text.into())
-}
-
-pub fn typed_user_message(text: impl Into<String>) -> AfterToolExecuteAction {
-    AfterToolExecuteAction::AddUserMessage(text.into())
-}
-
 pub fn typed_runtime_message(
     message: crate::runtime::inference::ContextMessage,
 ) -> AfterToolExecuteAction {
@@ -344,11 +336,6 @@ pub fn apply_before_inference_for_test(
 ) {
     for action in actions {
         match action {
-            BeforeInferenceAction::AddSessionContext(text) => {
-                step.inference.context_messages.push(
-                    crate::runtime::inference::ContextMessage::session_text(text),
-                );
-            }
             BeforeInferenceAction::AddContextMessage(entry) => {
                 step.inference.context_messages.push(entry);
             }
@@ -440,12 +427,6 @@ pub fn apply_after_tool_for_test(
                         .with_target(crate::runtime::inference::ContextMessageTarget::Conversation)
                         .with_consume_after_emit(false),
                 );
-            }
-            AfterToolExecuteAction::AddSystemReminder(text) => {
-                step.messaging.add_system_reminder(text);
-            }
-            AfterToolExecuteAction::AddUserMessage(text) => {
-                step.messaging.add_user_message(text);
             }
             AfterToolExecuteAction::State(sa) => step.emit_state_action(sa),
         }

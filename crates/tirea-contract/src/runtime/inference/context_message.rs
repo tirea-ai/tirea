@@ -182,17 +182,6 @@ impl ContextMessage {
         ))
     }
 
-    /// Build a session-scoped context entry using a deterministic key derived
-    /// from the content. Intended for legacy session-context callers that lack
-    /// an explicit stable key but still need unified throttle/placement logic.
-    #[must_use]
-    pub fn session_text(content: impl Into<String>) -> Self {
-        let content = content.into();
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        content.hash(&mut hasher);
-        Self::session(format!("legacy_session:{:016x}", hasher.finish()), content)
-    }
-
     #[must_use]
     pub fn is_prompt_injected(&self) -> bool {
         self.target != ContextMessageTarget::Conversation
@@ -304,16 +293,6 @@ mod tests {
         assert!(json.contains("\"suffix_system\""));
         let restored: ContextMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.target, ContextMessageTarget::SuffixSystem);
-    }
-
-    #[test]
-    fn session_text_auto_keys_by_content() {
-        let a = ContextMessage::session_text("branch: main");
-        let b = ContextMessage::session_text("branch: main");
-        let c = ContextMessage::session_text("branch: dev");
-        assert_eq!(a.target, ContextMessageTarget::Session);
-        assert_eq!(a.key, b.key);
-        assert_ne!(a.key, c.key);
     }
 
     #[test]

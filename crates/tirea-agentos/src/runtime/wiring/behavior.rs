@@ -277,12 +277,10 @@ mod tests {
             _ctx: &ReadOnlyContext<'_>,
         ) -> ActionSet<BeforeInferenceAction> {
             ActionSet::single(BeforeInferenceAction::AddContextMessage(
-                tirea_contract::runtime::inference::ContextMessage {
-                    key: self.id.to_string(),
-                    content: self.text.clone(),
-                    cooldown_turns: 0,
-                    target: Default::default(),
-                },
+                tirea_contract::runtime::inference::ContextMessage::session(
+                    format!("ordered:{}", self.id),
+                    self.text.clone(),
+                ),
             ))
         }
     }
@@ -296,7 +294,7 @@ mod tests {
             .into_vec()
             .into_iter()
             .filter_map(|a| match a {
-                BeforeInferenceAction::AddContextMessage(m) => Some(m.content),
+                BeforeInferenceAction::AddContextMessage(message) => Some(message.content),
                 _ => None,
             })
             .collect()

@@ -352,8 +352,6 @@ mod tests {
                         reminders.push(message.content);
                     }
                 }
-                AfterToolExecuteAction::AddSystemReminder(text) => reminders.push(text),
-                AfterToolExecuteAction::AddUserMessage(_) => {}
             }
         }
         (state_actions, reminders)
@@ -368,8 +366,7 @@ mod tests {
             match action {
                 BeforeInferenceAction::State(action) => state_actions.push(action),
                 BeforeInferenceAction::AddContextMessage(entry) => contexts.push(entry.content),
-                BeforeInferenceAction::AddSessionContext(_)
-                | BeforeInferenceAction::ExcludeTool(_)
+                BeforeInferenceAction::ExcludeTool(_)
                 | BeforeInferenceAction::IncludeOnlyTools(_)
                 | BeforeInferenceAction::AddRequestTransform(_)
                 | BeforeInferenceAction::OverrideModel(_)

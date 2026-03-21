@@ -183,12 +183,6 @@ async fn test_skill_activation_effect_does_not_emit_user_messages() {
             tirea_contract::runtime::phase::AfterToolExecuteAction::AddMessage(message) => {
                 step.messaging.push(message);
             }
-            tirea_contract::runtime::phase::AfterToolExecuteAction::AddSystemReminder(text) => {
-                step.messaging.add_system_reminder(text);
-            }
-            tirea_contract::runtime::phase::AfterToolExecuteAction::AddUserMessage(text) => {
-                step.messaging.add_user_message(text);
-            }
             tirea_contract::runtime::phase::AfterToolExecuteAction::State(_) => {}
         }
     }
@@ -524,12 +518,6 @@ async fn test_skill_activation_effect_keeps_skill_instructions_hidden() {
         match action {
             tirea_contract::runtime::phase::AfterToolExecuteAction::AddMessage(message) => {
                 step.messaging.push(message);
-            }
-            tirea_contract::runtime::phase::AfterToolExecuteAction::AddSystemReminder(text) => {
-                step.messaging.add_system_reminder(text);
-            }
-            tirea_contract::runtime::phase::AfterToolExecuteAction::AddUserMessage(text) => {
-                step.messaging.add_user_message(text);
             }
             tirea_contract::runtime::phase::AfterToolExecuteAction::State(_) => {}
         }
