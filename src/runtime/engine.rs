@@ -2,6 +2,8 @@ use std::any::TypeId;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
+use crate::config::profile::{ActiveConfig, OsConfig, RunOverrides};
+use crate::config::resolve::{ResolvedPhaseConfig, resolve_config};
 use crate::error::StateError;
 use crate::model::{
     EffectLog, EffectLogEntry, EffectLogUpdate, EffectSpec, FailedScheduledAction,
@@ -25,6 +27,8 @@ pub struct PhaseRuntime {
     runtime_registry: Arc<RwLock<RuntimeRegistry>>,
     execution_lock: Arc<Mutex<()>>,
     next_id: Arc<AtomicU64>,
+    os_config: Arc<RwLock<OsConfig>>,
+    active_config: Arc<RwLock<ActiveConfig>>,
 }
 
 impl PhaseRuntime {
@@ -40,7 +44,42 @@ impl PhaseRuntime {
             runtime_registry: Arc::new(RwLock::new(RuntimeRegistry::default())),
             execution_lock: Arc::new(Mutex::new(())),
             next_id: Arc::new(AtomicU64::new(1)),
+            os_config: Arc::new(RwLock::new(OsConfig::default())),
+            active_config: Arc::new(RwLock::new(ActiveConfig::default())),
         })
+    }
+
+    /// Atomically modify the runtime baseline configuration.
+    pub fn configure<F, R>(&self, f: F) -> Result<R, StateError>
+    where
+        F: FnOnce(&mut ActiveConfig) -> R,
+    {
+        let _guard = self
+            .execution_lock
+            .lock()
+            .expect("runtime execution lock poisoned");
+        let mut active = self
+            .active_config
+            .write()
+            .expect("active config lock poisoned");
+        Ok(f(&mut active))
+    }
+
+    /// Set the OS-level configuration (defaults + profiles).
+    pub fn set_os_config(&self, config: OsConfig) {
+        let mut os = self.os_config.write().expect("os config lock poisoned");
+        *os = config;
+    }
+
+    /// Resolve current effective configuration from all sources.
+    pub fn resolve_config(&self, overrides: Option<&RunOverrides>) -> ResolvedPhaseConfig {
+        let os = self.os_config.read().expect("os config lock poisoned");
+        let active = self
+            .active_config
+            .read()
+            .expect("active config lock poisoned");
+        let snapshot = self.store.snapshot();
+        resolve_config(&os, &active, &snapshot, overrides)
     }
 
     pub fn store(&self) -> &StateStore {
@@ -180,7 +219,11 @@ impl PhaseRuntime {
         };
         let mut rounds = 0;
 
+        // Resolve config at boundary (determines active_plugins + config snapshot)
+        let resolved = self.resolve_config(None);
+
         // Phase hooks run once before the action processing loop
+        // Filtered by resolved active_plugins
         let hooks: Vec<_> = {
             let registry = self
                 .runtime_registry
@@ -189,12 +232,24 @@ impl PhaseRuntime {
             registry
                 .phase_hooks
                 .get(&phase)
-                .map(|hooks| hooks.iter().map(|(_, _, hook)| Arc::clone(hook)).collect())
+                .map(|hooks| {
+                    hooks
+                        .iter()
+                        .filter(|(_, plugin_id, _)| {
+                            resolved.active_plugins.is_empty()
+                                || resolved.active_plugins.contains(plugin_id)
+                        })
+                        .map(|(_, _, hook)| Arc::clone(hook))
+                        .collect()
+                })
                 .unwrap_or_default()
         };
 
         for hook in hooks {
-            let ctx = base_ctx.clone().with_snapshot(self.store.snapshot());
+            let ctx = base_ctx
+                .clone()
+                .with_snapshot(self.store.snapshot())
+                .with_config(Arc::clone(&resolved.config));
             let command = hook.run(&ctx)?;
             if !command.is_empty() {
                 total_effects += command.effects.len();

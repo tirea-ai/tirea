@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
+use crate::config::spec::{ConfigMap, ConfigSlot};
 use crate::contract::identity::RunIdentity;
 use crate::contract::inference::LLMResponse;
 use crate::contract::message::Message;
@@ -33,6 +34,9 @@ pub struct PhaseContext {
 
     // LLM response (set during AfterInference)
     pub llm_response: Option<LLMResponse>,
+
+    // Resolved config (set at boundary by PhaseRuntime)
+    config: Option<Arc<ConfigMap>>,
 }
 
 impl PhaseContext {
@@ -48,12 +52,22 @@ impl PhaseContext {
             tool_args: None,
             tool_result: None,
             llm_response: None,
+            config: None,
         }
     }
 
     /// Read a state slot from the snapshot.
     pub fn state<K: StateSlot>(&self) -> Option<&K::Value> {
         self.snapshot.get::<K>()
+    }
+
+    /// Read a typed config value from the resolved config.
+    /// Returns the type's default if not set or no config attached.
+    pub fn config<C: ConfigSlot>(&self) -> C::Value {
+        self.config
+            .as_ref()
+            .and_then(|m| m.get::<C>().cloned())
+            .unwrap_or_default()
     }
 
     // -- Builder methods for setting optional fields --
@@ -67,6 +81,12 @@ impl PhaseContext {
     #[must_use]
     pub fn with_run_identity(mut self, identity: RunIdentity) -> Self {
         self.run_identity = identity;
+        self
+    }
+
+    #[must_use]
+    pub fn with_config(mut self, config: Arc<ConfigMap>) -> Self {
+        self.config = Some(config);
         self
     }
 
