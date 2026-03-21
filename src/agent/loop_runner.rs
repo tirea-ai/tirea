@@ -17,7 +17,7 @@ use crate::contract::message::{Message, Role, ToolCall, gen_message_id};
 use crate::contract::suspension::{
     ResumeDecisionAction, ToolCallOutcome, ToolCallResume, ToolCallResumeMode, ToolCallStatus,
 };
-use crate::contract::tool::ToolResult;
+use crate::contract::tool::{ToolCallContext, ToolResult};
 use crate::error::StateError;
 use crate::model::{Phase, RuntimeEffect};
 use crate::runtime::{ExecutionEnv, PhaseContext, PhaseRuntime, TypedEffectHandler};
@@ -299,9 +299,15 @@ pub async fn run_agent_loop(
         }
 
         // Execute allowed tool calls via ToolExecutor
+        let tool_ctx = ToolCallContext {
+            call_id: String::new(), // filled per-call by executor
+            run_identity: run_identity.clone(),
+            profile: make_ctx(Phase::BeforeToolExecute, &messages, &run_identity).profile,
+            snapshot: store.snapshot(),
+        };
         let exec_results = agent
             .tool_executor
-            .execute(&agent.tools, &allowed_calls)
+            .execute(&agent.tools, &allowed_calls, &tool_ctx)
             .await
             .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
 
@@ -487,6 +493,12 @@ pub async fn resume_agent_loop(
 
     // Apply decisions: transition each suspended tool call
     let tool_call_states = store.read::<ToolCallStates>().unwrap_or_default();
+    let resume_tool_ctx = ToolCallContext {
+        call_id: String::new(),
+        run_identity: run_identity.clone(),
+        profile: std::sync::Arc::new(crate::contract::profile::AgentProfile::default()),
+        snapshot: store.snapshot(),
+    };
 
     let mut resume_messages: Vec<Arc<Message>> = messages.into_iter().map(Arc::new).collect();
 
@@ -565,7 +577,9 @@ pub async fn resume_agent_loop(
                             &call_state.tool_name,
                             call_state.arguments.clone(),
                         );
-                        let result = execute_single_tool(agent, &call).await;
+                        let mut tool_ctx = resume_tool_ctx.clone();
+                        tool_ctx.call_id = call_id.to_string();
+                        let result = execute_single_tool(agent, &call, &tool_ctx).await;
 
                         let status = if result.is_success() {
                             ToolCallStatus::Succeeded
@@ -589,7 +603,9 @@ pub async fn resume_agent_loop(
                         // Re-execute with decision payload as new arguments
                         let call =
                             ToolCall::new(call_id, &call_state.tool_name, decision.result.clone());
-                        let result = execute_single_tool(agent, &call).await;
+                        let mut tool_ctx = resume_tool_ctx.clone();
+                        tool_ctx.call_id = call_id.to_string();
+                        let result = execute_single_tool(agent, &call, &tool_ctx).await;
 
                         let status = if result.is_success() {
                             ToolCallStatus::Succeeded
@@ -632,7 +648,11 @@ pub async fn resume_agent_loop(
 // -- Helpers --
 
 /// Execute a single tool, returning ToolResult (never crashes the loop).
-async fn execute_single_tool(agent: &AgentConfig, call: &ToolCall) -> ToolResult {
+async fn execute_single_tool(
+    agent: &AgentConfig,
+    call: &ToolCall,
+    ctx: &ToolCallContext,
+) -> ToolResult {
     let Some(tool) = agent.tools.get(&call.name) else {
         return ToolResult::error(&call.name, format!("tool '{}' not found", call.name));
     };
@@ -641,7 +661,7 @@ async fn execute_single_tool(agent: &AgentConfig, call: &ToolCall) -> ToolResult
         return ToolResult::error(&call.name, e.to_string());
     }
 
-    match tool.execute(call.arguments.clone()).await {
+    match tool.execute(call.arguments.clone(), ctx).await {
         Ok(result) => result,
         Err(e) => ToolResult::error(&call.name, e.to_string()),
     }

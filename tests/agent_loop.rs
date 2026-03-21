@@ -16,7 +16,7 @@ use awaken::contract::message::{Message, ToolCall};
 use awaken::contract::suspension::{
     ResumeDecisionAction, ToolCallResume, ToolCallResumeMode, ToolCallStatus,
 };
-use awaken::contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult};
 use awaken::*;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -73,7 +73,7 @@ impl Tool for EchoTool {
         ToolDescriptor::new("echo", "echo", "Echoes input back")
     }
 
-    async fn execute(&self, args: Value) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
         let msg = args
             .get("message")
             .and_then(|v| v.as_str())
@@ -91,7 +91,7 @@ impl Tool for CalcTool {
         ToolDescriptor::new("calc", "calculator", "Evaluates math")
     }
 
-    async fn execute(&self, args: Value) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
         let result = args.get("result").cloned().unwrap_or(json!(0));
         Ok(ToolResult::success("calc", result))
     }
@@ -105,7 +105,7 @@ impl Tool for FailingTool {
         ToolDescriptor::new("fail", "fail", "Always fails")
     }
 
-    async fn execute(&self, _args: Value) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
         Err(ToolError::ExecutionFailed("intentional failure".into()))
     }
 }
@@ -119,7 +119,7 @@ impl Tool for SuspendingTool {
         ToolDescriptor::new("dangerous", "dangerous", "Requires approval")
     }
 
-    async fn execute(&self, _args: Value) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
         Ok(ToolResult::suspended("dangerous", "needs user approval"))
     }
 }
@@ -133,7 +133,7 @@ impl Tool for PassthroughTool {
         ToolDescriptor::new("passthrough", "passthrough", "Returns args as result")
     }
 
-    async fn execute(&self, args: Value) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
         Ok(ToolResult::success("passthrough", args))
     }
 }
@@ -957,7 +957,11 @@ async fn resume_with_replay_tool_call() {
         fn descriptor(&self) -> ToolDescriptor {
             ToolDescriptor::new("dangerous", "dangerous", "Now approved echo")
         }
-        async fn execute(&self, args: Value) -> Result<ToolResult, ToolError> {
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("dangerous", args))
         }
     }
@@ -1070,7 +1074,11 @@ async fn resume_with_pass_decision_to_tool() {
         fn descriptor(&self) -> ToolDescriptor {
             ToolDescriptor::new("dangerous", "dangerous", "Returns args")
         }
-        async fn execute(&self, args: Value) -> Result<ToolResult, ToolError> {
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("dangerous", args))
         }
     }

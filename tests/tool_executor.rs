@@ -17,7 +17,7 @@ use awaken::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken::contract::message::{Message, ToolCall};
 use awaken::contract::profile::AgentProfile;
 use awaken::contract::suspension::{ToolCallOutcome, ToolCallStatus};
-use awaken::contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult};
 use awaken::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -73,7 +73,7 @@ impl Tool for EchoTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor::new("echo", "echo", "Echoes")
     }
-    async fn execute(&self, args: Value) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
         let msg = args
             .get("message")
             .and_then(|v| v.as_str())
@@ -89,7 +89,7 @@ impl Tool for FailingTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor::new("failing", "failing", "Fails")
     }
-    async fn execute(&self, _args: Value) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
         Err(ToolError::ExecutionFailed("intentional failure".into()))
     }
 }
@@ -100,7 +100,7 @@ impl Tool for SuspendingTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor::new("suspending", "suspending", "Suspends")
     }
-    async fn execute(&self, _args: Value) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
         Ok(ToolResult::suspended("suspending", "needs approval"))
     }
 }
@@ -113,7 +113,7 @@ impl Tool for CountingTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor::new("counting", "counting", "Counts")
     }
-    async fn execute(&self, _args: Value) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
         let n = self.call_count.fetch_add(1, Ordering::SeqCst) + 1;
         Ok(ToolResult::success("counting", json!({"count": n})))
     }

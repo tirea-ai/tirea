@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::contract::message::ToolCall;
 use crate::contract::suspension::ToolCallOutcome;
-use crate::contract::tool::{Tool, ToolResult};
+use crate::contract::tool::{Tool, ToolCallContext, ToolResult};
 use async_trait::async_trait;
 
 /// Result of executing a single tool call.
@@ -33,6 +33,7 @@ pub trait ToolExecutor: Send + Sync {
         &self,
         tools: &HashMap<String, Arc<dyn Tool>>,
         calls: &[ToolCall],
+        base_ctx: &ToolCallContext,
     ) -> Result<Vec<ToolExecutionResult>, ToolExecutorError>;
 
     /// Strategy name for logging.
@@ -50,11 +51,14 @@ impl ToolExecutor for SequentialToolExecutor {
         &self,
         tools: &HashMap<String, Arc<dyn Tool>>,
         calls: &[ToolCall],
+        base_ctx: &ToolCallContext,
     ) -> Result<Vec<ToolExecutionResult>, ToolExecutorError> {
         let mut results = Vec::with_capacity(calls.len());
 
         for call in calls {
-            let result = execute_single_tool(tools, call).await;
+            let mut ctx = base_ctx.clone();
+            ctx.call_id = call.id.clone();
+            let result = execute_single_tool(tools, call, &ctx).await;
             let outcome = ToolCallOutcome::from_tool_result(&result);
 
             results.push(ToolExecutionResult {
@@ -147,6 +151,7 @@ impl ToolExecutor for ParallelToolExecutor {
         &self,
         tools: &HashMap<String, Arc<dyn Tool>>,
         calls: &[ToolCall],
+        base_ctx: &ToolCallContext,
     ) -> Result<Vec<ToolExecutionResult>, ToolExecutorError> {
         use futures::future::join_all;
 
@@ -155,8 +160,10 @@ impl ToolExecutor for ParallelToolExecutor {
             .map(|call| {
                 let tools = tools.clone();
                 let call = call.clone();
+                let mut ctx = base_ctx.clone();
+                ctx.call_id = call.id.clone();
                 async move {
-                    let result = execute_single_tool(&tools, &call).await;
+                    let result = execute_single_tool(&tools, &call, &ctx).await;
                     let outcome = ToolCallOutcome::from_tool_result(&result);
                     ToolExecutionResult {
                         call,
@@ -182,6 +189,7 @@ impl ToolExecutor for ParallelToolExecutor {
 async fn execute_single_tool(
     tools: &HashMap<String, Arc<dyn Tool>>,
     call: &ToolCall,
+    ctx: &ToolCallContext,
 ) -> ToolResult {
     let Some(tool) = tools.get(&call.name) else {
         return ToolResult::error(&call.name, format!("tool '{}' not found", call.name));
@@ -191,7 +199,7 @@ async fn execute_single_tool(
         return ToolResult::error(&call.name, e.to_string());
     }
 
-    match tool.execute(call.arguments.clone()).await {
+    match tool.execute(call.arguments.clone(), ctx).await {
         Ok(result) => result,
         Err(e) => ToolResult::error(&call.name, e.to_string()),
     }
@@ -211,7 +219,11 @@ mod tests {
             ToolDescriptor::new("echo", "echo", "Echoes input")
         }
 
-        async fn execute(&self, args: Value) -> Result<ToolResult, ToolError> {
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
             let msg = args
                 .get("message")
                 .and_then(|v| v.as_str())
@@ -229,7 +241,11 @@ mod tests {
             ToolDescriptor::new("failing", "failing", "Always fails")
         }
 
-        async fn execute(&self, _args: Value) -> Result<ToolResult, ToolError> {
+        async fn execute(
+            &self,
+            _args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
             Err(ToolError::ExecutionFailed("intentional failure".into()))
         }
     }
@@ -242,7 +258,11 @@ mod tests {
             ToolDescriptor::new("suspending", "suspending", "Returns pending")
         }
 
-        async fn execute(&self, _args: Value) -> Result<ToolResult, ToolError> {
+        async fn execute(
+            &self,
+            _args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::suspended("suspending", "needs approval"))
         }
     }
@@ -259,7 +279,10 @@ mod tests {
         let calls = vec![ToolCall::new("c1", "echo", json!({"message": "hi"}))];
         let executor = SequentialToolExecutor;
 
-        let results = executor.execute(&tools, &calls).await.unwrap();
+        let results = executor
+            .execute(&tools, &calls, &ToolCallContext::test_default())
+            .await
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].outcome, ToolCallOutcome::Succeeded);
         assert!(results[0].result.is_success());
@@ -274,7 +297,10 @@ mod tests {
         ];
         let executor = SequentialToolExecutor;
 
-        let results = executor.execute(&tools, &calls).await.unwrap();
+        let results = executor
+            .execute(&tools, &calls, &ToolCallContext::test_default())
+            .await
+            .unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].outcome, ToolCallOutcome::Succeeded);
         assert_eq!(results[1].outcome, ToolCallOutcome::Failed);
@@ -289,7 +315,10 @@ mod tests {
         ];
         let executor = SequentialToolExecutor;
 
-        let results = executor.execute(&tools, &calls).await.unwrap();
+        let results = executor
+            .execute(&tools, &calls, &ToolCallContext::test_default())
+            .await
+            .unwrap();
         assert_eq!(results.len(), 1, "should stop after suspended tool");
         assert_eq!(results[0].outcome, ToolCallOutcome::Suspended);
     }
@@ -300,7 +329,10 @@ mod tests {
         let calls = vec![ToolCall::new("c1", "nonexistent", json!({}))];
         let executor = SequentialToolExecutor;
 
-        let results = executor.execute(&tools, &calls).await.unwrap();
+        let results = executor
+            .execute(&tools, &calls, &ToolCallContext::test_default())
+            .await
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].outcome, ToolCallOutcome::Failed);
         assert!(results[0].result.is_error());
@@ -311,7 +343,10 @@ mod tests {
         let tools = tool_map(vec![Arc::new(EchoTool)]);
         let executor = SequentialToolExecutor;
 
-        let results = executor.execute(&tools, &[]).await.unwrap();
+        let results = executor
+            .execute(&tools, &[], &ToolCallContext::test_default())
+            .await
+            .unwrap();
         assert!(results.is_empty());
     }
 
@@ -326,7 +361,10 @@ mod tests {
         ];
         let executor = ParallelToolExecutor::streaming();
 
-        let results = executor.execute(&tools, &calls).await.unwrap();
+        let results = executor
+            .execute(&tools, &calls, &ToolCallContext::test_default())
+            .await
+            .unwrap();
         assert_eq!(results.len(), 2);
         assert!(
             results
@@ -344,7 +382,10 @@ mod tests {
         ];
         let executor = ParallelToolExecutor::streaming();
 
-        let results = executor.execute(&tools, &calls).await.unwrap();
+        let results = executor
+            .execute(&tools, &calls, &ToolCallContext::test_default())
+            .await
+            .unwrap();
         assert_eq!(results.len(), 2);
         let successes = results
             .iter()
@@ -367,7 +408,10 @@ mod tests {
         ];
         let executor = ParallelToolExecutor::streaming();
 
-        let results = executor.execute(&tools, &calls).await.unwrap();
+        let results = executor
+            .execute(&tools, &calls, &ToolCallContext::test_default())
+            .await
+            .unwrap();
         // Parallel executes ALL tools regardless of suspension
         assert_eq!(results.len(), 2);
         let suspended = results
@@ -387,7 +431,10 @@ mod tests {
         let tools = tool_map(vec![Arc::new(EchoTool)]);
         let executor = ParallelToolExecutor::streaming();
 
-        let results = executor.execute(&tools, &[]).await.unwrap();
+        let results = executor
+            .execute(&tools, &[], &ToolCallContext::test_default())
+            .await
+            .unwrap();
         assert!(results.is_empty());
     }
 
@@ -443,7 +490,10 @@ mod tests {
         ];
         let executor = ParallelToolExecutor::batch_approval();
 
-        let results = executor.execute(&tools, &calls).await.unwrap();
+        let results = executor
+            .execute(&tools, &calls, &ToolCallContext::test_default())
+            .await
+            .unwrap();
         assert_eq!(results.len(), 2);
         assert!(
             results
@@ -461,7 +511,10 @@ mod tests {
         ];
         let executor = ParallelToolExecutor::batch_approval();
 
-        let results = executor.execute(&tools, &calls).await.unwrap();
+        let results = executor
+            .execute(&tools, &calls, &ToolCallContext::test_default())
+            .await
+            .unwrap();
         assert_eq!(results.len(), 2);
     }
 }

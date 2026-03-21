@@ -166,7 +166,7 @@ mod tests {
     use super::*;
     use crate::contract::executor::{InferenceExecutionError, InferenceRequest};
     use crate::contract::inference::{StopReason, StreamResult, TokenUsage};
-    use crate::contract::tool::{ToolDescriptor, ToolError, ToolResult};
+    use crate::contract::tool::{ToolCallContext, ToolDescriptor, ToolError, ToolResult};
     use crate::plugins::PluginDescriptor;
     use crate::registry::memory::{
         MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry,
@@ -188,7 +188,11 @@ mod tests {
             ToolDescriptor::new(&self.id, &self.id, "mock tool")
         }
 
-        async fn execute(&self, _args: Value) -> Result<ToolResult, ToolError> {
+        async fn execute(
+            &self,
+            _args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success(&self.id, Value::Null))
         }
     }

@@ -1,9 +1,15 @@
-//! Tool descriptor, result types, and async execution trait.
+//! Tool descriptor, result types, execution context, and async execution trait.
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
+
+use super::identity::RunIdentity;
+use super::profile::AgentProfile;
+use crate::state::{Snapshot, StateKey};
 
 /// Tool execution status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,6 +193,39 @@ impl ToolDescriptor {
     }
 }
 
+/// Context provided to a tool during execution.
+///
+/// Gives the tool access to call identity, run identity, state snapshot,
+/// and agent profile. All read-only — tools produce results, not state mutations.
+#[derive(Clone)]
+pub struct ToolCallContext {
+    /// Unique ID of this tool call.
+    pub call_id: String,
+    /// Run identity (thread_id, run_id, agent_id).
+    pub run_identity: RunIdentity,
+    /// Active agent profile.
+    pub profile: Arc<AgentProfile>,
+    /// State snapshot at the time of tool execution.
+    pub snapshot: Snapshot,
+}
+
+impl ToolCallContext {
+    /// Read a state key from the snapshot.
+    pub fn state<K: StateKey>(&self) -> Option<&K::Value> {
+        self.snapshot.get::<K>()
+    }
+
+    /// Create a minimal context for testing.
+    pub fn test_default() -> Self {
+        Self {
+            call_id: String::new(),
+            run_identity: RunIdentity::default(),
+            profile: Arc::new(AgentProfile::default()),
+            snapshot: Snapshot::new(0, Arc::new(crate::state::StateMap::default())),
+        }
+    }
+}
+
 /// Async trait for implementing agent tools.
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -198,8 +237,8 @@ pub trait Tool: Send + Sync {
         Ok(())
     }
 
-    /// Execute the tool with the given arguments.
-    async fn execute(&self, args: Value) -> Result<ToolResult, ToolError>;
+    /// Execute the tool with the given arguments and context.
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError>;
 }
 
 #[cfg(test)]
@@ -327,7 +366,11 @@ mod tests {
             ToolDescriptor::new("echo", "echo", "Echoes input")
         }
 
-        async fn execute(&self, args: Value) -> Result<ToolResult, ToolError> {
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("echo", args))
         }
     }
@@ -335,7 +378,10 @@ mod tests {
     #[tokio::test]
     async fn tool_trait_execute() {
         let tool = EchoTool;
-        let result = tool.execute(json!({"msg": "hello"})).await.unwrap();
+        let result = tool
+            .execute(json!({"msg": "hello"}), &ToolCallContext::test_default())
+            .await
+            .unwrap();
         assert!(result.is_success());
         assert_eq!(result.data["msg"], "hello");
     }
@@ -368,7 +414,11 @@ mod tests {
             Ok(())
         }
 
-        async fn execute(&self, _args: Value) -> Result<ToolResult, ToolError> {
+        async fn execute(
+            &self,
+            _args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("v", json!(null)))
         }
     }
@@ -385,7 +435,10 @@ mod tests {
         let tool: Box<dyn Tool> = Box::new(EchoTool);
         let desc = tool.descriptor();
         assert_eq!(desc.id, "echo");
-        let result = tool.execute(json!("test")).await.unwrap();
+        let result = tool
+            .execute(json!("test"), &ToolCallContext::test_default())
+            .await
+            .unwrap();
         assert!(result.is_success());
     }
 }
