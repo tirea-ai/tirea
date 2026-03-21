@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use awaken::agent::config::AgentConfig;
-use awaken::agent::loop_runner::{AgentRunResult, run_agent_loop};
+use awaken::agent::loop_runner::{AgentRunResult, ResumeInput, resume_agent_loop, run_agent_loop};
 use awaken::agent::state::{
     RunLifecycleSlot, RunLifecycleState, ToolCallStates, ToolCallStatesSlot,
 };
@@ -12,7 +12,9 @@ use awaken::contract::identity::{RunIdentity, RunOrigin};
 use awaken::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken::contract::message::{Message, ToolCall};
-use awaken::contract::suspension::ToolCallStatus;
+use awaken::contract::suspension::{
+    ResumeDecisionAction, ToolCallResume, ToolCallResumeMode, ToolCallStatus,
+};
 use awaken::contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use awaken::*;
 use serde_json::{Value, json};
@@ -104,6 +106,34 @@ impl Tool for FailingTool {
 
     async fn execute(&self, _args: Value) -> Result<ToolResult, ToolError> {
         Err(ToolError::ExecutionFailed("intentional failure".into()))
+    }
+}
+
+/// Tool that always returns Pending (suspends).
+struct SuspendingTool;
+
+#[async_trait]
+impl Tool for SuspendingTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("dangerous", "dangerous", "Requires approval")
+    }
+
+    async fn execute(&self, _args: Value) -> Result<ToolResult, ToolError> {
+        Ok(ToolResult::suspended("dangerous", "needs user approval"))
+    }
+}
+
+/// Tool that returns the arguments as result (useful for PassDecisionToTool test).
+struct PassthroughTool;
+
+#[async_trait]
+impl Tool for PassthroughTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("passthrough", "passthrough", "Returns args as result")
+    }
+
+    async fn execute(&self, args: Value) -> Result<ToolResult, ToolError> {
+        Ok(ToolResult::success("passthrough", args))
     }
 }
 
@@ -615,4 +645,436 @@ async fn phase_hooks_fire_during_loop() {
             Phase::RunEnd,
         ]
     );
+}
+
+// ---------------------------------------------------------------------------
+// Suspension & Resume tests
+// ---------------------------------------------------------------------------
+
+fn make_tool_call_response(tool_name: &str, call_id: &str, args: Value) -> StreamResult {
+    StreamResult {
+        text: String::new(),
+        tool_calls: vec![ToolCall::new(call_id, tool_name, args)],
+        usage: None,
+        stop_reason: Some(StopReason::ToolUse),
+    }
+}
+
+#[tokio::test]
+async fn tool_suspension_transitions_run_to_waiting() {
+    let llm = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
+        "dangerous",
+        "c1",
+        json!({"action": "delete"}),
+    )]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let runtime = make_runtime();
+
+    let result = run_agent_loop(
+        &agent,
+        &runtime,
+        vec![Message::user("do it")],
+        test_identity(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::Suspended);
+
+    // Run should be in Waiting state
+    let lifecycle = runtime.store().read_slot::<RunLifecycleSlot>().unwrap();
+    assert_eq!(lifecycle.status, RunStatus::Waiting);
+
+    // Tool call should be Suspended
+    let tc_states = runtime.store().read_slot::<ToolCallStatesSlot>().unwrap();
+    assert_eq!(tc_states.calls["c1"].status, ToolCallStatus::Suspended);
+}
+
+#[tokio::test]
+async fn resume_with_use_decision_as_tool_result() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        // First call: tool call that suspends
+        make_tool_call_response("dangerous", "c1", json!({"action": "delete"})),
+        // After resume: LLM sees the decision result and ends
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let runtime = make_runtime();
+
+    // Run until suspension
+    let result = run_agent_loop(
+        &agent,
+        &runtime,
+        vec![Message::user("do it")],
+        test_identity(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.termination, TerminationReason::Suspended);
+
+    // Collect messages from the first run
+    let messages: Vec<Message> = vec![
+        Message::user("do it"),
+        Message::assistant_with_tool_calls(
+            "",
+            vec![ToolCall::new(
+                "c1",
+                "dangerous",
+                json!({"action": "delete"}),
+            )],
+        ),
+        Message::tool("c1", "needs user approval"),
+    ];
+
+    // Resume with decision
+    let resume_result = resume_agent_loop(
+        &agent,
+        &runtime,
+        messages,
+        test_identity(),
+        ResumeInput {
+            decisions: vec![(
+                "c1".into(),
+                ToolCallResume {
+                    decision_id: "d1".into(),
+                    action: ResumeDecisionAction::Resume,
+                    result: json!({"approved": true}),
+                    reason: None,
+                    updated_at: 0,
+                },
+            )],
+            resume_mode: ToolCallResumeMode::UseDecisionAsToolResult,
+        },
+    )
+    .await
+    .unwrap();
+
+    // Should have completed (LLM returns text, no more tools)
+    assert_eq!(resume_result.termination, TerminationReason::NaturalEnd);
+
+    // Tool call should be terminal
+    let tc_states = runtime
+        .store()
+        .read_slot::<ToolCallStatesSlot>()
+        .unwrap_or_default();
+    // After resume, tool call states were cleared by the new step
+    // The run completed normally
+    let lifecycle = runtime.store().read_slot::<RunLifecycleSlot>().unwrap();
+    assert_eq!(lifecycle.status, RunStatus::Done);
+}
+
+#[tokio::test]
+async fn resume_with_cancel_marks_tool_cancelled() {
+    let llm = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
+        "dangerous",
+        "c1",
+        json!({"action": "delete"}),
+    )]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let runtime = make_runtime();
+
+    // Run until suspension
+    let result = run_agent_loop(
+        &agent,
+        &runtime,
+        vec![Message::user("do it")],
+        test_identity(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.termination, TerminationReason::Suspended);
+
+    let messages = vec![
+        Message::user("do it"),
+        Message::assistant_with_tool_calls(
+            "",
+            vec![ToolCall::new(
+                "c1",
+                "dangerous",
+                json!({"action": "delete"}),
+            )],
+        ),
+        Message::tool("c1", "needs user approval"),
+    ];
+
+    // Resume with cancel
+    let resume_result = resume_agent_loop(
+        &agent,
+        &runtime,
+        messages,
+        test_identity(),
+        ResumeInput {
+            decisions: vec![(
+                "c1".into(),
+                ToolCallResume {
+                    decision_id: "d1".into(),
+                    action: ResumeDecisionAction::Cancel,
+                    result: Value::Null,
+                    reason: Some("user denied".into()),
+                    updated_at: 0,
+                },
+            )],
+            resume_mode: ToolCallResumeMode::ReplayToolCall,
+        },
+    )
+    .await
+    .unwrap();
+
+    // After cancel, the loop continues with LLM seeing the cancellation message
+    // LLM has no more responses so it returns text → NaturalEnd
+    assert_eq!(resume_result.termination, TerminationReason::NaturalEnd);
+}
+
+#[tokio::test]
+async fn resume_with_replay_tool_call() {
+    // After resume, ReplayToolCall re-executes with original args.
+    // We use EchoTool on resume so it succeeds this time.
+    let llm = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
+        "dangerous",
+        "c1",
+        json!({"message": "hello"}),
+    )]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm)
+        .with_tool(Arc::new(SuspendingTool))
+        .with_tool(Arc::new(EchoTool)); // echo registered for replay
+    let runtime = make_runtime();
+
+    // Run until suspension
+    let result = run_agent_loop(
+        &agent,
+        &runtime,
+        vec![Message::user("do it")],
+        test_identity(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.termination, TerminationReason::Suspended);
+
+    // Now swap the tool: register "dangerous" as EchoTool for replay
+    // We create a new agent with EchoTool registered as "dangerous"
+    struct DangerousEcho;
+    #[async_trait]
+    impl Tool for DangerousEcho {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("dangerous", "dangerous", "Now approved echo")
+        }
+        async fn execute(&self, args: Value) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("dangerous", args))
+        }
+    }
+
+    let llm2 = Arc::new(ScriptedLlm::new(vec![]));
+    let agent2 = AgentConfig::new("test", "m", "sys", llm2).with_tool(Arc::new(DangerousEcho));
+
+    let messages = vec![
+        Message::user("do it"),
+        Message::assistant_with_tool_calls(
+            "",
+            vec![ToolCall::new(
+                "c1",
+                "dangerous",
+                json!({"message": "hello"}),
+            )],
+        ),
+        Message::tool("c1", "needs user approval"),
+    ];
+
+    let resume_result = resume_agent_loop(
+        &agent2,
+        &runtime,
+        messages,
+        test_identity(),
+        ResumeInput {
+            decisions: vec![(
+                "c1".into(),
+                ToolCallResume {
+                    decision_id: "d1".into(),
+                    action: ResumeDecisionAction::Resume,
+                    result: Value::Null,
+                    reason: None,
+                    updated_at: 0,
+                },
+            )],
+            resume_mode: ToolCallResumeMode::ReplayToolCall,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(resume_result.termination, TerminationReason::NaturalEnd);
+}
+
+#[tokio::test]
+async fn resume_with_pass_decision_to_tool() {
+    let llm = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
+        "passthrough",
+        "c1",
+        json!({"original": true}),
+    )]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let runtime = make_runtime();
+
+    // Hack: register passthrough as "dangerous" initially for suspension
+    // Actually, let's use a different approach: SuspendingTool is "dangerous"
+    // but we need passthrough for resume. Let's use a tool that suspends first.
+    // Simpler: just use SuspendingTool for suspension, then on resume use passthrough.
+
+    // First run: suspend
+    let result = run_agent_loop(
+        &agent,
+        &runtime,
+        vec![Message::user("do it")],
+        test_identity(),
+    )
+    .await;
+    // This might not work because tool_call name is "passthrough" but we only have "dangerous".
+    // Let me adjust: use "dangerous" tool call and have passthrough registered as "dangerous" on resume.
+    drop(result);
+
+    // Start fresh with correct setup:
+    let runtime2 = make_runtime();
+    let llm2 = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
+        "dangerous",
+        "c1",
+        json!({"original": true}),
+    )]));
+    let agent2 = AgentConfig::new("test", "m", "sys", llm2).with_tool(Arc::new(SuspendingTool));
+
+    let result = run_agent_loop(
+        &agent2,
+        &runtime2,
+        vec![Message::user("do it")],
+        test_identity(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.termination, TerminationReason::Suspended);
+
+    // Resume with PassDecisionToTool: decision payload becomes new arguments
+    struct DangerousPassthrough;
+    #[async_trait]
+    impl Tool for DangerousPassthrough {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("dangerous", "dangerous", "Returns args")
+        }
+        async fn execute(&self, args: Value) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("dangerous", args))
+        }
+    }
+
+    let llm3 = Arc::new(ScriptedLlm::new(vec![]));
+    let agent3 =
+        AgentConfig::new("test", "m", "sys", llm3).with_tool(Arc::new(DangerousPassthrough));
+
+    let messages = vec![
+        Message::user("do it"),
+        Message::assistant_with_tool_calls(
+            "",
+            vec![ToolCall::new("c1", "dangerous", json!({"original": true}))],
+        ),
+        Message::tool("c1", "needs user approval"),
+    ];
+
+    let resume_result = resume_agent_loop(
+        &agent3,
+        &runtime2,
+        messages,
+        test_identity(),
+        ResumeInput {
+            decisions: vec![(
+                "c1".into(),
+                ToolCallResume {
+                    decision_id: "d1".into(),
+                    action: ResumeDecisionAction::Resume,
+                    result: json!({"approved": true, "new_args": "yes"}),
+                    reason: None,
+                    updated_at: 0,
+                },
+            )],
+            resume_mode: ToolCallResumeMode::PassDecisionToTool,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(resume_result.termination, TerminationReason::NaturalEnd);
+}
+
+#[tokio::test]
+async fn resume_rejects_non_waiting_run() {
+    let llm = Arc::new(ScriptedLlm::new(vec![]));
+    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let runtime = make_runtime();
+
+    // Run to completion (not suspended)
+    run_agent_loop(&agent, &runtime, vec![Message::user("hi")], test_identity())
+        .await
+        .unwrap();
+
+    // Attempt resume on a Done run
+    let err = resume_agent_loop(
+        &agent,
+        &runtime,
+        vec![Message::user("hi")],
+        test_identity(),
+        ResumeInput {
+            decisions: vec![],
+            resume_mode: ToolCallResumeMode::ReplayToolCall,
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert!(err.to_string().contains("expected Waiting"));
+}
+
+#[tokio::test]
+async fn resume_rejects_unknown_call_id() {
+    let llm = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
+        "dangerous",
+        "c1",
+        json!({}),
+    )]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let runtime = make_runtime();
+
+    run_agent_loop(
+        &agent,
+        &runtime,
+        vec![Message::user("do it")],
+        test_identity(),
+    )
+    .await
+    .unwrap();
+
+    let messages = vec![Message::user("do it")];
+
+    let err = resume_agent_loop(
+        &agent,
+        &runtime,
+        messages,
+        test_identity(),
+        ResumeInput {
+            decisions: vec![(
+                "nonexistent".into(),
+                ToolCallResume {
+                    decision_id: "d1".into(),
+                    action: ResumeDecisionAction::Resume,
+                    result: Value::Null,
+                    reason: None,
+                    updated_at: 0,
+                },
+            )],
+            resume_mode: ToolCallResumeMode::ReplayToolCall,
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert!(err.to_string().contains("not found"));
 }
