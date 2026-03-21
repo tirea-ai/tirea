@@ -92,8 +92,9 @@ struct TrackingHook {
     log: HookLog,
 }
 
+#[async_trait]
 impl PhaseHook for TrackingHook {
-    fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+    async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
         self.log.entries.lock().unwrap().push(HookEntry {
             plugin_id: self.plugin_id.clone(),
             phase: ctx.phase,
@@ -112,8 +113,9 @@ struct HandoffHook {
     target_profile: String,
 }
 
+#[async_trait]
 impl PhaseHook for HandoffHook {
-    fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+    async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
         let mut cmd = StateCommand::new();
         // Deref to MutationBatch for update access
         cmd.update::<ActiveProfileOverride>(Some(self.target_profile.clone()));
@@ -237,22 +239,18 @@ async fn hook_filtering_only_active_plugins_fire() {
     runtime.install_plugin(LoopStatePlugin).unwrap();
 
     // Install tracker with two plugin_ids
-    runtime
-        .install_plugin(MultiTrackerPlugin {
-            trackers: vec![
-                ("alpha", vec![Phase::BeforeInference]),
-                ("beta", vec![Phase::BeforeInference]),
-            ],
-            log: log.clone(),
-        })
-        .unwrap();
+    runtime.install_plugin(MultiTrackerPlugin {
+        trackers: vec![
+            ("alpha", vec![Phase::BeforeInference]),
+            ("beta", vec![Phase::BeforeInference]),
+        ],
+        log: log.clone(),
+    });
 
     // Only activate "alpha"
-    runtime
-        .configure(|c| {
-            c.activate("alpha");
-        })
-        .unwrap();
+    runtime.configure(|c| {
+        c.activate("alpha");
+    });
 
     let agent = AgentConfig::new("test", "m", "sys", Arc::new(SimpleLlm));
     run_agent_loop(&agent, &runtime, vec![Message::user("hi")], test_identity())
@@ -276,15 +274,13 @@ async fn empty_active_plugins_runs_all_hooks() {
     let runtime = PhaseRuntime::new(StateStore::new()).unwrap();
     runtime.install_plugin(LoopStatePlugin).unwrap();
 
-    runtime
-        .install_plugin(MultiTrackerPlugin {
-            trackers: vec![
-                ("alpha", vec![Phase::BeforeInference]),
-                ("beta", vec![Phase::BeforeInference]),
-            ],
-            log: log.clone(),
-        })
-        .unwrap();
+    runtime.install_plugin(MultiTrackerPlugin {
+        trackers: vec![
+            ("alpha", vec![Phase::BeforeInference]),
+            ("beta", vec![Phase::BeforeInference]),
+        ],
+        log: log.clone(),
+    });
 
     // Don't configure active_plugins — empty means "run all"
     let agent = AgentConfig::new("test", "m", "sys", Arc::new(SimpleLlm));
@@ -317,22 +313,18 @@ async fn config_values_accessible_in_hooks() {
     runtime.set_os_config(os);
     runtime.install_plugin(LoopStatePlugin).unwrap();
 
-    runtime
-        .install_plugin(SingleTrackerPlugin {
-            id: "tracker",
-            log: log.clone(),
-            phases: vec![Phase::BeforeInference],
-        })
-        .unwrap();
+    runtime.install_plugin(SingleTrackerPlugin {
+        id: "tracker",
+        log: log.clone(),
+        phases: vec![Phase::BeforeInference],
+    });
 
     // Override model via ActiveConfig
-    runtime
-        .configure(|c| {
-            c.set::<ModelNameConfig>(ModelNameSettings {
-                name: "custom-model".into(),
-            });
-        })
-        .unwrap();
+    runtime.configure(|c| {
+        c.set::<ModelNameConfig>(ModelNameSettings {
+            name: "custom-model".into(),
+        });
+    });
 
     let agent = AgentConfig::new("test", "m", "sys", Arc::new(SimpleLlm));
     run_agent_loop(&agent, &runtime, vec![Message::user("hi")], test_identity())
@@ -372,28 +364,22 @@ async fn handoff_switches_profile_at_next_boundary() {
     runtime.install_plugin(LoopStatePlugin).unwrap();
 
     // Handoff plugin writes ActiveProfileOverride at RunStart
-    runtime
-        .install_plugin(HandoffPlugin {
-            target_profile: "reviewer".into(),
-        })
-        .unwrap();
+    runtime.install_plugin(HandoffPlugin {
+        target_profile: "reviewer".into(),
+    });
 
     // Tracker registered as "review-tracker" — only active when reviewer profile is active
-    runtime
-        .install_plugin(SingleTrackerPlugin {
-            id: "review-tracker",
-            log: log.clone(),
-            phases: vec![Phase::BeforeInference],
-        })
-        .unwrap();
+    runtime.install_plugin(SingleTrackerPlugin {
+        id: "review-tracker",
+        log: log.clone(),
+        phases: vec![Phase::BeforeInference],
+    });
 
     // Activate handoff plugin (so its hook runs at RunStart)
-    runtime
-        .configure(|c| {
-            c.activate("handoff");
-            // Don't activate "review-tracker" — it should be activated by profile switch
-        })
-        .unwrap();
+    runtime.configure(|c| {
+        c.activate("handoff");
+        // Don't activate "review-tracker" — it should be activated by profile switch
+    });
 
     let agent = AgentConfig::new("test", "m", "sys", Arc::new(SimpleLlm));
     run_agent_loop(&agent, &runtime, vec![Message::user("hi")], test_identity())
@@ -422,23 +408,19 @@ async fn deactivate_plugin_mid_run_via_configure() {
     let runtime = PhaseRuntime::new(StateStore::new()).unwrap();
     runtime.install_plugin(LoopStatePlugin).unwrap();
 
-    runtime
-        .install_plugin(SingleTrackerPlugin {
-            id: "tracker",
-            log: log.clone(),
-            phases: vec![Phase::RunStart, Phase::BeforeInference, Phase::RunEnd],
-        })
-        .unwrap();
+    runtime.install_plugin(SingleTrackerPlugin {
+        id: "tracker",
+        log: log.clone(),
+        phases: vec![Phase::RunStart, Phase::BeforeInference, Phase::RunEnd],
+    });
 
     // Activate tracker
-    runtime
-        .configure(|c| {
-            c.activate("tracker");
-        })
-        .unwrap();
+    runtime.configure(|c| {
+        c.activate("tracker");
+    });
 
     // Run phase manually to show tracker fires
-    runtime.run_phase(Phase::RunStart).unwrap();
+    runtime.run_phase(Phase::RunStart).await.unwrap();
 
     {
         let entries = log.entries.lock().unwrap();
@@ -448,15 +430,13 @@ async fn deactivate_plugin_mid_run_via_configure() {
 
     // Deactivate tracker, keep a dummy active so the set isn't empty
     // (empty active_plugins = no filtering = all hooks run)
-    runtime
-        .configure(|c| {
-            c.deactivate("tracker");
-            c.activate("other-plugin");
-        })
-        .unwrap();
+    runtime.configure(|c| {
+        c.deactivate("tracker");
+        c.activate("other-plugin");
+    });
 
     // Now BeforeInference should NOT fire tracker (it's not in active_plugins)
-    runtime.run_phase(Phase::BeforeInference).unwrap();
+    runtime.run_phase(Phase::BeforeInference).await.unwrap();
 
     {
         let entries = log.entries.lock().unwrap();

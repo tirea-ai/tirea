@@ -39,24 +39,32 @@ impl AppRuntime {
         self.store.revision()
     }
 
-    pub fn submit_command(&self, command: StateCommand) -> Result<SubmitCommandReport, StateError> {
-        self.phase_runtime.submit_command(command)
+    pub async fn submit_command(
+        &self,
+        command: StateCommand,
+    ) -> Result<SubmitCommandReport, StateError> {
+        self.phase_runtime.submit_command(command).await
     }
 
-    pub fn run_phase(&self, phase: Phase) -> Result<PhaseRunReport, StateError> {
-        self.phase_runtime.run_phase(phase)
+    pub async fn run_phase(&self, phase: Phase) -> Result<PhaseRunReport, StateError> {
+        self.phase_runtime.run_phase(phase).await
     }
 
-    pub fn run_phase_with_context(&self, ctx: PhaseContext) -> Result<PhaseRunReport, StateError> {
-        self.phase_runtime.run_phase_with_context(ctx)
+    pub async fn run_phase_with_context(
+        &self,
+        ctx: PhaseContext,
+    ) -> Result<PhaseRunReport, StateError> {
+        self.phase_runtime.run_phase_with_context(ctx).await
     }
 
-    pub fn run_phase_with_limit(
+    pub async fn run_phase_with_limit(
         &self,
         phase: Phase,
         max_rounds: usize,
     ) -> Result<PhaseRunReport, StateError> {
-        self.phase_runtime.run_phase_with_limit(phase, max_rounds)
+        self.phase_runtime
+            .run_phase_with_limit(phase, max_rounds)
+            .await
     }
 
     pub fn install_plugin<P>(&self, plugin: P) -> Result<(), StateError>

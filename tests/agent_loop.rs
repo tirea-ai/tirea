@@ -561,8 +561,9 @@ async fn phase_hooks_fire_during_loop() {
     let hook_phases = Arc::new(Mutex::new(Vec::<Phase>::new()));
 
     struct PhaseTracker(Arc<Mutex<Vec<Phase>>>);
+    #[async_trait]
     impl PhaseHook for PhaseTracker {
-        fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+        async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
             self.0.lock().unwrap().push(ctx.phase);
             Ok(StateCommand::new())
         }

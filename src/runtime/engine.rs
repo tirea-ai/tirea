@@ -1,6 +1,8 @@
 use std::any::TypeId;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
+
+use futures::lock::Mutex;
 
 use crate::config::profile::{ActiveConfig, OsConfig, RunOverrides};
 use crate::config::resolve::{ResolvedPhaseConfig, resolve_config};
@@ -49,19 +51,15 @@ impl PhaseRuntime {
     }
 
     /// Atomically modify the runtime baseline configuration.
-    pub fn configure<F, R>(&self, f: F) -> Result<R, StateError>
+    pub fn configure<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&mut ActiveConfig) -> R,
     {
-        let _guard = self
-            .execution_lock
-            .lock()
-            .expect("runtime execution lock poisoned");
         let mut active = self
             .active_config
             .write()
             .expect("active config lock poisoned");
-        Ok(f(&mut active))
+        f(&mut active)
     }
 
     /// Set the OS-level configuration (defaults + profiles).
@@ -90,10 +88,6 @@ impl PhaseRuntime {
         A: ScheduledActionSpec,
         H: TypedScheduledActionHandler<A>,
     {
-        let _guard = self
-            .execution_lock
-            .lock()
-            .expect("runtime execution lock poisoned");
         let mut registrar = PluginRegistrar::new();
         registrar.register_scheduled_action::<A, H>(handler)?;
         self.commit_runtime_registrations(None, registrar)
@@ -104,10 +98,6 @@ impl PhaseRuntime {
         E: EffectSpec,
         H: TypedEffectHandler<E>,
     {
-        let _guard = self
-            .execution_lock
-            .lock()
-            .expect("runtime execution lock poisoned");
         let mut registrar = PluginRegistrar::new();
         registrar.register_effect::<E, H>(handler)?;
         self.commit_runtime_registrations(None, registrar)
@@ -117,10 +107,6 @@ impl PhaseRuntime {
     where
         P: Plugin,
     {
-        let _guard = self
-            .execution_lock
-            .lock()
-            .expect("runtime execution lock poisoned");
         let mut registrar = PluginRegistrar::new();
         plugin.register(&mut registrar)?;
         let plugin_type_id = TypeId::of::<P>();
@@ -141,50 +127,48 @@ impl PhaseRuntime {
     where
         P: Plugin,
     {
-        let _guard = self
-            .execution_lock
-            .lock()
-            .expect("runtime execution lock poisoned");
         self.store.uninstall_plugin::<P>()?;
         self.remove_runtime_plugin::<P>();
         Ok(())
     }
 
-    pub fn submit_command(&self, command: StateCommand) -> Result<SubmitCommandReport, StateError> {
-        let _guard = self
-            .execution_lock
-            .lock()
-            .expect("runtime execution lock poisoned");
-        self.submit_command_inner(command)
+    pub async fn submit_command(
+        &self,
+        command: StateCommand,
+    ) -> Result<SubmitCommandReport, StateError> {
+        let _guard = self.execution_lock.lock().await;
+        self.submit_command_inner(command).await
     }
 
-    pub fn run_phase(&self, phase: Phase) -> Result<PhaseRunReport, StateError> {
+    pub async fn run_phase(&self, phase: Phase) -> Result<PhaseRunReport, StateError> {
         self.run_phase_with_limit(phase, DEFAULT_MAX_PHASE_ROUNDS)
+            .await
     }
 
-    pub fn run_phase_with_context(&self, ctx: PhaseContext) -> Result<PhaseRunReport, StateError> {
+    pub async fn run_phase_with_context(
+        &self,
+        ctx: PhaseContext,
+    ) -> Result<PhaseRunReport, StateError> {
         self.run_phase_ctx_inner(ctx, DEFAULT_MAX_PHASE_ROUNDS)
+            .await
     }
 
-    pub fn run_phase_with_limit(
+    pub async fn run_phase_with_limit(
         &self,
         phase: Phase,
         max_rounds: usize,
     ) -> Result<PhaseRunReport, StateError> {
         let ctx = PhaseContext::new(phase, self.store.snapshot());
-        self.run_phase_ctx_inner(ctx, max_rounds)
+        self.run_phase_ctx_inner(ctx, max_rounds).await
     }
 
-    fn run_phase_ctx_inner(
+    async fn run_phase_ctx_inner(
         &self,
         base_ctx: PhaseContext,
         max_rounds: usize,
     ) -> Result<PhaseRunReport, StateError> {
         let phase = base_ctx.phase;
-        let _guard = self
-            .execution_lock
-            .lock()
-            .expect("runtime execution lock poisoned");
+        let _guard = self.execution_lock.lock().await;
         let mut total_processed = 0;
         let mut total_skipped = 0;
         let mut total_failed = 0;
@@ -227,10 +211,10 @@ impl PhaseRuntime {
                 .clone()
                 .with_snapshot(self.store.snapshot())
                 .with_config(Arc::clone(&resolved.config));
-            let command = hook.run(&ctx)?;
+            let command = hook.run(&ctx).await?;
             if !command.is_empty() {
                 total_effects += command.effects.len();
-                let report = self.submit_command_inner(command)?;
+                let report = self.submit_command_inner(command).await?;
                 effect_report.attempted += report.effect_report.attempted;
                 effect_report.dispatched += report.effect_report.dispatched;
                 effect_report.failed += report.effect_report.failed;
@@ -286,7 +270,9 @@ impl PhaseRuntime {
                 };
 
                 let ctx = base_ctx.clone().with_snapshot(self.store.snapshot());
-                let mut command = match handler.handle_erased(&ctx, envelope.action.payload.clone())
+                let mut command = match handler
+                    .handle_erased(&ctx, envelope.action.payload.clone())
+                    .await
                 {
                     Ok(command) => command,
                     Err(err) => {
@@ -299,7 +285,7 @@ impl PhaseRuntime {
                 command.patch.update::<PendingScheduledActions>(
                     ScheduledActionQueueUpdate::Remove { id: envelope.id },
                 );
-                match self.submit_command_inner(command) {
+                match self.submit_command_inner(command).await {
                     Ok(report) => {
                         total_processed += 1;
                         effect_report.attempted += report.effect_report.attempted;
@@ -328,7 +314,7 @@ impl PhaseRuntime {
         })
     }
 
-    fn submit_command_inner(
+    async fn submit_command_inner(
         &self,
         mut command: StateCommand,
     ) -> Result<SubmitCommandReport, StateError> {
@@ -378,7 +364,7 @@ impl PhaseRuntime {
 
         let revision = self.store.commit(command.patch)?;
         let snapshot = self.store.snapshot();
-        let effect_report = self.dispatch_effects(&effects, &snapshot);
+        let effect_report = self.dispatch_effects(&effects, &snapshot).await;
         Ok(SubmitCommandReport {
             revision,
             effect_report,
@@ -457,7 +443,7 @@ impl PhaseRuntime {
         }
     }
 
-    fn dispatch_effects(
+    async fn dispatch_effects(
         &self,
         effects: &[TypedEffect],
         snapshot: &Snapshot,
@@ -483,7 +469,10 @@ impl PhaseRuntime {
                 continue;
             };
 
-            match handler.handle_erased(effect.payload.clone(), snapshot) {
+            match handler
+                .handle_erased(effect.payload.clone(), snapshot)
+                .await
+            {
                 Ok(()) => report.dispatched += 1,
                 Err(_) => report.failed += 1,
             }

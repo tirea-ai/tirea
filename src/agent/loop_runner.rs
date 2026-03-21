@@ -5,6 +5,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
+
 use crate::contract::event::AgentEvent;
 use crate::contract::executor::InferenceRequest;
 use crate::contract::identity::RunIdentity;
@@ -70,8 +72,13 @@ impl TerminationFlag {
     }
 }
 
+#[async_trait]
 impl TypedEffectHandler<RuntimeEffect> for TerminationFlag {
-    fn handle_typed(&self, payload: RuntimeEffect, _snapshot: &Snapshot) -> Result<(), String> {
+    async fn handle_typed(
+        &self,
+        payload: RuntimeEffect,
+        _snapshot: &Snapshot,
+    ) -> Result<(), String> {
         if let RuntimeEffect::Terminate { reason } = payload {
             let mut guard = self.inner.lock().expect("termination flag poisoned");
             if guard.is_none() {
@@ -124,7 +131,9 @@ pub async fn run_agent_loop(
         parent_run_id: run_identity.parent_run_id.clone(),
     });
 
-    runtime.run_phase_with_context(make_ctx(Phase::RunStart, &messages, &run_identity))?;
+    runtime
+        .run_phase_with_context(make_ctx(Phase::RunStart, &messages, &run_identity))
+        .await?;
 
     let termination = loop {
         steps += 1;
@@ -136,16 +145,16 @@ pub async fn run_agent_loop(
         // Clear tool call states from previous step
         commit_update::<ToolCallStatesSlot>(store, ToolCallStatesUpdate::Clear)?;
 
-        runtime.run_phase_with_context(make_ctx(Phase::StepStart, &messages, &run_identity))?;
+        runtime
+            .run_phase_with_context(make_ctx(Phase::StepStart, &messages, &run_identity))
+            .await?;
         if let Some(reason) = termination_flag.take() {
             break reason;
         }
 
-        runtime.run_phase_with_context(make_ctx(
-            Phase::BeforeInference,
-            &messages,
-            &run_identity,
-        ))?;
+        runtime
+            .run_phase_with_context(make_ctx(Phase::BeforeInference, &messages, &run_identity))
+            .await?;
         if let Some(reason) = termination_flag.take() {
             break reason;
         }
@@ -176,14 +185,14 @@ pub async fn run_agent_loop(
         let llm_response = LLMResponse::success(stream_result.clone());
         let after_inf_ctx = make_ctx(Phase::AfterInference, &messages, &run_identity)
             .with_llm_response(llm_response);
-        runtime.run_phase_with_context(after_inf_ctx)?;
+        runtime.run_phase_with_context(after_inf_ctx).await?;
         if let Some(reason) = termination_flag.take() {
             break reason;
         }
 
         if !stream_result.needs_tools() {
             messages.push(Arc::new(Message::assistant(&stream_result.text)));
-            complete_step(store, runtime, &mut events, &messages, &run_identity)?;
+            complete_step(store, runtime, &mut events, &messages, &run_identity).await?;
             break TerminationReason::NaturalEnd;
         }
 
@@ -215,7 +224,7 @@ pub async fn run_agent_loop(
 
             let before_ctx = make_ctx(Phase::BeforeToolExecute, &messages, &run_identity)
                 .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
-            runtime.run_phase_with_context(before_ctx)?;
+            runtime.run_phase_with_context(before_ctx).await?;
             if termination_flag.is_set() {
                 break;
             }
@@ -239,7 +248,7 @@ pub async fn run_agent_loop(
             let after_ctx = make_ctx(Phase::AfterToolExecute, &messages, &run_identity)
                 .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()))
                 .with_tool_result(tool_result.clone());
-            runtime.run_phase_with_context(after_ctx)?;
+            runtime.run_phase_with_context(after_ctx).await?;
             if termination_flag.is_set() {
                 break;
             }
@@ -265,11 +274,11 @@ pub async fn run_agent_loop(
                     updated_at: now_ms(),
                 },
             )?;
-            complete_step(store, runtime, &mut events, &messages, &run_identity)?;
+            complete_step(store, runtime, &mut events, &messages, &run_identity).await?;
             break TerminationReason::Suspended;
         }
 
-        complete_step(store, runtime, &mut events, &messages, &run_identity)?;
+        complete_step(store, runtime, &mut events, &messages, &run_identity).await?;
         if let Some(reason) = termination_flag.take() {
             break reason;
         }
@@ -287,7 +296,9 @@ pub async fn run_agent_loop(
         )?;
     }
 
-    runtime.run_phase_with_context(make_ctx(Phase::RunEnd, &messages, &run_identity))?;
+    runtime
+        .run_phase_with_context(make_ctx(Phase::RunEnd, &messages, &run_identity))
+        .await?;
 
     let response = messages
         .iter()
@@ -313,7 +324,7 @@ pub async fn run_agent_loop(
 
 // -- Helpers --
 
-fn complete_step(
+async fn complete_step(
     store: &crate::state::StateStore,
     runtime: &PhaseRuntime,
     events: &mut Vec<AgentEvent>,
@@ -329,7 +340,7 @@ fn complete_step(
     let ctx = PhaseContext::new(Phase::StepEnd, store.snapshot())
         .with_run_identity(run_identity.clone())
         .with_messages(messages.to_vec());
-    runtime.run_phase_with_context(ctx)?;
+    runtime.run_phase_with_context(ctx).await?;
     events.push(AgentEvent::StepEnd);
     Ok(())
 }

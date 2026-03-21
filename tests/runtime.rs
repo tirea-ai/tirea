@@ -2,6 +2,7 @@
 
 use awaken::*;
 
+use async_trait::async_trait;
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::sync::{Arc, Mutex};
@@ -74,8 +75,13 @@ impl ScheduledActionSpec for ActivateRequested {
 
 struct ActivateRequestedHandler;
 
+#[async_trait]
 impl TypedScheduledActionHandler<ActivateRequested> for ActivateRequestedHandler {
-    fn handle_typed(&self, ctx: &PhaseContext, _payload: ()) -> Result<StateCommand, StateError> {
+    async fn handle_typed(
+        &self,
+        ctx: &PhaseContext,
+        _payload: (),
+    ) -> Result<StateCommand, StateError> {
         let mut cmd = StateCommand::new().with_base_revision(ctx.snapshot.revision());
         if let Some(state) = ctx.get::<HandoffChannel>()
             && let Some(agent) = state.requested_agent.clone()
@@ -94,8 +100,13 @@ impl TypedScheduledActionHandler<ActivateRequested> for ActivateRequestedHandler
 #[derive(Clone, Default)]
 struct RuntimeEffectRecorder(Arc<Mutex<Vec<RuntimeEffect>>>);
 
+#[async_trait]
 impl TypedEffectHandler<RuntimeEffect> for RuntimeEffectRecorder {
-    fn handle_typed(&self, payload: RuntimeEffect, _snapshot: &Snapshot) -> Result<(), String> {
+    async fn handle_typed(
+        &self,
+        payload: RuntimeEffect,
+        _snapshot: &Snapshot,
+    ) -> Result<(), String> {
         self.0.lock().expect("lock poisoned").push(payload);
         Ok(())
     }
@@ -103,8 +114,13 @@ impl TypedEffectHandler<RuntimeEffect> for RuntimeEffectRecorder {
 
 struct FailingRuntimeEffectHandler;
 
+#[async_trait]
 impl TypedEffectHandler<RuntimeEffect> for FailingRuntimeEffectHandler {
-    fn handle_typed(&self, _payload: RuntimeEffect, _snapshot: &Snapshot) -> Result<(), String> {
+    async fn handle_typed(
+        &self,
+        _payload: RuntimeEffect,
+        _snapshot: &Snapshot,
+    ) -> Result<(), String> {
         Err("synthetic failure".into())
     }
 }
@@ -119,8 +135,13 @@ impl ScheduledActionSpec for AlwaysFailingAction {
 
 struct AlwaysFailingHandler;
 
+#[async_trait]
 impl TypedScheduledActionHandler<AlwaysFailingAction> for AlwaysFailingHandler {
-    fn handle_typed(&self, _ctx: &PhaseContext, _payload: ()) -> Result<StateCommand, StateError> {
+    async fn handle_typed(
+        &self,
+        _ctx: &PhaseContext,
+        _payload: (),
+    ) -> Result<StateCommand, StateError> {
         Err(StateError::UnknownSlot {
             key: "synthetic".into(),
         })
@@ -137,8 +158,13 @@ impl ScheduledActionSpec for SpawnOnceAction {
 
 struct SpawnOnceHandler;
 
+#[async_trait]
 impl TypedScheduledActionHandler<SpawnOnceAction> for SpawnOnceHandler {
-    fn handle_typed(&self, ctx: &PhaseContext, _payload: ()) -> Result<StateCommand, StateError> {
+    async fn handle_typed(
+        &self,
+        ctx: &PhaseContext,
+        _payload: (),
+    ) -> Result<StateCommand, StateError> {
         let mut cmd = StateCommand::new().with_base_revision(ctx.snapshot.revision());
         cmd.schedule_action::<FinishAction>(()).unwrap();
         Ok(cmd)
@@ -155,8 +181,13 @@ impl ScheduledActionSpec for FinishAction {
 
 struct FinishHandler;
 
+#[async_trait]
 impl TypedScheduledActionHandler<FinishAction> for FinishHandler {
-    fn handle_typed(&self, _ctx: &PhaseContext, _payload: ()) -> Result<StateCommand, StateError> {
+    async fn handle_typed(
+        &self,
+        _ctx: &PhaseContext,
+        _payload: (),
+    ) -> Result<StateCommand, StateError> {
         Ok(StateCommand::new())
     }
 }
@@ -171,8 +202,13 @@ impl ScheduledActionSpec for InfiniteLoopAction {
 
 struct InfiniteLoopHandler;
 
+#[async_trait]
 impl TypedScheduledActionHandler<InfiniteLoopAction> for InfiniteLoopHandler {
-    fn handle_typed(&self, ctx: &PhaseContext, _payload: ()) -> Result<StateCommand, StateError> {
+    async fn handle_typed(
+        &self,
+        ctx: &PhaseContext,
+        _payload: (),
+    ) -> Result<StateCommand, StateError> {
         let mut cmd = StateCommand::new().with_base_revision(ctx.snapshot.revision());
         cmd.schedule_action::<InfiniteLoopAction>(()).unwrap();
         Ok(cmd)
@@ -189,8 +225,13 @@ impl ScheduledActionSpec for OtherPhaseAction {
 
 struct OtherPhaseHandler;
 
+#[async_trait]
 impl TypedScheduledActionHandler<OtherPhaseAction> for OtherPhaseHandler {
-    fn handle_typed(&self, _ctx: &PhaseContext, _payload: ()) -> Result<StateCommand, StateError> {
+    async fn handle_typed(
+        &self,
+        _ctx: &PhaseContext,
+        _payload: (),
+    ) -> Result<StateCommand, StateError> {
         Ok(StateCommand::new())
     }
 }
@@ -205,8 +246,13 @@ impl ScheduledActionSpec for LogOnlyAction {
 
 struct LogOnlyHandler;
 
+#[async_trait]
 impl TypedScheduledActionHandler<LogOnlyAction> for LogOnlyHandler {
-    fn handle_typed(&self, _ctx: &PhaseContext, _payload: ()) -> Result<StateCommand, StateError> {
+    async fn handle_typed(
+        &self,
+        _ctx: &PhaseContext,
+        _payload: (),
+    ) -> Result<StateCommand, StateError> {
         Ok(StateCommand::new())
     }
 }
@@ -225,8 +271,9 @@ impl ScheduledActionSpec for BadlyEncodedAction {
 
 struct BadlyEncodedActionHandler;
 
+#[async_trait]
 impl TypedScheduledActionHandler<BadlyEncodedAction> for BadlyEncodedActionHandler {
-    fn handle_typed(
+    async fn handle_typed(
         &self,
         _ctx: &PhaseContext,
         _payload: String,
@@ -282,8 +329,9 @@ impl EffectSpec for MismatchedEffect {
 
 struct MismatchedEffectHandler;
 
+#[async_trait]
 impl TypedEffectHandler<MismatchedEffect> for MismatchedEffectHandler {
-    fn handle_typed(
+    async fn handle_typed(
         &self,
         _payload: MismatchedPayload,
         _snapshot: &Snapshot,
@@ -292,20 +340,20 @@ impl TypedEffectHandler<MismatchedEffect> for MismatchedEffectHandler {
     }
 }
 
-#[test]
-fn unregistered_action_handler_is_rejected_on_submit() {
+#[tokio::test]
+async fn unregistered_action_handler_is_rejected_on_submit() {
     let app = AppRuntime::new().unwrap();
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<ActivateRequested>(()).unwrap();
-    let err = app.submit_command(cmd).unwrap_err();
+    let err = app.submit_command(cmd).await.unwrap_err();
     assert!(matches!(
         err,
         StateError::UnknownScheduledActionHandler { .. }
     ));
 }
 
-#[test]
-fn unregistered_effect_handler_is_rejected_on_submit() {
+#[tokio::test]
+async fn unregistered_effect_handler_is_rejected_on_submit() {
     let app = AppRuntime::new().unwrap();
     let mut cmd = StateCommand::new();
     cmd.effect(RuntimeEffect::PublishJson {
@@ -313,12 +361,12 @@ fn unregistered_effect_handler_is_rejected_on_submit() {
         payload: serde_json::json!(null),
     })
     .unwrap();
-    let err = app.submit_command(cmd).unwrap_err();
+    let err = app.submit_command(cmd).await.unwrap_err();
     assert!(matches!(err, StateError::UnknownEffectHandler { .. }));
 }
 
-#[test]
-fn phase_runtime_stages_and_reduces_actions() {
+#[tokio::test]
+async fn phase_runtime_stages_and_reduces_actions() {
     let store = StateStore::new();
     let runtime = PhaseRuntime::new(store.clone()).unwrap();
     runtime.install_plugin(HandoffPlugin).unwrap();
@@ -332,7 +380,7 @@ fn phase_runtime_stages_and_reduces_actions() {
         agent: "fast".into(),
     });
     cmd.schedule_action::<ActivateRequested>(()).unwrap();
-    runtime.submit_command(cmd).unwrap();
+    runtime.submit_command(cmd).await.unwrap();
 
     assert_eq!(
         store
@@ -342,7 +390,7 @@ fn phase_runtime_stages_and_reduces_actions() {
         1
     );
 
-    let report = runtime.run_phase(Phase::BeforeInference).unwrap();
+    let report = runtime.run_phase(Phase::BeforeInference).await.unwrap();
     assert_eq!(report.processed_scheduled_actions, 1);
     assert_eq!(report.effect_report.dispatched, 1);
 
@@ -364,8 +412,8 @@ fn phase_runtime_stages_and_reduces_actions() {
     );
 }
 
-#[test]
-fn effect_failures_are_reported_immediately() {
+#[tokio::test]
+async fn effect_failures_are_reported_immediately() {
     let store = StateStore::new();
     let runtime = PhaseRuntime::new(store.clone()).unwrap();
     runtime
@@ -378,13 +426,13 @@ fn effect_failures_are_reported_immediately() {
         payload: serde_json::json!({"ok": true}),
     })
     .unwrap();
-    let report = runtime.submit_command(cmd).unwrap();
+    let report = runtime.submit_command(cmd).await.unwrap();
     assert_eq!(report.effect_report.attempted, 1);
     assert_eq!(report.effect_report.failed, 1);
 }
 
-#[test]
-fn app_runtime_wraps_store_and_phase_runtime() {
+#[tokio::test]
+async fn app_runtime_wraps_store_and_phase_runtime() {
     let app = AppRuntime::new().unwrap();
     app.install_plugin(HandoffPlugin).unwrap();
     app.phase_runtime()
@@ -396,9 +444,9 @@ fn app_runtime_wraps_store_and_phase_runtime() {
         agent: "planner".into(),
     });
     cmd.schedule_action::<ActivateRequested>(()).unwrap();
-    app.submit_command(cmd).unwrap();
+    app.submit_command(cmd).await.unwrap();
 
-    let report = app.run_phase(Phase::BeforeInference).unwrap();
+    let report = app.run_phase(Phase::BeforeInference).await.unwrap();
     assert_eq!(report.processed_scheduled_actions, 1);
     assert_eq!(
         app.store()
@@ -456,8 +504,8 @@ fn uninstalling_unknown_runtime_plugin_is_rejected() {
     assert!(matches!(err, StateError::PluginNotInstalled { .. }));
 }
 
-#[test]
-fn runtime_plugin_can_be_uninstalled_and_reinstalled() {
+#[tokio::test]
+async fn runtime_plugin_can_be_uninstalled_and_reinstalled() {
     let app = AppRuntime::new().unwrap();
     app.install_plugin(HandoffPlugin).unwrap();
     app.phase_runtime()
@@ -473,9 +521,9 @@ fn runtime_plugin_can_be_uninstalled_and_reinstalled() {
         agent: "reloaded".into(),
     });
     cmd.schedule_action::<ActivateRequested>(()).unwrap();
-    app.submit_command(cmd).unwrap();
+    app.submit_command(cmd).await.unwrap();
 
-    let report = app.run_phase(Phase::BeforeInference).unwrap();
+    let report = app.run_phase(Phase::BeforeInference).await.unwrap();
     assert_eq!(report.processed_scheduled_actions, 1);
     assert_eq!(
         app.store()
@@ -487,8 +535,8 @@ fn runtime_plugin_can_be_uninstalled_and_reinstalled() {
     );
 }
 
-#[test]
-fn failed_scheduled_actions_are_dead_lettered() {
+#[tokio::test]
+async fn failed_scheduled_actions_are_dead_lettered() {
     let app = AppRuntime::new().unwrap();
     app.phase_runtime()
         .register_scheduled_action::<AlwaysFailingAction, _>(AlwaysFailingHandler)
@@ -496,9 +544,9 @@ fn failed_scheduled_actions_are_dead_lettered() {
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<AlwaysFailingAction>(()).unwrap();
-    app.submit_command(cmd).unwrap();
+    app.submit_command(cmd).await.unwrap();
 
-    let report = app.run_phase(Phase::BeforeInference).unwrap();
+    let report = app.run_phase(Phase::BeforeInference).await.unwrap();
     assert_eq!(report.failed_scheduled_actions, 1);
     assert_eq!(
         app.store()
@@ -515,8 +563,8 @@ fn failed_scheduled_actions_are_dead_lettered() {
     assert_eq!(failed[0].action.key, AlwaysFailingAction::KEY);
 }
 
-#[test]
-fn run_phase_processes_same_phase_actions_across_rounds() {
+#[tokio::test]
+async fn run_phase_processes_same_phase_actions_across_rounds() {
     let app = AppRuntime::new().unwrap();
     app.phase_runtime()
         .register_scheduled_action::<SpawnOnceAction, _>(SpawnOnceHandler)
@@ -527,9 +575,9 @@ fn run_phase_processes_same_phase_actions_across_rounds() {
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<SpawnOnceAction>(()).unwrap();
-    app.submit_command(cmd).unwrap();
+    app.submit_command(cmd).await.unwrap();
 
-    let report = app.run_phase(Phase::BeforeInference).unwrap();
+    let report = app.run_phase(Phase::BeforeInference).await.unwrap();
     assert_eq!(report.rounds, 3);
     assert_eq!(report.processed_scheduled_actions, 2);
     assert_eq!(
@@ -541,8 +589,8 @@ fn run_phase_processes_same_phase_actions_across_rounds() {
     );
 }
 
-#[test]
-fn run_phase_reports_skipped_actions_from_other_phases() {
+#[tokio::test]
+async fn run_phase_reports_skipped_actions_from_other_phases() {
     let app = AppRuntime::new().unwrap();
     app.phase_runtime()
         .register_scheduled_action::<OtherPhaseAction, _>(OtherPhaseHandler)
@@ -550,9 +598,9 @@ fn run_phase_reports_skipped_actions_from_other_phases() {
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<OtherPhaseAction>(()).unwrap();
-    app.submit_command(cmd).unwrap();
+    app.submit_command(cmd).await.unwrap();
 
-    let report = app.run_phase(Phase::BeforeInference).unwrap();
+    let report = app.run_phase(Phase::BeforeInference).await.unwrap();
     assert_eq!(report.processed_scheduled_actions, 0);
     assert_eq!(report.skipped_scheduled_actions, 1);
     assert_eq!(
@@ -564,8 +612,8 @@ fn run_phase_reports_skipped_actions_from_other_phases() {
     );
 }
 
-#[test]
-fn run_phase_returns_error_on_infinite_loop() {
+#[tokio::test]
+async fn run_phase_returns_error_on_infinite_loop() {
     let app = AppRuntime::new().unwrap();
     app.phase_runtime()
         .register_scheduled_action::<InfiniteLoopAction, _>(InfiniteLoopHandler)
@@ -573,9 +621,9 @@ fn run_phase_returns_error_on_infinite_loop() {
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<InfiniteLoopAction>(()).unwrap();
-    app.submit_command(cmd).unwrap();
+    app.submit_command(cmd).await.unwrap();
 
-    let err = app.run_phase(Phase::BeforeInference).unwrap_err();
+    let err = app.run_phase(Phase::BeforeInference).await.unwrap_err();
     assert!(matches!(
         err,
         StateError::PhaseRunLoopExceeded {
@@ -585,8 +633,8 @@ fn run_phase_returns_error_on_infinite_loop() {
     ));
 }
 
-#[test]
-fn run_phase_with_custom_limit() {
+#[tokio::test]
+async fn run_phase_with_custom_limit() {
     let app = AppRuntime::new().unwrap();
     app.phase_runtime()
         .register_scheduled_action::<InfiniteLoopAction, _>(InfiniteLoopHandler)
@@ -594,11 +642,12 @@ fn run_phase_with_custom_limit() {
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<InfiniteLoopAction>(()).unwrap();
-    app.submit_command(cmd).unwrap();
+    app.submit_command(cmd).await.unwrap();
 
     let err = app
         .phase_runtime()
         .run_phase_with_limit(Phase::BeforeInference, 3)
+        .await
         .unwrap_err();
     assert!(matches!(
         err,
@@ -609,8 +658,8 @@ fn run_phase_with_custom_limit() {
     ));
 }
 
-#[test]
-fn malformed_action_payloads_are_dead_lettered() {
+#[tokio::test]
+async fn malformed_action_payloads_are_dead_lettered() {
     let app = AppRuntime::new().unwrap();
     app.phase_runtime()
         .register_scheduled_action::<BadlyEncodedAction, _>(BadlyEncodedActionHandler)
@@ -619,9 +668,9 @@ fn malformed_action_payloads_are_dead_lettered() {
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<BadlyEncodedAction>("broken".into())
         .unwrap();
-    app.submit_command(cmd).unwrap();
+    app.submit_command(cmd).await.unwrap();
 
-    let report = app.run_phase(Phase::BeforeInference).unwrap();
+    let report = app.run_phase(Phase::BeforeInference).await.unwrap();
     assert_eq!(report.failed_scheduled_actions, 1);
     let failed = app
         .store()
@@ -631,8 +680,8 @@ fn malformed_action_payloads_are_dead_lettered() {
     assert_eq!(failed[0].action.key, BadlyEncodedAction::KEY);
 }
 
-#[test]
-fn malformed_effect_payloads_are_reported_as_failed_dispatch() {
+#[tokio::test]
+async fn malformed_effect_payloads_are_reported_as_failed_dispatch() {
     let runtime = PhaseRuntime::new(StateStore::new()).unwrap();
     runtime
         .register_effect::<MismatchedEffect, _>(MismatchedEffectHandler)
@@ -641,7 +690,7 @@ fn malformed_effect_payloads_are_reported_as_failed_dispatch() {
     let mut cmd = StateCommand::new();
     cmd.emit::<MismatchedEffect>(MismatchedPayload).unwrap();
 
-    let report = runtime.submit_command(cmd).unwrap();
+    let report = runtime.submit_command(cmd).await.unwrap();
     assert_eq!(report.effect_report.attempted, 1);
     assert_eq!(report.effect_report.dispatched, 0);
     assert_eq!(report.effect_report.failed, 1);
@@ -651,8 +700,9 @@ fn malformed_effect_payloads_are_reported_as_failed_dispatch() {
 
 struct CountingHook(Arc<std::sync::atomic::AtomicUsize>);
 
+#[async_trait]
 impl PhaseHook for CountingHook {
-    fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+    async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(StateCommand::new())
     }
@@ -660,8 +710,9 @@ impl PhaseHook for CountingHook {
 
 struct MutatingHook;
 
+#[async_trait]
 impl PhaseHook for MutatingHook {
-    fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+    async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
         let mut cmd = StateCommand::new().with_base_revision(ctx.snapshot.revision());
         cmd.update::<HandoffChannel>(HandoffAction::Request {
             agent: "from-hook".into(),
@@ -672,8 +723,9 @@ impl PhaseHook for MutatingHook {
 
 struct ActionEnqueuingHook;
 
+#[async_trait]
 impl PhaseHook for ActionEnqueuingHook {
-    fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+    async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
         let mut cmd = StateCommand::new();
         cmd.schedule_action::<LogOnlyAction>(()).unwrap();
         Ok(cmd)
@@ -701,8 +753,8 @@ impl Plugin for HookPlugin {
     }
 }
 
-#[test]
-fn phase_hook_runs_during_run_phase() {
+#[tokio::test]
+async fn phase_hook_runs_during_run_phase() {
     let app = AppRuntime::new().unwrap();
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     app.install_plugin(HookPlugin {
@@ -710,12 +762,12 @@ fn phase_hook_runs_during_run_phase() {
     })
     .unwrap();
 
-    app.run_phase(Phase::BeforeInference).unwrap();
+    app.run_phase(Phase::BeforeInference).await.unwrap();
     assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
-#[test]
-fn phase_hook_can_mutate_state() {
+#[tokio::test]
+async fn phase_hook_can_mutate_state() {
     let app = AppRuntime::new().unwrap();
     app.install_plugin(HandoffPlugin).unwrap();
 
@@ -737,14 +789,14 @@ fn phase_hook_can_mutate_state() {
     }
     app.install_plugin(MutatingHookPlugin).unwrap();
 
-    app.run_phase(Phase::BeforeInference).unwrap();
+    app.run_phase(Phase::BeforeInference).await.unwrap();
 
     let state = app.store().read_slot::<HandoffChannel>().unwrap();
     assert_eq!(state.requested_agent.as_deref(), Some("from-hook"));
 }
 
-#[test]
-fn phase_hook_can_enqueue_actions() {
+#[tokio::test]
+async fn phase_hook_can_enqueue_actions() {
     let app = AppRuntime::new().unwrap();
     app.phase_runtime()
         .register_scheduled_action::<LogOnlyAction, _>(LogOnlyHandler)
@@ -768,7 +820,7 @@ fn phase_hook_can_enqueue_actions() {
     }
     app.install_plugin(EnqueuePlugin).unwrap();
 
-    let report = app.run_phase(Phase::BeforeInference).unwrap();
+    let report = app.run_phase(Phase::BeforeInference).await.unwrap();
     assert_eq!(report.processed_scheduled_actions, 1);
     assert_eq!(
         app.store()
@@ -779,16 +831,17 @@ fn phase_hook_can_enqueue_actions() {
     );
 }
 
-#[test]
-fn phase_hooks_execute_in_registration_order() {
+#[tokio::test]
+async fn phase_hooks_execute_in_registration_order() {
     let order = Arc::new(Mutex::new(Vec::<&str>::new()));
 
     struct OrderHook {
         label: &'static str,
         order: Arc<Mutex<Vec<&'static str>>>,
     }
+    #[async_trait]
     impl PhaseHook for OrderHook {
-        fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+        async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
             self.order.lock().unwrap().push(self.label);
             Ok(StateCommand::new())
         }
@@ -829,12 +882,12 @@ fn phase_hooks_execute_in_registration_order() {
     app.install_plugin(OrderPlugin { order: order_clone })
         .unwrap();
 
-    app.run_phase(Phase::BeforeInference).unwrap();
+    app.run_phase(Phase::BeforeInference).await.unwrap();
     assert_eq!(*order.lock().unwrap(), vec!["first", "second"]);
 }
 
-#[test]
-fn phase_hooks_are_cleaned_up_on_uninstall() {
+#[tokio::test]
+async fn phase_hooks_are_cleaned_up_on_uninstall() {
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let app = AppRuntime::new().unwrap();
     app.install_plugin(HookPlugin {
@@ -842,17 +895,17 @@ fn phase_hooks_are_cleaned_up_on_uninstall() {
     })
     .unwrap();
 
-    app.run_phase(Phase::BeforeInference).unwrap();
+    app.run_phase(Phase::BeforeInference).await.unwrap();
     assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
 
     app.uninstall_plugin::<HookPlugin>().unwrap();
 
-    app.run_phase(Phase::BeforeInference).unwrap();
+    app.run_phase(Phase::BeforeInference).await.unwrap();
     assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
-#[test]
-fn phase_hook_does_not_fire_for_other_phases() {
+#[tokio::test]
+async fn phase_hook_does_not_fire_for_other_phases() {
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let app = AppRuntime::new().unwrap();
     app.install_plugin(HookPlugin {
@@ -860,12 +913,12 @@ fn phase_hook_does_not_fire_for_other_phases() {
     })
     .unwrap();
 
-    app.run_phase(Phase::AfterInference).unwrap();
+    app.run_phase(Phase::AfterInference).await.unwrap();
     assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
-#[test]
-fn phase_hooks_fire_for_step_start_and_step_end() {
+#[tokio::test]
+async fn phase_hooks_fire_for_step_start_and_step_end() {
     let step_start_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let step_end_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
@@ -903,8 +956,8 @@ fn phase_hooks_fire_for_step_start_and_step_end() {
     })
     .unwrap();
 
-    app.run_phase(Phase::StepStart).unwrap();
-    app.run_phase(Phase::StepEnd).unwrap();
+    app.run_phase(Phase::StepStart).await.unwrap();
+    app.run_phase(Phase::StepEnd).await.unwrap();
 
     assert_eq!(
         step_start_count.load(std::sync::atomic::Ordering::SeqCst),
@@ -913,8 +966,8 @@ fn phase_hooks_fire_for_step_start_and_step_end() {
     assert_eq!(step_end_count.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
-#[test]
-fn phase_hooks_do_not_cross_fire_between_step_phases() {
+#[tokio::test]
+async fn phase_hooks_do_not_cross_fire_between_step_phases() {
     let start_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     struct StepStartOnlyPlugin {
@@ -945,19 +998,19 @@ fn phase_hooks_do_not_cross_fire_between_step_phases() {
     .unwrap();
 
     // StepEnd should NOT trigger StepStart hook
-    app.run_phase(Phase::StepEnd).unwrap();
+    app.run_phase(Phase::StepEnd).await.unwrap();
     assert_eq!(start_count.load(std::sync::atomic::Ordering::SeqCst), 0);
 
     // StepStart should trigger it
-    app.run_phase(Phase::StepStart).unwrap();
+    app.run_phase(Phase::StepStart).await.unwrap();
     assert_eq!(start_count.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
-#[test]
-fn all_eight_phases_can_run_without_hooks() {
+#[tokio::test]
+async fn all_eight_phases_can_run_without_hooks() {
     let app = AppRuntime::new().unwrap();
     for phase in Phase::ALL {
-        let report = app.run_phase(phase).unwrap();
+        let report = app.run_phase(phase).await.unwrap();
         assert_eq!(report.phase, phase);
         assert_eq!(report.processed_scheduled_actions, 0);
     }

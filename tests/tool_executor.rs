@@ -382,8 +382,9 @@ async fn suspension_tool_call_state_is_suspended() {
 async fn hook_state_mutation_visible_to_next_hook() {
     // Hook A writes state, Hook B reads it in the same phase
     struct WriterHook;
+    #[async_trait]
     impl PhaseHook for WriterHook {
-        fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+        async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
             let mut cmd = StateCommand::new();
             cmd.update::<TestCounterSlot>(1);
             Ok(cmd)
@@ -393,8 +394,9 @@ async fn hook_state_mutation_visible_to_next_hook() {
     struct ReaderHook {
         observed: Arc<Mutex<Option<usize>>>,
     }
+    #[async_trait]
     impl PhaseHook for ReaderHook {
-        fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+        async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
             let val = ctx.state::<TestCounterSlot>().copied().unwrap_or(0);
             *self.observed.lock().unwrap() = Some(val);
             Ok(StateCommand::new())
@@ -488,8 +490,9 @@ async fn max_rounds_precise_count() {
 #[tokio::test]
 async fn terminate_via_effect_in_after_inference_hook() {
     struct TerminateHook;
+    #[async_trait]
     impl PhaseHook for TerminateHook {
-        fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+        async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
             let mut cmd = StateCommand::new();
             cmd.effect(RuntimeEffect::Terminate {
                 reason: TerminationReason::stopped("custom_stop"),
@@ -537,8 +540,9 @@ async fn terminate_via_effect_in_after_inference_hook() {
 async fn phase_sequence_with_tool_call() {
     let phases = Arc::new(Mutex::new(Vec::<Phase>::new()));
     struct PhaseLogger(Arc<Mutex<Vec<Phase>>>);
+    #[async_trait]
     impl PhaseHook for PhaseLogger {
-        fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+        async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
             self.0.lock().unwrap().push(ctx.phase);
             Ok(StateCommand::new())
         }
@@ -590,8 +594,9 @@ async fn phase_sequence_with_tool_call() {
 async fn phase_sequence_on_suspension() {
     let phases = Arc::new(Mutex::new(Vec::<Phase>::new()));
     struct PhaseLogger(Arc<Mutex<Vec<Phase>>>);
+    #[async_trait]
     impl PhaseHook for PhaseLogger {
-        fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+        async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
             self.0.lock().unwrap().push(ctx.phase);
             Ok(StateCommand::new())
         }
@@ -652,8 +657,9 @@ struct TestModelValue {
 async fn config_values_available_in_loop_hooks() {
     let observed = Arc::new(Mutex::new(String::new()));
     struct ConfigReader(Arc<Mutex<String>>);
+    #[async_trait]
     impl PhaseHook for ConfigReader {
-        fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+        async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
             let val = ctx.config::<TestModelConfig>();
             *self.0.lock().unwrap() = val.name;
             Ok(StateCommand::new())
