@@ -480,16 +480,17 @@ impl Plugin for MismatchedEffectPlugin {
 }
 
 #[tokio::test]
-async fn unregistered_action_handler_is_accepted_on_submit() {
-    // Actions without handlers are allowed — they stay in the queue
-    // for loop-level consumption.
+async fn unregistered_action_handler_is_rejected_on_submit() {
+    // Actions must be either handler-registered or declared as loop-consumed.
     let app = AppRuntime::new().unwrap();
     let env = ExecutionEnv::empty();
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<ActivateRequested>(()).unwrap();
-    app.submit_command(&env, cmd)
-        .await
-        .expect("unhandled actions should be accepted");
+    let err = app.submit_command(&env, cmd).await.unwrap_err();
+    assert!(matches!(
+        err,
+        StateError::UnknownScheduledActionHandler { .. }
+    ));
 }
 
 #[tokio::test]

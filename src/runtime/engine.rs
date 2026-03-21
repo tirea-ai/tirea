@@ -131,7 +131,7 @@ impl PhaseRuntime {
                 .unwrap_or_default();
 
             // Only process actions matching this phase AND having a registered handler.
-            // Actions without handlers stay in the queue for loop-level consumption.
+            // Loop-consumed actions (declared via register_loop_consumed_action) stay in queue.
             let matching: Vec<_> = queued
                 .into_iter()
                 .filter(|envelope| {
@@ -212,9 +212,17 @@ impl PhaseRuntime {
         env: &ExecutionEnv,
         mut command: StateCommand,
     ) -> Result<SubmitCommandReport, StateError> {
+        // Validate all action keys are either handler-registered or loop-consumed.
+        for action in &command.scheduled_actions {
+            if !env.scheduled_action_handlers.contains_key(&action.key)
+                && !env.loop_consumed_action_keys.contains(&action.key)
+            {
+                return Err(StateError::UnknownScheduledActionHandler {
+                    key: action.key.clone(),
+                });
+            }
+        }
         // Validate effect keys have registered handlers.
-        // Actions without handlers are allowed — they stay in the queue
-        // for loop-level consumption (e.g. SetInferenceOverride).
         for effect in &command.effects {
             if !env.effect_handlers.contains_key(&effect.key) {
                 return Err(StateError::UnknownEffectHandler {

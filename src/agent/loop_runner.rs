@@ -64,7 +64,9 @@ pub fn build_agent_env(
     all_plugins.push(Arc::new(MaxRoundsPlugin::new(max_rounds)));
     all_plugins.push(Arc::new(AllowAllToolsPlugin));
 
-    ExecutionEnv::from_plugins(&all_plugins)
+    let mut env = ExecutionEnv::from_plugins(&all_plugins)?;
+    env.register_loop_consumed_action::<super::state::SetInferenceOverride>();
+    Ok(env)
 }
 
 pub async fn run_agent_loop(
