@@ -14,6 +14,14 @@ pub struct ResolvedAgent {
     pub env: ExecutionEnv,
 }
 
+impl std::fmt::Debug for ResolvedAgent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvedAgent")
+            .field("agent_id", &self.config.id)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Resolves an agent by ID, producing a ready-to-execute config + environment.
 ///
 /// Implementations look up `AgentSpec` from a registry, resolve the model → provider

@@ -1,12 +1,15 @@
-//! Resolution: `agent_id` + `RegistrySet` → `ResolvedRun`.
+//! Resolution: `agent_id` + `RegistrySet` → `ResolvedRun` / `ResolvedAgent`.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use crate::agent::config::AgentConfig;
+use crate::agent::executor::SequentialToolExecutor;
 use crate::contract::executor::LlmExecutor;
 use crate::contract::tool::Tool;
+use crate::error::StateError;
 use crate::plugins::Plugin;
-use crate::runtime::ExecutionEnv;
+use crate::runtime::{AgentResolver, ExecutionEnv, ResolvedAgent};
 
 use super::spec::AgentSpec;
 use super::traits::RegistrySet;
@@ -105,6 +108,50 @@ pub fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, 
         plugins,
         env,
     })
+}
+
+// ---------------------------------------------------------------------------
+// AgentResolver implementation
+// ---------------------------------------------------------------------------
+
+impl AgentResolver for RegistrySet {
+    /// Resolve an agent by ID into a `ResolvedAgent` (config + env).
+    ///
+    /// Bridges the registry resolution (`ResolvedRun`) into the runtime's
+    /// `AgentConfig` + `ExecutionEnv` pair that the loop runner expects.
+    fn resolve(&self, agent_id: &str) -> Result<ResolvedAgent, StateError> {
+        let run = resolve(self, agent_id).map_err(|e| StateError::AgentNotFound {
+            agent_id: e.to_string(),
+        })?;
+
+        let mut env = run.env;
+
+        // Register loop-consumed actions (same as build_agent_env)
+        env.register_loop_consumed_action::<crate::agent::state::SetInferenceOverride>();
+        env.register_loop_consumed_action::<crate::agent::state::AddContextMessage>();
+
+        let config = AgentConfig {
+            id: run.spec.id,
+            model: run.model_name,
+            system_prompt: run.spec.system_prompt,
+            max_rounds: run.spec.max_rounds,
+            tools: run.tools,
+            llm_executor: run.executor,
+            tool_executor: Arc::new(SequentialToolExecutor),
+            context_policy: None,
+            context_summarizer: None,
+        };
+
+        // Register built-in context truncation transform when policy is set
+        if let Some(ref policy) = config.context_policy {
+            env.request_transforms
+                .push(Arc::new(crate::agent::context::ContextTransform::new(
+                    policy.clone(),
+                )));
+        }
+
+        Ok(ResolvedAgent { config, env })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -555,5 +602,56 @@ mod tests {
         for (err, expected) in cases {
             assert_eq!(err.to_string(), expected);
         }
+    }
+
+    // -- AgentResolver bridge tests --
+
+    #[test]
+    fn registry_set_as_agent_resolver() {
+        use crate::runtime::AgentResolver;
+
+        let regs = build_registries(
+            vec![
+                ("read", Arc::new(MockTool { id: "read".into() })),
+                ("write", Arc::new(MockTool { id: "write".into() })),
+            ],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "claude-test".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![],
+            make_spec("my-agent"),
+        );
+
+        let resolved = AgentResolver::resolve(&regs, "my-agent").unwrap();
+        assert_eq!(resolved.config.id, "my-agent");
+        assert_eq!(resolved.config.model, "claude-test");
+        assert_eq!(resolved.config.system_prompt, "You are helpful.");
+        assert_eq!(resolved.config.tools.len(), 2);
+        assert!(resolved.config.tools.contains_key("read"));
+    }
+
+    #[test]
+    fn registry_set_resolver_not_found() {
+        use crate::runtime::AgentResolver;
+
+        let regs = build_registries(
+            vec![],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![],
+            make_spec("existing"),
+        );
+
+        let err = AgentResolver::resolve(&regs, "missing").unwrap_err();
+        assert!(matches!(err, StateError::AgentNotFound { .. }));
     }
 }
