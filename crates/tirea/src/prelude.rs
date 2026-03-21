@@ -19,8 +19,7 @@
 //!
 //!     async fn execute(&self, args: Value, ctx: &Thread) -> Result<ToolResult, ToolError> {
 //!         // Extension traits are auto-imported (requires "core" feature)
-//!         ctx.allow_tool("follow_up");           // PermissionContextExt
-//!         ctx.add_reminder("Remember to check"); // ReminderContextExt
+//!         ctx.allow_tool("follow_up"); // PermissionContextExt
 //!
 //!         Ok(ToolResult::success("my_tool", json!({"status": "done"})))
 //!     }
@@ -86,8 +85,7 @@ pub use tirea_extension_permission::{
 
 #[cfg(feature = "core")]
 pub use tirea_extension_reminder::{
-    add_persistent_reminder_action, add_reminder_action, clear_reminder_action, inject_reminders,
-    ReminderAction, ReminderPlugin, SystemReminder,
+    add_persistent_reminder_action, add_reminder_action, clear_reminder_action, SystemReminder,
 };
 
 // ── Skills extension (require "skills" feature) ──────────────────────────

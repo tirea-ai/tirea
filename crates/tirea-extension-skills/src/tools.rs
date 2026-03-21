@@ -112,7 +112,6 @@ impl SkillActivateTool {
             Err(r) => return Ok(ToolExecutionEffect::from(r)),
         };
 
-
         let activate_action =
             AnyStateAction::new::<SkillState>(SkillStateAction::Activate(meta.id.clone()));
         let mut applied_tool_ids: Vec<String> = Vec::new();

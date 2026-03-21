@@ -100,13 +100,6 @@ impl<'s, 'a> BeforeInferenceContext<'s, 'a> {
             });
     }
 
-    /// Append a session-band context message.
-    pub fn add_session_message(&mut self, key: impl Into<String>, text: impl Into<String>) {
-        self.step.inference.context_messages.push(
-            crate::runtime::inference::ContextMessage::session(key.into(), text.into()),
-        );
-    }
-
     /// Exclude tool by id.
     pub fn exclude_tool(&mut self, tool_id: &str) {
         self.step.inference.tools.retain(|t| t.id != tool_id);
