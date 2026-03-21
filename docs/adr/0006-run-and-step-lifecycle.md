@@ -32,16 +32,17 @@ Running ←→ Waiting → Done
 
 Implemented as a built-in `StateKey` with Run scope.
 
-**Stop conditions are plugins**: Implemented as regular plugins with AfterInference hooks, not hardcoded loop logic. Built-in conditions (MaxRounds, Timeout, TokenBudget, etc.) provided as a default plugin bundle. Termination flows through `RuntimeEffect::Terminate` — the agent loop's effect handler sets a flag checked at phase boundaries. Effects (not actions) because termination is control flow, not state mutation.
+**Stop conditions are plugins**: Implemented as regular plugins with AfterInference hooks, not hardcoded loop logic. Built-in conditions (MaxRounds, Timeout, TokenBudget, etc.) provided as a default plugin bundle. Termination flows through the `RunLifecycle` state machine — stop condition hooks write `RunLifecycleUpdate::Done` directly via `StateCommand`, and the loop runner checks `RunStatus` at phase boundaries. This eliminates the need for `RuntimeEffect::Terminate` and the `TerminationFlag` side channel; all lifecycle transitions are state-driven.
 
 **Configuration is boundary-resolved**: Run/step lifecycle boundaries are also configuration resolution boundaries (ADR-0004). In particular, `run_phase`, `BeforeInference`, and `BeforeToolExecute` re-resolve live config sources into an execution-local view so handoff, profile switching, and request-level overrides take effect without rebuilding the whole runtime.
 
 ## Implementation Status
 
-- Phase enum: 6 of 8 variants implemented (missing StepStart, StepEnd)
-- `RuntimeEffect::Terminate`: implemented
-- Run state machine: not implemented
-- Stop conditions as plugins: not implemented
+- Phase enum: implemented (8 variants)
+- Run state machine (`RunLifecycle` StateKey): implemented
+- Stop conditions as plugins: implemented (MaxRounds, TokenBudget, Timeout, ConsecutiveErrors)
+- State-driven termination: hooks write `RunLifecycleUpdate::Done`, loop checks `RunStatus`
+- `RuntimeEffect::Terminate` / `TerminationFlag`: removed (replaced by state machine)
 - Boundary-resolved configuration: not implemented (depends on ADR-0004)
 
 ## Consequences

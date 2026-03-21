@@ -60,6 +60,8 @@ Future extension: if a handler is known to be replay-safe (pure, idempotent), a 
 
 Both GATHER and EXECUTE produce effects via `StateCommand`. Effects are dispatched immediately after each commit (inline within `submit_command`), not deferred. During GATHER there is one merged commit, so effect handlers observe the post-merge snapshot. Effect handlers are terminal — they do not produce new actions or effects. This separation prevents feedback loops through the effect path.
 
+Effects are reserved for true fire-and-forget external I/O (e.g. `PublishJson`). Control flow signals (terminate, suspend, block) and per-inference configuration (inference overrides) are modeled as `StateKey` mutations, not effects. The loop runner reads state at phase boundaries to make control flow decisions. This eliminates side channels (`TerminationFlag`, collectors) and keeps all observable state in the `StateStore`.
+
 ### Phase-scoped consumption
 
 `ScheduledAction` carries a `phase` field. EXECUTE only dequeues actions matching the current phase; others remain queued. Cross-phase communication prefers state keys over cross-phase action scheduling.
@@ -82,8 +84,9 @@ Guiding principle: maximize parallelism on pure-data paths first; stay conservat
 ## Implementation Status
 
 - GATHER parallel hooks: implemented
-- GATHER Exclusive auto-fallback: not implemented
-- InferenceOverride wiring: implemented via `InferenceOverrideEffect` EffectSpec
+- GATHER Exclusive auto-fallback: implemented
+- InferenceOverride wiring: implemented via `InferenceOverrides` StateKey
+- State-driven termination: implemented (replaces `TerminationFlag` + `RuntimeEffect::Terminate`)
 - CancellationToken: not implemented
 - EXECUTE parallel actions: not implemented (currently serial)
 
