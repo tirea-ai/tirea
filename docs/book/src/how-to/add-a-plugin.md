@@ -10,14 +10,17 @@ Use this for cross-cutting behavior such as policy checks, approval gates, remin
 ## Steps
 
 1. Implement `AgentBehavior` and assign a stable `id()`.
-2. Return phase actions with `ActionSet<...>` from the phase hooks you need.
-3. Register behavior in `AgentOsBuilder::with_registered_behavior("id", plugin)`.
-4. Attach behavior id in `AgentDefinition.behavior_ids` or `with_behavior_id(...)`.
+2. Optionally declare ordering via `fn ordering(&self) -> PluginOrdering`.
+3. Optionally implement `fn configure(&self, config: &mut AgentRunConfig)` for one-time setup before the loop starts.
+4. Return phase actions with `ActionSet<...>` from the phase hooks you need.
+5. Register behavior in `AgentOsBuilder::with_registered_behavior("id", plugin)`.
+6. Attach behavior id in `AgentDefinition.behavior_ids` or `with_behavior_id(...)`.
 
 ## Minimal Pattern
 
 ```rust,ignore
 use async_trait::async_trait;
+use tirea::contracts::runtime::inference::ContextMessage;
 use tirea::contracts::runtime::phase::{ActionSet, BeforeInferenceAction};
 use tirea::contracts::{AgentBehavior, ReadOnlyContext};
 
@@ -34,14 +37,53 @@ impl AgentBehavior for AuditBehavior {
         _ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<BeforeInferenceAction> {
         ActionSet::single(BeforeInferenceAction::AddContextMessage(
-            tirea_contract::runtime::inference::ContextMessage {
-                key: "audit".into(),
-                content: "Audit: request entering inference".into(),
-                cooldown_turns: 0,
-                target: Default::default(),
-            },
+            ContextMessage::new("audit", "Audit: request entering inference"),
         ))
     }
+}
+```
+
+## Plugin Ordering
+
+When a plugin must run after (or before) another, override `ordering()`:
+
+```rust,ignore
+use tirea::contracts::runtime::behavior::PluginOrdering;
+
+fn ordering(&self) -> PluginOrdering {
+    PluginOrdering::after(&["permission"])
+}
+```
+
+`PluginOrdering` supports `after`, `before`, or both. Plugins without ordering constraints run in registration order.
+
+## Configuration Hook
+
+`configure` runs once during resolve, before the agent loop starts. Use it to seed `AgentRunConfig` with plugin-specific defaults:
+
+```rust,ignore
+use tirea::contracts::runtime::run::config::AgentRunConfig;
+
+fn configure(&self, config: &mut AgentRunConfig) {
+    config.extensions_mut().insert(MyPluginConfig::default());
+}
+```
+
+## Injecting Messages After Tool Execution
+
+Use `AfterToolExecuteAction::AddMessage(ContextMessage)` to append a message after a tool result:
+
+```rust,ignore
+use tirea::contracts::runtime::inference::ContextMessage;
+use tirea::contracts::runtime::phase::{ActionSet, AfterToolExecuteAction};
+
+async fn after_tool_execute(
+    &self,
+    _ctx: &ReadOnlyContext<'_>,
+) -> ActionSet<AfterToolExecuteAction> {
+    ActionSet::single(AfterToolExecuteAction::AddMessage(
+        ContextMessage::system_reminder("Remember to verify output."),
+    ))
 }
 ```
 
@@ -50,12 +92,14 @@ impl AgentBehavior for AuditBehavior {
 - Behavior hook runs at the intended phase.
 - Event/thread output contains expected behavior side effects.
 - Runs are unchanged when behavior preconditions are not met.
+- If ordering is declared, verify the plugin executes in the correct relative order.
 
 ## Common Errors
 
 - Registering behavior but forgetting to include its id in `AgentDefinition.behavior_ids`.
 - Using the wrong phase (effect appears too early or too late).
 - Unbounded mutations in a behavior, making runs hard to reason about.
+- Referencing a non-existent plugin id in `PluginOrdering::after` or `::before`.
 
 ## Related Example
 
@@ -66,7 +110,7 @@ impl AgentBehavior for AuditBehavior {
 
 - `crates/tirea-contract/src/runtime/behavior.rs`
 - `crates/tirea-agentos/src/composition/builder.rs`
-- `crates/tirea-extension-reminder/src/lib.rs`
+- `crates/tirea-agentos/src/runtime/prompt_segments/plugin.rs`
 - `crates/tirea-extension-permission/src/plugin.rs`
 
 ## Related

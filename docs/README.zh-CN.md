@@ -2,9 +2,9 @@
 
 # Tirea
 
-**类型安全的 AI 智能体，并发状态无需加锁。一个二进制文件通过三种协议服务 React、Next.js 和其他智能体。**
+**类型安全的 AI 智能体，并发状态无需加锁。一个二进制文件通过四种协议服务 React、Next.js 和其他智能体。**
 
-用 Rust 定义智能体、工具和状态，然后通过 AG-UI、AI SDK v6 和 A2A 协议从单一二进制文件服务任意前端。通过 MCP 连接外部工具服务器。
+用 Rust 定义智能体、工具和状态，然后通过 AG-UI、AI SDK v6、A2A 和 ACP 协议从单一二进制文件服务任意前端。通过 MCP 连接外部工具服务器。
 
 [![Crates.io](https://img.shields.io/crates/v/tirea.svg)](https://crates.io/crates/tirea)
 [![docs.rs](https://img.shields.io/docsrs/tirea)](https://docs.rs/tirea)
@@ -27,7 +27,7 @@
 
 | 特性 | 实现方式 |
 |---|---|
-| **一个后端服务所有前端** | 同一个二进制文件同时服务 React (AI SDK v6)、Next.js (AG-UI) 和其他智能体 (A2A)，无需单独部署。通过 MCP 连接外部工具服务器。 |
+| **一个后端服务所有前端** | 同一个二进制文件同时服务 React (AI SDK v6)、Next.js (AG-UI)、其他智能体 (A2A) 和基于 stdio 的智能体 (ACP)，无需单独部署。通过 MCP 连接外部工具服务器。 |
 | **LLM 驱动一切编排——无需 DAG** | 定义每个智能体的身份和工具权限，由 LLM 决定何时委派、委派给谁、如何组合结果。无需手写图或状态机。 |
 | **类型安全状态：CRDT + 作用域 + 回放** | 状态是 Rust 结构体，编译期检查类型。CRDT 字段无锁合并并行工具写入。按 thread / run / tool_call 划分作用域防止数据泄漏。每次变更都是可回放的不可变补丁。 |
 | **在编译期捕获插件接线错误** | 插件挂载到 8 个类型化生命周期阶段。将权限检查接到错误的阶段？编译器告诉你，而不是你的用户。 |
@@ -39,9 +39,11 @@
 |---|:---:|:---:|:---:|:---:|:---:|:---:|
 | **语言** | Rust | Python/TS | Python | Python | Python/TS | TypeScript |
 | **编排模型** | 工具委派 | 有状态图 | 会话驱动 | 角色驱动 | Handoffs + as_tool | Workflow + LLM |
-| **多协议服务器** | AG-UI · AI SDK · A2A | ◐ | ◐ | ◐ | ❌ | AG-UI · AI SDK · A2A |
+| **多协议服务器** | AG-UI · AI SDK · A2A · ACP | ◐ | ◐ | ◐ | ❌ | AG-UI · AI SDK · A2A |
 | **类型化状态** | ✅ CRDT + 作用域 + 回放 | ◐ | ❌ | ◐ | ❌ | ◐ |
 | **插件生命周期** | 8 个类型化阶段 | Middleware | ◐ | ◐ | Guardrails | ◐ |
+| **智能体移交** | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| **逐推理覆盖** | ✅ 模型 + 推理参数 | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **子智能体** | ✅ | ✅ | ✅ group chat | ✅ | ✅ | ✅ |
 | **MCP 支持** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Human-in-the-loop** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -108,7 +110,7 @@ graph LR
     end
 
     subgraph "tirea server (one binary)"
-        GW["Protocol gateway\nUI: AG-UI · AI SDK\nAgent: A2A"]
+        GW["Protocol gateway\nUI: AG-UI · AI SDK\nAgent: A2A · ACP"]
         RT["Agent runtime\nLLM streaming · tool dispatch\nplugin lifecycle · context mgmt"]
         EXT["Extensions\npermission · skills · MCP\nreminder · observability"]
     end
@@ -194,6 +196,7 @@ cargo run --package tirea-agentos-server -- --http-addr 127.0.0.1:8080
 | AI SDK v6 | `POST /v1/ai-sdk/agents/:agent_id/runs` | React `useChat()` |
 | AG-UI | `POST /v1/ag-ui/agents/:agent_id/runs` | CopilotKit `<CopilotKit>` |
 | A2A | `POST /v1/a2a/agents/:agent_id/message:send` | 其他智能体 |
+| ACP | stdio (stdin/stdout) | CLI 和基于 stdio 的智能体客户端 |
 
 **React + AI SDK v6：**
 
@@ -225,7 +228,7 @@ Tirea 内置了用于子智能体、后台任务、技能、UI 渲染和 MCP 集
 | **后台任务**（核心） | `task_status`, `task_cancel`, `task_output` | 监控和管理长时间运行的后台操作 |
 | **技能**（`skills` feature） | `skill`, `load_skill_resource`, `skill_script` | 发现、激活并执行技能包 |
 | **A2UI**（`a2ui` 扩展） | `render_a2ui` | 向前端发送声明式 UI 组件 |
-| **MCP**（`mcp` feature） | *动态* | 来自已连接 MCP 服务器的工具以原生工具形式呈现 |
+| **MCP**（`mcp` feature） | *动态* | 来自已连接 MCP 服务器的工具以原生工具形式呈现；Prompt 作为技能暴露，资源纳入 catalog |
 
 ### 在危险操作前要求审批
 
@@ -307,10 +310,12 @@ struct ToolWorkspace { /* ... */ }
 | **Stop Policy** | 按最大轮次、超时、Token 预算、循环检测终止 | `StopPolicyPlugin::new(conditions, specs)` |
 | **Permission** | 按工具 Allow/Deny/Ask，human-in-the-loop 暂停 | `PermissionPlugin` + `ToolPolicyPlugin` |
 | **Skills** | 从文件系统发现并激活技能包 | `skills` feature flag |
-| **MCP** | 连接 MCP 服务器，工具以原生形式呈现 | `mcp` feature flag |
-| **Reminder** | 跨轮次持久化的系统提醒 | `ReminderPlugin::new()` |
+| **MCP** | 连接 MCP 服务器；工具、Prompt 和资源自动发现 | `mcp` feature flag |
+| **Reminder** | 跨轮次持久化的系统提醒 | `add_reminder_action()` 辅助函数 |
 | **Observability** | LLM 调用和工具执行的 OpenTelemetry span | `LLMMetryPlugin::new(sink)` |
 | **A2UI** | 向前端发送声明式 UI 组件 | `A2uiPlugin::with_catalog_id(url)` |
+| **Handoff** | 运行时动态同线程智能体切换 | `HandoffPlugin` + `handoff` feature flag |
+| **Prompt Segments** | 统一的 Prompt 注入模型，用于系统上下文、提醒和技能指令 | 由运行时自动接入 |
 | **Agent Recovery** | 检测并恢复孤立的子智能体运行实例 | 随子智能体自动接入 |
 | **Background Tasks** | 追踪并注入后台任务状态 | 随任务工具自动接入 |
 

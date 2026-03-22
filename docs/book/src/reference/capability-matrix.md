@@ -8,7 +8,7 @@ This matrix maps each framework capability to the authoritative docs and concret
 | Stop policies and termination controls | `how-to/configure-stop-policies.md`, `reference/config.md`, `explanation/run-lifecycle-and-phases.md` | `crates/tirea-agentos/src/runtime/plugin/stop_policy.rs`, `examples/src/starter_backend/mod.rs`, `crates/tirea-agentos/src/runtime/tests.rs` |
 | Tool execution modes | `reference/config.md`, `explanation/hitl-and-decision-flow.md` | `crates/tirea-agentos/src/composition/agent_definition.rs`, `examples/src/starter_backend/mod.rs` |
 | Tool authoring and registration | `tutorials/first-tool.md`, `how-to/add-a-tool.md`, `reference/typed-tool.md` | `examples/src/starter_backend/tools.rs`, `examples/src/travel/tools.rs` |
-| Plugin authoring and registration | `how-to/add-a-plugin.md`, `reference/derive-macro.md` | `crates/tirea-extension-reminder/src/lib.rs`, `crates/tirea-extension-permission/src/plugin.rs` |
+| Plugin authoring and registration | `how-to/add-a-plugin.md`, `reference/derive-macro.md` | `crates/tirea-agentos/src/runtime/prompt_segments/plugin.rs`, `crates/tirea-extension-permission/src/plugin.rs` |
 | State patch operations + conflict model | `reference/state-ops.md`, `explanation/state-and-patch-model.md` | `crates/tirea-state/src/op.rs`, `crates/tirea-state/src/apply.rs` |
 | Typed state derive (`#[derive(State)]`) | `reference/derive-macro.md` | `crates/tirea-state-derive/src/` |
 | State scopes + run-scoped cleanup | `explanation/persistence-and-versioning.md`, `reference/config.md` | `crates/tirea-contract/src/lib.rs`, `crates/tirea-agentos/src/runtime/tests.rs`, `crates/tirea-agentos/src/runtime/plugin/stop_policy.rs` |
@@ -23,7 +23,7 @@ This matrix maps each framework capability to the authoritative docs and concret
 | Postgres thread/run storage | `how-to/use-postgres-store.md` | `crates/tirea-store-adapters/src/postgres_store.rs` |
 | NATS-buffered + Postgres durability | `how-to/use-nats-buffered-postgres-store.md` | `crates/tirea-store-adapters/src/nats_buffered.rs`, `crates/tirea-agentos-server/tests/e2e_nats_postgres.rs` |
 | Tool permission + HITL approval | `how-to/enable-tool-permission-hitl.md`, `explanation/hitl-and-decision-flow.md` | `crates/tirea-extension-permission/src/`, `examples/src/starter_backend/mod.rs`, `examples/ai-sdk-starter/src/components/tools/permission-dialog.tsx`, `examples/travel-ui/hooks/useTripApproval.tsx`, `examples/research-ui/hooks/useDeleteApproval.tsx` |
-| Reminder plugin | `how-to/use-reminder-plugin.md` | `crates/tirea-extension-reminder/src/` |
+| Reminders (prompt segments) | `how-to/use-reminder-plugin.md` | `crates/tirea-agentos/src/runtime/prompt_segments/` |
 | LLM telemetry / observability | `how-to/enable-llmmetry-observability.md` | `crates/tirea-extension-observability/src/`, `examples/src/travel.rs` |
 | Skills subsystem | `how-to/use-skills-subsystem.md` | `crates/tirea-extension-skills/src/subsystem.rs` |
 | MCP tool bridge | `how-to/use-mcp-tools.md` | `crates/tirea-extension-mcp/src/lib.rs`, `examples/src/starter_backend/mod.rs` |
