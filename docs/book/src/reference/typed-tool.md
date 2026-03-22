@@ -347,6 +347,7 @@ If the same policy must apply to many tools uniformly, move the gate into a plug
 ## Example: State Action + Message Injection
 
 ```rust,ignore
+use tirea::contracts::runtime::inference::ContextMessage;
 use tirea::contracts::runtime::phase::AfterToolExecuteAction;
 use tirea::contracts::runtime::state::AnyStateAction;
 use tirea::contracts::runtime::tool_call::{
@@ -383,8 +384,8 @@ impl Tool for ActivateSkillTool {
             .with_action(AnyStateAction::new::<SkillState>(
                 SkillStateAction::Activate("docx".to_string()),
             ))
-            .with_action(AfterToolExecuteAction::AddUserMessage(
-                "Skill instructions...".to_string(),
+            .with_action(AfterToolExecuteAction::AddMessage(
+                ContextMessage::conversation_user("Skill instructions..."),
             )),
         )
     }

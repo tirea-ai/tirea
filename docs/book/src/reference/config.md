@@ -20,15 +20,35 @@ cargo run -p tirea-agentos-server -- --print-agent-config-schema
 
 ## `AGENTOS_CONFIG` JSON Shape
 
+The top-level config object has three optional sections: `providers`, `models`, and the required `agents` array. Providers and models are keyed by id; agents reference them by those ids.
+
 ```json
 {
+  "providers": {
+    "my-proxy": {
+      "endpoint": "http://127.0.0.1:10531/v1",
+      "auth": { "kind": "env", "name": "OPENAI_API_KEY" },
+      "adapter_kind": "openai"
+    }
+  },
+  "models": {
+    "gpt-5": {
+      "provider": "my-proxy",
+      "model": "gpt-5.4",
+      "chat_options": {
+        "temperature": 0.7,
+        "max_tokens": 4096,
+        "reasoning_effort": "high"
+      }
+    }
+  },
   "agents": [
     {
       "kind": "local",
       "id": "assistant",
       "name": "Assistant",
       "description": "Primary hosted assistant",
-      "model": "gpt-4o-mini",
+      "model": "gpt-5",
       "system_prompt": "You are a helpful assistant.",
       "max_rounds": 10,
       "tool_execution_mode": "parallel_streaming",
@@ -88,6 +108,60 @@ Remote A2A agent file fields:
   - `{ "kind": "header", "name": "X-Api-Key", "value": "..." }`
 
 Legacy local entries without `"kind": "local"` are still accepted.
+Configs with only `agents` (no `providers`/`models`) remain valid for backward compatibility.
+
+## Providers (`ProviderConfig`)
+
+Declare custom LLM endpoints in the `providers` map. Each key is a provider id referenced by model configs.
+
+- `endpoint` (required) -- base URL for the provider API
+- `auth` (optional) -- authentication method:
+  - `{ "kind": "env", "name": "ENV_VAR_NAME" }` -- read API key from environment
+  - `{ "kind": "token", "value": "sk-..." }` -- literal token value
+- `adapter_kind` (optional) -- override the genai adapter used for all requests through this provider (e.g. `"openai"`, `"anthropic"`, `"bigmodel"`). Useful when a third-party endpoint speaks a compatible protocol but is not auto-detected by model name.
+
+```json
+"providers": {
+  "bigmodel-coding": {
+    "endpoint": "https://open.bigmodel.cn/api/coding/paas/v4/",
+    "auth": { "kind": "token", "value": "my-key" },
+    "adapter_kind": "openai"
+  }
+}
+```
+
+## Models (`ModelConfig`)
+
+Declare model aliases in the `models` map. Each key is a model id that agents reference in their `model` field.
+
+- `provider` (required) -- provider id from the `providers` map
+- `model` (required) -- upstream model name sent to the provider
+- `chat_options` (optional) -- inference parameters (see `ChatOptionsConfig` below)
+
+## Chat Options (`ChatOptionsConfig`)
+
+Strongly-typed universal fields plus a passthrough `extra` map for provider-specific parameters.
+
+| Field | Type | Description |
+|---|---|---|
+| `temperature` | `f64` | Sampling temperature |
+| `max_tokens` | `u32` | Maximum output tokens |
+| `top_p` | `f64` | Nucleus sampling threshold |
+| `stop_sequences` | `string[]` | Stop sequences |
+| `reasoning_effort` | `string` | `"low"`, `"medium"`, or `"high"` |
+| `seed` | `u64` | Deterministic sampling seed |
+| `extra` | `object` | Provider-specific fields merged into `genai::ChatOptions` via JSON round-trip |
+
+The `extra` map supports any field recognized by the genai crate (e.g. `verbosity`, `service_tier`). Invalid values produce an `ExtraMerge` error at config load time. An all-default `chat_options` object is treated as absent.
+
+```json
+"chat_options": {
+  "temperature": 0.5,
+  "max_tokens": 2048,
+  "reasoning_effort": "medium",
+  "extra": { "service_tier": "Flex" }
+}
+```
 
 `tool_execution_mode` values:
 
@@ -162,3 +236,26 @@ Runtime policy filters are stored as `RunPolicy` fields (set via `set_*_if_absen
 - `allowed_tools` / `excluded_tools`
 - `allowed_skills` / `excluded_skills`
 - `allowed_agents` / `excluded_agents`
+
+## AgentRunConfig (Layered Runtime Configuration)
+
+`AgentRunConfig` (`tirea-contract::runtime::run::config`) is the runtime configuration object that bridges build-time static config with runtime state. It is created during agent resolution, remains mutable until execution starts, then is frozen as `Arc<AgentRunConfig>` for the duration of the run.
+
+Core fields:
+
+- `policy` (`RunPolicy`) -- scope filters (allowed/excluded tools, skills, agents)
+- `agent_id` (`String`) -- resolved agent identifier
+- `model` (`String`) -- resolved model id
+- `extensions` (`Extensions`) -- TypeMap for plugin-specific typed config
+
+The `extensions` field is a `TypeMap`-based store that lets plugins attach arbitrary typed configuration without modifying `AgentRunConfig` itself. Plugins insert config during resolve and read it during execution:
+
+```rust
+// During resolve (mutable phase):
+run_config.extensions_mut().insert(MyPluginConfig { ... });
+
+// During execution (frozen phase):
+let cfg = run_config.extensions().get::<MyPluginConfig>();
+```
+
+This replaces the earlier pattern of passing `RunPolicy` directly to plugins and tools, providing a single extensible config surface for the entire run lifecycle.

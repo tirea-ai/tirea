@@ -1,68 +1,66 @@
-# Use Reminder Plugin
+# Use Reminders
 
-Use this when reminders should be injected into inference context from persisted state.
+Use this when reminders should be injected into inference context.
+
+Reminders use `ContextMessage` with `consume_after_emit` to control lifecycle. The built-in `PromptSegmentsPlugin` handles emission automatically — no plugin registration required.
 
 ## Prerequisites
 
-- `tirea-extension-reminder` is enabled.
-- Agent includes reminder behavior id.
+- `tirea` or `tirea-agentos` with prompt segments enabled.
 
 ## Steps
 
-1. Register plugin and attach behavior.
+1. Add an ephemeral reminder (consumed after the next inference call).
 
 ```rust,ignore
-use std::sync::Arc;
-use tirea::composition::{AgentDefinition, AgentDefinitionSpec, AgentOsBuilder};
-use tirea::extensions::reminder::ReminderPlugin;
+use tirea::prelude::*;
+use tirea_contract::runtime::inference::ContextMessage;
 
-let os = AgentOsBuilder::new()
-    .with_registered_behavior(
-        "reminder",
-        Arc::new(ReminderPlugin::new().with_clear_after_llm_request(true)),
-    )
-    .with_agent_spec(AgentDefinitionSpec::local_with_id(
-        "assistant",
-        AgentDefinition::new("deepseek-chat").with_behavior_id("reminder"),
-    ))
-    .build()?;
+let action = upsert_context_message_action(
+    ContextMessage::session("reminder:call-alice", "Reminder: Call Alice at 3pm")
+        .with_consume_after_emit(true),
+);
+// dispatch as a state action
 ```
 
-2. Write reminder state actions.
+2. For persistent reminders that survive across inference calls:
 
 ```rust,ignore
-use tirea::extensions::reminder::add_reminder_action;
-
-let add = add_reminder_action("Call Alice at 3pm");
-// dispatch as state action in your behavior/tool pipeline
+let action = upsert_context_message_action(
+    ContextMessage::session("reminder:verify-id", "Reminder: Always verify user identity"),
+);
+// persists until explicitly removed
 ```
 
-`ReminderState` path is `reminders` and stores deduplicated `items: Vec<String>`.
+3. Remove a specific reminder.
 
-3. Choose clear strategy.
+```rust,ignore
+let action = remove_context_message_action("reminder:call-alice");
+```
 
-- `true` (default): reminders are cleared after each LLM call.
-- `false`: reminders persist until explicit clear action.
+4. Remove all reminders by key prefix.
 
-## Verify
+```rust,ignore
+let action = remove_context_messages_by_prefix_action("reminder:");
+```
 
-- On next inference, reminder text is injected as session context.
-- When `clear_after_llm_request=true`, reminder list is cleared after injection.
+## How It Works
+
+Each reminder is stored as a `ContextMessage` in the `PromptSegmentState` under the `__prompt_segments` state path. Messages are keyed for deduplication and targeted removal.
+
+- **Ephemeral**: `with_consume_after_emit(true)` — removed after it is sent to the LLM once.
+- **Persistent**: default — remains until explicitly removed.
+- **Target**: session context (`ContextMessageTarget::Session`).
 
 ## Common Errors
 
-- Behavior registered but not attached to target agent.
-- Assuming reminders are per-run; reminder scope is thread-level state.
-
-## Related Example
-
-- No dedicated starter ships with reminders enabled by default; layer this plugin onto `examples/ai-sdk-starter/README.md` or `examples/copilotkit-starter/README.md`
+- Dispatching a reminder action but never running an inference call — the segment sits in state with no effect.
+- Expecting ephemeral reminders to appear in a second inference call — they are consumed after first emission.
 
 ## Key Files
 
-- `crates/tirea-extension-reminder/src/lib.rs`
-- `crates/tirea-extension-reminder/src/actions.rs`
-- `crates/tirea-extension-reminder/src/state.rs`
+- `crates/tirea-agentos/src/runtime/prompt_segments/state.rs`
+- `crates/tirea-agentos/src/runtime/prompt_segments/plugin.rs`
 
 ## Related
 

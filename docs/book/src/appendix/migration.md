@@ -1,5 +1,182 @@
 # Migration Notes
 
+## 0.4 → 0.5
+
+### Action Enum Changes
+
+Several `BeforeInferenceAction` and `AfterToolExecuteAction` variants have been replaced by
+unified `ContextMessage`-based variants.
+
+**BeforeInferenceAction**:
+
+```rust,ignore
+// Before (0.4)
+BeforeInferenceAction::AddSystemContext("You are helpful.".into())
+BeforeInferenceAction::AddSessionContext("User prefers short answers.".into())
+
+// After (0.5)
+use tirea_contract::runtime::inference::ContextMessage;
+
+BeforeInferenceAction::AddContextMessage(
+    ContextMessage::system("my_key", "You are helpful.")
+)
+BeforeInferenceAction::AddContextMessage(
+    ContextMessage::session("preference", "User prefers short answers.")
+)
+```
+
+`AddSessionContext` is removed entirely. Use `AddContextMessage` with `ContextMessage::session()`.
+
+**AfterToolExecuteAction**:
+
+```rust,ignore
+// Before (0.4)
+AfterToolExecuteAction::AddSystemReminder("Remember to verify.".into())
+AfterToolExecuteAction::AddUserMessage("Task completed.".into())
+
+// After (0.5)
+use tirea_contract::runtime::inference::ContextMessage;
+
+AfterToolExecuteAction::AddMessage(
+    ContextMessage::system_reminder("Remember to verify.")
+)
+AfterToolExecuteAction::AddMessage(
+    ContextMessage::conversation_user("Task completed.")
+)
+```
+
+| 0.4 | 0.5 |
+|-----|-----|
+| `BeforeInferenceAction::AddSystemContext(String)` | `BeforeInferenceAction::AddContextMessage(ContextMessage)` |
+| `BeforeInferenceAction::AddSessionContext(String)` | Removed — use `AddContextMessage(ContextMessage::session(...))` |
+| `AfterToolExecuteAction::AddSystemReminder(String)` | `AfterToolExecuteAction::AddMessage(ContextMessage)` |
+| `AfterToolExecuteAction::AddUserMessage(String)` | `AfterToolExecuteAction::AddMessage(ContextMessage)` |
+
+### Reminder System Rewrite
+
+The reminder system has been rewritten. `ReminderPlugin`, `ReminderState`, `ReminderAction`, and
+`inject_reminders` are removed. Reminders are now stored as prompt segments in the `__prompt_segments`
+state path.
+
+```rust,ignore
+// Before (0.4)
+use tirea_extension_reminder::{ReminderAction, add_reminder_action};
+
+ToolExecutionEffect::new(result)
+    .with_action(add_reminder_action("Check permissions"))
+
+// After (0.5)
+use tirea_extension_reminder::{
+    add_reminder_action, add_persistent_reminder_action, clear_reminder_action,
+};
+
+// Transient reminder (cleared after use)
+ToolExecutionEffect::new(result)
+    .with_action(add_reminder_action("Check permissions"))
+
+// Persistent reminder (survives across turns)
+ToolExecutionEffect::new(result)
+    .with_action(add_persistent_reminder_action("Always verify user intent"))
+
+// Clear a reminder by key
+ToolExecutionEffect::new(result)
+    .with_action(clear_reminder_action("my_reminder_key"))
+```
+
+| 0.4 | 0.5 |
+|-----|-----|
+| `ReminderPlugin` | Removed — prompt segment system handles injection |
+| `ReminderState` | Removed — stored in `__prompt_segments` |
+| `ReminderAction` | Removed — use helper functions below |
+| `inject_reminders(...)` | Removed — automatic via prompt segments |
+| `add_reminder_action(text)` | `add_reminder_action(text)` (same API, new internals) |
+| — | `add_persistent_reminder_action(text)` (new) |
+| — | `clear_reminder_action(key)` (new) |
+
+### ReadOnlyContext: run_policy → run_config
+
+`ReadOnlyContext` now exposes `run_config: Arc<AgentRunConfig>` instead of `run_policy: &RunPolicy`.
+The existing `::new()` constructor remains backward-compatible. `run_policy()` continues to work
+by delegating to `run_config().policy()`.
+
+```rust,ignore
+// Before (0.4)
+let policy: &RunPolicy = ctx.run_policy();
+let tools = policy.allowed_tools();
+
+// After (0.5) — preferred
+let config: &AgentRunConfig = ctx.run_config();
+let tools = config.policy().allowed_tools();
+
+// After (0.5) — backward-compatible, still works
+let policy: &RunPolicy = ctx.run_policy();
+```
+
+### Extensions Module Removed
+
+The `tirea_agentos::extensions` re-export module is removed. Import extension crates directly.
+
+```rust,ignore
+// Before (0.4)
+use tirea_agentos::extensions::mcp::McpPlugin;
+use tirea_agentos::extensions::permission::PermissionPlugin;
+use tirea_agentos::extensions::reminder::ReminderPlugin;
+use tirea_agentos::extensions::skills::SkillDiscoveryPlugin;
+use tirea_agentos::extensions::observability::ObservabilityPlugin;
+
+// After (0.5)
+use tirea_extension_mcp::McpPlugin;
+use tirea_extension_permission::PermissionPlugin;
+use tirea_extension_reminder::...; // ReminderPlugin removed; use helper functions
+use tirea_extension_skills::SkillDiscoveryPlugin;
+use tirea_extension_observability::ObservabilityPlugin;
+```
+
+### ToolExecutionResult Field Changes
+
+`ToolExecutionResult` no longer has separate `reminders` and `user_messages` fields. Use the
+unified `messages` field with `ContextMessage` instead.
+
+```rust,ignore
+// Before (0.4)
+ToolExecutionResult {
+    result: ToolResult::success(json!("ok")),
+    reminders: vec!["Don't forget X".into()],
+    user_messages: vec!["Done!".into()],
+    ..Default::default()
+}
+
+// After (0.5)
+use tirea_contract::runtime::inference::ContextMessage;
+
+ToolExecutionResult {
+    result: ToolResult::success(json!("ok")),
+    messages: vec![
+        ContextMessage::system_reminder("Don't forget X"),
+        ContextMessage::conversation_user("Done!"),
+    ],
+    ..Default::default()
+}
+```
+
+| 0.4 | 0.5 |
+|-----|-----|
+| `ToolExecutionResult.reminders: Vec<String>` | Removed |
+| `ToolExecutionResult.user_messages: Vec<String>` | Removed |
+| — | `ToolExecutionResult.messages: Vec<ContextMessage>` (new) |
+
+### New Features
+
+These are additive and do not require migration:
+
+- **PluginOrdering** — behaviors can declare ordering constraints relative to other behaviors
+- **AgentRunConfig** — TypeMap-based layered runtime configuration, replaces ad-hoc config passing
+- **InferenceOverride** — per-request override of inference parameters from behaviors
+- **ACP protocol** — Agent Communication Protocol support for inter-agent messaging
+- **Agent handoff** — structured handoff between agents with context transfer
+- **MCP prompt/resource discovery** — MCP servers can expose prompts and resources
+- **Prompt segments** — structured system prompt composition via `__prompt_segments` state
+
 ## 0.2 → 0.3
 
 ### Behavior Trait Rename and Signature Overhaul

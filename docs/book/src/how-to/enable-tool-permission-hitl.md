@@ -14,7 +14,7 @@ Use this when tool calls must be `allow` / `deny` / `ask` with human approval.
 ```rust,ignore
 use std::sync::Arc;
 use tirea::composition::{AgentDefinition, AgentDefinitionSpec, AgentOsBuilder};
-use tirea::extensions::permission::{PermissionPlugin, ToolPolicyPlugin};
+use tirea_extension_permission::{PermissionPlugin, ToolPolicyPlugin};
 
 let os = AgentOsBuilder::new()
     .with_registered_behavior("tool_policy", Arc::new(ToolPolicyPlugin))
@@ -32,7 +32,7 @@ let os = AgentOsBuilder::new()
 2. Configure permission policy state.
 
 ```rust,ignore
-use tirea::extensions::permission::{
+use tirea_extension_permission::{
     permission_state_action, PermissionAction, ToolPermissionBehavior,
 };
 

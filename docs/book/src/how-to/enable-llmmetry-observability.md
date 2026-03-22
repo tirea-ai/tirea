@@ -12,7 +12,7 @@ Use this when you need per-run inference/tool metrics and OpenTelemetry GenAI-al
 1. Implement a metrics sink.
 
 ```rust,ignore
-use tirea::extensions::observability::{AgentMetrics, GenAISpan, MetricsSink, ToolSpan};
+use tirea_extension_observability::{AgentMetrics, GenAISpan, MetricsSink, ToolSpan};
 
 struct LoggingSink;
 
@@ -37,7 +37,7 @@ impl MetricsSink for LoggingSink {
 use std::sync::Arc;
 use genai::chat::ChatOptions;
 use tirea::composition::{AgentDefinition, AgentDefinitionSpec, AgentOsBuilder};
-use tirea::extensions::observability::LLMMetryPlugin;
+use tirea_extension_observability::LLMMetryPlugin;
 
 let chat_options = ChatOptions::default().with_temperature(0.7);
 let llmmetry = LLMMetryPlugin::new(LoggingSink)

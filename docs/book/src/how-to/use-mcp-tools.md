@@ -26,7 +26,7 @@ let cfg = McpServerConnectionConfig::stdio(
 2. Connect MCP registry manager and fetch tool snapshot.
 
 ```rust,ignore
-use tirea::extensions::mcp::McpToolRegistryManager;
+use tirea_extension_mcp::McpToolRegistryManager;
 
 let manager = McpToolRegistryManager::connect([cfg]).await?;
 let mcp_tools = manager.registry().snapshot();
@@ -64,6 +64,40 @@ manager.start_periodic_refresh(std::time::Duration::from_secs(30))?;
 // shutdown path:
 let _stopped = manager.stop_periodic_refresh().await;
 ```
+
+## Prompt and Resource Discovery
+
+`McpToolRegistryManager` can also discover MCP prompts and resources from connected servers.
+
+**Prompts** — MCP prompts become activatable skills. Use `list_prompts` to enumerate them and `get_prompt` to retrieve prompt content with arguments:
+
+```rust,ignore
+let prompts = manager.list_prompts().await?;
+for entry in &prompts {
+    println!("{}/{}: {}", entry.server_name, entry.prompt.name,
+        entry.prompt.description.as_deref().unwrap_or(""));
+}
+
+let result = manager.get_prompt("server_name", "prompt_name", Some(args)).await?;
+```
+
+Each `McpPromptEntry` carries the originating `server_name` and the full `McpPromptDefinition` (name, description, arguments).
+
+**Resources** — MCP resources surface in the skill catalog with MIME type and size hints. Use `list_resources` to discover them and `read_resource` to fetch content:
+
+```rust,ignore
+let resources = manager.list_resources().await?;
+for entry in &resources {
+    println!("{}/{}: mime={:?}", entry.server_name, entry.resource.uri,
+        entry.resource.mime_type);
+}
+
+let content = manager.read_resource("server_name", "resource://uri").await?;
+```
+
+Each `McpResourceEntry` includes `server_name` and the full `McpResourceDefinition` (URI, name, description, MIME type).
+
+Servers that do not advertise prompt or resource capabilities are silently skipped.
 
 ## Verify
 

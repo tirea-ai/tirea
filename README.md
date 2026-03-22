@@ -2,9 +2,9 @@
 
 # Tirea
 
-**Type-safe AI agents that handle concurrent state without locks. One binary serves React, Next.js, and other agents over three protocols.**
+**Type-safe AI agents that handle concurrent state without locks. One binary serves React, Next.js, and other agents over four protocols.**
 
-Define agents, tools, and state in Rust — then serve them to any frontend over AG-UI, AI SDK v6, and A2A from a single binary. Connect to external tool servers via MCP.
+Define agents, tools, and state in Rust — then serve them to any frontend over AG-UI, AI SDK v6, A2A, and ACP from a single binary. Connect to external tool servers via MCP.
 
 [![Crates.io](https://img.shields.io/crates/v/tirea.svg)](https://crates.io/crates/tirea)
 [![docs.rs](https://img.shields.io/docsrs/tirea)](https://docs.rs/tirea)
@@ -27,7 +27,7 @@ Your agent picks tools, calls them, reads and updates state, and repeats — all
 
 | What you get | How it works |
 |---|---|
-| **Ship one backend for every frontend** | Serve React (AI SDK v6), Next.js (AG-UI), and other agents (A2A) from the same binary. No separate deployments. Connect to external tool servers via MCP. |
+| **Ship one backend for every frontend** | Serve React (AI SDK v6), Next.js (AG-UI), other agents (A2A), and stdio-based agents (ACP) from the same binary. No separate deployments. Connect to external tool servers via MCP. |
 | **LLM orchestrates everything — no DAGs** | Define each agent's identity and tool access; the LLM decides when to delegate, to whom, and how to combine results. No hand-coded graphs or state machines. |
 | **Type-safe state with CRDT, scoping, and replay** | State is a Rust struct with compile-time checks. CRDT fields merge concurrent tool writes without locks. Scope to thread, run, or tool_call to prevent stale data. Every change is an immutable patch you can replay. |
 | **Catch plugin wiring errors at compile time** | Plugins hook into 8 typed lifecycle phases. Wire a permission check to the wrong phase? The compiler tells you, not your users. |
@@ -39,9 +39,11 @@ Your agent picks tools, calls them, reads and updates state, and repeats — all
 |---|:---:|:---:|:---:|:---:|:---:|:---:|
 | **Language** | Rust | Python/TS | Python | Python | Python/TS | TypeScript |
 | **Orchestration** | Tool delegation | Stateful graph | Conversational | Role-based | Handoffs + as_tool | Workflow + LLM |
-| **Multi-protocol server** | AG-UI · AI SDK · A2A | ◐ | ◐ | ◐ | ❌ | AG-UI · AI SDK · A2A |
+| **Multi-protocol server** | AG-UI · AI SDK · A2A · ACP | ◐ | ◐ | ◐ | ❌ | AG-UI · AI SDK · A2A |
 | **Typed state** | ✅ CRDT + scoping + replay | ◐ | ❌ | ◐ | ❌ | ◐ |
 | **Plugin lifecycle** | 8 typed phases | Middleware | ◐ | ◐ | Guardrails | ◐ |
+| **Agent handoff** | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| **Per-inference override** | ✅ model + reasoning | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Sub-agents** | ✅ | ✅ | ✅ group chat | ✅ | ✅ | ✅ |
 | **MCP support** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Human-in-the-loop** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -108,7 +110,7 @@ graph LR
     end
 
     subgraph "tirea server (one binary)"
-        GW["Protocol gateway\nUI: AG-UI · AI SDK\nAgent: A2A"]
+        GW["Protocol gateway\nUI: AG-UI · AI SDK\nAgent: A2A · ACP"]
         RT["Agent runtime\nLLM streaming · tool dispatch\nplugin lifecycle · context mgmt"]
         EXT["Extensions\npermission · skills · MCP\nreminder · observability"]
     end
@@ -194,6 +196,7 @@ cargo run --package tirea-agentos-server -- --http-addr 127.0.0.1:8080
 | AI SDK v6 | `POST /v1/ai-sdk/agents/:agent_id/runs` | React `useChat()` |
 | AG-UI | `POST /v1/ag-ui/agents/:agent_id/runs` | CopilotKit `<CopilotKit>` |
 | A2A | `POST /v1/a2a/agents/:agent_id/message:send` | Other agents |
+| ACP | stdio (stdin/stdout) | CLI and stdio-based agent clients |
 
 **React + AI SDK v6:**
 
@@ -225,7 +228,7 @@ Tirea ships with tools for sub-agents, background tasks, skills, UI rendering, a
 | **Background tasks** (core) | `task_status`, `task_cancel`, `task_output` | Monitor and manage long-running background operations |
 | **Skills** (`skills` feature) | `skill`, `load_skill_resource`, `skill_script` | Discover, activate, and execute skill packages |
 | **A2UI** (`a2ui` extension) | `render_a2ui` | Send declarative UI components to the frontend |
-| **MCP** (`mcp` feature) | *dynamic* | Tools from connected MCP servers appear as native tools |
+| **MCP** (`mcp` feature) | *dynamic* | Tools from connected MCP servers appear as native tools; prompts surface as skills, resources appear in the catalog |
 
 ### Require approval before dangerous actions
 
@@ -307,10 +310,12 @@ Plugins hook into 8 lifecycle phases. Use built-in plugins or write your own:
 | **Stop Policy** | Terminate on max rounds, timeout, token budget, loop detection | `StopPolicyPlugin::new(conditions, specs)` |
 | **Permission** | Allow/Deny/Ask per tool, human-in-the-loop suspension | `PermissionPlugin` + `ToolPolicyPlugin` |
 | **Skills** | Discover and activate skill packages from filesystem | `skills` feature flag |
-| **MCP** | Connect to MCP servers; tools appear as native tools | `mcp` feature flag |
-| **Reminder** | Persistent system reminders that survive across turns | `ReminderPlugin::new()` |
+| **MCP** | Connect to MCP servers; tools, prompts, and resources are discovered automatically | `mcp` feature flag |
+| **Reminder** | Persistent system reminders that survive across turns | `add_reminder_action()` helper |
 | **Observability** | OpenTelemetry spans for LLM calls and tool executions | `LLMMetryPlugin::new(sink)` |
 | **A2UI** | Declarative UI components sent to the frontend | `A2uiPlugin::with_catalog_id(url)` |
+| **Handoff** | Dynamic same-thread agent switching at runtime | `HandoffPlugin` + `handoff` feature flag |
+| **Prompt Segments** | Unified prompt injection for system context, reminders, and skill instructions | Auto-wired by runtime |
 | **Agent Recovery** | Detect and resume orphaned sub-agent runs | Auto-wired with sub-agents |
 | **Background Tasks** | Track and inject background task status | Auto-wired with task tools |
 
