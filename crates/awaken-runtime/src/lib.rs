@@ -3,11 +3,31 @@
 pub mod agent;
 pub mod builder;
 pub mod engine;
+mod error;
 pub mod extensions;
 pub mod plugins;
 pub mod registry;
 pub mod runtime;
 pub mod state;
+
+// ── error ──
+pub use error::RuntimeError;
+
+// ── agent internals re-exported for extensions and tests ──
+pub use agent::loop_runner::{
+    AgentLoopError, AgentRunResult, LoopStatePlugin, build_agent_env, prepare_resume,
+    run_agent_loop, run_agent_loop_controlled,
+};
+pub use agent::state::AddContextMessage;
+pub use agent::state::{
+    AccumulatedContextMessages, AccumulatedContextMessagesUpdate, AccumulatedOverrides,
+    AccumulatedOverridesUpdate, AccumulatedToolExclusions, AccumulatedToolExclusionsUpdate,
+    AccumulatedToolInclusions, AccumulatedToolInclusionsUpdate, ContextThrottleMap,
+    ContextThrottleState, ContextThrottleUpdate, ExcludeTool, IncludeOnlyTools, RunLifecycle,
+    RunLifecycleState, RunLifecycleUpdate, SetInferenceOverride, ToolCallState, ToolCallStateMap,
+    ToolCallStates, ToolCallStatesUpdate, ToolInclusionSet,
+};
+pub use agent::tool_permission::AllowAllToolsPlugin;
 
 // ── builder ──
 pub use builder::AgentRuntimeBuilder;

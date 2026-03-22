@@ -7,22 +7,14 @@
 use awaken_contract::contract::inference::StreamResult;
 use awaken_contract::contract::message::{Message, Visibility};
 
-/// Maximum number of truncation recovery retries per run.
-pub(super) const MAX_RETRIES: usize = 3;
-
 /// Continuation prompt sent to the model after truncation.
 const CONTINUATION_PROMPT: &str = "Your response was cut off because it exceeded the output token limit. \
      Please break your work into smaller pieces. Continue from where you left off.";
-
-/// Continuation prompt sent to the model after a mid-stream error.
-const STREAM_ERROR_CONTINUATION_PROMPT: &str =
-    "Your previous response was interrupted due to a network error. Please continue.";
 
 /// Mutable state for tracking recovery retries during a single run.
 #[derive(Debug, Default)]
 pub(super) struct TruncationState {
     pub(super) truncation_retries: usize,
-    pub(super) stream_event_retries: usize,
 }
 
 impl TruncationState {
@@ -62,29 +54,6 @@ pub(super) fn should_retry(
 /// Build the continuation prompt message (Internal visibility).
 pub(super) fn continuation_message() -> Message {
     let mut msg = Message::user(CONTINUATION_PROMPT);
-    msg.visibility = Visibility::Internal;
-    msg
-}
-
-/// Check if stream error recovery should retry inference.
-///
-/// Returns `true` (and increments the retry counter) when:
-/// 1. Haven't exceeded max stream event retries
-pub(super) fn should_retry_stream_error(
-    state: &mut TruncationState,
-    max_stream_event_retries: usize,
-) -> bool {
-    if state.stream_event_retries < max_stream_event_retries {
-        state.stream_event_retries += 1;
-        true
-    } else {
-        false
-    }
-}
-
-/// Build the continuation prompt for stream error recovery (Internal visibility).
-pub(super) fn stream_error_continuation_message() -> Message {
-    let mut msg = Message::user(STREAM_ERROR_CONTINUATION_PROMPT);
     msg.visibility = Visibility::Internal;
     msg
 }
@@ -230,22 +199,18 @@ mod tests {
     #[test]
     fn respects_max_retries() {
         let mut state = TruncationState::new();
-        for i in 0..MAX_RETRIES {
+        let max = 3;
+        for i in 0..max {
             assert!(
-                should_retry(&max_tokens_with_incomplete(), &mut state, MAX_RETRIES),
+                should_retry(&max_tokens_with_incomplete(), &mut state, max),
                 "retry {i} should succeed"
             );
         }
         assert!(
-            !should_retry(&max_tokens_with_incomplete(), &mut state, MAX_RETRIES),
+            !should_retry(&max_tokens_with_incomplete(), &mut state, max),
             "retry after max should fail"
         );
-        assert_eq!(state.truncation_retries, MAX_RETRIES);
-    }
-
-    #[test]
-    fn max_retries_is_three() {
-        assert_eq!(MAX_RETRIES, 3);
+        assert_eq!(state.truncation_retries, max);
     }
 
     #[test]
@@ -309,25 +274,22 @@ mod tests {
 
     #[test]
     fn exhaust_retries_then_truncation_is_refused() {
+        let max = 3;
         let mut state = TruncationState::new();
-        for _ in 0..MAX_RETRIES {
-            assert!(should_retry(
-                &max_tokens_with_incomplete(),
-                &mut state,
-                MAX_RETRIES
-            ));
+        for _ in 0..max {
+            assert!(should_retry(&max_tokens_with_incomplete(), &mut state, max));
         }
         assert!(!should_retry(
             &max_tokens_with_incomplete(),
             &mut state,
-            MAX_RETRIES
+            max
         ));
         assert!(!should_retry(
             &max_tokens_with_incomplete(),
             &mut state,
-            MAX_RETRIES
+            max
         ));
-        assert_eq!(state.truncation_retries, MAX_RETRIES);
+        assert_eq!(state.truncation_retries, max);
     }
 
     // =====================================================================
@@ -368,57 +330,5 @@ mod tests {
         assert_eq!(msg1.text(), msg2.text());
         assert_eq!(msg1.visibility, msg2.visibility);
         assert_eq!(msg1.role, msg2.role);
-    }
-
-    // =====================================================================
-    // Stream error recovery tests
-    // =====================================================================
-
-    #[test]
-    fn stream_error_retry_triggers_within_limit() {
-        let mut state = TruncationState::new();
-        assert!(should_retry_stream_error(&mut state, 2));
-        assert_eq!(state.stream_event_retries, 1);
-        assert!(should_retry_stream_error(&mut state, 2));
-        assert_eq!(state.stream_event_retries, 2);
-    }
-
-    #[test]
-    fn stream_error_retry_respects_max() {
-        let mut state = TruncationState::new();
-        for _ in 0..3 {
-            assert!(should_retry_stream_error(&mut state, 3));
-        }
-        assert!(
-            !should_retry_stream_error(&mut state, 3),
-            "should not retry beyond max"
-        );
-        assert_eq!(state.stream_event_retries, 3);
-    }
-
-    #[test]
-    fn stream_error_continuation_message_is_internal() {
-        let msg = stream_error_continuation_message();
-        assert_eq!(msg.visibility, Visibility::Internal);
-        assert_eq!(msg.role, awaken_contract::contract::message::Role::User);
-    }
-
-    #[test]
-    fn stream_error_continuation_message_mentions_continue() {
-        let msg = stream_error_continuation_message();
-        let text = msg.text();
-        assert!(text.contains("continue") || text.contains("Continue"));
-    }
-
-    #[test]
-    fn stream_error_counter_independent_of_truncation() {
-        let mut state = TruncationState::new();
-        // Truncation retries
-        assert!(should_retry(&max_tokens_with_incomplete(), &mut state, 3));
-        assert_eq!(state.truncation_retries, 1);
-        // Stream error retries (independent counter)
-        assert!(should_retry_stream_error(&mut state, 2));
-        assert_eq!(state.stream_event_retries, 1);
-        assert_eq!(state.truncation_retries, 1);
     }
 }

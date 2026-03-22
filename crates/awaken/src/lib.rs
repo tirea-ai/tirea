@@ -20,7 +20,6 @@ pub use awaken_contract::contract;
 pub use awaken_contract::model;
 pub use awaken_contract::registry_spec;
 
-pub use awaken_runtime::agent;
 pub use awaken_runtime::builder;
 pub use awaken_runtime::engine;
 pub use awaken_runtime::extensions;
@@ -78,6 +77,8 @@ pub use awaken_runtime::{
     ResolvedAgent,
     RunHandle,
     RunRequest,
+    // error
+    RuntimeError,
     StateCommand,
     StateStore,
     ToolPermission,
@@ -100,4 +101,41 @@ pub mod state {
     pub use awaken_runtime::state::{
         CommitEvent, CommitHook, MutationBatch, StateCommand, StateStore,
     };
+}
+
+/// Agent module: re-exports public types from the runtime's agent subsystem.
+///
+/// Sub-modules `config`, `executor`, and `stop_conditions` are directly
+/// re-exported. Internal modules (`loop_runner`, `state`, `tool_permission`)
+/// are exposed only through curated re-export sub-modules.
+pub mod agent {
+    pub use awaken_runtime::agent::config;
+    pub use awaken_runtime::agent::executor;
+    pub use awaken_runtime::agent::stop_conditions;
+
+    /// Re-exported loop runner public API.
+    pub mod loop_runner {
+        pub use awaken_runtime::{
+            AgentLoopError, AgentRunResult, LoopStatePlugin, build_agent_env, prepare_resume,
+            run_agent_loop, run_agent_loop_controlled,
+        };
+    }
+
+    /// Re-exported agent state types.
+    pub mod state {
+        pub use awaken_runtime::{
+            AccumulatedContextMessages, AccumulatedContextMessagesUpdate, AccumulatedOverrides,
+            AccumulatedOverridesUpdate, AccumulatedToolExclusions, AccumulatedToolExclusionsUpdate,
+            AccumulatedToolInclusions, AccumulatedToolInclusionsUpdate, AddContextMessage,
+            ContextThrottleMap, ContextThrottleState, ContextThrottleUpdate, ExcludeTool,
+            IncludeOnlyTools, RunLifecycle, RunLifecycleState, RunLifecycleUpdate,
+            SetInferenceOverride, ToolCallState, ToolCallStateMap, ToolCallStates,
+            ToolCallStatesUpdate, ToolInclusionSet,
+        };
+    }
+
+    /// Re-exported tool permission types.
+    pub mod tool_permission {
+        pub use awaken_runtime::AllowAllToolsPlugin;
+    }
 }

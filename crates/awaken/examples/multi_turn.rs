@@ -10,8 +10,8 @@ use awaken::agent::loop_runner::build_agent_env;
 use awaken::contract::event::AgentEvent;
 use awaken::contract::event_sink::EventSink;
 use awaken::contract::message::Message;
-use awaken::contract::storage_mem::InMemoryThreadRunStore;
 use awaken::engine::GenaiExecutor;
+use awaken::stores::InMemoryStore;
 use awaken::*;
 use std::sync::Arc;
 
@@ -32,7 +32,7 @@ struct SimpleResolver {
 }
 
 impl AgentResolver for SimpleResolver {
-    fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, awaken::StateError> {
+    fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, awaken::RuntimeError> {
         let env = build_agent_env(&[], &self.agent)?;
         Ok(ResolvedAgent {
             config: self.agent.clone(),
@@ -56,7 +56,7 @@ async fn main() {
         agent: agent.clone(),
     });
 
-    let store = Arc::new(InMemoryThreadRunStore::new());
+    let store = Arc::new(InMemoryStore::new());
     let runtime = AgentRuntime::new(resolver).with_thread_run_store(store);
 
     let thread_id = "conversation-1";

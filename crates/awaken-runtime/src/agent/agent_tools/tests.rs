@@ -3,7 +3,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use awaken_contract::StateError;
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
@@ -65,10 +64,13 @@ impl awaken_contract::contract::executor::LlmExecutor for MockExecutor {
 }
 
 impl AgentResolver for MockResolver {
-    fn resolve(&self, agent_id: &str) -> Result<ResolvedAgent, StateError> {
-        let spec = self.agents.get(agent_id).ok_or(StateError::ResolveFailed {
-            message: format!("agent not found: {}", agent_id),
-        })?;
+    fn resolve(&self, agent_id: &str) -> Result<ResolvedAgent, crate::error::RuntimeError> {
+        let spec = self
+            .agents
+            .get(agent_id)
+            .ok_or(crate::error::RuntimeError::ResolveFailed {
+                message: format!("agent not found: {}", agent_id),
+            })?;
         let config = AgentConfig::new(
             &spec.id,
             &spec.model,

@@ -20,6 +20,7 @@ schemars = { workspace = true }
 jsonschema = { workspace = true }
 
 [dev-dependencies]
+awaken-stores = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt", "sync"] }
 
 [lints]

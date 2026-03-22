@@ -96,7 +96,7 @@ impl AgentRuntime {
 
         // Register active run
         self.register_run(&thread_id, handle.clone())
-            .map_err(AgentLoopError::PhaseError)?;
+            .map_err(AgentLoopError::RuntimeError)?;
 
         // Execute the loop
         let checkpoint_store_ref = self.storage.as_deref();
@@ -129,7 +129,6 @@ mod tests {
     use crate::runtime::ResolvedAgent;
     use crate::runtime::resolver::AgentResolver;
     use async_trait::async_trait;
-    use awaken_contract::StateError;
     use awaken_contract::contract::content::ContentBlock;
     use awaken_contract::contract::event_sink::NullEventSink;
     use awaken_contract::contract::executor::{
@@ -138,12 +137,12 @@ mod tests {
     use awaken_contract::contract::inference::{InferenceOverride, StopReason, StreamResult};
     use awaken_contract::contract::message::Message;
     use awaken_contract::contract::storage::ThreadRunStore;
-    use awaken_contract::contract::storage_mem::InMemoryThreadRunStore;
     use awaken_contract::contract::suspension::ResumeDecisionAction;
     use awaken_contract::contract::suspension::ToolCallResume;
     use awaken_contract::contract::tool::{
         Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
     };
+    use awaken_stores::InMemoryStore;
     use serde_json::{Value, json};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -224,7 +223,7 @@ mod tests {
     }
 
     impl AgentResolver for FixedResolver {
-        fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, StateError> {
+        fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, crate::error::RuntimeError> {
             let env = build_agent_env(&[], &self.agent)?;
             Ok(ResolvedAgent {
                 config: self.agent.clone(),
@@ -375,7 +374,7 @@ mod tests {
         let resolver = Arc::new(FixedResolver {
             agent: AgentConfig::new("agent", "m", "sys", llm),
         });
-        let store = Arc::new(InMemoryThreadRunStore::new());
+        let store = Arc::new(InMemoryStore::new());
         let runtime = AgentRuntime::new(resolver)
             .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>);
         let sink = NullEventSink;

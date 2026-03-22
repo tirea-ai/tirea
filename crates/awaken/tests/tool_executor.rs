@@ -20,9 +20,9 @@ use awaken::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken::contract::message::{Message, ToolCall};
 use awaken::contract::suspension::{ToolCallOutcome, ToolCallStatus};
 use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult};
-use awaken::registry::spec::AgentSpec;
+use awaken::registry::AgentSpec;
 use awaken::*;
-use awaken::{AgentResolver, ExecutionEnv, ResolvedAgent};
+use awaken::{AgentResolver, ExecutionEnv, ResolvedAgent, RuntimeError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -180,7 +180,7 @@ impl FixedResolver {
 }
 
 impl AgentResolver for FixedResolver {
-    fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, StateError> {
+    fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, RuntimeError> {
         let env = build_agent_env(&self.user_plugins, &self.agent)?;
         Ok(ResolvedAgent {
             config: self.agent.clone(),

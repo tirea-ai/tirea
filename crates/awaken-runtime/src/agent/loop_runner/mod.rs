@@ -73,6 +73,8 @@ pub enum AgentLoopError {
     StorageError(String),
     #[error("phase error: {0}")]
     PhaseError(#[from] awaken_contract::StateError),
+    #[error("runtime error: {0}")]
+    RuntimeError(#[from] crate::error::RuntimeError),
     #[error("invalid resume: {0}")]
     InvalidResume(String),
 }

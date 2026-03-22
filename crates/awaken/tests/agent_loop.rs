@@ -206,7 +206,7 @@ impl FixedResolver {
 }
 
 impl AgentResolver for FixedResolver {
-    fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, StateError> {
+    fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, RuntimeError> {
         let env = build_agent_env(&self.user_plugins, &self.agent)?;
         Ok(ResolvedAgent {
             config: self.agent.clone(),

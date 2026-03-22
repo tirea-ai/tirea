@@ -46,8 +46,6 @@ impl A2aEndpoint {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct A2aSubmissionResponse {
-    #[serde(default)]
-    context_id: Option<String>,
     task_id: String,
 }
 
@@ -55,8 +53,6 @@ struct A2aSubmissionResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct A2aTaskResponse {
-    #[serde(default)]
-    context_id: Option<String>,
     status: String,
     #[serde(default)]
     termination_code: Option<String>,
@@ -77,21 +73,6 @@ pub enum RemoteTaskStatus {
     Completed,
     Failed,
     Stopped,
-}
-
-impl RemoteTaskStatus {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Running => "running",
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-            Self::Stopped => "stopped",
-        }
-    }
-
-    pub fn is_terminal(self) -> bool {
-        !matches!(self, Self::Running)
-    }
 }
 
 /// Snapshot of a remote A2A task's state.
@@ -437,7 +418,6 @@ mod tests {
     #[test]
     fn map_task_status_completed() {
         let response = A2aTaskResponse {
-            context_id: None,
             status: "completed".into(),
             termination_code: None,
             termination_detail: None,
@@ -454,7 +434,6 @@ mod tests {
     #[test]
     fn map_task_status_cancelled() {
         let response = A2aTaskResponse {
-            context_id: None,
             status: "done".into(),
             termination_code: Some("cancelled".into()),
             termination_detail: Some("user cancelled".into()),
@@ -471,7 +450,6 @@ mod tests {
     #[test]
     fn map_task_status_failed() {
         let response = A2aTaskResponse {
-            context_id: None,
             status: "failed".into(),
             termination_code: None,
             termination_detail: Some("out of memory".into()),
@@ -487,7 +465,6 @@ mod tests {
     #[test]
     fn map_task_status_running() {
         let response = A2aTaskResponse {
-            context_id: None,
             status: "working".into(),
             termination_code: None,
             termination_detail: None,
@@ -503,7 +480,6 @@ mod tests {
     #[test]
     fn extract_text_from_artifacts() {
         let response = A2aTaskResponse {
-            context_id: None,
             status: "completed".into(),
             termination_code: None,
             termination_detail: None,
@@ -523,7 +499,6 @@ mod tests {
     #[test]
     fn extract_text_from_message_when_no_artifacts() {
         let response = A2aTaskResponse {
-            context_id: None,
             status: "completed".into(),
             termination_code: None,
             termination_detail: None,
@@ -538,7 +513,6 @@ mod tests {
     #[test]
     fn extract_text_from_history_fallback() {
         let response = A2aTaskResponse {
-            context_id: None,
             status: "completed".into(),
             termination_code: None,
             termination_detail: None,
@@ -551,22 +525,6 @@ mod tests {
         };
         let text = extract_output_text(&response);
         assert_eq!(text.as_deref(), Some("last reply"));
-    }
-
-    #[test]
-    fn remote_task_status_as_str() {
-        assert_eq!(RemoteTaskStatus::Running.as_str(), "running");
-        assert_eq!(RemoteTaskStatus::Completed.as_str(), "completed");
-        assert_eq!(RemoteTaskStatus::Failed.as_str(), "failed");
-        assert_eq!(RemoteTaskStatus::Stopped.as_str(), "stopped");
-    }
-
-    #[test]
-    fn remote_task_status_is_terminal() {
-        assert!(!RemoteTaskStatus::Running.is_terminal());
-        assert!(RemoteTaskStatus::Completed.is_terminal());
-        assert!(RemoteTaskStatus::Failed.is_terminal());
-        assert!(RemoteTaskStatus::Stopped.is_terminal());
     }
 
     #[test]
@@ -620,7 +578,6 @@ mod tests {
     #[test]
     fn map_task_status_done_with_error_termination() {
         let response = A2aTaskResponse {
-            context_id: None,
             status: "done".into(),
             termination_code: Some("error".into()),
             termination_detail: Some("internal error".into()),

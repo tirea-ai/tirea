@@ -27,7 +27,7 @@ pub struct AgentSystemConfig {
     pub models: HashMap<String, ModelConfig>,
     /// Agent definitions.
     #[serde(default)]
-    pub agents: Vec<super::spec::AgentSpec>,
+    pub agents: Vec<awaken_contract::registry_spec::AgentSpec>,
 }
 
 /// Maps a model ID to a provider and the actual model name for API calls.

@@ -60,7 +60,7 @@ pub async fn run_agent_loop_controlled(
         mut env,
     } = resolver
         .resolve(initial_agent_id)
-        .map_err(AgentLoopError::PhaseError)?;
+        .map_err(AgentLoopError::RuntimeError)?;
 
     // Trim to latest compaction boundary — skip already-summarized history
     if agent.context_policy.is_some() {

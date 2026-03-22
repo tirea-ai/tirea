@@ -11,7 +11,7 @@ use awaken::agent::state::{
     AccumulatedToolInclusions, ContextThrottleState, RunLifecycle, ToolCallStates,
 };
 use awaken::contract::profile::ActiveAgentIdKey;
-use awaken::registry::spec::AgentSpec;
+use awaken::registry::AgentSpec;
 use awaken::*;
 use serde_json::json;
 use std::collections::HashSet;

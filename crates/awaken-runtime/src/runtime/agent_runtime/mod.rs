@@ -7,8 +7,9 @@ mod runner;
 
 use std::sync::Arc;
 
-use awaken_contract::StateError;
 use awaken_contract::contract::storage::ThreadRunStore;
+
+use crate::error::RuntimeError;
 use awaken_contract::contract::suspension::ToolCallResume;
 use futures::channel::mpsc;
 
@@ -130,14 +131,14 @@ impl AgentRuntime {
         &self,
         thread_id: &str,
         handle: RunHandle,
-    ) -> Result<(), StateError> {
+    ) -> Result<(), RuntimeError> {
         let entry = RunEntry {
             run_id: handle.run_id.clone(),
             agent_id: handle.agent_id.clone(),
             handle,
         };
         if !self.active_runs.try_insert(thread_id.to_string(), entry) {
-            return Err(StateError::ThreadAlreadyRunning {
+            return Err(RuntimeError::ThreadAlreadyRunning {
                 thread_id: thread_id.to_string(),
             });
         }

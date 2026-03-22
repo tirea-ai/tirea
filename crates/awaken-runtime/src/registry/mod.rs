@@ -5,16 +5,15 @@
 pub mod config;
 pub mod memory;
 pub mod resolve;
-pub mod spec;
 pub mod traits;
 
+pub use awaken_contract::registry_spec::AgentSpec;
 pub use config::{AgentSystemConfig, ModelConfig};
 pub use memory::{
     MapAgentRegistry, MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry,
     MapStopPolicyRegistry, MapToolRegistry,
 };
 pub use resolve::ResolveError;
-pub use spec::AgentSpec;
 pub use traits::{
     AgentRegistry, AgentSpecRegistry, ModelEntry, ModelRegistry, PluginSource, ProviderRegistry,
     RegistrySet, StopPolicyRegistry, ToolRegistry,

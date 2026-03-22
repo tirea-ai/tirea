@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use crate::agent::config::AgentConfig;
 use crate::agent::executor::SequentialToolExecutor;
+use crate::error::RuntimeError;
 use crate::plugins::Plugin;
 use crate::runtime::{AgentResolver, ExecutionEnv, ResolvedAgent};
-use awaken_contract::StateError;
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::tool::Tool;
 
@@ -132,8 +132,8 @@ impl AgentResolver for RegistrySet {
     ///
     /// Bridges the registry resolution (`ResolvedRun`) into the runtime's
     /// `AgentConfig` + `ExecutionEnv` pair that the loop runner expects.
-    fn resolve(&self, agent_id: &str) -> Result<ResolvedAgent, StateError> {
-        let run = resolve(self, agent_id).map_err(|e| StateError::ResolveFailed {
+    fn resolve(&self, agent_id: &str) -> Result<ResolvedAgent, RuntimeError> {
+        let run = resolve(self, agent_id).map_err(|e| RuntimeError::ResolveFailed {
             message: e.to_string(),
         })?;
 
@@ -702,7 +702,7 @@ mod tests {
         );
 
         let err = AgentResolver::resolve(&regs, "missing").unwrap_err();
-        assert!(matches!(err, StateError::ResolveFailed { .. }));
+        assert!(matches!(err, RuntimeError::ResolveFailed { .. }));
     }
 
     // -- Config validation tests --

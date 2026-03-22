@@ -20,7 +20,7 @@ pub mod state;
 pub mod tools;
 
 /// Re-export the `AddContextMessage` scheduled action type from awaken-runtime.
-pub(crate) use awaken_runtime::agent::state::AddContextMessage;
+pub(crate) use awaken_runtime::AddContextMessage;
 
 pub const SKILLS_PLUGIN_ID: &str = "skills";
 pub const SKILLS_BUNDLE_ID: &str = SKILLS_PLUGIN_ID;

@@ -46,7 +46,7 @@ struct SimpleResolver {
 }
 
 impl AgentResolver for SimpleResolver {
-    fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, awaken::StateError> {
+    fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, awaken::RuntimeError> {
         let env = build_agent_env(&[], &self.agent)?;
         Ok(ResolvedAgent {
             config: self.agent.clone(),

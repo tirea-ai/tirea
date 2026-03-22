@@ -1,7 +1,7 @@
 //! Agent resolution: dynamic lookup of agent config + execution environment.
 
 use crate::agent::config::AgentConfig;
-use awaken_contract::StateError;
+use crate::error::RuntimeError;
 
 use super::ExecutionEnv;
 
@@ -29,5 +29,5 @@ impl std::fmt::Debug for ResolvedAgent {
 /// `ExecutionEnv`. The loop runner calls this at startup and at step boundaries
 /// when handoff is detected (via `ActiveAgentKey`).
 pub trait AgentResolver: Send + Sync {
-    fn resolve(&self, agent_id: &str) -> Result<ResolvedAgent, StateError>;
+    fn resolve(&self, agent_id: &str) -> Result<ResolvedAgent, RuntimeError>;
 }
