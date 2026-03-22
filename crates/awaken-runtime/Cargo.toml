@@ -1,0 +1,25 @@
+[package]
+name = "awaken-runtime"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+awaken-contract = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+typedmap = { workspace = true }
+uuid = { workspace = true }
+genai = { workspace = true }
+tokio = { workspace = true }
+schemars = { workspace = true }
+jsonschema = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "sync"] }
+
+[lints]
+workspace = true

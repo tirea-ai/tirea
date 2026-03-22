@@ -1,9 +1,19 @@
-[package]
-name = "awaken"
+[workspace]
+resolver = "2"
+members = [
+    "crates/awaken-contract",
+    "crates/awaken-runtime",
+    "crates/awaken",
+]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
 
-[dependencies]
+[workspace.dependencies]
+awaken-contract = { version = "0.1.0", path = "crates/awaken-contract" }
+awaken-runtime = { version = "0.1.0", path = "crates/awaken-runtime" }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 thiserror = "2"
@@ -17,12 +27,8 @@ tokio = { version = "1", features = ["sync"] }
 schemars = "0.8"
 jsonschema = "0.45"
 
-[dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt", "sync"] }
-
-[lints.rust]
+[workspace.lints.rust]
 unsafe_code = "forbid"
-missing_docs = "warn"
 
-[lints.clippy]
+[workspace.lints.clippy]
 all = "warn"

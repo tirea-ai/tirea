@@ -74,6 +74,37 @@ name = "awaken"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "awaken-contract",
+ "awaken-runtime",
+ "futures",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "awaken-contract"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "jsonschema",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "typedmap",
+ "uuid",
+]
+
+[[package]]
+name = "awaken-runtime"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "awaken-contract",
  "futures",
  "genai",
  "jsonschema",
