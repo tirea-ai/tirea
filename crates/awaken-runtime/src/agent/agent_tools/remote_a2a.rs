@@ -43,7 +43,6 @@ impl A2aEndpoint {
 }
 
 /// Submission response from a remote A2A endpoint.
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct A2aSubmissionResponse {
@@ -72,7 +71,6 @@ struct A2aTaskResponse {
 }
 
 /// Status of a remote A2A task.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteTaskStatus {
     Running,
@@ -82,7 +80,6 @@ pub enum RemoteTaskStatus {
 }
 
 impl RemoteTaskStatus {
-    #[allow(dead_code)]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",
@@ -92,14 +89,12 @@ impl RemoteTaskStatus {
         }
     }
 
-    #[allow(dead_code)]
     pub fn is_terminal(self) -> bool {
         !matches!(self, Self::Running)
     }
 }
 
 /// Snapshot of a remote A2A task's state.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct A2aTaskSnapshot {
     pub status: RemoteTaskStatus,
@@ -140,14 +135,91 @@ impl RemoteA2aTool {
     }
 
     /// Build the agent-scoped URL for the remote A2A endpoint.
-    #[allow(dead_code)]
     fn agent_url(&self) -> String {
         let base = self.endpoint.base_url.trim_end_matches('/');
         format!("{}/agents/{}", base, self.endpoint.remote_agent_id.trim())
     }
+
+    /// Build an HTTP client with optional authorization.
+    fn build_request(
+        &self,
+        client: &reqwest::Client,
+        method: reqwest::Method,
+        url: &str,
+    ) -> reqwest::RequestBuilder {
+        let builder = client.request(method, url);
+        match &self.endpoint.bearer_token {
+            Some(token) => builder.bearer_auth(token),
+            None => builder,
+        }
+    }
+
+    /// Submit a task to the remote A2A endpoint.
+    async fn submit_task(
+        &self,
+        client: &reqwest::Client,
+        prompt: &str,
+    ) -> Result<A2aSubmissionResponse, ToolError> {
+        let url = format!("{}/message:send", self.agent_url());
+        let response = self
+            .build_request(client, reqwest::Method::POST, &url)
+            .json(&json!({ "input": prompt }))
+            .send()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("failed to submit A2A task: {e}")))?;
+
+        let response = response
+            .error_for_status()
+            .map_err(|e| ToolError::ExecutionFailed(format!("A2A submission rejected: {e}")))?;
+
+        response.json::<A2aSubmissionResponse>().await.map_err(|e| {
+            ToolError::ExecutionFailed(format!("failed to decode A2A submission: {e}"))
+        })
+    }
+
+    /// Fetch the current status of a remote task.
+    async fn fetch_task_status(
+        &self,
+        client: &reqwest::Client,
+        task_id: &str,
+    ) -> Result<A2aTaskSnapshot, ToolError> {
+        let url = format!("{}/tasks/{}", self.agent_url(), task_id.trim());
+        let response = self
+            .build_request(client, reqwest::Method::GET, &url)
+            .send()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("failed to query A2A task: {e}")))?;
+
+        let response = response
+            .error_for_status()
+            .map_err(|e| ToolError::ExecutionFailed(format!("A2A task query rejected: {e}")))?;
+
+        let task_response = response.json::<A2aTaskResponse>().await.map_err(|e| {
+            ToolError::ExecutionFailed(format!("failed to decode A2A task status: {e}"))
+        })?;
+
+        Ok(map_task_status(&task_response))
+    }
+
+    /// Poll until the task reaches a terminal state.
+    async fn poll_to_completion(
+        &self,
+        client: &reqwest::Client,
+        task_id: &str,
+    ) -> Result<A2aTaskSnapshot, ToolError> {
+        loop {
+            let snapshot = self.fetch_task_status(client, task_id).await?;
+            if snapshot.done {
+                return Ok(snapshot);
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(
+                self.endpoint.poll_interval_ms,
+            ))
+            .await;
+        }
+    }
 }
 
-#[allow(dead_code)]
 fn extract_output_text(response: &A2aTaskResponse) -> Option<String> {
     // Try artifacts first
     for artifact in &response.artifacts {
@@ -170,7 +242,6 @@ fn extract_output_text(response: &A2aTaskResponse) -> Option<String> {
     None
 }
 
-#[allow(dead_code)]
 fn extract_text_from_value(value: &Value) -> Option<String> {
     match value {
         Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
@@ -217,7 +288,6 @@ fn extract_text_from_value(value: &Value) -> Option<String> {
     }
 }
 
-#[allow(dead_code)]
 fn map_task_status(response: &A2aTaskResponse) -> A2aTaskSnapshot {
     let output_text = extract_output_text(response);
     let status = response.status.trim().to_ascii_lowercase();
@@ -305,21 +375,283 @@ impl Tool for RemoteA2aTool {
             ));
         }
 
-        // Build the result as a delegation marker — actual HTTP call
-        // would be handled by the runtime's async delegation infrastructure.
-        // For now, return the submission intent.
-        Ok(ToolResult::success(
-            &self.tool_id,
-            json!({
-                "remote_agent_id": self.endpoint.remote_agent_id,
-                "base_url": self.endpoint.base_url,
-                "prompt": prompt,
-                "status": "submitted",
-                "message": format!(
-                    "Request submitted to remote agent '{}'.",
-                    self.endpoint.remote_agent_id,
-                ),
-            }),
-        ))
+        let client = reqwest::Client::new();
+
+        // Submit the task
+        let submission = self.submit_task(&client, &prompt).await?;
+
+        tracing::info!(
+            task_id = %submission.task_id,
+            remote_agent = %self.endpoint.remote_agent_id,
+            "a2a_task_submitted"
+        );
+
+        // Poll to completion
+        let snapshot = self
+            .poll_to_completion(&client, &submission.task_id)
+            .await?;
+
+        match snapshot.status {
+            RemoteTaskStatus::Completed => {
+                let output = snapshot.output_text.unwrap_or_else(|| "(no output)".into());
+                Ok(ToolResult::success(
+                    &self.tool_id,
+                    json!({
+                        "remote_agent_id": self.endpoint.remote_agent_id,
+                        "status": "completed",
+                        "response": output,
+                    }),
+                ))
+            }
+            RemoteTaskStatus::Failed => {
+                let error_msg = snapshot
+                    .error
+                    .unwrap_or_else(|| "remote agent run failed".into());
+                Ok(ToolResult::error(&self.tool_id, &error_msg))
+            }
+            RemoteTaskStatus::Stopped => {
+                let error_msg = snapshot
+                    .error
+                    .unwrap_or_else(|| "remote agent run was stopped".into());
+                Ok(ToolResult::error(&self.tool_id, &error_msg))
+            }
+            RemoteTaskStatus::Running => {
+                // Should not happen after poll_to_completion, but handle gracefully
+                Ok(ToolResult::success(
+                    &self.tool_id,
+                    json!({
+                        "remote_agent_id": self.endpoint.remote_agent_id,
+                        "status": "running",
+                        "message": "Task is still running after polling timeout.",
+                    }),
+                ))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn map_task_status_completed() {
+        let response = A2aTaskResponse {
+            context_id: None,
+            status: "completed".into(),
+            termination_code: None,
+            termination_detail: None,
+            message: None,
+            history: vec![],
+            artifacts: vec![json!({"text": "result"})],
+        };
+        let snapshot = map_task_status(&response);
+        assert_eq!(snapshot.status, RemoteTaskStatus::Completed);
+        assert!(snapshot.done);
+        assert_eq!(snapshot.output_text.as_deref(), Some("result"));
+    }
+
+    #[test]
+    fn map_task_status_cancelled() {
+        let response = A2aTaskResponse {
+            context_id: None,
+            status: "done".into(),
+            termination_code: Some("cancelled".into()),
+            termination_detail: Some("user cancelled".into()),
+            message: None,
+            history: vec![],
+            artifacts: vec![],
+        };
+        let snapshot = map_task_status(&response);
+        assert_eq!(snapshot.status, RemoteTaskStatus::Stopped);
+        assert!(snapshot.done);
+        assert_eq!(snapshot.error.as_deref(), Some("user cancelled"));
+    }
+
+    #[test]
+    fn map_task_status_failed() {
+        let response = A2aTaskResponse {
+            context_id: None,
+            status: "failed".into(),
+            termination_code: None,
+            termination_detail: Some("out of memory".into()),
+            message: None,
+            history: vec![],
+            artifacts: vec![],
+        };
+        let snapshot = map_task_status(&response);
+        assert_eq!(snapshot.status, RemoteTaskStatus::Failed);
+        assert!(snapshot.done);
+    }
+
+    #[test]
+    fn map_task_status_running() {
+        let response = A2aTaskResponse {
+            context_id: None,
+            status: "working".into(),
+            termination_code: None,
+            termination_detail: None,
+            message: None,
+            history: vec![],
+            artifacts: vec![],
+        };
+        let snapshot = map_task_status(&response);
+        assert_eq!(snapshot.status, RemoteTaskStatus::Running);
+        assert!(!snapshot.done);
+    }
+
+    #[test]
+    fn extract_text_from_artifacts() {
+        let response = A2aTaskResponse {
+            context_id: None,
+            status: "completed".into(),
+            termination_code: None,
+            termination_detail: None,
+            message: Some(json!({"role": "assistant", "content": "fallback"})),
+            history: vec![],
+            artifacts: vec![json!({
+                "parts": [
+                    {"text": "hello"},
+                    {"text": "world"}
+                ]
+            })],
+        };
+        let text = extract_output_text(&response);
+        assert_eq!(text.as_deref(), Some("hello\n\nworld"));
+    }
+
+    #[test]
+    fn extract_text_from_message_when_no_artifacts() {
+        let response = A2aTaskResponse {
+            context_id: None,
+            status: "completed".into(),
+            termination_code: None,
+            termination_detail: None,
+            message: Some(json!({"role": "assistant", "text": "reply"})),
+            history: vec![],
+            artifacts: vec![],
+        };
+        let text = extract_output_text(&response);
+        assert_eq!(text.as_deref(), Some("reply"));
+    }
+
+    #[test]
+    fn extract_text_from_history_fallback() {
+        let response = A2aTaskResponse {
+            context_id: None,
+            status: "completed".into(),
+            termination_code: None,
+            termination_detail: None,
+            message: None,
+            history: vec![
+                json!({"role": "user", "text": "ignored"}),
+                json!({"role": "assistant", "text": "last reply"}),
+            ],
+            artifacts: vec![],
+        };
+        let text = extract_output_text(&response);
+        assert_eq!(text.as_deref(), Some("last reply"));
+    }
+
+    #[test]
+    fn remote_task_status_as_str() {
+        assert_eq!(RemoteTaskStatus::Running.as_str(), "running");
+        assert_eq!(RemoteTaskStatus::Completed.as_str(), "completed");
+        assert_eq!(RemoteTaskStatus::Failed.as_str(), "failed");
+        assert_eq!(RemoteTaskStatus::Stopped.as_str(), "stopped");
+    }
+
+    #[test]
+    fn remote_task_status_is_terminal() {
+        assert!(!RemoteTaskStatus::Running.is_terminal());
+        assert!(RemoteTaskStatus::Completed.is_terminal());
+        assert!(RemoteTaskStatus::Failed.is_terminal());
+        assert!(RemoteTaskStatus::Stopped.is_terminal());
+    }
+
+    #[test]
+    fn endpoint_builder() {
+        let ep = A2aEndpoint::new("https://api.example.com", "agent-1")
+            .with_bearer_token("tok_123")
+            .with_poll_interval_ms(5000);
+
+        assert_eq!(ep.base_url, "https://api.example.com");
+        assert_eq!(ep.remote_agent_id, "agent-1");
+        assert_eq!(ep.bearer_token.as_deref(), Some("tok_123"));
+        assert_eq!(ep.poll_interval_ms, 5000);
+    }
+
+    #[test]
+    fn endpoint_defaults() {
+        let ep = A2aEndpoint::new("https://api.example.com", "worker");
+        assert!(ep.bearer_token.is_none());
+        assert!(ep.poll_interval_ms > 0);
+    }
+
+    #[test]
+    fn descriptor_reflects_tool_id() {
+        let ep = A2aEndpoint::new("https://api.example.com", "worker");
+        let tool = RemoteA2aTool::new("remote_worker", "Remote worker agent", ep);
+        let desc = tool.descriptor();
+        assert_eq!(desc.id, "remote_worker");
+        assert!(desc.description.contains("Remote worker"));
+    }
+
+    #[test]
+    fn validates_prompt_required() {
+        let ep = A2aEndpoint::new("https://api.example.com", "worker");
+        let tool = RemoteA2aTool::new("rw", "desc", ep);
+
+        assert!(tool.validate_args(&json!({})).is_err());
+        assert!(tool.validate_args(&json!({"prompt": 42})).is_err());
+        assert!(tool.validate_args(&json!({"prompt": "go"})).is_ok());
+    }
+
+    #[tokio::test]
+    async fn rejects_empty_prompt() {
+        let ep = A2aEndpoint::new("https://api.example.com", "worker");
+        let tool = RemoteA2aTool::new("rw", "desc", ep);
+        let ctx = ToolCallContext::test_default();
+
+        let err = tool.execute(json!({"prompt": "   "}), &ctx).await;
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn map_task_status_done_with_error_termination() {
+        let response = A2aTaskResponse {
+            context_id: None,
+            status: "done".into(),
+            termination_code: Some("error".into()),
+            termination_detail: Some("internal error".into()),
+            message: None,
+            history: vec![],
+            artifacts: vec![],
+        };
+        let snapshot = map_task_status(&response);
+        assert_eq!(snapshot.status, RemoteTaskStatus::Failed);
+        assert!(snapshot.done);
+        assert_eq!(snapshot.error.as_deref(), Some("internal error"));
+    }
+
+    #[test]
+    fn extract_text_ignores_user_role_in_history() {
+        // User messages should not be extracted
+        let value = json!({"role": "user", "text": "user input"});
+        assert!(extract_text_from_value(&value).is_none());
+    }
+
+    #[test]
+    fn extract_text_from_data_field() {
+        let value = json!({"data": "some data content"});
+        let text = extract_text_from_value(&value);
+        assert_eq!(text.as_deref(), Some("some data content"));
+    }
+
+    #[test]
+    fn extract_text_from_nested_content() {
+        let value = json!({"role": "assistant", "content": {"text": "nested"}});
+        let text = extract_text_from_value(&value);
+        assert_eq!(text.as_deref(), Some("nested"));
     }
 }

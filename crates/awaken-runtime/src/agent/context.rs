@@ -1,4 +1,10 @@
 //! Built-in context management: hard truncation, LLM compaction, summarizer trait.
+//!
+//! The [`ContextCompactionPlugin`] integrates compaction state into the plugin system
+//! by tracking compaction boundaries. This allows external code to query the current
+//! compaction state and enables load-time trimming of already-summarized history.
+
+use serde::{Deserialize, Serialize};
 
 use async_trait::async_trait;
 
@@ -11,6 +17,12 @@ use awaken_contract::contract::transform::{
     InferenceRequestTransform, TransformOutput, estimate_message_tokens, estimate_tokens,
     estimate_tool_tokens, patch_dangling_tool_calls,
 };
+
+use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
+use crate::state::{MutationBatch, StateKey, StateKeyOptions};
+
+/// Plugin ID for context compaction.
+pub const CONTEXT_COMPACTION_PLUGIN_ID: &str = "context_compaction";
 
 // ---------------------------------------------------------------------------
 // Artifact compaction
@@ -426,6 +438,115 @@ pub fn trim_to_compaction_boundary(messages: &mut Vec<std::sync::Arc<Message>>) 
         && idx > 0
     {
         messages.drain(..idx);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Compaction boundary tracking
+// ---------------------------------------------------------------------------
+
+/// A recorded compaction boundary — snapshot of a single compaction event.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CompactionBoundary {
+    /// Summary text produced by the compaction pass.
+    pub summary: String,
+    /// Estimated tokens before compaction (in the compacted range).
+    pub pre_tokens: usize,
+    /// Estimated tokens after compaction (summary message tokens).
+    pub post_tokens: usize,
+    /// Timestamp of the compaction event (millis since UNIX epoch).
+    pub timestamp_ms: u64,
+}
+
+/// Durable state for context compaction tracking.
+///
+/// Stores a history of compaction boundaries so that load-time trimming
+/// and plugin queries can identify already-summarized ranges.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextCompactionState {
+    /// Ordered list of compaction boundaries (most recent last).
+    pub boundaries: Vec<CompactionBoundary>,
+    /// Total number of compaction passes performed.
+    pub total_compactions: u64,
+}
+
+/// Reducer actions for [`ContextCompactionState`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContextCompactionAction {
+    /// Record a new compaction boundary.
+    RecordBoundary(CompactionBoundary),
+    /// Clear all tracked boundaries (e.g. on thread reset).
+    Clear,
+}
+
+impl ContextCompactionState {
+    fn reduce(&mut self, action: ContextCompactionAction) {
+        match action {
+            ContextCompactionAction::RecordBoundary(boundary) => {
+                self.boundaries.push(boundary);
+                self.total_compactions += 1;
+            }
+            ContextCompactionAction::Clear => {
+                self.boundaries.clear();
+                self.total_compactions = 0;
+            }
+        }
+    }
+
+    /// Latest compaction boundary, if any.
+    pub fn latest_boundary(&self) -> Option<&CompactionBoundary> {
+        self.boundaries.last()
+    }
+}
+
+/// State key for context compaction state.
+pub struct ContextCompactionKey;
+
+impl StateKey for ContextCompactionKey {
+    const KEY: &'static str = "__context_compaction";
+    type Value = ContextCompactionState;
+    type Update = ContextCompactionAction;
+
+    fn apply(value: &mut Self::Value, update: Self::Update) {
+        value.reduce(update);
+    }
+}
+
+/// Record a compaction boundary in the state store.
+pub fn record_compaction_boundary(boundary: CompactionBoundary) -> ContextCompactionAction {
+    ContextCompactionAction::RecordBoundary(boundary)
+}
+
+// ---------------------------------------------------------------------------
+// ContextCompactionPlugin
+// ---------------------------------------------------------------------------
+
+/// Plugin that integrates context compaction state into the plugin system.
+///
+/// Registers the [`ContextCompactionKey`] state key so that compaction boundaries
+/// are tracked durably and available to other plugins and external observers.
+#[derive(Debug, Clone, Default)]
+pub struct ContextCompactionPlugin;
+
+impl Plugin for ContextCompactionPlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
+            name: CONTEXT_COMPACTION_PLUGIN_ID,
+        }
+    }
+
+    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), awaken_contract::StateError> {
+        registrar.register_key::<ContextCompactionKey>(StateKeyOptions::default())?;
+        Ok(())
+    }
+
+    fn on_activate(
+        &self,
+        _agent_spec: &awaken_contract::registry_spec::AgentSpec,
+        _patch: &mut MutationBatch,
+    ) -> Result<(), awaken_contract::StateError> {
+        Ok(())
     }
 }
 
@@ -1372,5 +1493,142 @@ mod tests {
             summary.is_none(),
             "non-internal system message should not be extracted"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // ContextCompactionPlugin tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compaction_state_record_boundary() {
+        let mut state = ContextCompactionState::default();
+        assert_eq!(state.total_compactions, 0);
+        assert!(state.boundaries.is_empty());
+
+        state.reduce(ContextCompactionAction::RecordBoundary(
+            CompactionBoundary {
+                summary: "User asked to implement feature X.".into(),
+                pre_tokens: 5000,
+                post_tokens: 200,
+                timestamp_ms: 1234567890,
+            },
+        ));
+
+        assert_eq!(state.total_compactions, 1);
+        assert_eq!(state.boundaries.len(), 1);
+        assert_eq!(
+            state.latest_boundary().unwrap().summary,
+            "User asked to implement feature X."
+        );
+    }
+
+    #[test]
+    fn compaction_state_multiple_boundaries() {
+        let mut state = ContextCompactionState::default();
+
+        for i in 0..3 {
+            state.reduce(ContextCompactionAction::RecordBoundary(
+                CompactionBoundary {
+                    summary: format!("summary {i}"),
+                    pre_tokens: 1000 * (i + 1),
+                    post_tokens: 100 * (i + 1),
+                    timestamp_ms: 1000 + i as u64,
+                },
+            ));
+        }
+
+        assert_eq!(state.total_compactions, 3);
+        assert_eq!(state.boundaries.len(), 3);
+        assert_eq!(state.latest_boundary().unwrap().summary, "summary 2");
+    }
+
+    #[test]
+    fn compaction_state_clear() {
+        let mut state = ContextCompactionState {
+            boundaries: vec![CompactionBoundary {
+                summary: "old".into(),
+                pre_tokens: 100,
+                post_tokens: 10,
+                timestamp_ms: 1,
+            }],
+            total_compactions: 1,
+        };
+
+        state.reduce(ContextCompactionAction::Clear);
+        assert!(state.boundaries.is_empty());
+        assert_eq!(state.total_compactions, 0);
+    }
+
+    #[test]
+    fn compaction_state_latest_boundary_empty() {
+        let state = ContextCompactionState::default();
+        assert!(state.latest_boundary().is_none());
+    }
+
+    #[test]
+    fn compaction_state_serde_roundtrip() {
+        let state = ContextCompactionState {
+            boundaries: vec![
+                CompactionBoundary {
+                    summary: "first".into(),
+                    pre_tokens: 5000,
+                    post_tokens: 200,
+                    timestamp_ms: 1000,
+                },
+                CompactionBoundary {
+                    summary: "second".into(),
+                    pre_tokens: 3000,
+                    post_tokens: 150,
+                    timestamp_ms: 2000,
+                },
+            ],
+            total_compactions: 2,
+        };
+
+        let json = serde_json::to_string(&state).unwrap();
+        let parsed: ContextCompactionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, state);
+    }
+
+    #[test]
+    fn compaction_plugin_registers_key() {
+        use crate::state::StateStore;
+
+        let store = StateStore::new();
+        store.install_plugin(ContextCompactionPlugin).unwrap();
+        let registry = store.registry.lock().unwrap();
+        assert!(registry.keys_by_name.contains_key("__context_compaction"));
+    }
+
+    #[test]
+    fn compaction_plugin_state_via_store() {
+        use crate::state::StateStore;
+
+        let store = StateStore::new();
+        store.install_plugin(ContextCompactionPlugin).unwrap();
+
+        let mut patch = store.begin_mutation();
+        patch.update::<ContextCompactionKey>(record_compaction_boundary(CompactionBoundary {
+            summary: "test summary".into(),
+            pre_tokens: 4000,
+            post_tokens: 180,
+            timestamp_ms: 9999,
+        }));
+        store.commit(patch).unwrap();
+
+        let state = store.read::<ContextCompactionKey>().unwrap();
+        assert_eq!(state.total_compactions, 1);
+        assert_eq!(state.boundaries[0].summary, "test summary");
+    }
+
+    #[test]
+    fn record_compaction_boundary_constructor() {
+        let action = record_compaction_boundary(CompactionBoundary {
+            summary: "s".into(),
+            pre_tokens: 100,
+            post_tokens: 10,
+            timestamp_ms: 0,
+        });
+        assert!(matches!(action, ContextCompactionAction::RecordBoundary(_)));
     }
 }

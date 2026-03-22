@@ -27,6 +27,7 @@ use super::checkpoint::{
 };
 use super::inference::{compact_with_llm, execute_streaming};
 use super::resume::{WaitOutcome, detect_and_replay_resume, wait_for_resume_or_cancel};
+use super::truncation_recovery::{self, TruncationState};
 use super::{AgentLoopError, AgentRunResult, commit_update, now_ms, tool_result_to_content};
 
 /// Agent loop implementation with runtime control channels.
@@ -71,6 +72,7 @@ pub async fn run_agent_loop_controlled(
     detect_and_replay_resume(&agent, store, &run_identity, &mut messages).await?;
 
     let mut steps: usize = 0;
+    let mut truncation_state = TruncationState::new();
 
     // Helper to build PhaseContext with current state
     let make_ctx = |phase: Phase, msgs: &[Arc<Message>], identity: &RunIdentity| -> PhaseContext {
@@ -225,54 +227,49 @@ pub async fn run_agent_loop_controlled(
         // When the LLM hits MaxTokens mid-response with incomplete tool calls,
         // inject a continuation prompt and re-invoke inference up to
         // `max_continuation_retries` times.
-        if stream_result.needs_truncation_recovery() && agent.max_continuation_retries > 0 {
-            let mut continuation_attempts = 0;
-            while stream_result.needs_truncation_recovery()
-                && continuation_attempts < agent.max_continuation_retries
-            {
-                continuation_attempts += 1;
+        while truncation_recovery::should_retry(
+            &stream_result,
+            &mut truncation_state,
+            agent.max_continuation_retries,
+        ) {
+            // Add the partial assistant message to the conversation
+            let partial_text = stream_result.text();
+            messages.push(Arc::new(Message::assistant(&partial_text)));
 
-                // Add the partial assistant message to the conversation
-                let partial_text = stream_result.text();
-                messages.push(Arc::new(Message::assistant(&partial_text)));
+            // Add a continuation user message (Internal visibility)
+            messages.push(Arc::new(truncation_recovery::continuation_message()));
 
-                // Add a continuation user message
-                messages.push(Arc::new(Message::user(
-                    "Please continue from where you left off.",
-                )));
-
-                // Rebuild request with updated messages
-                let has_sys = !agent.system_prompt.is_empty();
-                let mut cont_messages: Vec<Message> = Vec::new();
-                if has_sys {
-                    cont_messages.push(Message::system(&agent.system_prompt));
-                }
-                cont_messages.extend(messages.iter().map(|m| (**m).clone()));
-                let cont_messages = awaken_contract::contract::transform::apply_transforms(
-                    cont_messages,
-                    &agent.tool_descriptors(),
-                    &env.request_transforms,
-                );
-
-                let cont_request = InferenceRequest {
-                    model: agent.model.clone(),
-                    messages: cont_messages,
-                    tools: agent.tool_descriptors(),
-                    system: vec![],
-                    overrides: run_overrides.clone(),
-                    enable_prompt_cache: false,
-                };
-
-                stream_result = execute_streaming(
-                    &agent,
-                    cont_request,
-                    sink,
-                    cancellation_token.as_ref(),
-                    &mut total_input_tokens,
-                    &mut total_output_tokens,
-                )
-                .await?;
+            // Rebuild request with updated messages
+            let has_sys = !agent.system_prompt.is_empty();
+            let mut cont_messages: Vec<Message> = Vec::new();
+            if has_sys {
+                cont_messages.push(Message::system(&agent.system_prompt));
             }
+            cont_messages.extend(messages.iter().map(|m| (**m).clone()));
+            let cont_messages = awaken_contract::contract::transform::apply_transforms(
+                cont_messages,
+                &agent.tool_descriptors(),
+                &env.request_transforms,
+            );
+
+            let cont_request = InferenceRequest {
+                model: agent.model.clone(),
+                messages: cont_messages,
+                tools: agent.tool_descriptors(),
+                system: vec![],
+                overrides: run_overrides.clone(),
+                enable_prompt_cache: false,
+            };
+
+            stream_result = execute_streaming(
+                &agent,
+                cont_request,
+                sink,
+                cancellation_token.as_ref(),
+                &mut total_input_tokens,
+                &mut total_output_tokens,
+            )
+            .await?;
         }
 
         let duration_ms = start.elapsed().as_millis() as u64;

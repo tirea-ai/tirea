@@ -5,17 +5,21 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
+use awaken_contract::contract::event_sink::NullEventSink;
+use awaken_contract::contract::identity::RunIdentity;
+use awaken_contract::contract::message::Message;
 use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
 };
 
+use crate::agent::loop_runner::run_agent_loop;
 use crate::runtime::AgentResolver;
 
 /// Tool that delegates execution to a local sub-agent.
 ///
 /// When the LLM calls this tool, it resolves the target agent by ID,
-/// and returns the agent descriptor as the tool output. The actual
-/// execution is handled by the runtime's delegation infrastructure.
+/// runs a full agent loop with the given prompt, and returns the
+/// sub-agent's final response as the tool output.
 pub struct AgentTool {
     /// Target agent ID to delegate to.
     target_agent_id: String,
@@ -63,13 +67,23 @@ impl Tool for AgentTool {
         Ok(())
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
         let prompt = args
             .get("prompt")
             .and_then(Value::as_str)
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .trim()
+            .to_string();
 
-        // Verify the target agent exists by attempting resolution
+        if prompt.is_empty() {
+            return Err(ToolError::InvalidArguments(
+                "prompt must not be empty".into(),
+            ));
+        }
+
+        let tool_id = format!("agent_run_{}", self.target_agent_id);
+
+        // Resolve the target agent
         let resolved = self.resolver.resolve(&self.target_agent_id).map_err(|e| {
             ToolError::ExecutionFailed(format!(
                 "failed to resolve agent '{}': {}",
@@ -77,18 +91,56 @@ impl Tool for AgentTool {
             ))
         })?;
 
-        let tool_id = format!("agent_run_{}", self.target_agent_id);
+        // Build execution environment
+        let store = crate::state::StateStore::new();
+        store
+            .install_plugin(crate::agent::loop_runner::LoopStatePlugin)
+            .map_err(|e| ToolError::ExecutionFailed(format!("state setup failed: {e}")))?;
+
+        let phase_runtime = crate::runtime::PhaseRuntime::new(store.clone())
+            .map_err(|e| ToolError::ExecutionFailed(format!("phase setup failed: {e}")))?;
+
+        // Create sub-agent run identity
+        let sub_run_id = uuid::Uuid::now_v7().to_string();
+        let sub_identity = RunIdentity::new(
+            ctx.run_identity.thread_id.clone(),
+            Some(ctx.run_identity.thread_id.clone()),
+            sub_run_id,
+            Some(ctx.run_identity.run_id.clone()),
+            self.target_agent_id.clone(),
+            awaken_contract::contract::identity::RunOrigin::Subagent,
+        );
+
+        // Execute sub-agent loop with the prompt as a user message
+        let sub_messages = vec![Message::user(&prompt)];
+        let sink = NullEventSink;
+
+        let result = run_agent_loop(
+            self.resolver.as_ref(),
+            &self.target_agent_id,
+            &phase_runtime,
+            &sink,
+            None, // no checkpoint store for sub-agent
+            sub_messages,
+            sub_identity,
+            None, // no cancellation token
+        )
+        .await
+        .map_err(|e| {
+            ToolError::ExecutionFailed(format!(
+                "sub-agent '{}' execution failed: {}",
+                self.target_agent_id, e
+            ))
+        })?;
+
         Ok(ToolResult::success(
             &tool_id,
             json!({
                 "agent_id": self.target_agent_id,
                 "agent_name": resolved.config.id,
-                "prompt": prompt,
-                "status": "delegated",
-                "message": format!(
-                    "Delegated to agent '{}'. The sub-agent will process the request.",
-                    self.target_agent_id
-                ),
+                "status": format!("{:?}", result.termination).to_lowercase(),
+                "response": result.response,
+                "steps": result.steps,
             }),
         ))
     }

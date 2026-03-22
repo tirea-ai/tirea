@@ -19,31 +19,109 @@ pub const PROMPT_SEGMENTS_PLUGIN_ID: &str = "prompt_segments";
 // ContextMessage
 // ---------------------------------------------------------------------------
 
+/// Injection point for a prompt segment.
+///
+/// Controls where in the prompt assembly the segment content is inserted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InjectionPoint {
+    /// Inject immediately after the base system prompt.
+    AfterSystemPrompt,
+    /// Inject in the session-context band before conversation history (default).
+    #[default]
+    BeforeHistory,
+    /// Inject at the end of the assembled prompt, after conversation history.
+    AfterHistory,
+}
+
 /// A persistent context message injected into inference turns.
+///
+/// Supports injection point targeting and priority ordering for deterministic
+/// prompt assembly across multiple plugins.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextMessage {
     /// Unique key for upsert semantics.
     pub key: String,
-    /// Message content injected into the system prompt.
+    /// Message content injected into the prompt.
     pub content: String,
     /// If true, the message is removed after being emitted once.
     #[serde(default)]
     pub consume_after_emit: bool,
+    /// Where in the prompt to inject this segment.
+    #[serde(default)]
+    pub injection_point: InjectionPoint,
+    /// Priority for ordering within the same injection point (lower = earlier).
+    /// Segments with the same priority are ordered by insertion time.
+    #[serde(default = "default_priority")]
+    pub priority: i32,
+    /// Whether this segment updates dynamically each step.
+    /// Dynamic segments are always re-evaluated; static segments persist unchanged.
+    #[serde(default)]
+    pub dynamic: bool,
+}
+
+const fn default_priority() -> i32 {
+    100
 }
 
 impl ContextMessage {
-    /// Create a session-scoped context message.
+    /// Create a session-scoped context message (injected before history).
     pub fn session(key: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             key: key.into(),
             content: content.into(),
             consume_after_emit: false,
+            injection_point: InjectionPoint::BeforeHistory,
+            priority: default_priority(),
+            dynamic: false,
+        }
+    }
+
+    /// Create a context message injected after the system prompt.
+    pub fn after_system(key: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            content: content.into(),
+            consume_after_emit: false,
+            injection_point: InjectionPoint::AfterSystemPrompt,
+            priority: default_priority(),
+            dynamic: false,
+        }
+    }
+
+    /// Create a context message appended after the conversation history.
+    pub fn after_history(key: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            content: content.into(),
+            consume_after_emit: false,
+            injection_point: InjectionPoint::AfterHistory,
+            priority: default_priority(),
+            dynamic: false,
         }
     }
 
     /// Set whether this message should be consumed after one emission.
     pub fn with_consume_after_emit(mut self, consume: bool) -> Self {
         self.consume_after_emit = consume;
+        self
+    }
+
+    /// Set the injection point.
+    pub fn with_injection_point(mut self, point: InjectionPoint) -> Self {
+        self.injection_point = point;
+        self
+    }
+
+    /// Set the priority (lower = earlier within the same injection point).
+    pub fn with_priority(mut self, priority: i32) -> Self {
+        self.priority = priority;
+        self
+    }
+
+    /// Mark this segment as dynamic (re-evaluated per step).
+    pub fn with_dynamic(mut self, dynamic: bool) -> Self {
+        self.dynamic = dynamic;
         self
     }
 }
@@ -57,6 +135,19 @@ impl ContextMessage {
 pub struct PromptSegmentState {
     #[serde(default)]
     pub items: Vec<ContextMessage>,
+}
+
+impl PromptSegmentState {
+    /// Return items sorted by injection point then priority for deterministic ordering.
+    pub fn sorted_items(&self) -> Vec<&ContextMessage> {
+        let mut sorted: Vec<&ContextMessage> = self.items.iter().collect();
+        sorted.sort_by(|a, b| {
+            a.injection_point
+                .cmp(&b.injection_point)
+                .then(a.priority.cmp(&b.priority))
+        });
+        sorted
+    }
 }
 
 /// Reducer actions for `PromptSegmentState`.
@@ -476,5 +567,131 @@ mod tests {
 
         let m3 = ContextMessage::session("test", "different");
         assert_ne!(m1, m3);
+    }
+
+    // -----------------------------------------------------------------------
+    // Injection point and priority tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn session_defaults_to_before_history() {
+        let m = ContextMessage::session("test", "content");
+        assert_eq!(m.injection_point, InjectionPoint::BeforeHistory);
+        assert_eq!(m.priority, 100);
+        assert!(!m.dynamic);
+    }
+
+    #[test]
+    fn after_system_injection_point() {
+        let m = ContextMessage::after_system("sys", "system context");
+        assert_eq!(m.injection_point, InjectionPoint::AfterSystemPrompt);
+        assert_eq!(m.key, "sys");
+        assert_eq!(m.content, "system context");
+    }
+
+    #[test]
+    fn after_history_injection_point() {
+        let m = ContextMessage::after_history("tail", "tail instructions");
+        assert_eq!(m.injection_point, InjectionPoint::AfterHistory);
+        assert_eq!(m.key, "tail");
+    }
+
+    #[test]
+    fn with_injection_point_builder() {
+        let m = ContextMessage::session("k", "v")
+            .with_injection_point(InjectionPoint::AfterSystemPrompt);
+        assert_eq!(m.injection_point, InjectionPoint::AfterSystemPrompt);
+    }
+
+    #[test]
+    fn with_priority_builder() {
+        let m = ContextMessage::session("k", "v").with_priority(10);
+        assert_eq!(m.priority, 10);
+    }
+
+    #[test]
+    fn with_dynamic_builder() {
+        let m = ContextMessage::session("k", "v").with_dynamic(true);
+        assert!(m.dynamic);
+    }
+
+    #[test]
+    fn sorted_items_by_injection_point_then_priority() {
+        let state = PromptSegmentState {
+            items: vec![
+                ContextMessage::after_history("tail", "last").with_priority(50),
+                ContextMessage::session("mid", "middle").with_priority(10),
+                ContextMessage::after_system("sys", "first").with_priority(5),
+                ContextMessage::session("mid2", "middle2").with_priority(5),
+            ],
+        };
+
+        let sorted = state.sorted_items();
+        assert_eq!(sorted.len(), 4);
+        // AfterSystemPrompt comes first
+        assert_eq!(sorted[0].key, "sys");
+        // BeforeHistory items next, sorted by priority
+        assert_eq!(sorted[1].key, "mid2");
+        assert_eq!(sorted[2].key, "mid");
+        // AfterHistory last
+        assert_eq!(sorted[3].key, "tail");
+    }
+
+    #[test]
+    fn sorted_items_same_point_same_priority_preserves_insertion_order() {
+        let state = PromptSegmentState {
+            items: vec![
+                ContextMessage::session("a", "first").with_priority(100),
+                ContextMessage::session("b", "second").with_priority(100),
+                ContextMessage::session("c", "third").with_priority(100),
+            ],
+        };
+
+        let sorted = state.sorted_items();
+        assert_eq!(sorted[0].key, "a");
+        assert_eq!(sorted[1].key, "b");
+        assert_eq!(sorted[2].key, "c");
+    }
+
+    #[test]
+    fn injection_point_serde_roundtrip() {
+        let m = ContextMessage::after_system("k", "v")
+            .with_priority(42)
+            .with_dynamic(true)
+            .with_consume_after_emit(true);
+        let json = serde_json::to_string(&m).unwrap();
+        let parsed: ContextMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.injection_point, InjectionPoint::AfterSystemPrompt);
+        assert_eq!(parsed.priority, 42);
+        assert!(parsed.dynamic);
+        assert!(parsed.consume_after_emit);
+    }
+
+    #[test]
+    fn injection_point_ordering() {
+        assert!(InjectionPoint::AfterSystemPrompt < InjectionPoint::BeforeHistory);
+        assert!(InjectionPoint::BeforeHistory < InjectionPoint::AfterHistory);
+    }
+
+    #[test]
+    fn sorted_items_empty() {
+        let state = PromptSegmentState::default();
+        assert!(state.sorted_items().is_empty());
+    }
+
+    #[test]
+    fn full_builder_chain() {
+        let m = ContextMessage::session("reminder", "Remember this")
+            .with_injection_point(InjectionPoint::AfterHistory)
+            .with_priority(1)
+            .with_dynamic(true)
+            .with_consume_after_emit(true);
+
+        assert_eq!(m.key, "reminder");
+        assert_eq!(m.content, "Remember this");
+        assert_eq!(m.injection_point, InjectionPoint::AfterHistory);
+        assert_eq!(m.priority, 1);
+        assert!(m.dynamic);
+        assert!(m.consume_after_emit);
     }
 }
