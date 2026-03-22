@@ -35,7 +35,14 @@ pub trait PluginConfigKey: 'static + Send + Sync {
     const KEY: &'static str;
 
     /// Typed configuration value.
-    type Config: Default + Clone + Serialize + DeserializeOwned + Send + Sync + 'static;
+    type Config: Default
+        + Clone
+        + Serialize
+        + DeserializeOwned
+        + schemars::JsonSchema
+        + Send
+        + Sync
+        + 'static;
 }
 
 // ---------------------------------------------------------------------------
@@ -250,7 +257,9 @@ mod tests {
         type Config = ModelNameConfig;
     }
 
-    #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(
+        Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+    )]
     struct ModelNameConfig {
         pub name: String,
     }
@@ -261,7 +270,9 @@ mod tests {
         type Config = PermConfig;
     }
 
-    #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(
+        Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+    )]
     struct PermConfig {
         pub mode: String,
     }

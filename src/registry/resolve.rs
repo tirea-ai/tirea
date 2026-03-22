@@ -169,11 +169,11 @@ impl AgentResolver for RegistrySet {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Validate spec sections against plugin-declared config schemas.
+/// Validate spec sections against plugin-declared JSON Schemas.
 ///
-/// For each plugin that declares `config_schemas()`, checks whether the
-/// corresponding section in `AgentSpec.sections` deserializes correctly.
-/// Missing sections are fine (plugins fall back to defaults). Malformed
+/// For each plugin that declares `config_schemas()`, validates the
+/// corresponding section in `AgentSpec.sections` against its JSON Schema.
+/// Missing sections are fine (plugins fall back to defaults). Invalid
 /// sections produce `ResolveError::InvalidPluginConfig`.
 ///
 /// Also logs a warning for any section keys not claimed by any plugin.
@@ -185,10 +185,12 @@ fn validate_sections(spec: &AgentSpec, plugins: &[Arc<dyn Plugin>]) -> Result<()
         for schema in &schemas {
             claimed_keys.insert(schema.key);
             if let Some(value) = spec.sections.get(schema.key) {
-                (schema.validate)(value).map_err(|e| ResolveError::InvalidPluginConfig {
-                    plugin: plugin.descriptor().name.into(),
-                    key: schema.key.into(),
-                    message: e.to_string(),
+                jsonschema::validate(&schema.json_schema, value).map_err(|e| {
+                    ResolveError::InvalidPluginConfig {
+                        plugin: plugin.descriptor().name.into(),
+                        key: schema.key.into(),
+                        message: e.to_string(),
+                    }
                 })?;
             }
         }
@@ -710,7 +712,7 @@ mod tests {
         name: &'static str,
     }
 
-    #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+    #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
     struct ValidatedConfig {
         pub mode: String,
         pub threshold: u32,
@@ -724,7 +726,7 @@ mod tests {
         fn config_schemas(&self) -> Vec<crate::plugins::ConfigSchema> {
             vec![crate::plugins::ConfigSchema {
                 key: "validated",
-                validate: |v| serde_json::from_value::<ValidatedConfig>(v.clone()).map(|_| ()),
+                json_schema: serde_json::to_value(schemars::schema_for!(ValidatedConfig)).unwrap(),
             }]
         }
     }
@@ -791,7 +793,8 @@ mod tests {
             } => {
                 assert_eq!(plugin, "vp");
                 assert_eq!(key, "validated");
-                assert!(message.contains("invalid type"), "got: {message}");
+                // JSON Schema validation error — exact message depends on jsonschema crate
+                assert!(!message.is_empty(), "expected non-empty error message");
             }
             other => panic!("expected InvalidPluginConfig, got: {other:?}"),
         }

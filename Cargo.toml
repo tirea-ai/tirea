@@ -14,6 +14,8 @@ typedmap = { version = "0.6", features = ["clone"] }
 uuid = { version = "1", features = ["v7"] }
 genai = "0.6.0-beta.10"
 tokio = { version = "1", features = ["sync"] }
+schemars = "0.8"
+jsonschema = "0.45"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "sync"] }
