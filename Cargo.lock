@@ -261,8 +261,10 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "awaken-contract",
+ "awaken-ext-mcp",
  "awaken-runtime",
  "base64 0.22.1",
+ "model-context-protocol",
  "serde",
  "serde_json",
  "serde_yaml",

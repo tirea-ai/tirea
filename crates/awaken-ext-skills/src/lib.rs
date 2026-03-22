@@ -10,6 +10,8 @@
 mod embedded;
 pub mod error;
 mod materialize;
+#[cfg(feature = "mcp")]
+pub mod mcp_bridge;
 pub mod plugin;
 pub mod registry;
 pub mod skill;
@@ -46,3 +48,6 @@ pub use skill::{
 };
 pub use state::{SkillState, SkillStateUpdate, SkillStateValue};
 pub use tools::{LoadSkillResourceTool, SkillActivateTool, SkillScriptTool};
+
+#[cfg(feature = "mcp")]
+pub use mcp_bridge::McpPromptSkillRegistryManager;

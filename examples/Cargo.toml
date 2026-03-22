@@ -32,5 +32,13 @@ path = "examples/research.rs"
 name = "starter_backend"
 path = "examples/starter_backend/main.rs"
 
+[[example]]
+name = "copilotkit_starter"
+path = "examples/copilotkit_starter.rs"
+
+[[example]]
+name = "ai_sdk_starter"
+path = "examples/ai_sdk_starter.rs"
+
 [lints]
 workspace = true

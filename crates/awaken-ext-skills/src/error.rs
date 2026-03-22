@@ -76,6 +76,12 @@ pub enum SkillRegistryManagerError {
 
     #[error("periodic refresh join failed: {0}")]
     Join(String),
+
+    #[error("tokio runtime is required to start periodic refresh")]
+    RuntimeUnavailable,
+
+    #[error("MCP error: {0}")]
+    Mcp(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
