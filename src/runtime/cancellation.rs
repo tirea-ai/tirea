@@ -3,13 +3,26 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use tokio::sync::Notify;
+
 /// A cooperative cancellation token.
 ///
-/// The holder of a `CancellationToken` can cancel a running agent loop.
-/// The loop checks `is_cancelled()` at phase boundaries and before inference.
-#[derive(Clone, Default)]
+/// Supports both synchronous polling (`is_cancelled()`) and async waiting
+/// (`cancelled()`). The async path uses `tokio::select!` in streaming loops
+/// to interrupt mid-stream without waiting for the next token.
+#[derive(Clone)]
 pub struct CancellationToken {
     cancelled: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+}
+
+impl Default for CancellationToken {
+    fn default() -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            notify: Arc::new(Notify::new()),
+        }
+    }
 }
 
 impl CancellationToken {
@@ -17,14 +30,23 @@ impl CancellationToken {
         Self::default()
     }
 
-    /// Signal cancellation.
+    /// Signal cancellation. Wakes all async waiters immediately.
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
     }
 
-    /// Check if cancellation has been requested.
+    /// Check if cancellation has been requested (synchronous poll).
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst)
+    }
+
+    /// Wait until cancellation is signalled. Resolves immediately if already cancelled.
+    pub async fn cancelled(&self) {
+        if self.is_cancelled() {
+            return;
+        }
+        self.notify.notified().await;
     }
 }
 

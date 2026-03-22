@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use genai::chat::{ChatStreamEvent, StreamEnd};
 use serde_json::Value;
 
-use crate::contract::inference::StreamResult;
+use crate::contract::inference::{StreamResult, TokenUsage};
 use crate::contract::message::ToolCall;
 
 use super::convert::{map_stop_reason, map_usage};

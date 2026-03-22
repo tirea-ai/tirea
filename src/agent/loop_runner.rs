@@ -320,6 +320,7 @@ pub async fn run_agent_loop_controlled(
             &agent,
             request,
             sink,
+            cancellation_token.as_ref(),
             &mut total_input_tokens,
             &mut total_output_tokens,
         )
@@ -1182,10 +1183,15 @@ async fn compact_with_llm(
 ///
 /// Consumes the token stream from `execute_stream()`, forwards deltas to sink,
 /// and collects the final `StreamResult`.
+///
+/// Supports mid-stream cancellation: if the `CancellationToken` is signalled while
+/// waiting for the next token, the stream is dropped and the partially accumulated
+/// result is returned with `StopReason::EndTurn` (graceful cancel — no error).
 async fn execute_streaming(
     agent: &AgentConfig,
     request: InferenceRequest,
     sink: &dyn EventSink,
+    cancellation_token: Option<&CancellationToken>,
     total_input_tokens: &mut u64,
     total_output_tokens: &mut u64,
 ) -> Result<crate::contract::inference::StreamResult, AgentLoopError> {
@@ -1209,8 +1215,26 @@ async fn execute_streaming(
         std::collections::HashMap::new();
     let mut tool_names: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
+    let mut cancelled = false;
 
-    while let Some(event_result) = token_stream.next().await {
+    loop {
+        let event = if let Some(token) = cancellation_token {
+            tokio::select! {
+                biased;
+                _ = token.cancelled() => {
+                    cancelled = true;
+                    break;
+                }
+                next = token_stream.next() => next,
+            }
+        } else {
+            token_stream.next().await
+        };
+
+        let Some(event_result) = event else {
+            break; // stream ended
+        };
+
         let event = event_result.map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
 
         match event {
@@ -1238,7 +1262,6 @@ async fn execute_streaming(
                     .await;
             }
             StreamEvent::ContentBlockStop => {
-                // Finalize any accumulated text
                 if !current_text.is_empty() {
                     content_blocks.push(ContentBlock::text(std::mem::take(&mut current_text)));
                 }
@@ -1263,18 +1286,27 @@ async fn execute_streaming(
         content_blocks.push(ContentBlock::text(current_text));
     }
 
-    // Collect tool calls from accumulated args
-    for (id, args_json) in current_tool_args {
-        let name = tool_names.get(&id).cloned().unwrap_or_default();
-        let arguments = serde_json::from_str(&args_json).unwrap_or(serde_json::Value::Null);
-        tool_calls.push(ToolCall::new(id, name, arguments));
+    // Collect tool calls from accumulated args (drop incomplete on cancel)
+    if !cancelled {
+        for (id, args_json) in current_tool_args {
+            let name = tool_names.get(&id).cloned().unwrap_or_default();
+            let arguments = serde_json::from_str(&args_json).unwrap_or(serde_json::Value::Null);
+            if arguments.is_null() && !args_json.is_empty() {
+                continue; // truncated JSON, skip
+            }
+            tool_calls.push(ToolCall::new(id, name, arguments));
+        }
     }
 
     Ok(StreamResult {
         content: content_blocks,
         tool_calls,
         usage,
-        stop_reason,
+        stop_reason: if cancelled {
+            Some(StopReason::EndTurn)
+        } else {
+            stop_reason
+        },
     })
 }
 
