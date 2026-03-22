@@ -10,11 +10,12 @@ pub mod traits;
 
 pub use config::{AgentSystemConfig, ModelConfig};
 pub use memory::{
-    MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapToolRegistry,
+    MapAgentRegistry, MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry,
+    MapStopPolicyRegistry, MapToolRegistry,
 };
 pub use resolve::ResolveError;
 pub use spec::AgentSpec;
 pub use traits::{
-    AgentSpecRegistry, ModelEntry, ModelRegistry, PluginSource, ProviderRegistry, RegistrySet,
-    ToolRegistry,
+    AgentRegistry, AgentSpecRegistry, ModelEntry, ModelRegistry, PluginSource, ProviderRegistry,
+    RegistrySet, StopPolicyRegistry, ToolRegistry,
 };

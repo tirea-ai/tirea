@@ -1,11 +1,16 @@
 #![allow(missing_docs)]
 
 pub mod agent;
+pub mod builder;
 pub mod engine;
+pub mod extensions;
 pub mod plugins;
 pub mod registry;
 pub mod runtime;
 pub mod state;
+
+// ── builder ──
+pub use builder::AgentRuntimeBuilder;
 
 // ── plugins ──
 pub use plugins::{Plugin, PluginDescriptor, PluginRegistrar};
@@ -20,3 +25,9 @@ pub use runtime::{
 
 // ── state ──
 pub use state::{CommitEvent, CommitHook, MutationBatch, StateCommand, StateStore};
+
+// ── extensions ──
+pub use extensions::a2ui::{A2uiPlugin, A2uiRenderTool, validate_a2ui_messages};
+pub use extensions::handoff::{
+    ActiveAgentKey, AgentOverlay, HandoffAction, HandoffPlugin, HandoffState,
+};

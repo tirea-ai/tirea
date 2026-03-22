@@ -7,6 +7,7 @@ pub(crate) mod actions;
 mod checkpoint;
 mod inference;
 mod orchestrator;
+pub mod parallel_merge;
 mod resume;
 
 #[cfg(test)]
