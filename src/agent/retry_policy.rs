@@ -379,6 +379,32 @@ mod tests {
     }
 
     #[test]
+    fn rate_limit_error_is_retryable() {
+        assert!(is_retryable(&InferenceExecutionError::RateLimited(
+            "429".into()
+        )));
+    }
+
+    #[test]
+    fn server_error_is_retryable() {
+        assert!(is_retryable(&InferenceExecutionError::Provider(
+            "500 internal".into()
+        )));
+    }
+
+    #[test]
+    fn timeout_error_is_retryable() {
+        assert!(is_retryable(&InferenceExecutionError::Timeout(
+            "timed out".into()
+        )));
+    }
+
+    #[test]
+    fn cancelled_error_is_not_retryable() {
+        assert!(!is_retryable(&InferenceExecutionError::Cancelled));
+    }
+
+    #[test]
     fn builder_methods_chain() {
         let policy = LlmRetryPolicy::default()
             .with_max_retries(5)

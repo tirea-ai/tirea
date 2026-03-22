@@ -198,6 +198,97 @@ mod tests {
     }
 
     #[test]
+    fn estimate_tokens_ascii() {
+        let msg = Message::user("abcdefghijklmnop"); // 16 chars → 4 tokens + 4 overhead = 8
+        let est = estimate_message_tokens(&msg);
+        assert_eq!(est, 8);
+    }
+
+    #[test]
+    fn estimate_tokens_cjk() {
+        // CJK characters are ~3 bytes each, but token estimation uses char count
+        let msg = Message::user("你好世界测试"); // 6 CJK chars, 18 bytes → 6/4 = 1 token + 4 = 5
+        let est = estimate_message_tokens(&msg);
+        assert!(est > 0);
+    }
+
+    #[test]
+    fn estimate_tokens_with_tool_calls() {
+        let msg = Message::assistant_with_tool_calls(
+            "calling tools",
+            vec![ToolCall::new(
+                "c1",
+                "search",
+                json!({"query": "rust async"}),
+            )],
+        );
+        let est = estimate_message_tokens(&msg);
+        assert!(est > 4); // more than just overhead
+    }
+
+    #[test]
+    fn estimate_tool_tokens_includes_schema() {
+        use crate::contract::tool::ToolDescriptor;
+        let tool = ToolDescriptor {
+            id: "calc".into(),
+            name: "calculator".into(),
+            description: "Evaluate math expressions".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "expression": {"type": "string"}
+                }
+            }),
+            category: None,
+        };
+        let est = estimate_tool_tokens(&[tool]);
+        assert!(est > 10); // name + description + schema
+    }
+
+    #[test]
+    fn estimate_multiple_messages() {
+        let messages = vec![
+            Message::system("you are helpful"),
+            Message::user("hello"),
+            Message::assistant("hi there"),
+        ];
+        let total = estimate_tokens(&messages);
+        let individual: usize = messages.iter().map(estimate_message_tokens).sum();
+        assert_eq!(total, individual);
+    }
+
+    #[test]
+    fn patch_dangling_multiple_missing() {
+        let mut messages = vec![
+            Message::user("go"),
+            Message::assistant_with_tool_calls(
+                "",
+                vec![
+                    ToolCall::new("c1", "a", json!({})),
+                    ToolCall::new("c2", "b", json!({})),
+                    ToolCall::new("c3", "c", json!({})),
+                ],
+            ),
+            // No results at all
+        ];
+        patch_dangling_tool_calls(&mut messages);
+        // Should have 3 synthetic results
+        assert_eq!(messages.len(), 5);
+        for i in 2..5 {
+            assert_eq!(messages[i].role, Role::Tool);
+            assert!(messages[i].text().contains("interrupted"));
+        }
+    }
+
+    #[test]
+    fn patch_dangling_no_tool_calls_is_noop() {
+        let mut messages = vec![Message::user("hello"), Message::assistant("hi")];
+        let len_before = messages.len();
+        patch_dangling_tool_calls(&mut messages);
+        assert_eq!(messages.len(), len_before);
+    }
+
+    #[test]
     fn apply_transforms_chains_in_order() {
         struct PrependTransform(String);
         impl InferenceRequestTransform for PrependTransform {

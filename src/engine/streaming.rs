@@ -209,6 +209,92 @@ mod tests {
     }
 
     #[test]
+    fn tool_call_chunks_accumulate() {
+        use genai::chat::{ToolCall as GToolCall, ToolChunk};
+
+        let mut c = StreamCollector::new();
+
+        // First chunk: tool call start
+        let o1 = c.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+            tool_call: GToolCall {
+                call_id: "c1".into(),
+                fn_name: "search".into(),
+                fn_arguments: serde_json::json!({}),
+                thought_signatures: None,
+            },
+        }));
+        assert!(
+            matches!(o1, StreamOutput::ToolCallStart { ref id, ref name } if id == "c1" && name == "search")
+        );
+
+        let result = c.finish();
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].name, "search");
+    }
+
+    #[test]
+    fn truncated_tool_call_json_dropped() {
+        let mut c = StreamCollector::new();
+
+        // Manually insert a partial tool call with truncated JSON
+        c.tool_call_order.push("c1".into());
+        c.tool_calls.insert(
+            "c1".into(),
+            super::PartialToolCall {
+                id: "c1".into(),
+                name: "search".into(),
+                arguments: r#"{"query": "rust"#.into(), // truncated JSON
+            },
+        );
+
+        let result = c.finish();
+        // Truncated JSON should be dropped
+        assert!(result.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn captured_end_overrides_streamed_text() {
+        use genai::chat::{StreamChunk, StreamEnd};
+
+        let mut c = StreamCollector::new();
+
+        // Stream some text
+        c.process(ChatStreamEvent::Chunk(StreamChunk {
+            content: "partial".into(),
+        }));
+
+        // End event with captured text that overrides
+        let mut end = StreamEnd::default();
+        end.captured_content = Some(genai::chat::MessageContent::from_text("final text"));
+        c.process(ChatStreamEvent::End(end));
+
+        let result = c.finish();
+        assert_eq!(result.text(), "final text");
+    }
+
+    #[test]
+    fn usage_mapped_from_end_event() {
+        use genai::chat::{StreamEnd, Usage};
+
+        let mut c = StreamCollector::new();
+
+        let mut end = StreamEnd::default();
+        end.captured_usage = Some(Usage {
+            prompt_tokens: Some(100),
+            completion_tokens: Some(50),
+            total_tokens: Some(150),
+            ..Default::default()
+        });
+        c.process(ChatStreamEvent::End(end));
+
+        let result = c.finish();
+        let usage = result.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, Some(100));
+        assert_eq!(usage.completion_tokens, Some(50));
+        assert_eq!(usage.total_tokens, Some(150));
+    }
+
+    #[test]
     fn finish_with_no_events_returns_empty() {
         let c = StreamCollector::new();
         let result = c.finish();

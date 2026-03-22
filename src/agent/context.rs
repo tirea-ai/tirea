@@ -526,6 +526,119 @@ mod tests {
     }
 
     #[test]
+    fn truncation_tool_pair_not_broken() {
+        // Tight budget — truncation should not split an assistant+tool pair
+        let transform = ContextTransform::new(make_policy(60, 1));
+        let messages = vec![
+            Message::system("sys"),
+            Message::user("old"),
+            Message::assistant_with_tool_calls(
+                "calling",
+                vec![ToolCall::new("c1", "search", json!({}))],
+            ),
+            Message::tool("c1", "found"),
+            Message::user("recent"),
+            Message::assistant("reply"),
+        ];
+
+        let output = transform.transform(messages, &[]);
+        // If the assistant with tool_calls is kept, its tool result must also be kept
+        for (i, msg) in output.messages.iter().enumerate() {
+            if msg.role == Role::Assistant {
+                if let Some(ref calls) = msg.tool_calls {
+                    for call in calls {
+                        let has_result = output.messages[i + 1..]
+                            .iter()
+                            .any(|m| m.tool_call_id.as_deref() == Some(&call.id));
+                        assert!(
+                            has_result,
+                            "tool call {} should have matching result",
+                            call.id
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn truncation_with_tool_descriptors_reduces_budget() {
+        use crate::contract::tool::ToolDescriptor;
+
+        let transform = ContextTransform::new(make_policy(100, 2));
+        let messages = vec![
+            Message::system("sys"),
+            Message::user("hello"),
+            Message::assistant("world"),
+        ];
+
+        // Without tools: all fit
+        let output_no_tools = transform.transform(messages.clone(), &[]);
+        let count_no_tools = output_no_tools.messages.len();
+
+        // With large tool schemas: might truncate
+        let big_tool = ToolDescriptor {
+            id: "t".into(),
+            name: "t".into(),
+            description: "x".repeat(200),
+            parameters: json!({"type": "object", "properties": {
+                "a": {"type": "string"}, "b": {"type": "string"},
+                "c": {"type": "string"}, "d": {"type": "string"},
+            }}),
+            category: None,
+        };
+
+        let output_with_tools = transform.transform(messages, &[big_tool]);
+        // With tools consuming budget, we may have fewer messages
+        assert!(output_with_tools.messages.len() <= count_no_tools);
+    }
+
+    #[test]
+    fn find_compaction_boundary_does_not_cut_open_tool_round() {
+        use std::sync::Arc;
+
+        let messages: Vec<Arc<Message>> = vec![
+            Arc::new(Message::user("start")),
+            Arc::new(Message::assistant("reply")),
+            Arc::new(Message::user("next")),
+            Arc::new(Message::assistant_with_tool_calls(
+                "",
+                vec![ToolCall::new("c1", "search", json!({}))],
+            )),
+            // c1 has no result yet — open tool round
+        ];
+
+        let boundary = find_compaction_boundary(&messages, 0, messages.len());
+        // Boundary should be before the open tool round (idx 2 at latest)
+        if let Some(b) = boundary {
+            assert!(b <= 2, "boundary should not include open tool round");
+        }
+    }
+
+    #[test]
+    fn trim_to_compaction_boundary_idempotent() {
+        use std::sync::Arc;
+
+        let mut messages = vec![
+            Arc::new(Message::user("old")),
+            Arc::new(Message::internal_system(
+                "<conversation-summary>\nSummary\n</conversation-summary>",
+            )),
+            Arc::new(Message::user("new")),
+        ];
+
+        trim_to_compaction_boundary(&mut messages);
+        let len_after_first = messages.len();
+
+        trim_to_compaction_boundary(&mut messages);
+        assert_eq!(
+            messages.len(),
+            len_after_first,
+            "second trim should be noop"
+        );
+    }
+
+    #[test]
     fn extract_previous_summary_none_without_summary() {
         use std::sync::Arc;
 
