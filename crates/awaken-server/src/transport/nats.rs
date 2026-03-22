@@ -142,48 +142,28 @@ impl NatsTransport {
 
     /// Publish a sequence of agent events to a NATS reply subject.
     ///
-    /// Consumes events from the given channel, encodes each through the provided
-    /// encoder, and publishes the serialized output to `reply`.
+    /// Uses the shared [`relay_events_bounded`](crate::event_relay::relay_events_bounded)
+    /// pipeline for prologue→transcode→epilogue, then publishes each serialized
+    /// item to `reply`.
     pub async fn publish_events<E>(
         &self,
-        mut rx: tokio::sync::mpsc::Receiver<AgentEvent>,
+        rx: tokio::sync::mpsc::Receiver<AgentEvent>,
         reply: async_nats::Subject,
-        mut encoder: E,
+        encoder: E,
     ) -> Result<(), NatsProtocolError>
     where
-        E: Transcoder<Input = AgentEvent>,
+        E: Transcoder<Input = AgentEvent> + 'static,
         E::Output: Serialize + Send + 'static,
     {
-        // Emit prologue
-        for item in encoder.prologue() {
-            let payload = serde_json::to_vec(&item)
-                .map_err(|e| NatsProtocolError::Run(format!("serialize prologue failed: {e}")))?;
+        use futures::StreamExt;
+
+        let mut stream = Box::pin(crate::event_relay::relay_events_bounded(rx, encoder));
+
+        while let Some(payload) = stream.next().await {
             self.client
                 .publish(reply.clone(), payload.into())
                 .await
-                .map_err(|e| NatsProtocolError::Run(format!("publish prologue failed: {e}")))?;
-        }
-
-        // Encode and publish each event
-        while let Some(event) = rx.recv().await {
-            for item in encoder.transcode(&event) {
-                let payload = serde_json::to_vec(&item)
-                    .map_err(|e| NatsProtocolError::Run(format!("serialize event failed: {e}")))?;
-                self.client
-                    .publish(reply.clone(), payload.into())
-                    .await
-                    .map_err(|e| NatsProtocolError::Run(format!("publish event failed: {e}")))?;
-            }
-        }
-
-        // Emit epilogue
-        for item in encoder.epilogue() {
-            let payload = serde_json::to_vec(&item)
-                .map_err(|e| NatsProtocolError::Run(format!("serialize epilogue failed: {e}")))?;
-            self.client
-                .publish(reply.clone(), payload.into())
-                .await
-                .map_err(|e| NatsProtocolError::Run(format!("publish epilogue failed: {e}")))?;
+                .map_err(|e| NatsProtocolError::Run(format!("publish event failed: {e}")))?;
         }
 
         Ok(())

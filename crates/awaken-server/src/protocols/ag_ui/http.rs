@@ -13,6 +13,7 @@ use crate::app::AppState;
 use crate::http_run::wire_sse_relay;
 use crate::http_sse::{sse_body_stream, sse_response};
 use crate::routes::ApiError;
+use crate::run_dispatcher::RunSpec;
 
 use super::encoder::AgUiEncoder;
 
@@ -66,25 +67,15 @@ async fn ag_ui_run(
     let thread_id = payload
         .thread_id
         .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
-    let agent_id = payload.agent_id;
 
-    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let spec = RunSpec {
+        thread_id,
+        agent_id: payload.agent_id,
+        messages,
+    };
+    let event_rx = st.dispatcher.dispatch(spec);
     let encoder = AgUiEncoder::new();
     let sse_rx = wire_sse_relay(event_rx, encoder, st.config.sse_buffer_size);
-
-    let runtime = st.runtime.clone();
-    tokio::spawn(async move {
-        let sink = crate::transport::channel_sink::ChannelEventSink::new(event_tx);
-        let request = awaken_runtime::RunRequest::new(thread_id, messages);
-        let request = if let Some(aid) = agent_id {
-            request.with_agent_id(aid)
-        } else {
-            request
-        };
-        if let Err(e) = runtime.run(request, &sink).await {
-            tracing::warn!(error = %e, "AG-UI run failed");
-        }
-    });
 
     Ok(sse_response(sse_body_stream(sse_rx)))
 }

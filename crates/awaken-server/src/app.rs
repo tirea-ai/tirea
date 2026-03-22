@@ -6,6 +6,8 @@ use awaken_contract::contract::storage::{MailboxStore, RunStore, ThreadStore};
 use awaken_runtime::{AgentResolver, AgentRuntime};
 use serde::{Deserialize, Serialize};
 
+use crate::run_dispatcher::RunDispatcher;
+
 /// Server configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
@@ -34,6 +36,8 @@ impl Default for ServerConfig {
 pub struct AppState {
     /// Agent runtime for executing runs.
     pub runtime: Arc<AgentRuntime>,
+    /// Unified run dispatcher.
+    pub dispatcher: RunDispatcher,
     /// Thread persistence (read/write).
     pub thread_store: Arc<dyn ThreadStore>,
     /// Run record persistence.
@@ -56,8 +60,10 @@ impl AppState {
         resolver: Arc<dyn AgentResolver>,
         config: ServerConfig,
     ) -> Self {
+        let dispatcher = RunDispatcher::new(runtime.clone());
         Self {
             runtime,
+            dispatcher,
             thread_store,
             run_store,
             mailbox_store,

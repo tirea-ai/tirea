@@ -1,65 +1,51 @@
 //! HTTP run execution with SSE relay.
 
 use bytes::Bytes;
+use futures::StreamExt;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::transport::Transcoder;
 
+use crate::event_relay::relay_events;
 use crate::http_sse::format_sse_data;
 
 /// Spawn a background task that consumes agent events from a receiver,
 /// transcodes them via the protocol encoder, and sends SSE frames to the response.
 ///
+/// Uses the shared [`relay_events`] pipeline for the prologue→transcode→epilogue
+/// logic and wraps each serialized item as an SSE `data:` frame.
+///
 /// Returns the SSE byte receiver to feed into an HTTP response body.
 pub fn wire_sse_relay<E>(
-    mut event_rx: mpsc::UnboundedReceiver<AgentEvent>,
-    mut encoder: E,
+    event_rx: mpsc::UnboundedReceiver<AgentEvent>,
+    encoder: E,
     buffer_size: usize,
 ) -> mpsc::Receiver<Bytes>
 where
     E: Transcoder<Input = AgentEvent> + 'static,
-    E::Output: Serialize + Send + Sync + 'static,
+    E::Output: Serialize + Send + 'static,
 {
     let (sse_tx, sse_rx) = mpsc::channel::<Bytes>(buffer_size);
 
     tokio::spawn(async move {
-        // Emit prologue events
-        for item in encoder.prologue() {
-            if send_encoded(&sse_tx, &item).await.is_err() {
-                return;
-            }
-        }
-
-        // Transcode each agent event
-        while let Some(event) = event_rx.recv().await {
-            for item in encoder.transcode(&event) {
-                if send_encoded(&sse_tx, &item).await.is_err() {
-                    return;
+        let mut stream = std::pin::pin!(relay_events(event_rx, encoder));
+        while let Some(json_bytes) = stream.next().await {
+            let json = match String::from_utf8(json_bytes) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to decode relay output as UTF-8");
+                    continue;
                 }
-            }
-        }
-
-        // Emit epilogue events
-        for item in encoder.epilogue() {
-            if send_encoded(&sse_tx, &item).await.is_err() {
+            };
+            if sse_tx.send(format_sse_data(&json)).await.is_err() {
                 return;
             }
         }
     });
 
     sse_rx
-}
-
-async fn send_encoded<T: Serialize>(tx: &mpsc::Sender<Bytes>, item: &T) -> Result<(), ()> {
-    match serde_json::to_string(item) {
-        Ok(json) => tx.send(format_sse_data(&json)).await.map_err(|_| ()),
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to serialize SSE event");
-            Err(())
-        }
-    }
 }
 
 /// Error-framed SSE data for relay errors.

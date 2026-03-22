@@ -12,6 +12,7 @@ use awaken_contract::contract::message::Message;
 
 use crate::app::AppState;
 use crate::routes::ApiError;
+use crate::run_dispatcher::RunSpec;
 
 /// Build A2A routes.
 pub fn a2a_routes() -> Router<AppState> {
@@ -128,24 +129,13 @@ async fn a2a_task_send(
         }
     };
 
-    let thread_id = task_id.clone();
-    let agent_id = payload.agent_id;
-
-    let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
-
-    let runtime = st.runtime.clone();
-    tokio::spawn(async move {
-        let sink = crate::transport::channel_sink::ChannelEventSink::new(event_tx);
-        let request = awaken_runtime::RunRequest::new(thread_id, messages);
-        let request = if let Some(aid) = agent_id {
-            request.with_agent_id(aid)
-        } else {
-            request
-        };
-        if let Err(e) = runtime.run(request, &sink).await {
-            tracing::warn!(error = %e, "A2A task run failed");
-        }
-    });
+    let spec = RunSpec {
+        thread_id: task_id.clone(),
+        agent_id: payload.agent_id,
+        messages,
+    };
+    // Fire-and-forget: dispatch the run but don't consume the event stream.
+    let _event_rx = st.dispatcher.dispatch(spec);
 
     Ok((
         StatusCode::OK,

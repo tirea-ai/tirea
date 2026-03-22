@@ -16,6 +16,7 @@ use crate::http_sse::{sse_body_stream, sse_response};
 use crate::protocols::a2a::http::a2a_routes;
 use crate::protocols::ag_ui::http::ag_ui_routes;
 use crate::protocols::ai_sdk_v6::http::ai_sdk_routes;
+use crate::run_dispatcher::RunSpec;
 
 /// API error type returned by route handlers.
 #[derive(Debug)]
@@ -74,6 +75,8 @@ fn run_routes() -> Router<AppState> {
         .route("/v1/runs/{id}", get(get_run))
         .route("/v1/runs/{id}/cancel", post(cancel_run))
         .route("/v1/runs/{id}/decision", post(submit_decision))
+        .route("/v1/threads/{id}/runs", get(list_thread_runs))
+        .route("/v1/threads/{id}/runs/latest", get(latest_thread_run))
 }
 
 // ── Health ──
@@ -265,18 +268,14 @@ async fn start_run(
 
     let messages = convert_run_messages(payload.messages);
 
-    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let spec = RunSpec {
+        thread_id,
+        agent_id: Some(agent_id),
+        messages,
+    };
+    let event_rx = st.dispatcher.dispatch(spec);
     let encoder = awaken_contract::contract::transport::Identity::default();
     let sse_rx = wire_sse_relay(event_rx, encoder, st.config.sse_buffer_size);
-
-    let runtime = st.runtime.clone();
-    tokio::spawn(async move {
-        let sink = crate::transport::channel_sink::ChannelEventSink::new(event_tx);
-        let request = awaken_runtime::RunRequest::new(thread_id, messages).with_agent_id(agent_id);
-        if let Err(e) = runtime.run(request, &sink).await {
-            tracing::warn!(error = %e, "run failed");
-        }
-    });
 
     Ok(sse_response(sse_body_stream(sse_rx)))
 }
@@ -346,6 +345,69 @@ async fn submit_decision(
         })),
     )
         .into_response())
+}
+
+// ── Thread Runs ──
+
+#[derive(Debug, Deserialize)]
+struct ListRunsParams {
+    #[serde(default)]
+    offset: Option<usize>,
+    #[serde(default = "default_limit")]
+    limit: usize,
+    #[serde(default)]
+    status: Option<String>,
+}
+
+async fn list_thread_runs(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Query(params): Query<ListRunsParams>,
+) -> Result<Json<Value>, ApiError> {
+    use awaken_contract::contract::lifecycle::RunStatus;
+    use awaken_contract::contract::storage::RunQuery;
+
+    let status = params
+        .status
+        .as_deref()
+        .map(|s| match s {
+            "running" => Ok(RunStatus::Running),
+            "waiting" => Ok(RunStatus::Waiting),
+            "done" => Ok(RunStatus::Done),
+            other => Err(ApiError::BadRequest(format!(
+                "invalid status filter: {other}"
+            ))),
+        })
+        .transpose()?;
+
+    let query = RunQuery {
+        offset: params.offset.unwrap_or(0),
+        limit: params.limit.clamp(1, 200),
+        thread_id: Some(id),
+        status,
+    };
+    let page = crate::services::run_service::list_runs(st.run_store.as_ref(), &query)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    let value = serde_json::to_value(&page.items).map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Json(json!({
+        "items": value,
+        "total": page.total,
+        "has_more": page.has_more,
+    })))
+}
+
+async fn latest_thread_run(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let record = crate::services::run_service::latest_run(st.run_store.as_ref(), &id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or(ApiError::RunNotFound(format!("no runs for thread {id}")))?;
+    let value = serde_json::to_value(record).map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Json(value))
 }
 
 #[cfg(test)]
