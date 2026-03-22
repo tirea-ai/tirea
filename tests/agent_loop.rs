@@ -559,15 +559,16 @@ async fn events_have_correct_sequence_for_single_step() {
     .unwrap();
 
     let events = sink.take();
+    // Filter to lifecycle events only (skip streaming deltas)
     let event_types: Vec<&str> = events
         .iter()
-        .map(|e| match e {
-            AgentEvent::RunStart { .. } => "RunStart",
-            AgentEvent::StepStart { .. } => "StepStart",
-            AgentEvent::InferenceComplete { .. } => "InferenceComplete",
-            AgentEvent::StepEnd => "StepEnd",
-            AgentEvent::RunFinish { .. } => "RunFinish",
-            _ => "Other",
+        .filter_map(|e| match e {
+            AgentEvent::RunStart { .. } => Some("RunStart"),
+            AgentEvent::StepStart { .. } => Some("StepStart"),
+            AgentEvent::InferenceComplete { .. } => Some("InferenceComplete"),
+            AgentEvent::StepEnd => Some("StepEnd"),
+            AgentEvent::RunFinish { .. } => Some("RunFinish"),
+            _ => None, // skip TextDelta, ToolCallStart, etc.
         })
         .collect();
 
@@ -580,6 +581,14 @@ async fn events_have_correct_sequence_for_single_step() {
             "StepEnd",
             "RunFinish"
         ]
+    );
+
+    // Verify TextDelta was emitted
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TextDelta { .. })),
+        "should emit TextDelta events during streaming"
     );
 }
 
@@ -619,17 +628,18 @@ async fn events_have_correct_sequence_with_tool_call() {
     .unwrap();
 
     let events = sink.take();
+    // Filter to lifecycle + tool events (skip streaming deltas)
     let event_types: Vec<&str> = events
         .iter()
-        .map(|e| match e {
-            AgentEvent::RunStart { .. } => "RunStart",
-            AgentEvent::StepStart { .. } => "StepStart",
-            AgentEvent::InferenceComplete { .. } => "InferenceComplete",
-            AgentEvent::ToolCallStart { .. } => "ToolCallStart",
-            AgentEvent::ToolCallDone { .. } => "ToolCallDone",
-            AgentEvent::StepEnd => "StepEnd",
-            AgentEvent::RunFinish { .. } => "RunFinish",
-            _ => "Other",
+        .filter_map(|e| match e {
+            AgentEvent::RunStart { .. } => Some("RunStart"),
+            AgentEvent::StepStart { .. } => Some("StepStart"),
+            AgentEvent::InferenceComplete { .. } => Some("InferenceComplete"),
+            AgentEvent::ToolCallStart { .. } => Some("ToolCallStart"),
+            AgentEvent::ToolCallDone { .. } => Some("ToolCallDone"),
+            AgentEvent::StepEnd => Some("StepEnd"),
+            AgentEvent::RunFinish { .. } => Some("RunFinish"),
+            _ => None,
         })
         .collect();
 
@@ -639,8 +649,9 @@ async fn events_have_correct_sequence_with_tool_call() {
             "RunStart",
             // Step 1: tool call
             "StepStart",
+            "ToolCallStart", // from streaming
             "InferenceComplete",
-            "ToolCallStart",
+            "ToolCallStart", // from tool execution
             "ToolCallDone",
             "StepEnd",
             // Step 2: final response

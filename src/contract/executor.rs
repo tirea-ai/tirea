@@ -35,10 +35,38 @@ pub enum InferenceExecutionError {
     Cancelled,
 }
 
+/// A token-level streaming event from the LLM.
+#[derive(Debug, Clone)]
+pub enum StreamEvent {
+    /// Incremental text content.
+    TextDelta(String),
+    /// Incremental reasoning/thinking content.
+    ReasoningDelta(String),
+    /// A tool use block started.
+    ToolCallStart { id: String, name: String },
+    /// Incremental tool call argument JSON.
+    ToolCallDelta { id: String, args_delta: String },
+    /// A content block finished.
+    ContentBlockStop,
+    /// Token usage data (typically sent once at the end).
+    Usage(super::inference::TokenUsage),
+    /// Stop reason (end of stream).
+    Stop(super::inference::StopReason),
+}
+
+/// A boxed stream of `StreamEvent`s.
+///
+/// Implementors wrap their provider-specific streaming response into this type.
+/// The loop runner consumes events, emits deltas via `EventSink`, and collects
+/// the final `StreamResult`.
+pub type InferenceStream = std::pin::Pin<
+    Box<dyn futures::Stream<Item = Result<StreamEvent, InferenceExecutionError>> + Send>,
+>;
+
 /// Abstraction over LLM inference backends.
 ///
-/// Unlike uncarve's `LlmExecutor` which is coupled to the `genai` crate,
-/// this trait uses awaken's own request/response types.
+/// Providers implement `execute` (collected) and optionally `execute_stream` (streaming).
+/// The loop runner prefers `execute_stream` when available.
 #[async_trait]
 pub trait LlmExecutor: Send + Sync {
     /// Execute a chat completion and return the collected result.
@@ -47,8 +75,77 @@ pub trait LlmExecutor: Send + Sync {
         request: InferenceRequest,
     ) -> Result<StreamResult, InferenceExecutionError>;
 
+    /// Execute a chat completion as a token stream.
+    ///
+    /// Default implementation calls `execute()` and wraps the result as a single-event stream.
+    /// Override to provide true token-level streaming from the LLM provider.
+    fn execute_stream(
+        &self,
+        request: InferenceRequest,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<InferenceStream, InferenceExecutionError>>
+                + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async move {
+            let result = self.execute(request).await?;
+            let events = collected_to_stream_events(result);
+            Ok(Box::pin(futures::stream::iter(events)) as InferenceStream)
+        })
+    }
+
     /// Provider name for logging/debugging.
     fn name(&self) -> &str;
+}
+
+/// Convert a collected `StreamResult` into a sequence of `StreamEvent`s.
+fn collected_to_stream_events(
+    result: StreamResult,
+) -> Vec<Result<StreamEvent, InferenceExecutionError>> {
+    use super::content::ContentBlock;
+    let mut events = Vec::new();
+
+    // Emit text/thinking deltas from content blocks
+    for block in &result.content {
+        match block {
+            ContentBlock::Text { text } if !text.is_empty() => {
+                events.push(Ok(StreamEvent::TextDelta(text.clone())));
+            }
+            ContentBlock::Thinking { thinking } if !thinking.is_empty() => {
+                events.push(Ok(StreamEvent::ReasoningDelta(thinking.clone())));
+            }
+            _ => {}
+        }
+    }
+
+    // Emit tool calls
+    for call in &result.tool_calls {
+        events.push(Ok(StreamEvent::ToolCallStart {
+            id: call.id.clone(),
+            name: call.name.clone(),
+        }));
+        let args = serde_json::to_string(&call.arguments).unwrap_or_default();
+        if !args.is_empty() {
+            events.push(Ok(StreamEvent::ToolCallDelta {
+                id: call.id.clone(),
+                args_delta: args,
+            }));
+        }
+    }
+
+    // Emit usage
+    if let Some(usage) = result.usage {
+        events.push(Ok(StreamEvent::Usage(usage)));
+    }
+
+    // Emit stop reason
+    if let Some(stop) = result.stop_reason {
+        events.push(Ok(StreamEvent::Stop(stop)));
+    }
+
+    events
 }
 
 /// Tool execution strategy.

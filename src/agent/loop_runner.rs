@@ -316,19 +316,14 @@ pub async fn run_agent_loop_controlled(
             overrides,
         };
 
-        let stream_result = agent
-            .llm_executor
-            .execute(request)
-            .await
-            .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
-        if let Some(usage) = &stream_result.usage {
-            if let Some(v) = usage.prompt_tokens {
-                total_input_tokens = total_input_tokens.saturating_add(v.max(0) as u64);
-            }
-            if let Some(v) = usage.completion_tokens {
-                total_output_tokens = total_output_tokens.saturating_add(v.max(0) as u64);
-            }
-        }
+        let stream_result = execute_streaming(
+            &agent,
+            request,
+            sink,
+            &mut total_input_tokens,
+            &mut total_output_tokens,
+        )
+        .await?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
         sink.emit(AgentEvent::InferenceComplete {
@@ -1181,6 +1176,106 @@ async fn compact_with_llm(
     );
 
     Ok(())
+}
+
+/// Execute LLM inference with streaming, emitting delta events via sink.
+///
+/// Consumes the token stream from `execute_stream()`, forwards deltas to sink,
+/// and collects the final `StreamResult`.
+async fn execute_streaming(
+    agent: &AgentConfig,
+    request: InferenceRequest,
+    sink: &dyn EventSink,
+    total_input_tokens: &mut u64,
+    total_output_tokens: &mut u64,
+) -> Result<crate::contract::inference::StreamResult, AgentLoopError> {
+    use crate::contract::content::ContentBlock;
+    use crate::contract::executor::StreamEvent;
+    use crate::contract::inference::{StopReason, StreamResult, TokenUsage};
+    use futures::StreamExt;
+
+    let mut token_stream = agent
+        .llm_executor
+        .execute_stream(request)
+        .await
+        .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
+
+    let mut content_blocks: Vec<ContentBlock> = Vec::new();
+    let mut tool_calls: Vec<ToolCall> = Vec::new();
+    let mut usage: Option<TokenUsage> = None;
+    let mut stop_reason: Option<StopReason> = None;
+    let mut current_text = String::new();
+    let mut current_tool_args: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut tool_names: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+
+    while let Some(event_result) = token_stream.next().await {
+        let event = event_result.map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
+
+        match event {
+            StreamEvent::TextDelta(delta) => {
+                current_text.push_str(&delta);
+                sink.emit(AgentEvent::TextDelta { delta }).await;
+            }
+            StreamEvent::ReasoningDelta(delta) => {
+                sink.emit(AgentEvent::ReasoningDelta { delta }).await;
+            }
+            StreamEvent::ToolCallStart { id, name } => {
+                sink.emit(AgentEvent::ToolCallStart {
+                    id: id.clone(),
+                    name: name.clone(),
+                })
+                .await;
+                tool_names.insert(id.clone(), name);
+                current_tool_args.insert(id, String::new());
+            }
+            StreamEvent::ToolCallDelta { id, args_delta } => {
+                if let Some(buf) = current_tool_args.get_mut(&id) {
+                    buf.push_str(&args_delta);
+                }
+                sink.emit(AgentEvent::ToolCallDelta { id, args_delta })
+                    .await;
+            }
+            StreamEvent::ContentBlockStop => {
+                // Finalize any accumulated text
+                if !current_text.is_empty() {
+                    content_blocks.push(ContentBlock::text(std::mem::take(&mut current_text)));
+                }
+            }
+            StreamEvent::Usage(u) => {
+                if let Some(v) = u.prompt_tokens {
+                    *total_input_tokens = total_input_tokens.saturating_add(v.max(0) as u64);
+                }
+                if let Some(v) = u.completion_tokens {
+                    *total_output_tokens = total_output_tokens.saturating_add(v.max(0) as u64);
+                }
+                usage = Some(u);
+            }
+            StreamEvent::Stop(reason) => {
+                stop_reason = Some(reason);
+            }
+        }
+    }
+
+    // Flush remaining text
+    if !current_text.is_empty() {
+        content_blocks.push(ContentBlock::text(current_text));
+    }
+
+    // Collect tool calls from accumulated args
+    for (id, args_json) in current_tool_args {
+        let name = tool_names.get(&id).cloned().unwrap_or_default();
+        let arguments = serde_json::from_str(&args_json).unwrap_or(serde_json::Value::Null);
+        tool_calls.push(ToolCall::new(id, name, arguments));
+    }
+
+    Ok(StreamResult {
+        content: content_blocks,
+        tool_calls,
+        usage,
+        stop_reason,
+    })
 }
 
 fn tool_result_to_content(result: &ToolResult) -> String {
