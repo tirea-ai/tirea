@@ -169,6 +169,11 @@ impl PostgresStore {
                         "CREATE UNIQUE INDEX IF NOT EXISTS idx_{}_thread_active_unique ON {} (thread_id) WHERE status != 'done'",
                         self.runs_table, self.runs_table
                     ),
+                    // Migration: normalize legacy status values to canonical set.
+                    format!(
+                        "UPDATE {} SET status = CASE status WHEN 'submitted' THEN 'running' WHEN 'working' THEN 'running' WHEN 'input_required' THEN 'waiting' WHEN 'auth_required' THEN 'waiting' WHEN 'completed' THEN 'done' WHEN 'failed' THEN 'done' WHEN 'canceled' THEN 'done' WHEN 'cancelled' THEN 'done' WHEN 'rejected' THEN 'done' ELSE status END WHERE status NOT IN ('running', 'waiting', 'done')",
+                        self.runs_table
+                    ),
                 ]
     }
 
@@ -271,10 +276,6 @@ impl PostgresStore {
             "running" => Ok(RunStatus::Running),
             "waiting" => Ok(RunStatus::Waiting),
             "done" => Ok(RunStatus::Done),
-            // Backward compatibility for legacy persisted values.
-            "submitted" | "working" => Ok(RunStatus::Running),
-            "input_required" | "auth_required" => Ok(RunStatus::Waiting),
-            "completed" | "failed" | "canceled" | "cancelled" | "rejected" => Ok(RunStatus::Done),
             _ => Err(RunStoreError::Backend(format!(
                 "invalid run status value: {raw}"
             ))),

@@ -149,7 +149,7 @@ mod tests {
     use crate::contracts::runtime::{ToolCallOutcome, ToolExecution, ToolExecutionResult};
     use crate::contracts::thread::ToolCall;
     use serde_json::json;
-    use tirea_state::{apply_patch, LatticeRegistry, Op, Patch};
+    use tirea_state::{LatticeRegistry, Op, Patch};
 
     fn result_with(
         call_id: &str,
@@ -165,8 +165,6 @@ mod tests {
             outcome: ToolCallOutcome::Succeeded,
             suspended_call: None,
             messages: Vec::new(),
-            reminders: Vec::new(),
-            user_messages: Vec::new(),
             pending_patches,
             serialized_state_actions: vec![],
         }
@@ -174,15 +172,6 @@ mod tests {
 
     fn empty_registry() -> LatticeRegistry {
         LatticeRegistry::new()
-    }
-
-    #[allow(dead_code)]
-    fn apply_all(base: &Value, patches: &[TrackedPatch]) -> Value {
-        let mut state = base.clone();
-        for patch in patches {
-            state = apply_patch(&state, patch.patch()).expect("patch should apply");
-        }
-        state
     }
 
     #[test]

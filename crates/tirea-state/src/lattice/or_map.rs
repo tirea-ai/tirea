@@ -201,7 +201,7 @@ impl<K: Ord + Clone + PartialEq, V: Lattice> Lattice for ORMap<K, V> {
                 }
                 (Some(a), None) => a.clone(),
                 (None, Some(b)) => b.clone(),
-                (None, None) => unreachable!(),
+                (None, None) => continue,
             };
 
             // Always keep entries so future merges can compare timestamps

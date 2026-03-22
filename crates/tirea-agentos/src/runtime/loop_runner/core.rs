@@ -343,7 +343,6 @@ pub(super) fn consume_emitted_prompt_segments(
     Ok(())
 }
 
-#[allow(dead_code)]
 pub(super) fn suspended_calls_from_ctx(run_ctx: &RunContext) -> HashMap<String, SuspendedCall> {
     run_ctx.suspended_calls()
 }

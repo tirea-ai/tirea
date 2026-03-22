@@ -1486,16 +1486,11 @@ async fn drain_resuming_tool_calls_and_replay(
                     .with_id(replay_msg_id.clone());
                 run_ctx.add_message(Arc::new(replay_msg));
 
-                if !replay_result.reminders.is_empty() {
+                if !replay_result.messages.is_empty() {
                     let msgs: Vec<Arc<Message>> = replay_result
-                        .reminders
+                        .messages
                         .iter()
-                        .map(|reminder| {
-                            Arc::new(Message::internal_system(format!(
-                                "<system-reminder>{}</system-reminder>",
-                                reminder
-                            )))
-                        })
+                        .map(|m| Arc::new(m.to_message()))
                         .collect();
                     run_ctx.add_messages(msgs);
                 }
