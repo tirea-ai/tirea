@@ -151,11 +151,11 @@ fn resolve_path<'a>(value: &'a Value, path: &[PathSegment]) -> Vec<&'a Value> {
 /// - If args is an object with exactly one key, use that value as string.
 /// - Otherwise, stringify the whole args.
 fn infer_primary_value(args: &Value) -> String {
-    if let Some(obj) = args.as_object() {
-        if obj.len() == 1 {
-            let v = obj.values().next().unwrap();
-            return value_to_string(v);
-        }
+    if let Some(obj) = args.as_object()
+        && obj.len() == 1
+    {
+        let v = obj.values().next().unwrap();
+        return value_to_string(v);
     }
     value_to_string(args)
 }

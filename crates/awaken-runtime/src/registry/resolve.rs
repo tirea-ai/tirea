@@ -231,10 +231,10 @@ fn resolve_tools(registries: &RegistrySet, spec: &AgentSpec) -> HashMap<String, 
 
     let mut tools = HashMap::new();
     for id in &included {
-        if !excluded.contains(id) {
-            if let Some(tool) = registries.tools.get_tool(id) {
-                tools.insert((*id).to_string(), tool);
-            }
+        if !excluded.contains(id)
+            && let Some(tool) = registries.tools.get_tool(id)
+        {
+            tools.insert((*id).to_string(), tool);
         }
     }
     tools

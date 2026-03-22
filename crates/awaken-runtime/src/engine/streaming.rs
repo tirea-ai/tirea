@@ -39,6 +39,12 @@ struct PartialToolCall {
     arguments: String,
 }
 
+impl Default for StreamCollector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StreamCollector {
     pub fn new() -> Self {
         Self {

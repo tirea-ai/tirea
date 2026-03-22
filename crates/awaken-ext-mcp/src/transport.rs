@@ -267,7 +267,7 @@ impl ProgressAwareStdioTransport {
                     Ok(_) => match serde_json::from_str::<JsonRpcMessage>(&line) {
                         Ok(JsonRpcMessage::Response(response)) => {
                             if let JsonRpcId::Number(id) = response.id {
-                                let tx = pending_reader.lock().unwrap().remove(&id);
+                                let tx = pending_reader.lock().expect("lock poisoned").remove(&id);
                                 if let Some(tx) = tx {
                                     let result = map_response_payload(response.payload);
                                     let _ = tx.send(result);
@@ -306,8 +306,8 @@ impl ProgressAwareStdioTransport {
                 }
             }
 
-            pending_reader.lock().unwrap().clear();
-            progress_reader.lock().unwrap().clear();
+            pending_reader.lock().expect("lock poisoned").clear();
+            progress_reader.lock().expect("lock poisoned").clear();
         });
 
         tokio::spawn(async move {
@@ -396,7 +396,7 @@ impl ProgressAwareStdioTransport {
         let line = format!("{}\n", serde_json::to_string(&request)?);
 
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(id, tx);
+        self.pending.lock().expect("lock poisoned").insert(id, tx);
 
         let progress_key = progress_registration.as_ref().map(|(key, _)| key.clone());
         if let Some((key, sender)) = progress_registration {
@@ -407,26 +407,32 @@ impl ProgressAwareStdioTransport {
         }
 
         if self.write_tx.send(WriteRequest { line }).await.is_err() {
-            self.pending.lock().unwrap().remove(&id);
+            self.pending.lock().expect("lock poisoned").remove(&id);
             if let Some(key) = progress_key {
-                self.progress_subscribers.lock().unwrap().remove(&key);
+                self.progress_subscribers
+                    .lock()
+                    .expect("lock poisoned")
+                    .remove(&key);
             }
             return Err(McpTransportError::ConnectionClosed);
         }
 
         let response = tokio::time::timeout(self.timeout, rx).await;
         if let Some(key) = progress_key {
-            self.progress_subscribers.lock().unwrap().remove(&key);
+            self.progress_subscribers
+                .lock()
+                .expect("lock poisoned")
+                .remove(&key);
         }
 
         match response {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => {
-                self.pending.lock().unwrap().remove(&id);
+                self.pending.lock().expect("lock poisoned").remove(&id);
                 Err(McpTransportError::ConnectionClosed)
             }
             Err(_) => {
-                self.pending.lock().unwrap().remove(&id);
+                self.pending.lock().expect("lock poisoned").remove(&id);
                 Err(McpTransportError::Timeout(format!(
                     "Request timed out after {:?}",
                     self.timeout
@@ -793,11 +799,15 @@ fn handle_progress_notification(
     let Some((key, update)) = decode_progress_notification(notification) else {
         return;
     };
-    let sender = subscribers.lock().unwrap().get(&key).cloned();
+    let sender = subscribers
+        .lock()
+        .expect("lock poisoned")
+        .get(&key)
+        .cloned();
     if let Some(sender) = sender
         && sender.send(update).is_err()
     {
-        subscribers.lock().unwrap().remove(&key);
+        subscribers.lock().expect("lock poisoned").remove(&key);
     }
 }
 

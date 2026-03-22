@@ -156,10 +156,10 @@ fn extract_output_text(response: &A2aTaskResponse) -> Option<String> {
         }
     }
     // Then message
-    if let Some(ref message) = response.message {
-        if let Some(text) = extract_text_from_value(message) {
-            return Some(text);
-        }
+    if let Some(ref message) = response.message
+        && let Some(text) = extract_text_from_value(message)
+    {
+        return Some(text);
     }
     // Then last history entry
     for entry in response.history.iter().rev() {

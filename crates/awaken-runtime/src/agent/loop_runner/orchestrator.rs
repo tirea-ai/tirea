@@ -120,14 +120,12 @@ pub async fn run_agent_loop_controlled(
 
         // --- Handoff: check ActiveAgentKey for agent switch ---
         if let Some(Some(active_id)) =
-            store.read::<awaken_contract::contract::profile::ActiveAgentKey>()
+            store.read::<awaken_contract::contract::profile::ActiveAgentIdKey>()
+            && active_id != agent.id
+            && let Ok(resolved) = resolver.resolve(&active_id)
         {
-            if active_id != agent.id {
-                if let Ok(resolved) = resolver.resolve(&active_id) {
-                    agent = resolved.config;
-                    env = resolved.env;
-                }
-            }
+            agent = resolved.config;
+            env = resolved.env;
         }
 
         sink.emit(AgentEvent::StepStart {
@@ -157,13 +155,12 @@ pub async fn run_agent_loop_controlled(
 
         // LLM compaction: if token count exceeds autocompact threshold,
         // call LLM to generate summary and replace old messages.
-        if let Some(ref policy) = agent.context_policy {
-            if let Some(threshold) = policy.autocompact_threshold {
-                let token_est =
-                    awaken_contract::contract::transform::estimate_tokens_arc(&messages);
-                if token_est >= threshold {
-                    compact_with_llm(&agent, &mut messages, policy).await?;
-                }
+        if let Some(ref policy) = agent.context_policy
+            && let Some(threshold) = policy.autocompact_threshold
+        {
+            let token_est = awaken_contract::contract::transform::estimate_tokens_arc(&messages);
+            if token_est >= threshold {
+                compact_with_llm(&agent, &mut messages, policy).await?;
             }
         }
 
@@ -204,7 +201,7 @@ pub async fn run_agent_loop_controlled(
         let enable_prompt_cache = agent
             .context_policy
             .as_ref()
-            .map_or(false, |p| p.enable_prompt_cache);
+            .is_some_and(|p| p.enable_prompt_cache);
         let request = InferenceRequest {
             model: agent.model.clone(),
             messages: request_messages,
@@ -323,7 +320,7 @@ pub async fn run_agent_loop_controlled(
         }
 
         if !stream_result.needs_tools() {
-            messages.push(Arc::new(Message::assistant(&stream_result.text())));
+            messages.push(Arc::new(Message::assistant(stream_result.text())));
             complete_step(
                 store,
                 runtime,
@@ -342,7 +339,7 @@ pub async fn run_agent_loop_controlled(
 
         // Add assistant message with tool calls
         messages.push(Arc::new(Message::assistant_with_tool_calls(
-            &stream_result.text(),
+            stream_result.text(),
             stream_result.tool_calls.clone(),
         )));
 

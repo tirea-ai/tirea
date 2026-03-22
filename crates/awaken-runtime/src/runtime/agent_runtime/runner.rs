@@ -58,12 +58,11 @@ impl AgentRuntime {
                 .latest_run(&thread_id)
                 .await
                 .map_err(|e| AgentLoopError::StorageError(e.to_string()))?
+                && let Some(persisted) = prev_run.state
             {
-                if let Some(persisted) = prev_run.state {
-                    store
-                        .restore_thread_scoped(persisted, awaken_contract::UnknownKeyPolicy::Skip)
-                        .map_err(AgentLoopError::PhaseError)?;
-                }
+                store
+                    .restore_thread_scoped(persisted, awaken_contract::UnknownKeyPolicy::Skip)
+                    .map_err(AgentLoopError::PhaseError)?;
             }
             ts.load_messages(&thread_id)
                 .await

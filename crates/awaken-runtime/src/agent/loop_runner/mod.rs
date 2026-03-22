@@ -142,7 +142,7 @@ pub fn build_agent_env(
 /// Agent loop implementation. Prefer `AgentRuntime::run()` for production use.
 ///
 /// Handles both fresh runs and resumed runs (state-driven detection).
-/// Supports dynamic agent handoff via `ActiveAgentKey` re-resolve at step boundaries.
+/// Supports dynamic agent handoff via `ActiveAgentIdKey` re-resolve at step boundaries.
 /// Cooperative cancellation via `CancellationToken`.
 pub async fn run_agent_loop(
     resolver: &dyn AgentResolver,

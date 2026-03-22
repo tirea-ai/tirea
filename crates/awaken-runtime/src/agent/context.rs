@@ -337,10 +337,10 @@ pub fn find_compaction_boundary(
             }
         }
 
-        if msg.role == Role::Tool {
-            if let Some(ref call_id) = msg.tool_call_id {
-                open_calls.remove(call_id);
-            }
+        if msg.role == Role::Tool
+            && let Some(ref call_id) = msg.tool_call_id
+        {
+            open_calls.remove(call_id);
         }
 
         // Safe boundary: all tool calls resolved and next isn't a tool result
@@ -390,13 +390,13 @@ pub fn extract_previous_summary(messages: &[std::sync::Arc<Message>]) -> Option<
             continue;
         }
         let text = msg.text();
-        if let Some(start) = text.find("<conversation-summary>") {
-            if let Some(end) = text.find("</conversation-summary>") {
-                let inner = &text[start + "<conversation-summary>".len()..end];
-                let trimmed = inner.trim();
-                if !trimmed.is_empty() {
-                    return Some(trimmed.to_string());
-                }
+        if let Some(start) = text.find("<conversation-summary>")
+            && let Some(end) = text.find("</conversation-summary>")
+        {
+            let inner = &text[start + "<conversation-summary>".len()..end];
+            let trimmed = inner.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
             }
         }
     }
@@ -422,10 +422,10 @@ pub fn trim_to_compaction_boundary(messages: &mut Vec<std::sync::Arc<Message>>) 
             && m.text().contains("<conversation-summary>")
     });
 
-    if let Some(idx) = last_summary_idx {
-        if idx > 0 {
-            messages.drain(..idx);
-        }
+    if let Some(idx) = last_summary_idx
+        && idx > 0
+    {
+        messages.drain(..idx);
     }
 }
 

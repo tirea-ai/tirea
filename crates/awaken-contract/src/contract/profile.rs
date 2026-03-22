@@ -26,13 +26,13 @@ pub struct RunInput {
 }
 
 // ---------------------------------------------------------------------------
-// ActiveAgentKey
+// ActiveAgentIdKey
 // ---------------------------------------------------------------------------
 
 /// StateKey for the active agent ID. Handoff writes this.
-pub struct ActiveAgentKey;
+pub struct ActiveAgentIdKey;
 
-impl crate::state::StateKey for ActiveAgentKey {
+impl crate::state::StateKey for ActiveAgentIdKey {
     const KEY: &'static str = "__runtime.active_agent";
     type Value = Option<String>;
     type Update = Option<String>;
@@ -54,9 +54,9 @@ mod tests {
     fn active_agent_key_apply() {
         use crate::state::StateKey;
         let mut val: Option<String> = None;
-        ActiveAgentKey::apply(&mut val, Some("reviewer".into()));
+        ActiveAgentIdKey::apply(&mut val, Some("reviewer".into()));
         assert_eq!(val.as_deref(), Some("reviewer"));
-        ActiveAgentKey::apply(&mut val, None);
+        ActiveAgentIdKey::apply(&mut val, None);
         assert!(val.is_none());
     }
 }

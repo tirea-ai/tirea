@@ -47,8 +47,10 @@ impl RunHandle {
         &self,
         call_id: String,
         resume: ToolCallResume,
-    ) -> Result<(), mpsc::TrySendError<(String, ToolCallResume)>> {
-        self.decision_tx.unbounded_send((call_id, resume))
+    ) -> Result<(), Box<mpsc::TrySendError<(String, ToolCallResume)>>> {
+        self.decision_tx
+            .unbounded_send((call_id, resume))
+            .map_err(Box::new)
     }
 }
 

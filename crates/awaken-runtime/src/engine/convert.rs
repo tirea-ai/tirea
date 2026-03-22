@@ -23,10 +23,10 @@ pub fn to_chat_message(msg: &Message) -> ChatMessage {
         }
         Role::User => {
             let parts = to_content_parts(&msg.content);
-            if parts.len() == 1 {
-                if let ContentPart::Text(text) = &parts[0] {
-                    return ChatMessage::user(text.clone());
-                }
+            if parts.len() == 1
+                && let ContentPart::Text(text) = &parts[0]
+            {
+                return ChatMessage::user(text.clone());
             }
             ChatMessage::user(MessageContent::from_parts(parts))
         }

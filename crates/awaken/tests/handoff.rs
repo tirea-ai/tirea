@@ -2,7 +2,7 @@
 //! Integration tests validating dynamic configuration:
 //! - Hook filtering by active_plugins in AgentSpec
 //! - Spec sections accessible in hooks via ctx.agent_spec.sections
-//! - Handoff via ActiveAgentKey (state-driven agent switch)
+//! - Handoff via ActiveAgentIdKey (state-driven agent switch)
 //! - Changing active_plugins between phases via different specs
 
 use async_trait::async_trait;
@@ -10,7 +10,7 @@ use awaken::agent::state::{
     AccumulatedContextMessages, AccumulatedOverrides, AccumulatedToolExclusions,
     AccumulatedToolInclusions, ContextThrottleState, RunLifecycle, ToolCallStates,
 };
-use awaken::contract::profile::ActiveAgentKey;
+use awaken::contract::profile::ActiveAgentIdKey;
 use awaken::registry::spec::AgentSpec;
 use awaken::*;
 use serde_json::json;
@@ -69,7 +69,7 @@ impl PhaseHook for TrackingHook {
 }
 
 // ---------------------------------------------------------------------------
-// Handoff hook — writes ActiveAgentKey to state
+// Handoff hook — writes ActiveAgentIdKey to state
 // ---------------------------------------------------------------------------
 
 struct HandoffHook {
@@ -80,7 +80,7 @@ struct HandoffHook {
 impl PhaseHook for HandoffHook {
     async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
         let mut cmd = StateCommand::new();
-        cmd.update::<ActiveAgentKey>(Some(self.target_agent.clone()));
+        cmd.update::<ActiveAgentIdKey>(Some(self.target_agent.clone()));
         Ok(cmd)
     }
 }
@@ -98,7 +98,7 @@ impl Plugin for LoopStatePlugin {
         r.register_key::<RunLifecycle>(StateKeyOptions::default())?;
         r.register_key::<ToolCallStates>(StateKeyOptions::default())?;
         r.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
-        r.register_key::<ActiveAgentKey>(StateKeyOptions::default())?;
+        r.register_key::<ActiveAgentIdKey>(StateKeyOptions::default())?;
         r.register_key::<AccumulatedOverrides>(StateKeyOptions::default())?;
         r.register_key::<AccumulatedContextMessages>(StateKeyOptions::default())?;
         r.register_key::<AccumulatedToolExclusions>(StateKeyOptions::default())?;
@@ -303,7 +303,7 @@ async fn config_values_accessible_in_hooks() {
     assert_eq!(entry.greeting, "Hello");
 }
 
-/// Handoff hook writes ActiveAgentKey; at the next phase boundary the
+/// Handoff hook writes ActiveAgentIdKey; at the next phase boundary the
 /// runtime resolves the new spec from the registry. The new spec's
 /// active_plugins and sections take effect.
 #[tokio::test]
@@ -332,7 +332,7 @@ async fn handoff_switches_spec_at_next_boundary() {
     );
 
     // Phase 1: RunStart with a spec that only activates "handoff"
-    // The handoff hook writes ActiveAgentKey = "reviewer"
+    // The handoff hook writes ActiveAgentIdKey = "reviewer"
     let handoff_spec = spec_with_plugins(&["handoff"]);
     let run_start_ctx = PhaseContext::new(Phase::RunStart, runtime.store().snapshot())
         .with_agent_spec(handoff_spec);
@@ -341,10 +341,10 @@ async fn handoff_switches_spec_at_next_boundary() {
         .await
         .unwrap();
 
-    // After RunStart, read ActiveAgentKey from state
+    // After RunStart, read ActiveAgentIdKey from state
     let active_id = runtime
         .store()
-        .read::<ActiveAgentKey>()
+        .read::<ActiveAgentIdKey>()
         .and_then(|v| v.clone());
     assert_eq!(active_id.as_deref(), Some("reviewer"));
 

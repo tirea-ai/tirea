@@ -289,11 +289,11 @@ impl BackgroundTaskManager {
     /// Cancel a running task.
     pub async fn cancel(&self, task_id: &str) -> bool {
         let tasks = self.tasks.lock().await;
-        if let Some(task) = tasks.get(task_id) {
-            if !task.status.is_terminal() {
-                task.cancel_handle.cancel();
-                return true;
-            }
+        if let Some(task) = tasks.get(task_id)
+            && !task.status.is_terminal()
+        {
+            task.cancel_handle.cancel();
+            return true;
         }
         false
     }
