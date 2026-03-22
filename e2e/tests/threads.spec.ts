@@ -10,11 +10,13 @@ test('create thread returns thread with id', async ({ request }) => {
   expect(body.metadata.title).toBe('Test Thread');
 });
 
-test('list threads returns array', async ({ request }) => {
+test('list threads returns paginated items', async ({ request }) => {
   const response = await request.get('/v1/threads');
   expect(response.ok()).toBeTruthy();
   const body = await response.json();
-  expect(Array.isArray(body)).toBeTruthy();
+  expect(Array.isArray(body.items)).toBeTruthy();
+  expect(typeof body.offset).toBe('number');
+  expect(typeof body.limit).toBe('number');
 });
 
 test('get nonexistent thread returns 404', async ({ request }) => {
