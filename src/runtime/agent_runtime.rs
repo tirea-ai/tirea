@@ -25,16 +25,62 @@ use super::resolver::AgentResolver;
 
 /// Unified request for starting or resuming a run.
 pub struct RunRequest {
-    /// Target agent ID. `None` = use default or infer from thread state.
-    pub agent_id: Option<String>,
-    /// Thread ID. Existing → load history; new → create.
-    pub thread_id: String,
+    /// Main business input for this run.
+    pub input: RunInput,
+    /// Runtime control options (session/routing/overrides/resume).
+    pub options: RunOptions,
+}
+
+/// Primary run input payload.
+#[derive(Default)]
+pub struct RunInput {
     /// New messages to append before running.
     pub messages: Vec<Message>,
+}
+
+/// Runtime control options for run execution.
+pub struct RunOptions {
+    /// Thread ID. Existing → load history; new → create.
+    pub thread_id: String,
+    /// Target agent ID. `None` = use default or infer from thread state.
+    pub agent_id: Option<String>,
     /// Runtime parameter overrides for this run.
     pub overrides: Option<InferenceOverride>,
     /// Resume decisions for suspended tool calls. Empty = fresh run.
     pub decisions: Vec<(String, ToolCallResume)>,
+}
+
+impl RunRequest {
+    /// Build a message-first request with default options.
+    pub fn new(thread_id: impl Into<String>, messages: Vec<Message>) -> Self {
+        Self {
+            input: RunInput { messages },
+            options: RunOptions {
+                thread_id: thread_id.into(),
+                agent_id: None,
+                overrides: None,
+                decisions: Vec::new(),
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn with_agent_id(mut self, agent_id: impl Into<String>) -> Self {
+        self.options.agent_id = Some(agent_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_overrides(mut self, overrides: InferenceOverride) -> Self {
+        self.options.overrides = Some(overrides);
+        self
+    }
+
+    #[must_use]
+    pub fn with_decisions(mut self, decisions: Vec<(String, ToolCallResume)>) -> Self {
+        self.options.decisions = decisions;
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -179,13 +225,14 @@ impl AgentRuntime {
         request: RunRequest,
         sink: &dyn EventSink,
     ) -> Result<(RunHandle, AgentRunResult), AgentLoopError> {
-        let RunRequest {
-            agent_id,
+        let RunRequest { input, options } = request;
+        let RunOptions {
             thread_id,
-            messages: request_messages,
+            agent_id,
             overrides,
             decisions,
-        } = request;
+        } = options;
+        let request_messages = input.messages;
         let agent_id = agent_id.unwrap_or_else(|| "default".to_string());
 
         // Create runtime infrastructure
@@ -469,13 +516,9 @@ mod tests {
 
         let (_handle, result) = runtime
             .run(
-                RunRequest {
-                    agent_id: Some("agent".into()),
-                    thread_id: "thread-ovr".into(),
-                    messages: vec![Message::user("hi")],
-                    overrides: Some(override_req.clone()),
-                    decisions: vec![],
-                },
+                RunRequest::new("thread-ovr", vec![Message::user("hi")])
+                    .with_agent_id("agent")
+                    .with_overrides(override_req.clone()),
                 &sink,
             )
             .await
@@ -531,13 +574,8 @@ mod tests {
                 let sink = NullEventSink;
                 runtime
                     .run(
-                        RunRequest {
-                            agent_id: Some("agent".into()),
-                            thread_id: "thread-live".into(),
-                            messages: vec![Message::user("go")],
-                            overrides: None,
-                            decisions: vec![],
-                        },
+                        RunRequest::new("thread-live", vec![Message::user("go")])
+                            .with_agent_id("agent"),
                         &sink,
                     )
                     .await
@@ -598,13 +636,7 @@ mod tests {
 
         let (_handle, result) = runtime
             .run(
-                RunRequest {
-                    agent_id: Some("agent".into()),
-                    thread_id: "thread-tx".into(),
-                    messages: vec![Message::user("hi")],
-                    overrides: None,
-                    decisions: vec![],
-                },
+                RunRequest::new("thread-tx", vec![Message::user("hi")]).with_agent_id("agent"),
                 &sink,
             )
             .await

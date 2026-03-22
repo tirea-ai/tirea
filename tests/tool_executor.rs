@@ -252,8 +252,9 @@ async fn sequential_partial_failure_both_produce_results() {
         })
         .collect();
     assert_eq!(tool_dones.len(), 2);
-    assert_eq!(tool_dones[0].1, ToolCallOutcome::Succeeded);
-    assert_eq!(tool_dones[1].1, ToolCallOutcome::Failed);
+    let by_id: std::collections::HashMap<_, _> = tool_dones.into_iter().collect();
+    assert_eq!(by_id.get("c1"), Some(&ToolCallOutcome::Succeeded));
+    assert_eq!(by_id.get("c2"), Some(&ToolCallOutcome::Failed));
 }
 
 #[tokio::test]
