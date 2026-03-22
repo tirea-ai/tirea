@@ -1472,12 +1472,14 @@ async fn state_snapshot_emitted_after_phase() {
             tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "ping"}))],
             usage: None,
             stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
         },
         StreamResult {
             content: vec![ContentBlock::text("Done!")],
             tool_calls: vec![],
             usage: None,
             stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
         },
     ]));
 

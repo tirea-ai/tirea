@@ -186,7 +186,7 @@ impl ToolExecutor for ParallelToolExecutor {
 }
 
 /// Execute a single tool call, never panicking.
-async fn execute_single_tool(
+pub(crate) async fn execute_single_tool(
     tools: &HashMap<String, Arc<dyn Tool>>,
     call: &ToolCall,
     ctx: &ToolCallContext,

@@ -95,6 +95,7 @@ impl ToolPermissionChecker for RulesPermissionChecker {
                             .reason
                             .clone()
                             .unwrap_or_else(|| format!("denied by rule: {}", rule.tool_pattern)),
+                        message: None,
                     },
                     PermissionAction::Ask => ToolPermission::Abstain,
                 });
@@ -157,7 +158,8 @@ mod tests {
         assert_eq!(
             result,
             ToolPermission::Deny {
-                reason: "destructive".into()
+                reason: "destructive".into(),
+                message: None,
             }
         );
     }

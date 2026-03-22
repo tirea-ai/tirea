@@ -1,212 +1,16 @@
-//! Agent runtime: top-level orchestrator for run management, routing, and control.
-
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+//! AgentRuntime::run() implementation.
 
 use crate::agent::loop_runner::{
     AgentLoopError, AgentRunResult, prepare_resume, run_agent_loop_controlled,
 };
 use crate::contract::event_sink::EventSink;
 use crate::contract::identity::RunIdentity;
-use crate::contract::inference::InferenceOverride;
-use crate::contract::message::Message;
-use crate::contract::storage::ThreadRunStore;
-use crate::contract::suspension::{ToolCallResume, ToolCallResumeMode};
-use crate::error::StateError;
-use futures::channel::mpsc;
+use crate::contract::suspension::ToolCallResumeMode;
 
-use super::cancellation::CancellationToken;
-use super::engine::PhaseRuntime;
-use super::resolver::AgentResolver;
-
-// ---------------------------------------------------------------------------
-// RunRequest
-// ---------------------------------------------------------------------------
-
-/// Unified request for starting or resuming a run.
-pub struct RunRequest {
-    /// Main business input for this run.
-    pub input: RunInput,
-    /// Runtime control options (session/routing/overrides/resume).
-    pub options: RunOptions,
-}
-
-/// Primary run input payload.
-#[derive(Default)]
-pub struct RunInput {
-    /// New messages to append before running.
-    pub messages: Vec<Message>,
-}
-
-/// Runtime control options for run execution.
-pub struct RunOptions {
-    /// Thread ID. Existing → load history; new → create.
-    pub thread_id: String,
-    /// Target agent ID. `None` = use default or infer from thread state.
-    pub agent_id: Option<String>,
-    /// Runtime parameter overrides for this run.
-    pub overrides: Option<InferenceOverride>,
-    /// Resume decisions for suspended tool calls. Empty = fresh run.
-    pub decisions: Vec<(String, ToolCallResume)>,
-}
-
-impl RunRequest {
-    /// Build a message-first request with default options.
-    pub fn new(thread_id: impl Into<String>, messages: Vec<Message>) -> Self {
-        Self {
-            input: RunInput { messages },
-            options: RunOptions {
-                thread_id: thread_id.into(),
-                agent_id: None,
-                overrides: None,
-                decisions: Vec::new(),
-            },
-        }
-    }
-
-    #[must_use]
-    pub fn with_agent_id(mut self, agent_id: impl Into<String>) -> Self {
-        self.options.agent_id = Some(agent_id.into());
-        self
-    }
-
-    #[must_use]
-    pub fn with_overrides(mut self, overrides: InferenceOverride) -> Self {
-        self.options.overrides = Some(overrides);
-        self
-    }
-
-    #[must_use]
-    pub fn with_decisions(mut self, decisions: Vec<(String, ToolCallResume)>) -> Self {
-        self.options.decisions = decisions;
-        self
-    }
-}
-
-// ---------------------------------------------------------------------------
-// RunHandle
-// ---------------------------------------------------------------------------
-
-/// External control handle for a running agent loop.
-///
-/// Returned by `AgentRuntime`. Enables cancellation and
-/// live decision injection.
-#[derive(Clone)]
-pub struct RunHandle {
-    pub run_id: String,
-    pub thread_id: String,
-    pub agent_id: String,
-    cancellation_token: CancellationToken,
-    decision_tx: mpsc::UnboundedSender<(String, ToolCallResume)>,
-}
-
-impl RunHandle {
-    /// Cancel the running agent loop cooperatively.
-    pub fn cancel(&self) {
-        self.cancellation_token.cancel();
-    }
-
-    /// Send a tool call decision to the running loop.
-    pub fn send_decision(
-        &self,
-        call_id: String,
-        resume: ToolCallResume,
-    ) -> Result<(), mpsc::TrySendError<(String, ToolCallResume)>> {
-        self.decision_tx.unbounded_send((call_id, resume))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ActiveRunRegistry
-// ---------------------------------------------------------------------------
-
-struct RunEntry {
-    #[allow(dead_code)]
-    run_id: String,
-    #[allow(dead_code)]
-    agent_id: String,
-    handle: RunHandle,
-}
-
-/// Tracks active runs. At most one active run per thread.
-pub(crate) struct ActiveRunRegistry {
-    by_thread_id: RwLock<HashMap<String, RunEntry>>,
-}
-
-impl ActiveRunRegistry {
-    pub(crate) fn new() -> Self {
-        Self {
-            by_thread_id: RwLock::new(HashMap::new()),
-        }
-    }
-
-    fn insert(&self, thread_id: String, entry: RunEntry) {
-        self.by_thread_id
-            .write()
-            .expect("active runs lock poisoned")
-            .insert(thread_id, entry);
-    }
-
-    fn remove(&self, thread_id: &str) {
-        self.by_thread_id
-            .write()
-            .expect("active runs lock poisoned")
-            .remove(thread_id);
-    }
-
-    fn get_handle(&self, thread_id: &str) -> Option<RunHandle> {
-        self.by_thread_id
-            .read()
-            .expect("active runs lock poisoned")
-            .get(thread_id)
-            .map(|e| e.handle.clone())
-    }
-
-    fn has_active_run(&self, thread_id: &str) -> bool {
-        self.by_thread_id
-            .read()
-            .expect("active runs lock poisoned")
-            .contains_key(thread_id)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// AgentRuntime
-// ---------------------------------------------------------------------------
-
-/// Top-level agent runtime. Manages runs across threads.
-///
-/// Provides methods for cancelling and sending decisions
-/// to active agent runs. Enforces one active run per thread.
-pub struct AgentRuntime {
-    resolver: Arc<dyn AgentResolver>,
-    storage: Option<Arc<dyn ThreadRunStore>>,
-    active_runs: ActiveRunRegistry,
-}
+use super::run_request::{RunOptions, RunRequest};
+use super::{AgentRuntime, RunHandle};
 
 impl AgentRuntime {
-    pub fn new(resolver: Arc<dyn AgentResolver>) -> Self {
-        Self {
-            resolver,
-            storage: None,
-            active_runs: ActiveRunRegistry::new(),
-        }
-    }
-
-    #[must_use]
-    pub fn with_thread_run_store(mut self, store: Arc<dyn ThreadRunStore>) -> Self {
-        self.storage = Some(store);
-        self
-    }
-
-    pub fn resolver(&self) -> &dyn AgentResolver {
-        self.resolver.as_ref()
-    }
-
-    pub fn thread_run_store(&self) -> Option<&dyn ThreadRunStore> {
-        self.storage.as_deref()
-    }
-
     /// Run an agent loop.
     ///
     /// This is the single production entry point. It:
@@ -237,7 +41,8 @@ impl AgentRuntime {
 
         // Create runtime infrastructure
         let store = crate::state::StateStore::new();
-        let phase_runtime = PhaseRuntime::new(store.clone()).map_err(AgentLoopError::PhaseError)?;
+        let phase_runtime = crate::runtime::engine::PhaseRuntime::new(store.clone())
+            .map_err(AgentLoopError::PhaseError)?;
 
         // Install state keys needed by the loop (RunLifecycle, ToolCallStates, etc.)
         // These are registered via the resolved agent's plugins during resolve.
@@ -315,109 +120,30 @@ impl AgentRuntime {
 
         Ok((handle, result?))
     }
-
-    /// Cancel an active run by thread ID.
-    pub fn cancel_by_thread(&self, thread_id: &str) -> bool {
-        if let Some(handle) = self.active_runs.get_handle(thread_id) {
-            handle.cancel();
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Send decisions to an active run by thread ID.
-    pub fn send_decisions(
-        &self,
-        thread_id: &str,
-        decisions: Vec<(String, ToolCallResume)>,
-    ) -> bool {
-        if let Some(handle) = self.active_runs.get_handle(thread_id) {
-            for (call_id, resume) in decisions {
-                if handle.send_decision(call_id, resume).is_err() {
-                    return false;
-                }
-            }
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Create a run handle pair (handle + internal channels).
-    ///
-    /// Returns (RunHandle for caller, CancellationToken for loop, decision_rx for loop).
-    pub(crate) fn create_run_channels(
-        &self,
-        run_id: String,
-        thread_id: String,
-        agent_id: String,
-    ) -> (
-        RunHandle,
-        CancellationToken,
-        mpsc::UnboundedReceiver<(String, ToolCallResume)>,
-    ) {
-        let token = CancellationToken::new();
-        let (tx, rx) = mpsc::unbounded();
-
-        let handle = RunHandle {
-            run_id,
-            thread_id,
-            agent_id,
-            cancellation_token: token.clone(),
-            decision_tx: tx,
-        };
-
-        (handle, token, rx)
-    }
-
-    /// Register an active run. Returns error if thread already has one.
-    pub(crate) fn register_run(
-        &self,
-        thread_id: &str,
-        handle: RunHandle,
-    ) -> Result<(), StateError> {
-        if self.active_runs.has_active_run(thread_id) {
-            return Err(StateError::ThreadAlreadyRunning {
-                thread_id: thread_id.to_string(),
-            });
-        }
-        self.active_runs.insert(
-            thread_id.to_string(),
-            RunEntry {
-                run_id: handle.run_id.clone(),
-                agent_id: handle.agent_id.clone(),
-                handle,
-            },
-        );
-        Ok(())
-    }
-
-    /// Unregister an active run when it completes.
-    pub(crate) fn unregister_run(&self, thread_id: &str) {
-        self.active_runs.remove(thread_id);
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::*;
     use crate::agent::config::AgentConfig;
     use crate::agent::loop_runner::build_agent_env;
     use crate::contract::content::ContentBlock;
     use crate::contract::event_sink::NullEventSink;
     use crate::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-    use crate::contract::inference::{StopReason, StreamResult};
+    use crate::contract::inference::{InferenceOverride, StopReason, StreamResult};
     use crate::contract::message::Message;
     use crate::contract::storage::ThreadRunStore;
     use crate::contract::storage_mem::InMemoryThreadRunStore;
     use crate::contract::suspension::ResumeDecisionAction;
+    use crate::contract::suspension::ToolCallResume;
     use crate::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult};
+    use crate::error::StateError;
     use crate::runtime::ResolvedAgent;
+    use crate::runtime::resolver::AgentResolver;
     use async_trait::async_trait;
     use serde_json::{Value, json};
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
     struct ScriptedLlm {
         responses: Mutex<Vec<StreamResult>>,

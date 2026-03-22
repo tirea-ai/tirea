@@ -9,7 +9,7 @@ mod registry;
 mod reports;
 mod resolver;
 
-pub use agent_runtime::{AgentRuntime, RunHandle, RunRequest};
+pub use agent_runtime::{AgentRuntime, RunHandle, RunInput, RunOptions, RunRequest};
 pub use app::AppRuntime;
 pub use cancellation::CancellationToken;
 pub use context::PhaseContext;
