@@ -1,0 +1,28 @@
+[package]
+name = "awaken-ext-skills"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+awaken-contract = { workspace = true }
+awaken-runtime = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+tokio = { version = "1", features = ["sync", "rt", "time", "process", "fs"] }
+serde_yaml = "0.9"
+sha2 = "0.10"
+base64 = "0.22"
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }
+tempfile = "3"
+
+[features]
+default = []
+
+[lints]
+workspace = true

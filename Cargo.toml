@@ -8,6 +8,7 @@ members = [
     "crates/awaken-ext-observability",
     "crates/awaken-ext-mcp",
     "crates/awaken",
+    "crates/awaken-ext-skills",
 ]
 
 [workspace.package]
