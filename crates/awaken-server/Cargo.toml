@@ -1,0 +1,38 @@
+[package]
+name = "awaken-server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+awaken-contract = { workspace = true }
+awaken-runtime = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+uuid = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
+axum = { version = "0.7", default-features = false, features = ["http1", "json", "query", "tokio"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+async-stream = "0.3"
+bytes = "1"
+
+# Optional
+async-nats = { version = "0.38", optional = true }
+awaken-ext-permission = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+
+[features]
+default = ["permission"]
+permission = ["dep:awaken-ext-permission"]
+nats = ["dep:async-nats"]
+
+[lints]
+workspace = true

@@ -9,6 +9,7 @@ members = [
     "crates/awaken-ext-mcp",
     "crates/awaken",
     "crates/awaken-ext-skills",
+    "crates/awaken-server",
 ]
 
 [workspace.package]

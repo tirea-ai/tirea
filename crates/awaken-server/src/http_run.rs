@@ -1,0 +1,201 @@
+//! HTTP run execution with SSE relay.
+
+use bytes::Bytes;
+use serde::Serialize;
+use tokio::sync::mpsc;
+
+use awaken_contract::contract::event::AgentEvent;
+use awaken_contract::contract::transport::Transcoder;
+
+use crate::http_sse::format_sse_data;
+
+/// Spawn a background task that consumes agent events from a receiver,
+/// transcodes them via the protocol encoder, and sends SSE frames to the response.
+///
+/// Returns the SSE byte receiver to feed into an HTTP response body.
+pub fn wire_sse_relay<E>(
+    mut event_rx: mpsc::UnboundedReceiver<AgentEvent>,
+    mut encoder: E,
+    buffer_size: usize,
+) -> mpsc::Receiver<Bytes>
+where
+    E: Transcoder<Input = AgentEvent> + 'static,
+    E::Output: Serialize + Send + Sync + 'static,
+{
+    let (sse_tx, sse_rx) = mpsc::channel::<Bytes>(buffer_size);
+
+    tokio::spawn(async move {
+        // Emit prologue events
+        for item in encoder.prologue() {
+            if send_encoded(&sse_tx, &item).await.is_err() {
+                return;
+            }
+        }
+
+        // Transcode each agent event
+        while let Some(event) = event_rx.recv().await {
+            for item in encoder.transcode(&event) {
+                if send_encoded(&sse_tx, &item).await.is_err() {
+                    return;
+                }
+            }
+        }
+
+        // Emit epilogue events
+        for item in encoder.epilogue() {
+            if send_encoded(&sse_tx, &item).await.is_err() {
+                return;
+            }
+        }
+    });
+
+    sse_rx
+}
+
+async fn send_encoded<T: Serialize>(tx: &mpsc::Sender<Bytes>, item: &T) -> Result<(), ()> {
+    match serde_json::to_string(item) {
+        Ok(json) => tx.send(format_sse_data(&json)).await.map_err(|_| ()),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to serialize SSE event");
+            Err(())
+        }
+    }
+}
+
+/// Error-framed SSE data for relay errors.
+pub fn format_relay_error(msg: &str) -> Bytes {
+    let error = serde_json::json!({
+        "type": "error",
+        "message": msg,
+        "code": "RELAY_ERROR",
+    });
+    let payload = serde_json::to_string(&error).unwrap_or_else(|_| {
+        r#"{"type":"error","message":"relay error","code":"RELAY_ERROR"}"#.to_string()
+    });
+    format_sse_data(&payload)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_contract::contract::event::AgentEvent;
+    use awaken_contract::contract::transport::Identity;
+
+    #[tokio::test]
+    async fn wire_sse_relay_transcodes_identity() {
+        let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+        let encoder = Identity::<AgentEvent>::default();
+        let mut sse_rx = wire_sse_relay(rx, encoder, 16);
+
+        tx.send(AgentEvent::TextDelta {
+            delta: "hello".into(),
+        })
+        .unwrap();
+        drop(tx);
+
+        let chunk = sse_rx.recv().await.unwrap();
+        let chunk_str = String::from_utf8(chunk.to_vec()).unwrap();
+        assert!(chunk_str.starts_with("data: "));
+        assert!(chunk_str.contains("text_delta"));
+        assert!(chunk_str.contains("hello"));
+        assert!(chunk_str.ends_with("\n\n"));
+    }
+
+    #[tokio::test]
+    async fn wire_sse_relay_completes_on_sender_drop() {
+        let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+        let encoder = Identity::<AgentEvent>::default();
+        let mut sse_rx = wire_sse_relay(rx, encoder, 16);
+
+        drop(tx);
+
+        // Should receive None when relay completes
+        let result = sse_rx.recv().await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn wire_sse_relay_multiple_events() {
+        let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+        let encoder = Identity::<AgentEvent>::default();
+        let mut sse_rx = wire_sse_relay(rx, encoder, 16);
+
+        tx.send(AgentEvent::TextDelta { delta: "a".into() })
+            .unwrap();
+        tx.send(AgentEvent::TextDelta { delta: "b".into() })
+            .unwrap();
+        tx.send(AgentEvent::StepEnd).unwrap();
+        drop(tx);
+
+        let mut chunks = Vec::new();
+        while let Some(chunk) = sse_rx.recv().await {
+            chunks.push(String::from_utf8(chunk.to_vec()).unwrap());
+        }
+        assert_eq!(chunks.len(), 3);
+    }
+
+    #[test]
+    fn format_relay_error_is_valid_sse() {
+        let err = format_relay_error("test error");
+        let s = String::from_utf8(err.to_vec()).unwrap();
+        assert!(s.starts_with("data: "));
+        assert!(s.contains("RELAY_ERROR"));
+        assert!(s.ends_with("\n\n"));
+    }
+
+    /// Custom transcoder that wraps events in a JSON envelope for testing.
+    struct EnvelopeTranscoder {
+        seq: u64,
+    }
+
+    impl EnvelopeTranscoder {
+        fn new() -> Self {
+            Self { seq: 0 }
+        }
+    }
+
+    impl Transcoder for EnvelopeTranscoder {
+        type Input = AgentEvent;
+        type Output = serde_json::Value;
+
+        fn prologue(&mut self) -> Vec<serde_json::Value> {
+            vec![serde_json::json!({"type": "stream_start"})]
+        }
+
+        fn transcode(&mut self, item: &AgentEvent) -> Vec<serde_json::Value> {
+            self.seq += 1;
+            vec![serde_json::json!({
+                "seq": self.seq,
+                "event": serde_json::to_value(item).unwrap_or_default(),
+            })]
+        }
+
+        fn epilogue(&mut self) -> Vec<serde_json::Value> {
+            vec![serde_json::json!({"type": "stream_end"})]
+        }
+    }
+
+    #[tokio::test]
+    async fn wire_sse_relay_with_custom_transcoder() {
+        let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+        let encoder = EnvelopeTranscoder::new();
+        let mut sse_rx = wire_sse_relay(rx, encoder, 16);
+
+        tx.send(AgentEvent::TextDelta {
+            delta: "test".into(),
+        })
+        .unwrap();
+        drop(tx);
+
+        let mut chunks = Vec::new();
+        while let Some(chunk) = sse_rx.recv().await {
+            chunks.push(String::from_utf8(chunk.to_vec()).unwrap());
+        }
+
+        // Should have: prologue + 1 event + epilogue = 3 chunks
+        assert_eq!(chunks.len(), 3);
+        assert!(chunks[0].contains("stream_start"));
+        assert!(chunks[1].contains("\"seq\":1"));
+        assert!(chunks[2].contains("stream_end"));
+    }
+}
