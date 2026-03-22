@@ -1678,4 +1678,150 @@ mod tests {
         });
         assert!(matches!(action, CompactionAction::RecordBoundary(_)));
     }
+
+    // -----------------------------------------------------------------------
+    // CompactionConfig defaults
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compaction_config_default_values() {
+        let config = CompactionConfig::default();
+        assert!(
+            config.summarizer_system_prompt.contains("summarizer"),
+            "default system prompt should mention summarizer"
+        );
+        assert!(
+            config.summarizer_user_prompt.contains("{messages}"),
+            "default user prompt should contain {{messages}} template variable"
+        );
+        assert!(config.summary_max_tokens.is_none());
+        assert!(config.summary_model.is_none());
+        assert!(
+            (config.min_savings_ratio - 0.3).abs() < f64::EPSILON,
+            "default min_savings_ratio should be 0.3"
+        );
+    }
+
+    #[test]
+    fn compaction_config_serde_roundtrip() {
+        let config = CompactionConfig {
+            summarizer_system_prompt: "Custom prompt.".into(),
+            summarizer_user_prompt: "Summarize: {messages}".into(),
+            summary_max_tokens: Some(2048),
+            summary_model: Some("gpt-4".into()),
+            min_savings_ratio: 0.5,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: CompactionConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.summarizer_system_prompt, "Custom prompt.");
+        assert_eq!(parsed.summary_max_tokens, Some(2048));
+        assert_eq!(parsed.summary_model.as_deref(), Some("gpt-4"));
+    }
+
+    #[test]
+    fn compaction_config_key_binding() {
+        use awaken_contract::registry_spec::PluginConfigKey;
+        assert_eq!(CompactionConfigKey::KEY, "compaction");
+    }
+
+    // -----------------------------------------------------------------------
+    // CompactionState mutations
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compaction_state_record_then_clear_then_record() {
+        let mut state = CompactionState::default();
+
+        state.reduce(CompactionAction::RecordBoundary(CompactionBoundary {
+            summary: "first".into(),
+            pre_tokens: 1000,
+            post_tokens: 100,
+            timestamp_ms: 1,
+        }));
+        assert_eq!(state.total_compactions, 1);
+
+        state.reduce(CompactionAction::Clear);
+        assert_eq!(state.total_compactions, 0);
+        assert!(state.boundaries.is_empty());
+        assert!(state.latest_boundary().is_none());
+
+        state.reduce(CompactionAction::RecordBoundary(CompactionBoundary {
+            summary: "after clear".into(),
+            pre_tokens: 2000,
+            post_tokens: 150,
+            timestamp_ms: 2,
+        }));
+        assert_eq!(state.total_compactions, 1);
+        assert_eq!(state.latest_boundary().unwrap().summary, "after clear");
+    }
+
+    #[test]
+    fn compaction_state_key_properties() {
+        assert_eq!(CompactionStateKey::KEY, "__context_compaction");
+    }
+
+    #[test]
+    fn compaction_state_key_apply() {
+        let mut state = CompactionState::default();
+        CompactionStateKey::apply(
+            &mut state,
+            CompactionAction::RecordBoundary(CompactionBoundary {
+                summary: "via apply".into(),
+                pre_tokens: 500,
+                post_tokens: 50,
+                timestamp_ms: 42,
+            }),
+        );
+        assert_eq!(state.total_compactions, 1);
+        assert_eq!(state.boundaries[0].summary, "via apply");
+    }
+
+    // -----------------------------------------------------------------------
+    // CompactionPlugin
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compaction_plugin_descriptor_name() {
+        let plugin = CompactionPlugin::default();
+        assert_eq!(plugin.descriptor().name, CONTEXT_COMPACTION_PLUGIN_ID);
+    }
+
+    #[test]
+    fn compaction_plugin_new_with_config() {
+        let config = CompactionConfig {
+            min_savings_ratio: 0.8,
+            ..Default::default()
+        };
+        let plugin = CompactionPlugin::new(config);
+        assert!((plugin.config.min_savings_ratio - 0.8).abs() < f64::EPSILON);
+    }
+
+    // -----------------------------------------------------------------------
+    // CompactionBoundary
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compaction_boundary_equality() {
+        let a = CompactionBoundary {
+            summary: "s".into(),
+            pre_tokens: 100,
+            post_tokens: 10,
+            timestamp_ms: 0,
+        };
+        let b = a.clone();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn compaction_boundary_serde_roundtrip() {
+        let boundary = CompactionBoundary {
+            summary: "test summary".into(),
+            pre_tokens: 3000,
+            post_tokens: 200,
+            timestamp_ms: 1234567890,
+        };
+        let json = serde_json::to_string(&boundary).unwrap();
+        let parsed: CompactionBoundary = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, boundary);
+    }
 }

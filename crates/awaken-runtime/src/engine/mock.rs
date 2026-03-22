@@ -122,4 +122,63 @@ mod tests {
         let executor = MockLlmExecutor::new();
         assert_eq!(executor.name(), "mock");
     }
+
+    #[tokio::test]
+    async fn token_usage_in_response() {
+        let executor = MockLlmExecutor::new();
+        let result = executor.execute(make_request()).await.unwrap();
+        let usage = result.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, Some(10));
+        assert_eq!(usage.completion_tokens, Some(20));
+        assert_eq!(usage.total_tokens, Some(30));
+    }
+
+    #[tokio::test]
+    async fn stop_reason_is_end_turn() {
+        let executor = MockLlmExecutor::new();
+        let result = executor.execute(make_request()).await.unwrap();
+        assert_eq!(result.stop_reason, Some(StopReason::EndTurn));
+    }
+
+    #[tokio::test]
+    async fn no_tool_calls_in_default_response() {
+        let executor = MockLlmExecutor::new();
+        let result = executor.execute(make_request()).await.unwrap();
+        assert!(result.tool_calls.is_empty());
+        assert!(!result.has_incomplete_tool_calls);
+    }
+
+    #[test]
+    fn default_trait_matches_new() {
+        let d = MockLlmExecutor::default();
+        assert_eq!(d.name(), "mock");
+        assert!(d.responses.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cycles_wraps_around_multiple_times() {
+        let executor = MockLlmExecutor::new().with_responses(vec!["alpha".into(), "beta".into()]);
+        // Go through 5 calls to verify wrapping
+        let expected = ["alpha", "beta", "alpha", "beta", "alpha"];
+        for exp in &expected {
+            let result = executor.execute(make_request()).await.unwrap();
+            assert_eq!(result.text(), *exp);
+        }
+    }
+
+    #[tokio::test]
+    async fn single_response_always_returns_same() {
+        let executor = MockLlmExecutor::new().with_responses(vec!["only".into()]);
+        for _ in 0..3 {
+            let result = executor.execute(make_request()).await.unwrap();
+            assert_eq!(result.text(), "only");
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_responses_falls_back_to_default() {
+        let executor = MockLlmExecutor::new().with_responses(vec![]);
+        let result = executor.execute(make_request()).await.unwrap();
+        assert!(result.text().contains("mock assistant"));
+    }
 }

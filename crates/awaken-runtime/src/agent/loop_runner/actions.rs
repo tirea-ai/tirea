@@ -307,3 +307,157 @@ pub(super) fn apply_context_messages(
     // Suffix: append at end
     messages.extend(suffix);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_contract::contract::context_message::ContextMessage;
+
+    // ---- apply_context_messages ----
+
+    #[test]
+    fn apply_context_messages_empty_input() {
+        let mut messages = vec![Message::system("sys prompt"), Message::user("hello")];
+        apply_context_messages(&mut messages, vec![], true);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].text(), "sys prompt");
+        assert_eq!(messages[1].text(), "hello");
+    }
+
+    #[test]
+    fn apply_context_messages_system_target() {
+        let mut messages = vec![
+            Message::system("base system"),
+            Message::user("hello"),
+            Message::assistant("hi"),
+        ];
+        let ctx_msgs = vec![ContextMessage::system("test.key", "injected system")];
+        apply_context_messages(&mut messages, ctx_msgs, true);
+
+        // System context should be inserted after the base system prompt (index 1)
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0].text(), "base system");
+        assert_eq!(messages[1].text(), "injected system");
+        assert_eq!(messages[1].role, Role::System);
+        assert_eq!(messages[2].text(), "hello");
+    }
+
+    #[test]
+    fn apply_context_messages_system_target_no_system_prompt() {
+        let mut messages = vec![Message::user("hello"), Message::assistant("hi")];
+        let ctx_msgs = vec![ContextMessage::system("test.key", "injected")];
+        apply_context_messages(&mut messages, ctx_msgs, false);
+
+        // Without system prompt, insert at position 0
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].text(), "injected");
+        assert_eq!(messages[1].text(), "hello");
+    }
+
+    #[test]
+    fn apply_context_messages_suffix_target() {
+        let mut messages = vec![
+            Message::system("sys"),
+            Message::user("hello"),
+            Message::assistant("hi"),
+        ];
+        let ctx_msgs = vec![ContextMessage::suffix_system(
+            "suffix.key",
+            "suffix content",
+        )];
+        apply_context_messages(&mut messages, ctx_msgs, true);
+
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[3].text(), "suffix content");
+    }
+
+    #[test]
+    fn apply_context_messages_session_target() {
+        let mut messages = vec![Message::system("sys"), Message::user("hello")];
+        let ctx_msgs = vec![ContextMessage::session(
+            "session.key",
+            Role::System,
+            "session context",
+        )];
+        apply_context_messages(&mut messages, ctx_msgs, true);
+
+        // Session: after all system-role messages. After injecting a system context_msg,
+        // the system count changes. The session-target message goes after system messages.
+        assert_eq!(messages.len(), 3);
+        // The session msg is inserted after the system prompt
+        let system_count = messages.iter().filter(|m| m.role == Role::System).count();
+        assert!(system_count >= 2); // base system + session context
+    }
+
+    #[test]
+    fn apply_context_messages_conversation_target() {
+        let mut messages = vec![
+            Message::system("sys"),
+            Message::user("hello"),
+            Message::assistant("hi"),
+        ];
+        let ctx_msgs = vec![ContextMessage::conversation(
+            "conv.key",
+            Role::User,
+            "conversation context",
+        )];
+        apply_context_messages(&mut messages, ctx_msgs, true);
+
+        assert_eq!(messages.len(), 4);
+        // Conversation messages are inserted after system messages, before history
+        assert_eq!(messages[0].role, Role::System);
+    }
+
+    #[test]
+    fn apply_context_messages_multiple_targets() {
+        let mut messages = vec![
+            Message::system("sys"),
+            Message::user("hello"),
+            Message::assistant("hi"),
+        ];
+        let ctx_msgs = vec![
+            ContextMessage::system("sys.key", "system inject"),
+            ContextMessage::suffix_system("suffix.key", "suffix inject"),
+        ];
+        apply_context_messages(&mut messages, ctx_msgs, true);
+
+        assert_eq!(messages.len(), 5);
+        // System inject should be near the beginning
+        assert_eq!(messages[1].text(), "system inject");
+        // Suffix inject should be at the end
+        assert_eq!(messages[4].text(), "suffix inject");
+    }
+
+    #[test]
+    fn apply_context_messages_ordering_preserved_within_target() {
+        let mut messages = vec![Message::system("sys"), Message::user("hello")];
+        let ctx_msgs = vec![
+            ContextMessage::system("a", "first system"),
+            ContextMessage::system("b", "second system"),
+        ];
+        apply_context_messages(&mut messages, ctx_msgs, true);
+
+        assert_eq!(messages[1].text(), "first system");
+        assert_eq!(messages[2].text(), "second system");
+    }
+
+    #[test]
+    fn apply_context_messages_empty_messages_list() {
+        let mut messages: Vec<Message> = vec![];
+        let ctx_msgs = vec![ContextMessage::system("key", "inject")];
+        apply_context_messages(&mut messages, ctx_msgs, false);
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].text(), "inject");
+    }
+
+    #[test]
+    fn apply_context_messages_suffix_with_empty_messages() {
+        let mut messages: Vec<Message> = vec![];
+        let ctx_msgs = vec![ContextMessage::suffix_system("key", "suffix")];
+        apply_context_messages(&mut messages, ctx_msgs, false);
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].text(), "suffix");
+    }
+}

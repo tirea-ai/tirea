@@ -165,3 +165,338 @@ impl AgentMetrics {
         result
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_genai_span(model: &str, input: Option<i32>, output: Option<i32>) -> GenAISpan {
+        GenAISpan {
+            model: model.to_string(),
+            provider: "test".to_string(),
+            operation: "chat".to_string(),
+            response_model: None,
+            response_id: None,
+            finish_reasons: Vec::new(),
+            error_type: None,
+            error_class: None,
+            thinking_tokens: None,
+            input_tokens: input,
+            output_tokens: output,
+            total_tokens: match (input, output) {
+                (Some(i), Some(o)) => Some(i + o),
+                _ => None,
+            },
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stop_sequences: Vec::new(),
+            duration_ms: 100,
+        }
+    }
+
+    fn make_tool_span(name: &str, error: bool) -> ToolSpan {
+        ToolSpan {
+            name: name.to_string(),
+            operation: "execute_tool".to_string(),
+            call_id: format!("call_{name}"),
+            tool_type: "function".to_string(),
+            error_type: if error {
+                Some("tool_error".to_string())
+            } else {
+                None
+            },
+            duration_ms: 50,
+        }
+    }
+
+    // ---- AgentMetrics::default() ----
+
+    #[test]
+    fn default_returns_zeros() {
+        let m = AgentMetrics::default();
+        assert!(m.inferences.is_empty());
+        assert!(m.tools.is_empty());
+        assert_eq!(m.session_duration_ms, 0);
+        assert_eq!(m.total_input_tokens(), 0);
+        assert_eq!(m.total_output_tokens(), 0);
+        assert_eq!(m.total_tokens(), 0);
+        assert_eq!(m.total_cache_read_tokens(), 0);
+        assert_eq!(m.total_cache_creation_tokens(), 0);
+        assert_eq!(m.total_inference_duration_ms(), 0);
+        assert_eq!(m.total_tool_duration_ms(), 0);
+        assert_eq!(m.inference_count(), 0);
+        assert_eq!(m.tool_count(), 0);
+        assert_eq!(m.tool_failures(), 0);
+    }
+
+    // ---- total_input_tokens() ----
+
+    #[test]
+    fn total_input_tokens_sums_across_spans() {
+        let m = AgentMetrics {
+            inferences: vec![
+                make_genai_span("m", Some(100), Some(50)),
+                make_genai_span("m", Some(200), Some(75)),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(m.total_input_tokens(), 300);
+    }
+
+    #[test]
+    fn total_input_tokens_skips_none() {
+        let m = AgentMetrics {
+            inferences: vec![
+                make_genai_span("m", Some(100), Some(50)),
+                make_genai_span("m", None, Some(75)),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(m.total_input_tokens(), 100);
+    }
+
+    // ---- total_output_tokens() ----
+
+    #[test]
+    fn total_output_tokens_sums_correctly() {
+        let m = AgentMetrics {
+            inferences: vec![
+                make_genai_span("m", Some(100), Some(50)),
+                make_genai_span("m", Some(200), Some(75)),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(m.total_output_tokens(), 125);
+    }
+
+    // ---- total_cache_read_tokens() ----
+
+    #[test]
+    fn total_cache_read_tokens_handles_none_values() {
+        let m = AgentMetrics {
+            inferences: vec![
+                GenAISpan {
+                    cache_read_input_tokens: Some(30),
+                    ..make_genai_span("m", Some(10), Some(5))
+                },
+                GenAISpan {
+                    cache_read_input_tokens: None,
+                    ..make_genai_span("m", Some(10), Some(5))
+                },
+                GenAISpan {
+                    cache_read_input_tokens: Some(20),
+                    ..make_genai_span("m", Some(10), Some(5))
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(m.total_cache_read_tokens(), 50);
+    }
+
+    #[test]
+    fn total_cache_read_tokens_all_none_returns_zero() {
+        let m = AgentMetrics {
+            inferences: vec![
+                make_genai_span("m", Some(10), Some(5)),
+                make_genai_span("m", Some(10), Some(5)),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(m.total_cache_read_tokens(), 0);
+    }
+
+    // ---- total_cache_creation_tokens() ----
+
+    #[test]
+    fn total_cache_creation_tokens_sums() {
+        let m = AgentMetrics {
+            inferences: vec![
+                GenAISpan {
+                    cache_creation_input_tokens: Some(10),
+                    ..make_genai_span("m", Some(10), Some(5))
+                },
+                GenAISpan {
+                    cache_creation_input_tokens: Some(20),
+                    ..make_genai_span("m", Some(10), Some(5))
+                },
+                GenAISpan {
+                    cache_creation_input_tokens: None,
+                    ..make_genai_span("m", Some(10), Some(5))
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(m.total_cache_creation_tokens(), 30);
+    }
+
+    // ---- stats_by_model() ----
+
+    #[test]
+    fn stats_by_model_groups_and_aggregates() {
+        let m = AgentMetrics {
+            inferences: vec![
+                GenAISpan {
+                    provider: "openai".into(),
+                    cache_read_input_tokens: Some(5),
+                    ..make_genai_span("gpt-4", Some(100), Some(50))
+                },
+                GenAISpan {
+                    provider: "openai".into(),
+                    cache_read_input_tokens: Some(15),
+                    ..make_genai_span("gpt-4", Some(200), Some(75))
+                },
+                GenAISpan {
+                    provider: "anthropic".into(),
+                    ..make_genai_span("claude-3", Some(150), Some(60))
+                },
+            ],
+            ..Default::default()
+        };
+        let stats = m.stats_by_model();
+        assert_eq!(stats.len(), 2);
+
+        // Sorted by model name: claude-3 first
+        assert_eq!(stats[0].model, "claude-3");
+        assert_eq!(stats[0].inference_count, 1);
+        assert_eq!(stats[0].input_tokens, 150);
+
+        assert_eq!(stats[1].model, "gpt-4");
+        assert_eq!(stats[1].inference_count, 2);
+        assert_eq!(stats[1].input_tokens, 300);
+        assert_eq!(stats[1].output_tokens, 125);
+        assert_eq!(stats[1].cache_read_input_tokens, 20);
+        assert_eq!(stats[1].total_duration_ms, 200);
+    }
+
+    #[test]
+    fn stats_by_model_empty_inferences() {
+        let m = AgentMetrics::default();
+        assert!(m.stats_by_model().is_empty());
+    }
+
+    // ---- stats_by_tool() ----
+
+    #[test]
+    fn stats_by_tool_groups_and_aggregates() {
+        let m = AgentMetrics {
+            tools: vec![
+                make_tool_span("search", false),
+                make_tool_span("search", false),
+                make_tool_span("write", true),
+            ],
+            ..Default::default()
+        };
+        let stats = m.stats_by_tool();
+        assert_eq!(stats.len(), 2);
+
+        let search = stats.iter().find(|s| s.name == "search").unwrap();
+        assert_eq!(search.call_count, 2);
+        assert_eq!(search.failure_count, 0);
+        assert_eq!(search.total_duration_ms, 100);
+
+        let write = stats.iter().find(|s| s.name == "write").unwrap();
+        assert_eq!(write.call_count, 1);
+        assert_eq!(write.failure_count, 1);
+    }
+
+    #[test]
+    fn stats_by_tool_empty_tools() {
+        let m = AgentMetrics::default();
+        assert!(m.stats_by_tool().is_empty());
+    }
+
+    // ---- tool_failures() ----
+
+    #[test]
+    fn tool_failures_counts_non_success() {
+        let m = AgentMetrics {
+            tools: vec![
+                make_tool_span("a", false),
+                make_tool_span("b", true),
+                make_tool_span("c", true),
+                make_tool_span("d", false),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(m.tool_failures(), 2);
+    }
+
+    // ---- inference_count() and tool_count() ----
+
+    #[test]
+    fn inference_count_and_tool_count() {
+        let m = AgentMetrics {
+            inferences: vec![
+                make_genai_span("a", Some(1), Some(1)),
+                make_genai_span("b", Some(2), Some(2)),
+                make_genai_span("c", Some(3), Some(3)),
+            ],
+            tools: vec![make_tool_span("t1", false), make_tool_span("t2", false)],
+            ..Default::default()
+        };
+        assert_eq!(m.inference_count(), 3);
+        assert_eq!(m.tool_count(), 2);
+    }
+
+    // ---- Edge cases ----
+
+    #[test]
+    fn empty_spans_edge_case() {
+        let m = AgentMetrics {
+            inferences: vec![],
+            tools: vec![],
+            session_duration_ms: 0,
+        };
+        assert_eq!(m.total_input_tokens(), 0);
+        assert_eq!(m.total_output_tokens(), 0);
+        assert_eq!(m.inference_count(), 0);
+        assert_eq!(m.tool_count(), 0);
+        assert!(m.stats_by_model().is_empty());
+        assert!(m.stats_by_tool().is_empty());
+    }
+
+    #[test]
+    fn zero_duration_spans() {
+        let m = AgentMetrics {
+            inferences: vec![GenAISpan {
+                duration_ms: 0,
+                ..make_genai_span("m", Some(10), Some(5))
+            }],
+            tools: vec![ToolSpan {
+                duration_ms: 0,
+                ..make_tool_span("t", false)
+            }],
+            ..Default::default()
+        };
+        assert_eq!(m.total_inference_duration_ms(), 0);
+        assert_eq!(m.total_tool_duration_ms(), 0);
+    }
+
+    #[test]
+    fn all_none_token_fields() {
+        let m = AgentMetrics {
+            inferences: vec![make_genai_span("m", None, None)],
+            ..Default::default()
+        };
+        assert_eq!(m.total_input_tokens(), 0);
+        assert_eq!(m.total_output_tokens(), 0);
+        assert_eq!(m.total_tokens(), 0);
+    }
+
+    // ---- ToolSpan::is_success ----
+
+    #[test]
+    fn tool_span_is_success_true() {
+        let span = make_tool_span("search", false);
+        assert!(span.is_success());
+    }
+
+    #[test]
+    fn tool_span_is_success_false() {
+        let span = make_tool_span("write", true);
+        assert!(!span.is_success());
+    }
+}
