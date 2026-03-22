@@ -331,3 +331,361 @@ async fn thread_store_and_thread_run_store_are_independent() {
     let loaded = store.load_thread("t-1").await.unwrap().unwrap();
     assert_eq!(loaded.messages[0].text(), "hello");
 }
+
+// ========================================================================
+// Additional ThreadStore tests
+// ========================================================================
+
+#[tokio::test]
+async fn list_threads_empty() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    let ids = store.list_threads(0, 10).await.unwrap();
+    assert!(ids.is_empty());
+}
+
+#[tokio::test]
+async fn list_threads_sorted() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    store.save_thread(&Thread::with_id("c")).await.unwrap();
+    store.save_thread(&Thread::with_id("a")).await.unwrap();
+    store.save_thread(&Thread::with_id("b")).await.unwrap();
+
+    let ids = store.list_threads(0, 10).await.unwrap();
+    assert_eq!(ids, vec!["a", "b", "c"]);
+}
+
+#[tokio::test]
+async fn thread_with_title() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    let thread = Thread::with_id("t-1").with_title("Test Chat");
+    store.save_thread(&thread).await.unwrap();
+
+    let loaded = store.load_thread("t-1").await.unwrap().unwrap();
+    assert_eq!(loaded.metadata.title.as_deref(), Some("Test Chat"));
+}
+
+#[tokio::test]
+async fn thread_serde_roundtrip_through_store() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    let thread = Thread::with_id("t-1")
+        .with_title("Test")
+        .with_message(Message::user("hello"))
+        .with_message(Message::assistant("world"));
+    store.save_thread(&thread).await.unwrap();
+
+    let loaded = store.load_thread("t-1").await.unwrap().unwrap();
+    assert_eq!(loaded.id, "t-1");
+    assert_eq!(loaded.metadata.title.as_deref(), Some("Test"));
+    assert_eq!(loaded.message_count(), 2);
+}
+
+// ========================================================================
+// Additional RunStore tests
+// ========================================================================
+
+#[tokio::test]
+async fn load_nonexistent_run() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    let result = RunStore::load_run(&store, "missing").await.unwrap();
+    assert!(result.is_none());
+}
+
+#[tokio::test]
+async fn latest_run_nonexistent_thread() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    let result = RunStore::latest_run(&store, "no-thread").await.unwrap();
+    assert!(result.is_none());
+}
+
+#[tokio::test]
+async fn list_runs_empty() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    let page = store.list_runs(&RunQuery::default()).await.unwrap();
+    assert_eq!(page.total, 0);
+    assert!(page.items.is_empty());
+    assert!(!page.has_more);
+}
+
+#[tokio::test]
+async fn list_runs_all() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    for i in 0..5 {
+        store
+            .create_run(&make_run(&format!("r{i}"), "t-1", i as u64 * 100))
+            .await
+            .unwrap();
+    }
+    let page = store.list_runs(&RunQuery::default()).await.unwrap();
+    assert_eq!(page.total, 5);
+    assert_eq!(page.items.len(), 5);
+    assert!(!page.has_more);
+}
+
+#[tokio::test]
+async fn list_runs_pagination() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    for i in 0..5 {
+        store
+            .create_run(&make_run(&format!("r{i}"), "t-1", i as u64 * 100))
+            .await
+            .unwrap();
+    }
+    let page = store
+        .list_runs(&RunQuery {
+            offset: 2,
+            limit: 2,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.total, 5);
+    assert_eq!(page.items.len(), 2);
+    assert!(page.has_more);
+}
+
+#[tokio::test]
+async fn list_runs_filter_by_status() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    let mut done = make_run("r1", "t-1", 100);
+    done.status = RunStatus::Done;
+    store.create_run(&done).await.unwrap();
+    store.create_run(&make_run("r2", "t-1", 200)).await.unwrap();
+
+    let page = store
+        .list_runs(&RunQuery {
+            status: Some(RunStatus::Done),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].run_id, "r1");
+}
+
+#[tokio::test]
+async fn run_record_with_parent() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    let mut run = make_run("r1", "t-1", 100);
+    run.parent_run_id = Some("r-parent".to_string());
+    store.create_run(&run).await.unwrap();
+
+    let loaded = RunStore::load_run(&store, "r1").await.unwrap().unwrap();
+    assert_eq!(loaded.parent_run_id.as_deref(), Some("r-parent"));
+}
+
+#[tokio::test]
+async fn run_record_with_termination_code() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    let mut run = make_run("r1", "t-1", 100);
+    run.status = RunStatus::Done;
+    run.termination_code = Some("natural".to_string());
+    store.create_run(&run).await.unwrap();
+
+    let loaded = RunStore::load_run(&store, "r1").await.unwrap().unwrap();
+    assert_eq!(loaded.status, RunStatus::Done);
+    assert_eq!(loaded.termination_code.as_deref(), Some("natural"));
+}
+
+// ========================================================================
+// Additional MailboxStore tests
+// ========================================================================
+
+#[tokio::test]
+async fn mailbox_peek_empty() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    let peeked = store.peek_messages("nonexistent", 10).await.unwrap();
+    assert!(peeked.is_empty());
+}
+
+#[tokio::test]
+async fn mailbox_multiple_mailboxes() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    store
+        .push_message(&make_mailbox_entry("e1", "inbox-a"))
+        .await
+        .unwrap();
+    store
+        .push_message(&make_mailbox_entry("e2", "inbox-b"))
+        .await
+        .unwrap();
+
+    let a = store.peek_messages("inbox-a", 10).await.unwrap();
+    assert_eq!(a.len(), 1);
+    assert_eq!(a[0].entry_id, "e1");
+
+    let b = store.peek_messages("inbox-b", 10).await.unwrap();
+    assert_eq!(b.len(), 1);
+    assert_eq!(b[0].entry_id, "e2");
+}
+
+#[tokio::test]
+async fn mailbox_pop_all_then_push_again() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    store
+        .push_message(&make_mailbox_entry("e1", "inbox"))
+        .await
+        .unwrap();
+    let popped = store.pop_messages("inbox", 10).await.unwrap();
+    assert_eq!(popped.len(), 1);
+
+    let empty = store.peek_messages("inbox", 10).await.unwrap();
+    assert!(empty.is_empty());
+
+    store
+        .push_message(&make_mailbox_entry("e2", "inbox"))
+        .await
+        .unwrap();
+    let peeked = store.peek_messages("inbox", 10).await.unwrap();
+    assert_eq!(peeked.len(), 1);
+    assert_eq!(peeked[0].entry_id, "e2");
+}
+
+#[tokio::test]
+async fn mailbox_pop_limited() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    for i in 0..5 {
+        store
+            .push_message(&make_mailbox_entry(&format!("e{i}"), "inbox"))
+            .await
+            .unwrap();
+    }
+    let popped = store.pop_messages("inbox", 3).await.unwrap();
+    assert_eq!(popped.len(), 3);
+    let remaining = store.peek_messages("inbox", 10).await.unwrap();
+    assert_eq!(remaining.len(), 2);
+}
+
+#[tokio::test]
+async fn mailbox_peek_limited() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    for i in 0..5 {
+        store
+            .push_message(&make_mailbox_entry(&format!("e{i}"), "inbox"))
+            .await
+            .unwrap();
+    }
+    let peeked = store.peek_messages("inbox", 3).await.unwrap();
+    assert_eq!(peeked.len(), 3);
+    // All still present
+    let all = store.peek_messages("inbox", 10).await.unwrap();
+    assert_eq!(all.len(), 5);
+}
+
+// ========================================================================
+// Tool call message roundtrip tests
+// ========================================================================
+
+#[tokio::test]
+async fn tool_call_message_roundtrip_via_save() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+
+    let tool_call = awaken_contract::contract::message::ToolCall::new(
+        "call_1",
+        "search",
+        serde_json::json!({"query": "rust"}),
+    );
+    let thread = Thread::with_id("tool-rt")
+        .with_message(Message::user("Find info"))
+        .with_message(Message::assistant_with_tool_calls(
+            "Searching...",
+            vec![tool_call],
+        ))
+        .with_message(Message::tool("call_1", "Found it"))
+        .with_message(Message::assistant("Here are the results."));
+
+    store.save_thread(&thread).await.unwrap();
+    let loaded = store.load_thread("tool-rt").await.unwrap().unwrap();
+
+    assert_eq!(loaded.message_count(), 4);
+    let calls = loaded.messages[1]
+        .tool_calls
+        .as_ref()
+        .expect("tool_calls lost");
+    assert_eq!(calls[0].id, "call_1");
+    assert_eq!(calls[0].name, "search");
+    assert_eq!(loaded.messages[2].tool_call_id.as_deref(), Some("call_1"));
+}
+
+#[tokio::test]
+async fn tool_call_message_roundtrip_via_checkpoint() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+
+    let tool_call = awaken_contract::contract::message::ToolCall::new(
+        "call_42",
+        "calculator",
+        serde_json::json!({"expr": "6*7"}),
+    );
+    let messages = vec![
+        Message::assistant_with_tool_calls("Calculating...", vec![tool_call]),
+        Message::tool("call_42", r#"{"answer": 42}"#),
+    ];
+
+    store
+        .checkpoint("t-1", &messages, &make_run("run-1", "t-1", 100))
+        .await
+        .unwrap();
+
+    let loaded = store.load_messages("t-1").await.unwrap().unwrap();
+    assert_eq!(loaded.len(), 2);
+
+    let calls = loaded[0].tool_calls.as_ref().expect("tool_calls lost");
+    assert_eq!(calls[0].id, "call_42");
+    assert_eq!(calls[0].name, "calculator");
+    assert_eq!(loaded[1].tool_call_id.as_deref(), Some("call_42"));
+}
+
+// ========================================================================
+// Cross-trait interactions
+// ========================================================================
+
+#[tokio::test]
+async fn checkpoint_run_visible_via_run_store() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    let run = make_run("run-cp", "t-1", 100);
+    store
+        .checkpoint("t-1", &[Message::user("m")], &run)
+        .await
+        .unwrap();
+
+    let loaded = RunStore::load_run(&store, "run-cp").await.unwrap().unwrap();
+    assert_eq!(loaded.run_id, "run-cp");
+
+    let latest = RunStore::latest_run(&store, "t-1").await.unwrap().unwrap();
+    assert_eq!(latest.run_id, "run-cp");
+}
+
+#[tokio::test]
+async fn latest_run_nonexistent_thread_via_thread_run_store() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    let result = ThreadRunStore::latest_run(&store, "missing").await.unwrap();
+    assert!(result.is_none());
+}
+
+#[tokio::test]
+async fn load_run_nonexistent_via_thread_run_store() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    let result = ThreadRunStore::load_run(&store, "missing").await.unwrap();
+    assert!(result.is_none());
+}

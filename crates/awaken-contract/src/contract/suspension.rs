@@ -394,4 +394,146 @@ mod tests {
         assert!(!json.contains("parameters"));
         assert!(!json.contains("response_schema"));
     }
+
+    // ── Additional ToolCallStatus transition tests ──
+
+    #[test]
+    fn tool_call_status_self_transitions_always_allowed() {
+        for status in [
+            ToolCallStatus::New,
+            ToolCallStatus::Running,
+            ToolCallStatus::Suspended,
+            ToolCallStatus::Resuming,
+            ToolCallStatus::Succeeded,
+            ToolCallStatus::Failed,
+            ToolCallStatus::Cancelled,
+        ] {
+            assert!(
+                status.can_transition_to(status),
+                "{status:?} -> {status:?} should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_call_status_new_can_transition_to_any() {
+        for target in [
+            ToolCallStatus::Running,
+            ToolCallStatus::Suspended,
+            ToolCallStatus::Resuming,
+            ToolCallStatus::Succeeded,
+            ToolCallStatus::Failed,
+            ToolCallStatus::Cancelled,
+        ] {
+            assert!(
+                ToolCallStatus::New.can_transition_to(target),
+                "New -> {target:?} should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_call_status_running_rejects_resuming() {
+        assert!(!ToolCallStatus::Running.can_transition_to(ToolCallStatus::Resuming));
+    }
+
+    #[test]
+    fn tool_call_status_suspended_rejects_running_directly() {
+        assert!(!ToolCallStatus::Suspended.can_transition_to(ToolCallStatus::Running));
+        assert!(!ToolCallStatus::Suspended.can_transition_to(ToolCallStatus::Succeeded));
+        assert!(!ToolCallStatus::Suspended.can_transition_to(ToolCallStatus::Failed));
+    }
+
+    #[test]
+    fn tool_call_status_resuming_allows_wide_transitions() {
+        assert!(ToolCallStatus::Resuming.can_transition_to(ToolCallStatus::Running));
+        assert!(ToolCallStatus::Resuming.can_transition_to(ToolCallStatus::Suspended));
+        assert!(ToolCallStatus::Resuming.can_transition_to(ToolCallStatus::Succeeded));
+        assert!(ToolCallStatus::Resuming.can_transition_to(ToolCallStatus::Failed));
+        assert!(ToolCallStatus::Resuming.can_transition_to(ToolCallStatus::Cancelled));
+    }
+
+    #[test]
+    fn tool_call_status_terminal_cannot_transition_to_non_self() {
+        for terminal in [
+            ToolCallStatus::Succeeded,
+            ToolCallStatus::Failed,
+            ToolCallStatus::Cancelled,
+        ] {
+            for target in [
+                ToolCallStatus::New,
+                ToolCallStatus::Running,
+                ToolCallStatus::Suspended,
+                ToolCallStatus::Resuming,
+            ] {
+                assert!(
+                    !terminal.can_transition_to(target),
+                    "{terminal:?} -> {target:?} should be rejected"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tool_call_status_serde_roundtrip() {
+        for status in [
+            ToolCallStatus::New,
+            ToolCallStatus::Running,
+            ToolCallStatus::Suspended,
+            ToolCallStatus::Resuming,
+            ToolCallStatus::Succeeded,
+            ToolCallStatus::Failed,
+            ToolCallStatus::Cancelled,
+        ] {
+            let json = serde_json::to_string(&status).unwrap();
+            let parsed: ToolCallStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, status);
+        }
+    }
+
+    #[test]
+    fn tool_call_outcome_serde_roundtrip() {
+        for outcome in [
+            ToolCallOutcome::Succeeded,
+            ToolCallOutcome::Suspended,
+            ToolCallOutcome::Failed,
+        ] {
+            let json = serde_json::to_string(&outcome).unwrap();
+            let parsed: ToolCallOutcome = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, outcome);
+        }
+    }
+
+    #[test]
+    fn suspension_with_all_fields_serde_roundtrip() {
+        let s = Suspension {
+            id: "s1".into(),
+            action: "confirm".into(),
+            message: "Allow this?".into(),
+            parameters: json!({"tool": "delete"}),
+            response_schema: Some(json!({"type": "object"})),
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        let parsed: Suspension = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, s);
+    }
+
+    #[test]
+    fn tool_call_action_proceed() {
+        let action = ToolCallAction::Proceed;
+        assert_eq!(action, ToolCallAction::Proceed);
+    }
+
+    #[test]
+    fn tool_call_resume_mode_default_is_replay() {
+        assert_eq!(
+            ToolCallResumeMode::default(),
+            ToolCallResumeMode::ReplayToolCall
+        );
+    }
+
+    #[test]
+    fn tool_call_status_default_is_new() {
+        assert_eq!(ToolCallStatus::default(), ToolCallStatus::New);
+    }
 }

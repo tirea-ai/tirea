@@ -651,4 +651,189 @@ mod tests {
         let json = serde_json::to_string(&input).unwrap();
         assert!(!json.contains("payload"));
     }
+
+    // ── Wire format detail tests ──
+
+    #[test]
+    fn run_start_wire_format_has_event_type() {
+        let event = AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: Some("parent".into()),
+        };
+        let wire: Value = serde_json::to_value(&event).unwrap();
+        assert_eq!(wire["event_type"], "run_start");
+        assert_eq!(wire["run_id"], "r1");
+        assert_eq!(wire["thread_id"], "t1");
+        assert_eq!(wire["parent_run_id"], "parent");
+    }
+
+    #[test]
+    fn run_finish_wire_format() {
+        let event = AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: Some(json!({"response": "hello"})),
+            termination: TerminationReason::NaturalEnd,
+        };
+        let wire: Value = serde_json::to_value(&event).unwrap();
+        assert_eq!(wire["event_type"], "run_finish");
+        assert_eq!(wire["run_id"], "r1");
+        assert_eq!(wire["thread_id"], "t1");
+    }
+
+    #[test]
+    fn run_start_omits_null_parent_run_id() {
+        let event = AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(!json.contains("parent_run_id"));
+    }
+
+    #[test]
+    fn run_finish_omits_null_result() {
+        let event = AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: None,
+            termination: TerminationReason::NaturalEnd,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(!json.contains("result"));
+    }
+
+    #[test]
+    fn activity_snapshot_omits_null_replace() {
+        let event = AgentEvent::ActivitySnapshot {
+            message_id: "m1".into(),
+            activity_type: "thinking".into(),
+            content: json!({}),
+            replace: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(!json.contains("replace"));
+    }
+
+    #[test]
+    fn inference_complete_omits_null_usage() {
+        let event = AgentEvent::InferenceComplete {
+            model: "gpt-4".into(),
+            usage: None,
+            duration_ms: 500,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(!json.contains("usage"));
+    }
+
+    #[test]
+    fn all_event_types_deserialize_from_serialized() {
+        let events: Vec<AgentEvent> = vec![
+            AgentEvent::RunStart {
+                thread_id: "t".into(),
+                run_id: "r".into(),
+                parent_run_id: None,
+            },
+            AgentEvent::RunFinish {
+                thread_id: "t".into(),
+                run_id: "r".into(),
+                result: None,
+                termination: TerminationReason::NaturalEnd,
+            },
+            AgentEvent::TextDelta { delta: "hi".into() },
+            AgentEvent::ReasoningDelta {
+                delta: "think".into(),
+            },
+            AgentEvent::ReasoningEncryptedValue {
+                encrypted_value: "enc".into(),
+            },
+            AgentEvent::ToolCallStart {
+                id: "c".into(),
+                name: "t".into(),
+            },
+            AgentEvent::ToolCallDelta {
+                id: "c".into(),
+                args_delta: "{}".into(),
+            },
+            AgentEvent::ToolCallReady {
+                id: "c".into(),
+                name: "t".into(),
+                arguments: json!({}),
+            },
+            AgentEvent::ToolCallDone {
+                id: "c".into(),
+                message_id: "m".into(),
+                result: ToolResult::success("t", json!(null)),
+                outcome: ToolCallOutcome::Succeeded,
+            },
+            AgentEvent::StepStart {
+                message_id: "m".into(),
+            },
+            AgentEvent::StepEnd,
+            AgentEvent::InferenceComplete {
+                model: "gpt".into(),
+                usage: None,
+                duration_ms: 100,
+            },
+            AgentEvent::StateSnapshot {
+                snapshot: json!({}),
+            },
+            AgentEvent::StateDelta {
+                delta: vec![json!({})],
+            },
+            AgentEvent::MessagesSnapshot {
+                messages: vec![json!({})],
+            },
+            AgentEvent::ActivitySnapshot {
+                message_id: "m".into(),
+                activity_type: "a".into(),
+                content: json!({}),
+                replace: None,
+            },
+            AgentEvent::ActivityDelta {
+                message_id: "m".into(),
+                activity_type: "a".into(),
+                patch: vec![],
+            },
+            AgentEvent::ToolCallResumed {
+                target_id: "t".into(),
+                result: json!({}),
+            },
+            AgentEvent::Error {
+                message: "oops".into(),
+                code: Some("LLM_ERROR".into()),
+            },
+        ];
+
+        for event in &events {
+            let wire = serde_json::to_value(event).expect("serialize");
+            let restored: AgentEvent = serde_json::from_value(wire).expect("deserialize");
+            // Verify the variant tag survived roundtrip
+            let original_json = serde_json::to_value(event).unwrap();
+            let restored_json = serde_json::to_value(&restored).unwrap();
+            assert_eq!(
+                original_json["event_type"], restored_json["event_type"],
+                "event_type mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn stream_event_preserves_all_fields() {
+        let se = StreamEvent::new(
+            42,
+            "2026-03-25T12:00:00Z",
+            AgentEvent::Error {
+                message: "test".into(),
+                code: None,
+            },
+        );
+        let json = serde_json::to_string(&se).unwrap();
+        let parsed: StreamEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.seq, 42);
+        assert_eq!(parsed.timestamp, "2026-03-25T12:00:00Z");
+        assert!(matches!(parsed.event, AgentEvent::Error { .. }));
+    }
 }

@@ -726,3 +726,350 @@ async fn thread_store_and_messages_are_independent() {
     let msgs = store.load_messages("t-1").await.unwrap().unwrap();
     assert_eq!(msgs[0].text(), "checkpoint msg");
 }
+
+// ========================================================================
+// Tool call message roundtrip tests
+// ========================================================================
+
+#[tokio::test]
+async fn tool_call_message_roundtrip_via_save() {
+    let store = InMemoryStore::new();
+
+    let tool_call = awaken_contract::contract::message::ToolCall::new(
+        "call_1",
+        "search",
+        serde_json::json!({"query": "rust"}),
+    );
+    let thread = Thread::with_id("tool-rt")
+        .with_message(Message::user("Find info about Rust"))
+        .with_message(Message::assistant_with_tool_calls(
+            "Let me search for that.",
+            vec![tool_call],
+        ))
+        .with_message(Message::tool(
+            "call_1",
+            r#"{"result": "Rust is a language"}"#,
+        ))
+        .with_message(Message::assistant(
+            "Rust is a systems programming language.",
+        ));
+
+    store.save_thread(&thread).await.unwrap();
+    let loaded = store.load_thread("tool-rt").await.unwrap().unwrap();
+
+    assert_eq!(loaded.message_count(), 4);
+
+    // Assistant message with tool_calls
+    let calls = loaded.messages[1]
+        .tool_calls
+        .as_ref()
+        .expect("tool_calls lost");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].id, "call_1");
+    assert_eq!(calls[0].name, "search");
+    assert_eq!(calls[0].arguments, serde_json::json!({"query": "rust"}));
+
+    // Tool response message
+    assert_eq!(loaded.messages[2].tool_call_id.as_deref(), Some("call_1"));
+    assert_eq!(
+        loaded.messages[2].text(),
+        r#"{"result": "Rust is a language"}"#
+    );
+}
+
+#[tokio::test]
+async fn tool_call_message_roundtrip_via_checkpoint() {
+    let store = InMemoryStore::new();
+
+    let tool_call = awaken_contract::contract::message::ToolCall::new(
+        "call_42",
+        "calculator",
+        serde_json::json!({"expr": "6*7"}),
+    );
+    let messages = vec![
+        Message::assistant_with_tool_calls("Calculating...", vec![tool_call]),
+        Message::tool("call_42", r#"{"answer": 42}"#),
+    ];
+
+    store
+        .checkpoint("t-1", &messages, &make_run("run-1", "t-1", 100))
+        .await
+        .unwrap();
+
+    let loaded = store.load_messages("t-1").await.unwrap().unwrap();
+    assert_eq!(loaded.len(), 2);
+
+    let calls = loaded[0]
+        .tool_calls
+        .as_ref()
+        .expect("tool_calls lost after checkpoint");
+    assert_eq!(calls[0].id, "call_42");
+    assert_eq!(calls[0].name, "calculator");
+    assert_eq!(calls[0].arguments, serde_json::json!({"expr": "6*7"}));
+
+    assert_eq!(loaded[1].tool_call_id.as_deref(), Some("call_42"));
+}
+
+#[tokio::test]
+async fn multi_tool_call_roundtrip() {
+    let store = InMemoryStore::new();
+
+    let calls = vec![
+        awaken_contract::contract::message::ToolCall::new(
+            "call_a",
+            "search",
+            serde_json::json!({"q": "hello"}),
+        ),
+        awaken_contract::contract::message::ToolCall::new(
+            "call_b",
+            "fetch",
+            serde_json::json!({"url": "https://example.com"}),
+        ),
+    ];
+    let thread = Thread::with_id("multi-tool")
+        .with_message(Message::assistant_with_tool_calls("multi-tool call", calls))
+        .with_message(Message::tool("call_a", "search result"))
+        .with_message(Message::tool("call_b", "fetch result"));
+
+    store.save_thread(&thread).await.unwrap();
+    let loaded = store.load_thread("multi-tool").await.unwrap().unwrap();
+
+    let tool_calls = loaded.messages[0]
+        .tool_calls
+        .as_ref()
+        .expect("tool_calls lost");
+    assert_eq!(tool_calls.len(), 2);
+    assert_eq!(tool_calls[0].id, "call_a");
+    assert_eq!(tool_calls[1].id, "call_b");
+
+    assert_eq!(loaded.messages[1].tool_call_id.as_deref(), Some("call_a"));
+    assert_eq!(loaded.messages[2].tool_call_id.as_deref(), Some("call_b"));
+}
+
+// ========================================================================
+// Additional RunStore edge cases
+// ========================================================================
+
+#[tokio::test]
+async fn list_runs_ordered_by_created_at() {
+    let store = InMemoryStore::new();
+    // Create in reverse order
+    store.create_run(&make_run("r3", "t-1", 300)).await.unwrap();
+    store.create_run(&make_run("r1", "t-1", 100)).await.unwrap();
+    store.create_run(&make_run("r2", "t-1", 200)).await.unwrap();
+
+    let page = store.list_runs(&RunQuery::default()).await.unwrap();
+    assert_eq!(page.items.len(), 3);
+    assert_eq!(page.items[0].run_id, "r1");
+    assert_eq!(page.items[1].run_id, "r2");
+    assert_eq!(page.items[2].run_id, "r3");
+}
+
+#[tokio::test]
+async fn list_runs_combined_filter_thread_and_status() {
+    let store = InMemoryStore::new();
+
+    let mut done = make_run("r1", "t-1", 100);
+    done.status = RunStatus::Done;
+    store.create_run(&done).await.unwrap();
+
+    store.create_run(&make_run("r2", "t-1", 200)).await.unwrap();
+
+    let mut done_other = make_run("r3", "t-2", 300);
+    done_other.status = RunStatus::Done;
+    store.create_run(&done_other).await.unwrap();
+
+    let page = store
+        .list_runs(&RunQuery {
+            thread_id: Some("t-1".to_string()),
+            status: Some(RunStatus::Done),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].run_id, "r1");
+}
+
+#[tokio::test]
+async fn run_record_with_state() {
+    use awaken_contract::state::PersistedState;
+    use std::collections::HashMap;
+
+    let store = InMemoryStore::new();
+    let mut run = make_run("r1", "t-1", 100);
+    let mut extensions = HashMap::new();
+    extensions.insert("key".to_string(), serde_json::json!("value"));
+    run.state = Some(PersistedState {
+        revision: 1,
+        extensions,
+    });
+    store.create_run(&run).await.unwrap();
+
+    let loaded = RunStore::load_run(&store, "r1").await.unwrap().unwrap();
+    let state = loaded.state.unwrap();
+    assert_eq!(state.revision, 1);
+    assert_eq!(state.extensions["key"], serde_json::json!("value"));
+}
+
+// ========================================================================
+// Additional mailbox edge cases
+// ========================================================================
+
+#[tokio::test]
+async fn mailbox_fifo_ordering() {
+    let store = InMemoryStore::new();
+    for i in 0..5 {
+        store
+            .push_message(&make_mailbox_entry(&format!("e{i}"), "inbox"))
+            .await
+            .unwrap();
+    }
+    let popped = store.pop_messages("inbox", 5).await.unwrap();
+    for (i, entry) in popped.iter().enumerate() {
+        assert_eq!(entry.entry_id, format!("e{i}"), "FIFO order broken");
+    }
+}
+
+// ========================================================================
+// Full agent lifecycle simulation
+// ========================================================================
+
+#[tokio::test]
+async fn full_agent_run_via_checkpoint() {
+    let store = InMemoryStore::new();
+
+    // 1. Save initial thread
+    let thread = Thread::with_id("t-1");
+    store.save_thread(&thread).await.unwrap();
+
+    // 2. User message checkpoint
+    store
+        .checkpoint(
+            "t-1",
+            &[Message::user("What is 2+2?")],
+            &make_run("run-1", "t-1", 100),
+        )
+        .await
+        .unwrap();
+
+    // 3. Tool call checkpoint
+    let tool_call = awaken_contract::contract::message::ToolCall::new(
+        "call-1",
+        "calculator",
+        serde_json::json!({"expr": "2+2"}),
+    );
+    store
+        .checkpoint(
+            "t-1",
+            &[
+                Message::user("What is 2+2?"),
+                Message::assistant_with_tool_calls("Let me calculate.", vec![tool_call]),
+                Message::tool("call-1", "4"),
+            ],
+            &make_run("run-1", "t-1", 200),
+        )
+        .await
+        .unwrap();
+
+    // 4. Final assistant message
+    let mut final_run = make_run("run-1", "t-1", 300);
+    final_run.status = RunStatus::Done;
+    final_run.termination_code = Some("natural".to_string());
+    final_run.steps = 2;
+    final_run.input_tokens = 100;
+    final_run.output_tokens = 50;
+
+    store
+        .checkpoint(
+            "t-1",
+            &[
+                Message::user("What is 2+2?"),
+                Message::assistant_with_tool_calls(
+                    "Let me calculate.",
+                    vec![awaken_contract::contract::message::ToolCall::new(
+                        "call-1",
+                        "calculator",
+                        serde_json::json!({"expr": "2+2"}),
+                    )],
+                ),
+                Message::tool("call-1", "4"),
+                Message::assistant("2 + 2 = 4"),
+            ],
+            &final_run,
+        )
+        .await
+        .unwrap();
+
+    // Verify final state
+    let msgs = store.load_messages("t-1").await.unwrap().unwrap();
+    assert_eq!(msgs.len(), 4);
+    assert_eq!(msgs[0].text(), "What is 2+2?");
+    assert_eq!(msgs[3].text(), "2 + 2 = 4");
+
+    let loaded_run = ThreadRunStore::load_run(&store, "run-1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded_run.status, RunStatus::Done);
+    assert_eq!(loaded_run.steps, 2);
+    assert_eq!(loaded_run.input_tokens, 100);
+    assert_eq!(loaded_run.output_tokens, 50);
+}
+
+// ========================================================================
+// Concurrent mixed operations
+// ========================================================================
+
+#[tokio::test]
+async fn concurrent_mixed_operations() {
+    let store = Arc::new(InMemoryStore::new());
+
+    let mut handles = Vec::new();
+
+    // Threads
+    for i in 0..5 {
+        let store = Arc::clone(&store);
+        handles.push(tokio::spawn(async move {
+            store
+                .save_thread(&Thread::with_id(format!("thread-{i}")))
+                .await
+                .unwrap();
+        }));
+    }
+
+    // Runs
+    for i in 0..5 {
+        let store = Arc::clone(&store);
+        handles.push(tokio::spawn(async move {
+            store
+                .create_run(&make_run(&format!("run-{i}"), "t-1", i as u64 * 100))
+                .await
+                .unwrap();
+        }));
+    }
+
+    // Mailbox
+    for i in 0..5 {
+        let store = Arc::clone(&store);
+        handles.push(tokio::spawn(async move {
+            store
+                .push_message(&make_mailbox_entry(&format!("e{i}"), "inbox"))
+                .await
+                .unwrap();
+        }));
+    }
+
+    for handle in handles {
+        handle.await.unwrap();
+    }
+
+    let thread_count = store.list_threads(0, 100).await.unwrap().len();
+    assert_eq!(thread_count, 5);
+
+    let run_page = store.list_runs(&RunQuery::default()).await.unwrap();
+    assert_eq!(run_page.total, 5);
+
+    let mailbox_count = store.peek_messages("inbox", 100).await.unwrap().len();
+    assert_eq!(mailbox_count, 5);
+}

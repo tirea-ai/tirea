@@ -276,4 +276,81 @@ mod tests {
             assert_eq!(parsed, status);
         }
     }
+
+    #[test]
+    fn termination_reason_from_done_reason_natural() {
+        let reason = TerminationReason::from_done_reason("natural");
+        assert_eq!(reason, TerminationReason::NaturalEnd);
+    }
+
+    #[test]
+    fn termination_reason_from_done_reason_behavior_requested() {
+        let reason = TerminationReason::from_done_reason("behavior_requested");
+        assert_eq!(reason, TerminationReason::BehaviorRequested);
+    }
+
+    #[test]
+    fn termination_reason_from_done_reason_cancelled() {
+        let reason = TerminationReason::from_done_reason("cancelled");
+        assert_eq!(reason, TerminationReason::Cancelled);
+    }
+
+    #[test]
+    fn termination_reason_from_done_reason_blocked() {
+        let reason = TerminationReason::from_done_reason("blocked:unsafe tool");
+        assert_eq!(
+            reason,
+            TerminationReason::Blocked("unsafe tool".to_string())
+        );
+    }
+
+    #[test]
+    fn termination_reason_from_done_reason_stopped() {
+        let reason = TerminationReason::from_done_reason("stopped:max_turns");
+        assert_eq!(
+            reason,
+            TerminationReason::Stopped(StoppedReason::new("max_turns"))
+        );
+    }
+
+    #[test]
+    fn termination_reason_from_done_reason_error() {
+        let reason = TerminationReason::from_done_reason("error:boom");
+        assert_eq!(reason, TerminationReason::Error("boom".to_string()));
+    }
+
+    #[test]
+    fn termination_reason_from_done_reason_unknown_becomes_error() {
+        let reason = TerminationReason::from_done_reason("unknown_value");
+        assert_eq!(
+            reason,
+            TerminationReason::Error("unknown_value".to_string())
+        );
+    }
+
+    #[test]
+    fn run_status_done_self_transition() {
+        assert!(RunStatus::Done.can_transition_to(RunStatus::Done));
+    }
+
+    #[test]
+    fn termination_reason_stopped_with_detail_serde_roundtrip() {
+        let reason = TerminationReason::stopped_with_detail("budget", "limit reached");
+        let json = serde_json::to_string(&reason).unwrap();
+        let parsed: TerminationReason = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, reason);
+        if let TerminationReason::Stopped(s) = &parsed {
+            assert_eq!(s.code, "budget");
+            assert_eq!(s.detail.as_deref(), Some("limit reached"));
+        } else {
+            panic!("expected Stopped variant");
+        }
+    }
+
+    #[test]
+    fn stopped_reason_omits_none_detail_in_serde() {
+        let reason = StoppedReason::new("budget");
+        let json = serde_json::to_string(&reason).unwrap();
+        assert!(!json.contains("detail"));
+    }
 }
