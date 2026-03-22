@@ -1,4 +1,8 @@
-//! Multi-turn conversation test with a real LLM provider.
+//! Multi-turn conversation using AgentRuntime with persistent thread storage.
+//!
+//! Demonstrates: each `runtime.run()` call loads history from ThreadRunStore,
+//! appends new messages, runs the loop, and checkpoints the result.
+//! No manual message accumulation needed.
 //!
 //! Run: cargo run --example multi_turn
 //!
@@ -6,19 +10,23 @@
 
 use async_trait::async_trait;
 use awaken::agent::config::AgentConfig;
-use awaken::agent::loop_runner::{LoopStatePlugin, build_agent_env, run_agent_loop};
+use awaken::agent::loop_runner::build_agent_env;
 use awaken::contract::content::ContentBlock;
 use awaken::contract::event::AgentEvent;
 use awaken::contract::event_sink::EventSink;
 use awaken::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken::contract::identity::{RunIdentity, RunOrigin};
 use awaken::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken::contract::message::Message;
+use awaken::contract::storage_mem::InMemoryThreadRunStore;
 use awaken::*;
+// AgentResolver, AgentRuntime, ResolvedAgent, RunRequest re-exported at crate root
 use serde_json::Value;
 use std::sync::Arc;
 
-// Reuse the OpenAI executor from live_test
+// ---------------------------------------------------------------------------
+// OpenAI-compatible executor
+// ---------------------------------------------------------------------------
+
 struct OpenAIExecutor {
     client: reqwest::Client,
     base_url: String,
@@ -61,7 +69,7 @@ impl LlmExecutor for OpenAIExecutor {
         let body = serde_json::json!({
             "model": if request.model.is_empty() { &self.model } else { &request.model },
             "messages": messages,
-            "max_tokens": 100,
+            "max_tokens": 200,
         });
 
         let resp = self
@@ -110,6 +118,10 @@ impl LlmExecutor for OpenAIExecutor {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Console sink — prints deltas inline
+// ---------------------------------------------------------------------------
+
 struct ConsoleSink;
 
 #[async_trait]
@@ -117,14 +129,14 @@ impl EventSink for ConsoleSink {
     async fn emit(&self, event: AgentEvent) {
         match &event {
             AgentEvent::TextDelta { delta } => print!("{delta}"),
-            AgentEvent::InferenceComplete { usage, .. } => {
-                let tokens = usage.as_ref().and_then(|u| u.total_tokens).unwrap_or(0);
-                print!(" [{tokens} tokens]");
-            }
             _ => {}
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Simple resolver
+// ---------------------------------------------------------------------------
 
 struct SimpleResolver {
     agent: AgentConfig,
@@ -140,6 +152,10 @@ impl AgentResolver for SimpleResolver {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let executor = OpenAIExecutor::new();
@@ -152,12 +168,15 @@ async fn main() {
         "You are a helpful assistant. Be concise. Remember what the user tells you.",
         llm,
     );
-    let resolver = SimpleResolver {
+    let resolver = Arc::new(SimpleResolver {
         agent: agent.clone(),
-    };
+    });
 
-    // Simulate multi-turn: collect messages across runs
-    let mut all_messages: Vec<Message> = Vec::new();
+    // Create runtime with persistent thread storage
+    let store = Arc::new(InMemoryThreadRunStore::new());
+    let runtime = AgentRuntime::new(resolver).with_thread_run_store(store);
+
+    let thread_id = "conversation-1";
 
     let turns = vec![
         "My name is Alice. Remember it.",
@@ -166,23 +185,6 @@ async fn main() {
     ];
 
     for (i, user_msg) in turns.iter().enumerate() {
-        // Add new user message
-        all_messages.push(Message::user(*user_msg));
-
-        // Create fresh runtime for each run (simulating separate HTTP requests)
-        let store = StateStore::new();
-        let runtime = PhaseRuntime::new(store.clone()).unwrap();
-        store.install_plugin(LoopStatePlugin).unwrap();
-
-        let identity = RunIdentity::new(
-            "thread-multi".into(),
-            None,
-            format!("run-{i}"),
-            None,
-            "chat".into(),
-            RunOrigin::User,
-        );
-
         print!(
             "\n[Turn {}] User: {}\n[Turn {}] Assistant: ",
             i + 1,
@@ -190,24 +192,23 @@ async fn main() {
             i + 1
         );
 
-        let result = run_agent_loop(
-            &resolver,
-            "chat",
-            &runtime,
-            &ConsoleSink,
-            None,
-            all_messages.clone(),
-            identity,
-            None,
-        )
-        .await
-        .unwrap();
+        // Each run() call:
+        // 1. Loads history from ThreadRunStore for this thread
+        // 2. Appends the new user message
+        // 3. Runs inference
+        // 4. Checkpoints messages + run record back to store
+        let request =
+            RunRequest::new(thread_id, vec![Message::user(*user_msg)]).with_agent_id("chat");
 
-        // Add assistant response to history for next turn
-        all_messages.push(Message::assistant(&result.response));
-        println!();
+        match runtime.run(request, &ConsoleSink).await {
+            Ok((_handle, result)) => {
+                print!(" [{:?}]", result.termination);
+            }
+            Err(e) => {
+                print!(" [ERROR: {e}]");
+            }
+        }
     }
 
-    println!("\n=== Multi-turn test complete ===");
-    println!("Total messages in history: {}", all_messages.len());
+    print!("\n\n=== Multi-turn test complete ===\n");
 }
