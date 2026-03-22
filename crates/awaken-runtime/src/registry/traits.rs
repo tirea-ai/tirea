@@ -106,6 +106,7 @@ pub trait StopPolicyRegistry: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Aggregation of all registries — passed to [`super::resolve::resolve`].
+#[derive(Clone)]
 pub struct RegistrySet {
     pub agents: Arc<dyn AgentSpecRegistry>,
     pub tools: Arc<dyn ToolRegistry>,

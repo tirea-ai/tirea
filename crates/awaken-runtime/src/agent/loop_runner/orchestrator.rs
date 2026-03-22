@@ -64,7 +64,7 @@ pub async fn run_agent_loop_controlled(
 
     // Trim to latest compaction boundary — skip already-summarized history
     if agent.context_policy.is_some() {
-        super::super::context::trim_to_compaction_boundary(&mut messages);
+        super::super::compaction::trim_to_compaction_boundary(&mut messages);
     }
 
     // --- State-driven resume detection ---

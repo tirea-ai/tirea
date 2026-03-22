@@ -30,6 +30,35 @@ pub use agent::state::{
 };
 pub use agent::tool_permission::AllowAllToolsPlugin;
 
+// ── compaction ──
+pub use agent::compaction::{
+    CompactionConfig, CompactionConfigKey, CompactionPlugin, CompactionState, CompactionStateKey,
+    ContextSummarizer, ContextTransform, DefaultSummarizer, record_compaction_boundary,
+};
+
+// ── retry policy ──
+pub use agent::retry_policy::{LlmRetryPolicy, RetryConfigKey, RetryingExecutor};
+
+// ── permission rules ──
+pub use agent::permission_rules::{
+    PermissionAction, PermissionRule, RulesPermissionChecker, RulesPermissionPlugin,
+};
+
+// ── background tasks ──
+pub use agent::background_tasks::{
+    BackgroundTaskManager, BackgroundTaskPlugin, PersistedTaskMeta, TaskId, TaskResult, TaskStatus,
+    TaskSummary,
+};
+
+// ── agent tools ──
+pub use agent::agent_tools::remote_a2a::A2aEndpoint;
+pub use agent::agent_tools::{AgentTool, RemoteA2aTool};
+
+// ── parallel merge ──
+pub use agent::loop_runner::parallel_merge::{
+    ParallelMergeError, ToolStateBatch, collect_all_touched_keys, validate_parallel_state_batches,
+};
+
 // ── builder ──
 pub use builder::AgentRuntimeBuilder;
 

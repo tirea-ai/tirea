@@ -306,7 +306,7 @@ async fn throttle_bypassed_on_content_change() {
 /// direct tracing macro calls matching those added to the loop runner and engine.
 #[test]
 fn tracing_does_not_panic_without_subscriber() {
-    use crate::agent::context::ContextTransform;
+    use crate::agent::compaction::ContextTransform;
     use awaken_contract::contract::inference::ContextWindowPolicy;
     use awaken_contract::contract::transform::InferenceRequestTransform;
 

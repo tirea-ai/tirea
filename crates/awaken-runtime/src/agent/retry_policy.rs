@@ -11,12 +11,13 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken_contract::contract::inference::StreamResult;
 
 /// Policy for retrying failed LLM inference.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct LlmRetryPolicy {
     /// Maximum number of retry attempts (0 = no retry, only the initial attempt).
     pub max_retries: u32,
@@ -150,6 +151,14 @@ impl LlmExecutor for RetryingExecutor {
     fn name(&self) -> &str {
         self.inner.name()
     }
+}
+
+/// Plugin config key for [`LlmRetryPolicy`] in `AgentSpec.sections["retry"]`.
+pub struct RetryConfigKey;
+
+impl awaken_contract::registry_spec::PluginConfigKey for RetryConfigKey {
+    const KEY: &'static str = "retry";
+    type Config = LlmRetryPolicy;
 }
 
 #[cfg(test)]

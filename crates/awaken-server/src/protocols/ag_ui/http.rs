@@ -31,7 +31,7 @@ struct AgUiRunRequest {
     #[serde(default)]
     messages: Vec<AgUiMessage>,
     #[serde(default)]
-    #[allow(dead_code)]
+    #[allow(dead_code)] // deserialized from AG-UI request, reserved for context forwarding
     context: Option<Value>,
 }
 

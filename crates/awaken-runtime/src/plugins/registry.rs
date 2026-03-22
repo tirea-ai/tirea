@@ -64,7 +64,7 @@ pub(crate) struct PhaseHookRegistration {
 }
 
 pub(crate) struct ToolPermissionRegistration {
-    #[allow(dead_code)]
+    /// Plugin that registered this checker (used for diagnostics in tracing).
     pub(crate) plugin_id: String,
     pub(crate) checker: ToolPermissionCheckerArc,
 }

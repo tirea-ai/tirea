@@ -1,6 +1,6 @@
 //! Built-in context management: hard truncation, LLM compaction, summarizer trait.
 //!
-//! The [`ContextCompactionPlugin`] integrates compaction state into the plugin system
+//! The [`CompactionPlugin`] integrates compaction state into the plugin system
 //! by tracking compaction boundaries. This allows external code to query the current
 //! compaction state and enables load-time trimming of already-summarized history.
 
@@ -23,6 +23,50 @@ use crate::state::{MutationBatch, StateKey, StateKeyOptions};
 
 /// Plugin ID for context compaction.
 pub const CONTEXT_COMPACTION_PLUGIN_ID: &str = "context_compaction";
+
+// ---------------------------------------------------------------------------
+// CompactionConfig — configurable prompts and thresholds
+// ---------------------------------------------------------------------------
+
+/// Configuration for the compaction subsystem.
+///
+/// Controls summarizer prompts, model selection, and savings thresholds.
+/// Stored in `AgentSpec.sections["compaction"]` and read via `PluginConfigKey`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CompactionConfig {
+    /// System prompt for the summarizer LLM call.
+    pub summarizer_system_prompt: String,
+    /// User prompt template. `{messages}` is replaced with the conversation transcript.
+    pub summarizer_user_prompt: String,
+    /// Maximum tokens for the summary response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_max_tokens: Option<u32>,
+    /// Model to use for summarization (if different from the agent's model).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_model: Option<String>,
+    /// Minimum token savings ratio to accept a compaction (0.0-1.0).
+    pub min_savings_ratio: f64,
+}
+
+impl Default for CompactionConfig {
+    fn default() -> Self {
+        Self {
+            summarizer_system_prompt: "You are a conversation summarizer. Preserve all key facts, decisions, tool results, and action items. Be concise but complete.".into(),
+            summarizer_user_prompt: "Summarize the following conversation:\n\n{messages}".into(),
+            summary_max_tokens: None,
+            summary_model: None,
+            min_savings_ratio: 0.3,
+        }
+    }
+}
+
+/// Plugin config key for [`CompactionConfig`].
+pub struct CompactionConfigKey;
+
+impl awaken_contract::registry_spec::PluginConfigKey for CompactionConfigKey {
+    const KEY: &'static str = "compaction";
+    type Config = CompactionConfig;
+}
 
 // ---------------------------------------------------------------------------
 // Artifact compaction
@@ -123,27 +167,21 @@ pub trait ContextSummarizer: Send + Sync {
     ) -> Result<String, String>;
 }
 
-/// Default summarizer with a domain-agnostic prompt.
+/// Default summarizer that reads prompts from [`CompactionConfig`].
 ///
 /// Uses cumulative summarization: if a previous summary exists, the prompt asks
 /// the LLM to update it with the new conversation span rather than re-summarize everything.
+#[derive(Default)]
 pub struct DefaultSummarizer {
-    /// Maximum output tokens for the summary.
-    pub max_tokens: u32,
+    config: CompactionConfig,
 }
 
-impl Default for DefaultSummarizer {
-    fn default() -> Self {
-        Self { max_tokens: 1024 }
+impl DefaultSummarizer {
+    /// Create a summarizer with a specific compaction config.
+    pub fn with_config(config: CompactionConfig) -> Self {
+        Self { config }
     }
 }
-
-const DEFAULT_SYSTEM_PROMPT: &str = "\
-You maintain a durable conversation summary for an agent runtime. \
-Produce a concise but lossless working summary for future turns. \
-Preserve user goals, constraints, preferences, decisions, completed work, \
-important findings, identifiers, and unresolved follow-ups. \
-Output plain text only; do not mention the summarization process.";
 
 #[async_trait]
 impl ContextSummarizer for DefaultSummarizer {
@@ -161,23 +199,25 @@ impl ContextSummarizer for DefaultSummarizer {
                 prev.trim(),
                 transcript.trim(),
             ),
-            _ => format!(
-                "Summarize the following conversation:\n\n\
-                 <conversation>\n{}\n</conversation>",
-                transcript.trim(),
-            ),
+            _ => self
+                .config
+                .summarizer_user_prompt
+                .replace("{messages}", transcript.trim()),
         };
 
+        let max_tokens = self.config.summary_max_tokens.unwrap_or(1024);
+        let model = self.config.summary_model.clone().unwrap_or_default();
+
         let request = awaken_contract::contract::executor::InferenceRequest {
-            model: String::new(), // executor decides the model
+            model,
             messages: vec![
-                Message::system(DEFAULT_SYSTEM_PROMPT),
+                Message::system(&self.config.summarizer_system_prompt),
                 Message::user(user_prompt),
             ],
             tools: vec![],
             system: vec![],
             overrides: Some(awaken_contract::contract::inference::InferenceOverride {
-                max_tokens: Some(self.max_tokens),
+                max_tokens: Some(max_tokens),
                 ..Default::default()
             }),
             enable_prompt_cache: false,
@@ -463,31 +503,31 @@ pub struct CompactionBoundary {
 /// Stores a history of compaction boundaries so that load-time trimming
 /// and plugin queries can identify already-summarized ranges.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ContextCompactionState {
+pub struct CompactionState {
     /// Ordered list of compaction boundaries (most recent last).
     pub boundaries: Vec<CompactionBoundary>,
     /// Total number of compaction passes performed.
     pub total_compactions: u64,
 }
 
-/// Reducer actions for [`ContextCompactionState`].
+/// Reducer actions for [`CompactionState`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum ContextCompactionAction {
+pub enum CompactionAction {
     /// Record a new compaction boundary.
     RecordBoundary(CompactionBoundary),
     /// Clear all tracked boundaries (e.g. on thread reset).
     Clear,
 }
 
-impl ContextCompactionState {
-    fn reduce(&mut self, action: ContextCompactionAction) {
+impl CompactionState {
+    fn reduce(&mut self, action: CompactionAction) {
         match action {
-            ContextCompactionAction::RecordBoundary(boundary) => {
+            CompactionAction::RecordBoundary(boundary) => {
                 self.boundaries.push(boundary);
                 self.total_compactions += 1;
             }
-            ContextCompactionAction::Clear => {
+            CompactionAction::Clear => {
                 self.boundaries.clear();
                 self.total_compactions = 0;
             }
@@ -501,12 +541,12 @@ impl ContextCompactionState {
 }
 
 /// State key for context compaction state.
-pub struct ContextCompactionKey;
+pub struct CompactionStateKey;
 
-impl StateKey for ContextCompactionKey {
+impl StateKey for CompactionStateKey {
     const KEY: &'static str = "__context_compaction";
-    type Value = ContextCompactionState;
-    type Update = ContextCompactionAction;
+    type Value = CompactionState;
+    type Update = CompactionAction;
 
     fn apply(value: &mut Self::Value, update: Self::Update) {
         value.reduce(update);
@@ -514,22 +554,33 @@ impl StateKey for ContextCompactionKey {
 }
 
 /// Record a compaction boundary in the state store.
-pub fn record_compaction_boundary(boundary: CompactionBoundary) -> ContextCompactionAction {
-    ContextCompactionAction::RecordBoundary(boundary)
+pub fn record_compaction_boundary(boundary: CompactionBoundary) -> CompactionAction {
+    CompactionAction::RecordBoundary(boundary)
 }
 
 // ---------------------------------------------------------------------------
-// ContextCompactionPlugin
+// CompactionPlugin
 // ---------------------------------------------------------------------------
 
 /// Plugin that integrates context compaction state into the plugin system.
 ///
-/// Registers the [`ContextCompactionKey`] state key so that compaction boundaries
+/// Registers the [`CompactionStateKey`] state key so that compaction boundaries
 /// are tracked durably and available to other plugins and external observers.
+/// Accepts an optional [`CompactionConfig`] for configurable prompts and thresholds.
 #[derive(Debug, Clone, Default)]
-pub struct ContextCompactionPlugin;
+pub struct CompactionPlugin {
+    /// Compaction configuration (prompts, model, thresholds).
+    pub config: CompactionConfig,
+}
 
-impl Plugin for ContextCompactionPlugin {
+impl CompactionPlugin {
+    /// Create with explicit config.
+    pub fn new(config: CompactionConfig) -> Self {
+        Self { config }
+    }
+}
+
+impl Plugin for CompactionPlugin {
     fn descriptor(&self) -> PluginDescriptor {
         PluginDescriptor {
             name: CONTEXT_COMPACTION_PLUGIN_ID,
@@ -537,7 +588,7 @@ impl Plugin for ContextCompactionPlugin {
     }
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), awaken_contract::StateError> {
-        registrar.register_key::<ContextCompactionKey>(StateKeyOptions::default())?;
+        registrar.register_key::<CompactionStateKey>(StateKeyOptions::default())?;
         Ok(())
     }
 
@@ -1496,23 +1547,21 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // ContextCompactionPlugin tests
+    // CompactionPlugin tests
     // -----------------------------------------------------------------------
 
     #[test]
     fn compaction_state_record_boundary() {
-        let mut state = ContextCompactionState::default();
+        let mut state = CompactionState::default();
         assert_eq!(state.total_compactions, 0);
         assert!(state.boundaries.is_empty());
 
-        state.reduce(ContextCompactionAction::RecordBoundary(
-            CompactionBoundary {
-                summary: "User asked to implement feature X.".into(),
-                pre_tokens: 5000,
-                post_tokens: 200,
-                timestamp_ms: 1234567890,
-            },
-        ));
+        state.reduce(CompactionAction::RecordBoundary(CompactionBoundary {
+            summary: "User asked to implement feature X.".into(),
+            pre_tokens: 5000,
+            post_tokens: 200,
+            timestamp_ms: 1234567890,
+        }));
 
         assert_eq!(state.total_compactions, 1);
         assert_eq!(state.boundaries.len(), 1);
@@ -1524,17 +1573,15 @@ mod tests {
 
     #[test]
     fn compaction_state_multiple_boundaries() {
-        let mut state = ContextCompactionState::default();
+        let mut state = CompactionState::default();
 
         for i in 0..3 {
-            state.reduce(ContextCompactionAction::RecordBoundary(
-                CompactionBoundary {
-                    summary: format!("summary {i}"),
-                    pre_tokens: 1000 * (i + 1),
-                    post_tokens: 100 * (i + 1),
-                    timestamp_ms: 1000 + i as u64,
-                },
-            ));
+            state.reduce(CompactionAction::RecordBoundary(CompactionBoundary {
+                summary: format!("summary {i}"),
+                pre_tokens: 1000 * (i + 1),
+                post_tokens: 100 * (i + 1),
+                timestamp_ms: 1000 + i as u64,
+            }));
         }
 
         assert_eq!(state.total_compactions, 3);
@@ -1544,7 +1591,7 @@ mod tests {
 
     #[test]
     fn compaction_state_clear() {
-        let mut state = ContextCompactionState {
+        let mut state = CompactionState {
             boundaries: vec![CompactionBoundary {
                 summary: "old".into(),
                 pre_tokens: 100,
@@ -1554,20 +1601,20 @@ mod tests {
             total_compactions: 1,
         };
 
-        state.reduce(ContextCompactionAction::Clear);
+        state.reduce(CompactionAction::Clear);
         assert!(state.boundaries.is_empty());
         assert_eq!(state.total_compactions, 0);
     }
 
     #[test]
     fn compaction_state_latest_boundary_empty() {
-        let state = ContextCompactionState::default();
+        let state = CompactionState::default();
         assert!(state.latest_boundary().is_none());
     }
 
     #[test]
     fn compaction_state_serde_roundtrip() {
-        let state = ContextCompactionState {
+        let state = CompactionState {
             boundaries: vec![
                 CompactionBoundary {
                     summary: "first".into(),
@@ -1586,7 +1633,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&state).unwrap();
-        let parsed: ContextCompactionState = serde_json::from_str(&json).unwrap();
+        let parsed: CompactionState = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, state);
     }
 
@@ -1595,7 +1642,7 @@ mod tests {
         use crate::state::StateStore;
 
         let store = StateStore::new();
-        store.install_plugin(ContextCompactionPlugin).unwrap();
+        store.install_plugin(CompactionPlugin::default()).unwrap();
         let registry = store.registry.lock().unwrap();
         assert!(registry.keys_by_name.contains_key("__context_compaction"));
     }
@@ -1605,10 +1652,10 @@ mod tests {
         use crate::state::StateStore;
 
         let store = StateStore::new();
-        store.install_plugin(ContextCompactionPlugin).unwrap();
+        store.install_plugin(CompactionPlugin::default()).unwrap();
 
         let mut patch = store.begin_mutation();
-        patch.update::<ContextCompactionKey>(record_compaction_boundary(CompactionBoundary {
+        patch.update::<CompactionStateKey>(record_compaction_boundary(CompactionBoundary {
             summary: "test summary".into(),
             pre_tokens: 4000,
             post_tokens: 180,
@@ -1616,7 +1663,7 @@ mod tests {
         }));
         store.commit(patch).unwrap();
 
-        let state = store.read::<ContextCompactionKey>().unwrap();
+        let state = store.read::<CompactionStateKey>().unwrap();
         assert_eq!(state.total_compactions, 1);
         assert_eq!(state.boundaries[0].summary, "test summary");
     }
@@ -1629,6 +1676,6 @@ mod tests {
             post_tokens: 10,
             timestamp_ms: 0,
         });
-        assert!(matches!(action, ContextCompactionAction::RecordBoundary(_)));
+        assert!(matches!(action, CompactionAction::RecordBoundary(_)));
     }
 }

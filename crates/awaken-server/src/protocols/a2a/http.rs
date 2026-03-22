@@ -65,7 +65,7 @@ struct A2aTaskSendRequest {
     #[serde(default)]
     message: Option<A2aMessage>,
     #[serde(default)]
-    #[allow(dead_code)]
+    #[allow(dead_code)] // deserialized from A2A request, reserved for task metadata forwarding
     metadata: Option<Value>,
 }
 

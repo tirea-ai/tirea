@@ -81,6 +81,7 @@ impl ExecutionEnv {
 
             // Collect permission checkers
             for entry in registrar.tool_permissions {
+                tracing::debug!(plugin_id = %entry.plugin_id, "registered_tool_permission_checker");
                 all_permission_checkers.push(entry.checker);
             }
 

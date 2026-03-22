@@ -1,7 +1,7 @@
 pub(crate) mod agent_tools;
 pub(crate) mod background_tasks;
+pub(crate) mod compaction;
 pub mod config;
-pub(crate) mod context;
 pub mod executor;
 pub(crate) mod loop_runner;
 pub(crate) mod permission_rules;

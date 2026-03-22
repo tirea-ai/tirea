@@ -324,7 +324,7 @@ struct DecisionPayload {
     tool_call_id: String,
     action: String,
     #[serde(default)]
-    #[allow(dead_code)]
+    #[allow(dead_code)] // deserialized from JSON request, reserved for decision data
     payload: Value,
 }
 

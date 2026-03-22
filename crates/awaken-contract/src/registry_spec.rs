@@ -86,9 +86,42 @@ pub struct AgentSpec {
     /// Excluded tool IDs (blacklist). Applied after `allowed_tools`.
     #[serde(default)]
     pub excluded_tools: Option<Vec<String>>,
+    /// Sub-agent IDs: each creates an `AgentTool` delegating to the named agent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sub_agents: Vec<SubAgentRef>,
+    /// Remote A2A agent endpoints: each creates a `RemoteA2aTool`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remote_agents: Vec<RemoteAgentRef>,
     /// Plugin-specific configuration sections (keyed by PluginConfigKey::KEY).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub sections: HashMap<String, Value>,
+}
+
+/// Reference to a sub-agent for delegation via `AgentTool`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubAgentRef {
+    /// Agent ID to delegate to.
+    pub agent_id: String,
+    /// Human-readable description shown to the LLM.
+    #[serde(default)]
+    pub description: String,
+}
+
+/// Reference to a remote A2A agent endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteAgentRef {
+    /// Unique tool ID for this remote agent.
+    pub tool_id: String,
+    /// Human-readable description shown to the LLM.
+    #[serde(default)]
+    pub description: String,
+    /// Base URL of the remote A2A server.
+    pub base_url: String,
+    /// Remote agent ID on the server.
+    pub remote_agent_id: String,
+    /// Optional bearer token for authentication.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bearer_token: Option<String>,
 }
 
 impl Default for AgentSpec {
@@ -104,6 +137,8 @@ impl Default for AgentSpec {
             active_plugins: HashSet::new(),
             allowed_tools: None,
             excluded_tools: None,
+            sub_agents: Vec::new(),
+            remote_agents: Vec::new(),
             sections: HashMap::new(),
         }
     }

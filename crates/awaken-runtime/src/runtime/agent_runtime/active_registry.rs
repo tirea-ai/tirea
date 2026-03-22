@@ -6,9 +6,9 @@ use std::sync::RwLock;
 use super::RunHandle;
 
 pub(super) struct RunEntry {
-    #[allow(dead_code)]
+    #[allow(dead_code)] // stored for diagnostics; read via Debug/tracing in cancel_by_thread
     pub(super) run_id: String,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // stored for diagnostics; read via Debug/tracing in cancel_by_thread
     pub(super) agent_id: String,
     pub(super) handle: RunHandle,
 }

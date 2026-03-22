@@ -122,7 +122,7 @@ pub fn build_agent_env(
     plugins: &[Arc<dyn crate::plugins::Plugin>],
     agent: &super::config::AgentConfig,
 ) -> Result<ExecutionEnv, StateError> {
-    use super::context::ContextTransform;
+    use super::compaction::ContextTransform;
     use super::stop_conditions::MaxRoundsPlugin;
     use super::tool_permission::AllowAllToolsPlugin;
 

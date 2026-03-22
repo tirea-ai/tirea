@@ -102,11 +102,72 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
         .get_provider(&model.provider)
         .ok_or_else(|| ResolveError::ProviderNotFound(model.provider.clone()))?;
 
-    let tools = resolve_tools(registries, &spec);
+    // Wrap executor with retry policy if configured in agent spec sections.
+    let executor = match spec.config::<crate::agent::retry_policy::RetryConfigKey>() {
+        Ok(policy) if policy.max_retries > 0 || !policy.fallback_models.is_empty() => Arc::new(
+            crate::agent::retry_policy::RetryingExecutor::new(executor, policy),
+        )
+            as Arc<dyn LlmExecutor>,
+        _ => executor,
+    };
+
+    let mut tools = resolve_tools(registries, &spec);
+
+    // Wire sub-agent tools from spec.sub_agents
+    if !spec.sub_agents.is_empty() {
+        let resolver: Arc<dyn crate::runtime::AgentResolver> = Arc::new(registries.clone());
+        for sub in &spec.sub_agents {
+            let agent_tool = crate::agent::agent_tools::AgentTool::new(
+                &sub.agent_id,
+                if sub.description.is_empty() {
+                    format!("Delegate to sub-agent '{}'", sub.agent_id)
+                } else {
+                    sub.description.clone()
+                },
+                resolver.clone(),
+            );
+            let tool_id = agent_tool.descriptor().id;
+            tools.insert(tool_id, Arc::new(agent_tool));
+        }
+    }
+
+    // Wire remote A2A agent tools from spec.remote_agents
+    for remote in &spec.remote_agents {
+        let endpoint = crate::agent::agent_tools::remote_a2a::A2aEndpoint::new(
+            &remote.base_url,
+            &remote.remote_agent_id,
+        );
+        let endpoint = match &remote.bearer_token {
+            Some(token) => endpoint.with_bearer_token(token),
+            None => endpoint,
+        };
+        let tool = crate::agent::agent_tools::RemoteA2aTool::new(
+            &remote.tool_id,
+            if remote.description.is_empty() {
+                format!("Remote A2A agent '{}'", remote.remote_agent_id)
+            } else {
+                remote.description.clone()
+            },
+            endpoint,
+        );
+        tools.insert(remote.tool_id.clone(), Arc::new(tool));
+    }
+
     let mut plugins = resolve_plugins(registries, &spec)?;
     plugins.push(Arc::new(
         crate::agent::loop_runner::actions::LoopActionHandlersPlugin,
     ));
+
+    // Default compaction plugin: tracks compaction boundaries in state.
+    // Only added if the agent has a context_policy configured.
+    if spec.context_policy.is_some() {
+        let compaction_config = spec
+            .config::<crate::agent::compaction::CompactionConfigKey>()
+            .unwrap_or_default();
+        plugins.push(Arc::new(crate::agent::compaction::CompactionPlugin::new(
+            compaction_config,
+        )));
+    }
 
     // Eager validation: check spec sections against plugin-declared schemas
     validate_sections(&spec, &plugins)?;
@@ -156,7 +217,7 @@ impl AgentResolver for RegistrySet {
         // Register built-in context truncation transform when policy is set
         if let Some(ref policy) = config.context_policy {
             env.request_transforms
-                .push(Arc::new(crate::agent::context::ContextTransform::new(
+                .push(Arc::new(crate::agent::compaction::ContextTransform::new(
                     policy.clone(),
                 )));
         }
