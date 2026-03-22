@@ -3,7 +3,7 @@
 //! Run lifecycle: RunLifecycle (Running → StepCompleted → Done/Waiting)
 //! Tool call lifecycle: ToolCallStates (New → Running → Succeeded/Failed/Suspended)
 
-mod actions;
+pub(crate) mod actions;
 mod checkpoint;
 mod inference;
 mod orchestrator;
@@ -45,12 +45,19 @@ impl crate::plugins::Plugin for LoopStatePlugin {
         &self,
         r: &mut crate::plugins::PluginRegistrar,
     ) -> Result<(), crate::error::StateError> {
-        use super::state::ContextThrottleState;
+        use super::state::{
+            AccumulatedContextMessages, AccumulatedOverrides, AccumulatedToolExclusions,
+            AccumulatedToolInclusions, ContextThrottleState,
+        };
         use crate::state::StateKeyOptions;
 
         r.register_key::<RunLifecycle>(StateKeyOptions::default())?;
         r.register_key::<ToolCallStates>(StateKeyOptions::default())?;
         r.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
+        r.register_key::<AccumulatedOverrides>(StateKeyOptions::default())?;
+        r.register_key::<AccumulatedContextMessages>(StateKeyOptions::default())?;
+        r.register_key::<AccumulatedToolExclusions>(StateKeyOptions::default())?;
+        r.register_key::<AccumulatedToolInclusions>(StateKeyOptions::default())?;
         Ok(())
     }
 }
@@ -118,12 +125,9 @@ pub fn build_agent_env(
     let mut all_plugins: Vec<Arc<dyn crate::plugins::Plugin>> = plugins.to_vec();
     all_plugins.push(Arc::new(MaxRoundsPlugin::new(agent.max_rounds)));
     all_plugins.push(Arc::new(AllowAllToolsPlugin));
+    all_plugins.push(Arc::new(actions::LoopActionHandlersPlugin));
 
     let mut env = ExecutionEnv::from_plugins(&all_plugins)?;
-    env.register_loop_consumed_action::<super::state::SetInferenceOverride>();
-    env.register_loop_consumed_action::<super::state::AddContextMessage>();
-    env.register_loop_consumed_action::<super::state::ExcludeTool>();
-    env.register_loop_consumed_action::<super::state::IncludeOnlyTools>();
 
     // Register built-in context truncation transform when policy is set
     if let Some(ref policy) = agent.context_policy {

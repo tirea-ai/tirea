@@ -19,8 +19,8 @@ use futures::channel::mpsc::UnboundedReceiver;
 
 use super::super::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate};
 use super::actions::{
-    apply_context_messages, apply_tool_filter_actions, consume_context_messages,
-    consume_inference_overrides,
+    apply_context_messages, take_accumulated_context_messages, take_accumulated_overrides,
+    take_and_apply_tool_filters,
 };
 use super::checkpoint::{
     check_termination, complete_step, emit_state_snapshot, persist_checkpoint,
@@ -164,16 +164,16 @@ pub async fn run_agent_loop_controlled(
             }
         }
 
-        // Consume loop actions from PendingScheduledActions before building request
+        // Read accumulated results from action handlers (populated during run_phase above)
         let mut overrides = run_overrides.clone();
-        if let Some(runtime_overrides) = consume_inference_overrides(store)? {
+        if let Some(runtime_overrides) = take_accumulated_overrides(store)? {
             if let Some(merged) = overrides.as_mut() {
                 merged.merge(runtime_overrides);
             } else {
                 overrides = Some(runtime_overrides);
             }
         }
-        let context_msgs = consume_context_messages(store, steps)?;
+        let context_msgs = take_accumulated_context_messages(store)?;
 
         // Build message list: system prompt + conversation history
         let has_system_prompt = !agent.system_prompt.is_empty();
@@ -188,9 +188,9 @@ pub async fn run_agent_loop_controlled(
             apply_context_messages(&mut request_messages, context_msgs, has_system_prompt);
         }
 
-        // Apply request transforms (e.g., hard truncation to token budget)
+        // Apply accumulated tool filters from action handlers
         let mut tools = agent.tool_descriptors();
-        apply_tool_filter_actions(store, &mut tools)?;
+        take_and_apply_tool_filters(store, &mut tools)?;
         let request_messages = crate::contract::transform::apply_transforms(
             request_messages,
             &tools,

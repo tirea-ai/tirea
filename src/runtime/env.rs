@@ -3,11 +3,11 @@
 //! Contains all hooks, action handlers, effect handlers, and permission checkers
 //! for one agent run. Not global — rebuilt per resolve().
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::error::StateError;
-use crate::model::{Phase, ScheduledActionSpec};
+use crate::model::Phase;
 use crate::plugins::{Plugin, PluginRegistrar};
 
 use super::handlers::{
@@ -31,9 +31,6 @@ pub struct ExecutionEnv {
     pub(crate) scheduled_action_handlers: HashMap<String, ScheduledActionHandlerArc>,
     pub(crate) effect_handlers: HashMap<String, EffectHandlerArc>,
     pub(crate) tool_permission_checkers: Vec<ToolPermissionCheckerArc>,
-    /// Action keys consumed by the loop runner (not by EXECUTE handlers).
-    /// EXECUTE skips these; submit_command allows them without a handler.
-    pub(crate) loop_consumed_action_keys: HashSet<String>,
     /// Request transforms applied after message assembly, before LLM call.
     pub(crate) request_transforms: Vec<RequestTransformArc>,
 }
@@ -98,7 +95,6 @@ impl ExecutionEnv {
             scheduled_action_handlers: all_action_handlers,
             effect_handlers: all_effect_handlers,
             tool_permission_checkers: all_permission_checkers,
-            loop_consumed_action_keys: HashSet::new(),
             request_transforms: all_transforms,
         })
     }
@@ -110,18 +106,8 @@ impl ExecutionEnv {
             scheduled_action_handlers: HashMap::new(),
             effect_handlers: HashMap::new(),
             tool_permission_checkers: Vec::new(),
-            loop_consumed_action_keys: HashSet::new(),
             request_transforms: Vec::new(),
         }
-    }
-
-    /// Declare an action key that the loop runner will consume directly.
-    ///
-    /// EXECUTE skips actions with these keys (leaves them in queue).
-    /// `submit_command` allows them without a registered handler.
-    /// Unknown action keys (neither handler-registered nor loop-consumed) are rejected.
-    pub fn register_loop_consumed_action<A: ScheduledActionSpec>(&mut self) {
-        self.loop_consumed_action_keys.insert(A::KEY.to_string());
     }
 
     /// Get all tagged hooks for a phase.

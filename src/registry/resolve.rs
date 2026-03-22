@@ -97,7 +97,10 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
         .ok_or_else(|| ResolveError::ProviderNotFound(model.provider.clone()))?;
 
     let tools = resolve_tools(registries, &spec);
-    let plugins = resolve_plugins(registries, &spec)?;
+    let mut plugins = resolve_plugins(registries, &spec)?;
+    plugins.push(Arc::new(
+        crate::agent::loop_runner::actions::LoopActionHandlersPlugin,
+    ));
     let env = ExecutionEnv::from_plugins(&plugins)?;
 
     Ok(ResolvedRun {
@@ -125,10 +128,6 @@ impl AgentResolver for RegistrySet {
         })?;
 
         let mut env = run.env;
-
-        // Register loop-consumed actions (same as build_agent_env)
-        env.register_loop_consumed_action::<crate::agent::state::SetInferenceOverride>();
-        env.register_loop_consumed_action::<crate::agent::state::AddContextMessage>();
 
         let config = AgentConfig {
             id: run.spec.id,
@@ -364,7 +363,7 @@ mod tests {
         assert_eq!(run.tools.len(), 2);
         assert!(run.tools.contains_key("read"));
         assert!(run.tools.contains_key("write"));
-        assert_eq!(run.plugins.len(), 1);
+        assert_eq!(run.plugins.len(), 2); // user plugin + LoopActionHandlersPlugin
     }
 
     #[test]
@@ -577,8 +576,8 @@ mod tests {
         );
 
         let run = resolve(&regs, "a").unwrap();
-        assert!(run.plugins.is_empty());
-        // env is empty — no hooks registered
+        assert_eq!(run.plugins.len(), 1); // LoopActionHandlersPlugin only
+        // env has action handlers but no hooks
     }
 
     #[test]

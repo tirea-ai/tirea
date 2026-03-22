@@ -1,220 +1,249 @@
-//! Loop-consumed actions: inference overrides, context messages, and tool filters.
+//! Action handlers and helpers for loop-consumed actions.
+//!
+//! Each action type has a handler that runs during `run_phase(BeforeInference)`,
+//! writing results to accumulator state keys. The orchestrator reads these
+//! accumulators after the phase to build the inference request.
 
+use async_trait::async_trait;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
+use crate::contract::context_message::ContextMessage;
 use crate::contract::message::{Message, Role};
-use crate::model::{PendingScheduledActions, ScheduledActionQueueUpdate};
-use crate::state::MutationBatch;
+use crate::error::StateError;
+use crate::runtime::{PhaseContext, TypedScheduledActionHandler};
+use crate::state::StateCommand;
 
-/// Consume `SetInferenceOverride` actions from the pending queue.
-///
-/// Loop-consumed action: no handler registered, EXECUTE skips it.
-/// Multiple overrides are merged with last-wins semantics per field.
-pub(super) fn consume_inference_overrides(
-    store: &crate::state::StateStore,
-) -> Result<Option<crate::contract::inference::InferenceOverride>, crate::error::StateError> {
-    use super::super::state::SetInferenceOverride;
-    use crate::model::ScheduledActionSpec;
+use super::super::state::{
+    AccumulatedContextMessages, AccumulatedContextMessagesUpdate, AccumulatedOverrides,
+    AccumulatedOverridesUpdate, AccumulatedToolExclusions, AccumulatedToolExclusionsUpdate,
+    AccumulatedToolInclusions, AccumulatedToolInclusionsUpdate, AddContextMessage,
+    ContextThrottleState, ContextThrottleUpdate, ExcludeTool, IncludeOnlyTools, RunLifecycle,
+    SetInferenceOverride,
+};
 
-    let pending = store.read::<PendingScheduledActions>().unwrap_or_default();
+// ---------------------------------------------------------------------------
+// Action handlers
+// ---------------------------------------------------------------------------
 
-    let matching: Vec<_> = pending
-        .iter()
-        .filter(|e| e.action.key == SetInferenceOverride::KEY)
-        .collect();
+/// Handler for `SetInferenceOverride` — merges overrides into [`AccumulatedOverrides`].
+pub(super) struct InferenceOverrideHandler;
 
-    if matching.is_empty() {
-        return Ok(None);
-    }
-
-    let mut merged = crate::contract::inference::InferenceOverride::default();
-    let mut ids = Vec::new();
-    for envelope in matching {
-        let payload = SetInferenceOverride::decode_payload(envelope.action.payload.clone())?;
-        merged.merge(payload);
-        ids.push(envelope.id);
-    }
-
-    // Dequeue consumed actions
-    let mut patch = MutationBatch::new();
-    for id in ids {
-        patch.update::<PendingScheduledActions>(ScheduledActionQueueUpdate::Remove { id });
-    }
-    store.commit(patch)?;
-
-    if merged.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(merged))
+#[async_trait]
+impl TypedScheduledActionHandler<SetInferenceOverride> for InferenceOverrideHandler {
+    async fn handle_typed(
+        &self,
+        _ctx: &PhaseContext,
+        payload: crate::contract::inference::InferenceOverride,
+    ) -> Result<StateCommand, StateError> {
+        let mut cmd = StateCommand::new();
+        cmd.update::<AccumulatedOverrides>(AccumulatedOverridesUpdate::Merge(payload));
+        Ok(cmd)
     }
 }
 
-/// Consume `AddContextMessage` actions from the pending queue with throttle filtering.
-///
-/// Reads `ContextThrottleState` to enforce cooldown rules:
-/// - `cooldown_turns == 0`: always inject
-/// - Content hash changed since last injection: inject
-/// - Steps since last injection >= cooldown_turns: inject
-/// - Otherwise: skip (throttled)
-///
-/// All matching actions are dequeued regardless of throttle outcome.
-pub(super) fn consume_context_messages(
-    store: &crate::state::StateStore,
-    current_step: usize,
-) -> Result<Vec<crate::contract::context_message::ContextMessage>, crate::error::StateError> {
-    use super::super::state::{AddContextMessage, ContextThrottleState, ContextThrottleUpdate};
-    use crate::model::ScheduledActionSpec;
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+/// Handler for `AddContextMessage` — applies throttle logic, pushes accepted
+/// messages to [`AccumulatedContextMessages`], updates [`ContextThrottleState`].
+pub(super) struct ContextMessageHandler;
 
-    let pending = store.read::<PendingScheduledActions>().unwrap_or_default();
+#[async_trait]
+impl TypedScheduledActionHandler<AddContextMessage> for ContextMessageHandler {
+    async fn handle_typed(
+        &self,
+        ctx: &PhaseContext,
+        payload: ContextMessage,
+    ) -> Result<StateCommand, StateError> {
+        let mut cmd = StateCommand::new();
 
-    let matching: Vec<_> = pending
-        .iter()
-        .filter(|e| e.action.key == AddContextMessage::KEY)
-        .collect();
+        // Determine current step from RunLifecycle.step_count + 1
+        // (step_count records completed steps; current step is one ahead)
+        let current_step = ctx
+            .snapshot
+            .get::<RunLifecycle>()
+            .map(|s| s.step_count as usize + 1)
+            .unwrap_or(1);
 
-    if matching.is_empty() {
-        return Ok(vec![]);
-    }
-
-    // Decode all payloads and collect action IDs
-    let mut candidates = Vec::new();
-    let mut action_ids = Vec::new();
-    for envelope in matching {
-        let payload = AddContextMessage::decode_payload(envelope.action.payload.clone())?;
-        candidates.push(payload);
-        action_ids.push(envelope.id);
-    }
-
-    // Dequeue all matching actions (consumed regardless of throttle)
-    let mut patch = MutationBatch::new();
-    for id in &action_ids {
-        patch.update::<PendingScheduledActions>(ScheduledActionQueueUpdate::Remove { id: *id });
-    }
-    store.commit(patch)?;
-
-    // Apply throttle filtering
-    let throttle_state = store.read::<ContextThrottleState>().unwrap_or_default();
-
-    let mut accepted = Vec::new();
-    let mut throttle_updates = Vec::new();
-
-    for msg in candidates {
         let content_hash = {
             let mut hasher = DefaultHasher::new();
-            // Hash the serialized content for change detection
-            if let Ok(json) = serde_json::to_string(&msg.content) {
+            if let Ok(json) = serde_json::to_string(&payload.content) {
                 json.hash(&mut hasher);
             }
             hasher.finish()
         };
 
-        let should_inject = if msg.cooldown_turns == 0 {
+        let should_inject = if payload.cooldown_turns == 0 {
             true
         } else {
-            match throttle_state.entries.get(&msg.key) {
+            let throttle_state = ctx
+                .snapshot
+                .get::<ContextThrottleState>()
+                .cloned()
+                .unwrap_or_default();
+            match throttle_state.entries.get(&payload.key) {
                 None => true,
                 Some(entry) => {
                     entry.content_hash != content_hash
                         || current_step.saturating_sub(entry.last_step)
-                            >= msg.cooldown_turns as usize
+                            >= payload.cooldown_turns as usize
                 }
             }
         };
 
         if should_inject {
-            throttle_updates.push(ContextThrottleUpdate::Injected {
-                key: msg.key.clone(),
+            cmd.update::<ContextThrottleState>(ContextThrottleUpdate::Injected {
+                key: payload.key.clone(),
                 step: current_step,
                 content_hash,
             });
-            accepted.push(msg);
+            cmd.update::<AccumulatedContextMessages>(AccumulatedContextMessagesUpdate::Push(
+                payload,
+            ));
         }
-    }
 
-    // Update throttle state
-    if !throttle_updates.is_empty() {
-        let mut patch = MutationBatch::new();
-        for update in throttle_updates {
-            patch.update::<ContextThrottleState>(update);
-        }
-        store.commit(patch)?;
+        Ok(cmd)
     }
-
-    Ok(accepted)
 }
 
-/// Consume `ExcludeTool` and `IncludeOnlyTools` actions, then filter tool descriptors.
+/// Handler for `ExcludeTool` — adds the tool ID to [`AccumulatedToolExclusions`].
+pub(super) struct ExcludeToolHandler;
+
+#[async_trait]
+impl TypedScheduledActionHandler<ExcludeTool> for ExcludeToolHandler {
+    async fn handle_typed(
+        &self,
+        _ctx: &PhaseContext,
+        payload: String,
+    ) -> Result<StateCommand, StateError> {
+        let mut cmd = StateCommand::new();
+        cmd.update::<AccumulatedToolExclusions>(AccumulatedToolExclusionsUpdate::Add(payload));
+        Ok(cmd)
+    }
+}
+
+/// Handler for `IncludeOnlyTools` — extends [`AccumulatedToolInclusions`] with the allow-list.
+pub(super) struct IncludeOnlyToolsHandler;
+
+#[async_trait]
+impl TypedScheduledActionHandler<IncludeOnlyTools> for IncludeOnlyToolsHandler {
+    async fn handle_typed(
+        &self,
+        _ctx: &PhaseContext,
+        payload: Vec<String>,
+    ) -> Result<StateCommand, StateError> {
+        let mut cmd = StateCommand::new();
+        cmd.update::<AccumulatedToolInclusions>(AccumulatedToolInclusionsUpdate::Extend(payload));
+        Ok(cmd)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Plugin for registering action handlers
+// ---------------------------------------------------------------------------
+
+/// Internal plugin that registers handlers for the four loop action types.
 ///
-/// - All `ExcludeTool` payloads are collected; matching tool IDs are removed.
-/// - If any `IncludeOnlyTools` payloads exist, their union forms an allow-list;
-///   only tools whose IDs appear in the allow-list are kept.
-/// - Exclusions are applied after inclusion filtering.
-pub(super) fn apply_tool_filter_actions(
+/// Added to the `ExecutionEnv` plugins list in `build_agent_env` and
+/// `RegistrySet::resolve` so that these actions are processed during
+/// `run_phase(BeforeInference)` like any other handler-based action.
+pub(crate) struct LoopActionHandlersPlugin;
+
+impl crate::plugins::Plugin for LoopActionHandlersPlugin {
+    fn descriptor(&self) -> crate::plugins::PluginDescriptor {
+        crate::plugins::PluginDescriptor {
+            name: "__loop_action_handlers",
+        }
+    }
+
+    fn register(
+        &self,
+        r: &mut crate::plugins::PluginRegistrar,
+    ) -> Result<(), crate::error::StateError> {
+        r.register_scheduled_action::<SetInferenceOverride, _>(InferenceOverrideHandler)?;
+        r.register_scheduled_action::<AddContextMessage, _>(ContextMessageHandler)?;
+        r.register_scheduled_action::<ExcludeTool, _>(ExcludeToolHandler)?;
+        r.register_scheduled_action::<IncludeOnlyTools, _>(IncludeOnlyToolsHandler)?;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator helpers — read accumulators after run_phase(BeforeInference)
+// ---------------------------------------------------------------------------
+
+/// Read and clear accumulated inference overrides from the state store.
+pub(super) fn take_accumulated_overrides(
+    store: &crate::state::StateStore,
+) -> Result<Option<crate::contract::inference::InferenceOverride>, StateError> {
+    let result = store.read::<AccumulatedOverrides>().flatten();
+    if result.is_some() {
+        let mut patch = crate::state::MutationBatch::new();
+        patch.update::<AccumulatedOverrides>(AccumulatedOverridesUpdate::Clear);
+        store.commit(patch)?;
+    }
+    Ok(result)
+}
+
+/// Read and clear accumulated context messages from the state store.
+pub(super) fn take_accumulated_context_messages(
+    store: &crate::state::StateStore,
+) -> Result<Vec<ContextMessage>, StateError> {
+    let result = store
+        .read::<AccumulatedContextMessages>()
+        .unwrap_or_default();
+    if !result.is_empty() {
+        let mut patch = crate::state::MutationBatch::new();
+        patch.update::<AccumulatedContextMessages>(AccumulatedContextMessagesUpdate::Clear);
+        store.commit(patch)?;
+    }
+    Ok(result)
+}
+
+/// Read and clear accumulated tool filters, then apply them to the tool list.
+///
+/// - If any `IncludeOnlyTools` actions were processed, only tools in the combined
+///   allow-list are kept.
+/// - Then any `ExcludeTool` tool IDs are removed.
+pub(super) fn take_and_apply_tool_filters(
     store: &crate::state::StateStore,
     tools: &mut Vec<crate::contract::tool::ToolDescriptor>,
-) -> Result<(), crate::error::StateError> {
-    use super::super::state::{ExcludeTool, IncludeOnlyTools};
-    use crate::model::ScheduledActionSpec;
-    use std::collections::HashSet;
+) -> Result<(), StateError> {
+    let exclusions = store
+        .read::<AccumulatedToolExclusions>()
+        .unwrap_or_default();
+    let inclusions = store
+        .read::<AccumulatedToolInclusions>()
+        .unwrap_or_default();
 
-    let pending = store.read::<PendingScheduledActions>().unwrap_or_default();
+    let has_filters = !exclusions.is_empty() || inclusions.0.is_some();
 
-    // Collect ExcludeTool actions
-    let exclude_matching: Vec<_> = pending
-        .iter()
-        .filter(|e| e.action.key == ExcludeTool::KEY)
-        .collect();
-
-    let mut exclude_ids: HashSet<String> = HashSet::new();
-    let mut action_ids: Vec<u64> = Vec::new();
-
-    for envelope in &exclude_matching {
-        let payload = ExcludeTool::decode_payload(envelope.action.payload.clone())?;
-        exclude_ids.insert(payload);
-        action_ids.push(envelope.id);
-    }
-
-    // Collect IncludeOnlyTools actions
-    let include_matching: Vec<_> = pending
-        .iter()
-        .filter(|e| e.action.key == IncludeOnlyTools::KEY)
-        .collect();
-
-    let mut include_ids: Option<HashSet<String>> = None;
-
-    for envelope in &include_matching {
-        let payload = IncludeOnlyTools::decode_payload(envelope.action.payload.clone())?;
-        let set = include_ids.get_or_insert_with(HashSet::new);
-        set.extend(payload);
-        action_ids.push(envelope.id);
-    }
-
-    // Dequeue all consumed actions
-    if !action_ids.is_empty() {
-        let mut patch = MutationBatch::new();
-        for id in action_ids {
-            patch.update::<PendingScheduledActions>(ScheduledActionQueueUpdate::Remove { id });
-        }
+    if has_filters {
+        let mut patch = crate::state::MutationBatch::new();
+        patch.update::<AccumulatedToolExclusions>(AccumulatedToolExclusionsUpdate::Clear);
+        patch.update::<AccumulatedToolInclusions>(AccumulatedToolInclusionsUpdate::Clear);
         store.commit(patch)?;
     }
 
     // Apply include-only filter first
-    if let Some(ref allowed) = include_ids {
+    if let Some(ref allowed) = inclusions.0 {
         tools.retain(|t| allowed.contains(&t.id));
     }
 
     // Apply exclusions
-    if !exclude_ids.is_empty() {
-        tools.retain(|t| !exclude_ids.contains(&t.id));
+    if !exclusions.is_empty() {
+        tools.retain(|t| !exclusions.contains(&t.id));
     }
 
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Message placement (unchanged)
+// ---------------------------------------------------------------------------
+
 /// Insert context messages into the message list at their declared target positions.
 pub(super) fn apply_context_messages(
     messages: &mut Vec<Message>,
-    context_messages: Vec<crate::contract::context_message::ContextMessage>,
+    context_messages: Vec<ContextMessage>,
     has_system_prompt: bool,
 ) {
     use crate::contract::context_message::ContextMessageTarget;

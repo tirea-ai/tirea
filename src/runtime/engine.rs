@@ -130,8 +130,7 @@ impl PhaseRuntime {
                 .read::<PendingScheduledActions>()
                 .unwrap_or_default();
 
-            // Only process actions matching this phase AND having a registered handler.
-            // Loop-consumed actions (declared via register_loop_consumed_action) stay in queue.
+            // Process actions matching this phase that have a registered handler.
             let matching: Vec<_> = queued
                 .into_iter()
                 .filter(|envelope| {
@@ -214,11 +213,9 @@ impl PhaseRuntime {
         env: &ExecutionEnv,
         mut command: StateCommand,
     ) -> Result<SubmitCommandReport, StateError> {
-        // Validate all action keys are either handler-registered or loop-consumed.
+        // Validate all action keys have a registered handler.
         for action in &command.scheduled_actions {
-            if !env.scheduled_action_handlers.contains_key(&action.key)
-                && !env.loop_consumed_action_keys.contains(&action.key)
-            {
+            if !env.scheduled_action_handlers.contains_key(&action.key) {
                 return Err(StateError::UnknownScheduledActionHandler {
                     key: action.key.clone(),
                 });

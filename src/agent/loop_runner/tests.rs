@@ -1,45 +1,44 @@
+use std::sync::Arc;
+
 use super::*;
 use crate::contract::content::ContentBlock;
 use crate::contract::context_message::ContextMessage;
 use crate::contract::message::{Message, Role};
 use crate::model::{
-    PendingScheduledActions, ScheduledAction, ScheduledActionEnvelope, ScheduledActionQueueUpdate,
-    ScheduledActionSpec,
+    PendingScheduledActions, Phase, ScheduledAction, ScheduledActionEnvelope,
+    ScheduledActionQueueUpdate, ScheduledActionSpec,
 };
-use crate::state::{StateKeyOptions, StateStore};
+use crate::runtime::{ExecutionEnv, PhaseContext};
+use crate::state::StateStore;
 
-use super::super::state::AddContextMessage;
-use super::actions::{apply_context_messages, apply_tool_filter_actions, consume_context_messages};
+use super::super::state::{
+    AddContextMessage, ExcludeTool, IncludeOnlyTools, RunLifecycle, RunLifecycleUpdate,
+    SetInferenceOverride,
+};
+use super::actions::{
+    LoopActionHandlersPlugin, apply_context_messages, take_accumulated_context_messages,
+    take_accumulated_overrides, take_and_apply_tool_filters,
+};
+use crate::runtime::PhaseRuntime;
 
-/// Test-only plugin that registers the PendingScheduledActions key.
-struct TestQueuePlugin;
-
-impl crate::plugins::Plugin for TestQueuePlugin {
-    fn descriptor(&self) -> crate::plugins::PluginDescriptor {
-        crate::plugins::PluginDescriptor {
-            name: "__test_queue",
-        }
-    }
-
-    fn register(
-        &self,
-        r: &mut crate::plugins::PluginRegistrar,
-    ) -> Result<(), crate::error::StateError> {
-        r.register_key::<PendingScheduledActions>(StateKeyOptions::default())?;
-        Ok(())
-    }
-}
-
-/// Helper: create a StateStore with all keys needed by context message machinery.
-fn test_store() -> StateStore {
+/// Helper: create a PhaseRuntime + ExecutionEnv with action handlers registered.
+fn test_runtime() -> (PhaseRuntime, ExecutionEnv) {
     let store = StateStore::new();
-    store
-        .install_plugin(TestQueuePlugin)
-        .expect("install TestQueuePlugin");
     store
         .install_plugin(LoopStatePlugin)
         .expect("install LoopStatePlugin");
-    store
+
+    // Initialize RunLifecycle so step counting works
+    let mut patch = crate::state::MutationBatch::new();
+    patch.update::<RunLifecycle>(RunLifecycleUpdate::Start {
+        run_id: "test".into(),
+        updated_at: 0,
+    });
+    store.commit(patch).expect("init lifecycle");
+
+    let runtime = PhaseRuntime::new(store).expect("create runtime");
+    let env = ExecutionEnv::from_plugins(&[Arc::new(LoopActionHandlersPlugin)]).expect("build env");
+    (runtime, env)
 }
 
 /// Helper: push a context message action into the pending queue.
@@ -136,20 +135,32 @@ fn multiple_context_messages_sorted_by_target() {
 }
 
 // -----------------------------------------------------------------------
-// consume_context_messages tests (throttle logic)
+// Handler-based context message tests (throttle logic via run_phase)
 // -----------------------------------------------------------------------
 
-#[test]
-fn throttle_zero_cooldown_always_injects() {
-    let store = test_store();
+#[tokio::test]
+async fn throttle_zero_cooldown_always_injects() {
+    let (runtime, env) = test_runtime();
+    let store = runtime.store();
 
-    for step in 0..5 {
+    for step in 0..5u32 {
         enqueue_context_message(
-            &store,
+            store,
             step as u64,
             ContextMessage::system("always", "inject me").with_cooldown(0),
         );
-        let accepted = consume_context_messages(&store, step).expect("consume");
+        // Simulate step completion for throttle tracking
+        if step > 0 {
+            let mut patch = crate::state::MutationBatch::new();
+            patch.update::<RunLifecycle>(RunLifecycleUpdate::StepCompleted { updated_at: 0 });
+            store.commit(patch).expect("step completed");
+        }
+        let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot());
+        runtime
+            .run_phase_with_context(&env, ctx)
+            .await
+            .expect("run phase");
+        let accepted = take_accumulated_context_messages(store).expect("take");
         assert_eq!(
             accepted.len(),
             1,
@@ -158,82 +169,130 @@ fn throttle_zero_cooldown_always_injects() {
     }
 }
 
-#[test]
-fn throttle_skips_within_cooldown() {
-    let store = test_store();
+#[tokio::test]
+async fn throttle_skips_within_cooldown() {
+    let (runtime, env) = test_runtime();
+    let store = runtime.store();
 
-    // Step 0: first injection, should be accepted
+    // Step 1 (step_count=0 → current_step=1): first injection, should be accepted
     enqueue_context_message(
-        &store,
+        store,
         1,
         ContextMessage::system("throttled", "content").with_cooldown(3),
     );
-    let accepted = consume_context_messages(&store, 0).expect("step 0");
-    assert_eq!(accepted.len(), 1, "first injection at step 0 should pass");
+    let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot());
+    runtime
+        .run_phase_with_context(&env, ctx)
+        .await
+        .expect("step 1");
+    let accepted = take_accumulated_context_messages(store).expect("take step 1");
+    assert_eq!(accepted.len(), 1, "first injection should pass");
 
-    // Steps 1 and 2: within cooldown, should be skipped
-    for step in 1..=2 {
+    // Steps 2 and 3: within cooldown, should be skipped
+    for step in 2..=3u32 {
+        let mut patch = crate::state::MutationBatch::new();
+        patch.update::<RunLifecycle>(RunLifecycleUpdate::StepCompleted { updated_at: 0 });
+        store.commit(patch).expect("step completed");
+
         enqueue_context_message(
-            &store,
+            store,
             10 + step as u64,
             ContextMessage::system("throttled", "content").with_cooldown(3),
         );
+        let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot());
+        runtime
+            .run_phase_with_context(&env, ctx)
+            .await
+            .expect(&format!("step {step}"));
         let accepted =
-            consume_context_messages(&store, step).unwrap_or_else(|e| panic!("step {step}: {e}"));
+            take_accumulated_context_messages(store).unwrap_or_else(|e| panic!("step {step}: {e}"));
         assert_eq!(
             accepted.len(),
             0,
-            "should be throttled at step {step} (cooldown=3, last_step=0)"
+            "should be throttled at step {step} (cooldown=3, last_step=1)"
         );
     }
 
-    // Step 3: cooldown expired (3 - 0 >= 3), should inject
+    // Step 4 (step_count=3 → current_step=4): cooldown expired (4 - 1 >= 3)
+    let mut patch = crate::state::MutationBatch::new();
+    patch.update::<RunLifecycle>(RunLifecycleUpdate::StepCompleted { updated_at: 0 });
+    store.commit(patch).expect("step completed");
+
     enqueue_context_message(
-        &store,
+        store,
         20,
         ContextMessage::system("throttled", "content").with_cooldown(3),
     );
-    let accepted = consume_context_messages(&store, 3).expect("step 3");
+    let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot());
+    runtime
+        .run_phase_with_context(&env, ctx)
+        .await
+        .expect("step 4");
+    let accepted = take_accumulated_context_messages(store).expect("take step 4");
     assert_eq!(
         accepted.len(),
         1,
-        "cooldown expired at step 3, should inject"
+        "cooldown expired at step 4, should inject"
     );
 }
 
-#[test]
-fn throttle_bypassed_on_content_change() {
-    let store = test_store();
+#[tokio::test]
+async fn throttle_bypassed_on_content_change() {
+    let (runtime, env) = test_runtime();
+    let store = runtime.store();
 
-    // Step 0: initial injection
+    // Step 1: initial injection
     enqueue_context_message(
-        &store,
+        store,
         1,
         ContextMessage::system("changing", "original content").with_cooldown(10),
     );
-    let accepted = consume_context_messages(&store, 0).expect("step 0");
+    let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot());
+    runtime
+        .run_phase_with_context(&env, ctx)
+        .await
+        .expect("step 1");
+    let accepted = take_accumulated_context_messages(store).expect("take step 1");
     assert_eq!(accepted.len(), 1);
 
-    // Step 1: same content, within cooldown — should be throttled
+    // Step 2: same content, within cooldown — should be throttled
+    let mut patch = crate::state::MutationBatch::new();
+    patch.update::<RunLifecycle>(RunLifecycleUpdate::StepCompleted { updated_at: 0 });
+    store.commit(patch).expect("step completed");
+
     enqueue_context_message(
-        &store,
+        store,
         2,
         ContextMessage::system("changing", "original content").with_cooldown(10),
     );
-    let accepted = consume_context_messages(&store, 1).expect("step 1 same content");
+    let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot());
+    runtime
+        .run_phase_with_context(&env, ctx)
+        .await
+        .expect("step 2");
+    let accepted = take_accumulated_context_messages(store).expect("take step 2");
     assert_eq!(
         accepted.len(),
         0,
         "same content within cooldown should be throttled"
     );
 
-    // Step 2: different content, within cooldown — should bypass
+    // Step 3: different content, within cooldown — should bypass
+    let mut patch = crate::state::MutationBatch::new();
+    patch.update::<RunLifecycle>(RunLifecycleUpdate::StepCompleted { updated_at: 0 });
+    store.commit(patch).expect("step completed");
+
     enqueue_context_message(
-        &store,
+        store,
         3,
         ContextMessage::system("changing", "updated content").with_cooldown(10),
     );
-    let accepted = consume_context_messages(&store, 2).expect("step 2 new content");
+    let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot());
+    runtime
+        .run_phase_with_context(&env, ctx)
+        .await
+        .expect("step 3");
+    let accepted = take_accumulated_context_messages(store).expect("take step 3");
     assert_eq!(
         accepted.len(),
         1,
@@ -316,10 +375,9 @@ fn text_of_ctx(msg: &ContextMessage) -> String {
 }
 
 // -----------------------------------------------------------------------
-// Tool filter action tests (ExcludeTool / IncludeOnlyTools)
+// Tool filter action tests (ExcludeTool / IncludeOnlyTools via run_phase)
 // -----------------------------------------------------------------------
 
-use super::super::state::{ExcludeTool, IncludeOnlyTools};
 use crate::contract::tool::ToolDescriptor;
 
 /// Helper: push an ExcludeTool action into the pending queue.
@@ -353,14 +411,20 @@ fn tool(id: &str) -> ToolDescriptor {
     ToolDescriptor::new(id, id, format!("{id} tool"))
 }
 
-#[test]
-fn exclude_tool_removes_from_request() {
-    let store = test_store();
+#[tokio::test]
+async fn exclude_tool_removes_from_request() {
+    let (runtime, env) = test_runtime();
+    let store = runtime.store();
     let mut tools = vec![tool("search"), tool("calculator"), tool("browser")];
 
-    enqueue_exclude_tool(&store, 1, "search");
+    enqueue_exclude_tool(store, 1, "search");
 
-    apply_tool_filter_actions(&store, &mut tools).expect("apply");
+    let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot());
+    runtime
+        .run_phase_with_context(&env, ctx)
+        .await
+        .expect("run phase");
+    take_and_apply_tool_filters(store, &mut tools).expect("apply");
 
     let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
     assert!(!ids.contains(&"search"), "search should be excluded");
@@ -376,9 +440,10 @@ fn exclude_tool_removes_from_request() {
     );
 }
 
-#[test]
-fn include_only_tools_filters_to_subset() {
-    let store = test_store();
+#[tokio::test]
+async fn include_only_tools_filters_to_subset() {
+    let (runtime, env) = test_runtime();
+    let store = runtime.store();
     let mut tools = vec![
         tool("search"),
         tool("calculator"),
@@ -386,9 +451,14 @@ fn include_only_tools_filters_to_subset() {
         tool("code_exec"),
     ];
 
-    enqueue_include_only_tools(&store, 1, vec!["calculator".into(), "browser".into()]);
+    enqueue_include_only_tools(store, 1, vec!["calculator".into(), "browser".into()]);
 
-    apply_tool_filter_actions(&store, &mut tools).expect("apply");
+    let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot());
+    runtime
+        .run_phase_with_context(&env, ctx)
+        .await
+        .expect("run phase");
+    take_and_apply_tool_filters(store, &mut tools).expect("apply");
 
     let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
     assert_eq!(ids.len(), 2);
@@ -398,56 +468,141 @@ fn include_only_tools_filters_to_subset() {
     assert!(!ids.contains(&"code_exec"));
 }
 
-#[test]
-fn exclude_and_include_only_combined() {
-    let store = test_store();
+#[tokio::test]
+async fn exclude_and_include_only_combined() {
+    let (runtime, env) = test_runtime();
+    let store = runtime.store();
     let mut tools = vec![tool("search"), tool("calculator"), tool("browser")];
 
     // Include only search + calculator, then exclude search
-    enqueue_include_only_tools(&store, 1, vec!["search".into(), "calculator".into()]);
-    enqueue_exclude_tool(&store, 2, "search");
+    enqueue_include_only_tools(store, 1, vec!["search".into(), "calculator".into()]);
+    enqueue_exclude_tool(store, 2, "search");
 
-    apply_tool_filter_actions(&store, &mut tools).expect("apply");
+    let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot());
+    runtime
+        .run_phase_with_context(&env, ctx)
+        .await
+        .expect("run phase");
+    take_and_apply_tool_filters(store, &mut tools).expect("apply");
 
     let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
     assert_eq!(ids, vec!["calculator"]);
 }
 
-#[test]
-fn multiple_exclude_tool_actions() {
-    let store = test_store();
+#[tokio::test]
+async fn multiple_exclude_tool_actions() {
+    let (runtime, env) = test_runtime();
+    let store = runtime.store();
     let mut tools = vec![tool("a"), tool("b"), tool("c"), tool("d")];
 
-    enqueue_exclude_tool(&store, 1, "a");
-    enqueue_exclude_tool(&store, 2, "c");
+    enqueue_exclude_tool(store, 1, "a");
+    enqueue_exclude_tool(store, 2, "c");
 
-    apply_tool_filter_actions(&store, &mut tools).expect("apply");
+    let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot());
+    runtime
+        .run_phase_with_context(&env, ctx)
+        .await
+        .expect("run phase");
+    take_and_apply_tool_filters(store, &mut tools).expect("apply");
 
     let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
     assert_eq!(ids, vec!["b", "d"]);
 }
 
-#[test]
-fn no_filter_actions_leaves_tools_unchanged() {
-    let store = test_store();
+#[tokio::test]
+async fn no_filter_actions_leaves_tools_unchanged() {
+    let (runtime, env) = test_runtime();
+    let store = runtime.store();
     let mut tools = vec![tool("search"), tool("calculator")];
 
-    apply_tool_filter_actions(&store, &mut tools).expect("apply");
+    let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot());
+    runtime
+        .run_phase_with_context(&env, ctx)
+        .await
+        .expect("run phase");
+    take_and_apply_tool_filters(store, &mut tools).expect("apply");
 
     assert_eq!(tools.len(), 2);
 }
 
-#[test]
-fn multiple_include_only_actions_union() {
-    let store = test_store();
+#[tokio::test]
+async fn multiple_include_only_actions_union() {
+    let (runtime, env) = test_runtime();
+    let store = runtime.store();
     let mut tools = vec![tool("a"), tool("b"), tool("c"), tool("d")];
 
     // Two separate include-only actions; their union should be used
-    enqueue_include_only_tools(&store, 1, vec!["a".into()]);
-    enqueue_include_only_tools(&store, 2, vec!["c".into()]);
+    enqueue_include_only_tools(store, 1, vec!["a".into()]);
+    enqueue_include_only_tools(store, 2, vec!["c".into()]);
 
-    apply_tool_filter_actions(&store, &mut tools).expect("apply");
+    let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot());
+    runtime
+        .run_phase_with_context(&env, ctx)
+        .await
+        .expect("run phase");
+    take_and_apply_tool_filters(store, &mut tools).expect("apply");
 
     let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
     assert_eq!(ids, vec!["a", "c"]);
+}
+
+// -----------------------------------------------------------------------
+// Inference override handler test
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn inference_override_merges_via_handler() {
+    let (runtime, env) = test_runtime();
+    let store = runtime.store();
+
+    // Enqueue two override actions
+    let ovr1 = crate::contract::inference::InferenceOverride {
+        model: Some("gpt-4".into()),
+        temperature: Some(0.7),
+        ..Default::default()
+    };
+    let payload1 = SetInferenceOverride::encode_payload(&ovr1).expect("encode");
+    let mut batch = crate::state::MutationBatch::new();
+    batch.update::<PendingScheduledActions>(ScheduledActionQueueUpdate::Push(
+        ScheduledActionEnvelope {
+            id: 1,
+            action: ScheduledAction::new(
+                SetInferenceOverride::PHASE,
+                SetInferenceOverride::KEY,
+                payload1,
+            ),
+        },
+    ));
+    store.commit(batch).expect("commit");
+
+    let ovr2 = crate::contract::inference::InferenceOverride {
+        temperature: Some(0.9),
+        max_tokens: Some(1000),
+        ..Default::default()
+    };
+    let payload2 = SetInferenceOverride::encode_payload(&ovr2).expect("encode");
+    let mut batch = crate::state::MutationBatch::new();
+    batch.update::<PendingScheduledActions>(ScheduledActionQueueUpdate::Push(
+        ScheduledActionEnvelope {
+            id: 2,
+            action: ScheduledAction::new(
+                SetInferenceOverride::PHASE,
+                SetInferenceOverride::KEY,
+                payload2,
+            ),
+        },
+    ));
+    store.commit(batch).expect("commit");
+
+    let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot());
+    runtime
+        .run_phase_with_context(&env, ctx)
+        .await
+        .expect("run phase");
+
+    let result = take_accumulated_overrides(store).expect("take overrides");
+    let ovr = result.expect("should have overrides");
+    assert_eq!(ovr.model.as_deref(), Some("gpt-4"));
+    assert_eq!(ovr.temperature, Some(0.9)); // last-wins
+    assert_eq!(ovr.max_tokens, Some(1000));
 }

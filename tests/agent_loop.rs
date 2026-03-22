@@ -3,7 +3,10 @@
 use async_trait::async_trait;
 use awaken::agent::config::AgentConfig;
 use awaken::agent::loop_runner::{build_agent_env, prepare_resume, run_agent_loop};
-use awaken::agent::state::{ContextThrottleState, RunLifecycle, ToolCallStates};
+use awaken::agent::state::{
+    AccumulatedContextMessages, AccumulatedOverrides, AccumulatedToolExclusions,
+    AccumulatedToolInclusions, ContextThrottleState, RunLifecycle, ToolCallStates,
+};
 use awaken::contract::content::ContentBlock;
 use awaken::contract::event::AgentEvent;
 use awaken::contract::event_sink::{NullEventSink, VecEventSink};
@@ -154,6 +157,10 @@ impl Plugin for LoopStatePlugin {
         registrar.register_key::<RunLifecycle>(StateKeyOptions::default())?;
         registrar.register_key::<ToolCallStates>(StateKeyOptions::default())?;
         registrar.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
+        registrar.register_key::<AccumulatedOverrides>(StateKeyOptions::default())?;
+        registrar.register_key::<AccumulatedContextMessages>(StateKeyOptions::default())?;
+        registrar.register_key::<AccumulatedToolExclusions>(StateKeyOptions::default())?;
+        registrar.register_key::<AccumulatedToolInclusions>(StateKeyOptions::default())?;
         Ok(())
     }
 }

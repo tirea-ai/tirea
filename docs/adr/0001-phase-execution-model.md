@@ -35,16 +35,16 @@ Every action is:
 - Created via `StateCommand.schedule_action::<A>(payload)`.
 - Stored in the `PendingScheduledActions` queue (itself a `StateKey`).
 - Tagged with a `phase` field that determines when it becomes eligible.
-- Declared in `ExecutionEnv` at setup time — either via `PluginRegistrar::register_scheduled_action` (handler-consumed) or `ExecutionEnv::register_loop_consumed_action` (loop-consumed).
-- Rejected at `submit_command` if the action key is neither handler-registered nor loop-consumed. This catches typos and misconfigurations immediately.
+- Declared in `ExecutionEnv` at setup time via `PluginRegistrar::register_scheduled_action`.
+- Rejected at `submit_command` if the action key has no registered handler. This catches typos and misconfigurations immediately.
 
-**Consumption**: during the EXECUTE stage of the target phase, the runtime processes actions that have a registered handler — dequeuing them, calling the handler, and committing the resulting `StateCommand`. Actions declared as loop-consumed are skipped by EXECUTE and remain in the queue; the loop runner reads and removes them at the appropriate point in its execution path (e.g., before building `InferenceRequest`). Loop-consumed actions exist for operations that require loop-runner-local context (message assembly, request construction) that generic action handlers cannot access.
+**Consumption**: during the EXECUTE stage of the target phase, the runtime processes actions that have a registered handler — dequeuing them, calling the handler, and committing the resulting `StateCommand`. Built-in loop actions (`SetInferenceOverride`, `AddContextMessage`, `ExcludeTool`, `IncludeOnlyTools`) are registered via `LoopActionHandlersPlugin` and execute during `run_phase(BeforeInference)` like any other handler-based action. Their handlers write results to accumulator state keys (`AccumulatedOverrides`, `AccumulatedContextMessages`, etc.), which the orchestrator reads and clears after the phase completes.
 
 Invariants:
 
-- All action keys must be declared at setup time. Unknown keys are rejected at `submit_command`.
+- All action keys must have a registered handler. Unknown keys are rejected at `submit_command`.
 - EXECUTE only processes actions that have a registered handler AND match the current phase.
-- Actions are consumed exactly once. After processing, the action is removed from `PendingScheduledActions` (by EXECUTE or by the loop runner).
+- Actions are consumed exactly once. After processing, the action is removed from `PendingScheduledActions` by EXECUTE.
 - The convergence loop terminates when no processable actions remain for the current phase, or after `max_rounds` (default 16).
 - Action handlers return `StateCommand`, which can contain further state mutations, new actions, and effects. This enables action chaining within a phase.
 

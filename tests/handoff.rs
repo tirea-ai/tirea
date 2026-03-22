@@ -6,7 +6,10 @@
 //! - Changing active_plugins between phases via different profiles
 
 use async_trait::async_trait;
-use awaken::agent::state::{ContextThrottleState, RunLifecycle, ToolCallStates};
+use awaken::agent::state::{
+    AccumulatedContextMessages, AccumulatedOverrides, AccumulatedToolExclusions,
+    AccumulatedToolInclusions, ContextThrottleState, RunLifecycle, ToolCallStates,
+};
 use awaken::contract::profile::{ActiveAgentKey, AgentProfile, AgentRegistry, MapAgentRegistry};
 use awaken::*;
 use serde_json::json;
@@ -95,6 +98,10 @@ impl Plugin for LoopStatePlugin {
         r.register_key::<ToolCallStates>(StateKeyOptions::default())?;
         r.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
         r.register_key::<ActiveAgentKey>(StateKeyOptions::default())?;
+        r.register_key::<AccumulatedOverrides>(StateKeyOptions::default())?;
+        r.register_key::<AccumulatedContextMessages>(StateKeyOptions::default())?;
+        r.register_key::<AccumulatedToolExclusions>(StateKeyOptions::default())?;
+        r.register_key::<AccumulatedToolInclusions>(StateKeyOptions::default())?;
         Ok(())
     }
 }

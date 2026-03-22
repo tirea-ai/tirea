@@ -46,6 +46,8 @@ pub(super) async fn execute_streaming(
         std::collections::HashMap::new();
     let mut tool_names: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
+    // Track insertion order so tool_calls preserves the LLM's declared order.
+    let mut tool_order: Vec<String> = Vec::new();
     let mut cancelled = false;
 
     loop {
@@ -83,7 +85,8 @@ pub(super) async fn execute_streaming(
                 })
                 .await;
                 tool_names.insert(id.clone(), name);
-                current_tool_args.insert(id, String::new());
+                current_tool_args.insert(id.clone(), String::new());
+                tool_order.push(id);
             }
             StreamEvent::ToolCallDelta { id, args_delta } => {
                 if let Some(buf) = current_tool_args.get_mut(&id) {
@@ -117,17 +120,18 @@ pub(super) async fn execute_streaming(
         content_blocks.push(ContentBlock::text(current_text));
     }
 
-    // Collect tool calls from accumulated args (drop incomplete on cancel)
+    // Collect tool calls from accumulated args in LLM-declared order (drop incomplete on cancel)
     let mut has_incomplete_tool_calls = false;
     if !cancelled {
-        for (id, args_json) in current_tool_args {
-            let name = tool_names.get(&id).cloned().unwrap_or_default();
+        for id in &tool_order {
+            let args_json = current_tool_args.get(id).cloned().unwrap_or_default();
+            let name = tool_names.get(id).cloned().unwrap_or_default();
             let arguments = serde_json::from_str(&args_json).unwrap_or(serde_json::Value::Null);
             if arguments.is_null() && !args_json.is_empty() {
                 has_incomplete_tool_calls = true;
                 continue; // truncated JSON, skip
             }
-            tool_calls.push(ToolCall::new(id, name, arguments));
+            tool_calls.push(ToolCall::new(id.clone(), name, arguments));
         }
     }
 
