@@ -28,7 +28,7 @@ use tirea_contract::TerminationReason;
 #[cfg(all(feature = "skills", feature = "mcp"))]
 use tirea_extension_mcp::{
     McpProgressUpdate, McpPromptDefinition, McpPromptMessage, McpPromptResult,
-    McpToolRegistryManager, McpToolTransport,
+    McpResourceDefinition, McpToolRegistryManager, McpToolTransport,
 };
 use tirea_extension_permission::{resolve_permission_behavior, ToolPermissionBehavior};
 #[cfg(feature = "skills")]
@@ -1240,6 +1240,136 @@ async fn build_with_mcp_prompt_skills_wires_skill_resource_loading() {
     assert_eq!(result.data["kind"], json!("reference"));
     assert_eq!(result.data["path"], json!("references/file://guide.md"));
     assert_eq!(result.data["content"], json!("# MCP Guide"));
+}
+
+#[cfg(all(feature = "skills", feature = "mcp"))]
+#[tokio::test]
+async fn mcp_prompt_skills_catalog_includes_resource_hints() {
+    #[derive(Debug)]
+    struct PromptTransport;
+
+    #[async_trait]
+    impl McpToolTransport for PromptTransport {
+        async fn list_tools(
+            &self,
+        ) -> Result<Vec<mcp::McpToolDefinition>, mcp::transport::McpTransportError> {
+            Ok(Vec::new())
+        }
+
+        async fn list_prompts(
+            &self,
+        ) -> Result<Vec<McpPromptDefinition>, mcp::transport::McpTransportError> {
+            Ok(vec![McpPromptDefinition {
+                name: "review".to_string(),
+                title: Some("Review".to_string()),
+                description: Some("Review prompt".to_string()),
+                arguments: Vec::new(),
+            }])
+        }
+
+        async fn list_resources(
+            &self,
+        ) -> Result<Vec<McpResourceDefinition>, mcp::transport::McpTransportError> {
+            Ok(vec![McpResourceDefinition {
+                uri: "file://guide.md".to_string(),
+                name: "guide".to_string(),
+                title: None,
+                description: Some("Guide".to_string()),
+                mime_type: Some("text/markdown".to_string()),
+                size: None,
+            }])
+        }
+
+        async fn get_prompt(
+            &self,
+            _name: &str,
+            _arguments: Option<HashMap<String, String>>,
+        ) -> Result<McpPromptResult, mcp::transport::McpTransportError> {
+            Ok(McpPromptResult {
+                description: Some("Review prompt".to_string()),
+                messages: vec![McpPromptMessage {
+                    role: "user".to_string(),
+                    content: json!({
+                        "type": "text",
+                        "text": "MCP prompt"
+                    }),
+                }],
+            })
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _args: Value,
+            _progress_tx: Option<tokio::sync::mpsc::UnboundedSender<McpProgressUpdate>>,
+        ) -> Result<mcp::CallToolResult, mcp::transport::McpTransportError> {
+            Ok(mcp::CallToolResult {
+                content: Vec::new(),
+                structured_content: None,
+                is_error: None,
+            })
+        }
+
+        fn transport_type(&self) -> mcp::transport::TransportTypeId {
+            mcp::transport::TransportTypeId::Stdio
+        }
+    }
+
+    let manager = Arc::new(
+        McpToolRegistryManager::from_transports([(
+            mcp::transport::McpServerConnectionConfig::stdio(
+                "github",
+                "node",
+                vec!["server.js".to_string()],
+            ),
+            Arc::new(PromptTransport) as Arc<dyn McpToolTransport>,
+        )])
+        .await
+        .unwrap(),
+    );
+
+    let os = AgentOs::builder()
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "root",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
+        .with_mcp_prompt_skills(manager)
+        .await
+        .unwrap()
+        .with_skills_config(SkillsConfig {
+            enabled: true,
+            advertise_catalog: true,
+            discovery_max_entries: 32,
+            discovery_max_chars: 8 * 1024,
+        })
+        .build()
+        .expect("build agent os");
+
+    let resolved = os.resolve("root").expect("resolve");
+
+    let doc = tirea_state::DocCell::new(json!({}));
+    let run_policy = crate::contracts::RunPolicy::new();
+    let ctx = ReadOnlyContext::new(
+        crate::contracts::runtime::phase::Phase::BeforeInference,
+        "thread_1",
+        &[],
+        &run_policy,
+        &doc,
+    );
+    let actions = resolved.agent.behavior.before_inference(&ctx).await;
+    let apply_fixture = TestFixture::new();
+    let mut apply_step = apply_fixture.step(vec![]);
+    apply_before_inference_for_test(&mut apply_step, actions);
+    let merged: String = apply_step
+        .inference
+        .context_messages
+        .iter()
+        .map(|cm| cm.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(merged.contains("mcp:github:review"));
+    assert!(merged.contains("file://guide.md"));
 }
 
 #[tokio::test]

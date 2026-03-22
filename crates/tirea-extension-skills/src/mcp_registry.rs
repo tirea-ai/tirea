@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 use tirea_extension_mcp::{
-    McpPromptArgument, McpPromptEntry, McpPromptResult, McpToolRegistryError,
+    McpPromptArgument, McpPromptEntry, McpPromptResult, McpResourceEntry, McpToolRegistryError,
     McpToolRegistryManager,
 };
 use tokio::runtime::Handle;
@@ -53,6 +53,45 @@ fn map_mcp_registry_error(err: McpToolRegistryError) -> SkillError {
     }
 }
 
+fn enrich_description(
+    base_description: &str,
+    prompt_arguments: &[McpPromptArgument],
+    resource_uris: &[String],
+) -> String {
+    let mut description = base_description.trim().to_string();
+
+    if !prompt_arguments.is_empty() {
+        let args = prompt_arguments
+            .iter()
+            .map(|arg| {
+                if arg.required {
+                    format!("{} (required)", arg.name)
+                } else {
+                    arg.name.clone()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        description.push_str(&format!(" Args: {args}."));
+    }
+
+    if !resource_uris.is_empty() {
+        let preview = resource_uris
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        description.push_str(&format!(" Resources: {preview}"));
+        if resource_uris.len() > 3 {
+            description.push_str(&format!(", +{} more", resource_uris.len() - 3));
+        }
+        description.push('.');
+    }
+
+    description
+}
+
 fn mcp_skill_id(server_name: &str, prompt_name: &str) -> String {
     format!("mcp:{server_name}:{prompt_name}")
 }
@@ -82,20 +121,26 @@ pub struct McpPromptSkill {
     server_name: String,
     prompt_name: String,
     prompt_arguments: Vec<McpPromptArgument>,
+    resource_uris: Vec<String>,
     manager: Arc<McpToolRegistryManager>,
 }
 
 impl McpPromptSkill {
-    pub fn from_entry(manager: Arc<McpToolRegistryManager>, entry: McpPromptEntry) -> Self {
+    pub fn from_entry(
+        manager: Arc<McpToolRegistryManager>,
+        entry: McpPromptEntry,
+        resource_uris: Vec<String>,
+    ) -> Self {
         let prompt = entry.prompt;
         let skill_id = mcp_skill_id(&entry.server_name, &prompt.name);
         let display_name = prompt.title.clone().unwrap_or_else(|| prompt.name.clone());
-        let description = prompt.description.clone().unwrap_or_else(|| {
+        let base_description = prompt.description.clone().unwrap_or_else(|| {
             format!(
                 "MCP prompt '{}' from server '{}'",
                 prompt.name, entry.server_name
             )
         });
+        let description = enrich_description(&base_description, &prompt.arguments, &resource_uris);
         let server_tool_pattern = format!(
             "mcp__{}__*",
             sanitize_mcp_tool_component(&entry.server_name)
@@ -111,6 +156,7 @@ impl McpPromptSkill {
             server_name: entry.server_name,
             prompt_name: prompt.name,
             prompt_arguments: prompt.arguments,
+            resource_uris,
             manager,
         }
     }
@@ -128,6 +174,18 @@ impl McpPromptSkill {
                 .as_deref()
                 .unwrap_or("No description provided.");
             out.push_str(&format!("- {} ({required}): {description}\n", arg.name));
+        }
+        out
+    }
+
+    fn resource_text(&self) -> String {
+        if self.resource_uris.is_empty() {
+            return "No MCP resources are currently advertised for this server.".to_string();
+        }
+
+        let mut out = String::from("Available MCP resources:\n");
+        for uri in &self.resource_uris {
+            out.push_str(&format!("- {uri}\n"));
         }
         out
     }
@@ -311,10 +369,11 @@ impl Skill for McpPromptSkill {
         }
 
         let body = format!(
-            "This skill is backed by MCP prompt '{}' from server '{}'.\n\n{}\nUse the skill tool to activate it. When the prompt requires structured input, pass named arguments via the tool field 'arguments'. MCP resources from the same server can be loaded with load_skill_resource using paths like 'references/<resource-uri>' or 'assets/<resource-uri>'.\n",
+            "This skill is backed by MCP prompt '{}' from server '{}'.\n\n{}\n{}\nUse the skill tool to activate it. When the prompt requires structured input, pass named arguments via the tool field 'arguments'. MCP resources from the same server can be loaded with load_skill_resource using paths like 'references/<resource-uri>' or 'assets/<resource-uri>'.\n",
             self.prompt_name,
             self.server_name,
             self.prompt_arguments_text(),
+            self.resource_text(),
         );
         let frontmatter = serde_yaml::to_string(&Frontmatter {
             name: &self.meta.id,
@@ -398,10 +457,20 @@ async fn discover_snapshot_from_manager(
         Err(err) if is_prompt_support_error(&err) => Vec::new(),
         Err(err) => return Err(err.into()),
     };
+    let resources_by_server =
+        group_resources_by_server(manager.list_resources().await.unwrap_or_default());
 
     let mut skills = HashMap::new();
     for entry in entries {
-        let skill = Arc::new(McpPromptSkill::from_entry(manager.clone(), entry)) as Arc<dyn Skill>;
+        let resource_uris = resources_by_server
+            .get(&entry.server_name)
+            .cloned()
+            .unwrap_or_default();
+        let skill = Arc::new(McpPromptSkill::from_entry(
+            manager.clone(),
+            entry,
+            resource_uris,
+        )) as Arc<dyn Skill>;
         let id = skill.meta().id.trim().to_string();
         if id.is_empty() {
             return Err(SkillRegistryError::EmptySkillId.into());
@@ -411,6 +480,20 @@ async fn discover_snapshot_from_manager(
         }
     }
     Ok(skills)
+}
+
+fn group_resources_by_server(resources: Vec<McpResourceEntry>) -> HashMap<String, Vec<String>> {
+    let mut grouped: HashMap<String, Vec<String>> = HashMap::new();
+    for entry in resources {
+        grouped
+            .entry(entry.server_name)
+            .or_default()
+            .push(entry.resource.uri);
+    }
+    for uris in grouped.values_mut() {
+        uris.sort();
+    }
+    grouped
 }
 
 fn apply_snapshot(
@@ -590,17 +673,21 @@ mod tests {
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use tirea_extension_mcp::{McpProgressUpdate, McpPromptDefinition, McpToolTransport};
+    use tirea_extension_mcp::{
+        McpProgressUpdate, McpPromptDefinition, McpResourceDefinition, McpToolTransport,
+    };
     use tokio::sync::mpsc;
 
     #[derive(Debug)]
     struct MutablePromptTransport {
         prompts: RwLock<Vec<McpPromptDefinition>>,
+        resource_defs: RwLock<Vec<McpResourceDefinition>>,
         resources: RwLock<HashMap<String, Value>>,
         prompt_calls: Mutex<Vec<(String, Option<HashMap<String, String>>)>>,
         resource_calls: Mutex<Vec<String>>,
         prompt_counter: AtomicUsize,
         prompt_list_calls: AtomicUsize,
+        resource_list_calls: AtomicUsize,
         capabilities: Option<mcp::transport::ServerCapabilities>,
     }
 
@@ -608,11 +695,13 @@ mod tests {
         fn new(prompts: Vec<McpPromptDefinition>) -> Self {
             Self {
                 prompts: RwLock::new(prompts),
+                resource_defs: RwLock::new(Vec::new()),
                 resources: RwLock::new(HashMap::new()),
                 prompt_calls: Mutex::new(Vec::new()),
                 resource_calls: Mutex::new(Vec::new()),
                 prompt_counter: AtomicUsize::new(0),
                 prompt_list_calls: AtomicUsize::new(0),
+                resource_list_calls: AtomicUsize::new(0),
                 capabilities: None,
             }
         }
@@ -631,6 +720,12 @@ mod tests {
             self
         }
 
+        fn with_resource_definition(self, resource: McpResourceDefinition, value: Value) -> Self {
+            write_lock(&self.resource_defs).push(resource.clone());
+            write_lock(&self.resources).insert(resource.uri.clone(), value);
+            self
+        }
+
         fn prompt_calls(&self) -> Vec<(String, Option<HashMap<String, String>>)> {
             mutex_lock(&self.prompt_calls).clone()
         }
@@ -641,6 +736,10 @@ mod tests {
 
         fn resource_calls(&self) -> Vec<String> {
             mutex_lock(&self.resource_calls).clone()
+        }
+
+        fn resource_list_calls(&self) -> usize {
+            self.resource_list_calls.load(Ordering::SeqCst)
         }
     }
 
@@ -657,6 +756,13 @@ mod tests {
         ) -> Result<Vec<McpPromptDefinition>, mcp::transport::McpTransportError> {
             self.prompt_list_calls.fetch_add(1, Ordering::SeqCst);
             Ok(read_lock(&self.prompts).clone())
+        }
+
+        async fn list_resources(
+            &self,
+        ) -> Result<Vec<McpResourceDefinition>, mcp::transport::McpTransportError> {
+            self.resource_list_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(read_lock(&self.resource_defs).clone())
         }
 
         async fn get_prompt(
@@ -841,6 +947,45 @@ mod tests {
             transport.resource_calls(),
             vec!["file://guide.md".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn mcp_prompt_skill_metadata_and_instructions_include_resource_hints() {
+        let transport = Arc::new(
+            MutablePromptTransport::new(vec![prompt("review", vec![prompt_arg("path", true)])])
+                .with_resource_definition(
+                    McpResourceDefinition {
+                        uri: "file://guide.md".to_string(),
+                        name: "guide".to_string(),
+                        title: None,
+                        description: Some("Guide".to_string()),
+                        mime_type: Some("text/markdown".to_string()),
+                        size: None,
+                    },
+                    json!({
+                        "contents": [{
+                            "uri": "file://guide.md",
+                            "text": "# Guide"
+                        }]
+                    }),
+                ),
+        );
+        let manager = make_manager(transport.clone()).await;
+        let registry = McpPromptSkillRegistryManager::discover(manager)
+            .await
+            .unwrap();
+        let skill = registry.get("mcp:github:review").unwrap();
+
+        assert!(skill.meta().description.contains("Args: path (required)."));
+        assert!(skill
+            .meta()
+            .description
+            .contains("Resources: file://guide.md."));
+
+        let instructions = skill.read_instructions().await.unwrap();
+        assert!(instructions.contains("Available MCP resources:"));
+        assert!(instructions.contains("file://guide.md"));
+        assert_eq!(transport.resource_list_calls(), 1);
     }
 
     #[tokio::test]
