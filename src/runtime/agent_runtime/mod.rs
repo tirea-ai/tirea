@@ -117,24 +117,23 @@ impl AgentRuntime {
     }
 
     /// Register an active run. Returns error if thread already has one.
+    ///
+    /// Uses atomic try-insert to avoid TOCTOU race between check and insert.
     pub(crate) fn register_run(
         &self,
         thread_id: &str,
         handle: RunHandle,
     ) -> Result<(), StateError> {
-        if self.active_runs.has_active_run(thread_id) {
+        let entry = RunEntry {
+            run_id: handle.run_id.clone(),
+            agent_id: handle.agent_id.clone(),
+            handle,
+        };
+        if !self.active_runs.try_insert(thread_id.to_string(), entry) {
             return Err(StateError::ThreadAlreadyRunning {
                 thread_id: thread_id.to_string(),
             });
         }
-        self.active_runs.insert(
-            thread_id.to_string(),
-            RunEntry {
-                run_id: handle.run_id.clone(),
-                agent_id: handle.agent_id.clone(),
-                handle,
-            },
-        );
         Ok(())
     }
 

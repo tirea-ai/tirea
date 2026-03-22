@@ -27,11 +27,20 @@ impl ActiveRunRegistry {
         }
     }
 
-    pub(super) fn insert(&self, thread_id: String, entry: RunEntry) {
-        self.by_thread_id
+    /// Atomically insert if the thread has no active run. Returns `false` if already occupied.
+    pub(super) fn try_insert(&self, thread_id: String, entry: RunEntry) -> bool {
+        use std::collections::hash_map::Entry;
+        let mut map = self
+            .by_thread_id
             .write()
-            .expect("active runs lock poisoned")
-            .insert(thread_id, entry);
+            .expect("active runs lock poisoned");
+        match map.entry(thread_id) {
+            Entry::Occupied(_) => false,
+            Entry::Vacant(v) => {
+                v.insert(entry);
+                true
+            }
+        }
     }
 
     pub(super) fn remove(&self, thread_id: &str) {
@@ -47,12 +56,5 @@ impl ActiveRunRegistry {
             .expect("active runs lock poisoned")
             .get(thread_id)
             .map(|e| e.handle.clone())
-    }
-
-    pub(super) fn has_active_run(&self, thread_id: &str) -> bool {
-        self.by_thread_id
-            .read()
-            .expect("active runs lock poisoned")
-            .contains_key(thread_id)
     }
 }
