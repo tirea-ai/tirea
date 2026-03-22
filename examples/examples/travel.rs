@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::tool::Tool;
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_examples::travel::tools::*;
@@ -11,7 +12,9 @@ use awaken_ext_observability::{
 };
 use awaken_ext_permission::PermissionPlugin;
 use awaken_runtime::builder::AgentRuntimeBuilder;
+use awaken_runtime::engine::{GenaiExecutor, MockLlmExecutor};
 use awaken_runtime::plugins::Plugin;
+use awaken_runtime::registry::traits::ModelEntry;
 use awaken_stores::InMemoryStore;
 
 /// Logging sink that forwards metrics via tracing after each session.
@@ -102,7 +105,29 @@ async fn main() {
 
     let _store = Arc::new(InMemoryStore::new());
 
-    let mut builder = AgentRuntimeBuilder::new().with_agent_spec(agent_spec);
+    let (provider, model_name): (Arc<dyn LlmExecutor>, String) =
+        if std::env::var("OPENAI_API_KEY").is_ok() {
+            let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
+            (Arc::new(GenaiExecutor::new()), model)
+        } else if std::env::var("ANTHROPIC_API_KEY").is_ok() {
+            let model = std::env::var("ANTHROPIC_MODEL")
+                .unwrap_or_else(|_| "claude-sonnet-4-20250514".into());
+            (Arc::new(GenaiExecutor::new()), model)
+        } else {
+            tracing::warn!("No LLM API key found, using mock executor");
+            (Arc::new(MockLlmExecutor::new()), "mock".into())
+        };
+
+    let mut builder = AgentRuntimeBuilder::new()
+        .with_agent_spec(agent_spec)
+        .with_provider("default", provider)
+        .with_model(
+            "default",
+            ModelEntry {
+                provider: "default".into(),
+                model_name,
+            },
+        );
 
     for tool in &tools {
         let id = tool.descriptor().id.clone();

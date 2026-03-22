@@ -7,6 +7,8 @@
 
 pub mod convert;
 pub mod executor;
+pub mod mock;
 pub mod streaming;
 
 pub use executor::GenaiExecutor;
+pub use mock::MockLlmExecutor;
