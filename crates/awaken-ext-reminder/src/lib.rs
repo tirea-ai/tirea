@@ -9,7 +9,7 @@ pub mod output_matcher;
 pub mod plugin;
 pub mod rule;
 
-pub use config::ReminderConfig;
+pub use config::{ReminderConfigError, ReminderConfigKey, ReminderRuleEntry, ReminderRulesConfig};
 pub use output_matcher::{ContentMatcher, OutputMatcher, ToolStatusMatcher, output_matches};
 pub use plugin::ReminderPlugin;
 pub use rule::ReminderRule;

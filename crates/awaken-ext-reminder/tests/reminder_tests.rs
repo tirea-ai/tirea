@@ -5,7 +5,7 @@ use awaken_contract::contract::tool::{ToolResult, ToolStatus};
 use awaken_contract::tool_pattern::{
     ArgMatcher, FieldCondition, MatchOp, PathSegment, ToolCallPattern, ToolMatcher, pattern_matches,
 };
-use awaken_ext_reminder::ReminderConfig;
+use awaken_ext_reminder::ReminderRulesConfig;
 use awaken_ext_reminder::output_matcher::{
     ContentMatcher, OutputMatcher, ToolStatusMatcher, output_matches,
 };
@@ -190,6 +190,8 @@ fn combined_input_matches_but_output_does_not() {
 // Plugin registration
 // ---------------------------------------------------------------------------
 
+use awaken_runtime::plugins::Plugin;
+
 #[test]
 fn plugin_has_correct_name() {
     let plugin = ReminderPlugin::new(vec![]);
@@ -200,38 +202,95 @@ fn plugin_has_correct_name() {
 }
 
 // ---------------------------------------------------------------------------
-// Config loading from JSON string
+// Config loading — new aligned format (tool string pattern)
 // ---------------------------------------------------------------------------
 
 #[test]
 fn config_loads_multiple_rules() {
     let json = r#"{
-        "reminders": [
+        "rules": [
             {
-                "name": "rule-a",
-                "pattern": "*",
+                "tool": "*",
                 "output": "any",
                 "message": { "target": "system", "content": "A" }
             },
             {
-                "name": "rule-b",
-                "pattern": { "tool": "Bash" },
+                "tool": "Bash",
                 "output": { "status": "error" },
                 "message": { "target": "suffix_system", "content": "B" }
             }
         ]
     }"#;
 
-    let config = ReminderConfig::from_json(json).unwrap();
+    let config = ReminderRulesConfig::from_str(json, None).unwrap();
     let rules = config.into_rules().unwrap();
     assert_eq!(rules.len(), 2);
-    assert_eq!(rules[0].name, "rule-a");
-    assert_eq!(rules[1].name, "rule-b");
+    // First rule has auto-generated name
+    assert!(rules[0].name.contains("*"));
+    // Second rule has auto-generated name with "Bash"
+    assert!(rules[1].name.contains("Bash"));
 }
 
 #[test]
 fn config_invalid_json_returns_error() {
-    assert!(ReminderConfig::from_json("{{bad").is_err());
+    assert!(ReminderRulesConfig::from_str("{{bad", Some("json")).is_err());
+}
+
+#[test]
+fn config_with_pattern_args() {
+    let json = r#"{
+        "rules": [
+            {
+                "tool": "Bash(command ~ \"rm *\")",
+                "output": { "status": "success" },
+                "message": { "target": "suffix_system", "content": "deletion detected" }
+            }
+        ]
+    }"#;
+
+    let config = ReminderRulesConfig::from_str(json, None).unwrap();
+    let rules = config.into_rules().unwrap();
+    assert_eq!(rules.len(), 1);
+}
+
+#[test]
+fn config_text_glob_content_shorthand() {
+    let json = r#"{
+        "rules": [
+            {
+                "tool": "*",
+                "output": {
+                    "status": "error",
+                    "content": "*permission denied*"
+                },
+                "message": { "target": "suffix_system", "content": "try sudo" }
+            }
+        ]
+    }"#;
+
+    let config = ReminderRulesConfig::from_str(json, None).unwrap();
+    let rules = config.into_rules().unwrap();
+    assert_eq!(rules.len(), 1);
+}
+
+#[test]
+fn config_json_fields_content() {
+    let json = r#"{
+        "rules": [
+            {
+                "tool": "*",
+                "output": {
+                    "status": "error",
+                    "content": { "fields": [{"path": "error.code", "op": "exact", "value": "403"}] }
+                },
+                "message": { "target": "suffix_system", "content": "HTTP 403" }
+            }
+        ]
+    }"#;
+
+    let config = ReminderRulesConfig::from_str(json, None).unwrap();
+    let rules = config.into_rules().unwrap();
+    assert_eq!(rules.len(), 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -303,8 +362,6 @@ fn reminder_produces_correct_context_message() {
     );
     assert_eq!(rule.message.cooldown_turns, 2);
 }
-
-use awaken_runtime::plugins::Plugin;
 
 #[test]
 fn plugin_descriptor_name() {

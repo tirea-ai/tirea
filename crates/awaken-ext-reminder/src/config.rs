@@ -1,52 +1,75 @@
 //! Configuration loading for reminder rules.
+//!
+//! Loads declarative reminder rules from a configuration file or inline
+//! value and integrates with [`PluginConfigKey`] for agent spec configuration.
+//!
+//! # Example JSON
+//!
+//! ```json
+//! {
+//!   "rules": [
+//!     {
+//!       "tool": "Bash(command ~ 'rm *')",
+//!       "output": { "status": "success" },
+//!       "message": { "target": "suffix_system", "content": "Just executed a deletion" }
+//!     }
+//!   ]
+//! }
+//! ```
 
+use std::path::Path;
+
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use awaken_contract::contract::context_message::ContextMessage;
-use awaken_contract::tool_pattern::{
-    ArgMatcher, FieldCondition, MatchOp, PathSegment, ToolCallPattern, ToolMatcher, parse_pattern,
-};
+use awaken_contract::contract::profile::PluginConfigKey;
+use awaken_contract::tool_pattern::{FieldCondition, MatchOp, PathSegment, parse_pattern};
 
 use crate::output_matcher::{ContentMatcher, OutputMatcher, ToolStatusMatcher};
 use crate::rule::ReminderRule;
 
-/// Top-level reminder configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReminderConfig {
-    pub reminders: Vec<ReminderRuleEntry>,
+// ---------------------------------------------------------------------------
+// Config types
+// ---------------------------------------------------------------------------
+
+/// Top-level reminder rules configuration.
+///
+/// Can be loaded from JSON or provided inline via agent spec.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct ReminderRulesConfig {
+    /// Ordered list of reminder rules.
+    pub rules: Vec<ReminderRuleEntry>,
 }
 
 /// A single reminder rule entry in the config.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ReminderRuleEntry {
-    pub name: String,
-    pub pattern: PatternEntry,
+    /// Optional human-readable name (auto-generated from tool pattern if missing).
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Tool name or pattern string using the same DSL as permission
+    /// (e.g. `"Bash"`, `"*"`, `"Bash(command ~ 'rm *')"`, `"Edit(file_path ~ '*.toml')"`)
+    pub tool: String,
+    /// Output matcher: `"any"` or structured `{ status?, content? }`.
+    #[serde(default = "default_output")]
     pub output: OutputEntry,
+    /// The message to inject when the rule matches.
     pub message: MessageEntry,
 }
 
-/// Tool call pattern entry in config (JSON-friendly).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum PatternEntry {
-    /// Simple string pattern: "Bash(npm *)" or "*"
-    Simple(String),
-    /// Structured pattern with tool + args
-    Structured {
-        tool: String,
-        #[serde(default)]
-        args: Option<Value>,
-    },
+fn default_output() -> OutputEntry {
+    OutputEntry::Simple("any".to_string())
 }
 
 /// Output matcher entry in config.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum OutputEntry {
-    /// Simple string "any"
+    /// Simple string `"any"`.
     Simple(String),
-    /// Structured output matcher
+    /// Structured output matcher with optional status and content.
     Structured {
         #[serde(default)]
         status: Option<String>,
@@ -56,17 +79,19 @@ pub enum OutputEntry {
 }
 
 /// Content matcher entry in config.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Can be a **string** (shorthand for text glob) or structured `{ fields: [...] }`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum ContentEntry {
-    /// Text matcher: {"text": "*pattern*"}
-    Text { text: String },
-    /// JSON fields matcher: {"fields": [{"path": "status", "op": "exact", "value": "ok"}]}
+    /// Shorthand text glob: `"*permission denied*"`.
+    TextGlob(String),
+    /// JSON fields matcher: `{ "fields": [{ "path": "error.code", "op": "exact", "value": "403" }] }`.
     Fields { fields: Vec<FieldEntry> },
 }
 
 /// Single field entry for JSON field matching.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FieldEntry {
     pub path: String,
     #[serde(default = "default_op")]
@@ -79,7 +104,7 @@ fn default_op() -> String {
 }
 
 /// Message entry in config.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MessageEntry {
     pub target: String,
     pub content: String,
@@ -87,98 +112,111 @@ pub struct MessageEntry {
     pub cooldown_turns: u32,
 }
 
-/// Error type for config loading.
+/// [`PluginConfigKey`] binding for reminder configuration in agent specs.
+///
+/// ```ignore
+/// let config = spec.config::<ReminderConfigKey>();
+/// ```
+pub struct ReminderConfigKey;
+
+impl PluginConfigKey for ReminderConfigKey {
+    const KEY: &'static str = "reminder";
+    type Config = ReminderRulesConfig;
+}
+
+// ---------------------------------------------------------------------------
+// Loading
+// ---------------------------------------------------------------------------
+
+/// Error type for configuration loading.
 #[derive(Debug, thiserror::Error)]
 pub enum ReminderConfigError {
+    /// File I/O error.
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+    /// JSON deserialization error.
     #[error("parse error: {0}")]
     Parse(String),
+    /// Invalid pattern in a rule entry.
     #[error("invalid pattern `{pattern}`: {reason}")]
     InvalidPattern { pattern: String, reason: String },
+    /// Invalid output matcher value.
     #[error("invalid output matcher: {0}")]
     InvalidOutput(String),
+    /// Invalid message target.
     #[error("invalid message target: {0}")]
     InvalidTarget(String),
+    /// Invalid match operation.
     #[error("invalid match op: {0}")]
     InvalidOp(String),
 }
 
-impl ReminderConfig {
-    /// Parse configuration from a JSON string.
-    pub fn from_json(json: &str) -> Result<Self, ReminderConfigError> {
-        serde_json::from_str(json).map_err(|e| ReminderConfigError::Parse(e.to_string()))
+impl ReminderRulesConfig {
+    /// Load configuration from a file path (JSON, detected by extension).
+    pub fn from_file(path: impl AsRef<Path>) -> Result<Self, ReminderConfigError> {
+        let path = path.as_ref();
+        let content = std::fs::read_to_string(path)?;
+        Self::from_str(&content, path.extension().and_then(|e| e.to_str()))
+    }
+
+    /// Parse configuration from a string with an optional format hint.
+    ///
+    /// If `ext` is `Some("json")`, parses as JSON; otherwise auto-detects.
+    pub fn from_str(content: &str, ext: Option<&str>) -> Result<Self, ReminderConfigError> {
+        match ext {
+            Some("json") => {
+                serde_json::from_str(content).map_err(|e| ReminderConfigError::Parse(e.to_string()))
+            }
+            _ => {
+                let trimmed = content.trim();
+                if trimmed.starts_with('{') || trimmed.starts_with('[') {
+                    serde_json::from_str(content)
+                        .map_err(|e| ReminderConfigError::Parse(e.to_string()))
+                } else {
+                    serde_json::from_str(content)
+                        .map_err(|e| ReminderConfigError::Parse(e.to_string()))
+                }
+            }
+        }
     }
 
     /// Convert this configuration into a list of [`ReminderRule`]s.
     pub fn into_rules(self) -> Result<Vec<ReminderRule>, ReminderConfigError> {
-        self.reminders
+        self.rules
             .into_iter()
-            .map(|entry| entry_to_rule(entry))
+            .enumerate()
+            .map(|(i, entry)| entry_to_rule(entry, i))
             .collect()
     }
 }
 
-fn entry_to_rule(entry: ReminderRuleEntry) -> Result<ReminderRule, ReminderConfigError> {
-    let pattern = parse_pattern_entry(&entry.pattern)?;
+// ---------------------------------------------------------------------------
+// Conversion helpers
+// ---------------------------------------------------------------------------
+
+fn entry_to_rule(
+    entry: ReminderRuleEntry,
+    index: usize,
+) -> Result<ReminderRule, ReminderConfigError> {
+    let name = entry
+        .name
+        .clone()
+        .unwrap_or_else(|| format!("rule-{}-{}", index, entry.tool));
+
+    let pattern = parse_pattern(&entry.tool).map_err(|e| ReminderConfigError::InvalidPattern {
+        pattern: entry.tool.clone(),
+        reason: e.to_string(),
+    })?;
+
     let output = parse_output_entry(&entry.output)?;
-    let message = parse_message_entry(&entry.message, &entry.name)?;
+    let message = parse_message_entry(&entry.message, &name)?;
 
     Ok(ReminderRule {
-        name: entry.name,
+        name,
         pattern,
         output,
         message,
     })
-}
-
-fn parse_pattern_entry(entry: &PatternEntry) -> Result<ToolCallPattern, ReminderConfigError> {
-    match entry {
-        PatternEntry::Simple(s) => {
-            parse_pattern(s).map_err(|e| ReminderConfigError::InvalidPattern {
-                pattern: s.clone(),
-                reason: e.to_string(),
-            })
-        }
-        PatternEntry::Structured { tool, args } => {
-            let tool_matcher = if tool == "*" {
-                ToolMatcher::Glob("*".into())
-            } else if tool.contains('*') || tool.contains('?') || tool.contains('[') {
-                ToolMatcher::Glob(tool.clone())
-            } else {
-                ToolMatcher::Exact(tool.clone())
-            };
-
-            let arg_matcher = match args {
-                None => ArgMatcher::Any,
-                Some(Value::Object(obj)) => {
-                    let conditions: Vec<FieldCondition> = obj
-                        .iter()
-                        .map(|(key, val)| {
-                            let value_str = match val {
-                                Value::String(s) => s.clone(),
-                                other => other.to_string(),
-                            };
-                            FieldCondition {
-                                path: vec![PathSegment::Field(key.clone())],
-                                op: MatchOp::Glob,
-                                value: value_str,
-                            }
-                        })
-                        .collect();
-                    if conditions.is_empty() {
-                        ArgMatcher::Any
-                    } else {
-                        ArgMatcher::Fields(conditions)
-                    }
-                }
-                _ => ArgMatcher::Any,
-            };
-
-            Ok(ToolCallPattern {
-                tool: tool_matcher,
-                args: arg_matcher,
-            })
-        }
-    }
 }
 
 fn parse_output_entry(entry: &OutputEntry) -> Result<OutputMatcher, ReminderConfigError> {
@@ -218,7 +256,7 @@ fn parse_status_matcher(s: &str) -> Result<ToolStatusMatcher, ReminderConfigErro
 
 fn parse_content_entry(entry: &ContentEntry) -> Result<ContentMatcher, ReminderConfigError> {
     match entry {
-        ContentEntry::Text { text } => Ok(ContentMatcher::Text {
+        ContentEntry::TextGlob(text) => Ok(ContentMatcher::Text {
             op: MatchOp::Glob,
             value: text.clone(),
         }),
@@ -288,10 +326,9 @@ mod tests {
     #[test]
     fn parse_basic_config() {
         let json = r#"{
-            "reminders": [
+            "rules": [
                 {
-                    "name": "deletion-warning",
-                    "pattern": { "tool": "Bash", "args": { "command": "rm *" } },
+                    "tool": "Bash(command ~ \"rm *\")",
                     "output": { "status": "success" },
                     "message": {
                         "target": "suffix_system",
@@ -301,18 +338,17 @@ mod tests {
             ]
         }"#;
 
-        let config = ReminderConfig::from_json(json).unwrap();
-        assert_eq!(config.reminders.len(), 1);
-        assert_eq!(config.reminders[0].name, "deletion-warning");
+        let config = ReminderRulesConfig::from_str(json, Some("json")).unwrap();
+        assert_eq!(config.rules.len(), 1);
+        assert_eq!(config.rules[0].tool, "Bash(command ~ \"rm *\")");
     }
 
     #[test]
     fn config_into_rules() {
         let json = r#"{
-            "reminders": [
+            "rules": [
                 {
-                    "name": "test-rule",
-                    "pattern": "*",
+                    "tool": "*",
                     "output": "any",
                     "message": {
                         "target": "system",
@@ -322,19 +358,40 @@ mod tests {
             ]
         }"#;
 
-        let config = ReminderConfig::from_json(json).unwrap();
+        let config = ReminderRulesConfig::from_str(json, None).unwrap();
         let rules = config.into_rules().unwrap();
         assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].name, "test-rule");
+        // Auto-generated name
+        assert!(rules[0].name.contains("*"));
+    }
+
+    #[test]
+    fn config_with_explicit_name() {
+        let json = r#"{
+            "rules": [
+                {
+                    "name": "my-rule",
+                    "tool": "*",
+                    "output": "any",
+                    "message": {
+                        "target": "system",
+                        "content": "test"
+                    }
+                }
+            ]
+        }"#;
+
+        let config = ReminderRulesConfig::from_str(json, None).unwrap();
+        let rules = config.into_rules().unwrap();
+        assert_eq!(rules[0].name, "my-rule");
     }
 
     #[test]
     fn config_with_cooldown() {
         let json = r#"{
-            "reminders": [
+            "rules": [
                 {
-                    "name": "config-check",
-                    "pattern": { "tool": "Edit", "args": { "file_path": "*.toml" } },
+                    "tool": "Edit(file_path ~ \"*.toml\")",
                     "output": "any",
                     "message": {
                         "target": "system",
@@ -345,21 +402,20 @@ mod tests {
             ]
         }"#;
 
-        let config = ReminderConfig::from_json(json).unwrap();
+        let config = ReminderRulesConfig::from_str(json, None).unwrap();
         let rules = config.into_rules().unwrap();
         assert_eq!(rules[0].message.cooldown_turns, 3);
     }
 
     #[test]
-    fn config_with_error_status_and_content() {
+    fn config_with_error_status_and_text_content() {
         let json = r#"{
-            "reminders": [
+            "rules": [
                 {
-                    "name": "error-guidance",
-                    "pattern": "*",
+                    "tool": "*",
                     "output": {
                         "status": "error",
-                        "content": { "text": "*permission denied*" }
+                        "content": "*permission denied*"
                     },
                     "message": {
                         "target": "suffix_system",
@@ -369,24 +425,50 @@ mod tests {
             ]
         }"#;
 
-        let config = ReminderConfig::from_json(json).unwrap();
+        let config = ReminderRulesConfig::from_str(json, None).unwrap();
+        let rules = config.into_rules().unwrap();
+        assert_eq!(rules.len(), 1);
+    }
+
+    #[test]
+    fn config_with_json_fields_content() {
+        let json = r#"{
+            "rules": [
+                {
+                    "tool": "*",
+                    "output": {
+                        "status": "error",
+                        "content": {
+                            "fields": [
+                                { "path": "error.code", "op": "exact", "value": "403" }
+                            ]
+                        }
+                    },
+                    "message": {
+                        "target": "suffix_system",
+                        "content": "HTTP 403"
+                    }
+                }
+            ]
+        }"#;
+
+        let config = ReminderRulesConfig::from_str(json, None).unwrap();
         let rules = config.into_rules().unwrap();
         assert_eq!(rules.len(), 1);
     }
 
     #[test]
     fn config_invalid_json() {
-        let result = ReminderConfig::from_json("not json");
+        let result = ReminderRulesConfig::from_str("not json", Some("json"));
         assert!(result.is_err());
     }
 
     #[test]
     fn config_invalid_target() {
         let json = r#"{
-            "reminders": [
+            "rules": [
                 {
-                    "name": "bad",
-                    "pattern": "*",
+                    "tool": "*",
                     "output": "any",
                     "message": {
                         "target": "invalid_target",
@@ -396,18 +478,17 @@ mod tests {
             ]
         }"#;
 
-        let config = ReminderConfig::from_json(json).unwrap();
+        let config = ReminderRulesConfig::from_str(json, None).unwrap();
         let result = config.into_rules();
         assert!(result.is_err());
     }
 
     #[test]
-    fn config_structured_pattern_glob_tool() {
+    fn config_glob_tool_pattern() {
         let json = r#"{
-            "reminders": [
+            "rules": [
                 {
-                    "name": "mcp-watch",
-                    "pattern": { "tool": "mcp__*" },
+                    "tool": "mcp__*",
                     "output": "any",
                     "message": {
                         "target": "system",
@@ -417,35 +498,75 @@ mod tests {
             ]
         }"#;
 
-        let config = ReminderConfig::from_json(json).unwrap();
+        let config = ReminderRulesConfig::from_str(json, None).unwrap();
         let rules = config.into_rules().unwrap();
-        assert!(matches!(rules[0].pattern.tool, ToolMatcher::Glob(_)));
+        assert!(matches!(
+            rules[0].pattern.tool,
+            awaken_contract::tool_pattern::ToolMatcher::Glob(_)
+        ));
     }
 
     #[test]
-    fn config_with_json_fields_content() {
+    fn config_auto_detect_json() {
+        let json = r#"{"rules": []}"#;
+        let config = ReminderRulesConfig::from_str(json, None).unwrap();
+        assert!(config.rules.is_empty());
+    }
+
+    #[test]
+    fn config_default_values() {
+        let config = ReminderRulesConfig::default();
+        assert!(config.rules.is_empty());
+    }
+
+    #[test]
+    fn config_serde_roundtrip() {
+        let config = ReminderRulesConfig {
+            rules: vec![ReminderRuleEntry {
+                name: Some("test".to_string()),
+                tool: "Bash".to_string(),
+                output: OutputEntry::Simple("any".to_string()),
+                message: MessageEntry {
+                    target: "system".to_string(),
+                    content: "hello".to_string(),
+                    cooldown_turns: 0,
+                },
+            }],
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let decoded: ReminderRulesConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.rules.len(), 1);
+        assert_eq!(decoded.rules[0].name, Some("test".to_string()));
+    }
+
+    #[test]
+    fn config_output_defaults_to_any() {
         let json = r#"{
-            "reminders": [
+            "rules": [
                 {
-                    "name": "field-match",
-                    "pattern": "*",
-                    "output": {
-                        "content": {
-                            "fields": [
-                                { "path": "error.code", "op": "exact", "value": "PERM_DENIED" }
-                            ]
-                        }
-                    },
-                    "message": {
-                        "target": "suffix_system",
-                        "content": "Permission error detected"
-                    }
+                    "tool": "*",
+                    "message": { "target": "system", "content": "test" }
                 }
             ]
         }"#;
 
-        let config = ReminderConfig::from_json(json).unwrap();
+        let config = ReminderRulesConfig::from_str(json, None).unwrap();
         let rules = config.into_rules().unwrap();
         assert_eq!(rules.len(), 1);
+    }
+
+    #[test]
+    fn config_error_display() {
+        let err = ReminderConfigError::InvalidPattern {
+            pattern: "bad[".to_string(),
+            reason: "unclosed bracket".to_string(),
+        };
+        assert_eq!(err.to_string(), "invalid pattern `bad[`: unclosed bracket");
+    }
+
+    #[test]
+    fn reminder_config_key_binding() {
+        assert_eq!(ReminderConfigKey::KEY, "reminder");
     }
 }
