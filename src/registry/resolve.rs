@@ -63,6 +63,12 @@ pub enum ResolveError {
     ProviderNotFound(String),
     #[error("plugin not found: {0}")]
     PluginNotFound(String),
+    #[error("invalid config for plugin {plugin}: section \"{key}\" — {message}")]
+    InvalidPluginConfig {
+        plugin: String,
+        key: String,
+        message: String,
+    },
     #[error("env build error: {0}")]
     EnvBuild(#[from] crate::error::StateError),
 }
@@ -101,6 +107,10 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
     plugins.push(Arc::new(
         crate::agent::loop_runner::actions::LoopActionHandlersPlugin,
     ));
+
+    // Eager validation: check spec sections against plugin-declared schemas
+    validate_sections(&spec, &plugins)?;
+
     let env = ExecutionEnv::from_plugins(&plugins)?;
 
     Ok(ResolvedRun {
@@ -158,6 +168,45 @@ impl AgentResolver for RegistrySet {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Validate spec sections against plugin-declared config schemas.
+///
+/// For each plugin that declares `config_schemas()`, checks whether the
+/// corresponding section in `AgentSpec.sections` deserializes correctly.
+/// Missing sections are fine (plugins fall back to defaults). Malformed
+/// sections produce `ResolveError::InvalidPluginConfig`.
+///
+/// Also logs a warning for any section keys not claimed by any plugin.
+fn validate_sections(spec: &AgentSpec, plugins: &[Arc<dyn Plugin>]) -> Result<(), ResolveError> {
+    let mut claimed_keys: HashSet<&str> = HashSet::new();
+
+    for plugin in plugins {
+        let schemas = plugin.config_schemas();
+        for schema in &schemas {
+            claimed_keys.insert(schema.key);
+            if let Some(value) = spec.sections.get(schema.key) {
+                (schema.validate)(value).map_err(|e| ResolveError::InvalidPluginConfig {
+                    plugin: plugin.descriptor().name.into(),
+                    key: schema.key.into(),
+                    message: e.to_string(),
+                })?;
+            }
+        }
+    }
+
+    // Warn about unclaimed section keys
+    for key in spec.sections.keys() {
+        if !claimed_keys.contains(key.as_str()) {
+            tracing::warn!(
+                agent_id = %spec.id,
+                key = %key,
+                "section key not claimed by any plugin — possible typo"
+            );
+        }
+    }
+
+    Ok(())
+}
 
 /// Resolve tools with allow/exclude filtering.
 ///
@@ -652,5 +701,149 @@ mod tests {
 
         let err = AgentResolver::resolve(&regs, "missing").unwrap_err();
         assert!(matches!(err, StateError::ResolveFailed { .. }));
+    }
+
+    // -- Config validation tests --
+
+    /// Plugin that declares a config schema for eager validation.
+    struct ValidatedPlugin {
+        name: &'static str,
+    }
+
+    #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+    struct ValidatedConfig {
+        pub mode: String,
+        pub threshold: u32,
+    }
+
+    impl Plugin for ValidatedPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: self.name }
+        }
+
+        fn config_schemas(&self) -> Vec<crate::plugins::ConfigSchema> {
+            vec![crate::plugins::ConfigSchema {
+                key: "validated",
+                validate: |v| serde_json::from_value::<ValidatedConfig>(v.clone()).map(|_| ()),
+            }]
+        }
+    }
+
+    #[test]
+    fn validate_sections_valid_config_passes() {
+        let spec = AgentSpec {
+            plugin_ids: vec!["vp".into()],
+            ..make_spec("a")
+        }
+        .with_section(
+            "validated",
+            serde_json::json!({"mode": "strict", "threshold": 42}),
+        );
+
+        let regs = build_registries(
+            vec![],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![("vp", Arc::new(ValidatedPlugin { name: "vp" }))],
+            spec,
+        );
+
+        // Should succeed — config is valid
+        let run = resolve(&regs, "a");
+        assert!(run.is_ok());
+    }
+
+    #[test]
+    fn validate_sections_invalid_config_fails() {
+        let spec = AgentSpec {
+            plugin_ids: vec!["vp".into()],
+            ..make_spec("a")
+        }
+        .with_section(
+            "validated",
+            serde_json::json!({"mode": 123, "threshold": "not_a_number"}),
+        );
+
+        let regs = build_registries(
+            vec![],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![("vp", Arc::new(ValidatedPlugin { name: "vp" }))],
+            spec,
+        );
+
+        let err = resolve(&regs, "a").unwrap_err();
+        match err {
+            ResolveError::InvalidPluginConfig {
+                plugin,
+                key,
+                message,
+            } => {
+                assert_eq!(plugin, "vp");
+                assert_eq!(key, "validated");
+                assert!(message.contains("invalid type"), "got: {message}");
+            }
+            other => panic!("expected InvalidPluginConfig, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_sections_missing_section_is_ok() {
+        // Plugin declares schema but spec has no corresponding section — should pass
+        let spec = AgentSpec {
+            plugin_ids: vec!["vp".into()],
+            ..make_spec("a")
+        };
+
+        let regs = build_registries(
+            vec![],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![("vp", Arc::new(ValidatedPlugin { name: "vp" }))],
+            spec,
+        );
+
+        assert!(resolve(&regs, "a").is_ok());
+    }
+
+    #[test]
+    fn validate_sections_no_schema_plugin_still_works() {
+        // Plugin without config_schemas — should not block any sections
+        let spec = AgentSpec {
+            plugin_ids: vec!["log".into()],
+            ..make_spec("a")
+        }
+        .with_section("random_key", serde_json::json!({"anything": true}));
+
+        let regs = build_registries(
+            vec![],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![("log", Arc::new(MockPlugin { name: "log" }))],
+            spec,
+        );
+
+        // Resolves OK (unclaimed key just logs a warning, doesn't error)
+        assert!(resolve(&regs, "a").is_ok());
     }
 }
