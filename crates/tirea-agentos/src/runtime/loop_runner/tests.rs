@@ -1033,8 +1033,6 @@ fn tool_execution_result(call_id: &str, patch: Option<TrackedPatch>) -> ToolExec
             patch,
         },
         messages: Vec::new(),
-        reminders: Vec::new(),
-        user_messages: Vec::new(),
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
@@ -1056,8 +1054,6 @@ fn skill_activation_result(call_id: &str, skill_id: &str) -> ToolExecutionResult
             patch: None,
         },
         messages: Vec::new(),
-        reminders: Vec::new(),
-        user_messages: Vec::new(),
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
@@ -3336,8 +3332,6 @@ fn test_apply_tool_results_appends_user_messages_from_effect() {
             tirea_contract::runtime::inference::ContextMessage::conversation_user("first"),
             tirea_contract::runtime::inference::ContextMessage::conversation_user("second"),
         ],
-        reminders: Vec::new(),
-        user_messages: vec!["first".to_string(), "second".to_string()],
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
@@ -3379,8 +3373,6 @@ fn test_apply_tool_results_ignores_blank_user_messages() {
             tirea_contract::runtime::inference::ContextMessage::conversation_user(""),
             tirea_contract::runtime::inference::ContextMessage::conversation_user("   "),
         ],
-        reminders: Vec::new(),
-        user_messages: vec!["".to_string(), "   ".to_string()],
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
@@ -3413,8 +3405,6 @@ fn test_apply_tool_results_preserves_internal_visibility_for_unified_messages() 
                 "<system-reminder>check status</system-reminder>",
             ),
         ],
-        reminders: vec!["check status".to_string()],
-        user_messages: Vec::new(),
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
@@ -3550,7 +3540,7 @@ fn test_execute_tools_with_config_basic() {
 }
 
 // Scope-based tool policy enforcement is tested via RunContext at the
-// orchestrator level (prepare_run / run_stream_with_context), where RunPolicy
+// orchestrator level (prepare_run / execute_prepared), where RunPolicy
 // is explicitly wired. The low-level execute_tools_with_config path uses
 // RunPolicy::default() and is not the right place to test scope filtering.
 

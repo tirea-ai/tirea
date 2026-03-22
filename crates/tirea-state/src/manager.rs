@@ -205,18 +205,6 @@ impl StateManager {
         Ok(preview)
     }
 
-    /// Deprecated: Use `commit` instead.
-    #[deprecated(since = "0.2.0", note = "Use `commit` instead")]
-    pub async fn apply(&self, patch: TrackedPatch) -> Result<ApplyResult, StateError> {
-        self.commit(patch).await
-    }
-
-    /// Deprecated: Use `commit_batch` instead.
-    #[deprecated(since = "0.2.0", note = "Use `commit_batch` instead")]
-    pub async fn apply_batch(&self, patches: Vec<TrackedPatch>) -> Result<ApplyResult, StateError> {
-        self.commit_batch(patches).await
-    }
-
     /// Replay state from the beginning up to (and including) the specified index.
     ///
     /// Returns the state as it was after applying patches [0..=index] to the initial state.

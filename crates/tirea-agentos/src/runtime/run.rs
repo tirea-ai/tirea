@@ -11,9 +11,9 @@ use crate::composition::AgentOsWiringError;
 use crate::contracts::runtime::RunIdentity;
 use crate::contracts::storage::{ThreadHead, ThreadStore, VersionPrecondition};
 use crate::contracts::thread::{CheckpointReason, Message, Thread};
-use crate::contracts::{AgentEvent, RunContext, RunRequest};
+use crate::contracts::{RunContext, RunRequest};
 use crate::runtime::loop_runner::{
-    run_loop_stream_with_context, AgentLoopError, RunCancellationToken, StateCommitter,
+    run_loop_stream_with_context, AgentLoopError, RunCancellationToken,
 };
 use futures::StreamExt;
 use std::sync::Arc;
@@ -494,43 +494,5 @@ impl AgentOs {
             message.metadata = Some(metadata);
         });
         messages
-    }
-
-    // --- Internal low-level helper (legacy) ---
-
-    #[deprecated(note = "Use prepare_run + execute_prepared instead")]
-    #[allow(dead_code)]
-    pub(crate) fn run_stream_with_context(
-        &self,
-        agent_id: &str,
-        thread: Thread,
-        cancellation_token: Option<RunCancellationToken>,
-        state_committer: Option<Arc<dyn StateCommitter>>,
-    ) -> Result<impl futures::Stream<Item = AgentEvent> + Send, AgentOsRunError> {
-        let resolved = self.resolve(agent_id)?;
-        let run_identity = RunIdentity::new(
-            thread.id.clone(),
-            thread.parent_thread_id.clone(),
-            thread.id.clone(),
-            None,
-            agent_id.to_string(),
-            crate::contracts::storage::RunOrigin::Internal,
-        );
-        let run_ctx = RunContext::from_thread_with_registry_and_identity(
-            &thread,
-            resolved.run_policy,
-            run_identity.clone(),
-            resolved.agent.lattice_registry.clone(),
-        )
-        .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;
-        Ok(run_loop_stream_with_context(
-            Arc::new(resolved.agent),
-            resolved.tools,
-            run_ctx,
-            run_identity,
-            cancellation_token,
-            state_committer,
-            None,
-        ))
     }
 }

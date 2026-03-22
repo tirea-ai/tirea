@@ -800,7 +800,13 @@ impl Tool for AgentRunTool {
                         )
                         .await);
                 }
-                SubAgentStatus::Running => unreachable!("handled above"),
+                SubAgentStatus::Running => {
+                    return Ok(ToolExecutionEffect::from(tool_error(
+                        tool_name,
+                        "invalid_state",
+                        format!("Run '{run_id}' is already running"),
+                    )));
+                }
             }
         }
 
@@ -1316,7 +1322,11 @@ impl Tool for AgentHandoffTool {
         _args: Value,
         _ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, crate::contracts::runtime::tool_call::ToolError> {
-        unreachable!("AgentHandoffTool uses execute_effect")
+        Err(
+            crate::contracts::runtime::tool_call::ToolError::ExecutionFailed(
+                "AgentHandoffTool requires execute_effect path".into(),
+            ),
+        )
     }
 
     async fn execute_effect(

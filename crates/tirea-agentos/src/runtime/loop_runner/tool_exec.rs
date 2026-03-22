@@ -482,17 +482,6 @@ fn tool_result_metadata_from_run_ctx(
     }
 }
 
-#[allow(dead_code)]
-pub(super) fn next_step_index(run_ctx: &RunContext) -> u32 {
-    run_ctx
-        .messages()
-        .iter()
-        .filter_map(|m| m.metadata.as_ref().and_then(|meta| meta.step_index))
-        .max()
-        .map(|v| v.saturating_add(1))
-        .unwrap_or(0)
-}
-
 pub(super) fn step_metadata(run_id: Option<String>, step_index: u32) -> MessageMetadata {
     MessageMetadata {
         run_id,
@@ -1120,32 +1109,6 @@ async fn execute_single_tool_with_phases_impl(
     )?;
 
     let messages = std::mem::take(&mut step.messaging.messages);
-    let reminders = messages
-        .iter()
-        .filter(|m| {
-            m.target == tirea_contract::runtime::inference::ContextMessageTarget::Conversation
-                && m.role == tirea_contract::thread::Role::System
-                && m.visibility == tirea_contract::thread::Visibility::Internal
-                && m.content.starts_with("<system-reminder>")
-                && m.content.ends_with("</system-reminder>")
-        })
-        .map(|m| {
-            m.content
-                .strip_prefix("<system-reminder>")
-                .and_then(|rest| rest.strip_suffix("</system-reminder>"))
-                .unwrap_or(m.content.as_str())
-                .to_string()
-        })
-        .collect();
-    let user_messages = messages
-        .iter()
-        .filter(|m| {
-            m.target == tirea_contract::runtime::inference::ContextMessageTarget::Conversation
-                && m.role == tirea_contract::thread::Role::User
-                && m.visibility == tirea_contract::thread::Visibility::All
-        })
-        .map(|m| m.content.clone())
-        .collect();
 
     // Merge plugin-phase serialized actions with tool-level ones.
     serialized_state_actions.extend(step.take_pending_serialized_state_actions());
@@ -1155,8 +1118,6 @@ async fn execute_single_tool_with_phases_impl(
         outcome,
         suspended_call,
         messages,
-        reminders,
-        user_messages,
         pending_patches,
         serialized_state_actions,
     })
