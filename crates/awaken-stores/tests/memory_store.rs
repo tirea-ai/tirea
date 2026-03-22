@@ -1086,8 +1086,8 @@ async fn delete_thread_removes_thread() {
 #[tokio::test]
 async fn delete_thread_not_found() {
     let store = InMemoryStore::new();
-    let err = store.delete_thread("missing").await.unwrap_err();
-    assert!(matches!(err, StorageError::NotFound(_)));
+    // delete_thread is idempotent — deleting a non-existent thread succeeds silently
+    store.delete_thread("missing").await.unwrap();
 }
 
 #[tokio::test]

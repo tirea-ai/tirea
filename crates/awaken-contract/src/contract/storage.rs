@@ -150,9 +150,6 @@ pub trait ThreadStore: Send + Sync {
         messages: &[Message],
     ) -> Result<(), StorageError>;
 
-    /// Delete a thread by ID. Returns `NotFound` if the thread does not exist.
-    async fn delete_thread(&self, id: &str) -> Result<(), StorageError>;
-
     /// Delete all messages for a thread. Returns `NotFound` if the thread does not exist.
     async fn delete_messages(&self, thread_id: &str) -> Result<(), StorageError>;
 
@@ -320,17 +317,6 @@ mod tests {
                 .write()
                 .map_err(|e| StorageError::Io(e.to_string()))?;
             guard.insert(thread_id.to_owned(), messages.to_vec());
-            Ok(())
-        }
-
-        async fn delete_thread(&self, id: &str) -> Result<(), StorageError> {
-            let mut guard = self
-                .threads
-                .write()
-                .map_err(|e| StorageError::Io(e.to_string()))?;
-            guard
-                .remove(id)
-                .ok_or_else(|| StorageError::NotFound(id.to_owned()))?;
             Ok(())
         }
 

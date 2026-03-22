@@ -237,17 +237,6 @@ impl ThreadStore for FileStore {
         atomic_write(&self.messages_dir(), &format!("{thread_id}.json"), &payload).await
     }
 
-    async fn delete_thread(&self, id: &str) -> Result<(), StorageError> {
-        validate_id(id, "thread id")?;
-        let path = self.threads_dir().join(format!("{id}.json"));
-        if !path.exists() {
-            return Err(StorageError::NotFound(id.to_owned()));
-        }
-        tokio::fs::remove_file(&path)
-            .await
-            .map_err(|e| StorageError::Io(e.to_string()))
-    }
-
     async fn delete_messages(&self, thread_id: &str) -> Result<(), StorageError> {
         validate_id(thread_id, "thread id")?;
         let thread_path = self.threads_dir().join(format!("{thread_id}.json"));

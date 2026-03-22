@@ -77,14 +77,6 @@ impl ThreadStore for InMemoryStore {
         Ok(())
     }
 
-    async fn delete_thread(&self, id: &str) -> Result<(), StorageError> {
-        let mut guard = self.threads.write().await;
-        guard
-            .remove(id)
-            .ok_or_else(|| StorageError::NotFound(id.to_owned()))?;
-        Ok(())
-    }
-
     async fn delete_messages(&self, thread_id: &str) -> Result<(), StorageError> {
         let threads = self.threads.read().await;
         if !threads.contains_key(thread_id) {

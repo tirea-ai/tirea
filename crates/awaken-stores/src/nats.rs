@@ -251,10 +251,6 @@ impl ThreadStore for NatsBufferedWriter {
         self.inner.save_messages(thread_id, messages).await
     }
 
-    async fn delete_thread(&self, id: &str) -> Result<(), StorageError> {
-        self.inner.delete_thread(id).await
-    }
-
     async fn delete_messages(&self, thread_id: &str) -> Result<(), StorageError> {
         self.inner.delete_messages(thread_id).await
     }

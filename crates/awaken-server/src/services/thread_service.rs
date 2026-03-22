@@ -124,15 +124,6 @@ mod tests {
             Ok(())
         }
 
-        async fn delete_thread(&self, id: &str) -> Result<(), StorageError> {
-            self.threads
-                .write()
-                .unwrap()
-                .remove(id)
-                .ok_or_else(|| StorageError::NotFound(id.to_owned()))?;
-            Ok(())
-        }
-
         async fn delete_messages(&self, thread_id: &str) -> Result<(), StorageError> {
             if !self.threads.read().unwrap().contains_key(thread_id) {
                 return Err(StorageError::NotFound(thread_id.to_owned()));

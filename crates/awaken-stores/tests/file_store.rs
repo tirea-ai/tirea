@@ -713,8 +713,8 @@ async fn delete_thread_removes_thread() {
 async fn delete_thread_not_found() {
     let tmp = TempDir::new().unwrap();
     let store = FileStore::new(tmp.path());
-    let err = store.delete_thread("missing").await.unwrap_err();
-    assert!(matches!(err, StorageError::NotFound(_)));
+    // delete_thread is idempotent — deleting a non-existent thread succeeds silently
+    store.delete_thread("missing").await.unwrap();
 }
 
 #[tokio::test]

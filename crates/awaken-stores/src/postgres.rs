@@ -279,20 +279,6 @@ impl ThreadStore for PostgresStore {
         Ok(())
     }
 
-    async fn delete_thread(&self, id: &str) -> Result<(), StorageError> {
-        self.ensure_schema().await?;
-        let sql = format!("DELETE FROM {} WHERE id = $1", self.threads_table);
-        let result = sqlx::query(&sql)
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| StorageError::Io(e.to_string()))?;
-        if result.rows_affected() == 0 {
-            return Err(StorageError::NotFound(id.to_owned()));
-        }
-        Ok(())
-    }
-
     async fn delete_messages(&self, thread_id: &str) -> Result<(), StorageError> {
         self.ensure_schema().await?;
         // Verify thread exists
