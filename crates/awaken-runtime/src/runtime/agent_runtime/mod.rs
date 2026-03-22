@@ -18,7 +18,7 @@ use crate::runtime::resolver::AgentResolver;
 
 pub use run_request::{RunInput, RunOptions, RunRequest};
 
-use active_registry::{ActiveRunRegistry, RunEntry};
+use active_registry::ActiveRunRegistry;
 
 // ---------------------------------------------------------------------------
 // RunHandle
@@ -132,12 +132,8 @@ impl AgentRuntime {
         thread_id: &str,
         handle: RunHandle,
     ) -> Result<(), RuntimeError> {
-        let entry = RunEntry {
-            run_id: handle.run_id.clone(),
-            agent_id: handle.agent_id.clone(),
-            handle,
-        };
-        if !self.active_runs.try_insert(thread_id.to_string(), entry) {
+        let run_id = handle.run_id.clone();
+        if !self.active_runs.register(&run_id, thread_id, handle) {
             return Err(RuntimeError::ThreadAlreadyRunning {
                 thread_id: thread_id.to_string(),
             });
@@ -145,8 +141,8 @@ impl AgentRuntime {
         Ok(())
     }
 
-    /// Unregister an active run when it completes.
-    pub(crate) fn unregister_run(&self, thread_id: &str) {
-        self.active_runs.remove(thread_id);
+    /// Unregister an active run when it completes (by run_id).
+    pub(crate) fn unregister_run(&self, run_id: &str) {
+        self.active_runs.unregister(run_id);
     }
 }

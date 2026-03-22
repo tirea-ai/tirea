@@ -114,8 +114,8 @@ impl AgentRuntime {
         )
         .await;
 
-        // Unregister active run
-        self.unregister_run(&thread_id);
+        // Unregister active run (by run_id for dual-index cleanup)
+        self.unregister_run(&handle.run_id);
 
         Ok((handle, result?))
     }

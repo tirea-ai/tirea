@@ -193,20 +193,8 @@ async fn a2a_task_cancel(
     State(st): State<AppState>,
     Path(task_id): Path<String>,
 ) -> Result<Response, ApiError> {
-    // Try to cancel via dispatcher (run_id lookup) then fall back to thread_id
+    // Dual-index lookup: tries run_id first, then thread_id.
     if st.dispatcher.cancel_run(&task_id) {
-        return Ok((
-            StatusCode::ACCEPTED,
-            Json(serde_json::json!({
-                "taskId": task_id,
-                "status": { "state": "canceled" },
-            })),
-        )
-            .into_response());
-    }
-
-    // Also try as thread_id
-    if st.runtime.cancel_by_thread(&task_id) {
         return Ok((
             StatusCode::ACCEPTED,
             Json(serde_json::json!({

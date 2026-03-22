@@ -1,4 +1,4 @@
-//! Control methods: cancel_by_thread, send_decisions.
+//! Control methods: cancel, send_decisions — with dual-index lookup (run_id + thread_id).
 
 use awaken_contract::contract::suspension::ToolCallResume;
 
@@ -7,7 +7,27 @@ use super::AgentRuntime;
 impl AgentRuntime {
     /// Cancel an active run by thread ID.
     pub fn cancel_by_thread(&self, thread_id: &str) -> bool {
-        if let Some(handle) = self.active_runs.get_handle(thread_id) {
+        if let Some(handle) = self.active_runs.get_by_thread_id(thread_id) {
+            handle.cancel();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Cancel an active run by run ID.
+    pub fn cancel_by_run_id(&self, run_id: &str) -> bool {
+        if let Some(handle) = self.active_runs.get_by_run_id(run_id) {
+            handle.cancel();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Cancel an active run, trying run_id first, then thread_id.
+    pub fn cancel(&self, id: &str) -> bool {
+        if let Some(handle) = self.active_runs.get_handle(id) {
             handle.cancel();
             true
         } else {
@@ -21,13 +41,22 @@ impl AgentRuntime {
         thread_id: &str,
         decisions: Vec<(String, ToolCallResume)>,
     ) -> bool {
-        if let Some(handle) = self.active_runs.get_handle(thread_id) {
+        if let Some(handle) = self.active_runs.get_by_thread_id(thread_id) {
             for (call_id, resume) in decisions {
                 if handle.send_decision(call_id, resume).is_err() {
                     return false;
                 }
             }
             true
+        } else {
+            false
+        }
+    }
+
+    /// Send a decision to an active run, trying run_id first, then thread_id.
+    pub fn send_decision(&self, id: &str, tool_call_id: String, resume: ToolCallResume) -> bool {
+        if let Some(handle) = self.active_runs.get_handle(id) {
+            handle.send_decision(tool_call_id, resume).is_ok()
         } else {
             false
         }

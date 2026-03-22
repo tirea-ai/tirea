@@ -62,6 +62,13 @@ pub async fn run_agent_loop_controlled(
         .resolve(initial_agent_id)
         .map_err(AgentLoopError::RuntimeError)?;
 
+    // Install plugin state keys into the store so persistence and commit can find them.
+    if !env.key_registrations.is_empty() {
+        store
+            .register_keys(&env.key_registrations)
+            .map_err(AgentLoopError::PhaseError)?;
+    }
+
     // Trim to latest compaction boundary — skip already-summarized history
     if agent.context_policy.is_some() {
         super::super::compaction::trim_to_compaction_boundary(&mut messages);

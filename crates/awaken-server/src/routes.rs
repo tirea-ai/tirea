@@ -379,9 +379,8 @@ async fn cancel_run(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    // Try to cancel via runtime's active runs (by thread_id = run_id heuristic)
-    // In practice, the caller should use thread_id, but we accept run_id as a best-effort lookup.
-    if st.runtime.cancel_by_thread(&id) {
+    // Dual-index lookup: tries run_id first, then thread_id.
+    if st.dispatcher.cancel_run(&id) {
         return Ok((
             StatusCode::ACCEPTED,
             Json(json!({

@@ -3,15 +3,14 @@
 //! Protocol handlers prepare a [`RunSpec`], dispatch it through [`RunDispatcher`],
 //! and get back a channel of [`AgentEvent`]s to relay over their transport.
 
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::suspension::ToolCallResume;
-use awaken_runtime::{AgentRuntime, RunHandle};
+use awaken_runtime::AgentRuntime;
 
 use crate::routes::ApiError;
 use crate::transport::channel_sink::ChannelEventSink;
@@ -49,21 +48,16 @@ pub struct RunSpec {
 /// then call [`dispatch`](Self::dispatch) to spawn the runtime and obtain an
 /// event receiver.
 ///
-/// Tracks active [`RunHandle`]s so that external callers can forward decisions
-/// or cancel active runs by run ID.
+/// Delegates cancel and decision operations to the runtime's dual-index
+/// `ActiveRunRegistry` (tries run_id first, then thread_id).
 #[derive(Clone)]
 pub struct RunDispatcher {
     runtime: Arc<AgentRuntime>,
-    /// Active run handles keyed by run_id.
-    active_handles: Arc<RwLock<HashMap<String, RunHandle>>>,
 }
 
 impl RunDispatcher {
     pub fn new(runtime: Arc<AgentRuntime>) -> Self {
-        Self {
-            runtime,
-            active_handles: Arc::new(RwLock::new(HashMap::new())),
-        }
+        Self { runtime }
     }
 
     /// Dispatch a run and return a channel receiver for events.
@@ -71,14 +65,10 @@ impl RunDispatcher {
     /// Creates an unbounded channel, wraps the sender in a [`ChannelEventSink`],
     /// builds a [`RunRequest`](awaken_runtime::RunRequest) from the spec, and
     /// spawns a background task that drives the runtime.
-    ///
-    /// The returned `RunHandle` is tracked in [`active_handles`] and removed
-    /// when the run completes.
     pub fn dispatch(&self, spec: RunSpec) -> mpsc::UnboundedReceiver<AgentEvent> {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
 
         let runtime = self.runtime.clone();
-        let active_handles = self.active_handles.clone();
         tokio::spawn(async move {
             let sink = ChannelEventSink::new(event_tx);
             let mut request = awaken_runtime::RunRequest::new(spec.thread_id, spec.messages);
@@ -86,10 +76,8 @@ impl RunDispatcher {
                 request = request.with_agent_id(aid);
             }
             match runtime.run(request, &sink).await {
-                Ok((handle, _result)) => {
-                    let run_id = handle.run_id.clone();
-                    // Run completed; remove from active handles.
-                    active_handles.write().ok().map(|mut m| m.remove(&run_id));
+                Ok((_handle, _result)) => {
+                    // Run completed; unregister already handled inside runtime.run()
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "run failed");
@@ -100,34 +88,18 @@ impl RunDispatcher {
         event_rx
     }
 
-    /// Look up an active run handle and forward a decision to it.
+    /// Cancel an active run. Tries run_id first, then thread_id via dual-index lookup.
     ///
-    /// Returns `true` if the decision was sent successfully.
-    pub fn send_decision(
-        &self,
-        run_id: &str,
-        tool_call_id: String,
-        resume: ToolCallResume,
-    ) -> bool {
-        let handles = self.active_handles.read().ok();
-        if let Some(handle) = handles.as_ref().and_then(|m| m.get(run_id)) {
-            handle.send_decision(tool_call_id, resume).is_ok()
-        } else {
-            // Fall back to runtime's thread-based lookup (run_id might be thread_id)
-            self.runtime
-                .send_decisions(run_id, vec![(tool_call_id, resume)])
-        }
+    /// Returns `true` if the cancellation was sent.
+    pub fn cancel_run(&self, id: &str) -> bool {
+        self.runtime.cancel(id)
     }
 
-    /// Cancel an active run by run_id.
-    pub fn cancel_run(&self, run_id: &str) -> bool {
-        let handles = self.active_handles.read().ok();
-        if let Some(handle) = handles.as_ref().and_then(|m| m.get(run_id)) {
-            handle.cancel();
-            true
-        } else {
-            self.runtime.cancel_by_thread(run_id)
-        }
+    /// Forward a decision to an active run. Tries run_id first, then thread_id.
+    ///
+    /// Returns `true` if the decision was sent successfully.
+    pub fn send_decision(&self, id: &str, tool_call_id: String, resume: ToolCallResume) -> bool {
+        self.runtime.send_decision(id, tool_call_id, resume)
     }
 }
 

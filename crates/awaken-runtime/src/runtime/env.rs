@@ -13,7 +13,7 @@ use awaken_contract::model::Phase;
 use super::handlers::{
     EffectHandlerArc, PhaseHookArc, ScheduledActionHandlerArc, ToolPermissionCheckerArc,
 };
-use crate::plugins::RequestTransformArc;
+use crate::plugins::{KeyRegistration, RequestTransformArc};
 
 /// A phase hook with its owning plugin ID.
 pub(crate) struct TaggedPhaseHook {
@@ -33,20 +33,23 @@ pub struct ExecutionEnv {
     pub(crate) tool_permission_checkers: Vec<ToolPermissionCheckerArc>,
     /// Request transforms applied after message assembly, before LLM call.
     pub(crate) request_transforms: Vec<RequestTransformArc>,
+    /// State key registrations collected from all plugins.
+    pub(crate) key_registrations: Vec<KeyRegistration>,
 }
 
 impl ExecutionEnv {
     /// Build an execution environment from a set of plugins.
     ///
-    /// Each plugin's `register()` is called to collect hooks and handlers.
-    /// State keys registered by plugins are ignored here — they are handled
-    /// separately by `StateStore::install_plugin_with_keys()`.
+    /// Each plugin's `register()` is called to collect hooks, handlers, and
+    /// state key registrations. The key registrations are stored so they can
+    /// be installed into a `StateStore` at run start.
     pub fn from_plugins(plugins: &[Arc<dyn Plugin>]) -> Result<Self, StateError> {
         let mut all_hooks: HashMap<Phase, Vec<TaggedPhaseHook>> = HashMap::new();
         let mut all_action_handlers: HashMap<String, ScheduledActionHandlerArc> = HashMap::new();
         let mut all_effect_handlers: HashMap<String, EffectHandlerArc> = HashMap::new();
         let mut all_permission_checkers: Vec<ToolPermissionCheckerArc> = Vec::new();
         let mut all_transforms: Vec<RequestTransformArc> = Vec::new();
+        let mut all_key_registrations: Vec<KeyRegistration> = Vec::new();
 
         for plugin in plugins {
             let mut registrar = PluginRegistrar::new();
@@ -89,6 +92,9 @@ impl ExecutionEnv {
             for entry in registrar.request_transforms {
                 all_transforms.push(entry.transform);
             }
+
+            // Collect state key registrations
+            all_key_registrations.extend(registrar.keys);
         }
 
         Ok(Self {
@@ -97,6 +103,7 @@ impl ExecutionEnv {
             effect_handlers: all_effect_handlers,
             tool_permission_checkers: all_permission_checkers,
             request_transforms: all_transforms,
+            key_registrations: all_key_registrations,
         })
     }
 
@@ -108,6 +115,7 @@ impl ExecutionEnv {
             effect_handlers: HashMap::new(),
             tool_permission_checkers: Vec::new(),
             request_transforms: Vec::new(),
+            key_registrations: Vec::new(),
         }
     }
 

@@ -8,14 +8,10 @@ use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::tool::Tool;
 use awaken_contract::registry_spec::AgentSpec;
 
-use crate::state::StateStore;
-
-use crate::agent::stop_conditions::StopPolicy;
 use crate::plugins::Plugin;
 use crate::registry::composite::{CompositeAgentSpecRegistry, RemoteAgentSource};
 use crate::registry::memory::{
-    MapAgentRegistry, MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry,
-    MapStopPolicyRegistry, MapToolRegistry,
+    MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapToolRegistry,
 };
 use crate::registry::traits::{AgentSpecRegistry, ModelEntry, RegistrySet};
 use crate::runtime::AgentRuntime;
@@ -25,10 +21,6 @@ use crate::runtime::AgentRuntime;
 pub enum BuildError {
     #[error("state error: {0}")]
     State(#[from] StateError),
-    #[error("agent registry conflict: {0}")]
-    AgentRegistryConflict(String),
-    #[error("stop policy registry conflict: {0}")]
-    StopPolicyConflict(String),
 }
 
 /// Fluent API for constructing an `AgentRuntime`.
@@ -41,10 +33,7 @@ pub struct AgentRuntimeBuilder {
     models: MapModelRegistry,
     providers: MapProviderRegistry,
     plugins: MapPluginSource,
-    store: Option<StateStore>,
     thread_run_store: Option<Arc<dyn ThreadRunStore>>,
-    agent_registries: MapAgentRegistry,
-    stop_policies: MapStopPolicyRegistry,
     remote_sources: Vec<RemoteAgentSource>,
 }
 
@@ -56,10 +45,7 @@ impl AgentRuntimeBuilder {
             models: MapModelRegistry::new(),
             providers: MapProviderRegistry::new(),
             plugins: MapPluginSource::new(),
-            store: None,
             thread_run_store: None,
-            agent_registries: MapAgentRegistry::new(),
-            stop_policies: MapStopPolicyRegistry::new(),
             remote_sources: Vec::new(),
         }
     }
@@ -102,27 +88,9 @@ impl AgentRuntimeBuilder {
         self
     }
 
-    /// Set the state store.
-    pub fn with_store(mut self, store: StateStore) -> Self {
-        self.store = Some(store);
-        self
-    }
-
     /// Set the thread run store for persistence.
     pub fn with_thread_run_store(mut self, store: Arc<dyn ThreadRunStore>) -> Self {
         self.thread_run_store = Some(store);
-        self
-    }
-
-    /// Register an agent in the agent registry (for sub-agent lookup).
-    pub fn with_agent_registry_entry(mut self, id: impl Into<String>, spec: AgentSpec) -> Self {
-        self.agent_registries.register(id, spec);
-        self
-    }
-
-    /// Register a stop policy.
-    pub fn with_stop_policy(mut self, id: impl Into<String>, policy: Arc<dyn StopPolicy>) -> Self {
-        self.stop_policies.register(id, policy);
         self
     }
 
@@ -360,17 +328,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn builder_with_store() {
-        let store = StateStore::new();
-        let runtime = AgentRuntimeBuilder::new()
-            .with_store(store)
-            .build()
-            .unwrap();
-        // Should work without error
-        let _ = runtime;
-    }
-
-    #[test]
     fn builder_with_plugin() {
         use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 
@@ -391,32 +348,6 @@ mod tests {
 
         let runtime = AgentRuntimeBuilder::new()
             .with_plugin("test-builder-plugin", Arc::new(TestPlugin))
-            .build()
-            .unwrap();
-        let _ = runtime;
-    }
-
-    #[test]
-    fn builder_with_stop_policy() {
-        use crate::agent::stop_conditions::MaxRoundsPolicy;
-
-        let runtime = AgentRuntimeBuilder::new()
-            .with_stop_policy("max_rounds", Arc::new(MaxRoundsPolicy::new(10)))
-            .build()
-            .unwrap();
-        let _ = runtime;
-    }
-
-    #[test]
-    fn builder_with_agent_registry_entry() {
-        let spec = AgentSpec {
-            id: "worker".into(),
-            model: "m".into(),
-            system_prompt: "sys".into(),
-            ..Default::default()
-        };
-        let runtime = AgentRuntimeBuilder::new()
-            .with_agent_registry_entry("worker", spec)
             .build()
             .unwrap();
         let _ = runtime;
@@ -451,15 +382,6 @@ mod tests {
         assert!(resolved.config.tools.contains_key("t1"));
         assert!(resolved.config.tools.contains_key("t2"));
         assert!(resolved.config.tools.contains_key("t3"));
-    }
-
-    #[test]
-    fn builder_error_display() {
-        let err = BuildError::AgentRegistryConflict("duplicate agent".into());
-        assert!(err.to_string().contains("duplicate agent"));
-
-        let err = BuildError::StopPolicyConflict("duplicate policy".into());
-        assert!(err.to_string().contains("duplicate policy"));
     }
 
     #[test]

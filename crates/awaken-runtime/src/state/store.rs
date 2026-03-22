@@ -196,6 +196,27 @@ impl StateStore {
         Ok(())
     }
 
+    /// Register standalone state keys (not owned by any plugin).
+    ///
+    /// Keys that are already registered are silently skipped.
+    /// This is used to install plugin-declared state keys collected by
+    /// `ExecutionEnv::from_plugins()`.
+    pub(crate) fn register_keys(
+        &self,
+        registrations: &[KeyRegistration],
+    ) -> Result<(), StateError> {
+        let mut registry = self.registry.lock().expect("registry lock poisoned");
+        for reg in registrations {
+            if registry.keys_by_name.contains_key(&reg.key) {
+                // Already registered (e.g., by LoopStatePlugin or another source) — skip.
+                continue;
+            }
+            registry.keys_by_name.insert(reg.key.clone(), reg.clone());
+            registry.keys_by_type.insert(reg.type_id, reg.clone());
+        }
+        Ok(())
+    }
+
     pub fn uninstall_plugin<P>(&self) -> Result<(), StateError>
     where
         P: Plugin,
