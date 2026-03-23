@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use awaken_contract::contract::context_message::ContextMessage;
 use awaken_contract::contract::profile::PluginConfigKey;
-use awaken_contract::tool_pattern::{FieldCondition, MatchOp, PathSegment, parse_pattern};
+use awaken_tool_pattern::{FieldCondition, MatchOp, PathSegment, parse_pattern};
 
 use crate::output_matcher::{ContentMatcher, OutputMatcher, ToolStatusMatcher};
 use crate::rule::ReminderRule;
@@ -502,7 +502,7 @@ mod tests {
         let rules = config.into_rules().unwrap();
         assert!(matches!(
             rules[0].pattern.tool,
-            awaken_contract::tool_pattern::ToolMatcher::Glob(_)
+            awaken_tool_pattern::ToolMatcher::Glob(_)
         ));
     }
 

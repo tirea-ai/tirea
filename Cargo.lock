@@ -179,9 +179,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures",
- "glob-match",
  "jsonschema",
- "regex",
  "schemars 0.8.22",
  "serde",
  "serde_json",
@@ -252,6 +250,7 @@ dependencies = [
  "async-trait",
  "awaken-contract",
  "awaken-runtime",
+ "awaken-tool-pattern",
  "glob-match",
  "regex",
  "schemars 0.8.22",
@@ -268,6 +267,7 @@ dependencies = [
  "async-trait",
  "awaken-contract",
  "awaken-runtime",
+ "awaken-tool-pattern",
  "schemars 0.8.22",
  "serde",
  "serde_json",
@@ -361,6 +361,16 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "awaken-tool-pattern"
+version = "0.1.0"
+dependencies = [
+ "glob-match",
+ "regex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

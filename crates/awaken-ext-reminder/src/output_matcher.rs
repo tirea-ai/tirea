@@ -1,7 +1,7 @@
 //! Output matching logic for tool execution results.
 
 use awaken_contract::contract::tool::{ToolResult, ToolStatus};
-use awaken_contract::tool_pattern::{
+use awaken_tool_pattern::{
     FieldCondition, MatchOp, evaluate_field_condition, evaluate_op, value_to_string,
 };
 
@@ -88,7 +88,7 @@ fn data_to_string(data: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::tool_pattern::{FieldCondition, MatchOp, PathSegment};
+    use awaken_tool_pattern::{FieldCondition, MatchOp, PathSegment};
     use serde_json::json;
 
     fn success_result(data: serde_json::Value) -> ToolResult {

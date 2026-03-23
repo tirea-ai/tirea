@@ -3,10 +3,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use awaken_contract::StateError;
-use awaken_contract::tool_pattern::pattern_matches;
 use awaken_runtime::AddContextMessage;
 use awaken_runtime::hooks::{PhaseContext, PhaseHook};
 use awaken_runtime::state::StateCommand;
+use awaken_tool_pattern::pattern_matches;
 
 use crate::output_matcher::output_matches;
 use crate::rule::ReminderRule;

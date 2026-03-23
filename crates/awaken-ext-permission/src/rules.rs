@@ -21,8 +21,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-// Re-export pattern types from contract so existing consumers keep working.
-pub use awaken_contract::tool_pattern::{
+// Re-export pattern types so existing consumers keep working.
+pub use awaken_tool_pattern::{
     ArgMatcher, FieldCondition, MatchOp, MatchResult, PathSegment, PatternParseError, Specificity,
     ToolCallPattern, ToolMatcher, parse_pattern, pattern_matches,
 };

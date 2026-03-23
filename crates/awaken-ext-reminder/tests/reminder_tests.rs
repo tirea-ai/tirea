@@ -2,15 +2,15 @@
 
 use awaken_contract::contract::context_message::ContextMessage;
 use awaken_contract::contract::tool::{ToolResult, ToolStatus};
-use awaken_contract::tool_pattern::{
-    ArgMatcher, FieldCondition, MatchOp, PathSegment, ToolCallPattern, ToolMatcher, pattern_matches,
-};
 use awaken_ext_reminder::ReminderRulesConfig;
 use awaken_ext_reminder::output_matcher::{
     ContentMatcher, OutputMatcher, ToolStatusMatcher, output_matches,
 };
 use awaken_ext_reminder::plugin::ReminderPlugin;
 use awaken_ext_reminder::rule::ReminderRule;
+use awaken_tool_pattern::{
+    ArgMatcher, FieldCondition, MatchOp, PathSegment, ToolCallPattern, ToolMatcher, pattern_matches,
+};
 use serde_json::json;
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,13 @@
+[package]
+name = "awaken-tool-pattern"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+glob-match = { workspace = true }
+regex = { workspace = true }
+
+[lints]
+workspace = true
