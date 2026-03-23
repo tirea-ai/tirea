@@ -152,6 +152,10 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
     plugins.push(Arc::new(
         crate::agent::loop_runner::actions::LoopActionHandlersPlugin,
     ));
+    plugins.push(Arc::new(
+        crate::agent::stop_conditions::MaxRoundsPlugin::new(spec.max_rounds),
+    ));
+    plugins.push(Arc::new(crate::agent::tool_permission::AllowAllToolsPlugin));
 
     // Default compaction plugin: tracks compaction boundaries in state.
     // Only added if the agent has a context_policy configured.
@@ -471,7 +475,7 @@ mod tests {
         assert_eq!(run.tools.len(), 2);
         assert!(run.tools.contains_key("read"));
         assert!(run.tools.contains_key("write"));
-        assert_eq!(run.plugins.len(), 2); // user plugin + LoopActionHandlersPlugin
+        assert_eq!(run.plugins.len(), 4); // user plugin + LoopActionHandlersPlugin + MaxRoundsPlugin + AllowAllToolsPlugin
     }
 
     #[test]
@@ -684,7 +688,7 @@ mod tests {
         );
 
         let run = resolve(&regs, "a").unwrap();
-        assert_eq!(run.plugins.len(), 1); // LoopActionHandlersPlugin only
+        assert_eq!(run.plugins.len(), 3); // LoopActionHandlersPlugin + MaxRoundsPlugin + AllowAllToolsPlugin
         // env has action handlers but no hooks
     }
 

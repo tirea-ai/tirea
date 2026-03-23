@@ -55,10 +55,14 @@ impl crate::plugins::Plugin for LoopStatePlugin {
             AccumulatedOverrides, AccumulatedToolExclusions, AccumulatedToolInclusions,
             ContextMessageStore, ContextThrottleState,
         };
-        use crate::state::StateKeyOptions;
+        use crate::state::{KeyScope, StateKeyOptions};
 
         r.register_key::<RunLifecycle>(StateKeyOptions::default())?;
-        r.register_key::<ToolCallStates>(StateKeyOptions::default())?;
+        r.register_key::<ToolCallStates>(StateKeyOptions {
+            scope: KeyScope::Thread,
+            persistent: true,
+            ..StateKeyOptions::default()
+        })?;
         r.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
         r.register_key::<AccumulatedOverrides>(StateKeyOptions::default())?;
         r.register_key::<ContextMessageStore>(StateKeyOptions::default())?;

@@ -142,14 +142,25 @@ pub(super) async fn wait_for_resume_or_cancel(
     };
 
     loop {
-        if cancellation_token.is_some_and(|t| t.is_cancelled()) {
-            return Ok(WaitOutcome::Cancelled);
-        }
-
-        let Some(first) = rx.next().await else {
-            return Ok(WaitOutcome::NoDecisionChannel);
+        // Use select! to race cancellation against decision arrival
+        let first = if let Some(token) = cancellation_token {
+            tokio::select! {
+                biased;
+                _ = token.cancelled() => return Ok(WaitOutcome::Cancelled),
+                next = rx.next() => match next {
+                    Some(v) => v,
+                    None => return Ok(WaitOutcome::NoDecisionChannel),
+                },
+            }
+        } else {
+            match rx.next().await {
+                Some(v) => v,
+                None => return Ok(WaitOutcome::NoDecisionChannel),
+            }
         };
+
         let mut decisions = vec![first];
+        // Drain any additional buffered decisions
         loop {
             match rx.try_recv() {
                 Ok(v) => decisions.push(v),

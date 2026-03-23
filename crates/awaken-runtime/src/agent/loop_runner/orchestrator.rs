@@ -95,10 +95,23 @@ pub(super) async fn run_agent_loop_impl(
         if let Some(Some(active_id)) =
             store.read::<awaken_contract::contract::profile::ActiveAgentIdKey>()
             && active_id != agent.id
-            && let Ok(resolved) = resolver.resolve(&active_id)
         {
-            agent = resolved.config;
-            env = resolved.env;
+            match resolver.resolve(&active_id) {
+                Ok(resolved) => {
+                    if !resolved.env.key_registrations.is_empty() {
+                        store
+                            .register_keys(&resolved.env.key_registrations)
+                            .map_err(AgentLoopError::PhaseError)?;
+                    }
+                    tracing::info!(from = %agent.id, to = %active_id, "agent_handoff");
+                    agent = resolved.config;
+                    env = resolved.env;
+                }
+                Err(e) => {
+                    tracing::error!(agent_id = %active_id, error = %e, "handoff_resolve_failed");
+                    break TerminationReason::Blocked(format!("handoff resolve failed: {e}"));
+                }
+            }
         }
 
         sink.emit(AgentEvent::StepStart {
