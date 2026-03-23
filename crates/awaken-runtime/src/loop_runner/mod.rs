@@ -152,8 +152,8 @@ pub struct AgentLoopParams<'a> {
     pub run_identity: RunIdentity,
     /// Cooperative cancellation token.
     pub cancellation_token: Option<CancellationToken>,
-    /// Live decision channel for suspended tool calls (from RunHandle).
-    pub decision_rx: Option<mpsc::UnboundedReceiver<(String, ToolCallResume)>>,
+    /// Live decision channel for suspended tool calls (batched by sender).
+    pub decision_rx: Option<mpsc::UnboundedReceiver<Vec<(String, ToolCallResume)>>>,
     /// Inference parameter overrides for this run.
     pub overrides: Option<InferenceOverride>,
 }
@@ -168,13 +168,9 @@ pub fn build_agent_env(
     agent: &crate::agent::config::AgentConfig,
 ) -> Result<ExecutionEnv, StateError> {
     use crate::context::ContextTransform;
-    use crate::plugins::defaults::AllowAllToolsPlugin;
-    use crate::policies::MaxRoundsPlugin;
 
-    let mut all_plugins: Vec<Arc<dyn crate::plugins::Plugin>> = plugins.to_vec();
-    all_plugins.push(Arc::new(MaxRoundsPlugin::new(agent.max_rounds)));
-    all_plugins.push(Arc::new(AllowAllToolsPlugin));
-    all_plugins.push(Arc::new(actions::LoopActionHandlersPlugin));
+    let all_plugins =
+        crate::registry::resolve::inject_default_plugins(plugins.to_vec(), agent.max_rounds);
 
     let mut env = ExecutionEnv::from_plugins(&all_plugins)?;
 

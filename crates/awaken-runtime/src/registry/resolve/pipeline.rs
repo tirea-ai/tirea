@@ -19,6 +19,26 @@ use super::ResolvedRun;
 use super::error::ResolveError;
 
 // ---------------------------------------------------------------------------
+// inject_default_plugins()
+// ---------------------------------------------------------------------------
+
+/// Inject runtime-required default plugins into a plugin list.
+///
+/// These plugins are always needed for the agent loop to function correctly.
+/// Called from both the resolve pipeline and `build_agent_env()`.
+pub(crate) fn inject_default_plugins(
+    mut plugins: Vec<Arc<dyn Plugin>>,
+    max_rounds: usize,
+) -> Vec<Arc<dyn Plugin>> {
+    plugins.push(Arc::new(
+        crate::loop_runner::actions::LoopActionHandlersPlugin,
+    ));
+    plugins.push(Arc::new(crate::policies::MaxRoundsPlugin::new(max_rounds)));
+    plugins.push(Arc::new(crate::plugins::AllowAllToolsPlugin));
+    plugins
+}
+
+// ---------------------------------------------------------------------------
 // resolve()
 // ---------------------------------------------------------------------------
 
@@ -101,14 +121,8 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
         }
     }
 
-    let mut plugins = resolve_plugins(registries, &spec)?;
-    plugins.push(Arc::new(
-        crate::loop_runner::actions::LoopActionHandlersPlugin,
-    ));
-    plugins.push(Arc::new(crate::policies::MaxRoundsPlugin::new(
-        spec.max_rounds,
-    )));
-    plugins.push(Arc::new(crate::plugins::AllowAllToolsPlugin));
+    let plugins = resolve_plugins(registries, &spec)?;
+    let mut plugins = inject_default_plugins(plugins, spec.max_rounds);
 
     // Default compaction plugin: tracks compaction boundaries in state.
     // Only added if the agent has a context_policy configured.
