@@ -42,7 +42,7 @@ pub use context::{
 };
 
 // ── retry policy ──
-pub use execution::{LlmRetryPolicy, RetryConfigKey, RetryingExecutor};
+pub use engine::{LlmRetryPolicy, RetryConfigKey, RetryingExecutor};
 
 // ── background tasks ──
 pub use extensions::background::{

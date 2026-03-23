@@ -113,10 +113,9 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
         .ok_or_else(|| ResolveError::ProviderNotFound(model.provider.clone()))?;
 
     // Wrap executor with retry policy if configured in agent spec sections.
-    let executor = match spec.config::<crate::execution::RetryConfigKey>() {
+    let executor = match spec.config::<crate::engine::RetryConfigKey>() {
         Ok(policy) if policy.max_retries > 0 || !policy.fallback_models.is_empty() => {
-            Arc::new(crate::execution::RetryingExecutor::new(executor, policy))
-                as Arc<dyn LlmExecutor>
+            Arc::new(crate::engine::RetryingExecutor::new(executor, policy)) as Arc<dyn LlmExecutor>
         }
         _ => executor,
     };

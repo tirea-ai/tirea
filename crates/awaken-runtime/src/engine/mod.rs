@@ -8,7 +8,9 @@
 pub mod convert;
 pub mod executor;
 pub mod mock;
+pub mod retry;
 pub mod streaming;
 
 pub use executor::GenaiExecutor;
 pub use mock::MockLlmExecutor;
+pub use retry::{LlmRetryPolicy, RetryConfigKey, RetryingExecutor};
