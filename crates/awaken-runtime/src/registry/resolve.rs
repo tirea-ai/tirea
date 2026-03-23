@@ -6,8 +6,9 @@ use std::sync::Arc;
 use crate::agent::config::AgentConfig;
 use crate::error::RuntimeError;
 use crate::execution::SequentialToolExecutor;
+use crate::phase::ExecutionEnv;
 use crate::plugins::Plugin;
-use crate::runtime::{AgentResolver, ExecutionEnv, ResolvedAgent};
+use crate::runtime::{AgentResolver, ResolvedAgent};
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::tool::Tool;
 
@@ -160,7 +161,7 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
 
     let mut plugins = resolve_plugins(registries, &spec)?;
     plugins.push(Arc::new(
-        crate::runtime::loop_runner::actions::LoopActionHandlersPlugin,
+        crate::loop_runner::actions::LoopActionHandlersPlugin,
     ));
     plugins.push(Arc::new(crate::policies::MaxRoundsPlugin::new(
         spec.max_rounds,

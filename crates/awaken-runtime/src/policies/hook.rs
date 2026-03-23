@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::runtime::{PhaseContext, PhaseHook};
+use crate::phase::{PhaseContext, PhaseHook};
 use crate::state::StateCommand;
 use awaken_contract::StateError;
 use awaken_contract::contract::lifecycle::TerminationReason;

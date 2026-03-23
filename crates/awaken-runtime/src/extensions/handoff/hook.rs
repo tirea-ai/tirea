@@ -1,7 +1,7 @@
 use awaken_contract::StateError;
 use awaken_contract::contract::profile::ActiveAgentIdKey;
 
-use crate::runtime::{PhaseContext, PhaseHook};
+use crate::phase::{PhaseContext, PhaseHook};
 
 use super::action::HandoffAction;
 use super::state::ActiveAgentKey;

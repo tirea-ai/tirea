@@ -2,8 +2,9 @@
 
 use std::sync::Arc;
 
-use super::super::{CancellationToken, ExecutionEnv, PhaseContext, PhaseRuntime};
 use crate::agent::config::AgentConfig;
+use crate::phase::{ExecutionEnv, PhaseContext, PhaseRuntime};
+use crate::runtime::CancellationToken;
 use crate::state::StateCommand;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
@@ -261,21 +262,21 @@ async fn check_tool_permissions(
             .await?;
 
         match perm_result {
-            crate::runtime::ToolPermissionResult::Allow => {
+            crate::phase::ToolPermissionResult::Allow => {
                 allowed_calls.push(call.clone());
             }
-            crate::runtime::ToolPermissionResult::Deny { reason, message } => {
+            crate::phase::ToolPermissionResult::Deny { reason, message } => {
                 tool_commands.push(tool_call_state_cmd(call, ToolCallStatus::Failed));
                 let tool_msg = message.unwrap_or_else(|| format!("Permission denied: {reason}"));
                 ctx.messages
                     .push(Arc::new(Message::tool(&call.id, tool_msg)));
             }
-            crate::runtime::ToolPermissionResult::Block { reason } => {
+            crate::phase::ToolPermissionResult::Block { reason } => {
                 tool_commands.push(tool_call_state_cmd(call, ToolCallStatus::Failed));
                 blocked_reason = Some(reason);
                 break;
             }
-            crate::runtime::ToolPermissionResult::Suspend => {
+            crate::phase::ToolPermissionResult::Suspend => {
                 tool_commands.push(tool_call_state_cmd(call, ToolCallStatus::Suspended));
                 ctx.messages.push(Arc::new(Message::tool(
                     &call.id,

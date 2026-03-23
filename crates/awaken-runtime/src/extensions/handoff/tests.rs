@@ -4,8 +4,8 @@ use std::sync::Arc;
 use awaken_contract::contract::profile::ActiveAgentIdKey;
 use awaken_contract::model::Phase;
 
+use crate::phase::{ExecutionEnv, PhaseRuntime};
 use crate::plugins::Plugin;
-use crate::runtime::{ExecutionEnv, PhaseRuntime};
 use crate::state::StateStore;
 
 use super::*;

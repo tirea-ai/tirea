@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use super::super::{PhaseContext, TypedScheduledActionHandler};
+use crate::phase::{PhaseContext, TypedScheduledActionHandler};
 use crate::state::StateCommand;
 use awaken_contract::StateError;
 use awaken_contract::contract::context_message::ContextMessage;

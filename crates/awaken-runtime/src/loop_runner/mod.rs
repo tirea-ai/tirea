@@ -18,7 +18,8 @@ mod tests;
 
 use std::sync::Arc;
 
-use super::{AgentResolver, CancellationToken, ExecutionEnv, PhaseRuntime};
+use crate::phase::{ExecutionEnv, PhaseRuntime};
+use crate::runtime::{AgentResolver, CancellationToken};
 use crate::state::MutationBatch;
 use awaken_contract::StateError;
 use awaken_contract::contract::event_sink::EventSink;
@@ -85,6 +86,18 @@ pub enum AgentLoopError {
     RuntimeError(#[from] crate::error::RuntimeError),
     #[error("invalid resume: {0}")]
     InvalidResume(String),
+}
+
+impl From<awaken_contract::contract::executor::InferenceExecutionError> for AgentLoopError {
+    fn from(e: awaken_contract::contract::executor::InferenceExecutionError) -> Self {
+        Self::InferenceFailed(e.to_string())
+    }
+}
+
+impl From<crate::execution::executor::ToolExecutorError> for AgentLoopError {
+    fn from(e: crate::execution::executor::ToolExecutorError) -> Self {
+        Self::InferenceFailed(e.to_string())
+    }
 }
 
 /// Result of running the agent loop.

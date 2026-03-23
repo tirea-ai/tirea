@@ -2,8 +2,9 @@
 
 use std::sync::Arc;
 
-use super::super::{AgentResolver, ExecutionEnv, PhaseRuntime, ResolvedAgent};
 use crate::agent::config::AgentConfig;
+use crate::phase::{ExecutionEnv, PhaseRuntime};
+use crate::runtime::{AgentResolver, ResolvedAgent};
 use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::message::Message;
 

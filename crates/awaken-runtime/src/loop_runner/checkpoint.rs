@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use super::super::{ExecutionEnv, PhaseContext, PhaseRuntime};
+use crate::phase::{ExecutionEnv, PhaseContext, PhaseRuntime};
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;

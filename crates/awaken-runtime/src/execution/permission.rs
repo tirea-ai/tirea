@@ -2,8 +2,8 @@
 
 use async_trait::async_trait;
 
+use crate::phase::{PhaseContext, ToolPermission, ToolPermissionChecker};
 use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
-use crate::runtime::{PhaseContext, ToolPermission, ToolPermissionChecker};
 use awaken_contract::StateError;
 
 /// Default plugin that allows all tool calls.

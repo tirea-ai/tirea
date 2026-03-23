@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::*;
-use crate::runtime::{ExecutionEnv, PhaseContext};
+use crate::phase::{ExecutionEnv, PhaseContext};
 use crate::state::StateStore;
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::context_message::ContextMessage;
@@ -19,7 +19,7 @@ use crate::agent::state::{
     AddContextMessage, ExcludeTool, IncludeOnlyTools, RunLifecycle, RunLifecycleUpdate,
     SetInferenceOverride,
 };
-use crate::runtime::PhaseRuntime;
+use crate::phase::PhaseRuntime;
 
 /// Helper: create a PhaseRuntime + ExecutionEnv with action handlers registered.
 fn test_runtime() -> (PhaseRuntime, ExecutionEnv) {

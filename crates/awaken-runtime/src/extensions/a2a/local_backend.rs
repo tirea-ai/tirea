@@ -8,8 +8,8 @@ use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
 use awaken_contract::contract::lifecycle::TerminationReason;
 use awaken_contract::contract::message::Message;
 
+use crate::loop_runner::{AgentLoopParams, run_agent_loop};
 use crate::runtime::AgentResolver;
-use crate::runtime::loop_runner::{AgentLoopParams, run_agent_loop};
 
 use super::backend::{AgentBackend, AgentBackendError, DelegateRunResult, DelegateRunStatus};
 
@@ -40,10 +40,10 @@ impl AgentBackend for LocalBackend {
         // Build execution environment
         let store = crate::state::StateStore::new();
         store
-            .install_plugin(crate::runtime::loop_runner::LoopStatePlugin)
+            .install_plugin(crate::loop_runner::LoopStatePlugin)
             .map_err(|e| AgentBackendError::ExecutionFailed(format!("state setup failed: {e}")))?;
 
-        let phase_runtime = crate::runtime::PhaseRuntime::new(store.clone())
+        let phase_runtime = crate::phase::PhaseRuntime::new(store.clone())
             .map_err(|e| AgentBackendError::ExecutionFailed(format!("phase setup failed: {e}")))?;
 
         // Create sub-agent run identity

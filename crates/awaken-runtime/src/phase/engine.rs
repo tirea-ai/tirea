@@ -16,7 +16,7 @@ use awaken_contract::model::{
 use super::PhaseContext;
 use super::env::{ExecutionEnv, TaggedPhaseHook};
 use super::handlers::{ToolPermissionResult, aggregate_tool_permissions};
-use super::registry::RuntimeQueuePlugin;
+use super::queue_plugin::RuntimeQueuePlugin;
 use super::reports::{
     DEFAULT_MAX_PHASE_ROUNDS, EffectDispatchReport, PhaseRunReport, SubmitCommandReport,
 };

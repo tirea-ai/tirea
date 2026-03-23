@@ -7,6 +7,8 @@ pub mod engine;
 mod error;
 pub mod execution;
 pub mod extensions;
+pub(crate) mod loop_runner;
+pub mod phase;
 pub mod plugins;
 pub mod policies;
 pub mod registry;
@@ -28,7 +30,7 @@ pub use agent::state::{
     ToolCallStatesUpdate, ToolInclusionSet,
 };
 pub use execution::AllowAllToolsPlugin;
-pub use runtime::loop_runner::{
+pub use loop_runner::{
     AgentLoopError, AgentLoopParams, AgentRunResult, LoopStatePlugin, build_agent_env,
     prepare_resume, run_agent_loop,
 };
@@ -55,7 +57,7 @@ pub use extensions::a2a::{
 };
 
 // ── parallel merge ──
-pub use runtime::loop_runner::parallel_merge::{
+pub use loop_runner::parallel_merge::{
     ParallelMergeError, ToolStateBatch, collect_all_touched_keys, validate_parallel_state_batches,
 };
 
@@ -68,12 +70,16 @@ pub use builder::{AgentRuntimeBuilder, BuildError};
 // ── plugins ──
 pub use plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 
-// ── runtime ──
-pub use runtime::{
-    AgentResolver, AgentRuntime, AppRuntime, CancellationToken, DEFAULT_MAX_PHASE_ROUNDS,
-    ExecutionEnv, PhaseContext, PhaseHook, PhaseRuntime, ResolvedAgent, RunRequest, ToolPermission,
+// ── phase ──
+pub use phase::{
+    DEFAULT_MAX_PHASE_ROUNDS, ExecutionEnv, PhaseContext, PhaseHook, PhaseRuntime, ToolPermission,
     ToolPermissionChecker, ToolPermissionResult, TypedEffectHandler, TypedScheduledActionHandler,
     aggregate_tool_permissions,
+};
+
+// ── runtime ──
+pub use runtime::{
+    AgentResolver, AgentRuntime, AppRuntime, CancellationToken, ResolvedAgent, RunRequest,
 };
 
 // ── state ──

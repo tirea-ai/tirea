@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use super::super::CancellationToken;
+use crate::runtime::CancellationToken;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::executor::{InferenceRequest, StreamEvent};
@@ -31,11 +31,7 @@ pub(super) async fn execute_streaming(
 ) -> Result<StreamResult, AgentLoopError> {
     use awaken_contract::contract::content::ContentBlock;
 
-    let mut token_stream = agent
-        .llm_executor
-        .execute_stream(request)
-        .await
-        .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
+    let mut token_stream = agent.llm_executor.execute_stream(request).await?;
 
     let mut content_blocks: Vec<ContentBlock> = Vec::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
@@ -68,7 +64,7 @@ pub(super) async fn execute_streaming(
             break; // stream ended
         };
 
-        let event = event_result.map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
+        let event = event_result?;
 
         match event {
             StreamEvent::TextDelta(delta) => {

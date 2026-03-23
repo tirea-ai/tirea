@@ -8,8 +8,8 @@ use awaken_contract::contract::inference::{
 use awaken_contract::contract::lifecycle::{RunStatus, StopConditionSpec};
 use awaken_contract::model::Phase;
 
+use crate::phase::{ExecutionEnv, PhaseContext, PhaseRuntime};
 use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
-use crate::runtime::{ExecutionEnv, PhaseContext, PhaseRuntime};
 use crate::state::StateStore;
 
 use super::*;

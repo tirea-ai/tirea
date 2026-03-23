@@ -1,6 +1,6 @@
 //! AgentRuntime::run() implementation.
 
-use crate::runtime::loop_runner::{
+use crate::loop_runner::{
     AgentLoopError, AgentLoopParams, AgentRunResult, prepare_resume, run_agent_loop,
 };
 use awaken_contract::contract::event_sink::EventSink;
@@ -9,6 +9,8 @@ use awaken_contract::contract::suspension::ToolCallResumeMode;
 
 use super::AgentRuntime;
 use super::run_request::RunRequest;
+
+const DEFAULT_AGENT_ID: &str = "default";
 
 /// RAII guard that unregisters the active run on drop, ensuring cleanup
 /// even if the run future panics or is cancelled.
@@ -51,18 +53,18 @@ impl AgentRuntime {
             overrides,
             decisions,
         } = request;
-        let agent_id = agent_id.unwrap_or_else(|| "default".to_string());
+        let agent_id = agent_id.unwrap_or_else(|| DEFAULT_AGENT_ID.to_string());
 
         // Create runtime infrastructure
         let store = crate::state::StateStore::new();
-        let phase_runtime = crate::runtime::engine::PhaseRuntime::new(store.clone())
-            .map_err(AgentLoopError::PhaseError)?;
+        let phase_runtime =
+            crate::phase::PhaseRuntime::new(store.clone()).map_err(AgentLoopError::PhaseError)?;
 
         // Install state keys needed by the loop (RunLifecycle, ToolCallStates, etc.)
         // These are registered via the resolved agent's plugins during resolve.
         // For keys needed by the loop itself, install a minimal plugin.
         store
-            .install_plugin(crate::runtime::loop_runner::LoopStatePlugin)
+            .install_plugin(crate::loop_runner::LoopStatePlugin)
             .map_err(AgentLoopError::PhaseError)?;
 
         // Preflight resolve to register plugin-declared keys before restoring persisted state.
@@ -154,9 +156,9 @@ impl AgentRuntime {
 mod tests {
     use super::super::*;
     use crate::agent::config::AgentConfig;
+    use crate::loop_runner::build_agent_env;
     use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
     use crate::runtime::ResolvedAgent;
-    use crate::runtime::loop_runner::build_agent_env;
     use crate::runtime::resolver::AgentResolver;
     use crate::state::{KeyScope, StateCommand, StateKey, StateKeyOptions};
     use crate::{PhaseContext, PhaseHook};

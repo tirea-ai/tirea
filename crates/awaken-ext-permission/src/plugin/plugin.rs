@@ -14,7 +14,7 @@ pub const PERMISSION_PLUGIN_NAME: &str = "ext-permission";
 /// Registers:
 /// - [`PermissionPolicyKey`]: thread-scoped persisted permission rules
 /// - [`PermissionOverridesKey`]: run-scoped temporary overrides
-/// - A [`awaken_runtime::runtime::ToolPermissionChecker`] that evaluates rules against tool calls
+/// - A [`awaken_runtime::phase::ToolPermissionChecker`] that evaluates rules against tool calls
 pub struct PermissionPlugin;
 
 impl Plugin for PermissionPlugin {

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use super::super::CancellationToken;
+use crate::runtime::CancellationToken;
 use awaken_contract::StateError;
 use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::message::{Message, ToolCall};

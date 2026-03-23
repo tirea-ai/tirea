@@ -3,7 +3,7 @@
 use crate::agent::config::AgentConfig;
 use crate::error::RuntimeError;
 
-use super::ExecutionEnv;
+use crate::phase::ExecutionEnv;
 
 /// A fully resolved agent: config + execution environment.
 ///

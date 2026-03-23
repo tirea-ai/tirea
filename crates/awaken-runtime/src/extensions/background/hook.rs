@@ -3,7 +3,7 @@ use std::sync::Arc;
 use awaken_contract::StateError;
 use awaken_contract::model::Phase;
 
-use crate::runtime::{PhaseContext, PhaseHook};
+use crate::phase::{PhaseContext, PhaseHook};
 use crate::state::StateCommand;
 
 use super::manager::BackgroundTaskManager;
