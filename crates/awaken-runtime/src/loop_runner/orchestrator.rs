@@ -92,6 +92,7 @@ pub(super) async fn run_agent_loop_impl(
         tracing::info!(step = steps, "step_start");
 
         // Handoff: check ActiveAgentKey for agent switch
+        #[cfg(feature = "handoff")]
         if let Some(Some(active_id)) =
             store.read::<awaken_contract::contract::profile::ActiveAgentIdKey>()
             && active_id != agent.id

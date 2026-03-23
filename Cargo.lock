@@ -219,6 +219,7 @@ dependencies = [
  "async-trait",
  "awaken-contract",
  "awaken-runtime",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",

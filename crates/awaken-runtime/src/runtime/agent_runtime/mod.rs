@@ -10,6 +10,7 @@ use std::sync::Arc;
 use awaken_contract::contract::storage::ThreadRunStore;
 
 use crate::error::RuntimeError;
+#[cfg(feature = "a2a")]
 use crate::registry::composite::CompositeAgentSpecRegistry;
 use awaken_contract::contract::suspension::ToolCallResume;
 use futures::channel::mpsc;
@@ -20,6 +21,8 @@ use crate::registry::AgentResolver;
 pub use run_request::RunRequest;
 
 use active_registry::ActiveRunRegistry;
+
+pub(crate) type DecisionBatch = Vec<(String, ToolCallResume)>;
 
 // ---------------------------------------------------------------------------
 // RunHandle
@@ -33,7 +36,7 @@ use active_registry::ActiveRunRegistry;
 pub(crate) struct RunHandle {
     pub(crate) run_id: String,
     cancellation_token: CancellationToken,
-    decision_tx: mpsc::UnboundedSender<(String, ToolCallResume)>,
+    decision_tx: mpsc::UnboundedSender<DecisionBatch>,
 }
 
 impl RunHandle {
@@ -42,15 +45,21 @@ impl RunHandle {
         self.cancellation_token.cancel();
     }
 
-    /// Send a tool call decision to the running loop.
+    /// Send one or more tool call decisions to the running loop atomically.
+    pub(crate) fn send_decisions(
+        &self,
+        decisions: DecisionBatch,
+    ) -> Result<(), Box<mpsc::TrySendError<DecisionBatch>>> {
+        self.decision_tx.unbounded_send(decisions).map_err(Box::new)
+    }
+
+    /// Send a single tool call decision to the running loop.
     pub(crate) fn send_decision(
         &self,
         call_id: String,
         resume: ToolCallResume,
-    ) -> Result<(), Box<mpsc::TrySendError<(String, ToolCallResume)>>> {
-        self.decision_tx
-            .unbounded_send((call_id, resume))
-            .map_err(Box::new)
+    ) -> Result<(), Box<mpsc::TrySendError<DecisionBatch>>> {
+        self.send_decisions(vec![(call_id, resume)])
     }
 }
 
@@ -66,6 +75,7 @@ pub struct AgentRuntime {
     pub(crate) resolver: Arc<dyn AgentResolver>,
     pub(crate) storage: Option<Arc<dyn ThreadRunStore>>,
     pub(crate) active_runs: ActiveRunRegistry,
+    #[cfg(feature = "a2a")]
     composite_registry: Option<Arc<CompositeAgentSpecRegistry>>,
 }
 
@@ -75,6 +85,7 @@ impl AgentRuntime {
             resolver,
             storage: None,
             active_runs: ActiveRunRegistry::new(),
+            #[cfg(feature = "a2a")]
             composite_registry: None,
         }
     }
@@ -94,6 +105,7 @@ impl AgentRuntime {
         Arc::clone(&self.resolver)
     }
 
+    #[cfg(feature = "a2a")]
     #[must_use]
     pub fn with_composite_registry(mut self, registry: Arc<CompositeAgentSpecRegistry>) -> Self {
         self.composite_registry = Some(registry);
@@ -101,12 +113,14 @@ impl AgentRuntime {
     }
 
     /// Return the composite registry, if one was configured.
+    #[cfg(feature = "a2a")]
     pub fn composite_registry(&self) -> Option<&Arc<CompositeAgentSpecRegistry>> {
         self.composite_registry.as_ref()
     }
 
     /// Initialize the runtime — discover remote agents.
     /// Call this after `build()` to complete async initialization.
+    #[cfg(feature = "a2a")]
     pub async fn initialize(&self) -> Result<(), RuntimeError> {
         if let Some(composite) = &self.composite_registry {
             composite
@@ -132,7 +146,7 @@ impl AgentRuntime {
     ) -> (
         RunHandle,
         CancellationToken,
-        mpsc::UnboundedReceiver<(String, ToolCallResume)>,
+        mpsc::UnboundedReceiver<DecisionBatch>,
     ) {
         let token = CancellationToken::new();
         let (tx, rx) = mpsc::unbounded();

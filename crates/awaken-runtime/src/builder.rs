@@ -9,6 +9,7 @@ use awaken_contract::contract::tool::Tool;
 use awaken_contract::registry_spec::AgentSpec;
 
 use crate::plugins::Plugin;
+#[cfg(feature = "a2a")]
 use crate::registry::composite::{CompositeAgentSpecRegistry, RemoteAgentSource};
 use crate::registry::memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapToolRegistry,
@@ -25,6 +26,7 @@ pub enum BuildError {
     AgentRegistryConflict(String),
     #[error("stop policy registry conflict: {0}")]
     StopPolicyConflict(String),
+    #[cfg(feature = "a2a")]
     #[error("discovery failed: {0}")]
     DiscoveryFailed(#[from] crate::registry::composite::DiscoveryError),
 }
@@ -40,6 +42,7 @@ pub struct AgentRuntimeBuilder {
     providers: MapProviderRegistry,
     plugins: MapPluginSource,
     thread_run_store: Option<Arc<dyn ThreadRunStore>>,
+    #[cfg(feature = "a2a")]
     remote_sources: Vec<RemoteAgentSource>,
 }
 
@@ -52,6 +55,7 @@ impl AgentRuntimeBuilder {
             providers: MapProviderRegistry::new(),
             plugins: MapPluginSource::new(),
             thread_run_store: None,
+            #[cfg(feature = "a2a")]
             remote_sources: Vec::new(),
         }
     }
@@ -106,6 +110,7 @@ impl AgentRuntimeBuilder {
     /// [`CompositeAgentSpecRegistry`] that combines local agents with
     /// agents discovered from remote A2A endpoints. The `name` is used
     /// for namespaced agent lookup (e.g., `"cloud/translator"`).
+    #[cfg(feature = "a2a")]
     pub fn with_remote_agents(
         mut self,
         name: impl Into<String>,
@@ -122,6 +127,7 @@ impl AgentRuntimeBuilder {
 
     /// Build the `AgentRuntime` from the accumulated configuration.
     pub fn build(self) -> Result<AgentRuntime, BuildError> {
+        #[cfg(feature = "a2a")]
         let (agents, composite_registry): (Arc<dyn AgentSpecRegistry>, _) =
             if self.remote_sources.is_empty() {
                 (Arc::new(self.agents), None)
@@ -133,6 +139,8 @@ impl AgentRuntimeBuilder {
                 let arc = Arc::new(composite);
                 (Arc::clone(&arc) as Arc<dyn AgentSpecRegistry>, Some(arc))
             };
+        #[cfg(not(feature = "a2a"))]
+        let agents: Arc<dyn AgentSpecRegistry> = Arc::new(self.agents);
 
         let registry_set = RegistrySet {
             agents,
@@ -146,6 +154,7 @@ impl AgentRuntimeBuilder {
 
         let mut runtime = AgentRuntime::new(resolver);
 
+        #[cfg(feature = "a2a")]
         if let Some(composite) = composite_registry {
             runtime = runtime.with_composite_registry(composite);
         }
@@ -158,6 +167,7 @@ impl AgentRuntimeBuilder {
     }
 
     /// Build and initialize (async). Discovers remote agents after build.
+    #[cfg(feature = "a2a")]
     pub async fn build_and_discover(self) -> Result<AgentRuntime, BuildError> {
         let runtime = self.build()?;
         if let Some(composite) = runtime.composite_registry() {

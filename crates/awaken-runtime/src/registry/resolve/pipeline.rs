@@ -58,6 +58,7 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
 
     // Remote agents run via A2A protocol — they don't need local model/provider
     // resolution. They should be used as delegates, not resolved directly.
+    #[cfg(feature = "a2a")]
     if spec.endpoint.is_some() {
         return Err(ResolveError::RemoteAgentNotDirectlyRunnable(
             spec.id.clone(),
@@ -82,9 +83,11 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
         _ => executor,
     };
 
+    #[cfg_attr(not(feature = "a2a"), allow(unused_mut))]
     let mut tools = resolve_tools(registries, &spec);
 
     // Wire delegate agent tools from spec.delegates (IDs referencing other agents)
+    #[cfg(feature = "a2a")]
     if !spec.delegates.is_empty() {
         for delegate_id in &spec.delegates {
             let delegate_spec = registries
@@ -119,6 +122,13 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
             let tool_id = tool.descriptor().id;
             tools.insert(tool_id, tool);
         }
+    }
+    #[cfg(not(feature = "a2a"))]
+    if !spec.delegates.is_empty() {
+        tracing::warn!(
+            agent_id = %spec.id,
+            "agent has delegates but 'a2a' feature is disabled; delegates ignored"
+        );
     }
 
     let plugins = resolve_plugins(registries, &spec)?;
