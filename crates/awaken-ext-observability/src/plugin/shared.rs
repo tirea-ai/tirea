@@ -1,0 +1,54 @@
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use awaken_contract::contract::inference::TokenUsage;
+
+use crate::metrics::AgentMetrics;
+use crate::sink::MetricsSink;
+
+pub(crate) fn lock_unpoison<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match m.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+pub(crate) fn extract_token_counts(
+    usage: Option<&TokenUsage>,
+) -> (Option<i32>, Option<i32>, Option<i32>, Option<i32>) {
+    match usage {
+        Some(u) => (
+            u.prompt_tokens,
+            u.completion_tokens,
+            u.total_tokens,
+            u.thinking_tokens,
+        ),
+        None => (None, None, None, None),
+    }
+}
+
+pub(crate) fn extract_cache_tokens(usage: Option<&TokenUsage>) -> (Option<i32>, Option<i32>) {
+    match usage {
+        Some(u) => (u.cache_read_tokens, u.cache_creation_tokens),
+        None => (None, None),
+    }
+}
+
+/// Shared mutable state between the plugin and its phase hooks.
+pub(crate) struct Inner {
+    pub(crate) sink: Arc<dyn MetricsSink>,
+    pub(crate) run_start: Mutex<Option<Instant>>,
+    pub(crate) metrics: Mutex<AgentMetrics>,
+    pub(crate) inference_start: Mutex<Option<Instant>>,
+    pub(crate) tool_start: Mutex<HashMap<String, Instant>>,
+    pub(crate) model: Mutex<String>,
+    pub(crate) provider: Mutex<String>,
+    pub(crate) operation: String,
+    pub(crate) temperature: Mutex<Option<f64>>,
+    pub(crate) top_p: Mutex<Option<f64>>,
+    pub(crate) max_tokens: Mutex<Option<u32>>,
+    pub(crate) stop_sequences: Mutex<Vec<String>>,
+    pub(crate) inference_tracing_span: Mutex<Option<tracing::Span>>,
+    pub(crate) tool_tracing_span: Mutex<HashMap<String, tracing::Span>>,
+}
