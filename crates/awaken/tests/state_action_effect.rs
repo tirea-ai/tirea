@@ -803,9 +803,13 @@ impl ScheduledActionSpec for CountingAction {
 
 #[tokio::test]
 async fn phase_with_no_hooks_no_actions_reports_zero() {
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let env = ExecutionEnv::empty();
-    let report = app.run_phase(&env, Phase::RunStart).await.unwrap();
+    let report = phase_runtime
+        .run_phase(&env, Phase::RunStart)
+        .await
+        .unwrap();
     assert_eq!(report.processed_scheduled_actions, 0);
     assert_eq!(report.skipped_scheduled_actions, 0);
     assert_eq!(report.failed_scheduled_actions, 0);
@@ -839,17 +843,17 @@ async fn phase_max_rounds_boundary_exact() {
         }
     }
 
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(RespawningPlugin)];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<CountingAction>(()).unwrap();
-    app.submit_command(&env, cmd).await.unwrap();
+    phase_runtime.submit_command(&env, cmd).await.unwrap();
 
     // With limit 3, should process 3 actions then fail on round 4
-    let err = app
-        .phase_runtime()
+    let err = phase_runtime
         .run_phase_with_limit(&env, Phase::BeforeInference, 3)
         .await
         .unwrap_err();
@@ -889,21 +893,28 @@ async fn phase_action_for_different_phase_is_skipped() {
         }
     }
 
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(OtherPlugin)];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<OtherPhaseAction>(()).unwrap();
-    app.submit_command(&env, cmd).await.unwrap();
+    phase_runtime.submit_command(&env, cmd).await.unwrap();
 
     // Run BeforeInference — should skip the AfterInference action
-    let report = app.run_phase(&env, Phase::BeforeInference).await.unwrap();
+    let report = phase_runtime
+        .run_phase(&env, Phase::BeforeInference)
+        .await
+        .unwrap();
     assert_eq!(report.processed_scheduled_actions, 0);
     assert_eq!(report.skipped_scheduled_actions, 1);
 
     // Run AfterInference — should process it
-    let report = app.run_phase(&env, Phase::AfterInference).await.unwrap();
+    let report = phase_runtime
+        .run_phase(&env, Phase::AfterInference)
+        .await
+        .unwrap();
     assert_eq!(report.processed_scheduled_actions, 1);
 }
 
@@ -961,8 +972,9 @@ async fn phase_hook_state_mutation_visible_to_action_handler() {
     }
 
     let seen = Arc::new(Mutex::new(None));
-    let app = AppRuntime::new().unwrap();
-    app.store().install_plugin(WriterPlugin).unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
+    store.install_plugin(WriterPlugin).unwrap();
 
     let plugins: Vec<Arc<dyn Plugin>> = vec![
         Arc::new(WriterPlugin),
@@ -975,9 +987,12 @@ async fn phase_hook_state_mutation_visible_to_action_handler() {
     // Schedule action, then run phase — hook writes first, action reads
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<TestAction>("check".into()).unwrap();
-    app.submit_command(&env, cmd).await.unwrap();
+    phase_runtime.submit_command(&env, cmd).await.unwrap();
 
-    app.run_phase(&env, Phase::BeforeInference).await.unwrap();
+    phase_runtime
+        .run_phase(&env, Phase::BeforeInference)
+        .await
+        .unwrap();
 
     // Action handler should have seen the counter value written by the hook
     assert_eq!(*seen.lock().unwrap(), Some(100));
@@ -1011,7 +1026,8 @@ async fn effect_dispatch_preserves_order() {
     }
 
     let recorder = EffectRecorder::default();
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(RecorderPlugin(recorder.clone()))];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
@@ -1028,7 +1044,7 @@ async fn effect_dispatch_preserves_order() {
         message: "third".into(),
     })
     .unwrap();
-    app.submit_command(&env, cmd).await.unwrap();
+    phase_runtime.submit_command(&env, cmd).await.unwrap();
 
     let effects = recorder.0.lock().unwrap();
     assert_eq!(effects.len(), 3);
@@ -1063,7 +1079,8 @@ async fn effect_handler_failure_does_not_block_other_effects() {
         }
     }
 
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(FailingEffectPlugin)];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
@@ -1076,7 +1093,7 @@ async fn effect_handler_failure_does_not_block_other_effects() {
         message: "b".into(),
     })
     .unwrap();
-    let report = app.submit_command(&env, cmd).await.unwrap();
+    let report = phase_runtime.submit_command(&env, cmd).await.unwrap();
 
     assert_eq!(report.effect_report.attempted, 2);
     assert_eq!(report.effect_report.failed, 2);
@@ -1085,7 +1102,8 @@ async fn effect_handler_failure_does_not_block_other_effects() {
 
 #[tokio::test]
 async fn effect_with_no_handler_rejected_at_submit() {
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let env = ExecutionEnv::empty();
     // No handler registered for TestEffect
 
@@ -1094,7 +1112,7 @@ async fn effect_with_no_handler_rejected_at_submit() {
         message: "test".into(),
     })
     .unwrap();
-    let err = app.submit_command(&env, cmd).await.unwrap_err();
+    let err = phase_runtime.submit_command(&env, cmd).await.unwrap_err();
     assert!(matches!(err, StateError::UnknownEffectHandler { .. }));
 }
 
@@ -1127,8 +1145,9 @@ async fn effect_handler_sees_post_commit_snapshot() {
         }
     }
 
-    let app = AppRuntime::new().unwrap();
-    app.store().install_plugin(CounterPlugin).unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
+    store.install_plugin(CounterPlugin).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(SnapshotReaderPlugin(Arc::clone(&seen)))];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
@@ -1138,7 +1157,7 @@ async fn effect_handler_sees_post_commit_snapshot() {
         message: "check".into(),
     })
     .unwrap();
-    app.submit_command(&env, cmd).await.unwrap();
+    phase_runtime.submit_command(&env, cmd).await.unwrap();
 
     // Effect handler should see the committed counter value
     assert_eq!(*seen.lock().unwrap(), Some(77));
@@ -1197,9 +1216,10 @@ async fn hooks_from_different_plugins_do_not_see_sibling_mutations() {
     }
 
     let seen = Arc::new(Mutex::new(None));
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     // Install A for state keys
-    app.store().install_plugin(PluginA).unwrap();
+    store.install_plugin(PluginA).unwrap();
 
     // Build env with both plugins (A writes counter, B reads counter)
     let plugins: Vec<Arc<dyn Plugin>> = vec![
@@ -1210,10 +1230,13 @@ async fn hooks_from_different_plugins_do_not_see_sibling_mutations() {
     ];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
-    app.run_phase(&env, Phase::BeforeInference).await.unwrap();
+    phase_runtime
+        .run_phase(&env, Phase::BeforeInference)
+        .await
+        .unwrap();
 
     assert_eq!(*seen.lock().unwrap(), None);
-    assert_eq!(app.store().read::<Counter>(), Some(10));
+    assert_eq!(store.read::<Counter>(), Some(10));
 }
 
 #[tokio::test]
@@ -1264,19 +1287,21 @@ async fn exclusive_hook_conflict_auto_fallback() {
         }
     }
 
-    let app = AppRuntime::new().unwrap();
-    app.store().install_plugin(PluginA).unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
+    store.install_plugin(PluginA).unwrap();
 
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(PluginA), Arc::new(PluginB)];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     // Auto-fallback: first hook committed in batch, second re-run serially
-    app.run_phase(&env, Phase::BeforeInference)
+    phase_runtime
+        .run_phase(&env, Phase::BeforeInference)
         .await
         .expect("exclusive conflict should auto-fallback, not error");
 
     // Both hooks applied: 10 + 20 = 30
-    assert_eq!(app.store().read::<Counter>(), Some(30));
+    assert_eq!(store.read::<Counter>(), Some(30));
 }
 
 #[tokio::test]
@@ -1327,19 +1352,23 @@ async fn exclusive_hook_conflict_deferred_sees_fresh_snapshot() {
         }
     }
 
-    let app = AppRuntime::new().unwrap();
-    app.store().install_plugin(PluginReader).unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
+    store.install_plugin(PluginReader).unwrap();
 
     // Writer registered first → goes into batch; Reader deferred (Exclusive conflict on Counter)
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(PluginWriter), Arc::new(PluginReader)];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
-    app.run_phase(&env, Phase::StepStart).await.unwrap();
+    phase_runtime
+        .run_phase(&env, Phase::StepStart)
+        .await
+        .unwrap();
 
     // Writer (batch) committed Counter += 100 → Counter = 100
     // Reader (deferred, re-run against fresh snapshot) saw Counter = 100, then added 1
-    assert_eq!(app.store().read::<Counter>(), Some(101));
-    assert_eq!(app.store().read::<Label>().as_deref(), Some("saw:100"));
+    assert_eq!(store.read::<Counter>(), Some(101));
+    assert_eq!(store.read::<Label>().as_deref(), Some("saw:100"));
 }
 
 #[tokio::test]
@@ -1385,14 +1414,15 @@ async fn collect_commands_still_fails_on_exclusive_conflict() {
         }
     }
 
-    let app = AppRuntime::new().unwrap();
-    app.store().install_plugin(PluginA).unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
+    store.install_plugin(PluginA).unwrap();
 
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(PluginA), Arc::new(PluginB)];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
-    let ctx = PhaseContext::new(Phase::RunStart, app.snapshot());
-    let result = app.phase_runtime().collect_commands(&env, ctx).await;
+    let ctx = PhaseContext::new(Phase::RunStart, store.snapshot());
+    let result = phase_runtime.collect_commands(&env, ctx).await;
 
     assert!(
         matches!(result, Err(StateError::ParallelMergeConflict { .. })),
@@ -1445,17 +1475,21 @@ async fn no_conflict_hooks_merge_in_single_commit() {
         }
     }
 
-    let app = AppRuntime::new().unwrap();
-    app.store().install_plugin(PluginA).unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
+    store.install_plugin(PluginA).unwrap();
 
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(PluginA), Arc::new(PluginB)];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
-    let report = app.run_phase(&env, Phase::RunStart).await.unwrap();
+    let report = phase_runtime
+        .run_phase(&env, Phase::RunStart)
+        .await
+        .unwrap();
 
     // Both hooks applied in single batch
-    assert_eq!(app.store().read::<Counter>(), Some(42));
-    assert_eq!(app.store().read::<Label>().as_deref(), Some("hello"));
+    assert_eq!(store.read::<Counter>(), Some(42));
+    assert_eq!(store.read::<Label>().as_deref(), Some("hello"));
     // Only one round needed (no convergence loop actions)
     assert_eq!(report.rounds, 1);
 }
@@ -1528,19 +1562,23 @@ async fn three_hooks_two_conflicting_one_independent() {
         }
     }
 
-    let app = AppRuntime::new().unwrap();
-    app.store().install_plugin(KeyPlugin).unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
+    store.install_plugin(KeyPlugin).unwrap();
 
     let plugins: Vec<Arc<dyn Plugin>> =
         vec![Arc::new(KeyPlugin), Arc::new(PluginB), Arc::new(PluginC)];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
-    app.run_phase(&env, Phase::RunStart).await.unwrap();
+    phase_runtime
+        .run_phase(&env, Phase::RunStart)
+        .await
+        .unwrap();
 
     // A (10) + B (20) both applied to Counter
-    assert_eq!(app.store().read::<Counter>(), Some(30));
+    assert_eq!(store.read::<Counter>(), Some(30));
     // C applied to SharedCounter
-    assert_eq!(app.store().read::<SharedCounter>(), Some(99));
+    assert_eq!(store.read::<SharedCounter>(), Some(99));
 }
 
 #[tokio::test]
@@ -1587,16 +1625,20 @@ async fn commutative_key_overlap_does_not_trigger_fallback() {
         }
     }
 
-    let app = AppRuntime::new().unwrap();
-    app.store().install_plugin(KeyPlugin).unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
+    store.install_plugin(KeyPlugin).unwrap();
 
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(KeyPlugin), Arc::new(PluginB)];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
-    app.run_phase(&env, Phase::RunStart).await.unwrap();
+    phase_runtime
+        .run_phase(&env, Phase::RunStart)
+        .await
+        .unwrap();
 
     // Both merged in single batch: 3 + 7 = 10
-    assert_eq!(app.store().read::<SharedCounter>(), Some(10));
+    assert_eq!(store.read::<SharedCounter>(), Some(10));
 }
 
 #[tokio::test]
@@ -1619,11 +1661,15 @@ async fn all_hooks_return_empty_commands() {
         }
     }
 
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(EmptyPlugin)];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
-    let report = app.run_phase(&env, Phase::RunStart).await.unwrap();
+    let report = phase_runtime
+        .run_phase(&env, Phase::RunStart)
+        .await
+        .unwrap();
     assert_eq!(report.generated_effects, 0);
     assert_eq!(report.rounds, 1);
 }
@@ -1651,14 +1697,18 @@ async fn single_hook_no_fallback_needed() {
         }
     }
 
-    let app = AppRuntime::new().unwrap();
-    app.store().install_plugin(SinglePlugin).unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
+    store.install_plugin(SinglePlugin).unwrap();
 
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(SinglePlugin)];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
-    app.run_phase(&env, Phase::RunStart).await.unwrap();
-    assert_eq!(app.store().read::<Counter>(), Some(77));
+    phase_runtime
+        .run_phase(&env, Phase::RunStart)
+        .await
+        .unwrap();
+    assert_eq!(store.read::<Counter>(), Some(77));
 }
 
 #[tokio::test]
@@ -1743,8 +1793,9 @@ async fn exclusive_fallback_effects_still_dispatched() {
         }
     }
 
-    let app = AppRuntime::new().unwrap();
-    app.store().install_plugin(EffectKeyPlugin).unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
+    store.install_plugin(EffectKeyPlugin).unwrap();
 
     let plugins: Vec<Arc<dyn Plugin>> = vec![
         Arc::new(EffectKeyPlugin),
@@ -1754,10 +1805,13 @@ async fn exclusive_fallback_effects_still_dispatched() {
     ];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
-    let report = app.run_phase(&env, Phase::RunStart).await.unwrap();
+    let report = phase_runtime
+        .run_phase(&env, Phase::RunStart)
+        .await
+        .unwrap();
 
     // Both hooks applied
-    assert_eq!(app.store().read::<Counter>(), Some(2));
+    assert_eq!(store.read::<Counter>(), Some(2));
     // Both effects dispatched (one from batch, one from deferred)
     assert_eq!(report.generated_effects, 2);
     assert_eq!(effect_count.load(Ordering::SeqCst), 2);
@@ -1786,19 +1840,26 @@ async fn uninstalled_plugin_hooks_do_not_fire() {
         }
     }
 
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
 
     // First run: with the hook plugin
     let count_plugin = Arc::new(CountPlugin(Arc::clone(&count)));
     let env_with = ExecutionEnv::from_plugins(&[count_plugin as Arc<dyn Plugin>]).unwrap();
 
-    app.run_phase(&env_with, Phase::RunStart).await.unwrap();
+    phase_runtime
+        .run_phase(&env_with, Phase::RunStart)
+        .await
+        .unwrap();
     assert_eq!(count.load(Ordering::SeqCst), 1);
 
     // Second run: without the hook plugin (simulates uninstall)
     let env_without = ExecutionEnv::empty();
 
-    app.run_phase(&env_without, Phase::RunStart).await.unwrap();
+    phase_runtime
+        .run_phase(&env_without, Phase::RunStart)
+        .await
+        .unwrap();
     assert_eq!(count.load(Ordering::SeqCst), 1); // No additional fires
 }
 
@@ -1859,15 +1920,19 @@ async fn action_handler_spawning_different_action_converges() {
         }
     }
 
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(StepPlugin)];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<StepOneAction>(()).unwrap();
-    app.submit_command(&env, cmd).await.unwrap();
+    phase_runtime.submit_command(&env, cmd).await.unwrap();
 
-    let report = app.run_phase(&env, Phase::BeforeInference).await.unwrap();
+    let report = phase_runtime
+        .run_phase(&env, Phase::BeforeInference)
+        .await
+        .unwrap();
     assert_eq!(report.processed_scheduled_actions, 2); // step_one + step_two
     assert_eq!(report.rounds, 3); // round 1: step_one, round 2: step_two, round 3: empty → exit
 }
@@ -1915,14 +1980,18 @@ async fn hook_emitted_effects_dispatched_during_phase() {
         }
     }
 
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![
         Arc::new(RecorderPlugin2(recorder.clone())),
         Arc::new(EffectPlugin),
     ];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
-    let report = app.run_phase(&env, Phase::RunStart).await.unwrap();
+    let report = phase_runtime
+        .run_phase(&env, Phase::RunStart)
+        .await
+        .unwrap();
     assert_eq!(report.effect_report.dispatched, 1);
 
     let effects = recorder.0.lock().unwrap();
@@ -2259,8 +2328,9 @@ fn merge_parallel_commutative_multiple_updates_per_batch() {
 
 #[tokio::test]
 async fn command_merge_parallel_disjoint_keys() {
-    let app = AppRuntime::new().unwrap();
-    app.store().install_plugin(ParallelPlugin).unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
+    store.install_plugin(ParallelPlugin).unwrap();
     let env = ExecutionEnv::empty();
 
     let mut a = StateCommand::new();
@@ -2268,17 +2338,18 @@ async fn command_merge_parallel_disjoint_keys() {
     let mut b = StateCommand::new();
     b.update::<Label>("hello".into());
 
-    let merged = app.store().merge_all_commands(vec![a, b]).unwrap();
-    app.submit_command(&env, merged).await.unwrap();
+    let merged = store.merge_all_commands(vec![a, b]).unwrap();
+    phase_runtime.submit_command(&env, merged).await.unwrap();
 
-    assert_eq!(app.store().read::<Counter>(), Some(10));
-    assert_eq!(app.store().read::<Label>().as_deref(), Some("hello"));
+    assert_eq!(store.read::<Counter>(), Some(10));
+    assert_eq!(store.read::<Label>().as_deref(), Some("hello"));
 }
 
 #[tokio::test]
 async fn command_merge_parallel_commutative_overlap() {
-    let app = AppRuntime::new().unwrap();
-    app.store().install_plugin(ParallelPlugin).unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
+    store.install_plugin(ParallelPlugin).unwrap();
     let env = ExecutionEnv::empty();
 
     let mut a = StateCommand::new();
@@ -2286,10 +2357,10 @@ async fn command_merge_parallel_commutative_overlap() {
     let mut b = StateCommand::new();
     b.update::<SharedCounter>(7);
 
-    let merged = app.store().merge_all_commands(vec![a, b]).unwrap();
-    app.submit_command(&env, merged).await.unwrap();
+    let merged = store.merge_all_commands(vec![a, b]).unwrap();
+    phase_runtime.submit_command(&env, merged).await.unwrap();
 
-    assert_eq!(app.store().read::<SharedCounter>(), Some(10));
+    assert_eq!(store.read::<SharedCounter>(), Some(10));
 }
 
 #[test]
@@ -2362,25 +2433,22 @@ async fn collect_commands_returns_combined_hook_output() {
         }
     }
 
-    let app = AppRuntime::new().unwrap();
-    app.store().install_plugin(WriterPlugin).unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
+    store.install_plugin(WriterPlugin).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(WriterPlugin)];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
-    let ctx = PhaseContext::new(Phase::AfterToolExecute, app.snapshot());
-    let cmd = app
-        .phase_runtime()
-        .collect_commands(&env, ctx)
-        .await
-        .unwrap();
+    let ctx = PhaseContext::new(Phase::AfterToolExecute, store.snapshot());
+    let cmd = phase_runtime.collect_commands(&env, ctx).await.unwrap();
 
     // Command collected but NOT committed
     assert!(!cmd.is_empty());
-    assert!(app.store().read::<Counter>().is_none());
+    assert!(store.read::<Counter>().is_none());
 
     // Now submit
-    app.submit_command(&env, cmd).await.unwrap();
-    assert_eq!(app.store().read::<Counter>(), Some(5));
+    phase_runtime.submit_command(&env, cmd).await.unwrap();
+    assert_eq!(store.read::<Counter>(), Some(5));
 }
 
 #[tokio::test]
@@ -2417,33 +2485,27 @@ async fn collect_commands_from_multiple_hooks_combined() {
         }
     }
 
-    let app = AppRuntime::new().unwrap();
-    app.store().install_plugin(DualHookPlugin).unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
+    store.install_plugin(DualHookPlugin).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(DualHookPlugin)];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
-    let ctx = PhaseContext::new(Phase::AfterToolExecute, app.snapshot());
-    let cmd = app
-        .phase_runtime()
-        .collect_commands(&env, ctx)
-        .await
-        .unwrap();
+    let ctx = PhaseContext::new(Phase::AfterToolExecute, store.snapshot());
+    let cmd = phase_runtime.collect_commands(&env, ctx).await.unwrap();
 
-    app.submit_command(&env, cmd).await.unwrap();
-    assert_eq!(app.store().read::<SharedCounter>(), Some(30));
+    phase_runtime.submit_command(&env, cmd).await.unwrap();
+    assert_eq!(store.read::<SharedCounter>(), Some(30));
 }
 
 #[tokio::test]
 async fn collect_commands_no_hooks_returns_empty() {
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let env = ExecutionEnv::empty();
 
-    let ctx = PhaseContext::new(Phase::AfterToolExecute, app.snapshot());
-    let cmd = app
-        .phase_runtime()
-        .collect_commands(&env, ctx)
-        .await
-        .unwrap();
+    let ctx = PhaseContext::new(Phase::AfterToolExecute, store.snapshot());
+    let cmd = phase_runtime.collect_commands(&env, ctx).await.unwrap();
 
     assert!(cmd.is_empty());
 }
@@ -2478,31 +2540,24 @@ async fn parallel_tool_calls_merge_hook_commands() {
         }
     }
 
-    let app = AppRuntime::new().unwrap();
-    app.store().install_plugin(ToolCounterPlugin).unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
+    store.install_plugin(ToolCounterPlugin).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(ToolCounterPlugin)];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     // Simulate two parallel tool calls, each collecting commands independently
-    let ctx1 = PhaseContext::new(Phase::AfterToolExecute, app.snapshot());
-    let ctx2 = PhaseContext::new(Phase::AfterToolExecute, app.snapshot());
+    let ctx1 = PhaseContext::new(Phase::AfterToolExecute, store.snapshot());
+    let ctx2 = PhaseContext::new(Phase::AfterToolExecute, store.snapshot());
 
-    let cmd1 = app
-        .phase_runtime()
-        .collect_commands(&env, ctx1)
-        .await
-        .unwrap();
-    let cmd2 = app
-        .phase_runtime()
-        .collect_commands(&env, ctx2)
-        .await
-        .unwrap();
+    let cmd1 = phase_runtime.collect_commands(&env, ctx1).await.unwrap();
+    let cmd2 = phase_runtime.collect_commands(&env, ctx2).await.unwrap();
 
     // Merge and commit
-    let merged = app.store().merge_all_commands(vec![cmd1, cmd2]).unwrap();
-    app.submit_command(&env, merged).await.unwrap();
+    let merged = store.merge_all_commands(vec![cmd1, cmd2]).unwrap();
+    phase_runtime.submit_command(&env, merged).await.unwrap();
 
-    assert_eq!(app.store().read::<SharedCounter>(), Some(2));
+    assert_eq!(store.read::<SharedCounter>(), Some(2));
 }
 
 #[tokio::test]
@@ -2563,7 +2618,8 @@ async fn parallel_pipeline_with_effects() {
     }
 
     let recorder = Recorder::default();
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![
         Arc::new(RecorderPlugin3(recorder.clone())),
         Arc::new(EffectPlugin),
@@ -2571,25 +2627,23 @@ async fn parallel_pipeline_with_effects() {
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     // Two tool calls, each producing an effect
-    let cmd1 = app
-        .phase_runtime()
+    let cmd1 = phase_runtime
         .collect_commands(
             &env,
-            PhaseContext::new(Phase::AfterToolExecute, app.snapshot()),
+            PhaseContext::new(Phase::AfterToolExecute, store.snapshot()),
         )
         .await
         .unwrap();
-    let cmd2 = app
-        .phase_runtime()
+    let cmd2 = phase_runtime
         .collect_commands(
             &env,
-            PhaseContext::new(Phase::AfterToolExecute, app.snapshot()),
+            PhaseContext::new(Phase::AfterToolExecute, store.snapshot()),
         )
         .await
         .unwrap();
 
-    let merged = app.store().merge_all_commands(vec![cmd1, cmd2]).unwrap();
-    app.submit_command(&env, merged).await.unwrap();
+    let merged = store.merge_all_commands(vec![cmd1, cmd2]).unwrap();
+    phase_runtime.submit_command(&env, merged).await.unwrap();
 
     let effects = recorder.0.lock().unwrap();
     assert_eq!(effects.len(), 2);

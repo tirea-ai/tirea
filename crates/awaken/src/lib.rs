@@ -59,7 +59,6 @@ pub use awaken_runtime::{
     // runtime
     AgentResolver,
     AgentRuntime,
-    AppRuntime,
     CancellationToken,
     // state (runtime-level)
     CommitEvent,

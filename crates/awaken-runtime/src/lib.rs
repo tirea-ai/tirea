@@ -86,7 +86,7 @@ pub use phase::{DEFAULT_MAX_PHASE_ROUNDS, ExecutionEnv, PhaseRuntime};
 
 // ── runtime ──
 pub use registry::{AgentResolver, ResolvedAgent};
-pub use runtime::{AgentRuntime, AppRuntime, RunRequest};
+pub use runtime::{AgentRuntime, RunRequest};
 
 // ── state ──
 pub use state::{CommitEvent, CommitHook, MutationBatch, StateCommand, StateStore};

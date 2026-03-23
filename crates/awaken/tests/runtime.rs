@@ -482,11 +482,12 @@ impl Plugin for MismatchedEffectPlugin {
 #[tokio::test]
 async fn unregistered_action_handler_is_rejected_on_submit() {
     // Actions must be either handler-registered or declared as loop-consumed.
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let env = ExecutionEnv::empty();
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<ActivateRequested>(()).unwrap();
-    let err = app.submit_command(&env, cmd).await.unwrap_err();
+    let err = phase_runtime.submit_command(&env, cmd).await.unwrap_err();
     assert!(matches!(
         err,
         StateError::UnknownScheduledActionHandler { .. }
@@ -495,14 +496,15 @@ async fn unregistered_action_handler_is_rejected_on_submit() {
 
 #[tokio::test]
 async fn unregistered_effect_handler_is_rejected_on_submit() {
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let env = ExecutionEnv::empty();
     let mut cmd = StateCommand::new();
     cmd.emit::<TestEffect>(TestEffect::Ping {
         message: "test".into(),
     })
     .unwrap();
-    let err = app.submit_command(&env, cmd).await.unwrap_err();
+    let err = phase_runtime.submit_command(&env, cmd).await.unwrap_err();
     assert!(matches!(err, StateError::UnknownEffectHandler { .. }));
 }
 
@@ -577,26 +579,30 @@ async fn effect_failures_are_reported_immediately() {
 }
 
 #[tokio::test]
-async fn app_runtime_wraps_store_and_phase_runtime() {
-    let app = AppRuntime::new().unwrap();
-    app.store().install_plugin(HandoffPlugin).unwrap();
+async fn store_and_phase_runtime_work_together() {
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
+    store.install_plugin(HandoffPlugin).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![
         Arc::new(HandoffPlugin),
         Arc::new(RuntimeEffectPlugin(RuntimeEffectRecorder::default())),
     ];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
-    let mut cmd = StateCommand::new().with_base_revision(app.revision());
+    let mut cmd = StateCommand::new().with_base_revision(store.revision());
     cmd.update::<HandoffChannel>(HandoffAction::Request {
         agent: "planner".into(),
     });
     cmd.schedule_action::<ActivateRequested>(()).unwrap();
-    app.submit_command(&env, cmd).await.unwrap();
+    phase_runtime.submit_command(&env, cmd).await.unwrap();
 
-    let report = app.run_phase(&env, Phase::BeforeInference).await.unwrap();
+    let report = phase_runtime
+        .run_phase(&env, Phase::BeforeInference)
+        .await
+        .unwrap();
     assert_eq!(report.processed_scheduled_actions, 1);
     assert_eq!(
-        app.store()
+        store
             .read::<HandoffChannel>()
             .unwrap()
             .active_agent
@@ -684,8 +690,9 @@ fn uninstalling_unknown_runtime_plugin_is_rejected() {
 
 #[tokio::test]
 async fn runtime_plugin_can_be_uninstalled_and_reinstalled() {
-    let app = AppRuntime::new().unwrap();
-    app.store().install_plugin(HandoffPlugin).unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
+    store.install_plugin(HandoffPlugin).unwrap();
 
     let plugins: Vec<Arc<dyn Plugin>> = vec![
         Arc::new(HandoffPlugin),
@@ -694,28 +701,31 @@ async fn runtime_plugin_can_be_uninstalled_and_reinstalled() {
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     // Write some state
-    let mut cmd = StateCommand::new().with_base_revision(app.revision());
+    let mut cmd = StateCommand::new().with_base_revision(store.revision());
     cmd.update::<HandoffChannel>(HandoffAction::Request {
         agent: "test".into(),
     });
-    app.submit_command(&env, cmd).await.unwrap();
+    phase_runtime.submit_command(&env, cmd).await.unwrap();
 
-    app.store().uninstall_plugin::<HandoffPlugin>().unwrap();
-    assert!(app.store().read::<HandoffChannel>().is_none());
+    store.uninstall_plugin::<HandoffPlugin>().unwrap();
+    assert!(store.read::<HandoffChannel>().is_none());
 
-    app.store().install_plugin(HandoffPlugin).unwrap();
+    store.install_plugin(HandoffPlugin).unwrap();
 
-    let mut cmd = StateCommand::new().with_base_revision(app.revision());
+    let mut cmd = StateCommand::new().with_base_revision(store.revision());
     cmd.update::<HandoffChannel>(HandoffAction::Request {
         agent: "reloaded".into(),
     });
     cmd.schedule_action::<ActivateRequested>(()).unwrap();
-    app.submit_command(&env, cmd).await.unwrap();
+    phase_runtime.submit_command(&env, cmd).await.unwrap();
 
-    let report = app.run_phase(&env, Phase::BeforeInference).await.unwrap();
+    let report = phase_runtime
+        .run_phase(&env, Phase::BeforeInference)
+        .await
+        .unwrap();
     assert_eq!(report.processed_scheduled_actions, 1);
     assert_eq!(
-        app.store()
+        store
             .read::<HandoffChannel>()
             .unwrap()
             .active_agent
@@ -726,46 +736,51 @@ async fn runtime_plugin_can_be_uninstalled_and_reinstalled() {
 
 #[tokio::test]
 async fn failed_scheduled_actions_are_dead_lettered() {
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(AlwaysFailingPlugin)];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<AlwaysFailingAction>(()).unwrap();
-    app.submit_command(&env, cmd).await.unwrap();
+    phase_runtime.submit_command(&env, cmd).await.unwrap();
 
-    let report = app.run_phase(&env, Phase::BeforeInference).await.unwrap();
+    let report = phase_runtime
+        .run_phase(&env, Phase::BeforeInference)
+        .await
+        .unwrap();
     assert_eq!(report.failed_scheduled_actions, 1);
     assert_eq!(
-        app.store()
+        store
             .read::<PendingScheduledActions>()
             .unwrap_or_default()
             .len(),
         0
     );
-    let failed = app
-        .store()
-        .read::<FailedScheduledActions>()
-        .unwrap_or_default();
+    let failed = store.read::<FailedScheduledActions>().unwrap_or_default();
     assert_eq!(failed.len(), 1);
     assert_eq!(failed[0].action.key, AlwaysFailingAction::KEY);
 }
 
 #[tokio::test]
 async fn run_phase_processes_same_phase_actions_across_rounds() {
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(SpawnOncePlugin)];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<SpawnOnceAction>(()).unwrap();
-    app.submit_command(&env, cmd).await.unwrap();
+    phase_runtime.submit_command(&env, cmd).await.unwrap();
 
-    let report = app.run_phase(&env, Phase::BeforeInference).await.unwrap();
+    let report = phase_runtime
+        .run_phase(&env, Phase::BeforeInference)
+        .await
+        .unwrap();
     assert_eq!(report.rounds, 3);
     assert_eq!(report.processed_scheduled_actions, 2);
     assert_eq!(
-        app.store()
+        store
             .read::<PendingScheduledActions>()
             .unwrap_or_default()
             .len(),
@@ -775,19 +790,23 @@ async fn run_phase_processes_same_phase_actions_across_rounds() {
 
 #[tokio::test]
 async fn run_phase_reports_skipped_actions_from_other_phases() {
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(OtherPhasePlugin)];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<OtherPhaseAction>(()).unwrap();
-    app.submit_command(&env, cmd).await.unwrap();
+    phase_runtime.submit_command(&env, cmd).await.unwrap();
 
-    let report = app.run_phase(&env, Phase::BeforeInference).await.unwrap();
+    let report = phase_runtime
+        .run_phase(&env, Phase::BeforeInference)
+        .await
+        .unwrap();
     assert_eq!(report.processed_scheduled_actions, 0);
     assert_eq!(report.skipped_scheduled_actions, 1);
     assert_eq!(
-        app.store()
+        store
             .read::<PendingScheduledActions>()
             .unwrap_or_default()
             .len(),
@@ -797,15 +816,16 @@ async fn run_phase_reports_skipped_actions_from_other_phases() {
 
 #[tokio::test]
 async fn run_phase_returns_error_on_infinite_loop() {
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(InfiniteLoopPlugin)];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<InfiniteLoopAction>(()).unwrap();
-    app.submit_command(&env, cmd).await.unwrap();
+    phase_runtime.submit_command(&env, cmd).await.unwrap();
 
-    let err = app
+    let err = phase_runtime
         .run_phase(&env, Phase::BeforeInference)
         .await
         .unwrap_err();
@@ -820,16 +840,16 @@ async fn run_phase_returns_error_on_infinite_loop() {
 
 #[tokio::test]
 async fn run_phase_with_custom_limit() {
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(InfiniteLoopPlugin)];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<InfiniteLoopAction>(()).unwrap();
-    app.submit_command(&env, cmd).await.unwrap();
+    phase_runtime.submit_command(&env, cmd).await.unwrap();
 
-    let err = app
-        .phase_runtime()
+    let err = phase_runtime
         .run_phase_with_limit(&env, Phase::BeforeInference, 3)
         .await
         .unwrap_err();
@@ -844,21 +864,22 @@ async fn run_phase_with_custom_limit() {
 
 #[tokio::test]
 async fn malformed_action_payloads_are_dead_lettered() {
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(BadlyEncodedPlugin)];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<BadlyEncodedAction>("broken".into())
         .unwrap();
-    app.submit_command(&env, cmd).await.unwrap();
+    phase_runtime.submit_command(&env, cmd).await.unwrap();
 
-    let report = app.run_phase(&env, Phase::BeforeInference).await.unwrap();
+    let report = phase_runtime
+        .run_phase(&env, Phase::BeforeInference)
+        .await
+        .unwrap();
     assert_eq!(report.failed_scheduled_actions, 1);
-    let failed = app
-        .store()
-        .read::<FailedScheduledActions>()
-        .unwrap_or_default();
+    let failed = store.read::<FailedScheduledActions>().unwrap_or_default();
     assert_eq!(failed.len(), 1);
     assert_eq!(failed[0].action.key, BadlyEncodedAction::KEY);
 }
@@ -937,7 +958,8 @@ impl Plugin for HookPlugin {
 
 #[tokio::test]
 async fn phase_hook_runs_during_run_phase() {
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let hook_plugin = Arc::new(HookPlugin {
         hook_count: Arc::clone(&count),
@@ -945,14 +967,18 @@ async fn phase_hook_runs_during_run_phase() {
     let plugins: Vec<Arc<dyn Plugin>> = vec![hook_plugin];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
-    app.run_phase(&env, Phase::BeforeInference).await.unwrap();
+    phase_runtime
+        .run_phase(&env, Phase::BeforeInference)
+        .await
+        .unwrap();
     assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
 async fn phase_hook_can_mutate_state() {
-    let app = AppRuntime::new().unwrap();
-    app.store().install_plugin(HandoffPlugin).unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
+    store.install_plugin(HandoffPlugin).unwrap();
 
     struct MutatingHookPlugin;
     impl Plugin for MutatingHookPlugin {
@@ -974,15 +1000,19 @@ async fn phase_hook_can_mutate_state() {
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(HandoffPlugin), Arc::new(MutatingHookPlugin)];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
-    app.run_phase(&env, Phase::BeforeInference).await.unwrap();
+    phase_runtime
+        .run_phase(&env, Phase::BeforeInference)
+        .await
+        .unwrap();
 
-    let state = app.store().read::<HandoffChannel>().unwrap();
+    let state = store.read::<HandoffChannel>().unwrap();
     assert_eq!(state.requested_agent.as_deref(), Some("from-hook"));
 }
 
 #[tokio::test]
 async fn phase_hook_can_enqueue_actions() {
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
 
     struct EnqueuePlugin;
     impl Plugin for EnqueuePlugin {
@@ -1005,10 +1035,13 @@ async fn phase_hook_can_enqueue_actions() {
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(EnqueuePlugin)];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
-    let report = app.run_phase(&env, Phase::BeforeInference).await.unwrap();
+    let report = phase_runtime
+        .run_phase(&env, Phase::BeforeInference)
+        .await
+        .unwrap();
     assert_eq!(report.processed_scheduled_actions, 1);
     assert_eq!(
-        app.store()
+        store
             .read::<PendingScheduledActions>()
             .unwrap_or_default()
             .len(),
@@ -1063,11 +1096,15 @@ async fn phase_hooks_execute_in_registration_order() {
         }
     }
 
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(OrderPlugin { order: order_clone })];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
-    app.run_phase(&env, Phase::BeforeInference).await.unwrap();
+    phase_runtime
+        .run_phase(&env, Phase::BeforeInference)
+        .await
+        .unwrap();
     assert_eq!(*order.lock().unwrap(), vec!["first", "second"]);
 }
 
@@ -1076,13 +1113,15 @@ async fn phase_hooks_are_cleaned_up_on_uninstall() {
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     // First run: with the hook plugin
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let hook_plugin = Arc::new(HookPlugin {
         hook_count: Arc::clone(&count),
     });
     let env_with_hook = ExecutionEnv::from_plugins(&[hook_plugin as Arc<dyn Plugin>]).unwrap();
 
-    app.run_phase(&env_with_hook, Phase::BeforeInference)
+    phase_runtime
+        .run_phase(&env_with_hook, Phase::BeforeInference)
         .await
         .unwrap();
     assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -1090,7 +1129,8 @@ async fn phase_hooks_are_cleaned_up_on_uninstall() {
     // Second run: without the hook plugin (simulates uninstall)
     let env_without_hook = ExecutionEnv::empty();
 
-    app.run_phase(&env_without_hook, Phase::BeforeInference)
+    phase_runtime
+        .run_phase(&env_without_hook, Phase::BeforeInference)
         .await
         .unwrap();
     assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -1099,13 +1139,17 @@ async fn phase_hooks_are_cleaned_up_on_uninstall() {
 #[tokio::test]
 async fn phase_hook_does_not_fire_for_other_phases() {
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let hook_plugin = Arc::new(HookPlugin {
         hook_count: Arc::clone(&count),
     });
     let env = ExecutionEnv::from_plugins(&[hook_plugin as Arc<dyn Plugin>]).unwrap();
 
-    app.run_phase(&env, Phase::AfterInference).await.unwrap();
+    phase_runtime
+        .run_phase(&env, Phase::AfterInference)
+        .await
+        .unwrap();
     assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
@@ -1141,15 +1185,19 @@ async fn phase_hooks_fire_for_step_start_and_step_end() {
         }
     }
 
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let step_plugin = Arc::new(StepHookPlugin {
         start_count: Arc::clone(&step_start_count),
         end_count: Arc::clone(&step_end_count),
     });
     let env = ExecutionEnv::from_plugins(&[step_plugin as Arc<dyn Plugin>]).unwrap();
 
-    app.run_phase(&env, Phase::StepStart).await.unwrap();
-    app.run_phase(&env, Phase::StepEnd).await.unwrap();
+    phase_runtime
+        .run_phase(&env, Phase::StepStart)
+        .await
+        .unwrap();
+    phase_runtime.run_phase(&env, Phase::StepEnd).await.unwrap();
 
     assert_eq!(
         step_start_count.load(std::sync::atomic::Ordering::SeqCst),
@@ -1183,27 +1231,32 @@ async fn phase_hooks_do_not_cross_fire_between_step_phases() {
         }
     }
 
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let step_plugin = Arc::new(StepStartOnlyPlugin {
         count: Arc::clone(&start_count),
     });
     let env = ExecutionEnv::from_plugins(&[step_plugin as Arc<dyn Plugin>]).unwrap();
 
     // StepEnd should NOT trigger StepStart hook
-    app.run_phase(&env, Phase::StepEnd).await.unwrap();
+    phase_runtime.run_phase(&env, Phase::StepEnd).await.unwrap();
     assert_eq!(start_count.load(std::sync::atomic::Ordering::SeqCst), 0);
 
     // StepStart should trigger it
-    app.run_phase(&env, Phase::StepStart).await.unwrap();
+    phase_runtime
+        .run_phase(&env, Phase::StepStart)
+        .await
+        .unwrap();
     assert_eq!(start_count.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
 async fn all_eight_phases_can_run_without_hooks() {
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let env = ExecutionEnv::empty();
     for phase in Phase::ALL {
-        let report = app.run_phase(&env, phase).await.unwrap();
+        let report = phase_runtime.run_phase(&env, phase).await.unwrap();
         assert_eq!(report.phase, phase);
         assert_eq!(report.processed_scheduled_actions, 0);
     }
