@@ -1,10 +1,13 @@
+use std::sync::Arc;
+
 use awaken_contract::StateError;
 use awaken_contract::registry_spec::AgentSpec;
 
 use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use awaken_runtime::state::MutationBatch;
 
-use super::A2UI_PLUGIN_ID;
+use super::tool::A2uiRenderTool;
+use super::{A2UI_PLUGIN_ID, A2UI_TOOL_ID};
 
 /// A2UI plugin that provides the render tool and prompt instructions.
 pub struct A2uiPlugin {
@@ -44,8 +47,8 @@ impl Plugin for A2uiPlugin {
         }
     }
 
-    fn register(&self, _registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-        // A2UI plugin is stateless — instructions are injected via the phase hook system
+    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+        registrar.register_tool(A2UI_TOOL_ID, Arc::new(A2uiRenderTool::new()))?;
         Ok(())
     }
 

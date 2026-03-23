@@ -84,7 +84,7 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
     };
 
     #[cfg_attr(not(feature = "a2a"), allow(unused_mut))]
-    let mut tools = resolve_tools(registries, &spec);
+    let mut tools = collect_global_tools(registries);
 
     // Wire delegate agent tools from spec.delegates (IDs referencing other agents)
     #[cfg(feature = "a2a")]
@@ -149,6 +149,23 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
     validate_sections(&spec, &plugins)?;
 
     let env = ExecutionEnv::from_plugins(&plugins)?;
+
+    // Merge plugin-registered tools into the resolved tool set.
+    // Conflict between global (builder) tools and plugin tools is an error.
+    for (tool_id, tool) in &env.tools {
+        if tools.contains_key(tool_id) {
+            return Err(ResolveError::ToolIdConflict {
+                tool_id: tool_id.clone(),
+                source_a: "global".into(),
+                source_b: "plugin".into(),
+            });
+        }
+        tools.insert(tool_id.clone(), Arc::clone(tool));
+    }
+
+    // Apply allow/exclude filtering to the full merged tool set
+    // (covers both global and plugin tools).
+    filter_tools(&mut tools, &spec);
 
     Ok(ResolvedRun {
         spec,
@@ -251,34 +268,33 @@ fn validate_sections(spec: &AgentSpec, plugins: &[Arc<dyn Plugin>]) -> Result<()
     Ok(())
 }
 
-/// Resolve tools with allow/exclude filtering.
-///
-/// - `allowed_tools = None` -> all tools from `ToolRegistry`.
-/// - `allowed_tools = Some(list)` -> only those IDs.
-/// - `excluded_tools` -> removed from the included set.
-fn resolve_tools(registries: &RegistrySet, spec: &AgentSpec) -> HashMap<String, Arc<dyn Tool>> {
-    let all_ids = registries.tools.tool_ids();
-
-    let included: HashSet<&str> = match &spec.allowed_tools {
-        Some(allow) => allow.iter().map(|s| s.as_str()).collect(),
-        None => all_ids.iter().map(|s| s.as_str()).collect(),
-    };
-
-    let excluded: HashSet<&str> = spec
-        .excluded_tools
-        .as_ref()
-        .map(|v| v.iter().map(|s| s.as_str()).collect())
-        .unwrap_or_default();
-
+/// Collect all global (builder-registered) tools from the registry.
+fn collect_global_tools(registries: &RegistrySet) -> HashMap<String, Arc<dyn Tool>> {
     let mut tools = HashMap::new();
-    for id in &included {
-        if !excluded.contains(id)
-            && let Some(tool) = registries.tools.get_tool(id)
-        {
-            tools.insert((*id).to_string(), tool);
+    for id in registries.tools.tool_ids() {
+        if let Some(tool) = registries.tools.get_tool(&id) {
+            tools.insert(id, tool);
         }
     }
     tools
+}
+
+/// Apply allow/exclude filtering to a mutable tool map.
+///
+/// - `allowed_tools = None` -> keep all.
+/// - `allowed_tools = Some(list)` -> keep only those IDs.
+/// - `excluded_tools` -> remove from the set.
+fn filter_tools(tools: &mut HashMap<String, Arc<dyn Tool>>, spec: &AgentSpec) {
+    if let Some(allow) = &spec.allowed_tools {
+        let allowed: HashSet<&str> = allow.iter().map(|s| s.as_str()).collect();
+        tools.retain(|id, _| allowed.contains(id.as_str()));
+    }
+
+    if let Some(exclude) = &spec.excluded_tools {
+        for id in exclude {
+            tools.remove(id);
+        }
+    }
 }
 
 /// Resolve plugins by IDs from the spec.
@@ -304,7 +320,7 @@ fn resolve_plugins(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugins::PluginDescriptor;
+    use crate::plugins::{PluginDescriptor, PluginRegistrar};
     use crate::registry::memory::{
         MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry,
         MapToolRegistry,
@@ -725,6 +741,14 @@ mod tests {
                 ResolveError::RemoteAgentNotDirectlyRunnable("r".into()),
                 "remote agent `r` cannot be resolved locally — use it as a delegate instead",
             ),
+            (
+                ResolveError::ToolIdConflict {
+                    tool_id: "my_tool".into(),
+                    source_a: "global".into(),
+                    source_b: "plugin".into(),
+                },
+                "tool ID conflict: \"my_tool\" registered by both global and plugin",
+            ),
         ];
         for (err, expected) in cases {
             assert_eq!(err.to_string(), expected);
@@ -926,5 +950,177 @@ mod tests {
 
         // Resolves OK (unclaimed key just logs a warning, doesn't error)
         assert!(resolve(&regs, "a").is_ok());
+    }
+
+    // -- Plugin tool registration tests --
+
+    /// Plugin that registers a tool via PluginRegistrar.
+    struct ToolPlugin {
+        name: &'static str,
+        tool_id: &'static str,
+    }
+
+    impl Plugin for ToolPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: self.name }
+        }
+
+        fn register(
+            &self,
+            registrar: &mut PluginRegistrar,
+        ) -> Result<(), awaken_contract::StateError> {
+            registrar.register_tool(
+                self.tool_id,
+                Arc::new(MockTool {
+                    id: self.tool_id.into(),
+                }),
+            )?;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn resolve_plugin_registered_tools_are_available() {
+        let spec = AgentSpec {
+            plugin_ids: vec!["tp".into()],
+            ..make_spec("a")
+        };
+
+        let regs = build_registries(
+            vec![],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![(
+                "tp",
+                Arc::new(ToolPlugin {
+                    name: "tp",
+                    tool_id: "plugin_tool",
+                }),
+            )],
+            spec,
+        );
+
+        let run = resolve(&regs, "a").unwrap();
+        assert!(run.tools.contains_key("plugin_tool"));
+    }
+
+    #[test]
+    fn resolve_plugin_tool_conflict_with_global_tool() {
+        let spec = AgentSpec {
+            plugin_ids: vec!["tp".into()],
+            ..make_spec("a")
+        };
+
+        let regs = build_registries(
+            vec![(
+                "conflicting",
+                Arc::new(MockTool {
+                    id: "conflicting".into(),
+                }),
+            )],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![(
+                "tp",
+                Arc::new(ToolPlugin {
+                    name: "tp",
+                    tool_id: "conflicting",
+                }),
+            )],
+            spec,
+        );
+
+        let err = resolve(&regs, "a").unwrap_err();
+        assert!(matches!(
+            err,
+            ResolveError::ToolIdConflict {
+                ref tool_id,
+                ..
+            } if tool_id == "conflicting"
+        ));
+    }
+
+    #[test]
+    fn resolve_plugin_tools_respect_exclude_filter() {
+        let spec = AgentSpec {
+            plugin_ids: vec!["tp".into()],
+            excluded_tools: Some(vec!["plugin_tool".into()]),
+            ..make_spec("a")
+        };
+
+        let regs = build_registries(
+            vec![(
+                "global_tool",
+                Arc::new(MockTool {
+                    id: "global_tool".into(),
+                }),
+            )],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![(
+                "tp",
+                Arc::new(ToolPlugin {
+                    name: "tp",
+                    tool_id: "plugin_tool",
+                }),
+            )],
+            spec,
+        );
+
+        let run = resolve(&regs, "a").unwrap();
+        assert!(!run.tools.contains_key("plugin_tool"));
+        assert!(run.tools.contains_key("global_tool"));
+    }
+
+    #[test]
+    fn resolve_plugin_tools_respect_allow_filter() {
+        let spec = AgentSpec {
+            plugin_ids: vec!["tp".into()],
+            allowed_tools: Some(vec!["plugin_tool".into()]),
+            ..make_spec("a")
+        };
+
+        let regs = build_registries(
+            vec![(
+                "global_tool",
+                Arc::new(MockTool {
+                    id: "global_tool".into(),
+                }),
+            )],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![(
+                "tp",
+                Arc::new(ToolPlugin {
+                    name: "tp",
+                    tool_id: "plugin_tool",
+                }),
+            )],
+            spec,
+        );
+
+        let run = resolve(&regs, "a").unwrap();
+        assert!(run.tools.contains_key("plugin_tool"));
+        assert!(!run.tools.contains_key("global_tool"));
     }
 }

@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use crate::plugins::{Plugin, PluginRegistrar};
 use awaken_contract::StateError;
+use awaken_contract::contract::tool::Tool;
 use awaken_contract::model::Phase;
 
 use crate::plugins::{KeyRegistration, RequestTransformArc};
@@ -34,6 +35,8 @@ pub struct ExecutionEnv {
     pub(crate) request_transforms: Vec<RequestTransformArc>,
     /// State key registrations collected from all plugins.
     pub(crate) key_registrations: Vec<KeyRegistration>,
+    /// Tools registered by plugins (per-spec scoped).
+    pub(crate) tools: HashMap<String, Arc<dyn Tool>>,
 }
 
 impl ExecutionEnv {
@@ -49,10 +52,25 @@ impl ExecutionEnv {
         let mut all_permission_checkers: Vec<ToolPermissionCheckerArc> = Vec::new();
         let mut all_transforms: Vec<RequestTransformArc> = Vec::new();
         let mut all_key_registrations: Vec<KeyRegistration> = Vec::new();
+        let mut all_tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
         for plugin in plugins {
+            let plugin_name = plugin.descriptor().name.to_string();
             let mut registrar = PluginRegistrar::new();
             plugin.register(&mut registrar)?;
+
+            // Collect tools (check cross-plugin duplicates)
+            for entry in registrar.tools {
+                if all_tools.contains_key(&entry.id) {
+                    return Err(StateError::ToolAlreadyRegistered { tool_id: entry.id });
+                }
+                tracing::debug!(
+                    plugin_id = %plugin_name,
+                    tool_id = %entry.id,
+                    "registered_plugin_tool"
+                );
+                all_tools.insert(entry.id, entry.tool);
+            }
 
             // Collect hooks (with plugin_id for profile filtering)
             for entry in registrar.phase_hooks {
@@ -103,6 +121,7 @@ impl ExecutionEnv {
             tool_permission_checkers: all_permission_checkers,
             request_transforms: all_transforms,
             key_registrations: all_key_registrations,
+            tools: all_tools,
         })
     }
 
@@ -115,6 +134,7 @@ impl ExecutionEnv {
             tool_permission_checkers: Vec::new(),
             request_transforms: Vec::new(),
             key_registrations: Vec::new(),
+            tools: HashMap::new(),
         }
     }
 

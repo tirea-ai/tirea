@@ -690,9 +690,8 @@ async fn events_have_correct_sequence_with_tool_call() {
             "RunStart",
             // Step 1: tool call
             "StepStart",
-            "ToolCallStart", // from streaming
+            "ToolCallStart",
             "InferenceComplete",
-            "ToolCallStart", // from tool execution
             "ToolCallDone",
             "StepEnd",
             // Step 2: final response

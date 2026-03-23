@@ -9,7 +9,7 @@ use crate::registry::SkillRegistry;
 use crate::registry::{FsSkill, InMemorySkillRegistry};
 use crate::skill::Skill;
 
-use super::{ActiveSkillInstructionsPlugin, SkillDiscoveryPlugin, SkillSubsystem};
+use super::{ActiveSkillInstructionsPlugin, SkillDiscoveryPlugin};
 
 fn make_registry(skills: Vec<Arc<dyn Skill>>) -> Arc<dyn SkillRegistry> {
     Arc::new(InMemorySkillRegistry::from_skills(skills))
@@ -150,26 +150,6 @@ fn render_catalog_truncates_by_char_limit() {
     let active = HashSet::new();
     let s = p.render_catalog(&active);
     assert!(s.len() <= 256);
-}
-
-#[test]
-fn subsystem_tools_returns_expected_ids() {
-    let (_td, skills) = make_skills();
-    let sys = SkillSubsystem::new(make_registry(skills));
-    let tools = sys.tools();
-    assert!(tools.contains_key(crate::SKILL_ACTIVATE_TOOL_ID));
-    assert!(tools.contains_key(crate::SKILL_LOAD_RESOURCE_TOOL_ID));
-    assert!(tools.contains_key(crate::SKILL_SCRIPT_TOOL_ID));
-    assert_eq!(tools.len(), 3);
-}
-
-#[test]
-fn subsystem_extend_tools_detects_conflict() {
-    let (_td, skills) = make_skills();
-    let sys = SkillSubsystem::new(make_registry(skills));
-    let mut tools = sys.tools();
-    let err = sys.extend_tools(&mut tools).unwrap_err();
-    assert!(err.to_string().contains("tool id already registered"));
 }
 
 #[tokio::test]

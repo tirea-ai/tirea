@@ -38,4 +38,6 @@ pub enum StateError {
     UnknownEffectHandler { key: String },
     #[error("parallel merge conflict on exclusive key: {key}")]
     ParallelMergeConflict { key: String },
+    #[error("tool already registered: {tool_id}")]
+    ToolAlreadyRegistered { tool_id: String },
 }

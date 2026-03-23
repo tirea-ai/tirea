@@ -168,6 +168,21 @@ impl Plugin for SkillDiscoveryPlugin {
             },
         )?;
 
+        // Register skill tools
+        let registry = self.registry.clone();
+        registrar.register_tool(
+            crate::SKILL_ACTIVATE_TOOL_ID,
+            Arc::new(crate::tools::SkillActivateTool::new(registry.clone())),
+        )?;
+        registrar.register_tool(
+            crate::SKILL_LOAD_RESOURCE_TOOL_ID,
+            Arc::new(crate::tools::LoadSkillResourceTool::new(registry.clone())),
+        )?;
+        registrar.register_tool(
+            crate::SKILL_SCRIPT_TOOL_ID,
+            Arc::new(crate::tools::SkillScriptTool::new(registry)),
+        )?;
+
         Ok(())
     }
 }

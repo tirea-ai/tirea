@@ -9,6 +9,7 @@ use crate::phase::{
 };
 use crate::state::{KeyScope, MergeStrategy, StateKey, StateKeyOptions, StateMap};
 use awaken_contract::StateError;
+use awaken_contract::contract::tool::Tool;
 use awaken_contract::model::{EffectSpec, JsonValue, Phase, ScheduledActionSpec};
 
 #[derive(Clone)]
@@ -76,6 +77,11 @@ pub(crate) struct RequestTransformRegistration {
     pub(crate) transform: RequestTransformArc,
 }
 
+pub(crate) struct ToolRegistration {
+    pub(crate) id: String,
+    pub(crate) tool: Arc<dyn Tool>,
+}
+
 #[derive(Default)]
 pub struct PluginRegistry {
     pub(crate) plugins: HashMap<TypeId, InstalledPlugin>,
@@ -115,6 +121,8 @@ pub struct PluginRegistrar {
     pub(crate) phase_hooks: Vec<PhaseHookRegistration>,
     pub(crate) tool_permissions: Vec<ToolPermissionRegistration>,
     pub(crate) request_transforms: Vec<RequestTransformRegistration>,
+    pub(crate) tools: Vec<ToolRegistration>,
+    tool_ids: HashSet<String>,
 }
 
 impl PluginRegistrar {
@@ -130,6 +138,8 @@ impl PluginRegistrar {
             phase_hooks: Vec::new(),
             tool_permissions: Vec::new(),
             request_transforms: Vec::new(),
+            tools: Vec::new(),
+            tool_ids: HashSet::new(),
         }
     }
 
@@ -218,6 +228,23 @@ impl PluginRegistrar {
             plugin_id: plugin_id.into(),
             checker: Arc::new(checker),
         });
+        Ok(())
+    }
+
+    /// Register a tool provided by this plugin.
+    ///
+    /// The tool becomes available to agents that activate this plugin.
+    /// Tool IDs must be unique across all plugins; duplicates cause a resolve error.
+    pub fn register_tool(
+        &mut self,
+        id: impl Into<String>,
+        tool: Arc<dyn Tool>,
+    ) -> Result<(), StateError> {
+        let id = id.into();
+        if !self.tool_ids.insert(id.clone()) {
+            return Err(StateError::ToolAlreadyRegistered { tool_id: id });
+        }
+        self.tools.push(ToolRegistration { id, tool });
         Ok(())
     }
 

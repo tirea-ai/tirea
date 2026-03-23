@@ -19,6 +19,12 @@ pub enum ResolveError {
     },
     #[error("remote agent `{0}` cannot be resolved locally — use it as a delegate instead")]
     RemoteAgentNotDirectlyRunnable(String),
+    #[error("tool ID conflict: \"{tool_id}\" registered by both {source_a} and {source_b}")]
+    ToolIdConflict {
+        tool_id: String,
+        source_a: String,
+        source_b: String,
+    },
     #[error("env build error: {0}")]
     EnvBuild(#[from] awaken_contract::StateError),
 }

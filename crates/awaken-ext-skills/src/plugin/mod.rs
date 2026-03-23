@@ -4,7 +4,7 @@ mod subsystem;
 
 pub use active_instructions::ActiveSkillInstructionsPlugin;
 pub use discovery::SkillDiscoveryPlugin;
-pub use subsystem::{SkillSubsystem, SkillSubsystemError};
+pub use subsystem::SkillSubsystem;
 
 #[cfg(test)]
 mod tests;

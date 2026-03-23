@@ -35,9 +35,7 @@ pub use embedded::{EmbeddedSkill, EmbeddedSkillData};
 pub use error::{
     SkillError, SkillMaterializeError, SkillRegistryError, SkillRegistryManagerError, SkillWarning,
 };
-pub use plugin::{
-    ActiveSkillInstructionsPlugin, SkillDiscoveryPlugin, SkillSubsystem, SkillSubsystemError,
-};
+pub use plugin::{ActiveSkillInstructionsPlugin, SkillDiscoveryPlugin, SkillSubsystem};
 pub use registry::{
     CompositeSkillRegistry, DiscoveryResult, FsSkill, FsSkillRegistryManager,
     InMemorySkillRegistry, SkillRegistry,
