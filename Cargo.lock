@@ -160,6 +160,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "awaken-contract",
+ "awaken-ext-generative-ui",
  "awaken-ext-mcp",
  "awaken-ext-observability",
  "awaken-ext-permission",
@@ -196,6 +197,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "awaken-contract",
+ "awaken-ext-generative-ui",
  "awaken-ext-observability",
  "awaken-ext-permission",
  "awaken-runtime",
