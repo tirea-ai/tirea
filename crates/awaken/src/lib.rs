@@ -14,86 +14,27 @@ pub use awaken_ext_skills as ext_skills;
 #[cfg(feature = "server")]
 pub use awaken_server as server;
 
-// ── Sub-module re-exports (backward compatible) ──
+// ── Sub-crate module re-exports ──
 
 pub use awaken_contract::contract;
 pub use awaken_contract::model;
 pub use awaken_contract::registry_spec;
 
 pub use awaken_runtime::builder;
+pub use awaken_runtime::context;
 pub use awaken_runtime::engine;
+pub use awaken_runtime::execution;
 pub use awaken_runtime::extensions;
+pub use awaken_runtime::loop_runner;
 pub use awaken_runtime::plugins;
+pub use awaken_runtime::policies;
 pub use awaken_runtime::registry;
 pub use awaken_runtime::runtime;
 
-// ── Flat re-exports ──
+// ── Agent module: config + state from runtime ──
+pub use awaken_runtime::agent;
 
-// Re-export contract crate
-pub use awaken_contract::{
-    // registry spec
-    AgentSpec,
-    // model
-    EffectSpec,
-    FailedScheduledActions,
-    JsonValue,
-    // state (contract-level)
-    KeyScope,
-    MergeStrategy,
-    PendingScheduledActions,
-    PersistedState,
-    Phase,
-    PluginConfigKey,
-    ScheduledActionSpec,
-    Snapshot,
-    StateError,
-    StateKey,
-    StateKeyOptions,
-    StateMap,
-    TypedEffect,
-    UnknownKeyPolicy,
-};
-
-// Re-export runtime crate
-pub use awaken_runtime::{
-    // runtime
-    AgentResolver,
-    AgentRuntime,
-    CancellationToken,
-    // state (runtime-level)
-    CommitEvent,
-    CommitHook,
-    DEFAULT_MAX_PHASE_ROUNDS,
-    ExecutionEnv,
-    MutationBatch,
-    PhaseContext,
-    PhaseHook,
-    PhaseRuntime,
-    // plugins
-    Plugin,
-    PluginDescriptor,
-    PluginRegistrar,
-    ResolvedAgent,
-    RunRequest,
-    // error
-    RuntimeError,
-    StateCommand,
-    StateStore,
-    ToolPermission,
-    ToolPermissionChecker,
-    ToolPermissionResult,
-    TypedEffectHandler,
-    TypedScheduledActionHandler,
-    aggregate_tool_permissions,
-};
-
-// Re-export handoff and A2UI extensions at top level
-pub use awaken_runtime::{
-    A2uiPlugin, A2uiRenderTool, ActiveAgentKey, AgentOverlay, HandoffAction, HandoffPlugin,
-    HandoffState, validate_a2ui_messages,
-};
-
-/// Re-export combined state module. Use `awaken::state` for all state types.
+// ── State: combined contract + runtime types ──
 pub mod state {
     pub use awaken_contract::state::*;
     pub use awaken_runtime::state::{
@@ -101,40 +42,21 @@ pub mod state {
     };
 }
 
-/// Agent module: re-exports public types from the runtime's agent subsystem.
-///
-/// Sub-modules `config`, `executor`, and `stop_conditions` are directly
-/// re-exported. Internal modules (`loop_runner`, `state`, `tool_permission`)
-/// are exposed only through curated re-export sub-modules.
-pub mod agent {
-    pub use awaken_runtime::agent::config;
-    pub use awaken_runtime::execution as executor;
-    pub use awaken_runtime::policies as stop_conditions;
+// ── Flat re-exports: most commonly used types at crate root ──
 
-    /// Re-exported loop runner public API.
-    pub mod loop_runner {
-        pub use awaken_runtime::{
-            AgentLoopError, AgentLoopParams, AgentRunResult, LoopStatePlugin, build_agent_env,
-            prepare_resume, run_agent_loop,
-        };
-    }
+// contract types
+pub use awaken_contract::{
+    AgentSpec, EffectSpec, FailedScheduledActions, JsonValue, KeyScope, MergeStrategy,
+    PendingScheduledActions, PersistedState, Phase, PluginConfigKey, ScheduledActionSpec, Snapshot,
+    StateError, StateKey, StateKeyOptions, StateMap, TypedEffect, UnknownKeyPolicy,
+};
 
-    /// Re-exported agent state types.
-    pub mod state {
-        pub use awaken_runtime::{
-            AccumulatedContextMessages, AccumulatedContextMessagesUpdate, AccumulatedOverrides,
-            AccumulatedOverridesUpdate, AccumulatedToolExclusions, AccumulatedToolExclusionsUpdate,
-            AccumulatedToolInclusions, AccumulatedToolInclusionsUpdate, AddContextMessage,
-            ContextMessageAction, ContextMessageStore, ContextMessageStoreValue,
-            ContextThrottleMap, ContextThrottleState, ContextThrottleUpdate, ExcludeTool,
-            IncludeOnlyTools, RunLifecycle, RunLifecycleState, RunLifecycleUpdate,
-            SetInferenceOverride, ToolCallState, ToolCallStateMap, ToolCallStates,
-            ToolCallStatesUpdate, ToolInclusionSet,
-        };
-    }
-
-    /// Re-exported tool permission types.
-    pub mod tool_permission {
-        pub use awaken_runtime::AllowAllToolsPlugin;
-    }
-}
+// runtime types
+pub use awaken_runtime::{
+    AgentResolver, AgentRuntime, AgentRuntimeBuilder, AllowAllToolsPlugin, BuildError,
+    CancellationToken, CommitEvent, CommitHook, DEFAULT_MAX_PHASE_ROUNDS, ExecutionEnv,
+    MutationBatch, PhaseContext, PhaseHook, PhaseRuntime, Plugin, PluginDescriptor,
+    PluginRegistrar, ResolvedAgent, RunRequest, RuntimeError, StateCommand, StateStore,
+    ToolPermission, ToolPermissionChecker, ToolPermissionResult, TypedEffectHandler,
+    TypedScheduledActionHandler, aggregate_tool_permissions,
+};

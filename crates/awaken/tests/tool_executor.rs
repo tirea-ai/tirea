@@ -5,8 +5,6 @@
 
 use async_trait::async_trait;
 use awaken::agent::config::AgentConfig;
-use awaken::agent::executor::{ParallelToolExecutor, SequentialToolExecutor, ToolExecutor};
-use awaken::agent::loop_runner::{AgentLoopParams, build_agent_env, run_agent_loop};
 use awaken::agent::state::{
     ContextThrottleState, RunLifecycle, SetInferenceOverride, ToolCallStates,
 };
@@ -20,6 +18,8 @@ use awaken::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken::contract::message::{Message, ToolCall};
 use awaken::contract::suspension::{ToolCallOutcome, ToolCallStatus};
 use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult};
+use awaken::execution::{ParallelToolExecutor, SequentialToolExecutor, ToolExecutor};
+use awaken::loop_runner::{AgentLoopParams, build_agent_env, run_agent_loop};
 use awaken::registry::AgentSpec;
 use awaken::*;
 use awaken::{AgentResolver, ExecutionEnv, ResolvedAgent, RuntimeError};

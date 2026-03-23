@@ -6,15 +6,13 @@
 
 use async_trait::async_trait;
 use awaken::agent::config::AgentConfig;
-use awaken::agent::loop_runner::{
-    AgentLoopParams, LoopStatePlugin, build_agent_env, run_agent_loop,
-};
 use awaken::contract::event::AgentEvent;
 use awaken::contract::event_sink::EventSink;
 use awaken::contract::identity::{RunIdentity, RunOrigin};
 use awaken::contract::message::Message;
 use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult};
 use awaken::engine::GenaiExecutor;
+use awaken::loop_runner::{AgentLoopParams, LoopStatePlugin, build_agent_env, run_agent_loop};
 use awaken::*;
 use serde_json::{Value, json};
 use std::sync::Arc;

@@ -555,7 +555,7 @@ async fn mixed_allow_and_abstain_allows() {
 
 #[tokio::test]
 async fn builtin_allow_all_tools_plugin() {
-    use awaken::agent::tool_permission::AllowAllToolsPlugin;
+    use awaken::AllowAllToolsPlugin;
 
     let store = StateStore::new();
     let runtime = PhaseRuntime::new(store).unwrap();

@@ -6,11 +6,11 @@
 
 use async_trait::async_trait;
 use awaken::agent::config::AgentConfig;
-use awaken::agent::loop_runner::build_agent_env;
 use awaken::contract::event::AgentEvent;
 use awaken::contract::event_sink::EventSink;
 use awaken::contract::message::Message;
 use awaken::engine::GenaiExecutor;
+use awaken::loop_runner::build_agent_env;
 use awaken::stores::InMemoryStore;
 use awaken::*;
 use std::sync::Arc;

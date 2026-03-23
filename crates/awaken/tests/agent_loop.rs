@@ -2,9 +2,6 @@
 
 use async_trait::async_trait;
 use awaken::agent::config::AgentConfig;
-use awaken::agent::loop_runner::{
-    AgentLoopParams, build_agent_env, prepare_resume, run_agent_loop,
-};
 use awaken::agent::state::{
     AccumulatedContextMessages, AccumulatedOverrides, AccumulatedToolExclusions,
     AccumulatedToolInclusions, ContextThrottleState, RunLifecycle, ToolCallStates,
@@ -21,6 +18,7 @@ use awaken::contract::suspension::{
     ResumeDecisionAction, ToolCallResume, ToolCallResumeMode, ToolCallStatus,
 };
 use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult};
+use awaken::loop_runner::{AgentLoopParams, build_agent_env, prepare_resume, run_agent_loop};
 use awaken::*;
 use awaken::{AgentResolver, ResolvedAgent};
 use serde_json::{Value, json};
