@@ -4,7 +4,8 @@ use std::sync::Arc;
 use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::model::Phase;
 
-use crate::phase::{ExecutionEnv, PhaseContext, PhaseRuntime};
+use crate::hooks::PhaseContext;
+use crate::phase::{ExecutionEnv, PhaseRuntime};
 use crate::plugins::Plugin;
 use crate::state::StateStore;
 

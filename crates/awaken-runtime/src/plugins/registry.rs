@@ -2,7 +2,7 @@ use std::any::TypeId;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::phase::{
+use crate::hooks::{
     EffectHandlerArc, PhaseHook, PhaseHookArc, ScheduledActionHandlerArc, ToolPermissionChecker,
     ToolPermissionCheckerArc, TypedEffectAdapter, TypedEffectHandler, TypedScheduledActionAdapter,
     TypedScheduledActionHandler,

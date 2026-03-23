@@ -2,7 +2,8 @@ use crate::state::{Snapshot, StateCommand, StateStore};
 use awaken_contract::StateError;
 use awaken_contract::model::Phase;
 
-use crate::phase::{ExecutionEnv, PhaseContext, PhaseRunReport, PhaseRuntime, SubmitCommandReport};
+use crate::hooks::PhaseContext;
+use crate::phase::{ExecutionEnv, PhaseRunReport, PhaseRuntime, SubmitCommandReport};
 
 #[derive(Clone)]
 pub struct AppRuntime {

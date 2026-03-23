@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use awaken_contract::StateError;
 use awaken_contract::tool_pattern::pattern_matches;
 use awaken_runtime::AddContextMessage;
-use awaken_runtime::phase::{PhaseContext, PhaseHook};
+use awaken_runtime::hooks::{PhaseContext, PhaseHook};
 use awaken_runtime::state::StateCommand;
 
 use crate::output_matcher::output_matches;

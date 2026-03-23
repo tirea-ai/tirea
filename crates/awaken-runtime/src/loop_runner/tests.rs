@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use super::*;
-use crate::phase::{ExecutionEnv, PhaseContext};
+use crate::hooks::PhaseContext;
+use crate::phase::ExecutionEnv;
 use crate::state::StateStore;
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::context_message::ContextMessage;

@@ -8,6 +8,7 @@ pub mod engine;
 mod error;
 pub mod execution;
 pub mod extensions;
+pub mod hooks;
 pub(crate) mod loop_runner;
 pub mod phase;
 pub mod plugins;
@@ -74,12 +75,14 @@ pub use builder::{AgentRuntimeBuilder, BuildError};
 // ── plugins ──
 pub use plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 
-// ── phase ──
-pub use phase::{
-    DEFAULT_MAX_PHASE_ROUNDS, ExecutionEnv, PhaseContext, PhaseHook, PhaseRuntime, ToolPermission,
-    ToolPermissionChecker, ToolPermissionResult, TypedEffectHandler, TypedScheduledActionHandler,
-    aggregate_tool_permissions,
+// ── hooks ──
+pub use hooks::{
+    PhaseContext, PhaseHook, ToolPermission, ToolPermissionChecker, ToolPermissionResult,
+    TypedEffectHandler, TypedScheduledActionHandler, aggregate_tool_permissions,
 };
+
+// ── phase ──
+pub use phase::{DEFAULT_MAX_PHASE_ROUNDS, ExecutionEnv, PhaseRuntime};
 
 // ── runtime ──
 pub use registry::{AgentResolver, ResolvedAgent};

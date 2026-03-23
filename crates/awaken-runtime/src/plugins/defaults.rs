@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 
-use crate::phase::{PhaseContext, ToolPermission, ToolPermissionChecker};
+use crate::hooks::{PhaseContext, ToolPermission, ToolPermissionChecker};
 use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use awaken_contract::StateError;
 

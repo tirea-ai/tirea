@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::phase::PhaseContext;
+use crate::hooks::PhaseContext;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::lifecycle::TerminationReason;
