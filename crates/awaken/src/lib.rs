@@ -3,6 +3,8 @@
 // ── Crate-level re-exports for modular access ──
 pub use awaken_stores as stores;
 
+#[cfg(feature = "generative-ui")]
+pub use awaken_ext_generative_ui as ext_generative_ui;
 #[cfg(feature = "mcp")]
 pub use awaken_ext_mcp as ext_mcp;
 #[cfg(feature = "observability")]

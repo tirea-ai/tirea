@@ -211,6 +211,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-ext-generative-ui"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "awaken-contract",
+ "awaken-runtime",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "awaken-ext-mcp"
 version = "0.1.0"
 dependencies = [

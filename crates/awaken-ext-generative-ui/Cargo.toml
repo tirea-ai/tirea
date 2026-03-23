@@ -1,0 +1,23 @@
+[package]
+name = "awaken-ext-generative-ui"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+openui = []
+json-render = []
+
+[dependencies]
+awaken-contract = { workspace = true }
+awaken-runtime = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+
+[lints]
+workspace = true
