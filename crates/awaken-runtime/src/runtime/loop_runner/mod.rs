@@ -154,9 +154,9 @@ pub fn build_agent_env(
     plugins: &[Arc<dyn crate::plugins::Plugin>],
     agent: &crate::agent::config::AgentConfig,
 ) -> Result<ExecutionEnv, StateError> {
-    use crate::agent::compaction::ContextTransform;
-    use crate::agent::stop_conditions::MaxRoundsPlugin;
-    use crate::agent::tool_permission::AllowAllToolsPlugin;
+    use crate::context::ContextTransform;
+    use crate::execution::permission::AllowAllToolsPlugin;
+    use crate::policies::MaxRoundsPlugin;
 
     let mut all_plugins: Vec<Arc<dyn crate::plugins::Plugin>> = plugins.to_vec();
     all_plugins.push(Arc::new(MaxRoundsPlugin::new(agent.max_rounds)));

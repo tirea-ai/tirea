@@ -171,9 +171,9 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
     // Only added if the agent has a context_policy configured.
     if spec.context_policy.is_some() {
         let compaction_config = spec
-            .config::<crate::agent::compaction::CompactionConfigKey>()
+            .config::<crate::context::CompactionConfigKey>()
             .unwrap_or_default();
-        plugins.push(Arc::new(crate::agent::compaction::CompactionPlugin::new(
+        plugins.push(Arc::new(crate::context::CompactionPlugin::new(
             compaction_config,
         )));
     }
@@ -226,7 +226,7 @@ impl AgentResolver for RegistrySet {
         // Register built-in context truncation transform when policy is set
         if let Some(ref policy) = config.context_policy {
             env.request_transforms
-                .push(Arc::new(crate::agent::compaction::ContextTransform::new(
+                .push(Arc::new(crate::context::ContextTransform::new(
                     policy.clone(),
                 )));
         }

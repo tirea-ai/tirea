@@ -42,7 +42,7 @@ pub(super) async fn prepare_run(
 
     // Trim to latest compaction boundary — skip already-summarized history
     if agent.context_policy.is_some() {
-        crate::agent::compaction::trim_to_compaction_boundary(&mut messages);
+        crate::context::trim_to_compaction_boundary(&mut messages);
     }
 
     // State-driven resume detection: replay any Resuming tool calls.

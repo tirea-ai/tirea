@@ -160,7 +160,7 @@ pub(super) async fn compact_with_llm(
     messages: &mut Vec<Arc<Message>>,
     policy: &awaken_contract::contract::inference::ContextWindowPolicy,
 ) -> Result<(), AgentLoopError> {
-    use crate::agent::compaction::{
+    use crate::context::{
         MIN_COMPACTION_GAIN_TOKENS, extract_previous_summary, find_compaction_boundary,
         render_transcript,
     };

@@ -25,7 +25,7 @@ pub struct AgentConfig {
     pub context_policy: Option<ContextWindowPolicy>,
     /// Context summarizer for LLM-based compaction. `None` disables LLM compaction
     /// (hard truncation still works if `context_policy` is set).
-    pub context_summarizer: Option<Arc<dyn super::compaction::ContextSummarizer>>,
+    pub context_summarizer: Option<Arc<dyn crate::context::ContextSummarizer>>,
     /// Maximum number of continuation retries when the LLM response is truncated
     /// at `MaxTokens` with incomplete tool calls. `0` disables truncation recovery.
     pub max_continuation_retries: usize,
@@ -91,7 +91,7 @@ impl AgentConfig {
     #[must_use]
     pub fn with_context_summarizer(
         mut self,
-        summarizer: Arc<dyn super::compaction::ContextSummarizer>,
+        summarizer: Arc<dyn crate::context::ContextSummarizer>,
     ) -> Self {
         self.context_summarizer = Some(summarizer);
         self
