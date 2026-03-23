@@ -18,6 +18,7 @@ use awaken::contract::suspension::{
     ResumeDecisionAction, ToolCallResume, ToolCallResumeMode, ToolCallStatus,
 };
 use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult};
+use awaken::contract::tool_intercept::{ToolInterceptAction, ToolInterceptPayload};
 use awaken::loop_runner::{AgentLoopParams, build_agent_env, prepare_resume, run_agent_loop};
 use awaken::*;
 use awaken::{AgentResolver, ResolvedAgent};
@@ -1625,5 +1626,227 @@ async fn state_snapshot_emitted_after_phase() {
     assert!(
         last_snapshot_idx < run_finish_idx,
         "final StateSnapshot should precede RunFinish"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Frontend tool interception tests
+// ---------------------------------------------------------------------------
+
+/// A plugin that intercepts "frontend" tools via BeforeToolExecute.
+///
+/// On first entry: suspends with UseDecisionAsToolResult mode.
+/// On resume: the tool re-executes with decision.result as arguments,
+/// and this passthrough tool returns those arguments as the tool result.
+/// This mirrors uncarve's FrontendToolPlugin pattern.
+struct FrontendToolInterceptPlugin {
+    frontend_tool_ids: Vec<String>,
+}
+
+#[async_trait]
+impl PhaseHook for FrontendToolInterceptPlugin {
+    async fn run(
+        &self,
+        ctx: &awaken::PhaseContext,
+    ) -> Result<awaken::StateCommand, awaken::StateError> {
+        use awaken::contract::suspension::{PendingToolCall, SuspendTicket, Suspension};
+
+        let tool_name = match &ctx.tool_name {
+            Some(name) => name.as_str(),
+            None => return Ok(awaken::StateCommand::new()),
+        };
+
+        if !self.frontend_tool_ids.iter().any(|id| id == tool_name) {
+            return Ok(awaken::StateCommand::new());
+        }
+
+        // If resuming, don't intercept — let the tool execute with decision args
+        if ctx.resume_input.is_some() {
+            return Ok(awaken::StateCommand::new());
+        }
+
+        // First entry: suspend with UseDecisionAsToolResult
+        let call_id = ctx.tool_call_id.as_deref().unwrap_or("");
+        let args = ctx.tool_args.clone().unwrap_or_default();
+        let ticket = SuspendTicket::new(
+            Suspension {
+                id: format!("suspend_{call_id}"),
+                action: format!("tool:{tool_name}"),
+                message: format!("Frontend tool '{tool_name}' requires client execution"),
+                parameters: args.clone(),
+                response_schema: None,
+            },
+            PendingToolCall::new(call_id, tool_name, args),
+            ToolCallResumeMode::UseDecisionAsToolResult,
+        );
+
+        let mut cmd = awaken::StateCommand::new();
+        cmd.schedule_action::<ToolInterceptAction>(ToolInterceptPayload::Suspend(ticket))?;
+        Ok(cmd)
+    }
+}
+
+struct FrontendToolInterceptPluginWrapper {
+    plugin: FrontendToolInterceptPlugin,
+}
+
+impl Plugin for FrontendToolInterceptPluginWrapper {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
+            name: "frontend-tool-intercept",
+        }
+    }
+
+    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+        registrar.register_phase_hook(
+            "frontend-tool-intercept",
+            awaken::Phase::BeforeToolExecute,
+            self.plugin.clone(),
+        )?;
+        Ok(())
+    }
+}
+
+impl Clone for FrontendToolInterceptPlugin {
+    fn clone(&self) -> Self {
+        Self {
+            frontend_tool_ids: self.frontend_tool_ids.clone(),
+        }
+    }
+}
+
+/// End-to-end test: frontend tool suspension + resume via UseDecisionAsToolResult.
+///
+/// Flow:
+/// 1. LLM calls "ask_user" tool
+/// 2. FrontendToolInterceptPlugin intercepts → Suspend(UseDecisionAsToolResult)
+/// 3. Run terminates with Suspended
+/// 4. External decision arrives with result payload
+/// 5. prepare_resume with UseDecisionAsToolResult mode replaces arguments
+/// 6. detect_and_replay_resume re-executes tool with decision args
+/// 7. PassthroughTool returns decision args as tool result
+/// 8. LLM sees the frontend result and responds
+#[tokio::test]
+async fn frontend_tool_intercept_suspend_and_resume() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        // First call: LLM invokes the frontend tool
+        make_tool_call_response("ask_user", "fc1", json!({"question": "What color?"})),
+        // After resume: LLM sees the frontend result and ends
+    ]));
+
+    // AskUserTool is a "frontend tool" — it returns args as result.
+    // When resumed with decision args, the decision payload becomes the tool result.
+    struct AskUserTool;
+    #[async_trait]
+    impl Tool for AskUserTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("ask_user", "ask_user", "Ask the user a question")
+        }
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("ask_user", args))
+        }
+    }
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(AskUserTool));
+
+    let frontend_plugin = Arc::new(FrontendToolInterceptPluginWrapper {
+        plugin: FrontendToolInterceptPlugin {
+            frontend_tool_ids: vec!["ask_user".into()],
+        },
+    });
+
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(agent, vec![frontend_plugin]);
+
+    // Run until suspension
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("ask the user what color they want")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        result.termination,
+        TerminationReason::Suspended,
+        "should suspend on frontend tool"
+    );
+
+    // Verify tool call is in Suspended state
+    let states = runtime.store().read::<ToolCallStates>().unwrap();
+    assert_eq!(states.calls["fc1"].status, ToolCallStatus::Suspended);
+
+    // Simulate frontend sending back the user's answer
+    let messages: Vec<Message> = vec![
+        Message::user("ask the user what color they want"),
+        Message::assistant_with_tool_calls(
+            "",
+            vec![ToolCall::new(
+                "fc1",
+                "ask_user",
+                json!({"question": "What color?"}),
+            )],
+        ),
+        Message::tool("fc1", "Tool 'ask_user' suspended: awaiting decision"),
+    ];
+
+    // Resume with UseDecisionAsToolResult: decision.result becomes tool arguments
+    prepare_resume(
+        runtime.store(),
+        vec![(
+            "fc1".into(),
+            ToolCallResume {
+                decision_id: "d1".into(),
+                action: ResumeDecisionAction::Resume,
+                result: json!({"answer": "blue"}),
+                reason: None,
+                updated_at: 0,
+            },
+        )],
+        ToolCallResumeMode::UseDecisionAsToolResult,
+    )
+    .unwrap();
+
+    // Verify tool call transitioned to Resuming with decision args
+    let states = runtime.store().read::<ToolCallStates>().unwrap();
+    assert_eq!(states.calls["fc1"].status, ToolCallStatus::Resuming);
+    assert_eq!(
+        states.calls["fc1"].arguments,
+        json!({"answer": "blue"}),
+        "arguments should be replaced with decision result"
+    );
+
+    // Resume the run
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages,
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        result.termination,
+        TerminationReason::NaturalEnd,
+        "should complete after frontend tool resume"
     );
 }
