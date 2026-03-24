@@ -1378,3 +1378,625 @@ fn error_event_without_code() {
         panic!("expected RunError");
     }
 }
+
+// ============================================================================
+// State management tests (8)
+// ============================================================================
+
+#[test]
+fn state_snapshot_with_nested_json() {
+    let mut enc = AgUiEncoder::new();
+    let state = json!({
+        "user": {
+            "profile": {
+                "name": "Alice",
+                "preferences": {
+                    "theme": "dark",
+                    "notifications": {"email": true, "sms": false}
+                }
+            }
+        },
+        "session": {"token": "abc123"}
+    });
+    let events = enc.on_agent_event(&AgentEvent::StateSnapshot {
+        snapshot: state.clone(),
+    });
+    assert_eq!(events.len(), 1);
+    if let Event::StateSnapshot { snapshot, .. } = &events[0] {
+        assert_eq!(*snapshot, state);
+        assert_eq!(snapshot["user"]["profile"]["name"], "Alice");
+        assert_eq!(
+            snapshot["user"]["profile"]["preferences"]["notifications"]["email"],
+            true
+        );
+    } else {
+        panic!("expected StateSnapshot");
+    }
+}
+
+#[test]
+fn state_snapshot_with_array_value() {
+    let mut enc = AgUiEncoder::new();
+    let state = json!({
+        "items": [1, "two", null, true, {"nested": [10, 20]}],
+        "tags": ["a", "b", "c"]
+    });
+    let events = enc.on_agent_event(&AgentEvent::StateSnapshot {
+        snapshot: state.clone(),
+    });
+    assert_eq!(events.len(), 1);
+    if let Event::StateSnapshot { snapshot, .. } = &events[0] {
+        assert_eq!(*snapshot, state);
+        assert_eq!(snapshot["items"].as_array().unwrap().len(), 5);
+        assert_eq!(snapshot["items"][4]["nested"][1], 20);
+    } else {
+        panic!("expected StateSnapshot");
+    }
+}
+
+#[test]
+fn state_snapshot_empty_object() {
+    let mut enc = AgUiEncoder::new();
+    let events = enc.on_agent_event(&AgentEvent::StateSnapshot {
+        snapshot: json!({}),
+    });
+    assert_eq!(events.len(), 1);
+    if let Event::StateSnapshot { snapshot, .. } = &events[0] {
+        assert_eq!(*snapshot, json!({}));
+        assert!(snapshot.as_object().unwrap().is_empty());
+    } else {
+        panic!("expected StateSnapshot");
+    }
+}
+
+#[test]
+fn state_snapshot_with_null_values() {
+    let mut enc = AgUiEncoder::new();
+    let state = json!({
+        "a": null,
+        "b": {"inner": null},
+        "c": [null, 1, null]
+    });
+    let events = enc.on_agent_event(&AgentEvent::StateSnapshot {
+        snapshot: state.clone(),
+    });
+    assert_eq!(events.len(), 1);
+    if let Event::StateSnapshot { snapshot, .. } = &events[0] {
+        assert_eq!(*snapshot, state);
+        assert!(snapshot["a"].is_null());
+        assert!(snapshot["b"]["inner"].is_null());
+        assert!(snapshot["c"][0].is_null());
+        assert!(snapshot["c"][2].is_null());
+    } else {
+        panic!("expected StateSnapshot");
+    }
+}
+
+#[test]
+fn multiple_state_snapshots_all_emitted() {
+    let mut enc = AgUiEncoder::new();
+    let ev1 = enc.on_agent_event(&AgentEvent::StateSnapshot {
+        snapshot: json!({"version": 1}),
+    });
+    let ev2 = enc.on_agent_event(&AgentEvent::StateSnapshot {
+        snapshot: json!({"version": 2}),
+    });
+    assert_eq!(ev1.len(), 1);
+    assert_eq!(ev2.len(), 1);
+    assert!(matches!(&ev1[0], Event::StateSnapshot { snapshot, .. } if snapshot["version"] == 1));
+    assert!(matches!(&ev2[0], Event::StateSnapshot { snapshot, .. } if snapshot["version"] == 2));
+}
+
+#[test]
+fn state_snapshot_preserves_field_order() {
+    let mut enc = AgUiEncoder::new();
+    let state = json!({
+        "alpha": 1,
+        "beta": 2,
+        "gamma": 3,
+        "delta": 4,
+        "epsilon": 5
+    });
+    let events = enc.on_agent_event(&AgentEvent::StateSnapshot {
+        snapshot: state.clone(),
+    });
+    assert_eq!(events.len(), 1);
+    if let Event::StateSnapshot { snapshot, .. } = &events[0] {
+        let keys: Vec<&String> = snapshot.as_object().unwrap().keys().collect();
+        assert_eq!(keys.len(), 5);
+        assert!(keys.contains(&&"alpha".to_string()));
+        assert!(keys.contains(&&"beta".to_string()));
+        assert!(keys.contains(&&"gamma".to_string()));
+        assert!(keys.contains(&&"delta".to_string()));
+        assert!(keys.contains(&&"epsilon".to_string()));
+    } else {
+        panic!("expected StateSnapshot");
+    }
+}
+
+#[test]
+fn state_snapshot_large_payload() {
+    let mut enc = AgUiEncoder::new();
+    let mut obj = serde_json::Map::new();
+    for i in 0..60 {
+        obj.insert(format!("field_{i}"), json!(i));
+    }
+    let state = serde_json::Value::Object(obj);
+    let events = enc.on_agent_event(&AgentEvent::StateSnapshot {
+        snapshot: state.clone(),
+    });
+    assert_eq!(events.len(), 1);
+    if let Event::StateSnapshot { snapshot, .. } = &events[0] {
+        assert_eq!(*snapshot, state);
+        assert_eq!(snapshot.as_object().unwrap().len(), 60);
+        assert_eq!(snapshot["field_0"], 0);
+        assert_eq!(snapshot["field_59"], 59);
+    } else {
+        panic!("expected StateSnapshot");
+    }
+}
+
+#[test]
+fn state_snapshot_after_tool_call() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    // Execute a tool call lifecycle
+    enc.on_agent_event(&AgentEvent::ToolCallStart {
+        id: "c1".into(),
+        name: "search".into(),
+    });
+    enc.on_agent_event(&AgentEvent::ToolCallReady {
+        id: "c1".into(),
+        name: "search".into(),
+        arguments: json!({"q": "test"}),
+    });
+    enc.on_agent_event(&AgentEvent::ToolCallDone {
+        id: "c1".into(),
+        message_id: "m_tool".into(),
+        result: ToolResult::success("search", json!({"found": true})),
+        outcome: ToolCallOutcome::Succeeded,
+    });
+
+    // State snapshot after tool call
+    let state = json!({"search_complete": true, "results_count": 5});
+    let events = enc.on_agent_event(&AgentEvent::StateSnapshot {
+        snapshot: state.clone(),
+    });
+    assert_eq!(events.len(), 1);
+    assert!(matches!(&events[0], Event::StateSnapshot { snapshot, .. } if *snapshot == state));
+}
+
+// ============================================================================
+// Message handling tests (8)
+// ============================================================================
+
+#[test]
+fn messages_snapshot_with_tool_messages() {
+    let mut enc = AgUiEncoder::new();
+    let msgs = vec![
+        json!({"role": "user", "content": "search for rust"}),
+        json!({"role": "assistant", "content": null, "tool_calls": [{"id": "c1", "function": {"name": "search"}}]}),
+        json!({"role": "tool", "content": "found 3 results", "tool_call_id": "c1"}),
+    ];
+    let events = enc.on_agent_event(&AgentEvent::MessagesSnapshot {
+        messages: msgs.clone(),
+    });
+    assert_eq!(events.len(), 1);
+    if let Event::MessagesSnapshot { messages, .. } = &events[0] {
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[2]["role"], "tool");
+        assert_eq!(messages[2]["tool_call_id"], "c1");
+        assert_eq!(messages[2]["content"], "found 3 results");
+    } else {
+        panic!("expected MessagesSnapshot");
+    }
+}
+
+#[test]
+fn messages_snapshot_ordering_preserved() {
+    let mut enc = AgUiEncoder::new();
+    let msgs: Vec<serde_json::Value> = (0..10)
+        .map(|i| json!({"role": "user", "content": format!("msg_{i}"), "seq": i}))
+        .collect();
+    let events = enc.on_agent_event(&AgentEvent::MessagesSnapshot {
+        messages: msgs.clone(),
+    });
+    assert_eq!(events.len(), 1);
+    if let Event::MessagesSnapshot { messages, .. } = &events[0] {
+        for (i, msg) in messages.iter().enumerate() {
+            assert_eq!(msg["seq"], i);
+            assert_eq!(msg["content"], format!("msg_{i}"));
+        }
+    } else {
+        panic!("expected MessagesSnapshot");
+    }
+}
+
+#[test]
+fn messages_snapshot_with_metadata() {
+    let mut enc = AgUiEncoder::new();
+    let msgs = vec![json!({
+        "role": "assistant",
+        "content": "hello",
+        "metadata": {
+            "model": "gpt-4",
+            "tokens": 50,
+            "latency_ms": 200
+        }
+    })];
+    let events = enc.on_agent_event(&AgentEvent::MessagesSnapshot {
+        messages: msgs.clone(),
+    });
+    assert_eq!(events.len(), 1);
+    if let Event::MessagesSnapshot { messages, .. } = &events[0] {
+        assert_eq!(messages[0]["metadata"]["model"], "gpt-4");
+        assert_eq!(messages[0]["metadata"]["tokens"], 50);
+    } else {
+        panic!("expected MessagesSnapshot");
+    }
+}
+
+#[test]
+fn messages_snapshot_empty_array() {
+    let mut enc = AgUiEncoder::new();
+    let events = enc.on_agent_event(&AgentEvent::MessagesSnapshot { messages: vec![] });
+    assert_eq!(events.len(), 1);
+    if let Event::MessagesSnapshot { messages, .. } = &events[0] {
+        assert!(messages.is_empty());
+    } else {
+        panic!("expected MessagesSnapshot");
+    }
+}
+
+#[test]
+fn messages_snapshot_mixed_roles() {
+    let mut enc = AgUiEncoder::new();
+    let msgs = vec![
+        json!({"role": "user", "content": "hi"}),
+        json!({"role": "assistant", "content": "hello"}),
+        json!({"role": "tool", "content": "result", "tool_call_id": "c1"}),
+        json!({"role": "user", "content": "thanks"}),
+        json!({"role": "assistant", "content": "welcome"}),
+    ];
+    let events = enc.on_agent_event(&AgentEvent::MessagesSnapshot {
+        messages: msgs.clone(),
+    });
+    assert_eq!(events.len(), 1);
+    if let Event::MessagesSnapshot { messages, .. } = &events[0] {
+        assert_eq!(messages.len(), 5);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[2]["role"], "tool");
+        assert_eq!(messages[3]["role"], "user");
+        assert_eq!(messages[4]["role"], "assistant");
+    } else {
+        panic!("expected MessagesSnapshot");
+    }
+}
+
+#[test]
+fn text_message_with_empty_content() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let events = enc.on_agent_event(&AgentEvent::TextDelta { delta: "".into() });
+    assert_eq!(events.len(), 2);
+    assert!(matches!(&events[0], Event::TextMessageStart { .. }));
+    assert!(matches!(&events[1], Event::TextMessageContent { delta, .. } if delta.is_empty()));
+}
+
+#[test]
+fn text_message_with_multiline_content() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let multiline = "line1\nline2\n\nline4\ttab";
+    let events = enc.on_agent_event(&AgentEvent::TextDelta {
+        delta: multiline.into(),
+    });
+    assert_eq!(events.len(), 2);
+    if let Event::TextMessageContent { delta, .. } = &events[1] {
+        assert_eq!(delta, multiline);
+        assert!(delta.contains('\n'));
+        assert!(delta.contains('\t'));
+    } else {
+        panic!("expected TextMessageContent");
+    }
+}
+
+#[test]
+fn text_message_with_special_characters() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let special = r#"<div class="test">&amp; 'single' "double" \backslash</div>"#;
+    let events = enc.on_agent_event(&AgentEvent::TextDelta {
+        delta: special.into(),
+    });
+    assert_eq!(events.len(), 2);
+    if let Event::TextMessageContent { delta, .. } = &events[1] {
+        assert_eq!(delta, special);
+        assert!(delta.contains("&amp;"));
+        assert!(delta.contains(r#"\backslash"#));
+        assert!(delta.contains('"'));
+        assert!(delta.contains('\''));
+    } else {
+        panic!("expected TextMessageContent");
+    }
+}
+
+// ============================================================================
+// Event sequence validation tests (9)
+// ============================================================================
+
+#[test]
+fn events_start_with_run_started() {
+    let mut enc = AgUiEncoder::new();
+    let mut all = Vec::new();
+
+    all.extend(enc.on_agent_event(&AgentEvent::RunStart {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        parent_run_id: None,
+    }));
+    all.extend(enc.on_agent_event(&AgentEvent::StepStart {
+        message_id: "m1".into(),
+    }));
+    all.extend(enc.on_agent_event(&AgentEvent::TextDelta {
+        delta: "hello".into(),
+    }));
+    all.extend(enc.on_agent_event(&AgentEvent::StepEnd));
+    all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        result: None,
+        termination: TerminationReason::NaturalEnd,
+    }));
+
+    assert!(!all.is_empty());
+    assert!(matches!(&all[0], Event::RunStarted { .. }));
+}
+
+#[test]
+fn events_end_with_run_finished() {
+    let mut enc = AgUiEncoder::new();
+    let mut all = Vec::new();
+
+    all.extend(enc.on_agent_event(&AgentEvent::RunStart {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        parent_run_id: None,
+    }));
+    all.extend(enc.on_agent_event(&AgentEvent::TextDelta { delta: "hi".into() }));
+    all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        result: None,
+        termination: TerminationReason::NaturalEnd,
+    }));
+
+    let last = all.last().unwrap();
+    assert!(matches!(last, Event::RunFinished { .. }));
+}
+
+#[test]
+fn step_started_before_text_events() {
+    let mut enc = AgUiEncoder::new();
+    let mut all = Vec::new();
+
+    all.extend(enc.on_agent_event(&AgentEvent::RunStart {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        parent_run_id: None,
+    }));
+    all.extend(enc.on_agent_event(&AgentEvent::StepStart {
+        message_id: "m1".into(),
+    }));
+    all.extend(enc.on_agent_event(&AgentEvent::TextDelta {
+        delta: "response".into(),
+    }));
+
+    let step_idx = all
+        .iter()
+        .position(|e| matches!(e, Event::StepStarted { .. }))
+        .unwrap();
+    let text_start_idx = all
+        .iter()
+        .position(|e| matches!(e, Event::TextMessageStart { .. }))
+        .unwrap();
+    assert!(step_idx < text_start_idx);
+}
+
+#[test]
+fn tool_call_sequence_correct() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let mut all = Vec::new();
+
+    all.extend(enc.on_agent_event(&AgentEvent::ToolCallStart {
+        id: "c1".into(),
+        name: "search".into(),
+    }));
+    all.extend(enc.on_agent_event(&AgentEvent::ToolCallDelta {
+        id: "c1".into(),
+        args_delta: r#"{"q":"test"}"#.into(),
+    }));
+    all.extend(enc.on_agent_event(&AgentEvent::ToolCallReady {
+        id: "c1".into(),
+        name: "search".into(),
+        arguments: json!({"q": "test"}),
+    }));
+    all.extend(enc.on_agent_event(&AgentEvent::ToolCallDone {
+        id: "c1".into(),
+        message_id: "m1".into(),
+        result: ToolResult::success("search", json!("found")),
+        outcome: ToolCallOutcome::Succeeded,
+    }));
+
+    let tool_events: Vec<_> = all
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Event::ToolCallStart { .. }
+                    | Event::ToolCallArgs { .. }
+                    | Event::ToolCallEnd { .. }
+                    | Event::ToolCallResult { .. }
+            )
+        })
+        .collect();
+
+    assert_eq!(tool_events.len(), 4);
+    assert!(matches!(tool_events[0], Event::ToolCallStart { .. }));
+    assert!(matches!(tool_events[1], Event::ToolCallArgs { .. }));
+    assert!(matches!(tool_events[2], Event::ToolCallEnd { .. }));
+    assert!(matches!(tool_events[3], Event::ToolCallResult { .. }));
+}
+
+#[test]
+fn no_events_after_run_finished() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    enc.on_agent_event(&AgentEvent::RunFinish {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        result: None,
+        termination: TerminationReason::NaturalEnd,
+    });
+
+    // All subsequent events should be suppressed
+    assert!(
+        enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "late".into()
+        })
+        .is_empty()
+    );
+    assert!(
+        enc.on_agent_event(&AgentEvent::StepStart {
+            message_id: "m".into()
+        })
+        .is_empty()
+    );
+    assert!(
+        enc.on_agent_event(&AgentEvent::StateSnapshot {
+            snapshot: json!({})
+        })
+        .is_empty()
+    );
+    assert!(
+        enc.on_agent_event(&AgentEvent::MessagesSnapshot { messages: vec![] })
+            .is_empty()
+    );
+    assert!(
+        enc.on_agent_event(&AgentEvent::ToolCallStart {
+            id: "c".into(),
+            name: "x".into(),
+        })
+        .is_empty()
+    );
+}
+
+#[test]
+fn no_events_after_run_error() {
+    let mut enc = AgUiEncoder::new();
+    enc.on_agent_event(&AgentEvent::Error {
+        message: "fatal".into(),
+        code: Some("E500".into()),
+    });
+
+    assert!(
+        enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "late".into()
+        })
+        .is_empty()
+    );
+    assert!(
+        enc.on_agent_event(&AgentEvent::StepStart {
+            message_id: "m".into()
+        })
+        .is_empty()
+    );
+    assert!(
+        enc.on_agent_event(&AgentEvent::StateSnapshot {
+            snapshot: json!({})
+        })
+        .is_empty()
+    );
+    assert!(
+        enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: None,
+            termination: TerminationReason::NaturalEnd,
+        })
+        .is_empty()
+    );
+}
+
+#[test]
+fn run_error_includes_message() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let events = enc.on_agent_event(&AgentEvent::RunFinish {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        result: None,
+        termination: TerminationReason::Error("context window exceeded".into()),
+    });
+    let error_event = events
+        .iter()
+        .find(|e| matches!(e, Event::RunError { .. }))
+        .expect("should contain RunError");
+    if let Event::RunError { message, .. } = error_event {
+        assert_eq!(message, "context window exceeded");
+    }
+}
+
+#[test]
+fn natural_end_finish_has_result() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let result_val = json!({"response": "task completed", "artifacts": [1, 2, 3]});
+    let events = enc.on_agent_event(&AgentEvent::RunFinish {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        result: Some(result_val.clone()),
+        termination: TerminationReason::NaturalEnd,
+    });
+    let finished = events
+        .iter()
+        .find(|e| matches!(e, Event::RunFinished { .. }))
+        .expect("should contain RunFinished");
+    if let Event::RunFinished {
+        result,
+        thread_id,
+        run_id,
+        ..
+    } = finished
+    {
+        assert_eq!(thread_id, "t1");
+        assert_eq!(run_id, "r1");
+        assert_eq!(*result, Some(result_val));
+    }
+}
+
+#[test]
+fn cancelled_finish_has_correct_reason() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let events = enc.on_agent_event(&AgentEvent::RunFinish {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        result: None,
+        termination: TerminationReason::Cancelled,
+    });
+    // Cancelled maps to RunFinished (not RunError)
+    let finished = events
+        .iter()
+        .find(|e| matches!(e, Event::RunFinished { .. }))
+        .expect("Cancelled should produce RunFinished");
+    if let Event::RunFinished {
+        thread_id,
+        run_id,
+        result,
+        ..
+    } = finished
+    {
+        assert_eq!(thread_id, "t1");
+        assert_eq!(run_id, "r1");
+        assert!(result.is_none());
+    }
+    // Verify no error event was produced
+    assert!(
+        !events.iter().any(|e| matches!(e, Event::RunError { .. })),
+        "Cancelled should not produce RunError"
+    );
+}
