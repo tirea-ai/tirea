@@ -128,9 +128,7 @@ impl Tool for CountingTool {
 // Helpers
 // ---------------------------------------------------------------------------
 
-use awaken::agent::state::{
-    AccumulatedOverrides, AccumulatedToolExclusions, AccumulatedToolInclusions, ContextMessageStore,
-};
+use awaken::agent::state::ContextMessageStore;
 
 struct LoopStatePlugin;
 impl Plugin for LoopStatePlugin {
@@ -141,10 +139,7 @@ impl Plugin for LoopStatePlugin {
         r.register_key::<RunLifecycle>(StateKeyOptions::default())?;
         r.register_key::<ToolCallStates>(StateKeyOptions::default())?;
         r.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
-        r.register_key::<AccumulatedOverrides>(StateKeyOptions::default())?;
         r.register_key::<ContextMessageStore>(StateKeyOptions::default())?;
-        r.register_key::<AccumulatedToolExclusions>(StateKeyOptions::default())?;
-        r.register_key::<AccumulatedToolInclusions>(StateKeyOptions::default())?;
         Ok(())
     }
 }

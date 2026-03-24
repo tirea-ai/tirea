@@ -18,6 +18,7 @@ use super::setup::{PreparedRun, prepare_run};
 use super::step::{StepContext, StepOutcome, execute_step};
 use super::{AgentLoopError, AgentLoopParams, AgentRunResult, commit_update, now_ms};
 use crate::agent::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate};
+use crate::state::MutationBatch;
 
 #[tracing::instrument(skip_all, fields(agent_id = %params.agent_id, run_id = %params.run_identity.run_id))]
 pub(super) async fn run_agent_loop_impl(
@@ -61,9 +62,13 @@ pub(super) async fn run_agent_loop_impl(
     let mut truncation_state = TruncationState::new();
 
     let make_ctx = |phase: Phase, msgs: &[Arc<Message>], identity: &RunIdentity| -> PhaseContext {
-        PhaseContext::new(phase, store.snapshot())
+        let ctx = PhaseContext::new(phase, store.snapshot())
             .with_run_identity(identity.clone())
-            .with_messages(msgs.to_vec())
+            .with_messages(msgs.to_vec());
+        match cancellation_token.as_ref() {
+            Some(token) => ctx.with_cancellation_token(token.clone()),
+            None => ctx,
+        }
     };
 
     // --- Run lifecycle: Start ---
@@ -82,9 +87,20 @@ pub(super) async fn run_agent_loop_impl(
     })
     .await;
 
-    runtime
+    match runtime
         .run_phase_with_context(&env, make_ctx(Phase::RunStart, &messages, &run_identity))
-        .await?;
+        .await
+    {
+        Ok(_) => {}
+        Err(awaken_contract::StateError::Cancelled) => {
+            return Ok(AgentRunResult {
+                response: String::new(),
+                termination: TerminationReason::Cancelled,
+                steps: 0,
+            });
+        }
+        Err(e) => return Err(AgentLoopError::PhaseError(e)),
+    }
 
     // --- Main loop ---
     let termination = loop {
@@ -104,6 +120,37 @@ pub(super) async fn run_agent_loop_impl(
                             .register_keys(&resolved.env.key_registrations)
                             .map_err(AgentLoopError::PhaseError)?;
                     }
+
+                    // Deactivate old plugins
+                    {
+                        let mut deactivate_patch = MutationBatch::new();
+                        for plugin in &env.plugins {
+                            plugin
+                                .on_deactivate(&mut deactivate_patch)
+                                .map_err(AgentLoopError::PhaseError)?;
+                        }
+                        if !deactivate_patch.is_empty() {
+                            store
+                                .commit(deactivate_patch)
+                                .map_err(AgentLoopError::PhaseError)?;
+                        }
+                    }
+
+                    // Activate new plugins
+                    if let Some(ref spec) = resolved.env.agent_spec {
+                        let mut activate_patch = MutationBatch::new();
+                        for plugin in &resolved.env.plugins {
+                            plugin
+                                .on_activate(spec, &mut activate_patch)
+                                .map_err(AgentLoopError::PhaseError)?;
+                        }
+                        if !activate_patch.is_empty() {
+                            store
+                                .commit(activate_patch)
+                                .map_err(AgentLoopError::PhaseError)?;
+                        }
+                    }
+
                     tracing::info!(from = %agent.id, to = %active_id, "agent_handoff");
                     agent = resolved.config;
                     env = resolved.env;
@@ -139,7 +186,14 @@ pub(super) async fn run_agent_loop_impl(
             run_created_at,
         };
 
-        match execute_step(&mut step_ctx).await? {
+        let step_result = match execute_step(&mut step_ctx).await {
+            Ok(outcome) => outcome,
+            Err(AgentLoopError::PhaseError(awaken_contract::StateError::Cancelled)) => {
+                StepOutcome::Cancelled
+            }
+            Err(e) => return Err(e),
+        };
+        match step_result {
             StepOutcome::Cancelled => {
                 break TerminationReason::Cancelled;
             }
@@ -232,9 +286,13 @@ pub(super) async fn run_agent_loop_impl(
         )?;
     }
 
-    runtime
+    match runtime
         .run_phase_with_context(&env, make_ctx(Phase::RunEnd, &messages, &run_identity))
-        .await?;
+        .await
+    {
+        Ok(_) | Err(awaken_contract::StateError::Cancelled) => {}
+        Err(e) => return Err(AgentLoopError::PhaseError(e)),
+    }
 
     persist_checkpoint(
         store,

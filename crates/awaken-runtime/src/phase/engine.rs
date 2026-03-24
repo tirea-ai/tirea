@@ -82,6 +82,20 @@ impl PhaseRuntime {
         self.run_hooks_collect(env, ctx).await
     }
 
+    /// Run only the EXECUTE stage of a phase (no GATHER/hook execution).
+    ///
+    /// Processes pending scheduled actions that match the given phase and have
+    /// a registered handler. Used when GATHER was already done via `collect_commands`
+    /// and the caller has manually submitted the remaining command.
+    pub async fn run_execute_loop(
+        &self,
+        env: &ExecutionEnv,
+        ctx: PhaseContext,
+    ) -> Result<PhaseRunReport, StateError> {
+        self.run_execute_loop_inner(env, ctx, DEFAULT_MAX_PHASE_ROUNDS)
+            .await
+    }
+
     pub async fn run_phase_with_limit(
         &self,
         env: &ExecutionEnv,
@@ -92,12 +106,128 @@ impl PhaseRuntime {
         self.run_phase_ctx_inner(env, ctx, max_rounds).await
     }
 
+    /// EXECUTE-only inner: same convergence loop as `run_phase_ctx_inner` but
+    /// without the GATHER (hook execution) stage.
+    async fn run_execute_loop_inner(
+        &self,
+        env: &ExecutionEnv,
+        base_ctx: PhaseContext,
+        max_rounds: usize,
+    ) -> Result<PhaseRunReport, StateError> {
+        let phase = base_ctx.phase;
+        let _guard = self.execution_lock.lock().await;
+        let mut total_processed = 0;
+        let mut total_skipped = 0;
+        let mut total_failed = 0;
+        let mut total_effects = 0;
+        let mut effect_report = EffectDispatchReport {
+            attempted: 0,
+            dispatched: 0,
+            failed: 0,
+        };
+        let mut rounds = 0;
+
+        loop {
+            rounds += 1;
+            if rounds > max_rounds {
+                return Err(StateError::PhaseRunLoopExceeded { phase, max_rounds });
+            }
+
+            let queued = self
+                .store
+                .read::<PendingScheduledActions>()
+                .unwrap_or_default();
+
+            let matching: Vec<_> = queued
+                .into_iter()
+                .filter(|envelope| {
+                    envelope.action.phase == phase
+                        && env
+                            .scheduled_action_handlers
+                            .contains_key(&envelope.action.key)
+                })
+                .collect();
+
+            tracing::debug!(phase = ?phase, actions = matching.len(), "execute_loop_start");
+
+            if matching.is_empty() {
+                if rounds == 1 {
+                    total_skipped = self
+                        .store
+                        .read::<PendingScheduledActions>()
+                        .unwrap_or_default()
+                        .iter()
+                        .filter(|envelope| envelope.action.phase != phase)
+                        .count();
+                }
+                break;
+            }
+
+            for envelope in matching {
+                let handler = env
+                    .scheduled_action_handlers
+                    .get(&envelope.action.key)
+                    .cloned()
+                    .expect("handler existence verified in filter above");
+
+                let ctx = base_ctx.clone().with_snapshot(self.store.snapshot());
+                let mut command = match handler
+                    .handle_erased(&ctx, envelope.action.payload.clone())
+                    .await
+                {
+                    Ok(command) => command,
+                    Err(err) => {
+                        self.dead_letter(envelope, err.to_string())?;
+                        total_failed += 1;
+                        continue;
+                    }
+                };
+                total_effects += command.effects.len();
+                command.patch.update::<PendingScheduledActions>(
+                    ScheduledActionQueueUpdate::Remove { id: envelope.id },
+                );
+                match self.submit_command_inner(env, command).await {
+                    Ok(report) => {
+                        total_processed += 1;
+                        effect_report.attempted += report.effect_report.attempted;
+                        effect_report.dispatched += report.effect_report.dispatched;
+                        effect_report.failed += report.effect_report.failed;
+                    }
+                    Err(err) => {
+                        self.dead_letter(
+                            envelope,
+                            format!("failed to submit action command: {err}"),
+                        )?;
+                        total_failed += 1;
+                    }
+                }
+            }
+        }
+
+        Ok(PhaseRunReport {
+            phase,
+            rounds,
+            processed_scheduled_actions: total_processed,
+            skipped_scheduled_actions: total_skipped,
+            failed_scheduled_actions: total_failed,
+            generated_effects: total_effects,
+            effect_report,
+        })
+    }
+
     async fn run_phase_ctx_inner(
         &self,
         env: &ExecutionEnv,
         base_ctx: PhaseContext,
         max_rounds: usize,
     ) -> Result<PhaseRunReport, StateError> {
+        // Check cancellation at phase entry
+        if let Some(token) = base_ctx.cancellation_token.as_ref() {
+            if token.is_cancelled() {
+                return Err(StateError::Cancelled);
+            }
+        }
+
         let phase = base_ctx.phase;
         let _guard = self.execution_lock.lock().await;
         let mut total_processed = 0;
@@ -117,6 +247,13 @@ impl PhaseRuntime {
         effect_report.attempted += hook_effect_report.attempted;
         effect_report.dispatched += hook_effect_report.dispatched;
         effect_report.failed += hook_effect_report.failed;
+
+        // Check cancellation after hooks, before scheduled action execution
+        if let Some(token) = base_ctx.cancellation_token.as_ref() {
+            if token.is_cancelled() {
+                return Err(StateError::Cancelled);
+            }
+        }
 
         loop {
             rounds += 1;

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::agent::config::AgentConfig;
 use crate::phase::{ExecutionEnv, PhaseRuntime};
 use crate::registry::{AgentResolver, ResolvedAgent};
+use crate::state::MutationBatch;
 use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::message::Message;
 
@@ -39,6 +40,21 @@ pub(super) async fn prepare_run(
         store
             .register_keys(&env.key_registrations)
             .map_err(AgentLoopError::PhaseError)?;
+    }
+
+    // Activate plugins for the initial agent.
+    if let Some(ref spec) = env.agent_spec {
+        let mut activate_patch = MutationBatch::new();
+        for plugin in &env.plugins {
+            plugin
+                .on_activate(spec, &mut activate_patch)
+                .map_err(AgentLoopError::PhaseError)?;
+        }
+        if !activate_patch.is_empty() {
+            store
+                .commit(activate_patch)
+                .map_err(AgentLoopError::PhaseError)?;
+        }
     }
 
     // Trim to latest compaction boundary — skip already-summarized history

@@ -13,8 +13,8 @@ use awaken_contract::model::{
 };
 
 use super::actions::{
-    LoopActionHandlersPlugin, apply_context_messages, take_accumulated_overrides,
-    take_and_apply_tool_filters, take_context_messages,
+    LoopActionHandlersPlugin, apply_context_messages, apply_tool_filter_payloads, extract_actions,
+    merge_override_payloads, resolve_intercept_payloads, take_context_messages,
 };
 use crate::agent::state::{
     AddContextMessage, ExcludeTool, IncludeOnlyTools, RunLifecycle, RunLifecycleUpdate,
@@ -377,35 +377,31 @@ fn text_of_ctx(msg: &ContextMessage) -> String {
 }
 
 // -----------------------------------------------------------------------
-// Tool filter action tests (ExcludeTool / IncludeOnlyTools via run_phase)
+// Tool filter tests (extract_actions + apply_tool_filter_payloads)
 // -----------------------------------------------------------------------
 
 use awaken_contract::contract::tool::ToolDescriptor;
 
-/// Helper: push an ExcludeTool action into the pending queue.
-fn enqueue_exclude_tool(store: &StateStore, id: u64, tool_id: &str) {
-    let payload = ExcludeTool::encode_payload(&tool_id.to_string()).expect("encode");
-    let mut batch = crate::state::MutationBatch::new();
-    batch.update::<PendingScheduledActions>(ScheduledActionQueueUpdate::Push(
-        ScheduledActionEnvelope {
-            id,
-            action: ScheduledAction::new(ExcludeTool::PHASE, ExcludeTool::KEY, payload),
-        },
-    ));
-    store.commit(batch).expect("commit enqueue");
+/// Helper: build a Vec<ScheduledAction> from ExcludeTool payloads.
+fn make_exclude_actions(tool_ids: &[&str]) -> Vec<ScheduledAction> {
+    tool_ids
+        .iter()
+        .map(|id| {
+            let payload = ExcludeTool::encode_payload(&id.to_string()).expect("encode");
+            ScheduledAction::new(ExcludeTool::PHASE, ExcludeTool::KEY, payload)
+        })
+        .collect()
 }
 
-/// Helper: push an IncludeOnlyTools action into the pending queue.
-fn enqueue_include_only_tools(store: &StateStore, id: u64, tool_ids: Vec<String>) {
-    let payload = IncludeOnlyTools::encode_payload(&tool_ids).expect("encode");
-    let mut batch = crate::state::MutationBatch::new();
-    batch.update::<PendingScheduledActions>(ScheduledActionQueueUpdate::Push(
-        ScheduledActionEnvelope {
-            id,
-            action: ScheduledAction::new(IncludeOnlyTools::PHASE, IncludeOnlyTools::KEY, payload),
-        },
-    ));
-    store.commit(batch).expect("commit enqueue");
+/// Helper: build a Vec<ScheduledAction> from IncludeOnlyTools payloads.
+fn make_include_actions(tool_id_lists: &[Vec<String>]) -> Vec<ScheduledAction> {
+    tool_id_lists
+        .iter()
+        .map(|ids| {
+            let payload = IncludeOnlyTools::encode_payload(ids).expect("encode");
+            ScheduledAction::new(IncludeOnlyTools::PHASE, IncludeOnlyTools::KEY, payload)
+        })
+        .collect()
 }
 
 /// Helper: create a simple tool descriptor with the given id.
@@ -413,198 +409,194 @@ fn tool(id: &str) -> ToolDescriptor {
     ToolDescriptor::new(id, id, format!("{id} tool"))
 }
 
-#[tokio::test]
-async fn exclude_tool_removes_from_request() {
-    let (runtime, env) = test_runtime();
-    let store = runtime.store();
+#[test]
+fn exclude_tool_removes_from_request() {
     let mut tools = vec![tool("search"), tool("calculator"), tool("browser")];
+    let mut actions = make_exclude_actions(&["search"]);
+    let exclusion_payloads = extract_actions::<ExcludeTool>(&mut actions);
 
-    enqueue_exclude_tool(store, 1, "search");
-
-    let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot());
-    runtime
-        .run_phase_with_context(&env, ctx)
-        .await
-        .expect("run phase");
-    take_and_apply_tool_filters(store, &mut tools).expect("apply");
+    assert!(actions.is_empty(), "actions should be drained");
+    apply_tool_filter_payloads(&mut tools, exclusion_payloads, vec![]);
 
     let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
     assert!(!ids.contains(&"search"), "search should be excluded");
     assert!(ids.contains(&"calculator"));
     assert!(ids.contains(&"browser"));
     assert_eq!(tools.len(), 2);
-
-    // Actions should be consumed from the queue
-    let pending = store.read::<PendingScheduledActions>().unwrap_or_default();
-    assert!(
-        pending.is_empty(),
-        "actions should be dequeued after consumption"
-    );
 }
 
-#[tokio::test]
-async fn include_only_tools_filters_to_subset() {
-    let (runtime, env) = test_runtime();
-    let store = runtime.store();
+#[test]
+fn include_only_tools_filters_to_subset() {
     let mut tools = vec![
         tool("search"),
         tool("calculator"),
         tool("browser"),
         tool("code_exec"),
     ];
+    let mut actions = make_include_actions(&[vec!["calculator".into(), "browser".into()]]);
+    let inclusion_payloads = extract_actions::<IncludeOnlyTools>(&mut actions);
 
-    enqueue_include_only_tools(store, 1, vec!["calculator".into(), "browser".into()]);
-
-    let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot());
-    runtime
-        .run_phase_with_context(&env, ctx)
-        .await
-        .expect("run phase");
-    take_and_apply_tool_filters(store, &mut tools).expect("apply");
+    apply_tool_filter_payloads(&mut tools, vec![], inclusion_payloads);
 
     let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
     assert_eq!(ids.len(), 2);
     assert!(ids.contains(&"calculator"));
     assert!(ids.contains(&"browser"));
-    assert!(!ids.contains(&"search"));
-    assert!(!ids.contains(&"code_exec"));
 }
 
-#[tokio::test]
-async fn exclude_and_include_only_combined() {
-    let (runtime, env) = test_runtime();
-    let store = runtime.store();
+#[test]
+fn exclude_and_include_only_combined() {
     let mut tools = vec![tool("search"), tool("calculator"), tool("browser")];
+    let mut actions = make_include_actions(&[vec!["search".into(), "calculator".into()]]);
+    actions.extend(make_exclude_actions(&["search"]));
 
-    // Include only search + calculator, then exclude search
-    enqueue_include_only_tools(store, 1, vec!["search".into(), "calculator".into()]);
-    enqueue_exclude_tool(store, 2, "search");
-
-    let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot());
-    runtime
-        .run_phase_with_context(&env, ctx)
-        .await
-        .expect("run phase");
-    take_and_apply_tool_filters(store, &mut tools).expect("apply");
+    let exclusion_payloads = extract_actions::<ExcludeTool>(&mut actions);
+    let inclusion_payloads = extract_actions::<IncludeOnlyTools>(&mut actions);
+    apply_tool_filter_payloads(&mut tools, exclusion_payloads, inclusion_payloads);
 
     let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
     assert_eq!(ids, vec!["calculator"]);
 }
 
-#[tokio::test]
-async fn multiple_exclude_tool_actions() {
-    let (runtime, env) = test_runtime();
-    let store = runtime.store();
+#[test]
+fn multiple_exclude_tool_actions() {
     let mut tools = vec![tool("a"), tool("b"), tool("c"), tool("d")];
+    let mut actions = make_exclude_actions(&["a", "c"]);
+    let exclusion_payloads = extract_actions::<ExcludeTool>(&mut actions);
 
-    enqueue_exclude_tool(store, 1, "a");
-    enqueue_exclude_tool(store, 2, "c");
-
-    let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot());
-    runtime
-        .run_phase_with_context(&env, ctx)
-        .await
-        .expect("run phase");
-    take_and_apply_tool_filters(store, &mut tools).expect("apply");
+    apply_tool_filter_payloads(&mut tools, exclusion_payloads, vec![]);
 
     let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
     assert_eq!(ids, vec!["b", "d"]);
 }
 
-#[tokio::test]
-async fn no_filter_actions_leaves_tools_unchanged() {
-    let (runtime, env) = test_runtime();
-    let store = runtime.store();
+#[test]
+fn no_filter_actions_leaves_tools_unchanged() {
     let mut tools = vec![tool("search"), tool("calculator")];
-
-    let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot());
-    runtime
-        .run_phase_with_context(&env, ctx)
-        .await
-        .expect("run phase");
-    take_and_apply_tool_filters(store, &mut tools).expect("apply");
-
+    apply_tool_filter_payloads(&mut tools, vec![], vec![]);
     assert_eq!(tools.len(), 2);
 }
 
-#[tokio::test]
-async fn multiple_include_only_actions_union() {
-    let (runtime, env) = test_runtime();
-    let store = runtime.store();
+#[test]
+fn multiple_include_only_actions_union() {
     let mut tools = vec![tool("a"), tool("b"), tool("c"), tool("d")];
+    let mut actions = make_include_actions(&[vec!["a".into()], vec!["c".into()]]);
+    let inclusion_payloads = extract_actions::<IncludeOnlyTools>(&mut actions);
 
-    // Two separate include-only actions; their union should be used
-    enqueue_include_only_tools(store, 1, vec!["a".into()]);
-    enqueue_include_only_tools(store, 2, vec!["c".into()]);
-
-    let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot());
-    runtime
-        .run_phase_with_context(&env, ctx)
-        .await
-        .expect("run phase");
-    take_and_apply_tool_filters(store, &mut tools).expect("apply");
+    apply_tool_filter_payloads(&mut tools, vec![], inclusion_payloads);
 
     let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
     assert_eq!(ids, vec!["a", "c"]);
 }
 
 // -----------------------------------------------------------------------
-// Inference override handler test
+// Inference override extraction test
 // -----------------------------------------------------------------------
 
-#[tokio::test]
-async fn inference_override_merges_via_handler() {
-    let (runtime, env) = test_runtime();
-    let store = runtime.store();
-
-    // Enqueue two override actions
+#[test]
+fn inference_override_merges_via_extract() {
     let ovr1 = awaken_contract::contract::inference::InferenceOverride {
         model: Some("gpt-4".into()),
         temperature: Some(0.7),
         ..Default::default()
     };
-    let payload1 = SetInferenceOverride::encode_payload(&ovr1).expect("encode");
-    let mut batch = crate::state::MutationBatch::new();
-    batch.update::<PendingScheduledActions>(ScheduledActionQueueUpdate::Push(
-        ScheduledActionEnvelope {
-            id: 1,
-            action: ScheduledAction::new(
-                SetInferenceOverride::PHASE,
-                SetInferenceOverride::KEY,
-                payload1,
-            ),
-        },
-    ));
-    store.commit(batch).expect("commit");
-
     let ovr2 = awaken_contract::contract::inference::InferenceOverride {
         temperature: Some(0.9),
         max_tokens: Some(1000),
         ..Default::default()
     };
-    let payload2 = SetInferenceOverride::encode_payload(&ovr2).expect("encode");
-    let mut batch = crate::state::MutationBatch::new();
-    batch.update::<PendingScheduledActions>(ScheduledActionQueueUpdate::Push(
-        ScheduledActionEnvelope {
-            id: 2,
-            action: ScheduledAction::new(
-                SetInferenceOverride::PHASE,
-                SetInferenceOverride::KEY,
-                payload2,
-            ),
-        },
-    ));
-    store.commit(batch).expect("commit");
 
-    let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot());
-    runtime
-        .run_phase_with_context(&env, ctx)
-        .await
-        .expect("run phase");
+    let mut actions = vec![
+        ScheduledAction::new(
+            SetInferenceOverride::PHASE,
+            SetInferenceOverride::KEY,
+            SetInferenceOverride::encode_payload(&ovr1).expect("encode"),
+        ),
+        ScheduledAction::new(
+            SetInferenceOverride::PHASE,
+            SetInferenceOverride::KEY,
+            SetInferenceOverride::encode_payload(&ovr2).expect("encode"),
+        ),
+    ];
 
-    let result = take_accumulated_overrides(store).expect("take overrides");
-    let ovr = result.expect("should have overrides");
+    let override_payloads = extract_actions::<SetInferenceOverride>(&mut actions);
+    assert!(actions.is_empty(), "actions should be drained");
+    assert_eq!(override_payloads.len(), 2);
+
+    let mut overrides = None;
+    merge_override_payloads(&mut overrides, override_payloads);
+    let ovr = overrides.expect("should have overrides");
     assert_eq!(ovr.model.as_deref(), Some("gpt-4"));
     assert_eq!(ovr.temperature, Some(0.9)); // last-wins
     assert_eq!(ovr.max_tokens, Some(1000));
+}
+
+// -----------------------------------------------------------------------
+// Tool intercept resolution tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn intercept_block_wins_over_suspend() {
+    use awaken_contract::contract::suspension::{
+        PendingToolCall, SuspendTicket, Suspension, ToolCallResumeMode,
+    };
+    use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
+
+    let payloads = vec![
+        ToolInterceptPayload::Suspend(SuspendTicket {
+            suspension: Suspension::default(),
+            pending: PendingToolCall::default(),
+            resume_mode: ToolCallResumeMode::default(),
+        }),
+        ToolInterceptPayload::Block {
+            reason: "blocked".into(),
+        },
+    ];
+    let winner = resolve_intercept_payloads(payloads);
+    assert!(matches!(winner, Some(ToolInterceptPayload::Block { .. })));
+}
+
+#[test]
+fn intercept_same_priority_keeps_first() {
+    use awaken_contract::contract::tool::ToolResult;
+    use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
+
+    let payloads = vec![
+        ToolInterceptPayload::SetResult(ToolResult::success("first", serde_json::json!({}))),
+        ToolInterceptPayload::SetResult(ToolResult::success("second", serde_json::json!({}))),
+    ];
+    let winner = resolve_intercept_payloads(payloads);
+    match winner {
+        Some(ToolInterceptPayload::SetResult(r)) => assert_eq!(r.tool_name, "first"),
+        other => panic!("expected SetResult, got {other:?}"),
+    }
+}
+
+#[test]
+fn intercept_empty_returns_none() {
+    let winner = resolve_intercept_payloads(vec![]);
+    assert!(winner.is_none());
+}
+
+#[test]
+fn extract_actions_leaves_unrelated_actions() {
+    let mut actions = vec![
+        ScheduledAction::new(
+            ExcludeTool::PHASE,
+            ExcludeTool::KEY,
+            ExcludeTool::encode_payload(&"search".to_string()).expect("encode"),
+        ),
+        ScheduledAction::new(
+            AddContextMessage::PHASE,
+            AddContextMessage::KEY,
+            AddContextMessage::encode_payload(&ContextMessage::system("k", "v")).expect("encode"),
+        ),
+    ];
+
+    let excluded = extract_actions::<ExcludeTool>(&mut actions);
+    assert_eq!(excluded.len(), 1);
+    assert_eq!(excluded[0], "search");
+    // AddContextMessage action should remain
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0].key, AddContextMessage::KEY);
 }

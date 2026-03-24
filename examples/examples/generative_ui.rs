@@ -172,7 +172,6 @@ impl Plugin for LoopStatePlugin {
         registrar: &mut awaken_runtime::PluginRegistrar,
     ) -> Result<(), awaken_contract::StateError> {
         use awaken_runtime::agent::state::{
-            AccumulatedOverrides, AccumulatedToolExclusions, AccumulatedToolInclusions,
             ContextMessageStore, ContextThrottleState, RunLifecycle, ToolCallStates,
         };
         registrar.register_key::<RunLifecycle>(awaken_contract::StateKeyOptions::default())?;
@@ -180,15 +179,7 @@ impl Plugin for LoopStatePlugin {
         registrar
             .register_key::<ContextThrottleState>(awaken_contract::StateKeyOptions::default())?;
         registrar
-            .register_key::<AccumulatedOverrides>(awaken_contract::StateKeyOptions::default())?;
-        registrar
             .register_key::<ContextMessageStore>(awaken_contract::StateKeyOptions::default())?;
-        registrar.register_key::<AccumulatedToolExclusions>(
-            awaken_contract::StateKeyOptions::default(),
-        )?;
-        registrar.register_key::<AccumulatedToolInclusions>(
-            awaken_contract::StateKeyOptions::default(),
-        )?;
         Ok(())
     }
 }

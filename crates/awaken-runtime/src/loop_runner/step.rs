@@ -21,13 +21,15 @@ use awaken_contract::contract::tool::ToolCallContext;
 use awaken_contract::model::Phase;
 
 use super::actions::{
-    apply_context_messages, take_accumulated_overrides, take_and_apply_tool_filters,
-    take_context_messages, take_tool_intercept,
+    apply_context_messages, apply_tool_filter_payloads, extract_actions, merge_override_payloads,
+    resolve_intercept_payloads, take_context_messages,
 };
 use super::checkpoint::{check_termination, complete_step};
 use super::inference::{compact_with_llm, execute_streaming};
 use super::{AgentLoopError, commit_update, now_ms, tool_result_to_content};
+use crate::agent::state::{ExcludeTool, IncludeOnlyTools, SetInferenceOverride};
 use crate::agent::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate};
+use awaken_contract::contract::tool_intercept::ToolInterceptAction;
 
 /// Outcome of a single step.
 pub(super) enum StepOutcome {
@@ -67,10 +69,15 @@ fn make_ctx(
     msgs: &[Arc<Message>],
     identity: &RunIdentity,
     store: &crate::state::StateStore,
+    cancellation_token: Option<&CancellationToken>,
 ) -> PhaseContext {
-    PhaseContext::new(phase, store.snapshot())
+    let ctx = PhaseContext::new(phase, store.snapshot())
         .with_run_identity(identity.clone())
-        .with_messages(msgs.to_vec())
+        .with_messages(msgs.to_vec());
+    match cancellation_token {
+        Some(token) => ctx.with_cancellation_token(token.clone()),
+        None => ctx,
+    }
 }
 
 /// Build a `StateCommand` that upserts a `ToolCallStates` entry for a given call and status.
@@ -92,13 +99,24 @@ async fn run_phase_and_check(
     phase: Phase,
 ) -> Result<Option<StepOutcome>, AgentLoopError> {
     let store = ctx.runtime.store();
-    ctx.runtime
+    match ctx
+        .runtime
         .run_phase_with_context(
             ctx.env,
-            make_ctx(phase, ctx.messages, ctx.run_identity, store),
+            make_ctx(
+                phase,
+                ctx.messages,
+                ctx.run_identity,
+                store,
+                ctx.cancellation_token,
+            ),
         )
-        .await?;
-    Ok(check_termination(store).map(StepOutcome::Terminated))
+        .await
+    {
+        Ok(_) => Ok(check_termination(store).map(StepOutcome::Terminated)),
+        Err(awaken_contract::StateError::Cancelled) => Ok(Some(StepOutcome::Cancelled)),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Retry inference when the model hits max_tokens (truncation).
@@ -156,10 +174,78 @@ async fn recover_truncation(
     Ok(stream_result)
 }
 
+/// Run the BeforeInference phase via collect_commands, extract loop-consumed
+/// action payloads, submit remaining command, and run EXECUTE for AddContextMessage.
+///
+/// Returns `Some(StepOutcome)` if a lifecycle hook triggered termination.
+async fn run_before_inference(
+    ctx: &mut StepContext<'_>,
+) -> Result<
+    (
+        Option<StepOutcome>,
+        Option<InferenceOverride>,
+        Vec<String>,
+        Vec<Vec<String>>,
+    ),
+    AgentLoopError,
+> {
+    let store = ctx.runtime.store();
+    let phase_ctx = make_ctx(
+        Phase::BeforeInference,
+        ctx.messages,
+        ctx.run_identity,
+        store,
+        ctx.cancellation_token,
+    );
+
+    // GATHER only — returns merged StateCommand without committing
+    let mut cmd = ctx
+        .runtime
+        .collect_commands(ctx.env, phase_ctx.clone())
+        .await?;
+
+    // Extract known action payloads directly from the command
+    let override_payloads = extract_actions::<SetInferenceOverride>(&mut cmd.scheduled_actions);
+    let exclusion_payloads = extract_actions::<ExcludeTool>(&mut cmd.scheduled_actions);
+    let inclusion_payloads = extract_actions::<IncludeOnlyTools>(&mut cmd.scheduled_actions);
+
+    // Commit remaining state mutations + unrecognized actions (including AddContextMessage)
+    if !cmd.is_empty() {
+        ctx.runtime.submit_command(ctx.env, cmd).await?;
+    }
+
+    // Run EXECUTE loop for remaining actions (e.g. AddContextMessage handler)
+    let exec_ctx = make_ctx(
+        Phase::BeforeInference,
+        ctx.messages,
+        ctx.run_identity,
+        store,
+        ctx.cancellation_token,
+    );
+    ctx.runtime.run_execute_loop(ctx.env, exec_ctx).await?;
+
+    // Check termination after phase completes
+    let termination = check_termination(store).map(StepOutcome::Terminated);
+
+    // Merge override payloads with run-level overrides
+    let mut overrides = ctx.run_overrides.clone();
+    merge_override_payloads(&mut overrides, override_payloads);
+
+    Ok((
+        termination,
+        overrides,
+        exclusion_payloads,
+        inclusion_payloads,
+    ))
+}
+
 /// Run the inference phase: compaction, request building, streaming.
 /// Returns the stream result and wall-clock duration in milliseconds.
 async fn run_inference_phase(
     ctx: &mut StepContext<'_>,
+    overrides: Option<InferenceOverride>,
+    exclusion_payloads: Vec<String>,
+    inclusion_payloads: Vec<Vec<String>>,
 ) -> Result<(StreamResult, u64), AgentLoopError> {
     let store = ctx.runtime.store();
 
@@ -173,15 +259,7 @@ async fn run_inference_phase(
         }
     }
 
-    // Build inference request
-    let mut overrides = ctx.run_overrides.clone();
-    if let Some(runtime_overrides) = take_accumulated_overrides(store)? {
-        if let Some(merged) = overrides.as_mut() {
-            merged.merge(runtime_overrides);
-        } else {
-            overrides = Some(runtime_overrides);
-        }
-    }
+    // Read context messages from persistent store (populated by AddContextMessage handler)
     let context_msgs = take_context_messages(store)?;
 
     let has_system_prompt = !ctx.agent.system_prompt.is_empty();
@@ -196,7 +274,7 @@ async fn run_inference_phase(
     }
 
     let mut tools = ctx.agent.tool_descriptors();
-    take_and_apply_tool_filters(store, &mut tools)?;
+    apply_tool_filter_payloads(&mut tools, exclusion_payloads, inclusion_payloads);
     let transform_arcs = ctx.env.transform_arcs();
     let request_messages = awaken_contract::contract::transform::apply_transforms(
         request_messages,
@@ -245,7 +323,7 @@ async fn run_inference_phase(
     Ok((stream_result, duration_ms))
 }
 
-/// Run BeforeToolExecute phase (hooks + action handlers) and check for intercept.
+/// Run BeforeToolExecute phase via collect_commands and check for intercept.
 ///
 /// Returns `Some(payload)` if any hook scheduled a `ToolInterceptAction`,
 /// `None` if the tool should execute normally.
@@ -260,17 +338,34 @@ async fn intercept_tool_call(
         ctx.messages,
         ctx.run_identity,
         store,
+        ctx.cancellation_token,
     )
     .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
 
-    // Run BeforeToolExecute phase: hooks execute and may schedule ToolInterceptAction,
-    // action handlers consume and write to AccumulatedToolIntercept state.
-    ctx.runtime
-        .run_phase_with_context(ctx.env, before_ctx)
+    // GATHER only — extract intercept actions directly
+    let mut cmd = ctx
+        .runtime
+        .collect_commands(ctx.env, before_ctx.clone())
         .await?;
+    let intercept_payloads = extract_actions::<ToolInterceptAction>(&mut cmd.scheduled_actions);
 
-    // Read intercept decision (if any)
-    Ok(take_tool_intercept(store)?)
+    // Commit remaining state mutations + other actions
+    if !cmd.is_empty() {
+        ctx.runtime.submit_command(ctx.env, cmd).await?;
+        // Run EXECUTE for any remaining handler-based actions
+        let exec_ctx = make_ctx(
+            Phase::BeforeToolExecute,
+            ctx.messages,
+            ctx.run_identity,
+            store,
+            ctx.cancellation_token,
+        )
+        .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
+        ctx.runtime.run_execute_loop(ctx.env, exec_ctx).await?;
+    }
+
+    // Resolve winning intercept from extracted payloads
+    Ok(resolve_intercept_payloads(intercept_payloads))
 }
 
 /// Complete a tool call: update lifecycle state, emit event via Effect,
@@ -324,6 +419,7 @@ async fn complete_tool_call(
         ctx.messages,
         ctx.run_identity,
         store,
+        ctx.cancellation_token,
     )
     .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()))
     .with_tool_result(tool_result.clone());
@@ -425,6 +521,7 @@ async fn execute_tools_with_interception(
             ctx.messages,
             ctx.run_identity,
             store,
+            ctx.cancellation_token,
         )
         .agent_spec,
         snapshot: store.snapshot(),
@@ -511,13 +608,16 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
         return Ok(outcome);
     }
 
-    // --- Phase hooks: BeforeInference ---
-    if let Some(outcome) = run_phase_and_check(ctx, Phase::BeforeInference).await? {
+    // --- Phase hooks: BeforeInference (collect_commands + extract actions) ---
+    let (termination, overrides, exclusion_payloads, inclusion_payloads) =
+        run_before_inference(ctx).await?;
+    if let Some(outcome) = termination {
         return Ok(outcome);
     }
 
     // --- Inference ---
-    let (stream_result, duration_ms) = run_inference_phase(ctx).await?;
+    let (stream_result, duration_ms) =
+        run_inference_phase(ctx, overrides, exclusion_payloads, inclusion_payloads).await?;
 
     // --- Post-inference cancellation check ---
     if ctx.cancellation_token.is_some_and(|t| t.is_cancelled()) {
@@ -547,11 +647,23 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
 
     // --- AfterInference phase ---
     let llm_response = LLMResponse::success(stream_result.clone());
-    let after_inf_ctx = make_ctx(Phase::AfterInference, ctx.messages, ctx.run_identity, store)
-        .with_llm_response(llm_response);
-    ctx.runtime
+    let after_inf_ctx = make_ctx(
+        Phase::AfterInference,
+        ctx.messages,
+        ctx.run_identity,
+        store,
+        ctx.cancellation_token,
+    )
+    .with_llm_response(llm_response);
+    match ctx
+        .runtime
         .run_phase_with_context(ctx.env, after_inf_ctx)
-        .await?;
+        .await
+    {
+        Ok(_) => {}
+        Err(awaken_contract::StateError::Cancelled) => return Ok(StepOutcome::Cancelled),
+        Err(e) => return Err(e.into()),
+    }
     if let Some(reason) = check_termination(store) {
         return Ok(StepOutcome::Terminated(reason));
     }

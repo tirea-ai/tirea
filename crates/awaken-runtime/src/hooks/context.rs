@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
+use crate::cancellation::CancellationToken;
 use crate::state::{Snapshot, StateKey};
 use awaken_contract::StateError;
 use awaken_contract::contract::identity::RunIdentity;
@@ -43,6 +44,9 @@ pub struct PhaseContext {
 
     // Resume decision (set during BeforeToolExecute when resuming a suspended tool call)
     pub resume_input: Option<awaken_contract::contract::suspension::ToolCallResume>,
+
+    /// Optional cancellation token for cooperative cancellation at phase boundaries.
+    pub cancellation_token: Option<CancellationToken>,
 }
 
 impl PhaseContext {
@@ -60,6 +64,7 @@ impl PhaseContext {
             tool_result: None,
             llm_response: None,
             resume_input: None,
+            cancellation_token: None,
         }
     }
 
@@ -137,6 +142,12 @@ impl PhaseContext {
         resume: awaken_contract::contract::suspension::ToolCallResume,
     ) -> Self {
         self.resume_input = Some(resume);
+        self
+    }
+
+    #[must_use]
+    pub fn with_cancellation_token(mut self, token: CancellationToken) -> Self {
+        self.cancellation_token = Some(token);
         self
     }
 }

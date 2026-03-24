@@ -40,4 +40,6 @@ pub enum StateError {
     ParallelMergeConflict { key: String },
     #[error("tool already registered: {tool_id}")]
     ToolAlreadyRegistered { tool_id: String },
+    #[error("operation cancelled")]
+    Cancelled,
 }

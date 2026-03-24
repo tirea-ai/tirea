@@ -25,6 +25,7 @@ default = ["a2a", "handoff", "background"]
 a2a = ["dep:reqwest"]
 handoff = []
 background = []
+parallel-tools = []
 
 [dev-dependencies]
 awaken-stores = { workspace = true }

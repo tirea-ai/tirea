@@ -267,21 +267,23 @@ impl AgentResolver for RegistrySetResolver {
             message: e.to_string(),
         })?;
 
-        let mut env = run.env;
+        let spec_arc = Arc::new(run.spec);
 
         let config = AgentConfig {
-            id: run.spec.id,
-            model_id: run.spec.model,
+            id: spec_arc.id.clone(),
+            model_id: spec_arc.model.clone(),
             model: run.model_name,
-            system_prompt: run.spec.system_prompt,
-            max_rounds: run.spec.max_rounds,
+            system_prompt: spec_arc.system_prompt.clone(),
+            max_rounds: spec_arc.max_rounds,
             tools: run.tools,
             llm_executor: run.executor,
             tool_executor: Arc::new(SequentialToolExecutor),
-            context_policy: run.spec.context_policy,
+            context_policy: spec_arc.context_policy.clone(),
             context_summarizer: None,
-            max_continuation_retries: run.spec.max_continuation_retries,
+            max_continuation_retries: spec_arc.max_continuation_retries,
         };
+
+        let env = run.env.with_agent_spec(spec_arc);
 
         Ok(ResolvedAgent { config, env })
     }

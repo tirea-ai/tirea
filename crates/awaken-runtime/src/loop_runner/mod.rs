@@ -7,6 +7,7 @@ pub(crate) mod actions;
 mod checkpoint;
 mod inference;
 mod orchestrator;
+#[cfg(feature = "parallel-tools")]
 pub mod parallel_merge;
 mod resume;
 mod setup;
@@ -52,10 +53,7 @@ impl crate::plugins::Plugin for LoopStatePlugin {
         &self,
         r: &mut crate::plugins::PluginRegistrar,
     ) -> Result<(), awaken_contract::StateError> {
-        use crate::agent::state::{
-            AccumulatedOverrides, AccumulatedToolExclusions, AccumulatedToolInclusions,
-            ContextMessageStore, ContextThrottleState,
-        };
+        use crate::agent::state::{ContextMessageStore, ContextThrottleState};
         use crate::state::{KeyScope, StateKeyOptions};
 
         r.register_key::<RunLifecycle>(StateKeyOptions::default())?;
@@ -65,10 +63,7 @@ impl crate::plugins::Plugin for LoopStatePlugin {
             ..StateKeyOptions::default()
         })?;
         r.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
-        r.register_key::<AccumulatedOverrides>(StateKeyOptions::default())?;
         r.register_key::<ContextMessageStore>(StateKeyOptions::default())?;
-        r.register_key::<AccumulatedToolExclusions>(StateKeyOptions::default())?;
-        r.register_key::<AccumulatedToolInclusions>(StateKeyOptions::default())?;
         Ok(())
     }
 }

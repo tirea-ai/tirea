@@ -26,6 +26,8 @@ pub enum BuildError {
     AgentRegistryConflict(String),
     #[error("stop policy registry conflict: {0}")]
     StopPolicyConflict(String),
+    #[error("agent validation failed: {0}")]
+    ValidationFailed(String),
     #[cfg(feature = "a2a")]
     #[error("discovery failed: {0}")]
     DiscoveryFailed(#[from] crate::registry::composite::DiscoveryError),
@@ -165,6 +167,25 @@ impl AgentRuntimeBuilder {
             runtime = runtime.with_thread_run_store(store);
         }
 
+        Ok(runtime)
+    }
+
+    /// Build and validate all registered agents can resolve successfully.
+    ///
+    /// Performs a dry-run resolve for every registered agent, catching
+    /// configuration errors (missing models, providers, plugins) at build time.
+    pub fn build_validated(self) -> Result<AgentRuntime, BuildError> {
+        let runtime = self.build()?;
+        let resolver = runtime.resolver();
+        let mut errors = Vec::new();
+        for agent_id in resolver.agent_ids() {
+            if let Err(e) = resolver.resolve(&agent_id) {
+                errors.push(format!("{agent_id}: {e}"));
+            }
+        }
+        if !errors.is_empty() {
+            return Err(BuildError::ValidationFailed(errors.join("; ")));
+        }
         Ok(runtime)
     }
 
@@ -415,6 +436,53 @@ mod tests {
         assert!(resolved.config.tools.contains_key("t1"));
         assert!(resolved.config.tools.contains_key("t2"));
         assert!(resolved.config.tools.contains_key("t3"));
+    }
+
+    #[test]
+    fn build_validated_catches_missing_model() {
+        let spec = AgentSpec {
+            id: "bad-agent".into(),
+            model: "nonexistent-model".into(),
+            system_prompt: "sys".into(),
+            ..Default::default()
+        };
+
+        let result = AgentRuntimeBuilder::new()
+            .with_agent_spec(spec)
+            .build_validated();
+
+        let err = match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("expected build_validated to fail for missing model"),
+        };
+        assert!(
+            err.contains("bad-agent"),
+            "error should mention the agent ID: {err}"
+        );
+    }
+
+    #[test]
+    fn build_validated_succeeds_with_valid_config() {
+        let spec = AgentSpec {
+            id: "good-agent".into(),
+            model: "m".into(),
+            system_prompt: "sys".into(),
+            ..Default::default()
+        };
+
+        let result = AgentRuntimeBuilder::new()
+            .with_agent_spec(spec)
+            .with_model(
+                "m",
+                ModelEntry {
+                    provider: "p".into(),
+                    model_name: "n".into(),
+                },
+            )
+            .with_provider("p", Arc::new(MockExecutor))
+            .build_validated();
+
+        assert!(result.is_ok());
     }
 
     #[test]

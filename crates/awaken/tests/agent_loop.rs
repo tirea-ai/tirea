@@ -3,7 +3,6 @@
 use async_trait::async_trait;
 use awaken::agent::config::AgentConfig;
 use awaken::agent::state::{
-    AccumulatedOverrides, AccumulatedToolExclusions, AccumulatedToolInclusions,
     ContextMessageStore, ContextThrottleState, RunLifecycle, ToolCallStates,
 };
 use awaken::contract::content::ContentBlock;
@@ -158,10 +157,7 @@ impl Plugin for LoopStatePlugin {
         registrar.register_key::<RunLifecycle>(StateKeyOptions::default())?;
         registrar.register_key::<ToolCallStates>(StateKeyOptions::default())?;
         registrar.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
-        registrar.register_key::<AccumulatedOverrides>(StateKeyOptions::default())?;
         registrar.register_key::<ContextMessageStore>(StateKeyOptions::default())?;
-        registrar.register_key::<AccumulatedToolExclusions>(StateKeyOptions::default())?;
-        registrar.register_key::<AccumulatedToolInclusions>(StateKeyOptions::default())?;
         Ok(())
     }
 }
@@ -1513,10 +1509,10 @@ async fn cancel_before_inference_terminates_immediately() {
         TerminationReason::Cancelled,
         "run should terminate immediately when token is already cancelled"
     );
-    // steps is incremented at loop top before cancellation check, so it will be 1
+    // Token pre-cancelled: RunStart phase detects it before entering the loop
     assert_eq!(
-        result.steps, 1,
-        "only one step entry before cancellation detected"
+        result.steps, 0,
+        "no steps should execute when token is already cancelled"
     );
 }
 

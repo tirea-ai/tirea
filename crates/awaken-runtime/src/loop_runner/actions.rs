@@ -1,10 +1,13 @@
 //! Action handlers and helpers for loop-consumed actions.
 //!
-//! Each action type has a handler that runs during `run_phase(BeforeInference)`,
-//! writing results to accumulator state keys. The orchestrator reads these
-//! accumulators after the phase to build the inference request.
+//! The orchestrator uses `collect_commands()` to run GATHER hooks, then
+//! `extract_actions` to consume known action types directly from the returned
+//! `StateCommand` — no accumulator state keys needed. Only `AddContextMessage`
+//! still goes through handler-based EXECUTE because `ContextMessageStore` is
+//! legitimate persistent state (not an accumulator).
 
 use async_trait::async_trait;
+use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -13,35 +16,116 @@ use crate::state::StateCommand;
 use awaken_contract::StateError;
 use awaken_contract::contract::context_message::ContextMessage;
 use awaken_contract::contract::message::{Message, Role};
+use awaken_contract::model::ScheduledActionSpec;
 
 use crate::agent::state::{
-    AccumulatedOverrides, AccumulatedOverridesUpdate, AccumulatedToolExclusions,
-    AccumulatedToolExclusionsUpdate, AccumulatedToolInclusions, AccumulatedToolInclusionsUpdate,
-    AccumulatedToolIntercept, AccumulatedToolInterceptUpdate, AddContextMessage,
-    ContextMessageAction, ContextMessageStore, ContextThrottleState, ContextThrottleUpdate,
-    ExcludeTool, IncludeOnlyTools, RunLifecycle, SetInferenceOverride,
+    AddContextMessage, ContextMessageAction, ContextMessageStore, ContextThrottleState,
+    ContextThrottleUpdate, RunLifecycle,
 };
-use awaken_contract::contract::tool_intercept::{ToolInterceptAction, ToolInterceptPayload};
 
 // ---------------------------------------------------------------------------
-// Action handlers
+// Action extraction — consume actions directly from StateCommand
 // ---------------------------------------------------------------------------
 
-/// Handler for `SetInferenceOverride` — merges overrides into [`AccumulatedOverrides`].
-pub(super) struct InferenceOverrideHandler;
+/// Extract and decode all scheduled actions matching a given spec type.
+/// Removes matched actions from the list, returns decoded payloads.
+pub(super) fn extract_actions<A: ScheduledActionSpec>(
+    actions: &mut Vec<awaken_contract::model::ScheduledAction>,
+) -> Vec<A::Payload> {
+    let mut extracted = Vec::new();
+    actions.retain(|action| {
+        if action.key == A::KEY {
+            if let Ok(payload) = A::decode_payload(action.payload.clone()) {
+                extracted.push(payload);
+            }
+            false
+        } else {
+            true
+        }
+    });
+    extracted
+}
 
-#[async_trait]
-impl TypedScheduledActionHandler<SetInferenceOverride> for InferenceOverrideHandler {
-    async fn handle_typed(
-        &self,
-        _ctx: &PhaseContext,
-        payload: awaken_contract::contract::inference::InferenceOverride,
-    ) -> Result<StateCommand, StateError> {
-        let mut cmd = StateCommand::new();
-        cmd.update::<AccumulatedOverrides>(AccumulatedOverridesUpdate::Merge(payload));
-        Ok(cmd)
+/// Merge multiple inference override payloads with last-wins-per-field semantics.
+pub(super) fn merge_override_payloads(
+    base: &mut Option<awaken_contract::contract::inference::InferenceOverride>,
+    payloads: Vec<awaken_contract::contract::inference::InferenceOverride>,
+) {
+    for ovr in payloads {
+        if let Some(existing) = base.as_mut() {
+            existing.merge(ovr);
+        } else {
+            *base = Some(ovr);
+        }
     }
 }
+
+/// Apply tool filter payloads (exclusions and inclusions) to a tool list.
+///
+/// - If any `IncludeOnlyTools` payloads exist, only tools in the combined
+///   allow-list are kept.
+/// - Then any `ExcludeTool` tool IDs are removed.
+pub(super) fn apply_tool_filter_payloads(
+    tools: &mut Vec<awaken_contract::contract::tool::ToolDescriptor>,
+    exclusion_payloads: Vec<String>,
+    inclusion_payloads: Vec<Vec<String>>,
+) {
+    // Build combined allow-list from inclusion payloads
+    if !inclusion_payloads.is_empty() {
+        let allowed: HashSet<String> = inclusion_payloads.into_iter().flatten().collect();
+        tools.retain(|t| allowed.contains(&t.id));
+    }
+
+    // Apply exclusions
+    if !exclusion_payloads.is_empty() {
+        let excluded: HashSet<String> = exclusion_payloads.into_iter().collect();
+        tools.retain(|t| !excluded.contains(&t.id));
+    }
+}
+
+/// Resolve the winning intercept decision from multiple payloads using
+/// priority: Block > Suspend > SetResult.
+pub(super) fn resolve_intercept_payloads(
+    payloads: Vec<awaken_contract::contract::tool_intercept::ToolInterceptPayload>,
+) -> Option<awaken_contract::contract::tool_intercept::ToolInterceptPayload> {
+    use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
+
+    fn priority(p: &ToolInterceptPayload) -> u8 {
+        match p {
+            ToolInterceptPayload::Block { .. } => 3,
+            ToolInterceptPayload::Suspend(_) => 2,
+            ToolInterceptPayload::SetResult(_) => 1,
+        }
+    }
+
+    let mut winner: Option<ToolInterceptPayload> = None;
+    for payload in payloads {
+        match winner.as_ref() {
+            None => {
+                winner = Some(payload);
+            }
+            Some(existing) if priority(&payload) > priority(existing) => {
+                winner = Some(payload);
+            }
+            Some(existing) if priority(&payload) == priority(existing) => {
+                tracing::error!(
+                    existing = ?existing,
+                    incoming = ?payload,
+                    "tool intercept conflict: two plugins scheduled same-priority intercepts"
+                );
+                // Keep first
+            }
+            _ => {
+                // Lower priority — ignore
+            }
+        }
+    }
+    winner
+}
+
+// ---------------------------------------------------------------------------
+// Action handlers (only AddContextMessage remains handler-based)
+// ---------------------------------------------------------------------------
 
 /// Handler for `AddContextMessage` — applies throttle logic, upserts accepted
 /// messages into [`ContextMessageStore`], updates [`ContextThrottleState`].
@@ -103,64 +187,15 @@ impl TypedScheduledActionHandler<AddContextMessage> for ContextMessageHandler {
     }
 }
 
-/// Handler for `ExcludeTool` — adds the tool ID to [`AccumulatedToolExclusions`].
-pub(super) struct ExcludeToolHandler;
-
-#[async_trait]
-impl TypedScheduledActionHandler<ExcludeTool> for ExcludeToolHandler {
-    async fn handle_typed(
-        &self,
-        _ctx: &PhaseContext,
-        payload: String,
-    ) -> Result<StateCommand, StateError> {
-        let mut cmd = StateCommand::new();
-        cmd.update::<AccumulatedToolExclusions>(AccumulatedToolExclusionsUpdate::Add(payload));
-        Ok(cmd)
-    }
-}
-
-/// Handler for `IncludeOnlyTools` — extends [`AccumulatedToolInclusions`] with the allow-list.
-pub(super) struct IncludeOnlyToolsHandler;
-
-#[async_trait]
-impl TypedScheduledActionHandler<IncludeOnlyTools> for IncludeOnlyToolsHandler {
-    async fn handle_typed(
-        &self,
-        _ctx: &PhaseContext,
-        payload: Vec<String>,
-    ) -> Result<StateCommand, StateError> {
-        let mut cmd = StateCommand::new();
-        cmd.update::<AccumulatedToolInclusions>(AccumulatedToolInclusionsUpdate::Extend(payload));
-        Ok(cmd)
-    }
-}
-
-/// Handler for `ToolInterceptAction` — stores the intercept decision
-/// in [`AccumulatedToolIntercept`] with priority aggregation.
-pub(super) struct ToolInterceptHandler;
-
-#[async_trait]
-impl TypedScheduledActionHandler<ToolInterceptAction> for ToolInterceptHandler {
-    async fn handle_typed(
-        &self,
-        _ctx: &PhaseContext,
-        payload: ToolInterceptPayload,
-    ) -> Result<StateCommand, StateError> {
-        let mut cmd = StateCommand::new();
-        cmd.update::<AccumulatedToolIntercept>(AccumulatedToolInterceptUpdate::Set(payload));
-        Ok(cmd)
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Plugin for registering action handlers
 // ---------------------------------------------------------------------------
 
-/// Internal plugin that registers handlers for the four loop action types.
+/// Internal plugin that registers the `AddContextMessage` handler.
 ///
-/// Added to the `ExecutionEnv` plugins list in `build_agent_env` and
-/// `RegistrySet::resolve` so that these actions are processed during
-/// `run_phase(BeforeInference)` like any other handler-based action.
+/// The four accumulator actions (`SetInferenceOverride`, `ExcludeTool`,
+/// `IncludeOnlyTools`, `ToolInterceptAction`) are consumed directly by the
+/// orchestrator via `extract_actions` and no longer need handlers.
 pub(crate) struct LoopActionHandlersPlugin;
 
 impl crate::plugins::Plugin for LoopActionHandlersPlugin {
@@ -174,38 +209,14 @@ impl crate::plugins::Plugin for LoopActionHandlersPlugin {
         &self,
         r: &mut crate::plugins::PluginRegistrar,
     ) -> Result<(), awaken_contract::StateError> {
-        r.register_scheduled_action::<SetInferenceOverride, _>(InferenceOverrideHandler)?;
         r.register_scheduled_action::<AddContextMessage, _>(ContextMessageHandler)?;
-        r.register_scheduled_action::<ExcludeTool, _>(ExcludeToolHandler)?;
-        r.register_scheduled_action::<IncludeOnlyTools, _>(IncludeOnlyToolsHandler)?;
-        r.register_scheduled_action::<ToolInterceptAction, _>(ToolInterceptHandler)?;
-
-        r.register_key::<AccumulatedToolIntercept>(crate::state::StateKeyOptions {
-            persistent: false,
-            retain_on_uninstall: false,
-            scope: awaken_contract::state::KeyScope::Run,
-        })?;
-
         Ok(())
     }
 }
 
 // ---------------------------------------------------------------------------
-// Orchestrator helpers — read accumulators after run_phase(BeforeInference)
+// Orchestrator helpers
 // ---------------------------------------------------------------------------
-
-/// Read and clear accumulated inference overrides from the state store.
-pub(super) fn take_accumulated_overrides(
-    store: &crate::state::StateStore,
-) -> Result<Option<awaken_contract::contract::inference::InferenceOverride>, StateError> {
-    let result = store.read::<AccumulatedOverrides>().flatten();
-    if result.is_some() {
-        let mut patch = crate::state::MutationBatch::new();
-        patch.update::<AccumulatedOverrides>(AccumulatedOverridesUpdate::Clear);
-        store.commit(patch)?;
-    }
-    Ok(result)
-}
 
 /// Read context messages from the store, return sorted list, then apply lifecycle cleanup.
 ///
@@ -232,62 +243,6 @@ pub(super) fn take_context_messages(
     store.commit(patch)?;
 
     Ok(result)
-}
-
-/// Read and clear accumulated tool intercept decision.
-///
-/// Returns `Some(payload)` if any BeforeToolExecute hook scheduled a `ToolInterceptAction`,
-/// `None` if the tool should execute normally (no intercept).
-pub(super) fn take_tool_intercept(
-    store: &crate::state::StateStore,
-) -> Result<Option<ToolInterceptPayload>, StateError> {
-    let value = store
-        .read::<AccumulatedToolIntercept>()
-        .and_then(|v| v.clone());
-    if value.is_some() {
-        let mut patch = crate::state::MutationBatch::new();
-        patch.update::<AccumulatedToolIntercept>(AccumulatedToolInterceptUpdate::Clear);
-        store.commit(patch)?;
-    }
-    Ok(value)
-}
-
-/// Read and clear accumulated tool filters, then apply them to the tool list.
-///
-/// - If any `IncludeOnlyTools` actions were processed, only tools in the combined
-///   allow-list are kept.
-/// - Then any `ExcludeTool` tool IDs are removed.
-pub(super) fn take_and_apply_tool_filters(
-    store: &crate::state::StateStore,
-    tools: &mut Vec<awaken_contract::contract::tool::ToolDescriptor>,
-) -> Result<(), StateError> {
-    let exclusions = store
-        .read::<AccumulatedToolExclusions>()
-        .unwrap_or_default();
-    let inclusions = store
-        .read::<AccumulatedToolInclusions>()
-        .unwrap_or_default();
-
-    let has_filters = !exclusions.is_empty() || inclusions.0.is_some();
-
-    if has_filters {
-        let mut patch = crate::state::MutationBatch::new();
-        patch.update::<AccumulatedToolExclusions>(AccumulatedToolExclusionsUpdate::Clear);
-        patch.update::<AccumulatedToolInclusions>(AccumulatedToolInclusionsUpdate::Clear);
-        store.commit(patch)?;
-    }
-
-    // Apply include-only filter first
-    if let Some(ref allowed) = inclusions.0 {
-        tools.retain(|t| allowed.contains(&t.id));
-    }
-
-    // Apply exclusions
-    if !exclusions.is_empty() {
-        tools.retain(|t| !exclusions.contains(&t.id));
-    }
-
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------

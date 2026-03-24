@@ -10,6 +10,7 @@ use crate::plugins::{Plugin, PluginRegistrar};
 use awaken_contract::StateError;
 use awaken_contract::contract::tool::Tool;
 use awaken_contract::model::Phase;
+use awaken_contract::registry_spec::AgentSpec;
 
 use crate::plugins::{KeyRegistration, RequestTransformArc};
 
@@ -43,6 +44,10 @@ pub struct ExecutionEnv {
     pub(crate) key_registrations: Vec<KeyRegistration>,
     /// Tools registered by plugins (per-spec scoped).
     pub(crate) tools: HashMap<String, Arc<dyn Tool>>,
+    /// Plugin references retained for lifecycle hooks (`on_activate`/`on_deactivate`).
+    pub(crate) plugins: Vec<Arc<dyn Plugin>>,
+    /// Agent spec for lifecycle hooks. Set by the resolve pipeline.
+    pub(crate) agent_spec: Option<Arc<AgentSpec>>,
 }
 
 impl ExecutionEnv {
@@ -153,6 +158,8 @@ impl ExecutionEnv {
             request_transforms: all_transforms,
             key_registrations: all_key_registrations,
             tools: all_tools,
+            plugins: plugins.to_vec(),
+            agent_spec: None,
         })
     }
 
@@ -165,6 +172,8 @@ impl ExecutionEnv {
             request_transforms: Vec::new(),
             key_registrations: Vec::new(),
             tools: HashMap::new(),
+            plugins: Vec::new(),
+            agent_spec: None,
         }
     }
 
@@ -174,6 +183,12 @@ impl ExecutionEnv {
             .iter()
             .map(|t| Arc::clone(&t.transform))
             .collect()
+    }
+
+    /// Attach an agent spec for lifecycle hooks.
+    pub fn with_agent_spec(mut self, spec: Arc<AgentSpec>) -> Self {
+        self.agent_spec = Some(spec);
+        self
     }
 
     /// Get all tagged hooks for a phase.

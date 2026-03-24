@@ -38,7 +38,7 @@ Every action is:
 - Declared in `ExecutionEnv` at setup time via `PluginRegistrar::register_scheduled_action`.
 - Rejected at `submit_command` if the action key has no registered handler. This catches typos and misconfigurations immediately.
 
-**Consumption**: during the EXECUTE stage of the target phase, the runtime processes actions that have a registered handler — dequeuing them, calling the handler, and committing the resulting `StateCommand`. Built-in loop actions (`SetInferenceOverride`, `AddContextMessage`, `ExcludeTool`, `IncludeOnlyTools`) are registered via `LoopActionHandlersPlugin` and execute during `run_phase(BeforeInference)` like any other handler-based action. Their handlers write results to accumulator state keys (`AccumulatedOverrides`, `AccumulatedContextMessages`, etc.), which the orchestrator reads and clears after the phase completes.
+**Consumption**: during the EXECUTE stage of the target phase, the runtime processes actions that have a registered handler — dequeuing them, calling the handler, and committing the resulting `StateCommand`. The orchestrator can also consume actions directly from the `StateCommand` returned by `collect_commands()` (GATHER-only) using `extract_actions`, bypassing the handler/accumulator pattern entirely. Loop actions (`SetInferenceOverride`, `ExcludeTool`, `IncludeOnlyTools`, `ToolInterceptAction`) are consumed this way — extracted from the collected command, with remaining actions (`AddContextMessage`) submitted for handler-based EXECUTE processing. This eliminates write-read-clear accumulator state keys.
 
 Invariants:
 
@@ -149,7 +149,7 @@ Tool calls involve external resources (files, network, git worktrees) whose conf
 - GATHER parallel hooks: implemented
 - GATHER Exclusive auto-fallback: implemented
 - State-driven termination via RunLifecycle: implemented
-- InferenceOverride via loop-consumed action: implemented
+- Loop actions (overrides, tool filters, intercept) consumed directly by orchestrator via collect_commands + extract_actions — no accumulator state keys
 - RuntimeEffect enum: deleted (all variants replaced by State/Action)
 - CancellationToken: not implemented
 - EXECUTE parallel actions: not implemented (currently serial)
