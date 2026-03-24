@@ -3520,3 +3520,1243 @@ async fn tool_execution_preserves_arguments() {
         "tool result should contain the exact arguments passed by the LLM"
     );
 }
+
+// ===========================================================================
+// Behavioral tests migrated from uncarve streaming suite
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Retry & Recovery
+// ---------------------------------------------------------------------------
+
+/// An LLM that fails the first N calls with a provider error, then succeeds.
+struct CountingLlm {
+    failures_remaining: Mutex<usize>,
+    success_responses: Mutex<Vec<StreamResult>>,
+}
+
+impl CountingLlm {
+    fn new(failures: usize, responses: Vec<StreamResult>) -> Self {
+        Self {
+            failures_remaining: Mutex::new(failures),
+            success_responses: Mutex::new(responses),
+        }
+    }
+}
+
+#[async_trait]
+impl LlmExecutor for CountingLlm {
+    async fn execute(
+        &self,
+        _req: InferenceRequest,
+    ) -> Result<StreamResult, InferenceExecutionError> {
+        let mut remaining = self.failures_remaining.lock().unwrap();
+        if *remaining > 0 {
+            *remaining -= 1;
+            return Err(InferenceExecutionError::Provider(
+                "transient failure".into(),
+            ));
+        }
+        drop(remaining);
+        let mut responses = self.success_responses.lock().unwrap();
+        if responses.is_empty() {
+            Ok(StreamResult {
+                content: vec![ContentBlock::text("recovered")],
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            })
+        } else {
+            Ok(responses.remove(0))
+        }
+    }
+
+    fn name(&self) -> &str {
+        "counting"
+    }
+}
+
+/// An LLM that records the model field from each request.
+struct ModelRecordingLlm {
+    models_seen: Mutex<Vec<String>>,
+    responses: Mutex<Vec<StreamResult>>,
+}
+
+impl ModelRecordingLlm {
+    fn new(responses: Vec<StreamResult>) -> Self {
+        Self {
+            models_seen: Mutex::new(Vec::new()),
+            responses: Mutex::new(responses),
+        }
+    }
+
+    fn models(&self) -> Vec<String> {
+        self.models_seen.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl LlmExecutor for ModelRecordingLlm {
+    async fn execute(
+        &self,
+        req: InferenceRequest,
+    ) -> Result<StreamResult, InferenceExecutionError> {
+        self.models_seen.lock().unwrap().push(req.model.clone());
+        let mut responses = self.responses.lock().unwrap();
+        if responses.is_empty() {
+            Ok(StreamResult {
+                content: vec![ContentBlock::text("done")],
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            })
+        } else {
+            Ok(responses.remove(0))
+        }
+    }
+
+    fn name(&self) -> &str {
+        "model-recording"
+    }
+}
+
+/// 1. LLM fails on first call => run_agent_loop returns Err.
+#[tokio::test]
+async fn retry_startup_error_propagates() {
+    let llm = Arc::new(CountingLlm::new(1, vec![]));
+    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await;
+
+    assert!(
+        result.is_err(),
+        "LLM provider error should propagate as AgentLoopError"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("transient failure"),
+        "error should contain the provider message, got: {err_msg}"
+    );
+}
+
+/// 2. Model name in inference request matches AgentConfig.model.
+#[tokio::test]
+async fn inference_request_uses_configured_model_name() {
+    let llm = Arc::new(ModelRecordingLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("ok")],
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+    let llm_clone = Arc::clone(&llm);
+
+    let agent = AgentConfig::new("test", "claude-3-opus", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let models = llm_clone.models();
+    assert_eq!(models.len(), 1, "should have exactly one inference call");
+    assert_eq!(
+        models[0], "claude-3-opus",
+        "inference request should use the configured model name"
+    );
+}
+
+/// 3. Truncation with complete tool calls does NOT trigger retry; tools proceed.
+#[tokio::test]
+async fn truncation_with_tool_calls_no_retry() {
+    // LLM returns MaxTokens but tool calls are complete (not incomplete).
+    // This should NOT trigger truncation recovery; tool calls proceed normally.
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![ContentBlock::text("partial")],
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "test"}))],
+            usage: None,
+            stop_reason: Some(StopReason::MaxTokens),
+            has_incomplete_tool_calls: false, // complete tool calls
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("Done after tool.")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm)
+        .with_tool(Arc::new(EchoTool))
+        .with_max_continuation_retries(2);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    // Tool calls should have executed; two steps (tool call step + final response)
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+    assert_eq!(
+        result.steps, 2,
+        "tool call should proceed without truncation retry"
+    );
+}
+
+/// 4. Truncation retries exhaust budget; run ends with NaturalEnd (not error).
+///
+///    Uses a custom execute_stream to produce truncated tool calls each time.
+#[tokio::test]
+async fn truncation_recovery_exhausts_retries() {
+    use awaken::contract::executor::StreamEvent as LlmStreamEvent;
+
+    struct AlwaysTruncatingLlm {
+        call_count: Mutex<usize>,
+    }
+    impl AlwaysTruncatingLlm {
+        fn new() -> Self {
+            Self {
+                call_count: Mutex::new(0),
+            }
+        }
+    }
+    #[async_trait]
+    impl LlmExecutor for AlwaysTruncatingLlm {
+        async fn execute(
+            &self,
+            _req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            unreachable!("should use execute_stream")
+        }
+
+        fn execute_stream(
+            &self,
+            _request: InferenceRequest,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            awaken::contract::executor::InferenceStream,
+                            InferenceExecutionError,
+                        >,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            let mut count = self.call_count.lock().unwrap();
+            *count += 1;
+            let call_num = *count;
+            drop(count);
+
+            Box::pin(async move {
+                // Always return truncated response with incomplete tool call
+                let events: Vec<Result<LlmStreamEvent, InferenceExecutionError>> = vec![
+                    Ok(LlmStreamEvent::TextDelta(format!(
+                        "partial output {call_num}..."
+                    ))),
+                    Ok(LlmStreamEvent::ToolCallStart {
+                        id: format!("tc_{call_num}"),
+                        name: "echo".into(),
+                    }),
+                    Ok(LlmStreamEvent::ToolCallDelta {
+                        id: format!("tc_{call_num}"),
+                        args_delta: "{\"incomplete".into(),
+                    }),
+                    Ok(LlmStreamEvent::Stop(StopReason::MaxTokens)),
+                ];
+                Ok(Box::pin(futures::stream::iter(events))
+                    as awaken::contract::executor::InferenceStream)
+            })
+        }
+
+        fn name(&self) -> &str {
+            "always-truncating"
+        }
+    }
+
+    let llm = Arc::new(AlwaysTruncatingLlm::new());
+    let llm_ref = Arc::clone(&llm);
+    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm)
+        .with_max_continuation_retries(2)
+        .with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    // After exhausting retries (2), the final truncated response has no complete
+    // tool calls, so it's treated as text-only and ends naturally
+    assert_eq!(
+        result.termination,
+        TerminationReason::NaturalEnd,
+        "exhausted truncation retries should end naturally, not error"
+    );
+
+    // Should have called LLM 3 times: 1 original + 2 retries
+    let call_count = *llm_ref.call_count.lock().unwrap();
+    assert_eq!(
+        call_count, 3,
+        "should retry exactly max_continuation_retries times"
+    );
+}
+
+/// 5. After truncation recovery, the partial text is preserved as a message
+///    and the continuation text becomes the final response.
+///
+///    Uses a custom execute_stream to produce incomplete tool call JSON
+///    (which `execute_streaming` detects as `has_incomplete_tool_calls`).
+#[tokio::test]
+async fn truncation_recovery_preserves_truncated_text() {
+    use awaken::contract::executor::StreamEvent as LlmStreamEvent;
+
+    struct TruncationStreamLlm {
+        call_count: Mutex<usize>,
+        messages_seen: Mutex<Vec<Vec<String>>>,
+    }
+    impl TruncationStreamLlm {
+        fn new() -> Self {
+            Self {
+                call_count: Mutex::new(0),
+                messages_seen: Mutex::new(Vec::new()),
+            }
+        }
+    }
+    #[async_trait]
+    impl LlmExecutor for TruncationStreamLlm {
+        async fn execute(
+            &self,
+            _req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            unreachable!("should use execute_stream")
+        }
+
+        fn execute_stream(
+            &self,
+            request: InferenceRequest,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            awaken::contract::executor::InferenceStream,
+                            InferenceExecutionError,
+                        >,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            let msg_texts: Vec<String> = request.messages.iter().map(|m| m.text()).collect();
+            self.messages_seen.lock().unwrap().push(msg_texts);
+            let mut count = self.call_count.lock().unwrap();
+            *count += 1;
+            let call_num = *count;
+            drop(count);
+
+            Box::pin(async move {
+                if call_num == 1 {
+                    // First call: text + incomplete tool call JSON, then MaxTokens
+                    let events: Vec<Result<LlmStreamEvent, InferenceExecutionError>> = vec![
+                        Ok(LlmStreamEvent::TextDelta("Part one.".into())),
+                        Ok(LlmStreamEvent::ToolCallStart {
+                            id: "tc_incomplete".into(),
+                            name: "echo".into(),
+                        }),
+                        // Incomplete JSON (truncated mid-argument)
+                        Ok(LlmStreamEvent::ToolCallDelta {
+                            id: "tc_incomplete".into(),
+                            args_delta: "{\"message\": \"trun".into(),
+                        }),
+                        Ok(LlmStreamEvent::Stop(StopReason::MaxTokens)),
+                    ];
+                    Ok(Box::pin(futures::stream::iter(events))
+                        as awaken::contract::executor::InferenceStream)
+                } else {
+                    // Continuation: completes normally
+                    let events: Vec<Result<LlmStreamEvent, InferenceExecutionError>> = vec![
+                        Ok(LlmStreamEvent::TextDelta("Part two.".into())),
+                        Ok(LlmStreamEvent::Stop(StopReason::EndTurn)),
+                    ];
+                    Ok(Box::pin(futures::stream::iter(events))
+                        as awaken::contract::executor::InferenceStream)
+                }
+            })
+        }
+
+        fn name(&self) -> &str {
+            "truncation-stream-llm"
+        }
+    }
+
+    let llm = Arc::new(TruncationStreamLlm::new());
+    let llm_ref = Arc::clone(&llm);
+
+    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm)
+        .with_max_continuation_retries(2)
+        .with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+
+    // Verify the LLM was called twice (original + continuation)
+    let messages_seen = llm_ref.messages_seen.lock().unwrap();
+    assert_eq!(
+        messages_seen.len(),
+        2,
+        "should have two inference calls: original + continuation"
+    );
+
+    // The continuation request should contain the partial text as a message
+    let continuation_msgs = &messages_seen[1];
+    let has_partial = continuation_msgs.iter().any(|m| m.contains("Part one."));
+    assert!(
+        has_partial,
+        "continuation request should contain the partial text from truncated response, got: {:?}",
+        continuation_msgs
+    );
+
+    // The continuation request should also have the continuation prompt
+    let has_continuation_prompt = continuation_msgs
+        .iter()
+        .any(|m| m.contains("cut off") || m.contains("Continue from where you left off"));
+    assert!(
+        has_continuation_prompt,
+        "continuation request should contain the continuation prompt, got: {:?}",
+        continuation_msgs
+    );
+}
+
+// ---------------------------------------------------------------------------
+// State & Lifecycle
+// ---------------------------------------------------------------------------
+
+/// 6. RunStart and RunFinish events have matching thread_id and run_id.
+#[tokio::test]
+async fn run_finish_has_matching_thread_id() {
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("hello")],
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let identity = RunIdentity::new(
+        "thread-42".into(),
+        None,
+        "run-99".into(),
+        None,
+        "test-agent".into(),
+        RunOrigin::User,
+    );
+
+    let sink = Arc::new(VecEventSink::new());
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: identity,
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let events = sink.take();
+
+    let run_start = events.iter().find_map(|e| match e {
+        AgentEvent::RunStart {
+            thread_id, run_id, ..
+        } => Some((thread_id.clone(), run_id.clone())),
+        _ => None,
+    });
+    let run_finish = events.iter().find_map(|e| match e {
+        AgentEvent::RunFinish {
+            thread_id, run_id, ..
+        } => Some((thread_id.clone(), run_id.clone())),
+        _ => None,
+    });
+
+    let (start_tid, start_rid) = run_start.expect("should have RunStart event");
+    let (finish_tid, finish_rid) = run_finish.expect("should have RunFinish event");
+
+    assert_eq!(start_tid, "thread-42");
+    assert_eq!(start_rid, "run-99");
+    assert_eq!(
+        start_tid, finish_tid,
+        "thread_id should match between RunStart and RunFinish"
+    );
+    assert_eq!(
+        start_rid, finish_rid,
+        "run_id should match between RunStart and RunFinish"
+    );
+}
+
+/// 7. All tool calls in a step suspend => run enters Waiting (Suspended termination).
+#[tokio::test]
+async fn all_tools_suspended_pauses_run() {
+    use awaken::contract::suspension::{PendingToolCall, SuspendTicket, Suspension};
+
+    // Plugin that suspends ALL tool calls
+    struct SuspendAllHook;
+    impl Clone for SuspendAllHook {
+        fn clone(&self) -> Self {
+            Self
+        }
+    }
+    #[async_trait]
+    impl PhaseHook for SuspendAllHook {
+        async fn run(
+            &self,
+            ctx: &awaken::PhaseContext,
+        ) -> Result<awaken::StateCommand, awaken::StateError> {
+            let tool_name = match &ctx.tool_name {
+                Some(name) => name.as_str(),
+                None => return Ok(awaken::StateCommand::new()),
+            };
+            if ctx.resume_input.is_some() {
+                return Ok(awaken::StateCommand::new());
+            }
+            let call_id = ctx.tool_call_id.as_deref().unwrap_or("");
+            let args = ctx.tool_args.clone().unwrap_or_default();
+            let ticket = SuspendTicket::new(
+                Suspension {
+                    id: format!("suspend_{call_id}"),
+                    action: format!("tool:{tool_name}"),
+                    message: format!("Tool '{tool_name}' needs approval"),
+                    parameters: args.clone(),
+                    response_schema: None,
+                },
+                PendingToolCall::new(call_id, tool_name, args),
+                ToolCallResumeMode::ReplayToolCall,
+            );
+            let mut cmd = awaken::StateCommand::new();
+            cmd.schedule_action::<ToolInterceptAction>(ToolInterceptPayload::Suspend(ticket))?;
+            Ok(cmd)
+        }
+    }
+    struct SuspendAllWrapper;
+    impl Plugin for SuspendAllWrapper {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "suspend-all-test",
+            }
+        }
+        fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+            registrar.register_phase_hook(
+                "suspend-all-test",
+                awaken::Phase::BeforeToolExecute,
+                SuspendAllHook,
+            )?;
+            Ok(())
+        }
+    }
+
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![],
+        tool_calls: vec![
+            ToolCall::new("c1", "echo", json!({"message": "a"})),
+            ToolCall::new("c2", "echo", json!({"message": "b"})),
+        ],
+        usage: None,
+        stop_reason: Some(StopReason::ToolUse),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(agent, vec![Arc::new(SuspendAllWrapper)]);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("do both")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        result.termination,
+        TerminationReason::Suspended,
+        "all tools suspended should pause the run"
+    );
+
+    let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
+    assert_eq!(lifecycle.status, RunStatus::Waiting);
+
+    // Both tool calls should be Suspended
+    let tc_states = runtime.store().read::<ToolCallStates>().unwrap();
+    assert_eq!(tc_states.calls["c1"].status, ToolCallStatus::Suspended);
+    assert_eq!(tc_states.calls["c2"].status, ToolCallStatus::Suspended);
+}
+
+/// 8. After a normal step completes, tool call states are cleared for the new step.
+///    This verifies the Clear behavior at step start.
+#[tokio::test]
+async fn completed_tool_round_clears_state_at_next_step() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        // Step 1: tool call succeeds
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "hi"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        // Step 2: no tools, just text
+        StreamResult {
+            content: vec![ContentBlock::text("Done.")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("test")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    // After step 2, tool call states from step 1 should be cleared
+    let tc_states = runtime.store().read::<ToolCallStates>().unwrap_or_default();
+    assert!(
+        tc_states.calls.is_empty(),
+        "tool call states should be cleared at the start of each new step"
+    );
+}
+
+/// 9. AfterInference stop policy fires => tools from that inference do NOT execute.
+#[tokio::test]
+async fn after_inference_stop_prevents_tool_execution() {
+    use awaken::policies::{StopConditionPlugin, StopDecision, StopPolicy, StopPolicyStats};
+
+    /// A policy that always stops after inference.
+    struct AlwaysStopPolicy;
+
+    impl StopPolicy for AlwaysStopPolicy {
+        fn id(&self) -> &str {
+            "always_stop"
+        }
+        fn evaluate(&self, _stats: &StopPolicyStats) -> StopDecision {
+            StopDecision::Stop {
+                code: "forced_stop".into(),
+                detail: "test stop policy fired".into(),
+            }
+        }
+    }
+
+    // Track whether the tool was actually executed
+    let tool_executed = Arc::new(Mutex::new(false));
+    struct TrackedTool(Arc<Mutex<bool>>);
+    #[async_trait]
+    impl Tool for TrackedTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("tracked", "tracked", "Tracks execution")
+        }
+        async fn execute(
+            &self,
+            _args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
+            *self.0.lock().unwrap() = true;
+            Ok(ToolResult::success("tracked", json!({"done": true})))
+        }
+    }
+
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("thinking...")],
+        tool_calls: vec![ToolCall::new("c1", "tracked", json!({}))],
+        usage: None,
+        stop_reason: Some(StopReason::ToolUse),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm)
+        .with_tool(Arc::new(TrackedTool(Arc::clone(&tool_executed))));
+
+    let stop_plugin = Arc::new(StopConditionPlugin::new(vec![Arc::new(AlwaysStopPolicy)]));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(agent, vec![stop_plugin]);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        matches!(
+            result.termination,
+            TerminationReason::Stopped(ref s) if s.code == "forced_stop"
+        ),
+        "expected Stopped(forced_stop), got {:?}",
+        result.termination
+    );
+
+    assert!(
+        !*tool_executed.lock().unwrap(),
+        "tool should NOT execute when AfterInference stop policy fires"
+    );
+}
+
+/// 10. LLM returns end_turn with no tool calls => NaturalEnd on first step with minimal events.
+#[tokio::test]
+async fn natural_end_no_tools_completes_immediately() {
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("Hello!")],
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+    assert_eq!(result.steps, 1, "should complete in a single step");
+    assert_eq!(result.response, "Hello!");
+
+    let events = sink.take();
+
+    // Should have no ToolCallStart/ToolCallDone events
+    let tool_events = events
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                AgentEvent::ToolCallStart { .. } | AgentEvent::ToolCallDone { .. }
+            )
+        })
+        .count();
+    assert_eq!(tool_events, 0, "no tool events should be emitted");
+
+    // Should have exactly one RunStart and one RunFinish
+    let run_starts = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::RunStart { .. }))
+        .count();
+    let run_finishes = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::RunFinish { .. }))
+        .count();
+    assert_eq!(run_starts, 1);
+    assert_eq!(run_finishes, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Error Handling
+// ---------------------------------------------------------------------------
+
+/// 11. LLM returns 3 tool calls, one has unknown tool ID. The unknown one gets
+///     error result, others succeed.
+#[tokio::test]
+async fn unknown_tool_in_multi_call_doesnt_crash() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![
+                ToolCall::new("c1", "echo", json!({"message": "first"})),
+                ToolCall::new("c2", "nonexistent_tool", json!({})),
+                ToolCall::new("c3", "calc", json!({"result": 7})),
+            ],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("Handled.")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm)
+        .with_tool(Arc::new(EchoTool))
+        .with_tool(Arc::new(CalcTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("multi-tool")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    // Should NOT crash and should complete
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+    assert_eq!(result.steps, 2);
+
+    let events = sink.take();
+    let tool_done_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolCallDone { id, outcome, .. } => Some((id.clone(), *outcome)),
+            _ => None,
+        })
+        .collect();
+
+    // Should have 3 ToolCallDone events
+    assert_eq!(
+        tool_done_events.len(),
+        3,
+        "all three tool calls should produce ToolCallDone events"
+    );
+
+    // The unknown tool should have Failed outcome
+    let unknown_outcome = tool_done_events
+        .iter()
+        .find(|(id, _)| id == "c2")
+        .map(|(_, o)| *o);
+    assert_eq!(
+        unknown_outcome,
+        Some(awaken::contract::suspension::ToolCallOutcome::Failed),
+        "unknown tool should have Failed outcome"
+    );
+
+    // Known tools should have Succeeded outcomes
+    let known_succeeded = tool_done_events
+        .iter()
+        .filter(|(id, o)| {
+            (id == "c1" || id == "c3")
+                && *o == awaken::contract::suspension::ToolCallOutcome::Succeeded
+        })
+        .count();
+    assert_eq!(known_succeeded, 2, "both known tools should succeed");
+}
+
+/// 12. Permission hook blocks a tool. After blocking, tool is NOT re-executed on resume.
+#[tokio::test]
+async fn permission_denied_does_not_replay_tool() {
+    let tool_executed = Arc::new(Mutex::new(0u32));
+    struct CountingEchoTool(Arc<Mutex<u32>>);
+    #[async_trait]
+    impl Tool for CountingEchoTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("echo", "echo", "Counting echo")
+        }
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
+            *self.0.lock().unwrap() += 1;
+            let msg = args
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Ok(ToolResult::success_with_message("echo", args, msg))
+        }
+    }
+
+    let exec_count = Arc::clone(&tool_executed);
+    let llm = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
+        "echo",
+        "c1",
+        json!({"message": "blocked"}),
+    )]));
+
+    let agent =
+        AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(CountingEchoTool(exec_count)));
+    let blocking_plugin = Arc::new(BlockingPluginWrapper(BlockingPlugin {
+        blocked_tool: "echo".into(),
+        reason: "permission denied".into(),
+    }));
+
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(agent, vec![blocking_plugin]);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("use echo")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        matches!(result.termination, TerminationReason::Blocked(_)),
+        "should be blocked"
+    );
+    assert_eq!(
+        *tool_executed.lock().unwrap(),
+        0,
+        "tool should never have been executed when permission hook blocks it"
+    );
+}
+
+/// 13. Send decision for non-existent call_id via prepare_resume. Should fail
+///     with an error (not crash/panic). Validates defensive handling of unknown IDs.
+#[tokio::test]
+async fn decision_for_unknown_call_id_returns_error() {
+    // Run until suspension so we have valid tool call state
+    let llm = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
+        "dangerous",
+        "c1",
+        json!({"action": "test"}),
+    )]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("do it")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(result.termination, TerminationReason::Suspended);
+
+    // Send a decision for a nonexistent call_id -- should return Err, not panic
+    let err = prepare_resume(
+        runtime.store(),
+        vec![(
+            "nonexistent_id".into(),
+            ToolCallResume {
+                decision_id: "d0".into(),
+                action: ResumeDecisionAction::Resume,
+                result: json!({}),
+                reason: None,
+                updated_at: 0,
+            },
+        )],
+        ToolCallResumeMode::ReplayToolCall,
+    );
+    assert!(
+        err.is_err(),
+        "decision for unknown call_id should return error, not panic"
+    );
+    assert!(
+        err.unwrap_err().to_string().contains("not found"),
+        "error should indicate the call was not found"
+    );
+
+    // The valid suspended call should still be intact
+    let tc_states = runtime.store().read::<ToolCallStates>().unwrap();
+    assert_eq!(
+        tc_states.calls["c1"].status,
+        ToolCallStatus::Suspended,
+        "valid suspended call should remain intact after failed resume of unknown ID"
+    );
+}
+
+/// 14. Send Resume for a Succeeded call. Should be ignored (terminal state).
+///     We test via prepare_resume which should error when the call is not Suspended.
+#[tokio::test]
+async fn decision_channel_rejects_illegal_transition() {
+    // Run to completion with a successful tool call
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "hi"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("Done.")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("test")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+
+    // After completion, tool call states are cleared. Attempting prepare_resume should fail.
+    let err = prepare_resume(
+        runtime.store(),
+        vec![(
+            "c1".into(),
+            ToolCallResume {
+                decision_id: "d1".into(),
+                action: ResumeDecisionAction::Resume,
+                result: Value::Null,
+                reason: None,
+                updated_at: 0,
+            },
+        )],
+        ToolCallResumeMode::ReplayToolCall,
+    );
+
+    assert!(
+        err.is_err(),
+        "resuming a completed/cleared call should fail: terminal state cannot be transitioned"
+    );
+}
+
+/// 15. Some tools succeed, some suspend. Verify correct state for each.
+#[tokio::test]
+async fn mixed_suspended_and_completed_tools() {
+    // Echo succeeds, dangerous suspends
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![],
+        tool_calls: vec![
+            ToolCall::new("c1", "echo", json!({"message": "ok"})),
+            ToolCall::new("c2", "dangerous", json!({"action": "nuke"})),
+            ToolCall::new("c3", "calc", json!({"result": 99})),
+        ],
+        usage: None,
+        stop_reason: Some(StopReason::ToolUse),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm)
+        .with_tool(Arc::new(EchoTool))
+        .with_tool(Arc::new(SuspendingTool))
+        .with_tool(Arc::new(CalcTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("run all")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    // With sequential executor: first echo succeeds, then dangerous suspends,
+    // then execution stops (no more tools after suspension)
+    assert_eq!(
+        result.termination,
+        TerminationReason::Suspended,
+        "should suspend because dangerous tool suspends"
+    );
+
+    let tc_states = runtime.store().read::<ToolCallStates>().unwrap();
+
+    // echo (c1) should have succeeded
+    assert_eq!(
+        tc_states.calls["c1"].status,
+        ToolCallStatus::Succeeded,
+        "echo tool should succeed"
+    );
+
+    // dangerous (c2) should be suspended
+    assert_eq!(
+        tc_states.calls["c2"].status,
+        ToolCallStatus::Suspended,
+        "dangerous tool should be suspended"
+    );
+
+    // calc (c3) should NOT have executed (sequential executor stops after suspension)
+    assert!(
+        !tc_states.calls.contains_key("c3"),
+        "calc tool should not have executed after suspension, but got: {:?}",
+        tc_states.calls.get("c3")
+    );
+
+    // Verify events
+    let events = sink.take();
+    let tool_done_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolCallDone { id, outcome, .. } => Some((id.clone(), *outcome)),
+            _ => None,
+        })
+        .collect();
+
+    // echo should have a Succeeded ToolCallDone
+    let echo_outcome = tool_done_events.iter().find(|(id, _)| id == "c1");
+    assert!(
+        matches!(
+            echo_outcome,
+            Some((_, awaken::contract::suspension::ToolCallOutcome::Succeeded))
+        ),
+        "echo should emit Succeeded ToolCallDone"
+    );
+}
