@@ -31,6 +31,11 @@ pub use contract::progress::{
     ProgressStatus, TOOL_CALL_PROGRESS_ACTIVITY_TYPE, ToolCallProgressState,
 };
 
+// ── mailbox ──
+pub use contract::mailbox::{
+    MailboxInterrupt, MailboxJob, MailboxJobOrigin, MailboxJobStatus, MailboxStore,
+};
+
 // ── profile store ──
 pub use contract::profile_store::{ProfileEntry, ProfileKey, ProfileOwner, ProfileStore};
 

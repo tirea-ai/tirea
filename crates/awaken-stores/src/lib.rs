@@ -5,6 +5,7 @@
 //! and [`ThreadRunStore`].
 
 pub mod memory;
+pub mod memory_mailbox;
 
 #[cfg(feature = "file")]
 pub mod file;
@@ -16,6 +17,7 @@ pub mod postgres;
 pub mod nats;
 
 pub use memory::InMemoryStore;
+pub use memory_mailbox::InMemoryMailboxStore;
 
 #[cfg(feature = "file")]
 pub use file::FileStore;

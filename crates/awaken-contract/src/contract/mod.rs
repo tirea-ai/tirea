@@ -8,6 +8,7 @@ pub mod executor;
 pub mod identity;
 pub mod inference;
 pub mod lifecycle;
+pub mod mailbox;
 pub mod message;
 pub mod profile;
 pub mod profile_store;
