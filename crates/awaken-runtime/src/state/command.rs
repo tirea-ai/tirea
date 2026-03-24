@@ -243,4 +243,109 @@ mod tests {
         }
         assert_eq!(cmd.effects.len(), 5);
     }
+
+    // -----------------------------------------------------------------------
+    // Migrated from uncarve: merge_parallel and extended edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn state_command_merge_parallel_combines_all_fields() {
+        let mut left = StateCommand::new();
+        left.schedule_action::<TestAction>("left_action".into())
+            .unwrap();
+        left.emit::<CustomEffect>("left_effect".into()).unwrap();
+
+        let mut right = StateCommand::new();
+        right
+            .schedule_action::<TestAction>("right_action".into())
+            .unwrap();
+        right.emit::<CustomEffect>("right_effect".into()).unwrap();
+
+        let merged = left
+            .merge_parallel(right, |_| MergeStrategy::Commutative)
+            .unwrap();
+        assert_eq!(merged.scheduled_actions.len(), 2);
+        assert_eq!(merged.effects.len(), 2);
+    }
+
+    #[test]
+    fn state_command_merge_parallel_empty_commands() {
+        let left = StateCommand::new();
+        let right = StateCommand::new();
+        let merged = left
+            .merge_parallel(right, |_| MergeStrategy::Exclusive)
+            .unwrap();
+        assert!(merged.is_empty());
+    }
+
+    #[test]
+    fn state_command_merge_parallel_preserves_base_revision() {
+        let left = StateCommand::new().with_base_revision(5);
+        let right = StateCommand::new().with_base_revision(5);
+        let merged = left
+            .merge_parallel(right, |_| MergeStrategy::Commutative)
+            .unwrap();
+        assert_eq!(merged.base_revision(), Some(5));
+    }
+
+    #[test]
+    fn state_command_merge_parallel_mismatched_revisions_fails() {
+        let left = StateCommand::new().with_base_revision(1);
+        let right = StateCommand::new().with_base_revision(2);
+        let result = left.merge_parallel(right, |_| MergeStrategy::Commutative);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn state_command_extend_empty_into_populated() {
+        let mut populated = StateCommand::new();
+        populated
+            .schedule_action::<TestAction>("a1".into())
+            .unwrap();
+        populated.emit::<CustomEffect>("e1".into()).unwrap();
+
+        let empty = StateCommand::new();
+        populated.extend(empty).unwrap();
+
+        assert_eq!(populated.scheduled_actions.len(), 1);
+        assert_eq!(populated.effects.len(), 1);
+    }
+
+    #[test]
+    fn state_command_extend_populated_into_empty() {
+        let mut empty = StateCommand::new();
+
+        let mut populated = StateCommand::new();
+        populated
+            .schedule_action::<TestAction>("a1".into())
+            .unwrap();
+        populated.emit::<CustomEffect>("e1".into()).unwrap();
+
+        empty.extend(populated).unwrap();
+        assert_eq!(empty.scheduled_actions.len(), 1);
+        assert_eq!(empty.effects.len(), 1);
+    }
+
+    #[test]
+    fn state_command_deref_mut_allows_mutation_batch_update() {
+        let mut cmd = StateCommand::new();
+        // DerefMut accesses MutationBatch, allowing direct update calls
+        // (though in practice you'd use typed update calls)
+        assert!(cmd.is_empty());
+        // After scheduling, is_empty returns false due to scheduled_actions
+        cmd.schedule_action::<TestAction>("hello".into()).unwrap();
+        assert!(!cmd.is_empty());
+    }
+
+    #[test]
+    fn state_command_effects_decode_in_order() {
+        let mut cmd = StateCommand::new();
+        for i in 0..3 {
+            cmd.emit::<CustomEffect>(format!("payload_{i}")).unwrap();
+        }
+        for (i, effect) in cmd.effects.iter().enumerate() {
+            let decoded = effect.decode::<CustomEffect>().unwrap();
+            assert_eq!(decoded, format!("payload_{i}"));
+        }
+    }
 }

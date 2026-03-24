@@ -458,4 +458,129 @@ mod tests {
             "system message should not have options when prompt cache is disabled"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Migrated from uncarve: additional conversion tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn to_chat_message_with_special_characters() {
+        let msg = Message::user("Hello <world> & \"friends\"!");
+        let cm = to_chat_message(&msg);
+        let text = cm.content.first_text().expect("should have text");
+        assert_eq!(text, "Hello <world> & \"friends\"!");
+    }
+
+    #[test]
+    fn to_chat_message_empty_content() {
+        let msg = Message::user("");
+        let cm = to_chat_message(&msg);
+        let text = cm.content.first_text().expect("should have text");
+        assert_eq!(text, "");
+    }
+
+    #[test]
+    fn to_chat_message_assistant_plain_text() {
+        let msg = Message::assistant("Just text, no tools");
+        let cm = to_chat_message(&msg);
+        assert!(matches!(cm.role, chat::ChatRole::Assistant));
+        let text = cm.content.first_text().expect("should have text");
+        assert_eq!(text, "Just text, no tools");
+        assert!(
+            cm.content.tool_calls().is_empty(),
+            "plain assistant should have no tool calls"
+        );
+    }
+
+    #[test]
+    fn build_chat_request_empty_messages() {
+        let req = build_chat_request(&[], &[], &[], false);
+        assert!(req.messages.is_empty());
+        assert!(req.tools.is_none());
+    }
+
+    #[test]
+    fn build_chat_request_multiple_tools_preserves_order() {
+        let tools = vec![
+            ToolDescriptor::new("alpha", "alpha", "Tool alpha"),
+            ToolDescriptor::new("beta", "beta", "Tool beta"),
+            ToolDescriptor::new("gamma", "gamma", "Tool gamma"),
+        ];
+        let req = build_chat_request(&[], &[Message::user("hi")], &tools, false);
+        let genai_tools = req.tools.expect("should have tools");
+        assert_eq!(genai_tools.len(), 3);
+        assert_eq!(genai_tools[0].name, "alpha".into());
+        assert_eq!(genai_tools[1].name, "beta".into());
+        assert_eq!(genai_tools[2].name, "gamma".into());
+    }
+
+    #[test]
+    fn to_genai_tool_with_empty_schema() {
+        let desc = ToolDescriptor::new("test", "test", "Test tool");
+        let tool = to_genai_tool(&desc);
+        assert_eq!(tool.name, "test".into());
+        assert_eq!(tool.description.as_deref(), Some("Test tool"));
+    }
+
+    #[test]
+    fn from_genai_tool_call_preserves_arguments() {
+        let complex_args = json!({
+            "query": "test query",
+            "options": {"limit": 10, "offset": 0},
+            "tags": ["a", "b", "c"]
+        });
+        let genai_call = GenaiToolCall {
+            call_id: "c99".into(),
+            fn_name: "search".into(),
+            fn_arguments: complex_args.clone(),
+            thought_signatures: None,
+        };
+        let awaken_call = from_genai_tool_call(&genai_call);
+        assert_eq!(awaken_call.arguments, complex_args);
+    }
+
+    #[test]
+    fn map_usage_handles_none_fields() {
+        let genai_usage = chat::Usage {
+            prompt_tokens: None,
+            completion_tokens: None,
+            total_tokens: None,
+            prompt_tokens_details: None,
+            completion_tokens_details: None,
+        };
+        let usage = map_usage(&genai_usage);
+        assert_eq!(usage.prompt_tokens, None);
+        assert_eq!(usage.completion_tokens, None);
+        assert_eq!(usage.total_tokens, None);
+        assert_eq!(usage.cache_read_tokens, None);
+        assert_eq!(usage.cache_creation_tokens, None);
+        assert_eq!(usage.thinking_tokens, None);
+    }
+
+    #[test]
+    fn to_chat_message_tool_with_empty_call_id() {
+        let msg = Message::tool("", "result content");
+        let cm = to_chat_message(&msg);
+        assert!(matches!(cm.role, chat::ChatRole::Tool));
+    }
+
+    #[test]
+    fn build_chat_request_system_and_multiple_messages() {
+        let system = vec![
+            ContentBlock::text("system 1"),
+            ContentBlock::text("system 2"),
+        ];
+        let messages = vec![
+            Message::user("u1"),
+            Message::assistant("a1"),
+            Message::user("u2"),
+        ];
+        let req = build_chat_request(&system, &messages, &[], false);
+        // 1 system (combined) + 3 messages
+        assert_eq!(req.messages.len(), 4);
+        assert!(matches!(req.messages[0].role, chat::ChatRole::System));
+        assert!(matches!(req.messages[1].role, chat::ChatRole::User));
+        assert!(matches!(req.messages[2].role, chat::ChatRole::Assistant));
+        assert!(matches!(req.messages[3].role, chat::ChatRole::User));
+    }
 }

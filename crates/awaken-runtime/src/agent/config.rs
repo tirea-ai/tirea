@@ -284,4 +284,94 @@ mod tests {
         assert_eq!(config.max_continuation_retries, 0);
         assert_eq!(config.tools.len(), 2);
     }
+
+    // -----------------------------------------------------------------------
+    // Migrated from uncarve: additional config tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn config_tool_descriptors_sorted_by_id() {
+        let tools: Vec<Arc<dyn Tool>> = vec![
+            Arc::new(TestTool { id: "zebra".into() }),
+            Arc::new(TestTool { id: "alpha".into() }),
+            Arc::new(TestTool {
+                id: "middle".into(),
+            }),
+        ];
+        let config = AgentConfig::new("a", "m", "s", mock_executor()).with_tools(tools);
+        let descriptors = config.tool_descriptors();
+        let ids: Vec<&str> = descriptors.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, vec!["alpha", "middle", "zebra"]);
+    }
+
+    #[test]
+    fn config_tool_descriptors_empty() {
+        let config = AgentConfig::new("a", "m", "s", mock_executor());
+        let descriptors = config.tool_descriptors();
+        assert!(descriptors.is_empty());
+    }
+
+    #[test]
+    fn config_duplicate_tool_id_overwrites() {
+        let t1: Arc<dyn Tool> = Arc::new(TestTool { id: "echo".into() });
+        let t2: Arc<dyn Tool> = Arc::new(TestTool { id: "echo".into() });
+        let config = AgentConfig::new("a", "m", "s", mock_executor())
+            .with_tool(t1)
+            .with_tool(t2);
+        assert_eq!(config.tools.len(), 1, "duplicate tool ID should overwrite");
+    }
+
+    #[test]
+    fn config_with_tools_deduplicates_by_id() {
+        let tools: Vec<Arc<dyn Tool>> = vec![
+            Arc::new(TestTool { id: "echo".into() }),
+            Arc::new(TestTool { id: "echo".into() }),
+            Arc::new(TestTool {
+                id: "search".into(),
+            }),
+        ];
+        let config = AgentConfig::new("a", "m", "s", mock_executor()).with_tools(tools);
+        assert_eq!(config.tools.len(), 2);
+    }
+
+    #[test]
+    fn config_system_prompt_preserved_verbatim() {
+        let prompt = "You are a helpful assistant.\nBe concise.\nDo not hallucinate.";
+        let config = AgentConfig::new("a", "m", prompt, mock_executor());
+        assert_eq!(config.system_prompt, prompt);
+    }
+
+    #[test]
+    fn config_with_context_summarizer() {
+        use crate::context::ContextSummarizer;
+
+        struct MockSummarizer;
+        #[async_trait]
+        impl ContextSummarizer for MockSummarizer {
+            async fn summarize(
+                &self,
+                _transcript: &str,
+                _previous_summary: Option<&str>,
+                _executor: &dyn awaken_contract::contract::executor::LlmExecutor,
+            ) -> Result<String, String> {
+                Ok("summary".into())
+            }
+        }
+
+        let config = AgentConfig::new("a", "m", "s", mock_executor())
+            .with_context_summarizer(Arc::new(MockSummarizer));
+        assert!(config.context_summarizer.is_some());
+    }
+
+    #[test]
+    fn config_default_max_continuation_retries() {
+        let config = AgentConfig::new("a", "m", "s", mock_executor());
+        assert_eq!(config.max_continuation_retries, 2);
+    }
+
+    #[test]
+    fn config_zero_max_rounds() {
+        let config = AgentConfig::new("a", "m", "s", mock_executor()).with_max_rounds(0);
+        assert_eq!(config.max_rounds, 0);
+    }
 }

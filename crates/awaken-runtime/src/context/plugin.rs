@@ -426,4 +426,127 @@ mod tests {
         let parsed: CompactionBoundary = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, boundary);
     }
+
+    // -----------------------------------------------------------------------
+    // Migrated from uncarve: additional compaction state tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compaction_state_default_is_empty() {
+        let state = CompactionState::default();
+        assert!(state.boundaries.is_empty());
+        assert_eq!(state.total_compactions, 0);
+        assert!(state.latest_boundary().is_none());
+    }
+
+    #[test]
+    fn compaction_state_boundary_ordering_preserved() {
+        let mut state = CompactionState::default();
+        for i in 0..5 {
+            state.reduce(CompactionAction::RecordBoundary(CompactionBoundary {
+                summary: format!("boundary_{i}"),
+                pre_tokens: 1000,
+                post_tokens: 100,
+                timestamp_ms: i as u64,
+            }));
+        }
+        assert_eq!(state.boundaries.len(), 5);
+        assert_eq!(state.total_compactions, 5);
+        for (i, b) in state.boundaries.iter().enumerate() {
+            assert_eq!(b.summary, format!("boundary_{i}"));
+            assert_eq!(b.timestamp_ms, i as u64);
+        }
+    }
+
+    #[test]
+    fn compaction_state_clear_twice_is_idempotent() {
+        let mut state = CompactionState::default();
+        state.reduce(CompactionAction::RecordBoundary(CompactionBoundary {
+            summary: "s".into(),
+            pre_tokens: 1,
+            post_tokens: 1,
+            timestamp_ms: 0,
+        }));
+        state.reduce(CompactionAction::Clear);
+        state.reduce(CompactionAction::Clear);
+        assert!(state.boundaries.is_empty());
+        assert_eq!(state.total_compactions, 0);
+    }
+
+    #[test]
+    fn compaction_config_default_has_sane_values() {
+        let config = CompactionConfig::default();
+        assert!(!config.summarizer_system_prompt.is_empty());
+        assert!(config.summarizer_user_prompt.contains("{messages}"));
+        assert!(config.min_savings_ratio > 0.0);
+        assert!(config.min_savings_ratio < 1.0);
+        assert!(config.summary_max_tokens.is_none());
+        assert!(config.summary_model.is_none());
+    }
+
+    #[test]
+    fn compaction_config_serde_roundtrip() {
+        let config = CompactionConfig {
+            summarizer_system_prompt: "custom system".into(),
+            summarizer_user_prompt: "custom user: {messages}".into(),
+            summary_max_tokens: Some(512),
+            summary_model: Some("claude-3-haiku".into()),
+            min_savings_ratio: 0.5,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: CompactionConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed.summarizer_system_prompt,
+            config.summarizer_system_prompt
+        );
+        assert_eq!(parsed.summary_max_tokens, Some(512));
+        assert_eq!(parsed.summary_model.as_deref(), Some("claude-3-haiku"));
+    }
+
+    #[test]
+    fn compaction_state_pre_post_tokens_preserved() {
+        let mut state = CompactionState::default();
+        state.reduce(CompactionAction::RecordBoundary(CompactionBoundary {
+            summary: "test".into(),
+            pre_tokens: 10_000,
+            post_tokens: 500,
+            timestamp_ms: 99,
+        }));
+        let b = state.latest_boundary().unwrap();
+        assert_eq!(b.pre_tokens, 10_000);
+        assert_eq!(b.post_tokens, 500);
+        assert_eq!(b.timestamp_ms, 99);
+    }
+
+    #[test]
+    fn context_transform_plugin_descriptor_name() {
+        let policy = awaken_contract::contract::inference::ContextWindowPolicy::default();
+        let plugin = ContextTransformPlugin::new(policy);
+        assert_eq!(plugin.descriptor().name, CONTEXT_TRANSFORM_PLUGIN_ID);
+    }
+
+    #[test]
+    fn compaction_action_serde_roundtrip() {
+        let actions = vec![
+            CompactionAction::RecordBoundary(CompactionBoundary {
+                summary: "s".into(),
+                pre_tokens: 1,
+                post_tokens: 1,
+                timestamp_ms: 0,
+            }),
+            CompactionAction::Clear,
+        ];
+        for action in actions {
+            let json = serde_json::to_string(&action).unwrap();
+            let parsed: CompactionAction = serde_json::from_str(&json).unwrap();
+            // Verify the action type roundtrips
+            match (&action, &parsed) {
+                (CompactionAction::Clear, CompactionAction::Clear) => {}
+                (CompactionAction::RecordBoundary(a), CompactionAction::RecordBoundary(b)) => {
+                    assert_eq!(a.summary, b.summary);
+                }
+                _ => panic!("action type mismatch after serde roundtrip"),
+            }
+        }
+    }
 }

@@ -590,4 +590,45 @@ mod tests {
         assert_eq!(inner.call_count(), 1, "should not attempt fallback");
         let _ = recorder; // suppress unused warning
     }
+
+    // -----------------------------------------------------------------------
+    // Migrated from uncarve: retry budget exhaustion and policy serde
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn retry_policy_serde_roundtrip() {
+        let policy = LlmRetryPolicy::default()
+            .with_max_retries(5)
+            .with_fallback_model("fallback-a")
+            .with_fallback_model("fallback-b");
+        let json = serde_json::to_string(&policy).unwrap();
+        let parsed: LlmRetryPolicy = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.max_retries, 5);
+        assert_eq!(parsed.fallback_models, vec!["fallback-a", "fallback-b"]);
+    }
+
+    #[tokio::test]
+    async fn retry_budget_exact_boundary() {
+        // max_retries=2 means 3 total attempts (1 initial + 2 retries).
+        // Fail exactly 2 times, succeed on attempt 3.
+        let inner = Arc::new(FailNThenSucceed::new(2));
+        let policy = LlmRetryPolicy::default().with_max_retries(2);
+        let executor = RetryingExecutor::new(inner.clone(), policy);
+
+        let result = executor.execute(test_request()).await;
+        assert!(result.is_ok());
+        assert_eq!(inner.call_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn retry_budget_one_over_boundary() {
+        // max_retries=2, fail 3 times = should exhaust budget
+        let inner = Arc::new(FailNThenSucceed::new(3));
+        let policy = LlmRetryPolicy::default().with_max_retries(2);
+        let executor = RetryingExecutor::new(inner.clone(), policy);
+
+        let result = executor.execute(test_request()).await;
+        assert!(result.is_err());
+        assert_eq!(inner.call_count(), 3, "1 initial + 2 retries = 3 calls");
+    }
 }
