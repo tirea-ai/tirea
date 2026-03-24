@@ -44,6 +44,7 @@ pub struct AgentRuntimeBuilder {
     providers: MapProviderRegistry,
     plugins: MapPluginSource,
     thread_run_store: Option<Arc<dyn ThreadRunStore>>,
+    profile_store: Option<Arc<dyn awaken_contract::contract::profile_store::ProfileStore>>,
     #[cfg(feature = "a2a")]
     remote_sources: Vec<RemoteAgentSource>,
 }
@@ -57,6 +58,7 @@ impl AgentRuntimeBuilder {
             providers: MapProviderRegistry::new(),
             plugins: MapPluginSource::new(),
             thread_run_store: None,
+            profile_store: None,
             #[cfg(feature = "a2a")]
             remote_sources: Vec::new(),
         }
@@ -103,6 +105,15 @@ impl AgentRuntimeBuilder {
     /// Set the thread run store for persistence.
     pub fn with_thread_run_store(mut self, store: Arc<dyn ThreadRunStore>) -> Self {
         self.thread_run_store = Some(store);
+        self
+    }
+
+    /// Set the profile store for cross-run key-value persistence.
+    pub fn with_profile_store(
+        mut self,
+        store: Arc<dyn awaken_contract::contract::profile_store::ProfileStore>,
+    ) -> Self {
+        self.profile_store = Some(store);
         self
     }
 
@@ -165,6 +176,10 @@ impl AgentRuntimeBuilder {
 
         if let Some(store) = self.thread_run_store {
             runtime = runtime.with_thread_run_store(store);
+        }
+
+        if let Some(store) = self.profile_store {
+            runtime = runtime.with_profile_store(store);
         }
 
         Ok(runtime)
@@ -510,5 +525,49 @@ mod tests {
         let resolved = runtime.resolver().resolve("agent").unwrap();
         // The model should be resolved to the actual model name
         assert_eq!(resolved.config.model, "gpt-4-turbo");
+    }
+
+    #[test]
+    fn builder_with_profile_store() {
+        use awaken_contract::contract::profile_store::{
+            ProfileEntry, ProfileOwner as POwner, ProfileStore,
+        };
+        use awaken_contract::contract::storage::StorageError;
+
+        struct NoOpProfileStore;
+
+        #[async_trait]
+        impl ProfileStore for NoOpProfileStore {
+            async fn get(
+                &self,
+                _owner: &POwner,
+                _key: &str,
+            ) -> Result<Option<ProfileEntry>, StorageError> {
+                Ok(None)
+            }
+            async fn set(
+                &self,
+                _owner: &POwner,
+                _key: &str,
+                _value: Value,
+            ) -> Result<(), StorageError> {
+                Ok(())
+            }
+            async fn delete(&self, _owner: &POwner, _key: &str) -> Result<(), StorageError> {
+                Ok(())
+            }
+            async fn list(&self, _owner: &POwner) -> Result<Vec<ProfileEntry>, StorageError> {
+                Ok(vec![])
+            }
+            async fn clear_owner(&self, _owner: &POwner) -> Result<(), StorageError> {
+                Ok(())
+            }
+        }
+
+        let runtime = AgentRuntimeBuilder::new()
+            .with_profile_store(Arc::new(NoOpProfileStore))
+            .build()
+            .unwrap();
+        assert!(runtime.profile_store.is_some());
     }
 }

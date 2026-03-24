@@ -74,6 +74,8 @@ impl RunHandle {
 pub struct AgentRuntime {
     pub(crate) resolver: Arc<dyn AgentResolver>,
     pub(crate) storage: Option<Arc<dyn ThreadRunStore>>,
+    pub(crate) profile_store:
+        Option<Arc<dyn awaken_contract::contract::profile_store::ProfileStore>>,
     pub(crate) active_runs: ActiveRunRegistry,
     #[cfg(feature = "a2a")]
     composite_registry: Option<Arc<CompositeAgentSpecRegistry>>,
@@ -84,6 +86,7 @@ impl AgentRuntime {
         Self {
             resolver,
             storage: None,
+            profile_store: None,
             active_runs: ActiveRunRegistry::new(),
             #[cfg(feature = "a2a")]
             composite_registry: None,
@@ -93,6 +96,15 @@ impl AgentRuntime {
     #[must_use]
     pub fn with_thread_run_store(mut self, store: Arc<dyn ThreadRunStore>) -> Self {
         self.storage = Some(store);
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_profile_store(
+        mut self,
+        store: Arc<dyn awaken_contract::contract::profile_store::ProfileStore>,
+    ) -> Self {
+        self.profile_store = Some(store);
         self
     }
 
