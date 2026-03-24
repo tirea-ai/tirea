@@ -161,4 +161,113 @@ mod tests {
         let parsed: Vec<ContentBlock> = serde_json::from_value(json).unwrap();
         assert_eq!(parsed, blocks);
     }
+
+    // ── Thinking block tests ──
+
+    #[test]
+    fn thinking_block_serde_roundtrip() {
+        let block = ContentBlock::Thinking {
+            thinking: "Let me consider...".into(),
+        };
+        let json_val = serde_json::to_value(&block).unwrap();
+        assert_eq!(json_val["type"], "thinking");
+        assert_eq!(json_val["thinking"], "Let me consider...");
+        let parsed: ContentBlock = serde_json::from_value(json_val).unwrap();
+        assert_eq!(parsed, block);
+    }
+
+    // ── ToolUse block tests ──
+
+    #[test]
+    fn tool_use_block_serde_roundtrip() {
+        let block = ContentBlock::ToolUse {
+            id: "call_1".into(),
+            name: "search".into(),
+            input: json!({"query": "rust"}),
+        };
+        let json_val = serde_json::to_value(&block).unwrap();
+        assert_eq!(json_val["type"], "tool_use");
+        assert_eq!(json_val["id"], "call_1");
+        assert_eq!(json_val["name"], "search");
+        let parsed: ContentBlock = serde_json::from_value(json_val).unwrap();
+        assert_eq!(parsed, block);
+    }
+
+    // ── ToolResult block tests ──
+
+    #[test]
+    fn tool_result_block_serde_roundtrip() {
+        let block = ContentBlock::ToolResult {
+            tool_use_id: "call_1".into(),
+            content: vec![ContentBlock::text("Result: 42")],
+        };
+        let json_val = serde_json::to_value(&block).unwrap();
+        assert_eq!(json_val["type"], "tool_result");
+        assert_eq!(json_val["tool_use_id"], "call_1");
+        let parsed: ContentBlock = serde_json::from_value(json_val).unwrap();
+        assert_eq!(parsed, block);
+    }
+
+    // ── Image base64 tests ──
+
+    #[test]
+    fn image_base64_block_serde_roundtrip() {
+        let block = ContentBlock::image_base64("image/png", "iVBORw0KGgo=");
+        let json_val = serde_json::to_value(&block).unwrap();
+        assert_eq!(json_val["type"], "image");
+        assert_eq!(json_val["source"]["type"], "base64");
+        assert_eq!(json_val["source"]["media_type"], "image/png");
+        let parsed: ContentBlock = serde_json::from_value(json_val).unwrap();
+        assert_eq!(parsed, block);
+    }
+
+    // ── Document block without title ──
+
+    #[test]
+    fn document_block_without_title_omits_field() {
+        let block = ContentBlock::document_base64("application/pdf", "JVBER", None);
+        let json_val = serde_json::to_value(&block).unwrap();
+        assert!(json_val.get("title").is_none());
+        let parsed: ContentBlock = serde_json::from_value(json_val).unwrap();
+        assert_eq!(parsed, block);
+    }
+
+    // ── Mixed content blocks ──
+
+    #[test]
+    fn mixed_content_blocks_roundtrip() {
+        let blocks = vec![
+            ContentBlock::text("Here is the result:"),
+            ContentBlock::ToolUse {
+                id: "c1".into(),
+                name: "calc".into(),
+                input: json!({"expr": "2+2"}),
+            },
+            ContentBlock::ToolResult {
+                tool_use_id: "c1".into(),
+                content: vec![ContentBlock::text("4")],
+            },
+            ContentBlock::Thinking {
+                thinking: "hmm".into(),
+            },
+        ];
+        let json_val = serde_json::to_value(&blocks).unwrap();
+        let parsed: Vec<ContentBlock> = serde_json::from_value(json_val).unwrap();
+        assert_eq!(parsed, blocks);
+    }
+
+    #[test]
+    fn content_block_debug_output() {
+        let block = ContentBlock::text("hi");
+        let debug = format!("{:?}", block);
+        assert!(debug.contains("Text"));
+        assert!(debug.contains("hi"));
+    }
+
+    #[test]
+    fn content_block_clone() {
+        let block = ContentBlock::text("hello");
+        let cloned = block.clone();
+        assert_eq!(block, cloned);
+    }
 }

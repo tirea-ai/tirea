@@ -698,4 +698,301 @@ mod tests {
         ctx.report_progress(ProgressStatus::Running, None, None)
             .await;
     }
+
+    // ── ToolStatus serde tests (migrated from uncarve) ──
+
+    #[test]
+    fn tool_status_serialization() {
+        assert_eq!(
+            serde_json::to_string(&ToolStatus::Success).unwrap(),
+            "\"success\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ToolStatus::Pending).unwrap(),
+            "\"pending\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ToolStatus::Error).unwrap(),
+            "\"error\""
+        );
+    }
+
+    #[test]
+    fn tool_status_deserialization() {
+        assert_eq!(
+            serde_json::from_str::<ToolStatus>("\"success\"").unwrap(),
+            ToolStatus::Success
+        );
+        assert_eq!(
+            serde_json::from_str::<ToolStatus>("\"pending\"").unwrap(),
+            ToolStatus::Pending
+        );
+        assert_eq!(
+            serde_json::from_str::<ToolStatus>("\"error\"").unwrap(),
+            ToolStatus::Error
+        );
+    }
+
+    #[test]
+    fn tool_status_equality() {
+        assert_eq!(ToolStatus::Success, ToolStatus::Success);
+        assert_ne!(ToolStatus::Success, ToolStatus::Error);
+    }
+
+    #[test]
+    fn tool_status_clone() {
+        let status = ToolStatus::Pending;
+        let cloned = status.clone();
+        assert_eq!(status, cloned);
+    }
+
+    #[test]
+    fn tool_status_debug() {
+        assert_eq!(format!("{:?}", ToolStatus::Success), "Success");
+        assert_eq!(format!("{:?}", ToolStatus::Error), "Error");
+        assert_eq!(format!("{:?}", ToolStatus::Pending), "Pending");
+    }
+
+    // ── ToolResult detailed tests (migrated from uncarve) ──
+
+    #[test]
+    fn tool_result_success_detailed() {
+        let result = ToolResult::success("my_tool", json!({"value": 42}));
+        assert_eq!(result.tool_name, "my_tool");
+        assert_eq!(result.status, ToolStatus::Success);
+        assert_eq!(result.data, json!({"value": 42}));
+        assert!(result.message.is_none());
+        assert!(result.is_success());
+        assert!(!result.is_error());
+        assert!(!result.is_pending());
+    }
+
+    #[test]
+    fn tool_result_success_with_message_detailed() {
+        let result = ToolResult::success_with_message(
+            "my_tool",
+            json!({"done": true}),
+            "Operation complete",
+        );
+        assert_eq!(result.tool_name, "my_tool");
+        assert_eq!(result.status, ToolStatus::Success);
+        assert_eq!(result.data, json!({"done": true}));
+        assert_eq!(result.message, Some("Operation complete".to_string()));
+        assert!(result.is_success());
+    }
+
+    #[test]
+    fn tool_result_error_detailed() {
+        let result = ToolResult::error("my_tool", "Something went wrong");
+        assert_eq!(result.tool_name, "my_tool");
+        assert_eq!(result.status, ToolStatus::Error);
+        assert_eq!(result.data, Value::Null);
+        assert_eq!(result.message, Some("Something went wrong".to_string()));
+        assert!(!result.is_success());
+        assert!(result.is_error());
+        assert!(!result.is_pending());
+    }
+
+    #[test]
+    fn tool_result_error_with_code_detailed() {
+        let result = ToolResult::error_with_code("my_tool", "invalid_arguments", "missing input");
+        assert_eq!(result.tool_name, "my_tool");
+        assert_eq!(result.status, ToolStatus::Error);
+        assert_eq!(
+            result.data,
+            json!({"error": {"code": "invalid_arguments", "message": "missing input"}})
+        );
+        assert_eq!(
+            result.message,
+            Some("[invalid_arguments] missing input".to_string())
+        );
+        assert!(result.is_error());
+    }
+
+    #[test]
+    fn tool_result_pending_detailed() {
+        let result = ToolResult::suspended("my_tool", "Waiting for confirmation");
+        assert_eq!(result.tool_name, "my_tool");
+        assert_eq!(result.status, ToolStatus::Pending);
+        assert_eq!(result.data, Value::Null);
+        assert_eq!(result.message, Some("Waiting for confirmation".to_string()));
+        assert!(!result.is_success());
+        assert!(!result.is_error());
+        assert!(result.is_pending());
+    }
+
+    #[test]
+    fn tool_result_with_suspension_roundtrip() {
+        use crate::contract::suspension::*;
+        let suspension = Suspension {
+            id: "call_1".into(),
+            action: "tool:confirm".into(),
+            message: "Need confirmation".into(),
+            parameters: json!({"message": "hi"}),
+            response_schema: None,
+        };
+        let ticket = SuspendTicket::new(
+            suspension,
+            PendingToolCall::new("call_1", "confirm", json!({"message": "hi"})),
+            ToolCallResumeMode::ReplayToolCall,
+        );
+        let result = ToolResult::suspended_with("confirm", "waiting", ticket.clone());
+        assert!(result.is_pending());
+        assert_eq!(*result.suspension.unwrap(), ticket);
+    }
+
+    #[test]
+    fn tool_result_serialization_roundtrip() {
+        let result = ToolResult::success("my_tool", json!({"key": "value"}));
+        let json_str = serde_json::to_string(&result).unwrap();
+        let parsed: ToolResult = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(parsed.tool_name, "my_tool");
+        assert_eq!(parsed.status, ToolStatus::Success);
+        assert_eq!(parsed.data, json!({"key": "value"}));
+    }
+
+    #[test]
+    fn tool_result_clone_preserves_fields() {
+        let result = ToolResult::success("my_tool", json!({"x": 1}));
+        let cloned = result.clone();
+        assert_eq!(result.tool_name, cloned.tool_name);
+        assert_eq!(result.status, cloned.status);
+        assert_eq!(result.data, cloned.data);
+    }
+
+    #[test]
+    fn tool_result_debug_output() {
+        let result = ToolResult::success("test", json!(null));
+        let debug = format!("{:?}", result);
+        assert!(debug.contains("ToolResult"));
+        assert!(debug.contains("test"));
+    }
+
+    // ── ToolDescriptor detailed tests (migrated from uncarve) ──
+
+    #[test]
+    fn tool_descriptor_new_detailed() {
+        let desc = ToolDescriptor::new("read_file", "Read File", "Reads a file from disk");
+        assert_eq!(desc.id, "read_file");
+        assert_eq!(desc.name, "Read File");
+        assert_eq!(desc.description, "Reads a file from disk");
+        assert!(desc.category.is_none());
+        assert_eq!(desc.parameters, json!({"type": "object", "properties": {}}));
+    }
+
+    #[test]
+    fn tool_descriptor_with_parameters_detailed() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"]
+        });
+        let desc =
+            ToolDescriptor::new("read_file", "Read File", "Read").with_parameters(schema.clone());
+        assert_eq!(desc.parameters, schema);
+    }
+
+    #[test]
+    fn tool_descriptor_with_category_detailed() {
+        let desc =
+            ToolDescriptor::new("read_file", "Read File", "Read").with_category("filesystem");
+        assert_eq!(desc.category, Some("filesystem".to_string()));
+    }
+
+    #[test]
+    fn tool_descriptor_builder_chain_detailed() {
+        let desc = ToolDescriptor::new("tool", "Tool", "Desc")
+            .with_parameters(json!({"type": "object"}))
+            .with_category("test");
+        assert_eq!(desc.id, "tool");
+        assert_eq!(desc.category, Some("test".to_string()));
+    }
+
+    #[test]
+    fn tool_descriptor_serialization_detailed() {
+        let desc =
+            ToolDescriptor::new("my_tool", "My Tool", "Does things").with_category("utilities");
+        let json_str = serde_json::to_string(&desc).unwrap();
+        let parsed: ToolDescriptor = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(parsed.id, "my_tool");
+        assert_eq!(parsed.name, "My Tool");
+        assert_eq!(parsed.category, Some("utilities".to_string()));
+    }
+
+    #[test]
+    fn tool_descriptor_clone_preserves_all() {
+        let desc = ToolDescriptor::new("tool", "Tool", "Desc").with_category("cat");
+        let cloned = desc.clone();
+        assert_eq!(desc.id, cloned.id);
+        assert_eq!(desc.name, cloned.name);
+        assert_eq!(desc.description, cloned.description);
+        assert_eq!(desc.category, cloned.category);
+    }
+
+    #[test]
+    fn tool_descriptor_debug_output() {
+        let desc = ToolDescriptor::new("tool", "Tool", "Desc");
+        let debug = format!("{:?}", desc);
+        assert!(debug.contains("ToolDescriptor"));
+        assert!(debug.contains("tool"));
+    }
+
+    #[test]
+    fn tool_result_to_json_preserves_status() {
+        let result = ToolResult::error("my_tool", "fail");
+        let value = result.to_json();
+        assert_eq!(value["status"], "error");
+        assert_eq!(value["tool_name"], "my_tool");
+        assert_eq!(value["message"], "fail");
+    }
+
+    #[test]
+    fn tool_result_suspended_with_null_suspension() {
+        let result = ToolResult::suspended("my_tool", "waiting");
+        assert!(result.suspension.is_none());
+    }
+
+    #[tokio::test]
+    async fn tool_trait_arc_dyn() {
+        let tool: std::sync::Arc<dyn Tool> = std::sync::Arc::new(EchoTool);
+        let desc = tool.descriptor();
+        assert_eq!(desc.id, "echo");
+        let result = tool
+            .execute(json!("test"), &ToolCallContext::test_default())
+            .await
+            .unwrap();
+        assert!(result.is_success());
+    }
+
+    // ── ToolError individual variant tests (migrated from uncarve) ──
+
+    #[test]
+    fn tool_error_invalid_arguments_display() {
+        let err = ToolError::InvalidArguments("missing field".to_string());
+        assert_eq!(err.to_string(), "Invalid arguments: missing field");
+    }
+
+    #[test]
+    fn tool_error_execution_failed_display() {
+        let err = ToolError::ExecutionFailed("timeout".to_string());
+        assert_eq!(err.to_string(), "Execution failed: timeout");
+    }
+
+    #[test]
+    fn tool_error_denied_display() {
+        let err = ToolError::Denied("no access".to_string());
+        assert_eq!(err.to_string(), "Denied: no access");
+    }
+
+    #[test]
+    fn tool_error_not_found_display() {
+        let err = ToolError::NotFound("file.txt".to_string());
+        assert_eq!(err.to_string(), "Not found: file.txt");
+    }
+
+    #[test]
+    fn tool_error_internal_display() {
+        let err = ToolError::Internal("unexpected".to_string());
+        assert_eq!(err.to_string(), "Internal error: unexpected");
+    }
 }

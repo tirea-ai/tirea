@@ -441,4 +441,124 @@ mod tests {
         assert!(!json.contains("run_id"));
         assert!(!json.contains("step_index"));
     }
+
+    // ── Backward compatibility tests (migrated from uncarve) ──
+
+    #[test]
+    fn test_message_without_metadata_deserializes() {
+        let json = r#"{"role":"user","content":[{"type":"text","text":"hello"}]}"#;
+        let msg: Message = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.role, Role::User);
+        assert!(msg.metadata.is_none());
+        assert!(msg.id.is_none());
+        assert_eq!(msg.visibility, Visibility::All);
+    }
+
+    // ── Role serialization value tests ──
+
+    #[test]
+    fn test_role_serialization_values() {
+        assert_eq!(serde_json::to_string(&Role::System).unwrap(), "\"system\"");
+        assert_eq!(serde_json::to_string(&Role::User).unwrap(), "\"user\"");
+        assert_eq!(
+            serde_json::to_string(&Role::Assistant).unwrap(),
+            "\"assistant\""
+        );
+        assert_eq!(serde_json::to_string(&Role::Tool).unwrap(), "\"tool\"");
+    }
+
+    // ── Visibility serialization value tests ──
+
+    #[test]
+    fn test_visibility_serialization_values() {
+        assert_eq!(serde_json::to_string(&Visibility::All).unwrap(), "\"all\"");
+        assert_eq!(
+            serde_json::to_string(&Visibility::Internal).unwrap(),
+            "\"internal\""
+        );
+    }
+
+    // ── Message clone and debug tests ──
+
+    #[test]
+    fn test_message_clone() {
+        let msg = Message::user("hello");
+        let cloned = msg.clone();
+        assert_eq!(cloned.role, Role::User);
+        assert_eq!(cloned.text(), "hello");
+        assert_eq!(cloned.id, msg.id);
+    }
+
+    #[test]
+    fn test_message_debug() {
+        let msg = Message::user("hello");
+        let debug = format!("{:?}", msg);
+        assert!(debug.contains("Message"));
+        assert!(debug.contains("User"));
+    }
+
+    // ── ToolCall tests ──
+
+    #[test]
+    fn test_tool_call_clone() {
+        let call = ToolCall::new("id_1", "search", json!({"q": "rust"}));
+        let cloned = call.clone();
+        assert_eq!(cloned.id, "id_1");
+        assert_eq!(cloned.name, "search");
+        assert_eq!(cloned.arguments, json!({"q": "rust"}));
+    }
+
+    #[test]
+    fn test_tool_call_debug() {
+        let call = ToolCall::new("id_1", "search", json!({}));
+        let debug = format!("{:?}", call);
+        assert!(debug.contains("ToolCall"));
+        assert!(debug.contains("search"));
+    }
+
+    // ── MessageMetadata tests ──
+
+    #[test]
+    fn test_message_metadata_serde_roundtrip() {
+        let meta = MessageMetadata {
+            run_id: Some("run-1".into()),
+            step_index: Some(5),
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        let parsed: MessageMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, meta);
+    }
+
+    #[test]
+    fn test_message_metadata_partial_fields() {
+        let json = r#"{"run_id":"r1"}"#;
+        let meta: MessageMetadata = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.run_id.as_deref(), Some("r1"));
+        assert!(meta.step_index.is_none());
+    }
+
+    // ── Message text extraction tests ──
+
+    #[test]
+    fn test_message_text_multiblock() {
+        let msg = Message::tool_with_content(
+            "c1",
+            vec![ContentBlock::text("first"), ContentBlock::text("second")],
+        );
+        assert_eq!(msg.text(), "firstsecond");
+    }
+
+    #[test]
+    fn test_message_text_empty_content() {
+        let msg = Message {
+            id: None,
+            role: Role::User,
+            content: vec![],
+            tool_calls: None,
+            tool_call_id: None,
+            visibility: Visibility::All,
+            metadata: None,
+        };
+        assert_eq!(msg.text(), "");
+    }
 }

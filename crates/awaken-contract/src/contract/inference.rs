@@ -427,4 +427,328 @@ mod tests {
         let parsed: InferenceError = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, err);
     }
+
+    // ── StreamResult tests (migrated from uncarve) ──
+
+    #[test]
+    fn stream_result_text_concatenates() {
+        let result = StreamResult {
+            content: vec![
+                ContentBlock::text("Hello "),
+                ContentBlock::image_url("img.png"),
+                ContentBlock::text("World"),
+            ],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        };
+        assert_eq!(result.text(), "Hello World");
+    }
+
+    #[test]
+    fn stream_result_text_empty_no_text_blocks() {
+        let result = StreamResult {
+            content: vec![ContentBlock::image_url("img.png")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        };
+        assert_eq!(result.text(), "");
+    }
+
+    #[test]
+    fn stream_result_needs_truncation_recovery_true() {
+        let result = StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c1", "search", json!({}))],
+            usage: None,
+            stop_reason: Some(StopReason::MaxTokens),
+            has_incomplete_tool_calls: true,
+        };
+        assert!(result.needs_truncation_recovery());
+    }
+
+    #[test]
+    fn stream_result_no_truncation_recovery_end_turn() {
+        let result = StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c1", "search", json!({}))],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: true,
+        };
+        assert!(!result.needs_truncation_recovery());
+    }
+
+    #[test]
+    fn stream_result_no_truncation_recovery_complete_tools() {
+        let result = StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c1", "search", json!({}))],
+            usage: None,
+            stop_reason: Some(StopReason::MaxTokens),
+            has_incomplete_tool_calls: false,
+        };
+        assert!(!result.needs_truncation_recovery());
+    }
+
+    // ── StopReason tests (migrated from uncarve) ──
+
+    #[test]
+    fn stop_reason_serde_roundtrip_all_variants() {
+        for reason in [
+            StopReason::EndTurn,
+            StopReason::MaxTokens,
+            StopReason::ToolUse,
+            StopReason::StopSequence,
+        ] {
+            let json = serde_json::to_string(&reason).unwrap();
+            let parsed: StopReason = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, reason);
+        }
+    }
+
+    #[test]
+    fn stop_reason_debug_output() {
+        assert_eq!(format!("{:?}", StopReason::EndTurn), "EndTurn");
+        assert_eq!(format!("{:?}", StopReason::MaxTokens), "MaxTokens");
+        assert_eq!(format!("{:?}", StopReason::ToolUse), "ToolUse");
+        assert_eq!(format!("{:?}", StopReason::StopSequence), "StopSequence");
+    }
+
+    // ── InferenceOverride.is_empty tests (migrated from uncarve) ──
+
+    #[test]
+    fn inference_override_is_empty_default() {
+        assert!(InferenceOverride::default().is_empty());
+    }
+
+    #[test]
+    fn inference_override_not_empty_with_model() {
+        let ovr = InferenceOverride {
+            model: Some("model-a".into()),
+            ..Default::default()
+        };
+        assert!(!ovr.is_empty());
+    }
+
+    #[test]
+    fn inference_override_not_empty_with_temperature() {
+        let ovr = InferenceOverride {
+            temperature: Some(0.5),
+            ..Default::default()
+        };
+        assert!(!ovr.is_empty());
+    }
+
+    #[test]
+    fn inference_override_not_empty_with_max_tokens() {
+        let ovr = InferenceOverride {
+            max_tokens: Some(1024),
+            ..Default::default()
+        };
+        assert!(!ovr.is_empty());
+    }
+
+    #[test]
+    fn inference_override_not_empty_with_reasoning_effort() {
+        let ovr = InferenceOverride {
+            reasoning_effort: Some(ReasoningEffort::High),
+            ..Default::default()
+        };
+        assert!(!ovr.is_empty());
+    }
+
+    #[test]
+    fn inference_override_not_empty_with_top_p() {
+        let ovr = InferenceOverride {
+            top_p: Some(0.9),
+            ..Default::default()
+        };
+        assert!(!ovr.is_empty());
+    }
+
+    #[test]
+    fn inference_override_not_empty_with_fallback_models() {
+        let ovr = InferenceOverride {
+            fallback_models: Some(vec!["m1".into()]),
+            ..Default::default()
+        };
+        assert!(!ovr.is_empty());
+    }
+
+    // ── TokenUsage tests (migrated from uncarve) ──
+
+    #[test]
+    fn token_usage_full_serde_roundtrip() {
+        let usage = TokenUsage {
+            prompt_tokens: Some(100),
+            completion_tokens: Some(50),
+            total_tokens: Some(150),
+            cache_read_tokens: Some(30),
+            cache_creation_tokens: Some(10),
+            thinking_tokens: Some(5),
+        };
+        let json = serde_json::to_string(&usage).unwrap();
+        let parsed: TokenUsage = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, usage);
+    }
+
+    #[test]
+    fn token_usage_default_is_all_none() {
+        let usage = TokenUsage::default();
+        assert!(usage.prompt_tokens.is_none());
+        assert!(usage.completion_tokens.is_none());
+        assert!(usage.total_tokens.is_none());
+        assert!(usage.cache_read_tokens.is_none());
+        assert!(usage.cache_creation_tokens.is_none());
+        assert!(usage.thinking_tokens.is_none());
+    }
+
+    #[test]
+    fn token_usage_default_serializes_to_empty_object() {
+        let usage = TokenUsage::default();
+        let json = serde_json::to_string(&usage).unwrap();
+        assert_eq!(json, "{}");
+    }
+
+    // ── ReasoningEffort tests (migrated from uncarve) ──
+
+    #[test]
+    fn reasoning_effort_all_variants_serde_roundtrip() {
+        for effort in [
+            ReasoningEffort::None,
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+            ReasoningEffort::Max,
+            ReasoningEffort::Budget(2048),
+        ] {
+            let json = serde_json::to_string(&effort).unwrap();
+            let parsed: ReasoningEffort = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, effort);
+        }
+    }
+
+    // ── ContextCompactionMode tests (migrated from uncarve) ──
+
+    #[test]
+    fn context_compaction_mode_serde_roundtrip() {
+        for mode in [
+            ContextCompactionMode::KeepRecentRawSuffix,
+            ContextCompactionMode::CompactToSafeFrontier,
+        ] {
+            let json = serde_json::to_string(&mode).unwrap();
+            let parsed: ContextCompactionMode = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, mode);
+        }
+    }
+
+    #[test]
+    fn context_compaction_mode_default_is_keep_recent() {
+        assert_eq!(
+            ContextCompactionMode::default(),
+            ContextCompactionMode::KeepRecentRawSuffix
+        );
+    }
+
+    #[test]
+    fn context_compaction_mode_serialization_values() {
+        assert_eq!(
+            serde_json::to_string(&ContextCompactionMode::KeepRecentRawSuffix).unwrap(),
+            "\"keep_recent_raw_suffix\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ContextCompactionMode::CompactToSafeFrontier).unwrap(),
+            "\"compact_to_safe_frontier\""
+        );
+    }
+
+    // ── InferenceError tests (migrated from uncarve) ──
+
+    #[test]
+    fn inference_error_omits_none_error_class() {
+        let err = InferenceError {
+            error_type: "timeout".into(),
+            message: "timed out".into(),
+            error_class: None,
+        };
+        let json = serde_json::to_string(&err).unwrap();
+        assert!(!json.contains("error_class"));
+    }
+
+    #[test]
+    fn inference_error_type_field_serializes_as_type() {
+        let err = InferenceError {
+            error_type: "rate_limit".into(),
+            message: "too many requests".into(),
+            error_class: None,
+        };
+        let json_val: serde_json::Value = serde_json::to_value(&err).unwrap();
+        assert_eq!(json_val["type"], "rate_limit");
+        assert!(json_val.get("error_type").is_none());
+    }
+
+    // ── ContextWindowPolicy tests (migrated from uncarve) ──
+
+    #[test]
+    fn context_window_policy_default_values() {
+        let policy = ContextWindowPolicy::default();
+        assert_eq!(policy.max_context_tokens, 200_000);
+        assert_eq!(policy.max_output_tokens, 16_384);
+        assert_eq!(policy.min_recent_messages, 10);
+        assert!(policy.enable_prompt_cache);
+        assert!(policy.autocompact_threshold.is_none());
+    }
+
+    #[test]
+    fn context_window_policy_full_roundtrip() {
+        let policy = ContextWindowPolicy {
+            max_context_tokens: 4096,
+            max_output_tokens: 512,
+            min_recent_messages: 4,
+            enable_prompt_cache: false,
+            autocompact_threshold: Some(2048),
+            compaction_mode: ContextCompactionMode::CompactToSafeFrontier,
+            compaction_raw_suffix_messages: 3,
+        };
+        let json = serde_json::to_value(&policy).unwrap();
+        let restored: ContextWindowPolicy = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.max_context_tokens, 4096);
+        assert_eq!(
+            restored.compaction_mode,
+            ContextCompactionMode::CompactToSafeFrontier
+        );
+        assert_eq!(restored.compaction_raw_suffix_messages, 3);
+    }
+
+    // ── InferenceOverride merge tests (migrated from uncarve) ──
+
+    #[test]
+    fn inference_override_merge_fallback_models() {
+        let mut base = InferenceOverride::default();
+        base.merge(InferenceOverride {
+            fallback_models: Some(vec!["model-a".into(), "model-b".into()]),
+            ..Default::default()
+        });
+        assert_eq!(
+            base.fallback_models,
+            Some(vec!["model-a".into(), "model-b".into()])
+        );
+    }
+
+    #[test]
+    fn inference_override_merge_top_p() {
+        let mut base = InferenceOverride {
+            top_p: Some(0.9),
+            ..Default::default()
+        };
+        base.merge(InferenceOverride {
+            top_p: Some(0.7),
+            ..Default::default()
+        });
+        assert_eq!(base.top_p, Some(0.7));
+    }
 }
