@@ -316,3 +316,242 @@ fn cancellation_token_check() {
     handle.cancel();
     assert!(token.is_cancelled());
 }
+
+// ---------------------------------------------------------------------------
+// Additional background task tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn manager_multiple_concurrent_tasks() {
+    let manager = Arc::new(BackgroundTaskManager::new());
+    let id1 = manager
+        .spawn("thread-1", "shell", "task A", |mut cancel| async move {
+            cancel.cancelled().await;
+            TaskResult::Cancelled
+        })
+        .await;
+    let id2 = manager
+        .spawn("thread-1", "http", "task B", |mut cancel| async move {
+            cancel.cancelled().await;
+            TaskResult::Cancelled
+        })
+        .await;
+    let id3 = manager
+        .spawn("thread-1", "shell", "task C", |_| async {
+            TaskResult::Success(serde_json::json!("done"))
+        })
+        .await;
+
+    // Wait for the instant task to finish
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let tasks = manager.list("thread-1").await;
+    assert_eq!(tasks.len(), 3);
+
+    // id1 and id2 are still running, id3 completed
+    let s1 = manager.get(&id1).await.unwrap();
+    assert_eq!(s1.status, TaskStatus::Running);
+    let s2 = manager.get(&id2).await.unwrap();
+    assert_eq!(s2.status, TaskStatus::Running);
+    let s3 = manager.get(&id3).await.unwrap();
+    assert_eq!(s3.status, TaskStatus::Completed);
+
+    // Cancel remaining
+    assert!(manager.cancel(&id1).await);
+    assert!(manager.cancel(&id2).await);
+}
+
+#[tokio::test]
+async fn manager_get_nonexistent_returns_none() {
+    let manager = Arc::new(BackgroundTaskManager::new());
+    assert!(manager.get("does_not_exist").await.is_none());
+}
+
+#[tokio::test]
+async fn manager_cancel_already_completed_returns_false() {
+    let manager = Arc::new(BackgroundTaskManager::new());
+    let id = manager
+        .spawn("thread-1", "test", "fast", |_| async {
+            TaskResult::Success(serde_json::json!(true))
+        })
+        .await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(
+        manager.get(&id).await.unwrap().status,
+        TaskStatus::Completed
+    );
+
+    // Cancelling a completed task returns false
+    assert!(!manager.cancel(&id).await);
+}
+
+#[tokio::test]
+async fn manager_task_result_retrieval_after_success() {
+    let manager = Arc::new(BackgroundTaskManager::new());
+    let id = manager
+        .spawn("thread-1", "test", "result task", |_| async {
+            TaskResult::Success(serde_json::json!({"key": "value", "nested": [1, 2, 3]}))
+        })
+        .await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let summary = manager.get(&id).await.unwrap();
+    assert_eq!(summary.status, TaskStatus::Completed);
+    let result = summary.result.unwrap();
+    assert_eq!(result["key"], "value");
+    assert_eq!(result["nested"][0], 1);
+    assert_eq!(result["nested"][2], 3);
+}
+
+#[tokio::test]
+async fn manager_persisted_snapshot_includes_all_tasks() {
+    let manager = Arc::new(BackgroundTaskManager::new());
+    let _id1 = manager
+        .spawn("thread-1", "shell", "build", |_| async {
+            TaskResult::Success(serde_json::json!(null))
+        })
+        .await;
+    let _id2 = manager
+        .spawn("thread-2", "http", "fetch", |_| async {
+            TaskResult::Failed("timeout".into())
+        })
+        .await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let snapshot = manager.persisted_snapshot().await;
+    assert_eq!(snapshot.len(), 2);
+
+    // Both threads' tasks appear in the global snapshot
+    for meta in snapshot.values() {
+        assert!(meta.status.is_terminal());
+    }
+}
+
+#[tokio::test]
+async fn manager_restore_skips_existing_live_tasks() {
+    let manager = Arc::new(BackgroundTaskManager::new());
+
+    // Spawn a live task with a known id pattern
+    let live_id = manager
+        .spawn("thread-1", "shell", "live task", |mut cancel| async move {
+            cancel.cancelled().await;
+            TaskResult::Cancelled
+        })
+        .await;
+
+    // Build a snapshot that includes the same task id and a new one
+    let mut snapshot = BackgroundTaskStateSnapshot::default();
+    snapshot.tasks.insert(
+        live_id.clone(),
+        PersistedTaskMeta {
+            task_id: live_id.clone(),
+            task_type: "shell".into(),
+            description: "stale restore".into(),
+            status: TaskStatus::Completed,
+            error: None,
+            created_at_ms: 1,
+            completed_at_ms: Some(2),
+        },
+    );
+    snapshot.tasks.insert(
+        "bg_999".into(),
+        PersistedTaskMeta {
+            task_id: "bg_999".into(),
+            task_type: "http".into(),
+            description: "restored only".into(),
+            status: TaskStatus::Failed,
+            error: Some("err".into()),
+            created_at_ms: 10,
+            completed_at_ms: Some(20),
+        },
+    );
+
+    manager.restore_for_thread("thread-1", &snapshot).await;
+
+    // Live task should keep its Running status (not overwritten)
+    let live = manager.get(&live_id).await.unwrap();
+    assert_eq!(live.status, TaskStatus::Running);
+    assert_eq!(live.description, "live task");
+
+    // The new restored task should be visible
+    let restored = manager.get("bg_999").await.unwrap();
+    assert_eq!(restored.status, TaskStatus::Failed);
+    assert_eq!(restored.error.as_deref(), Some("err"));
+
+    // Clean up
+    manager.cancel(&live_id).await;
+}
+
+#[tokio::test]
+async fn manager_task_ids_are_sequential() {
+    let manager = Arc::new(BackgroundTaskManager::new());
+    let id1 = manager
+        .spawn("t", "test", "a", |_| async { TaskResult::Cancelled })
+        .await;
+    let id2 = manager
+        .spawn("t", "test", "b", |_| async { TaskResult::Cancelled })
+        .await;
+    let id3 = manager
+        .spawn("t", "test", "c", |_| async { TaskResult::Cancelled })
+        .await;
+
+    // IDs should be bg_0, bg_1, bg_2
+    assert_eq!(id1, "bg_0");
+    assert_eq!(id2, "bg_1");
+    assert_eq!(id3, "bg_2");
+}
+
+#[tokio::test]
+async fn run_end_persists_task_state() {
+    let store = StateStore::new();
+    let runtime = PhaseRuntime::new(store.clone()).unwrap();
+    let manager = Arc::new(BackgroundTaskManager::new());
+    let plugin: Arc<dyn Plugin> = Arc::new(BackgroundTaskPlugin::new(manager.clone()));
+    let env = ExecutionEnv::from_plugins(&[plugin], &Default::default()).unwrap();
+    store.register_keys(&env.key_registrations).unwrap();
+
+    // Spawn and complete a task
+    let _id = manager
+        .spawn("thread-persist", "shell", "compile", |_| async {
+            TaskResult::Success(serde_json::json!({"status": "ok"}))
+        })
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Run the RunEnd phase to persist
+    let ctx = PhaseContext::new(Phase::RunEnd, store.snapshot())
+        .with_run_identity(RunIdentity::for_thread("thread-persist"));
+    runtime.run_phase_with_context(&env, ctx).await.unwrap();
+
+    // Verify the persisted state was written
+    let snap = store.snapshot();
+    let bg_state = snap.get::<BackgroundTaskStateKey>().unwrap();
+    assert!(!bg_state.tasks.is_empty());
+    let meta = bg_state.tasks.values().next().unwrap();
+    assert_eq!(meta.task_type, "shell");
+    assert_eq!(meta.status, TaskStatus::Completed);
+}
+
+#[test]
+fn task_summary_serde_roundtrip() {
+    let summary = TaskSummary {
+        task_id: "bg_42".into(),
+        task_type: "http".into(),
+        description: "fetch API data".into(),
+        status: TaskStatus::Failed,
+        error: Some("connection refused".into()),
+        result: None,
+        created_at_ms: 1000,
+        completed_at_ms: Some(2000),
+    };
+    let json = serde_json::to_string(&summary).unwrap();
+    let decoded: TaskSummary = serde_json::from_str(&json).unwrap();
+    assert_eq!(decoded.task_id, "bg_42");
+    assert_eq!(decoded.status, TaskStatus::Failed);
+    assert_eq!(decoded.error.as_deref(), Some("connection refused"));
+    assert!(decoded.result.is_none());
+    assert_eq!(decoded.completed_at_ms, Some(2000));
+}
