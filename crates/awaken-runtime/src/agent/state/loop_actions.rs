@@ -288,11 +288,27 @@ impl StateKey for AccumulatedToolIntercept {
                         ToolInterceptPayload::SetResult(_) => 1,
                     }
                 }
-                if value
-                    .as_ref()
-                    .map_or(true, |existing| priority(&payload) > priority(existing))
-                {
-                    *value = Some(payload);
+                match value.as_ref() {
+                    None => {
+                        *value = Some(payload);
+                    }
+                    Some(existing) if priority(&payload) > priority(existing) => {
+                        // Higher priority wins (Block > Suspend > SetResult)
+                        *value = Some(payload);
+                    }
+                    Some(existing) if priority(&payload) == priority(existing) => {
+                        // Same priority = conflict. Log error and keep the first.
+                        // This indicates two plugins are competing for the same
+                        // interception — the plugin ordering should be fixed.
+                        tracing::error!(
+                            existing = ?existing,
+                            incoming = ?payload,
+                            "tool intercept conflict: two plugins scheduled same-priority intercepts"
+                        );
+                    }
+                    _ => {
+                        // Lower priority — ignore
+                    }
                 }
             }
             AccumulatedToolInterceptUpdate::Clear => {
@@ -742,7 +758,7 @@ mod tests {
     }
 
     #[test]
-    fn accumulated_tool_intercept_first_set_result_kept_over_second() {
+    fn accumulated_tool_intercept_same_priority_keeps_first() {
         let mut val: Option<ToolInterceptPayload> = None;
         AccumulatedToolIntercept::apply(
             &mut val,
@@ -752,11 +768,9 @@ mod tests {
             &mut val,
             AccumulatedToolInterceptUpdate::Set(make_set_result("second")),
         );
-        // Same priority (both SetResult), last wins per the > check (it doesn't, so first is kept)
+        // Same priority = conflict: first is kept, error logged
         match &val {
             Some(ToolInterceptPayload::SetResult(r)) => {
-                // priority is equal so the condition `priority(&payload) > priority(existing)`
-                // is false, meaning the first value is kept (not replaced).
                 assert_eq!(r.tool_name, "first");
             }
             other => panic!("expected SetResult, got {other:?}"),
