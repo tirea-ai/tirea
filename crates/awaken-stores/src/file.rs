@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use awaken_contract::contract::message::Message;
+use awaken_contract::contract::profile_store::{ProfileEntry, ProfileOwner, ProfileStore};
 use awaken_contract::contract::storage::{
     MailboxEntry, MailboxStore, RunPage, RunQuery, RunRecord, RunStore, StorageError,
     ThreadRunStore, ThreadStore,
@@ -47,6 +48,10 @@ impl FileStore {
 
     fn mailbox_dir(&self) -> PathBuf {
         self.base_path.join("mailbox")
+    }
+
+    fn profiles_dir(&self) -> PathBuf {
+        self.base_path.join("profiles")
     }
 }
 
@@ -374,6 +379,93 @@ impl MailboxStore for FileStore {
         entries.sort_by_key(|e| e.created_at);
         entries.truncate(limit);
         Ok(entries)
+    }
+}
+
+// ── ProfileStore ────────────────────────────────────────────────────
+
+/// Sanitize an agent ID for use as a directory name.
+fn sanitize_id_for_dir(id: &str) -> String {
+    id.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn owner_dir_name(owner: &ProfileOwner) -> String {
+    match owner {
+        ProfileOwner::Agent(id) => format!("agent_{}", sanitize_id_for_dir(id)),
+        ProfileOwner::System => "system".to_string(),
+    }
+}
+
+fn current_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before UNIX epoch")
+        .as_millis() as u64
+}
+
+#[async_trait]
+impl ProfileStore for FileStore {
+    async fn get(
+        &self,
+        owner: &ProfileOwner,
+        key: &str,
+    ) -> Result<Option<ProfileEntry>, StorageError> {
+        let dir = self.profiles_dir().join(owner_dir_name(owner));
+        let path = dir.join(format!("{key}.json"));
+        read_json(&path).await
+    }
+
+    async fn set(
+        &self,
+        owner: &ProfileOwner,
+        key: &str,
+        value: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        let dir = self.profiles_dir().join(owner_dir_name(owner));
+        let entry = ProfileEntry {
+            key: key.to_owned(),
+            value,
+            updated_at: current_millis(),
+        };
+        let payload = serde_json::to_string_pretty(&entry)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        atomic_write(&dir, &format!("{key}.json"), &payload).await
+    }
+
+    async fn delete(&self, owner: &ProfileOwner, key: &str) -> Result<(), StorageError> {
+        let dir = self.profiles_dir().join(owner_dir_name(owner));
+        let path = dir.join(format!("{key}.json"));
+        if path.exists() {
+            tokio::fs::remove_file(&path)
+                .await
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn list(&self, owner: &ProfileOwner) -> Result<Vec<ProfileEntry>, StorageError> {
+        let dir = self.profiles_dir().join(owner_dir_name(owner));
+        let mut entries: Vec<ProfileEntry> = scan_json_dir(&dir).await?;
+        entries.sort_by(|a, b| a.key.cmp(&b.key));
+        Ok(entries)
+    }
+
+    async fn clear_owner(&self, owner: &ProfileOwner) -> Result<(), StorageError> {
+        let dir = self.profiles_dir().join(owner_dir_name(owner));
+        if dir.exists() {
+            tokio::fs::remove_dir_all(&dir)
+                .await
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+        }
+        Ok(())
     }
 }
 
@@ -716,5 +808,85 @@ mod tests {
         let store = FileStore::new(td.path());
         let err = store.load_run("a/b").await.unwrap_err();
         assert!(matches!(err, StorageError::Io(_)));
+    }
+
+    // ── ProfileStore ──
+
+    #[tokio::test]
+    async fn profile_file_set_and_get() {
+        let td = TempDir::new().unwrap();
+        let store = FileStore::new(td.path());
+        let owner = ProfileOwner::Agent("alice".into());
+        store
+            .set(&owner, "lang", serde_json::json!("en"))
+            .await
+            .unwrap();
+        let entry = store.get(&owner, "lang").await.unwrap().unwrap();
+        assert_eq!(entry.key, "lang");
+        assert_eq!(entry.value, serde_json::json!("en"));
+        assert!(entry.updated_at > 0);
+    }
+
+    #[tokio::test]
+    async fn profile_file_get_missing() {
+        let td = TempDir::new().unwrap();
+        let store = FileStore::new(td.path());
+        let result = store
+            .get(&ProfileOwner::System, "nonexistent")
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn profile_file_delete_and_clear() {
+        let td = TempDir::new().unwrap();
+        let store = FileStore::new(td.path());
+        let owner = ProfileOwner::Agent("bob".into());
+
+        // Delete non-existent is fine
+        store.delete(&owner, "missing").await.unwrap();
+
+        // Set, delete, verify gone
+        store.set(&owner, "k", serde_json::json!(1)).await.unwrap();
+        store.delete(&owner, "k").await.unwrap();
+        assert!(store.get(&owner, "k").await.unwrap().is_none());
+
+        // Clear owner
+        store.set(&owner, "a", serde_json::json!(1)).await.unwrap();
+        store.set(&owner, "b", serde_json::json!(2)).await.unwrap();
+        store.clear_owner(&owner).await.unwrap();
+        assert!(store.list(&owner).await.unwrap().is_empty());
+
+        // Clear again is idempotent
+        store.clear_owner(&owner).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn profile_file_list_sorted() {
+        let td = TempDir::new().unwrap();
+        let store = FileStore::new(td.path());
+        let alice = ProfileOwner::Agent("alice".into());
+        let bob = ProfileOwner::Agent("bob".into());
+        store
+            .set(&alice, "z", serde_json::json!("last"))
+            .await
+            .unwrap();
+        store
+            .set(&alice, "a", serde_json::json!("first"))
+            .await
+            .unwrap();
+        store
+            .set(&bob, "x", serde_json::json!("other"))
+            .await
+            .unwrap();
+
+        let entries = store.list(&alice).await.unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].key, "a");
+        assert_eq!(entries[1].key, "z");
+
+        // Bob's entries are isolated
+        assert_eq!(store.list(&bob).await.unwrap().len(), 1);
     }
 }

@@ -4,11 +4,13 @@ use std::collections::{BTreeMap, HashMap};
 
 use async_trait::async_trait;
 use awaken_contract::contract::message::Message;
+use awaken_contract::contract::profile_store::{ProfileEntry, ProfileOwner, ProfileStore};
 use awaken_contract::contract::storage::{
     MailboxEntry, MailboxStore, RunPage, RunQuery, RunRecord, RunStore, StorageError,
     ThreadRunStore, ThreadStore,
 };
 use awaken_contract::thread::Thread;
+use serde_json::Value;
 use tokio::sync::RwLock;
 
 /// In-memory storage implementing all four store traits.
@@ -23,6 +25,8 @@ pub struct InMemoryStore {
     messages: RwLock<HashMap<String, Vec<Message>>>,
     /// Mailbox ID -> ordered queue of entries.
     mailbox: RwLock<BTreeMap<String, Vec<MailboxEntry>>>,
+    /// Profile entries keyed by (owner, key).
+    profiles: RwLock<HashMap<ProfileOwner, HashMap<String, ProfileEntry>>>,
 }
 
 impl InMemoryStore {
@@ -205,6 +209,65 @@ impl ThreadRunStore for InMemoryStore {
         let mut run_guard = self.runs.write().await;
         msg_guard.insert(thread_id.to_owned(), messages.to_vec());
         run_guard.insert(run.run_id.clone(), run.clone());
+        Ok(())
+    }
+}
+
+// ── ProfileStore ────────────────────────────────────────────────────
+
+fn current_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before UNIX epoch")
+        .as_millis() as u64
+}
+
+#[async_trait]
+impl ProfileStore for InMemoryStore {
+    async fn get(
+        &self,
+        owner: &ProfileOwner,
+        key: &str,
+    ) -> Result<Option<ProfileEntry>, StorageError> {
+        let guard = self.profiles.read().await;
+        Ok(guard.get(owner).and_then(|inner| inner.get(key)).cloned())
+    }
+
+    async fn set(&self, owner: &ProfileOwner, key: &str, value: Value) -> Result<(), StorageError> {
+        let mut guard = self.profiles.write().await;
+        let inner = guard.entry(owner.clone()).or_default();
+        inner.insert(
+            key.to_owned(),
+            ProfileEntry {
+                key: key.to_owned(),
+                value,
+                updated_at: current_millis(),
+            },
+        );
+        Ok(())
+    }
+
+    async fn delete(&self, owner: &ProfileOwner, key: &str) -> Result<(), StorageError> {
+        let mut guard = self.profiles.write().await;
+        if let Some(inner) = guard.get_mut(owner) {
+            inner.remove(key);
+        }
+        Ok(())
+    }
+
+    async fn list(&self, owner: &ProfileOwner) -> Result<Vec<ProfileEntry>, StorageError> {
+        let guard = self.profiles.read().await;
+        let mut entries: Vec<ProfileEntry> = guard
+            .get(owner)
+            .map(|inner| inner.values().cloned().collect())
+            .unwrap_or_default();
+        entries.sort_by(|a, b| a.key.cmp(&b.key));
+        Ok(entries)
+    }
+
+    async fn clear_owner(&self, owner: &ProfileOwner) -> Result<(), StorageError> {
+        let mut guard = self.profiles.write().await;
+        guard.remove(owner);
         Ok(())
     }
 }
@@ -533,5 +596,101 @@ mod tests {
 
         let loaded = store.load_thread(&thread.id).await.unwrap().unwrap();
         assert_eq!(loaded.metadata.title.as_deref(), Some("Updated"));
+    }
+
+    // ── ProfileStore ──
+
+    #[tokio::test]
+    async fn profile_set_and_get() {
+        let store = InMemoryStore::new();
+        let owner = ProfileOwner::Agent("alice".into());
+        store
+            .set(&owner, "lang", serde_json::json!("en"))
+            .await
+            .unwrap();
+        let entry = store.get(&owner, "lang").await.unwrap().unwrap();
+        assert_eq!(entry.key, "lang");
+        assert_eq!(entry.value, serde_json::json!("en"));
+        assert!(entry.updated_at > 0);
+    }
+
+    #[tokio::test]
+    async fn profile_get_missing() {
+        let store = InMemoryStore::new();
+        let result = store
+            .get(&ProfileOwner::System, "nonexistent")
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn profile_upsert_overwrites() {
+        let store = InMemoryStore::new();
+        let owner = ProfileOwner::System;
+        store.set(&owner, "k", serde_json::json!(1)).await.unwrap();
+        store.set(&owner, "k", serde_json::json!(2)).await.unwrap();
+        let entry = store.get(&owner, "k").await.unwrap().unwrap();
+        assert_eq!(entry.value, serde_json::json!(2));
+    }
+
+    #[tokio::test]
+    async fn profile_delete_idempotent() {
+        let store = InMemoryStore::new();
+        let owner = ProfileOwner::Agent("bob".into());
+        // Delete non-existent key is fine
+        store.delete(&owner, "missing").await.unwrap();
+        // Set then delete
+        store.set(&owner, "k", serde_json::json!(1)).await.unwrap();
+        store.delete(&owner, "k").await.unwrap();
+        assert!(store.get(&owner, "k").await.unwrap().is_none());
+        // Delete again is fine
+        store.delete(&owner, "k").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn profile_list_sorted_and_isolated() {
+        let store = InMemoryStore::new();
+        let alice = ProfileOwner::Agent("alice".into());
+        let bob = ProfileOwner::Agent("bob".into());
+        store
+            .set(&alice, "b", serde_json::json!("second"))
+            .await
+            .unwrap();
+        store
+            .set(&alice, "a", serde_json::json!("first"))
+            .await
+            .unwrap();
+        store
+            .set(&bob, "x", serde_json::json!("other"))
+            .await
+            .unwrap();
+
+        let entries = store.list(&alice).await.unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].key, "a");
+        assert_eq!(entries[1].key, "b");
+
+        // Bob's entries are isolated
+        let bob_entries = store.list(&bob).await.unwrap();
+        assert_eq!(bob_entries.len(), 1);
+        assert_eq!(bob_entries[0].key, "x");
+    }
+
+    #[tokio::test]
+    async fn profile_clear_owner() {
+        let store = InMemoryStore::new();
+        let alice = ProfileOwner::Agent("alice".into());
+        let bob = ProfileOwner::Agent("bob".into());
+        store.set(&alice, "a", serde_json::json!(1)).await.unwrap();
+        store.set(&alice, "b", serde_json::json!(2)).await.unwrap();
+        store.set(&bob, "c", serde_json::json!(3)).await.unwrap();
+
+        store.clear_owner(&alice).await.unwrap();
+        assert!(store.list(&alice).await.unwrap().is_empty());
+        assert_eq!(store.list(&bob).await.unwrap().len(), 1);
+
+        // Clear again is idempotent
+        store.clear_owner(&alice).await.unwrap();
     }
 }
