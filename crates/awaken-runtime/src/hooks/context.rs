@@ -47,6 +47,9 @@ pub struct PhaseContext {
 
     /// Optional cancellation token for cooperative cancellation at phase boundaries.
     pub cancellation_token: Option<CancellationToken>,
+
+    /// Optional profile access for cross-run persistence.
+    pub profile_access: Option<Arc<crate::profile::ProfileAccess>>,
 }
 
 impl PhaseContext {
@@ -65,6 +68,7 @@ impl PhaseContext {
             llm_response: None,
             resume_input: None,
             cancellation_token: None,
+            profile_access: None,
         }
     }
 
@@ -148,6 +152,17 @@ impl PhaseContext {
     #[must_use]
     pub fn with_cancellation_token(mut self, token: CancellationToken) -> Self {
         self.cancellation_token = Some(token);
+        self
+    }
+
+    /// Get profile access, if configured.
+    pub fn profile(&self) -> Option<&crate::profile::ProfileAccess> {
+        self.profile_access.as_deref()
+    }
+
+    #[must_use]
+    pub fn with_profile_access(mut self, access: Arc<crate::profile::ProfileAccess>) -> Self {
+        self.profile_access = Some(access);
         self
     }
 }
@@ -277,5 +292,11 @@ mod tests {
         assert_eq!(ctx.messages.len(), 1);
         assert_eq!(ctx.tool_name.as_deref(), Some("calc"));
         assert!(ctx.tool_result.is_some());
+    }
+
+    #[test]
+    fn phase_context_profile_none_by_default() {
+        let ctx = PhaseContext::new(Phase::RunStart, empty_snapshot());
+        assert!(ctx.profile().is_none());
     }
 }

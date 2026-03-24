@@ -13,6 +13,7 @@ pub mod loop_runner;
 pub mod phase;
 pub mod plugins;
 pub mod policies;
+pub mod profile;
 pub mod registry;
 pub mod runtime;
 pub mod state;
@@ -21,6 +22,7 @@ pub mod state;
 
 pub use cancellation::CancellationToken;
 pub use error::RuntimeError;
+pub use profile::ProfileAccess;
 
 pub use builder::{AgentRuntimeBuilder, BuildError};
 pub use phase::{

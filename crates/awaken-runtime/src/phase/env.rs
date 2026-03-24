@@ -12,7 +12,7 @@ use awaken_contract::contract::tool::Tool;
 use awaken_contract::model::Phase;
 use awaken_contract::registry_spec::AgentSpec;
 
-use crate::plugins::{KeyRegistration, RequestTransformArc};
+use crate::plugins::{KeyRegistration, ProfileKeyRegistration, RequestTransformArc};
 
 use super::{EffectHandlerArc, PhaseHookArc, ScheduledActionHandlerArc};
 
@@ -46,6 +46,8 @@ pub struct ExecutionEnv {
     pub(crate) tools: HashMap<String, Arc<dyn Tool>>,
     /// Plugin references retained for lifecycle hooks (`on_activate`/`on_deactivate`).
     pub(crate) plugins: Vec<Arc<dyn Plugin>>,
+    /// Profile key registrations collected from all plugins.
+    pub profile_key_registrations: Vec<ProfileKeyRegistration>,
     /// Agent spec for lifecycle hooks. Set by the resolve pipeline.
     pub(crate) agent_spec: Option<Arc<AgentSpec>>,
 }
@@ -71,6 +73,7 @@ impl ExecutionEnv {
         let mut all_effect_handlers: HashMap<String, EffectHandlerArc> = HashMap::new();
         let mut all_transforms: Vec<TaggedRequestTransform> = Vec::new();
         let mut all_key_registrations: Vec<KeyRegistration> = Vec::new();
+        let mut all_profile_key_registrations: Vec<ProfileKeyRegistration> = Vec::new();
         let mut all_tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
         for plugin in plugins {
@@ -149,6 +152,9 @@ impl ExecutionEnv {
 
             // Collect state key registrations (always, regardless of filter)
             all_key_registrations.extend(registrar.keys);
+
+            // Collect profile key registrations (always, structural)
+            all_profile_key_registrations.extend(registrar.profile_keys);
         }
 
         Ok(Self {
@@ -157,6 +163,7 @@ impl ExecutionEnv {
             effect_handlers: all_effect_handlers,
             request_transforms: all_transforms,
             key_registrations: all_key_registrations,
+            profile_key_registrations: all_profile_key_registrations,
             tools: all_tools,
             plugins: plugins.to_vec(),
             agent_spec: None,
@@ -171,6 +178,7 @@ impl ExecutionEnv {
             effect_handlers: HashMap::new(),
             request_transforms: Vec::new(),
             key_registrations: Vec::new(),
+            profile_key_registrations: Vec::new(),
             tools: HashMap::new(),
             plugins: Vec::new(),
             agent_spec: None,
@@ -406,5 +414,36 @@ mod tests {
         // if the plugin registered any). Structural handlers are unaffected.
         assert!(env.tools.is_empty());
         assert!(env.hooks_for_phase(Phase::StepStart).is_empty());
+    }
+
+    #[test]
+    fn from_plugins_collects_profile_keys() {
+        use awaken_contract::contract::profile_store::ProfileKey;
+
+        struct ProfileLocale;
+        impl ProfileKey for ProfileLocale {
+            const KEY: &'static str = "locale";
+            type Value = String;
+        }
+
+        struct ProfilePlugin;
+        impl Plugin for ProfilePlugin {
+            fn descriptor(&self) -> PluginDescriptor {
+                PluginDescriptor {
+                    name: "profile-plugin",
+                }
+            }
+            fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+                registrar.register_profile_key::<ProfileLocale>()?;
+                Ok(())
+            }
+        }
+
+        let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(ProfilePlugin)];
+        // Even with a non-matching filter, profile keys should be collected
+        let filter: HashSet<String> = ["nonexistent".to_string()].into();
+        let env = ExecutionEnv::from_plugins(&plugins, &filter).unwrap();
+        assert_eq!(env.profile_key_registrations.len(), 1);
+        assert_eq!(env.profile_key_registrations[0].key, "locale");
     }
 }

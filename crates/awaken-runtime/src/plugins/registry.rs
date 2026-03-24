@@ -8,6 +8,7 @@ use crate::phase::{
 };
 use crate::state::{KeyScope, MergeStrategy, StateKey, StateKeyOptions, StateMap};
 use awaken_contract::StateError;
+use awaken_contract::contract::profile_store::ProfileKey;
 use awaken_contract::contract::tool::Tool;
 use awaken_contract::model::{EffectSpec, JsonValue, Phase, ScheduledActionSpec};
 
@@ -45,6 +46,12 @@ impl KeyRegistration {
             },
         }
     }
+}
+
+#[derive(Clone)]
+pub struct ProfileKeyRegistration {
+    pub type_id: TypeId,
+    pub key: String,
 }
 
 pub(crate) struct ScheduledActionHandlerRegistration {
@@ -108,6 +115,9 @@ pub struct PluginRegistrar {
     pub(crate) keys: Vec<KeyRegistration>,
     key_type_ids: HashSet<TypeId>,
     key_names: HashSet<String>,
+    pub profile_keys: Vec<ProfileKeyRegistration>,
+    profile_key_type_ids: HashSet<TypeId>,
+    profile_key_names: HashSet<String>,
     pub(crate) scheduled_actions: Vec<ScheduledActionHandlerRegistration>,
     scheduled_action_keys: HashSet<String>,
     pub(crate) effects: Vec<EffectHandlerRegistration>,
@@ -124,6 +134,9 @@ impl PluginRegistrar {
             keys: Vec::new(),
             key_type_ids: HashSet::new(),
             key_names: HashSet::new(),
+            profile_keys: Vec::new(),
+            profile_key_type_ids: HashSet::new(),
+            profile_key_names: HashSet::new(),
             scheduled_actions: Vec::new(),
             scheduled_action_keys: HashSet::new(),
             effects: Vec::new(),
@@ -234,5 +247,67 @@ impl PluginRegistrar {
             plugin_id: plugin_id.into(),
             transform: Arc::new(transform),
         });
+    }
+
+    /// Register a profile key for typed profile storage access.
+    pub fn register_profile_key<K: ProfileKey>(&mut self) -> Result<(), StateError> {
+        let type_id = TypeId::of::<K>();
+        if !self.profile_key_type_ids.insert(type_id)
+            || !self.profile_key_names.insert(K::KEY.to_string())
+        {
+            return Err(StateError::KeyAlreadyRegistered {
+                key: K::KEY.to_string(),
+            });
+        }
+        self.profile_keys.push(ProfileKeyRegistration {
+            type_id,
+            key: K::KEY.to_string(),
+        });
+        Ok(())
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn new_for_test() -> Self {
+        Self::new()
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn profile_keys_for_test(&self) -> Vec<ProfileKeyRegistration> {
+        self.profile_keys.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_contract::contract::profile_store::ProfileKey;
+
+    struct TestLocale;
+    impl ProfileKey for TestLocale {
+        const KEY: &'static str = "locale";
+        type Value = String;
+    }
+
+    struct TestTheme;
+    impl ProfileKey for TestTheme {
+        const KEY: &'static str = "theme";
+        type Value = String;
+    }
+
+    #[test]
+    fn register_profile_key_succeeds() {
+        let mut registrar = PluginRegistrar::new_for_test();
+        registrar.register_profile_key::<TestLocale>().unwrap();
+        let keys = registrar.profile_keys_for_test();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].key, "locale");
+    }
+
+    #[test]
+    fn register_duplicate_profile_key_errors() {
+        let mut registrar = PluginRegistrar::new_for_test();
+        registrar.register_profile_key::<TestLocale>().unwrap();
+        let err = registrar.register_profile_key::<TestLocale>().unwrap_err();
+        assert!(err.to_string().contains("locale"));
     }
 }

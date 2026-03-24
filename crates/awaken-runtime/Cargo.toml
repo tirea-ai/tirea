@@ -26,6 +26,7 @@ a2a = ["dep:reqwest"]
 handoff = []
 background = []
 parallel-tools = []
+test-utils = []
 
 [dev-dependencies]
 awaken-stores = { workspace = true }
