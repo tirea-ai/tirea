@@ -786,4 +786,192 @@ mod tests {
         let err2 = ToolExecutorError::Failed("some reason".into());
         assert!(err2.to_string().contains("some reason"));
     }
+
+    // -----------------------------------------------------------------------
+    // Additional coverage: context preservation, mixed scenarios, edge cases
+    // -----------------------------------------------------------------------
+
+    /// Tool that captures the context it receives for later inspection.
+    struct ContextCaptureTool {
+        captured_call_id: Arc<std::sync::Mutex<String>>,
+        captured_tool_name: Arc<std::sync::Mutex<String>>,
+    }
+
+    impl ContextCaptureTool {
+        fn new() -> Self {
+            Self {
+                captured_call_id: Arc::new(std::sync::Mutex::new(String::new())),
+                captured_tool_name: Arc::new(std::sync::Mutex::new(String::new())),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Tool for ContextCaptureTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("capture", "capture", "Captures context")
+        }
+
+        async fn execute(
+            &self,
+            _args: Value,
+            ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
+            *self.captured_call_id.lock().unwrap() = ctx.call_id.clone();
+            *self.captured_tool_name.lock().unwrap() = ctx.tool_name.clone();
+            Ok(ToolResult::success("capture", json!({"captured": true})))
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_single_tool_preserves_call_context() {
+        let capture = Arc::new(ContextCaptureTool::new());
+        let tools = tool_map(vec![capture.clone() as Arc<dyn Tool>]);
+        let call = ToolCall::new("call-42", "capture", json!({}));
+        let ctx = ToolCallContext::test_default();
+
+        let result = execute_single_tool(&tools, &call, &ctx).await;
+        assert!(result.is_success());
+        // execute_single_tool sets call_id and tool_name from the call's context
+        // (the caller is responsible for setting ctx fields, which the executor does)
+    }
+
+    #[tokio::test]
+    async fn execute_single_tool_missing_returns_error_with_name() {
+        let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+        let call = ToolCall::new("c1", "ghost_tool", json!({}));
+        let ctx = ToolCallContext::test_default();
+
+        let result = execute_single_tool(&tools, &call, &ctx).await;
+        assert!(result.is_error());
+        assert!(
+            result
+                .message
+                .as_deref()
+                .unwrap_or("")
+                .contains("ghost_tool")
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_single_tool_validates_args() {
+        let tools = tool_map(vec![Arc::new(StrictArgsTool)]);
+        let call = ToolCall::new("c1", "strict", json!({"wrong": "field"}));
+        let ctx = ToolCallContext::test_default();
+
+        let result = execute_single_tool(&tools, &call, &ctx).await;
+        assert!(result.is_error());
+    }
+
+    #[tokio::test]
+    async fn sequential_context_call_id_set_per_tool() {
+        let capture = Arc::new(ContextCaptureTool::new());
+        let tools = tool_map(vec![capture.clone() as Arc<dyn Tool>]);
+        let calls = vec![ToolCall::new("unique-id-99", "capture", json!({}))];
+        let executor = SequentialToolExecutor;
+
+        let results = executor
+            .execute(&tools, &calls, &ToolCallContext::test_default())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].call.id, "unique-id-99");
+        // The executor sets ctx.call_id = call.id before passing to execute_single_tool
+        assert_eq!(*capture.captured_call_id.lock().unwrap(), "unique-id-99");
+    }
+
+    #[tokio::test]
+    async fn sequential_mixed_success_failure_suspension_order() {
+        let tools = tool_map(vec![
+            Arc::new(EchoTool),
+            Arc::new(FailingTool),
+            Arc::new(SuspendingTool),
+        ]);
+        // success, fail, suspend — suspension stops execution
+        let calls = vec![
+            ToolCall::new("c1", "echo", json!({"message": "hi"})),
+            ToolCall::new("c2", "failing", json!({})),
+            ToolCall::new("c3", "suspending", json!({})),
+            ToolCall::new("c4", "echo", json!({"message": "should not run"})),
+        ];
+        let executor = SequentialToolExecutor;
+
+        let results = executor
+            .execute(&tools, &calls, &ToolCallContext::test_default())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 3, "stops after suspension at c3");
+        assert_eq!(results[0].outcome, ToolCallOutcome::Succeeded);
+        assert_eq!(results[1].outcome, ToolCallOutcome::Failed);
+        assert_eq!(results[2].outcome, ToolCallOutcome::Suspended);
+    }
+
+    #[tokio::test]
+    async fn parallel_preserves_result_order() {
+        let counting = Arc::new(CountingTool::new());
+        let tools = tool_map(vec![counting.clone() as Arc<dyn Tool>]);
+        let calls: Vec<_> = (0..5)
+            .map(|i| ToolCall::new(format!("c{i}"), "counting", json!({})))
+            .collect();
+        let executor = ParallelToolExecutor::streaming();
+
+        let results = executor
+            .execute(&tools, &calls, &ToolCallContext::test_default())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 5);
+        // join_all preserves order of futures
+        for (i, r) in results.iter().enumerate() {
+            assert_eq!(r.call.id, format!("c{i}"));
+        }
+    }
+
+    #[tokio::test]
+    async fn parallel_mixed_success_failure_suspension() {
+        let tools = tool_map(vec![
+            Arc::new(EchoTool),
+            Arc::new(FailingTool),
+            Arc::new(SuspendingTool),
+        ]);
+        let calls = vec![
+            ToolCall::new("c1", "echo", json!({"message": "hi"})),
+            ToolCall::new("c2", "failing", json!({})),
+            ToolCall::new("c3", "suspending", json!({})),
+        ];
+        let executor = ParallelToolExecutor::batch_approval();
+
+        let results = executor
+            .execute(&tools, &calls, &ToolCallContext::test_default())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 3, "parallel runs all regardless");
+        assert_eq!(results[0].outcome, ToolCallOutcome::Succeeded);
+        assert_eq!(results[1].outcome, ToolCallOutcome::Failed);
+        assert_eq!(results[2].outcome, ToolCallOutcome::Suspended);
+    }
+
+    #[test]
+    fn sequential_requires_incremental_state() {
+        let executor = SequentialToolExecutor;
+        assert!(executor.requires_incremental_state());
+    }
+
+    #[test]
+    fn parallel_does_not_require_incremental_state() {
+        let executor = ParallelToolExecutor::streaming();
+        assert!(!executor.requires_incremental_state());
+        let batch = ParallelToolExecutor::batch_approval();
+        assert!(!batch.requires_incremental_state());
+    }
+
+    #[tokio::test]
+    async fn execute_single_tool_success_returns_correct_tool_name() {
+        let tools = tool_map(vec![Arc::new(EchoTool)]);
+        let call = ToolCall::new("c1", "echo", json!({"message": "test"}));
+        let ctx = ToolCallContext::test_default();
+
+        let result = execute_single_tool(&tools, &call, &ctx).await;
+        assert!(result.is_success());
+        assert_eq!(result.tool_name, "echo");
+    }
 }

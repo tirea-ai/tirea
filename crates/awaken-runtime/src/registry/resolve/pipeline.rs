@@ -1195,4 +1195,247 @@ mod tests {
         assert!(run.tools.contains_key("plugin_tool"));
         assert!(!run.tools.contains_key("global_tool"));
     }
+
+    // -----------------------------------------------------------------------
+    // Additional coverage: multi-plugin, empty specs, filter combos, defaults
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_multiple_plugins_all_loaded() {
+        let spec = AgentSpec {
+            plugin_ids: vec!["p1".into(), "p2".into(), "p3".into()],
+            ..make_spec("a")
+        };
+
+        let regs = build_registries(
+            vec![],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![
+                ("p1", Arc::new(MockPlugin { name: "p1" })),
+                ("p2", Arc::new(MockPlugin { name: "p2" })),
+                ("p3", Arc::new(MockPlugin { name: "p3" })),
+            ],
+            spec,
+        );
+
+        let run = resolve(&regs, "a").unwrap();
+        // 3 user plugins + LoopActionHandlersPlugin + MaxRoundsPlugin
+        assert_eq!(run.plugins.len(), 5);
+    }
+
+    #[test]
+    fn resolve_no_tools_yields_empty_tool_set() {
+        let regs = build_registries(
+            vec![],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![],
+            make_spec("a"),
+        );
+
+        let run = resolve(&regs, "a").unwrap();
+        assert!(run.tools.is_empty());
+    }
+
+    #[test]
+    fn resolve_spec_max_rounds_propagated() {
+        let spec = AgentSpec {
+            max_rounds: 42,
+            ..make_spec("a")
+        };
+
+        let regs = build_registries(
+            vec![],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![],
+            spec,
+        );
+
+        let run = resolve(&regs, "a").unwrap();
+        assert_eq!(run.spec.max_rounds, 42);
+    }
+
+    #[test]
+    fn resolve_spec_system_prompt_propagated() {
+        let spec = AgentSpec {
+            system_prompt: "Custom instructions for the agent.".into(),
+            ..make_spec("a")
+        };
+
+        let regs = build_registries(
+            vec![],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![],
+            spec,
+        );
+
+        let run = resolve(&regs, "a").unwrap();
+        assert_eq!(run.spec.system_prompt, "Custom instructions for the agent.");
+    }
+
+    #[test]
+    fn resolve_model_name_from_model_entry() {
+        let regs = build_registries(
+            vec![],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "claude-opus-4-20250514".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![],
+            make_spec("a"),
+        );
+
+        let run = resolve(&regs, "a").unwrap();
+        assert_eq!(run.model_name, "claude-opus-4-20250514");
+    }
+
+    #[test]
+    fn resolve_empty_allow_list_removes_all_tools() {
+        let spec = AgentSpec {
+            allowed_tools: Some(vec![]),
+            ..make_spec("a")
+        };
+
+        let regs = build_registries(
+            vec![
+                ("read", Arc::new(MockTool { id: "read".into() })),
+                ("write", Arc::new(MockTool { id: "write".into() })),
+            ],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![],
+            spec,
+        );
+
+        let run = resolve(&regs, "a").unwrap();
+        assert!(run.tools.is_empty(), "empty allow list removes all tools");
+    }
+
+    #[test]
+    fn resolve_exclude_nonexistent_tool_is_noop() {
+        let spec = AgentSpec {
+            excluded_tools: Some(vec!["nonexistent".into()]),
+            ..make_spec("a")
+        };
+
+        let regs = build_registries(
+            vec![("read", Arc::new(MockTool { id: "read".into() }))],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![],
+            spec,
+        );
+
+        let run = resolve(&regs, "a").unwrap();
+        assert_eq!(run.tools.len(), 1);
+        assert!(run.tools.contains_key("read"));
+    }
+
+    #[test]
+    fn resolve_default_spec_has_expected_defaults() {
+        let spec = make_spec("default-agent");
+
+        let regs = build_registries(
+            vec![],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![],
+            spec,
+        );
+
+        let run = resolve(&regs, "default-agent").unwrap();
+        assert_eq!(run.spec.max_rounds, 16);
+        assert_eq!(run.spec.max_continuation_retries, 2);
+        assert!(run.spec.context_policy.is_none());
+        assert!(run.spec.allowed_tools.is_none());
+        assert!(run.spec.excluded_tools.is_none());
+        assert!(run.spec.plugin_ids.is_empty());
+        assert!(run.spec.delegates.is_empty());
+    }
+
+    #[test]
+    fn resolver_agent_ids_returns_all_registered() {
+        use crate::registry::AgentResolver;
+
+        let mut agent_reg = MapAgentSpecRegistry::new();
+        agent_reg.register(make_spec("a1"));
+        agent_reg.register(make_spec("a2"));
+        agent_reg.register(make_spec("a3"));
+
+        let mut model_reg = MapModelRegistry::new();
+        model_reg.register(
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+        );
+
+        let mut provider_reg = MapProviderRegistry::new();
+        provider_reg.register("p", Arc::new(MockExecutor));
+
+        let regs = RegistrySet {
+            agents: Arc::new(agent_reg),
+            tools: Arc::new(MapToolRegistry::new()),
+            models: Arc::new(model_reg),
+            providers: Arc::new(provider_reg),
+            plugins: Arc::new(MapPluginSource::new()),
+        };
+
+        let resolver = RegistrySetResolver::new(regs);
+        let mut ids = resolver.agent_ids();
+        ids.sort();
+        assert_eq!(ids, vec!["a1", "a2", "a3"]);
+    }
+
+    #[test]
+    fn inject_default_plugins_adds_required_plugins() {
+        let plugins = inject_default_plugins(vec![], 10);
+        assert_eq!(plugins.len(), 2);
+        // The two default plugins: LoopActionHandlersPlugin and MaxRoundsPlugin
+        let names: Vec<&str> = plugins.iter().map(|p| p.descriptor().name).collect();
+        assert!(names.contains(&"__loop_action_handlers"));
+        assert!(names.contains(&"stop-condition:max-rounds"));
+    }
 }

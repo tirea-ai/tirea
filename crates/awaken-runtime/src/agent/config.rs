@@ -374,4 +374,123 @@ mod tests {
         let config = AgentConfig::new("a", "m", "s", mock_executor()).with_max_rounds(0);
         assert_eq!(config.max_rounds, 0);
     }
+
+    // -----------------------------------------------------------------------
+    // Additional coverage: builder completeness, edge cases, tool ordering
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn config_builder_all_options_set() {
+        use awaken_contract::contract::inference::ContextWindowPolicy;
+
+        let policy = ContextWindowPolicy {
+            max_context_tokens: 16000,
+            max_output_tokens: 4000,
+            min_recent_messages: 8,
+            enable_prompt_cache: false,
+            autocompact_threshold: Some(8000),
+            compaction_mode: Default::default(),
+            compaction_raw_suffix_messages: 5,
+        };
+        let config = AgentConfig::new("full-agent", "gpt-4", "Be helpful.", mock_executor())
+            .with_max_rounds(32)
+            .with_max_continuation_retries(10)
+            .with_tool(Arc::new(TestTool { id: "a".into() }))
+            .with_tool(Arc::new(TestTool { id: "b".into() }))
+            .with_tool(Arc::new(TestTool { id: "c".into() }))
+            .with_context_policy(policy)
+            .with_tool_executor(Arc::new(crate::execution::SequentialToolExecutor));
+
+        assert_eq!(config.id, "full-agent");
+        assert_eq!(config.model, "gpt-4");
+        assert_eq!(config.system_prompt, "Be helpful.");
+        assert_eq!(config.max_rounds, 32);
+        assert_eq!(config.max_continuation_retries, 10);
+        assert_eq!(config.tools.len(), 3);
+        assert!(config.context_policy.is_some());
+        assert_eq!(
+            config.context_policy.as_ref().unwrap().max_context_tokens,
+            16000
+        );
+        assert_eq!(config.tool_executor.name(), "sequential");
+    }
+
+    #[test]
+    fn config_empty_system_prompt() {
+        let config = AgentConfig::new("a", "m", "", mock_executor());
+        assert_eq!(config.system_prompt, "");
+    }
+
+    #[test]
+    fn config_system_prompt_with_unicode() {
+        let prompt = "You are \u{1F916} a helpful assistant. \u{2764}";
+        let config = AgentConfig::new("a", "m", prompt, mock_executor());
+        assert_eq!(config.system_prompt, prompt);
+    }
+
+    #[test]
+    fn config_tool_descriptors_single_tool() {
+        let config = AgentConfig::new("a", "m", "s", mock_executor())
+            .with_tool(Arc::new(TestTool { id: "only".into() }));
+        let descs = config.tool_descriptors();
+        assert_eq!(descs.len(), 1);
+        assert_eq!(descs[0].id, "only");
+    }
+
+    #[test]
+    fn config_tool_descriptors_many_tools_sorted() {
+        let ids = vec!["zeta", "beta", "alpha", "gamma", "delta"];
+        let tools: Vec<Arc<dyn Tool>> = ids
+            .iter()
+            .map(|id| Arc::new(TestTool { id: (*id).into() }) as Arc<dyn Tool>)
+            .collect();
+        let config = AgentConfig::new("a", "m", "s", mock_executor()).with_tools(tools);
+        let descs = config.tool_descriptors();
+        let sorted_ids: Vec<&str> = descs.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(sorted_ids, vec!["alpha", "beta", "delta", "gamma", "zeta"]);
+    }
+
+    #[test]
+    fn config_with_tools_then_with_tool_merges() {
+        let tools: Vec<Arc<dyn Tool>> = vec![
+            Arc::new(TestTool { id: "a".into() }),
+            Arc::new(TestTool { id: "b".into() }),
+        ];
+        let config = AgentConfig::new("a", "m", "s", mock_executor())
+            .with_tools(tools)
+            .with_tool(Arc::new(TestTool { id: "c".into() }));
+        assert_eq!(config.tools.len(), 3);
+        assert!(config.tools.contains_key("a"));
+        assert!(config.tools.contains_key("b"));
+        assert!(config.tools.contains_key("c"));
+    }
+
+    #[test]
+    fn config_default_tool_executor_is_sequential() {
+        let config = AgentConfig::new("a", "m", "s", mock_executor());
+        assert_eq!(config.tool_executor.name(), "sequential");
+        assert!(config.tool_executor.requires_incremental_state());
+    }
+
+    #[test]
+    fn config_model_id_and_model_independent_after_creation() {
+        let mut config = AgentConfig::new("a", "original-model", "s", mock_executor());
+        // Manually change model_name (simulating what resolve pipeline does)
+        config.model = "resolved-model-name".into();
+        assert_eq!(config.model_id, "original-model");
+        assert_eq!(config.model, "resolved-model-name");
+    }
+
+    #[test]
+    fn config_large_max_rounds() {
+        let config = AgentConfig::new("a", "m", "s", mock_executor()).with_max_rounds(usize::MAX);
+        assert_eq!(config.max_rounds, usize::MAX);
+    }
+
+    #[test]
+    fn config_zero_continuation_retries_disables_recovery() {
+        let config =
+            AgentConfig::new("a", "m", "s", mock_executor()).with_max_continuation_retries(0);
+        assert_eq!(config.max_continuation_retries, 0);
+    }
 }
