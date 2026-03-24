@@ -142,7 +142,7 @@ async fn run_start_restores_persisted_metadata_into_manager() {
     let runtime = PhaseRuntime::new(store.clone()).unwrap();
     let manager = Arc::new(BackgroundTaskManager::new());
     let plugin: Arc<dyn Plugin> = Arc::new(BackgroundTaskPlugin::new(manager.clone()));
-    let env = ExecutionEnv::from_plugins(&[plugin]).unwrap();
+    let env = ExecutionEnv::from_plugins(&[plugin], &Default::default()).unwrap();
     store.register_keys(&env.key_registrations).unwrap();
 
     let mut persisted = HashMap::new();

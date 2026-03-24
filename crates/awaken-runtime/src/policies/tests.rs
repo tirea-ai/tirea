@@ -46,7 +46,7 @@ fn make_test_env(policies: Vec<Arc<dyn StopPolicy>>) -> (StateStore, PhaseRuntim
         Arc::new(LifecycleKeyPlugin),
         Arc::new(StopConditionPlugin::new(policies)),
     ];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
     store.register_keys(&env.key_registrations).unwrap();
     (store, runtime, env)
 }
@@ -73,7 +73,7 @@ async fn max_rounds_plugin_sets_done_after_exceeding_limit() {
         Arc::new(LifecycleKeyPlugin),
         Arc::new(MaxRoundsPlugin::new(2)),
     ];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
     store.register_keys(&env.key_registrations).unwrap();
 
     // Round 1 and 2: still Running

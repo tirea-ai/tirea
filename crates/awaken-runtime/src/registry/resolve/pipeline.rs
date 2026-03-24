@@ -54,7 +54,7 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
 
     // Stage 2: Plugin pipeline
     let plugins = build_plugin_chain(registries, &spec)?;
-    let env = ExecutionEnv::from_plugins(&plugins)?;
+    let env = ExecutionEnv::from_plugins(&plugins, &spec.active_hook_filter)?;
 
     // Stage 3: Tool pipeline
     let tools = build_tool_set(registries, &spec, &env)?;

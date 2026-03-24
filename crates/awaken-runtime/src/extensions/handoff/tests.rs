@@ -191,7 +191,7 @@ async fn run_start_syncs_requested_handoff_to_active_agent_id_key() {
     let store = StateStore::new();
     let runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugin: Arc<dyn Plugin> = Arc::new(HandoffPlugin::new(HashMap::new()));
-    let env = ExecutionEnv::from_plugins(&[plugin]).unwrap();
+    let env = ExecutionEnv::from_plugins(&[plugin], &Default::default()).unwrap();
     store.register_keys(&env.key_registrations).unwrap();
 
     let mut patch = store.begin_mutation();

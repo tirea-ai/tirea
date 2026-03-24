@@ -178,7 +178,7 @@ pub fn build_agent_env(
         )));
     }
 
-    ExecutionEnv::from_plugins(&all_plugins)
+    ExecutionEnv::from_plugins(&all_plugins, &std::collections::HashSet::new())
 }
 
 /// Execute the agent loop. Prefer `AgentRuntime::run()` for production use.

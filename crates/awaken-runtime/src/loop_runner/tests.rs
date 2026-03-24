@@ -38,7 +38,9 @@ fn test_runtime() -> (PhaseRuntime, ExecutionEnv) {
     store.commit(patch).expect("init lifecycle");
 
     let runtime = PhaseRuntime::new(store).expect("create runtime");
-    let env = ExecutionEnv::from_plugins(&[Arc::new(LoopActionHandlersPlugin)]).expect("build env");
+    let env =
+        ExecutionEnv::from_plugins(&[Arc::new(LoopActionHandlersPlugin)], &Default::default())
+            .expect("build env");
     (runtime, env)
 }
 
