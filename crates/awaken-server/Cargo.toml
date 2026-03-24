@@ -27,9 +27,12 @@ awaken-ext-permission = { workspace = true, optional = true }
 awaken-stores = { workspace = true, features = ["nats"], optional = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
+awaken-stores = { workspace = true }
+awaken-runtime = { workspace = true }
+async-trait = { workspace = true }
 
 [features]
 default = ["permission"]
