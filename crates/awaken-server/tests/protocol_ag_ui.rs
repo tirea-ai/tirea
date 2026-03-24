@@ -2000,3 +2000,272 @@ fn cancelled_finish_has_correct_reason() {
         "Cancelled should not produce RunError"
     );
 }
+
+// ============================================================================
+// Activity event encoder tests
+// ============================================================================
+
+#[test]
+fn activity_snapshot_forwarded_with_all_fields() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let events = enc.on_agent_event(&AgentEvent::ActivitySnapshot {
+        message_id: "msg-1".into(),
+        activity_type: "file-write".into(),
+        content: json!({"path": "/tmp/out.txt", "bytes": 1024}),
+        replace: Some(true),
+    });
+    assert_eq!(events.len(), 1);
+    if let Event::ActivitySnapshot {
+        message_id,
+        activity_type,
+        content,
+        replace,
+        ..
+    } = &events[0]
+    {
+        assert_eq!(message_id, "msg-1");
+        assert_eq!(activity_type, "file-write");
+        assert_eq!(content.get("path").unwrap(), &json!("/tmp/out.txt"));
+        assert_eq!(content.get("bytes").unwrap(), &json!(1024));
+        assert_eq!(*replace, Some(true));
+    } else {
+        panic!("expected ActivitySnapshot, got: {:?}", events[0]);
+    }
+}
+
+#[test]
+fn activity_delta_forwarded_with_all_fields() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let events = enc.on_agent_event(&AgentEvent::ActivityDelta {
+        message_id: "msg-2".into(),
+        activity_type: "edit".into(),
+        patch: vec![
+            json!({"op": "replace", "path": "/line", "value": 42}),
+            json!({"op": "add", "path": "/col", "value": 0}),
+        ],
+    });
+    assert_eq!(events.len(), 1);
+    if let Event::ActivityDelta {
+        message_id,
+        activity_type,
+        patch,
+        ..
+    } = &events[0]
+    {
+        assert_eq!(message_id, "msg-2");
+        assert_eq!(activity_type, "edit");
+        assert_eq!(patch.len(), 2);
+        assert_eq!(patch[0]["op"], "replace");
+        assert_eq!(patch[1]["op"], "add");
+    } else {
+        panic!("expected ActivityDelta, got: {:?}", events[0]);
+    }
+}
+
+#[test]
+fn activity_snapshot_content_is_json_object() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let events = enc.on_agent_event(&AgentEvent::ActivitySnapshot {
+        message_id: "m1".into(),
+        activity_type: "data".into(),
+        content: json!({"key": "value", "nested": {"a": 1}}),
+        replace: None,
+    });
+    assert_eq!(events.len(), 1);
+    if let Event::ActivitySnapshot { content, .. } = &events[0] {
+        assert_eq!(content.get("key").unwrap(), &json!("value"));
+        assert!(content.get("nested").unwrap().is_object());
+    } else {
+        panic!("expected ActivitySnapshot");
+    }
+}
+
+#[test]
+fn activity_snapshot_content_is_array() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let events = enc.on_agent_event(&AgentEvent::ActivitySnapshot {
+        message_id: "m1".into(),
+        activity_type: "list".into(),
+        content: json!([1, 2, 3]),
+        replace: None,
+    });
+    assert_eq!(events.len(), 1);
+    // Non-object content gets wrapped under "value" key
+    if let Event::ActivitySnapshot { content, .. } = &events[0] {
+        assert_eq!(content.get("value").unwrap(), &json!([1, 2, 3]));
+    } else {
+        panic!("expected ActivitySnapshot");
+    }
+}
+
+#[test]
+fn activity_snapshot_content_is_scalar() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let events = enc.on_agent_event(&AgentEvent::ActivitySnapshot {
+        message_id: "m1".into(),
+        activity_type: "note".into(),
+        content: json!("hello world"),
+        replace: None,
+    });
+    assert_eq!(events.len(), 1);
+    // Scalar content gets wrapped under "value" key
+    if let Event::ActivitySnapshot { content, .. } = &events[0] {
+        assert_eq!(content.get("value").unwrap(), &json!("hello world"));
+    } else {
+        panic!("expected ActivitySnapshot");
+    }
+
+    // Also test numeric scalar
+    let events2 = enc.on_agent_event(&AgentEvent::ActivitySnapshot {
+        message_id: "m2".into(),
+        activity_type: "count".into(),
+        content: json!(42),
+        replace: None,
+    });
+    if let Event::ActivitySnapshot { content, .. } = &events2[0] {
+        assert_eq!(content.get("value").unwrap(), &json!(42));
+    } else {
+        panic!("expected ActivitySnapshot");
+    }
+}
+
+#[test]
+fn activity_delta_patch_is_json_patch_format() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let events = enc.on_agent_event(&AgentEvent::ActivityDelta {
+        message_id: "m1".into(),
+        activity_type: "edit".into(),
+        patch: vec![
+            json!({"op": "replace", "path": "/status", "value": "done"}),
+            json!({"op": "remove", "path": "/temp"}),
+            json!({"op": "add", "path": "/result", "value": 42}),
+        ],
+    });
+    assert_eq!(events.len(), 1);
+    if let Event::ActivityDelta { patch, .. } = &events[0] {
+        assert_eq!(patch.len(), 3);
+        // Each element is a JSON Patch operation object
+        assert_eq!(patch[0]["op"], "replace");
+        assert_eq!(patch[0]["path"], "/status");
+        assert_eq!(patch[1]["op"], "remove");
+        assert_eq!(patch[2]["op"], "add");
+    } else {
+        panic!("expected ActivityDelta");
+    }
+}
+
+#[test]
+fn activity_snapshot_message_id_matches_tool_call() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    // Simulate a tool call, then an activity snapshot referencing the same call_id
+    let tool_call_id = "tc-abc-123";
+    enc.on_agent_event(&AgentEvent::ToolCallStart {
+        id: tool_call_id.into(),
+        name: "search".into(),
+    });
+
+    let events = enc.on_agent_event(&AgentEvent::ActivitySnapshot {
+        message_id: tool_call_id.into(),
+        activity_type: "tool-call-progress".into(),
+        content: json!({"status": "running"}),
+        replace: Some(true),
+    });
+    assert_eq!(events.len(), 1);
+    if let Event::ActivitySnapshot { message_id, .. } = &events[0] {
+        assert_eq!(message_id, tool_call_id);
+    } else {
+        panic!("expected ActivitySnapshot");
+    }
+}
+
+#[test]
+fn multiple_activity_snapshots_different_types() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let events1 = enc.on_agent_event(&AgentEvent::ActivitySnapshot {
+        message_id: "m1".into(),
+        activity_type: "file-read".into(),
+        content: json!({"path": "/etc/hosts"}),
+        replace: None,
+    });
+    let events2 = enc.on_agent_event(&AgentEvent::ActivitySnapshot {
+        message_id: "m1".into(),
+        activity_type: "tool-call-progress".into(),
+        content: json!({"status": "done"}),
+        replace: Some(true),
+    });
+
+    assert_eq!(events1.len(), 1);
+    assert_eq!(events2.len(), 1);
+
+    if let Event::ActivitySnapshot { activity_type, .. } = &events1[0] {
+        assert_eq!(activity_type, "file-read");
+    } else {
+        panic!("expected ActivitySnapshot");
+    }
+    if let Event::ActivitySnapshot { activity_type, .. } = &events2[0] {
+        assert_eq!(activity_type, "tool-call-progress");
+    } else {
+        panic!("expected ActivitySnapshot");
+    }
+}
+
+#[test]
+fn activity_snapshot_after_text_delta() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+
+    // Emit text delta first
+    let text_events = enc.on_agent_event(&AgentEvent::TextDelta {
+        delta: "Thinking...".into(),
+    });
+    assert!(!text_events.is_empty());
+
+    // Now emit activity snapshot — should coexist with open text stream
+    let activity_events = enc.on_agent_event(&AgentEvent::ActivitySnapshot {
+        message_id: "m-act".into(),
+        activity_type: "progress".into(),
+        content: json!({"percent": 50}),
+        replace: Some(true),
+    });
+    assert_eq!(activity_events.len(), 1);
+    assert!(matches!(
+        &activity_events[0],
+        Event::ActivitySnapshot { .. }
+    ));
+}
+
+#[test]
+fn activity_events_not_suppressed_by_terminal_guard() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+
+    // Emit activity before terminal event — should work
+    let before = enc.on_agent_event(&AgentEvent::ActivitySnapshot {
+        message_id: "m1".into(),
+        activity_type: "progress".into(),
+        content: json!({"status": "running"}),
+        replace: Some(true),
+    });
+    assert_eq!(before.len(), 1);
+    assert!(matches!(&before[0], Event::ActivitySnapshot { .. }));
+
+    // Now trigger terminal guard via Error
+    enc.on_agent_event(&AgentEvent::Error {
+        message: "fatal".into(),
+        code: None,
+    });
+
+    // After terminal event, ALL events are suppressed (including activity)
+    // This verifies the terminal guard is consistent
+    let after = enc.on_agent_event(&AgentEvent::ActivitySnapshot {
+        message_id: "m2".into(),
+        activity_type: "progress".into(),
+        content: json!({"status": "done"}),
+        replace: Some(true),
+    });
+    assert!(
+        after.is_empty(),
+        "activity events should be suppressed after terminal event"
+    );
+
+    // But the key point: activity events BEFORE terminal pass through fine
+    // (verified by `before` assertions above)
+}

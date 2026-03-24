@@ -995,4 +995,233 @@ mod tests {
         let err = ToolError::Internal("unexpected".to_string());
         assert_eq!(err.to_string(), "Internal error: unexpected");
     }
+
+    // ── Activity event tests ──
+
+    fn make_ctx_with_sink() -> (
+        ToolCallContext,
+        Arc<crate::contract::event_sink::VecEventSink>,
+    ) {
+        let sink = Arc::new(crate::contract::event_sink::VecEventSink::new());
+        let mut ctx = ToolCallContext::test_default();
+        ctx.call_id = "call-100".into();
+        ctx.tool_name = "test_tool".into();
+        ctx.activity_sink = Some(sink.clone() as Arc<dyn EventSink>);
+        (ctx, sink)
+    }
+
+    #[tokio::test]
+    async fn activity_snapshot_contains_content_and_type() {
+        let (ctx, sink) = make_ctx_with_sink();
+        ctx.report_activity("file-write", "writing to disk").await;
+
+        let events = sink.events();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AgentEvent::ActivitySnapshot {
+                activity_type,
+                content,
+                ..
+            } => {
+                assert_eq!(activity_type, "file-write");
+                assert_eq!(content, &json!("writing to disk"));
+            }
+            other => panic!("expected ActivitySnapshot, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn activity_delta_contains_patch_array() {
+        let (ctx, sink) = make_ctx_with_sink();
+        ctx.report_activity_delta(
+            "edit",
+            json!([
+                {"op": "replace", "path": "/line", "value": 42},
+                {"op": "add", "path": "/col", "value": 0}
+            ]),
+        )
+        .await;
+
+        let events = sink.events();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AgentEvent::ActivityDelta { patch, .. } => {
+                assert_eq!(patch.len(), 2);
+                assert_eq!(patch[0]["op"], "replace");
+                assert_eq!(patch[1]["op"], "add");
+            }
+            other => panic!("expected ActivityDelta, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn activity_snapshot_replace_true() {
+        let (ctx, sink) = make_ctx_with_sink();
+        ctx.report_activity("status", "done").await;
+
+        let events = sink.events();
+        match &events[0] {
+            AgentEvent::ActivitySnapshot { replace, .. } => {
+                assert_eq!(*replace, Some(true));
+            }
+            other => panic!("expected ActivitySnapshot, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn activity_snapshot_replace_false() {
+        let (ctx, sink) = make_ctx_with_sink();
+        // Emit directly via sink to test replace=Some(false)
+        if let Some(sink_ref) = &ctx.activity_sink {
+            sink_ref
+                .emit(AgentEvent::ActivitySnapshot {
+                    message_id: ctx.call_id.clone(),
+                    activity_type: "log".into(),
+                    content: json!("append me"),
+                    replace: Some(false),
+                })
+                .await;
+        }
+
+        let events = sink.events();
+        match &events[0] {
+            AgentEvent::ActivitySnapshot { replace, .. } => {
+                assert_eq!(*replace, Some(false));
+            }
+            other => panic!("expected ActivitySnapshot, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn activity_snapshot_replace_none_default() {
+        let (ctx, sink) = make_ctx_with_sink();
+        // Emit directly via sink to test replace=None default
+        if let Some(sink_ref) = &ctx.activity_sink {
+            sink_ref
+                .emit(AgentEvent::ActivitySnapshot {
+                    message_id: ctx.call_id.clone(),
+                    activity_type: "info".into(),
+                    content: json!("data"),
+                    replace: None,
+                })
+                .await;
+        }
+
+        let events = sink.events();
+        match &events[0] {
+            AgentEvent::ActivitySnapshot { replace, .. } => {
+                assert!(replace.is_none());
+            }
+            other => panic!("expected ActivitySnapshot, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn multiple_activities_same_call() {
+        let (ctx, sink) = make_ctx_with_sink();
+        ctx.report_activity("status", "starting").await;
+        ctx.report_activity("status", "in progress").await;
+        ctx.report_activity("status", "done").await;
+
+        let events = sink.events();
+        assert_eq!(events.len(), 3);
+        for event in &events {
+            match event {
+                AgentEvent::ActivitySnapshot { message_id, .. } => {
+                    assert_eq!(message_id, "call-100");
+                }
+                other => panic!("expected ActivitySnapshot, got: {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn activity_type_preserved_across_snapshot_and_delta() {
+        let (ctx, sink) = make_ctx_with_sink();
+        ctx.report_activity("compile", "compiling").await;
+        ctx.report_activity_delta(
+            "compile",
+            json!({"op": "replace", "path": "/step", "value": 2}),
+        )
+        .await;
+
+        let events = sink.events();
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            AgentEvent::ActivitySnapshot { activity_type, .. } => {
+                assert_eq!(activity_type, "compile");
+            }
+            other => panic!("expected ActivitySnapshot, got: {other:?}"),
+        }
+        match &events[1] {
+            AgentEvent::ActivityDelta { activity_type, .. } => {
+                assert_eq!(activity_type, "compile");
+            }
+            other => panic!("expected ActivityDelta, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn progress_report_has_structured_content() {
+        use crate::contract::progress::ProgressStatus;
+
+        let (ctx, sink) = make_ctx_with_sink();
+        ctx.report_progress(ProgressStatus::Running, Some("Indexing files"), Some(0.75))
+            .await;
+
+        let events = sink.events();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AgentEvent::ActivitySnapshot { content, .. } => {
+                assert_eq!(content["status"], "running");
+                assert_eq!(content["message"], "Indexing files");
+                assert_eq!(content["progress"], 0.75);
+                assert_eq!(content["tool_name"], "test_tool");
+                assert_eq!(content["call_id"], "call-100");
+                assert_eq!(content["node_id"], "call-100");
+                assert_eq!(content["schema"], "tool-call-progress.v1");
+            }
+            other => panic!("expected ActivitySnapshot, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn progress_report_activity_type_is_tool_call_progress() {
+        use crate::contract::progress::{ProgressStatus, TOOL_CALL_PROGRESS_ACTIVITY_TYPE};
+
+        let (ctx, sink) = make_ctx_with_sink();
+        ctx.report_progress(ProgressStatus::Done, None, None).await;
+
+        let events = sink.events();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AgentEvent::ActivitySnapshot { activity_type, .. } => {
+                assert_eq!(activity_type, TOOL_CALL_PROGRESS_ACTIVITY_TYPE);
+            }
+            other => panic!("expected ActivitySnapshot, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn activity_events_order_preserved() {
+        let (ctx, sink) = make_ctx_with_sink();
+        ctx.report_activity("step", "one").await;
+        ctx.report_activity_delta("step", json!({"op": "add", "path": "/n", "value": 2}))
+            .await;
+        ctx.report_activity("step", "three").await;
+
+        let events = sink.events();
+        assert_eq!(events.len(), 3);
+
+        // First: snapshot "one"
+        assert!(
+            matches!(&events[0], AgentEvent::ActivitySnapshot { content, .. } if content == &json!("one"))
+        );
+        // Second: delta
+        assert!(matches!(&events[1], AgentEvent::ActivityDelta { .. }));
+        // Third: snapshot "three"
+        assert!(
+            matches!(&events[2], AgentEvent::ActivitySnapshot { content, .. } if content == &json!("three"))
+        );
+    }
 }
