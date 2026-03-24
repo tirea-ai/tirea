@@ -21,9 +21,9 @@ use super::encoder::AiSdkEncoder;
 pub fn ai_sdk_routes() -> Router<AppState> {
     Router::new()
         .route("/v1/ai-sdk/chat", post(ai_sdk_chat))
-        .route("/v1/ai-sdk/streams/{run_id}", get(resume_stream))
-        .route("/v1/ai-sdk/runs/{run_id}/stream", get(resume_stream))
-        .route("/v1/ai-sdk/threads/{id}/messages", get(thread_messages))
+        .route("/v1/ai-sdk/streams/:run_id", get(resume_stream))
+        .route("/v1/ai-sdk/runs/:run_id/stream", get(resume_stream))
+        .route("/v1/ai-sdk/threads/:id/messages", get(thread_messages))
 }
 
 #[derive(Debug, Deserialize)]

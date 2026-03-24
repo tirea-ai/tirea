@@ -22,7 +22,7 @@ use super::types::Role;
 pub fn ag_ui_routes() -> Router<AppState> {
     Router::new()
         .route("/v1/ag-ui/run", post(ag_ui_run))
-        .route("/v1/ag-ui/threads/{id}/messages", get(thread_messages))
+        .route("/v1/ag-ui/threads/:id/messages", get(thread_messages))
 }
 
 #[derive(Debug, Deserialize)]

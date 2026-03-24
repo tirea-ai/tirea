@@ -18,20 +18,20 @@ use crate::run_dispatcher::RunSpec;
 pub fn a2a_routes() -> Router<AppState> {
     Router::new()
         .route("/v1/a2a/tasks/send", post(a2a_task_send))
-        .route("/v1/a2a/tasks/{task_id}", get(a2a_task_status))
-        .route("/v1/a2a/tasks/{task_id}/cancel", post(a2a_task_cancel))
+        .route("/v1/a2a/tasks/:task_id", get(a2a_task_status))
+        .route("/v1/a2a/tasks/:task_id/cancel", post(a2a_task_cancel))
         .route("/v1/a2a/.well-known/agent", get(a2a_agent_card))
         .route("/v1/a2a/agents", get(a2a_list_agents))
         .route(
-            "/v1/a2a/agents/{agent_id}/agent-card",
+            "/v1/a2a/agents/:agent_id/agent-card",
             get(a2a_agent_card_by_id),
         )
         .route(
-            "/v1/a2a/agents/{agent_id}/message:send",
+            "/v1/a2a/agents/:agent_id/message:send",
             post(a2a_message_send),
         )
         .route(
-            "/v1/a2a/agents/{agent_id}/tasks/{task_action}",
+            "/v1/a2a/agents/:agent_id/tasks/:task_action",
             get(a2a_task_action_get).post(a2a_task_action_post),
         )
 }

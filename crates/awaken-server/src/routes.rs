@@ -63,17 +63,17 @@ fn thread_routes() -> Router<AppState> {
         .route("/v1/threads", get(list_threads).post(create_thread))
         .route("/v1/threads/summaries", get(list_thread_summaries))
         .route(
-            "/v1/threads/{id}",
+            "/v1/threads/:id",
             get(get_thread).delete(delete_thread).patch(patch_thread),
         )
-        .route("/v1/threads/{id}/interrupt", post(interrupt_thread))
-        .route("/v1/threads/{id}/metadata", patch(patch_thread))
+        .route("/v1/threads/:id/interrupt", post(interrupt_thread))
+        .route("/v1/threads/:id/metadata", patch(patch_thread))
         .route(
-            "/v1/threads/{id}/messages",
+            "/v1/threads/:id/messages",
             get(get_thread_messages).post(post_thread_messages),
         )
         .route(
-            "/v1/threads/{id}/mailbox",
+            "/v1/threads/:id/mailbox",
             post(push_mailbox).get(peek_mailbox),
         )
 }
@@ -81,12 +81,12 @@ fn thread_routes() -> Router<AppState> {
 fn run_routes() -> Router<AppState> {
     Router::new()
         .route("/v1/runs", get(list_runs).post(start_run))
-        .route("/v1/runs/{id}", get(get_run))
-        .route("/v1/runs/{id}/inputs", post(push_run_inputs))
-        .route("/v1/runs/{id}/cancel", post(cancel_run))
-        .route("/v1/runs/{id}/decision", post(submit_decision))
-        .route("/v1/threads/{id}/runs", get(list_thread_runs))
-        .route("/v1/threads/{id}/runs/latest", get(latest_thread_run))
+        .route("/v1/runs/:id", get(get_run))
+        .route("/v1/runs/:id/inputs", post(push_run_inputs))
+        .route("/v1/runs/:id/cancel", post(cancel_run))
+        .route("/v1/runs/:id/decision", post(submit_decision))
+        .route("/v1/threads/:id/runs", get(list_thread_runs))
+        .route("/v1/threads/:id/runs/latest", get(latest_thread_run))
 }
 
 // ── Health ──
