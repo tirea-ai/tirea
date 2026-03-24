@@ -29,6 +29,7 @@ parallel-tools = []
 test-utils = []
 
 [dev-dependencies]
+awaken-runtime = { path = ".", features = ["test-utils"] }
 awaken-stores = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt", "sync"] }
 
