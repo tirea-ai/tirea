@@ -219,3 +219,46 @@ pub(super) fn has_suspended_calls(store: &crate::state::StateStore) -> bool {
         })
         .unwrap_or(false)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn normalize_decision_result_uses_value_for_object() {
+        let decision = json!({"key": "value"});
+        let fallback = json!({"original": true});
+        let result = normalize_decision_result(&decision, &fallback);
+        assert_eq!(result, json!({"key": "value"}));
+    }
+
+    #[test]
+    fn normalize_decision_result_falls_back_for_boolean() {
+        let decision = json!(true);
+        let fallback = json!({"original": "args"});
+        let result = normalize_decision_result(&decision, &fallback);
+        assert_eq!(result, json!({"original": "args"}));
+
+        // Also test false
+        let decision_false = json!(false);
+        let result_false = normalize_decision_result(&decision_false, &fallback);
+        assert_eq!(result_false, json!({"original": "args"}));
+    }
+
+    #[test]
+    fn normalize_decision_result_uses_value_for_string() {
+        let decision = json!("custom result");
+        let fallback = json!({"original": true});
+        let result = normalize_decision_result(&decision, &fallback);
+        assert_eq!(result, json!("custom result"));
+    }
+
+    #[test]
+    fn normalize_decision_result_uses_value_for_null() {
+        let decision = json!(null);
+        let fallback = json!({"original": true});
+        let result = normalize_decision_result(&decision, &fallback);
+        assert_eq!(result, json!(null));
+    }
+}

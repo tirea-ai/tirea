@@ -658,4 +658,108 @@ mod tests {
         assert!(val.0.is_some());
         assert!(val.0.as_ref().unwrap().is_empty());
     }
+
+    // -----------------------------------------------------------------------
+    // AccumulatedToolIntercept tests
+    // -----------------------------------------------------------------------
+
+    use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
+
+    fn make_block() -> ToolInterceptPayload {
+        ToolInterceptPayload::Block {
+            reason: "blocked".into(),
+        }
+    }
+
+    fn make_suspend() -> ToolInterceptPayload {
+        use awaken_contract::contract::suspension::{
+            PendingToolCall, SuspendTicket, Suspension, ToolCallResumeMode,
+        };
+        ToolInterceptPayload::Suspend(SuspendTicket {
+            suspension: Suspension::default(),
+            pending: PendingToolCall::default(),
+            resume_mode: ToolCallResumeMode::default(),
+        })
+    }
+
+    fn make_set_result(name: &str) -> ToolInterceptPayload {
+        use awaken_contract::contract::tool::ToolResult;
+        ToolInterceptPayload::SetResult(ToolResult::success(name, serde_json::json!({})))
+    }
+
+    #[test]
+    fn accumulated_tool_intercept_block_wins_over_suspend() {
+        let mut val: Option<ToolInterceptPayload> = None;
+        AccumulatedToolIntercept::apply(
+            &mut val,
+            AccumulatedToolInterceptUpdate::Set(make_suspend()),
+        );
+        AccumulatedToolIntercept::apply(
+            &mut val,
+            AccumulatedToolInterceptUpdate::Set(make_block()),
+        );
+        assert!(matches!(val, Some(ToolInterceptPayload::Block { .. })));
+    }
+
+    #[test]
+    fn accumulated_tool_intercept_block_wins_over_set_result() {
+        let mut val: Option<ToolInterceptPayload> = None;
+        AccumulatedToolIntercept::apply(
+            &mut val,
+            AccumulatedToolInterceptUpdate::Set(make_set_result("r1")),
+        );
+        AccumulatedToolIntercept::apply(
+            &mut val,
+            AccumulatedToolInterceptUpdate::Set(make_block()),
+        );
+        assert!(matches!(val, Some(ToolInterceptPayload::Block { .. })));
+    }
+
+    #[test]
+    fn accumulated_tool_intercept_suspend_wins_over_set_result() {
+        let mut val: Option<ToolInterceptPayload> = None;
+        AccumulatedToolIntercept::apply(
+            &mut val,
+            AccumulatedToolInterceptUpdate::Set(make_set_result("r1")),
+        );
+        AccumulatedToolIntercept::apply(
+            &mut val,
+            AccumulatedToolInterceptUpdate::Set(make_suspend()),
+        );
+        assert!(matches!(val, Some(ToolInterceptPayload::Suspend(_))));
+    }
+
+    #[test]
+    fn accumulated_tool_intercept_clear_resets() {
+        let mut val: Option<ToolInterceptPayload> = None;
+        AccumulatedToolIntercept::apply(
+            &mut val,
+            AccumulatedToolInterceptUpdate::Set(make_block()),
+        );
+        assert!(val.is_some());
+        AccumulatedToolIntercept::apply(&mut val, AccumulatedToolInterceptUpdate::Clear);
+        assert!(val.is_none());
+    }
+
+    #[test]
+    fn accumulated_tool_intercept_first_set_result_kept_over_second() {
+        let mut val: Option<ToolInterceptPayload> = None;
+        AccumulatedToolIntercept::apply(
+            &mut val,
+            AccumulatedToolInterceptUpdate::Set(make_set_result("first")),
+        );
+        AccumulatedToolIntercept::apply(
+            &mut val,
+            AccumulatedToolInterceptUpdate::Set(make_set_result("second")),
+        );
+        // Same priority (both SetResult), last wins per the > check (it doesn't, so first is kept)
+        match &val {
+            Some(ToolInterceptPayload::SetResult(r)) => {
+                // priority is equal so the condition `priority(&payload) > priority(existing)`
+                // is false, meaning the first value is kept (not replaced).
+                assert_eq!(r.tool_name, "first");
+            }
+            other => panic!("expected SetResult, got {other:?}"),
+        }
+    }
 }
