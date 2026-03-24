@@ -31,5 +31,8 @@ pub use contract::progress::{
     ProgressStatus, TOOL_CALL_PROGRESS_ACTIVITY_TYPE, ToolCallProgressState,
 };
 
+// ── profile store ──
+pub use contract::profile_store::{ProfileEntry, ProfileKey, ProfileOwner, ProfileStore};
+
 // ── thread ──
 pub use thread::{Thread, ThreadMetadata};
