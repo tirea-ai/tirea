@@ -6834,3 +6834,2705 @@ async fn text_delta_events_emitted_for_text_response() {
         "should emit TextDelta events for text content"
     );
 }
+
+// ===========================================================================
+// Group 1: Parallel tool state isolation (5 tests)
+// ===========================================================================
+
+/// Parallel tool calls in the same step each get their own ToolCallState entries.
+#[tokio::test]
+async fn parallel_tools_have_independent_state_entries() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![
+                ToolCall::new("p1", "echo", json!({"message": "alpha"})),
+                ToolCall::new("p2", "calc", json!({"result": 99})),
+            ],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("Both done.")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm)
+        .with_tool(Arc::new(EchoTool))
+        .with_tool(Arc::new(CalcTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+
+    // After step 2, states are cleared, but ToolCallDone events prove isolation
+    let events = sink.take();
+    let done_ids: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolCallDone { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(done_ids.len(), 2);
+    assert!(done_ids.contains(&"p1".to_string()));
+    assert!(done_ids.contains(&"p2".to_string()));
+}
+
+/// Parallel tools: one succeeds, one suspends. Succeeded tool state preserved at suspension.
+#[tokio::test]
+async fn parallel_tools_succeed_and_suspend_independent_states() {
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![],
+        tool_calls: vec![
+            ToolCall::new("ok", "echo", json!({"message": "fine"})),
+            ToolCall::new("sus", "dangerous", json!({"action": "rm"})),
+        ],
+        usage: None,
+        stop_reason: Some(StopReason::ToolUse),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm)
+        .with_tool(Arc::new(EchoTool))
+        .with_tool(Arc::new(SuspendingTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::Suspended);
+
+    let tc = runtime.store().read::<ToolCallStates>().unwrap();
+    assert_eq!(tc.calls["ok"].status, ToolCallStatus::Succeeded);
+    assert_eq!(tc.calls["sus"].status, ToolCallStatus::Suspended);
+}
+
+/// Parallel tools: both fail, both get Failed status in ToolCallDone events.
+#[tokio::test]
+async fn parallel_tools_both_fail_independently() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![
+                ToolCall::new("f1", "fail", json!({})),
+                ToolCall::new("f2", "fail", json!({})),
+            ],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("Both failed.")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(FailingTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+
+    let events = sink.take();
+    let failed_count = events
+        .iter()
+        .filter(|e| {
+            matches!(e, AgentEvent::ToolCallDone { outcome, .. }
+                if *outcome == awaken::contract::suspension::ToolCallOutcome::Failed)
+        })
+        .count();
+    assert_eq!(
+        failed_count, 2,
+        "both parallel tools should fail independently"
+    );
+}
+
+/// Parallel tool: same tool invoked twice with different args produces distinct results.
+#[tokio::test]
+async fn parallel_same_tool_distinct_results() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![
+                ToolCall::new("e1", "echo", json!({"message": "first"})),
+                ToolCall::new("e2", "echo", json!({"message": "second"})),
+            ],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("ok")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("echo twice")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+
+    let events = sink.take();
+    let results: std::collections::HashMap<String, ToolResult> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolCallDone { id, result, .. } => Some((id.clone(), result.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 2);
+    assert_ne!(
+        results["e1"].message, results["e2"].message,
+        "same tool with different args should produce distinct results"
+    );
+}
+
+/// Sequential step 2 sees fresh tool call state (step 1 state cleared).
+#[tokio::test]
+async fn sequential_steps_see_fresh_tool_state() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("s1", "echo", json!({"message": "step1"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("s2", "echo", json!({"message": "step2"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("final")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    // After 3 steps, tool states should be cleared
+    let tc = runtime.store().read::<ToolCallStates>().unwrap_or_default();
+    assert!(
+        tc.calls.is_empty(),
+        "final step should clear tool call states"
+    );
+}
+
+// ===========================================================================
+// Group 2: State snapshot / revision behavior (5 tests)
+// ===========================================================================
+
+/// State snapshot revision increases across steps.
+#[tokio::test]
+async fn state_snapshot_revision_increases_across_steps() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "a"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("done")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let events = sink.take();
+    let revisions: Vec<u64> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::StateSnapshot { snapshot } => {
+                snapshot.get("revision").and_then(|v| v.as_u64())
+            }
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        revisions.len() >= 2,
+        "should have at least 2 snapshots, got {}",
+        revisions.len()
+    );
+    for window in revisions.windows(2) {
+        assert!(
+            window[1] >= window[0],
+            "snapshot revision should be non-decreasing: {:?}",
+            revisions
+        );
+    }
+}
+
+/// State snapshot contains extensions field with registered key data.
+#[tokio::test]
+async fn state_snapshot_contains_extensions_with_lifecycle() {
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("done")],
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let events = sink.take();
+    let last_snapshot = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::StateSnapshot { snapshot } => Some(snapshot),
+            _ => None,
+        })
+        .last()
+        .expect("should have at least one snapshot");
+
+    let extensions = last_snapshot
+        .get("extensions")
+        .expect("snapshot should have extensions");
+    assert!(extensions.is_object(), "extensions should be an object");
+}
+
+/// State snapshot emitted for every step plus the final run end.
+#[tokio::test]
+async fn state_snapshot_count_matches_steps_plus_finish() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "1"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c2", "echo", json!({"message": "2"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("end")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.steps, 3);
+
+    let events = sink.take();
+    let snapshot_count = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::StateSnapshot { .. }))
+        .count();
+
+    // At least one per step + one for run finish
+    assert!(
+        snapshot_count >= result.steps as usize,
+        "expected at least {} snapshots (one per step), got {}",
+        result.steps,
+        snapshot_count
+    );
+}
+
+/// State snapshot at suspension includes Waiting status.
+#[tokio::test]
+async fn state_snapshot_at_suspension_includes_waiting_status() {
+    let llm = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
+        "dangerous",
+        "c1",
+        json!({"action": "nuke"}),
+    )]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::Suspended);
+
+    let events = sink.take();
+    let last_snapshot = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::StateSnapshot { snapshot } => Some(snapshot),
+            _ => None,
+        })
+        .last()
+        .expect("should have at least one snapshot");
+
+    // The snapshot should contain the lifecycle with Waiting status
+    let extensions = last_snapshot.get("extensions").unwrap();
+    let lifecycle_json = extensions.get("__runtime.run_lifecycle");
+    assert!(
+        lifecycle_json.is_some(),
+        "snapshot extensions should contain run_lifecycle"
+    );
+}
+
+/// Export_persisted after run completion returns correct revision.
+#[tokio::test]
+async fn export_persisted_after_run_has_positive_revision() {
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("done")],
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let persisted = runtime.store().export_persisted().unwrap();
+    assert!(
+        persisted.revision > 0,
+        "persisted state should have positive revision after run"
+    );
+}
+
+// ===========================================================================
+// Group 3: Checkpoint behavior (5 tests)
+// ===========================================================================
+
+/// Checkpoint store receives checkpoint data when provided.
+#[tokio::test]
+async fn checkpoint_store_receives_data() {
+    use awaken::stores::InMemoryStore;
+
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("checkpointed")],
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let checkpoint = Arc::new(InMemoryStore::new());
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: Some(checkpoint.as_ref()),
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    use awaken::contract::storage::RunStore;
+    let record = checkpoint.load_run("run-1").await.unwrap();
+    assert!(
+        record.is_some(),
+        "checkpoint store should have a run record"
+    );
+    let record = record.unwrap();
+    assert_eq!(record.run_id, "run-1");
+    assert_eq!(record.thread_id, "thread-1");
+}
+
+/// Checkpoint includes correct step count after multi-step run.
+#[tokio::test]
+async fn checkpoint_includes_correct_step_count() {
+    use awaken::stores::InMemoryStore;
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "1"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("done")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let checkpoint = Arc::new(InMemoryStore::new());
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: Some(checkpoint.as_ref()),
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    use awaken::contract::storage::RunStore;
+    let record = checkpoint.load_run("run-1").await.unwrap().unwrap();
+    assert_eq!(record.steps, 2, "checkpoint should reflect 2 steps");
+}
+
+/// Checkpoint persists state blob.
+#[tokio::test]
+async fn checkpoint_contains_state_blob() {
+    use awaken::stores::InMemoryStore;
+
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("ok")],
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let checkpoint = Arc::new(InMemoryStore::new());
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: Some(checkpoint.as_ref()),
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    use awaken::contract::storage::RunStore;
+    let record = checkpoint.load_run("run-1").await.unwrap().unwrap();
+    assert!(
+        record.state.is_some(),
+        "checkpoint should contain persisted state"
+    );
+}
+
+/// Checkpoint stores messages.
+#[tokio::test]
+async fn checkpoint_stores_thread_messages() {
+    use awaken::stores::InMemoryStore;
+
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("hello back")],
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let checkpoint = Arc::new(InMemoryStore::new());
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: Some(checkpoint.as_ref()),
+        messages: vec![Message::user("hello")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    use awaken::contract::storage::ThreadStore;
+    let msgs = checkpoint.load_messages("thread-1").await.unwrap();
+    assert!(msgs.is_some(), "checkpoint should store thread messages");
+    let msgs = msgs.unwrap();
+    assert!(
+        msgs.len() >= 2,
+        "should store at least user + assistant messages, got {}",
+        msgs.len()
+    );
+}
+
+/// Checkpoint records correct agent_id from identity.
+#[tokio::test]
+async fn checkpoint_records_agent_id() {
+    use awaken::stores::InMemoryStore;
+
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("ok")],
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let checkpoint = Arc::new(InMemoryStore::new());
+    let identity = RunIdentity::new(
+        "t-1".into(),
+        None,
+        "r-1".into(),
+        None,
+        "my-agent".into(),
+        RunOrigin::User,
+    );
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: Some(checkpoint.as_ref()),
+        messages: vec![Message::user("hi")],
+        run_identity: identity,
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    use awaken::contract::storage::RunStore;
+    let record = checkpoint.load_run("r-1").await.unwrap().unwrap();
+    assert_eq!(record.agent_id, "my-agent");
+}
+
+// ===========================================================================
+// Group 4: Context window handling (5 tests)
+// ===========================================================================
+
+/// LLM receives context messages from multiple user messages.
+#[tokio::test]
+async fn llm_receives_all_user_messages() {
+    struct CountingMsgLlm {
+        message_counts: Mutex<Vec<usize>>,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for CountingMsgLlm {
+        async fn execute(
+            &self,
+            req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            self.message_counts.lock().unwrap().push(req.messages.len());
+            Ok(StreamResult {
+                content: vec![ContentBlock::text("ok")],
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            })
+        }
+
+        fn name(&self) -> &str {
+            "counting-msg"
+        }
+    }
+
+    let llm = Arc::new(CountingMsgLlm {
+        message_counts: Mutex::new(Vec::new()),
+    });
+    let llm_ref = Arc::clone(&llm);
+
+    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![
+            Message::user("first"),
+            Message::user("second"),
+            Message::user("third"),
+        ],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let counts = llm_ref.message_counts.lock().unwrap();
+    assert!(
+        counts[0] >= 3,
+        "LLM should receive at least 3 user messages (+ system prompt), got {}",
+        counts[0]
+    );
+}
+
+/// Tool results from step 1 appear in step 2 inference messages.
+#[tokio::test]
+async fn tool_results_visible_in_next_step_messages() {
+    struct MsgRecordLlm {
+        requests: Mutex<Vec<Vec<String>>>,
+        call_count: Mutex<usize>,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for MsgRecordLlm {
+        async fn execute(
+            &self,
+            req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            let texts: Vec<String> = req.messages.iter().map(|m| m.text()).collect();
+            self.requests.lock().unwrap().push(texts);
+            let mut count = self.call_count.lock().unwrap();
+            *count += 1;
+            if *count == 1 {
+                Ok(StreamResult {
+                    content: vec![],
+                    tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "hi"}))],
+                    usage: None,
+                    stop_reason: Some(StopReason::ToolUse),
+                    has_incomplete_tool_calls: false,
+                })
+            } else {
+                Ok(StreamResult {
+                    content: vec![ContentBlock::text("final")],
+                    tool_calls: vec![],
+                    usage: None,
+                    stop_reason: Some(StopReason::EndTurn),
+                    has_incomplete_tool_calls: false,
+                })
+            }
+        }
+
+        fn name(&self) -> &str {
+            "msg-record"
+        }
+    }
+
+    let llm = Arc::new(MsgRecordLlm {
+        requests: Mutex::new(Vec::new()),
+        call_count: Mutex::new(0),
+    });
+    let llm_ref = Arc::clone(&llm);
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("echo hi")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let requests = llm_ref.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2, "should have two LLM calls");
+    let second_req = &requests[1];
+    let has_tool_result = second_req.iter().any(|m| m.contains("hi"));
+    assert!(
+        has_tool_result,
+        "second LLM call should contain tool result from step 1, got: {:?}",
+        second_req
+    );
+}
+
+/// Context message injection adds to existing messages without overwriting.
+#[tokio::test]
+async fn context_injection_additive_not_destructive() {
+    use awaken::agent::state::AddContextMessage;
+    use awaken::contract::context_message::ContextMessage;
+
+    struct MsgCheckLlm {
+        requests: Mutex<Vec<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for MsgCheckLlm {
+        async fn execute(
+            &self,
+            req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            let texts: Vec<String> = req.messages.iter().map(|m| m.text()).collect();
+            self.requests.lock().unwrap().push(texts);
+            Ok(StreamResult {
+                content: vec![ContentBlock::text("ok")],
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            })
+        }
+
+        fn name(&self) -> &str {
+            "msg-check"
+        }
+    }
+
+    struct AdditiveContextHook;
+
+    #[async_trait]
+    impl PhaseHook for AdditiveContextHook {
+        async fn run(
+            &self,
+            _ctx: &awaken::PhaseContext,
+        ) -> Result<awaken::StateCommand, awaken::StateError> {
+            let mut cmd = awaken::StateCommand::new();
+            cmd.schedule_action::<AddContextMessage>(ContextMessage::system(
+                "additive_test",
+                "ADDITIVE_MARKER",
+            ))?;
+            Ok(cmd)
+        }
+    }
+
+    struct AdditivePlugin;
+    impl Plugin for AdditivePlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "additive-ctx",
+            }
+        }
+        fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+            registrar.register_phase_hook(
+                "additive-ctx",
+                awaken::Phase::BeforeInference,
+                AdditiveContextHook,
+            )?;
+            Ok(())
+        }
+    }
+
+    let llm = Arc::new(MsgCheckLlm {
+        requests: Mutex::new(Vec::new()),
+    });
+    let llm_ref = Arc::clone(&llm);
+
+    let agent = AgentConfig::new("test", "m", "Original system prompt", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(agent, vec![Arc::new(AdditivePlugin)]);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("hello user")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let requests = llm_ref.requests.lock().unwrap();
+    let first_req = &requests[0];
+    let has_system = first_req
+        .iter()
+        .any(|m| m.contains("Original system prompt"));
+    let has_user = first_req.iter().any(|m| m.contains("hello user"));
+    let has_injected = first_req.iter().any(|m| m.contains("ADDITIVE_MARKER"));
+    assert!(has_system, "system prompt should still be present");
+    assert!(has_user, "user message should still be present");
+    assert!(has_injected, "injected context should be present");
+}
+
+/// Token usage accumulates across multiple steps.
+#[tokio::test]
+async fn token_usage_accumulates_across_steps() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "a"}))],
+            usage: Some(TokenUsage {
+                prompt_tokens: Some(100),
+                completion_tokens: Some(50),
+                total_tokens: Some(150),
+                ..Default::default()
+            }),
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("done")],
+            tool_calls: vec![],
+            usage: Some(TokenUsage {
+                prompt_tokens: Some(200),
+                completion_tokens: Some(30),
+                total_tokens: Some(230),
+                ..Default::default()
+            }),
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let events = sink.take();
+    let inference_count = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::InferenceComplete { .. }))
+        .count();
+    assert_eq!(
+        inference_count, 2,
+        "should have two inference completion events"
+    );
+}
+
+/// LLM gets tool descriptors even on text-only response.
+#[tokio::test]
+async fn tool_descriptors_present_even_when_unused() {
+    struct ToolCheckLlm {
+        tool_counts: Mutex<Vec<usize>>,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for ToolCheckLlm {
+        async fn execute(
+            &self,
+            req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            self.tool_counts.lock().unwrap().push(req.tools.len());
+            Ok(StreamResult {
+                content: vec![ContentBlock::text("ok")],
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            })
+        }
+
+        fn name(&self) -> &str {
+            "tool-check"
+        }
+    }
+
+    let llm = Arc::new(ToolCheckLlm {
+        tool_counts: Mutex::new(Vec::new()),
+    });
+    let llm_ref = Arc::clone(&llm);
+
+    let agent = AgentConfig::new("test", "m", "sys", llm)
+        .with_tool(Arc::new(EchoTool))
+        .with_tool(Arc::new(CalcTool))
+        .with_tool(Arc::new(FailingTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let counts = llm_ref.tool_counts.lock().unwrap();
+    assert_eq!(
+        counts[0], 3,
+        "all 3 tool descriptors should be sent even when tools are not used"
+    );
+}
+
+// ===========================================================================
+// Group 5: Plugin interaction in loop (5 tests)
+// ===========================================================================
+
+/// RunStart and RunEnd hooks fire exactly once each.
+#[tokio::test]
+async fn run_start_and_run_end_hooks_fire_exactly_once() {
+    let run_start_count = Arc::new(Mutex::new(0u32));
+    let run_end_count = Arc::new(Mutex::new(0u32));
+
+    struct RunBoundaryCounter {
+        start: Arc<Mutex<u32>>,
+        end: Arc<Mutex<u32>>,
+    }
+
+    impl Clone for RunBoundaryCounter {
+        fn clone(&self) -> Self {
+            Self {
+                start: Arc::clone(&self.start),
+                end: Arc::clone(&self.end),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl PhaseHook for RunBoundaryCounter {
+        async fn run(
+            &self,
+            ctx: &awaken::PhaseContext,
+        ) -> Result<awaken::StateCommand, awaken::StateError> {
+            match ctx.phase {
+                Phase::RunStart => *self.start.lock().unwrap() += 1,
+                Phase::RunEnd => *self.end.lock().unwrap() += 1,
+                _ => {}
+            }
+            Ok(awaken::StateCommand::new())
+        }
+    }
+
+    struct RunBoundaryPlugin(RunBoundaryCounter);
+    impl Plugin for RunBoundaryPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "run-boundary",
+            }
+        }
+        fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+            registrar.register_phase_hook("run-boundary", Phase::RunStart, self.0.clone())?;
+            registrar.register_phase_hook("run-boundary", Phase::RunEnd, self.0.clone())?;
+            Ok(())
+        }
+    }
+
+    let counter = RunBoundaryCounter {
+        start: Arc::clone(&run_start_count),
+        end: Arc::clone(&run_end_count),
+    };
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "a"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("done")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(agent, vec![Arc::new(RunBoundaryPlugin(counter))]);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        *run_start_count.lock().unwrap(),
+        1,
+        "RunStart should fire exactly once"
+    );
+    assert_eq!(
+        *run_end_count.lock().unwrap(),
+        1,
+        "RunEnd should fire exactly once"
+    );
+}
+
+/// StepStart fires once per step.
+#[tokio::test]
+async fn step_start_fires_per_step() {
+    let step_start_count = Arc::new(Mutex::new(0u32));
+
+    struct StepCounter(Arc<Mutex<u32>>);
+    impl Clone for StepCounter {
+        fn clone(&self) -> Self {
+            Self(Arc::clone(&self.0))
+        }
+    }
+
+    #[async_trait]
+    impl PhaseHook for StepCounter {
+        async fn run(
+            &self,
+            _ctx: &awaken::PhaseContext,
+        ) -> Result<awaken::StateCommand, awaken::StateError> {
+            *self.0.lock().unwrap() += 1;
+            Ok(awaken::StateCommand::new())
+        }
+    }
+
+    struct StepCounterPlugin(StepCounter);
+    impl Plugin for StepCounterPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "step-counter",
+            }
+        }
+        fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+            registrar.register_phase_hook("step-counter", Phase::StepStart, self.0.clone())?;
+            Ok(())
+        }
+    }
+
+    let counter = StepCounter(Arc::clone(&step_start_count));
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "1"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c2", "echo", json!({"message": "2"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("end")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(agent, vec![Arc::new(StepCounterPlugin(counter))]);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.steps, 3);
+    assert_eq!(
+        *step_start_count.lock().unwrap(),
+        3,
+        "StepStart should fire once per step"
+    );
+}
+
+/// BeforeInference hook can observe step count in lifecycle via snapshot.
+#[tokio::test]
+async fn before_inference_hook_sees_step_count() {
+    let step_counts_at_inference = Arc::new(Mutex::new(Vec::<u32>::new()));
+
+    struct StepCountObserver(Arc<Mutex<Vec<u32>>>);
+    impl Clone for StepCountObserver {
+        fn clone(&self) -> Self {
+            Self(Arc::clone(&self.0))
+        }
+    }
+
+    #[async_trait]
+    impl PhaseHook for StepCountObserver {
+        async fn run(
+            &self,
+            ctx: &awaken::PhaseContext,
+        ) -> Result<awaken::StateCommand, awaken::StateError> {
+            if let Some(lifecycle) = ctx.snapshot.get::<RunLifecycle>() {
+                self.0.lock().unwrap().push(lifecycle.step_count);
+            }
+            Ok(awaken::StateCommand::new())
+        }
+    }
+
+    struct StepCountObserverPlugin(StepCountObserver);
+    impl Plugin for StepCountObserverPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "step-count-obs",
+            }
+        }
+        fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+            registrar.register_phase_hook(
+                "step-count-obs",
+                Phase::BeforeInference,
+                self.0.clone(),
+            )?;
+            Ok(())
+        }
+    }
+
+    let observer = StepCountObserver(Arc::clone(&step_counts_at_inference));
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "1"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("end")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver =
+        FixedResolver::with_plugins(agent, vec![Arc::new(StepCountObserverPlugin(observer))]);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let counts = step_counts_at_inference.lock().unwrap();
+    assert_eq!(counts.len(), 2, "should observe 2 BeforeInference hooks");
+}
+
+/// Plugin can modify context at BeforeInference, visible in same step's LLM call.
+#[tokio::test]
+async fn plugin_context_mutation_visible_in_same_step() {
+    use awaken::agent::state::AddContextMessage;
+    use awaken::contract::context_message::ContextMessage;
+
+    struct StepScopedContextHook {
+        marker: String,
+    }
+
+    #[async_trait]
+    impl PhaseHook for StepScopedContextHook {
+        async fn run(
+            &self,
+            _ctx: &awaken::PhaseContext,
+        ) -> Result<awaken::StateCommand, awaken::StateError> {
+            let mut cmd = awaken::StateCommand::new();
+            cmd.schedule_action::<AddContextMessage>(ContextMessage::system(
+                "step_scoped",
+                &self.marker,
+            ))?;
+            Ok(cmd)
+        }
+    }
+
+    struct StepScopedPlugin(String);
+    impl Plugin for StepScopedPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "step-scoped-ctx",
+            }
+        }
+        fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+            registrar.register_phase_hook(
+                "step-scoped-ctx",
+                awaken::Phase::BeforeInference,
+                StepScopedContextHook {
+                    marker: self.0.clone(),
+                },
+            )?;
+            Ok(())
+        }
+    }
+
+    struct ContextVerifyLlm {
+        requests: Mutex<Vec<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for ContextVerifyLlm {
+        async fn execute(
+            &self,
+            req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            let texts: Vec<String> = req.messages.iter().map(|m| m.text()).collect();
+            self.requests.lock().unwrap().push(texts);
+            Ok(StreamResult {
+                content: vec![ContentBlock::text("ok")],
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            })
+        }
+
+        fn name(&self) -> &str {
+            "ctx-verify"
+        }
+    }
+
+    let llm = Arc::new(ContextVerifyLlm {
+        requests: Mutex::new(Vec::new()),
+    });
+    let llm_ref = Arc::clone(&llm);
+
+    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(
+        agent,
+        vec![Arc::new(StepScopedPlugin("UNIQUE_PLUGIN_MARKER".into()))],
+    );
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("test")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let requests = llm_ref.requests.lock().unwrap();
+    let has_marker = requests[0]
+        .iter()
+        .any(|m| m.contains("UNIQUE_PLUGIN_MARKER"));
+    assert!(
+        has_marker,
+        "plugin context mutation should be visible in same step's LLM call"
+    );
+}
+
+/// Multiple plugins can register hooks for the same phase.
+#[tokio::test]
+async fn multiple_plugins_same_phase_both_fire() {
+    let count_a = Arc::new(Mutex::new(0u32));
+    let count_b = Arc::new(Mutex::new(0u32));
+
+    struct SimpleCounter(Arc<Mutex<u32>>);
+    #[async_trait]
+    impl PhaseHook for SimpleCounter {
+        async fn run(
+            &self,
+            _ctx: &awaken::PhaseContext,
+        ) -> Result<awaken::StateCommand, awaken::StateError> {
+            *self.0.lock().unwrap() += 1;
+            Ok(awaken::StateCommand::new())
+        }
+    }
+
+    struct PluginA(Arc<Mutex<u32>>);
+    impl Plugin for PluginA {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "plugin-a" }
+        }
+        fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+            registrar.register_phase_hook(
+                "plugin-a",
+                Phase::RunStart,
+                SimpleCounter(Arc::clone(&self.0)),
+            )?;
+            Ok(())
+        }
+    }
+
+    struct PluginB(Arc<Mutex<u32>>);
+    impl Plugin for PluginB {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "plugin-b" }
+        }
+        fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+            registrar.register_phase_hook(
+                "plugin-b",
+                Phase::RunStart,
+                SimpleCounter(Arc::clone(&self.0)),
+            )?;
+            Ok(())
+        }
+    }
+
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("ok")],
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(
+        agent,
+        vec![
+            Arc::new(PluginA(Arc::clone(&count_a))),
+            Arc::new(PluginB(Arc::clone(&count_b))),
+        ],
+    );
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(*count_a.lock().unwrap(), 1, "plugin A should fire once");
+    assert_eq!(*count_b.lock().unwrap(), 1, "plugin B should fire once");
+}
+
+// ===========================================================================
+// Group 6: Tool result message formatting (5 tests)
+// ===========================================================================
+
+/// Tool result message for successful tool contains tool output.
+#[tokio::test]
+async fn tool_result_message_contains_output() {
+    struct ResultCaptureLlm {
+        requests: Mutex<Vec<Vec<String>>>,
+        call_count: Mutex<usize>,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for ResultCaptureLlm {
+        async fn execute(
+            &self,
+            req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            let texts: Vec<String> = req.messages.iter().map(|m| m.text()).collect();
+            self.requests.lock().unwrap().push(texts);
+            let mut count = self.call_count.lock().unwrap();
+            *count += 1;
+            if *count == 1 {
+                Ok(StreamResult {
+                    content: vec![],
+                    tool_calls: vec![ToolCall::new(
+                        "c1",
+                        "echo",
+                        json!({"message": "TOOL_OUTPUT_MARKER"}),
+                    )],
+                    usage: None,
+                    stop_reason: Some(StopReason::ToolUse),
+                    has_incomplete_tool_calls: false,
+                })
+            } else {
+                Ok(StreamResult {
+                    content: vec![ContentBlock::text("done")],
+                    tool_calls: vec![],
+                    usage: None,
+                    stop_reason: Some(StopReason::EndTurn),
+                    has_incomplete_tool_calls: false,
+                })
+            }
+        }
+
+        fn name(&self) -> &str {
+            "result-capture"
+        }
+    }
+
+    let llm = Arc::new(ResultCaptureLlm {
+        requests: Mutex::new(Vec::new()),
+        call_count: Mutex::new(0),
+    });
+    let llm_ref = Arc::clone(&llm);
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("echo")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let requests = llm_ref.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    let second_req = &requests[1];
+    let has_output = second_req.iter().any(|m| m.contains("TOOL_OUTPUT_MARKER"));
+    assert!(
+        has_output,
+        "tool output should appear in next LLM request, got: {:?}",
+        second_req
+    );
+}
+
+/// Failed tool result message indicates error.
+#[tokio::test]
+async fn failed_tool_result_message_indicates_error() {
+    struct FailCaptureLlm {
+        requests: Mutex<Vec<Vec<String>>>,
+        call_count: Mutex<usize>,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for FailCaptureLlm {
+        async fn execute(
+            &self,
+            req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            let texts: Vec<String> = req.messages.iter().map(|m| m.text()).collect();
+            self.requests.lock().unwrap().push(texts);
+            let mut count = self.call_count.lock().unwrap();
+            *count += 1;
+            if *count == 1 {
+                Ok(StreamResult {
+                    content: vec![],
+                    tool_calls: vec![ToolCall::new("c1", "fail", json!({}))],
+                    usage: None,
+                    stop_reason: Some(StopReason::ToolUse),
+                    has_incomplete_tool_calls: false,
+                })
+            } else {
+                Ok(StreamResult {
+                    content: vec![ContentBlock::text("ok")],
+                    tool_calls: vec![],
+                    usage: None,
+                    stop_reason: Some(StopReason::EndTurn),
+                    has_incomplete_tool_calls: false,
+                })
+            }
+        }
+
+        fn name(&self) -> &str {
+            "fail-capture"
+        }
+    }
+
+    let llm = Arc::new(FailCaptureLlm {
+        requests: Mutex::new(Vec::new()),
+        call_count: Mutex::new(0),
+    });
+    let llm_ref = Arc::clone(&llm);
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(FailingTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("fail")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let requests = llm_ref.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    let second_req = &requests[1];
+    let has_error = second_req
+        .iter()
+        .any(|m| m.to_lowercase().contains("error") || m.to_lowercase().contains("fail"));
+    assert!(
+        has_error,
+        "failed tool result should indicate error in message, got: {:?}",
+        second_req
+    );
+}
+
+/// Unknown tool result message indicates tool not found.
+#[tokio::test]
+async fn unknown_tool_result_indicates_not_found() {
+    struct UnknownCaptureLlm {
+        requests: Mutex<Vec<Vec<String>>>,
+        call_count: Mutex<usize>,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for UnknownCaptureLlm {
+        async fn execute(
+            &self,
+            req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            let texts: Vec<String> = req.messages.iter().map(|m| m.text()).collect();
+            self.requests.lock().unwrap().push(texts);
+            let mut count = self.call_count.lock().unwrap();
+            *count += 1;
+            if *count == 1 {
+                Ok(StreamResult {
+                    content: vec![],
+                    tool_calls: vec![ToolCall::new("c1", "no_such_tool", json!({}))],
+                    usage: None,
+                    stop_reason: Some(StopReason::ToolUse),
+                    has_incomplete_tool_calls: false,
+                })
+            } else {
+                Ok(StreamResult {
+                    content: vec![ContentBlock::text("ok")],
+                    tool_calls: vec![],
+                    usage: None,
+                    stop_reason: Some(StopReason::EndTurn),
+                    has_incomplete_tool_calls: false,
+                })
+            }
+        }
+
+        fn name(&self) -> &str {
+            "unknown-capture"
+        }
+    }
+
+    let llm = Arc::new(UnknownCaptureLlm {
+        requests: Mutex::new(Vec::new()),
+        call_count: Mutex::new(0),
+    });
+    let llm_ref = Arc::clone(&llm);
+
+    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("call unknown")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let requests = llm_ref.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    let second_req = &requests[1];
+    let has_not_found = second_req
+        .iter()
+        .any(|m| m.contains("not found") || m.contains("unknown") || m.contains("not registered"));
+    assert!(
+        has_not_found,
+        "unknown tool message should indicate not found, got: {:?}",
+        second_req
+    );
+}
+
+/// ToolCallStart events emitted before ToolCallDone for each tool.
+#[tokio::test]
+async fn tool_call_start_emitted_before_done() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "x"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("done")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let events = sink.take();
+    let start_idx = events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::ToolCallStart { id, .. } if id == "c1"));
+    let done_idx = events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::ToolCallDone { id, .. } if id == "c1"));
+    assert!(start_idx.is_some(), "should have ToolCallStart for c1");
+    assert!(done_idx.is_some(), "should have ToolCallDone for c1");
+    assert!(
+        start_idx.unwrap() < done_idx.unwrap(),
+        "ToolCallStart should precede ToolCallDone"
+    );
+}
+
+/// Multiple tool calls in one step each get Start then Done events.
+#[tokio::test]
+async fn multiple_tools_each_get_start_done_pair() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![
+                ToolCall::new("a", "echo", json!({"message": "1"})),
+                ToolCall::new("b", "calc", json!({"result": 2})),
+            ],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("done")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm)
+        .with_tool(Arc::new(EchoTool))
+        .with_tool(Arc::new(CalcTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let events = sink.take();
+    let starts: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolCallStart { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .collect();
+    let dones: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolCallDone { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(starts.len(), 2);
+    assert_eq!(dones.len(), 2);
+    assert!(starts.contains(&"a".to_string()));
+    assert!(starts.contains(&"b".to_string()));
+    assert!(dones.contains(&"a".to_string()));
+    assert!(dones.contains(&"b".to_string()));
+}
+
+// ===========================================================================
+// Group 7: Resume with all three modes (5 tests)
+// ===========================================================================
+
+/// ReplayToolCall re-executes the original tool with original args on resume.
+#[tokio::test]
+async fn replay_tool_call_executes_original_tool() {
+    let tool_args = Arc::new(Mutex::new(Vec::<Value>::new()));
+
+    struct ArgTrackingTool(Arc<Mutex<Vec<Value>>>);
+    #[async_trait]
+    impl Tool for ArgTrackingTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("dangerous", "dangerous", "Tracks args")
+        }
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
+            self.0.lock().unwrap().push(args.clone());
+            Ok(ToolResult::success("dangerous", args))
+        }
+    }
+
+    // First run: suspend
+    let llm1 = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
+        "dangerous",
+        "c1",
+        json!({"action": "deploy", "env": "prod"}),
+    )]));
+    let agent1 = AgentConfig::new("test", "m", "sys", llm1).with_tool(Arc::new(SuspendingTool));
+    let runtime = make_runtime();
+    let resolver1 = FixedResolver::new(agent1);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver1,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("deploy")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(result.termination, TerminationReason::Suspended);
+
+    // Resume with ReplayToolCall
+    prepare_resume(
+        runtime.store(),
+        vec![(
+            "c1".into(),
+            ToolCallResume {
+                decision_id: "d1".into(),
+                action: ResumeDecisionAction::Resume,
+                result: Value::Null,
+                reason: None,
+                updated_at: 0,
+            },
+        )],
+        ToolCallResumeMode::ReplayToolCall,
+    )
+    .unwrap();
+
+    // Second run: tool re-executes
+    let args_tracker = Arc::clone(&tool_args);
+    let llm2 = Arc::new(ScriptedLlm::new(vec![]));
+    let agent2 = AgentConfig::new("test", "m", "sys", llm2)
+        .with_tool(Arc::new(ArgTrackingTool(args_tracker)));
+    let resolver2 = FixedResolver::new(agent2);
+
+    let messages = vec![
+        Message::user("deploy"),
+        Message::assistant_with_tool_calls(
+            "",
+            vec![ToolCall::new(
+                "c1",
+                "dangerous",
+                json!({"action": "deploy", "env": "prod"}),
+            )],
+        ),
+        Message::tool("c1", "needs user approval"),
+    ];
+
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver2,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages,
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let tracked = tool_args.lock().unwrap();
+    assert_eq!(tracked.len(), 1, "tool should be re-executed exactly once");
+    assert_eq!(
+        tracked[0],
+        json!({"action": "deploy", "env": "prod"}),
+        "should use original arguments"
+    );
+}
+
+/// UseDecisionAsToolResult: decision result replaces tool arguments.
+#[tokio::test]
+async fn use_decision_replaces_args_with_decision_result() {
+    let llm = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
+        "dangerous",
+        "c1",
+        json!({"original": true}),
+    )]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    prepare_resume(
+        runtime.store(),
+        vec![(
+            "c1".into(),
+            ToolCallResume {
+                decision_id: "d1".into(),
+                action: ResumeDecisionAction::Resume,
+                result: json!({"decision_data": "replaced"}),
+                reason: None,
+                updated_at: 0,
+            },
+        )],
+        ToolCallResumeMode::UseDecisionAsToolResult,
+    )
+    .unwrap();
+
+    let tc = runtime.store().read::<ToolCallStates>().unwrap();
+    assert_eq!(tc.calls["c1"].status, ToolCallStatus::Resuming);
+    assert_eq!(
+        tc.calls["c1"].arguments,
+        json!({"decision_data": "replaced"}),
+        "UseDecisionAsToolResult should replace arguments with decision result"
+    );
+}
+
+/// PassDecisionToTool: decision result becomes new tool arguments.
+#[tokio::test]
+async fn pass_decision_updates_args_for_tool() {
+    let llm = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
+        "dangerous",
+        "c1",
+        json!({"original_key": "original_value"}),
+    )]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    prepare_resume(
+        runtime.store(),
+        vec![(
+            "c1".into(),
+            ToolCallResume {
+                decision_id: "d1".into(),
+                action: ResumeDecisionAction::Resume,
+                result: json!({"new_arg": "from_decision"}),
+                reason: None,
+                updated_at: 0,
+            },
+        )],
+        ToolCallResumeMode::PassDecisionToTool,
+    )
+    .unwrap();
+
+    let tc = runtime.store().read::<ToolCallStates>().unwrap();
+    assert_eq!(tc.calls["c1"].status, ToolCallStatus::Resuming);
+    assert_eq!(
+        tc.calls["c1"].arguments,
+        json!({"new_arg": "from_decision"}),
+        "PassDecisionToTool should update arguments with decision result"
+    );
+}
+
+/// Cancel resume transitions state from Suspended to Cancelled.
+#[tokio::test]
+async fn cancel_resume_transitions_to_cancelled_status() {
+    let llm = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
+        "dangerous",
+        "c1",
+        json!({}),
+    )]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    prepare_resume(
+        runtime.store(),
+        vec![(
+            "c1".into(),
+            ToolCallResume {
+                decision_id: "d1".into(),
+                action: ResumeDecisionAction::Cancel,
+                result: Value::Null,
+                reason: Some("user declined".into()),
+                updated_at: 0,
+            },
+        )],
+        ToolCallResumeMode::ReplayToolCall,
+    )
+    .unwrap();
+
+    let tc = runtime.store().read::<ToolCallStates>().unwrap();
+    assert_eq!(
+        tc.calls["c1"].status,
+        ToolCallStatus::Cancelled,
+        "Cancel action should transition to Cancelled"
+    );
+}
+
+/// Resume with empty decision result succeeds for UseDecisionAsToolResult.
+#[tokio::test]
+async fn resume_with_empty_decision_result_succeeds() {
+    let llm = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
+        "dangerous",
+        "c1",
+        json!({"key": "val"}),
+    )]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    // Resume with null result -- should succeed
+    let result = prepare_resume(
+        runtime.store(),
+        vec![(
+            "c1".into(),
+            ToolCallResume {
+                decision_id: "d1".into(),
+                action: ResumeDecisionAction::Resume,
+                result: Value::Null,
+                reason: None,
+                updated_at: 0,
+            },
+        )],
+        ToolCallResumeMode::UseDecisionAsToolResult,
+    );
+    assert!(
+        result.is_ok(),
+        "resume with null decision result should succeed"
+    );
+
+    let tc = runtime.store().read::<ToolCallStates>().unwrap();
+    assert_eq!(tc.calls["c1"].status, ToolCallStatus::Resuming);
+}
+
+// ===========================================================================
+// Group 8: Multi-step complex scenarios (5 tests)
+// ===========================================================================
+
+/// Three steps: tool -> tool -> response, verifying correct event sequence.
+#[tokio::test]
+async fn three_step_events_have_correct_overall_sequence() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![ContentBlock::text("Step 1")],
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "one"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("Step 2")],
+            tool_calls: vec![ToolCall::new("c2", "calc", json!({"result": 42}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("Final")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm)
+        .with_tool(Arc::new(EchoTool))
+        .with_tool(Arc::new(CalcTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.steps, 3);
+    assert_eq!(result.response, "Final");
+
+    let events = sink.take();
+
+    // Verify RunStart is first and RunFinish is last
+    assert!(matches!(
+        events.first().unwrap(),
+        AgentEvent::RunStart { .. }
+    ));
+    assert!(matches!(
+        events.last().unwrap(),
+        AgentEvent::RunFinish { .. }
+    ));
+
+    // Count key lifecycle events
+    let step_starts = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::StepStart { .. }))
+        .count();
+    let step_ends = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::StepEnd))
+        .count();
+    assert_eq!(step_starts, 3);
+    assert_eq!(step_ends, 3);
+}
+
+/// Suspend on step 2 after successful step 1 preserves step 1 context.
+#[tokio::test]
+async fn suspend_on_step_two_preserves_first_step_context() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![ContentBlock::text("Step 1")],
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "done"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c2", "dangerous", json!({"action": "risky"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm)
+        .with_tool(Arc::new(EchoTool))
+        .with_tool(Arc::new(SuspendingTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::Suspended);
+
+    // Step 1's echo tool should have emitted ToolCallDone with Succeeded
+    let events = sink.take();
+    let echo_done = events.iter().any(|e| {
+        matches!(e, AgentEvent::ToolCallDone { id, outcome, .. }
+            if id == "c1" && *outcome == awaken::contract::suspension::ToolCallOutcome::Succeeded)
+    });
+    assert!(echo_done, "step 1 echo should have succeeded");
+
+    // Step 2's dangerous tool should be Suspended in state
+    let tc = runtime.store().read::<ToolCallStates>().unwrap();
+    assert_eq!(tc.calls["c2"].status, ToolCallStatus::Suspended);
+    assert_eq!(tc.calls["c2"].tool_name, "dangerous");
+}
+
+/// Error on step 3 after two successful tool steps propagates correctly.
+#[tokio::test]
+async fn error_on_third_step_after_two_successful_steps() {
+    struct FailOnThirdLlm {
+        call_count: Mutex<usize>,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for FailOnThirdLlm {
+        async fn execute(
+            &self,
+            _req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            let mut count = self.call_count.lock().unwrap();
+            *count += 1;
+            match *count {
+                1 => Ok(StreamResult {
+                    content: vec![],
+                    tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "1"}))],
+                    usage: None,
+                    stop_reason: Some(StopReason::ToolUse),
+                    has_incomplete_tool_calls: false,
+                }),
+                2 => Ok(StreamResult {
+                    content: vec![],
+                    tool_calls: vec![ToolCall::new("c2", "echo", json!({"message": "2"}))],
+                    usage: None,
+                    stop_reason: Some(StopReason::ToolUse),
+                    has_incomplete_tool_calls: false,
+                }),
+                _ => Err(InferenceExecutionError::Provider(
+                    "third call exploded".into(),
+                )),
+            }
+        }
+
+        fn name(&self) -> &str {
+            "fail-on-third"
+        }
+    }
+
+    let llm = Arc::new(FailOnThirdLlm {
+        call_count: Mutex::new(0),
+    });
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await;
+
+    assert!(result.is_err(), "third-step error should propagate");
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("third call exploded")
+    );
+}
+
+/// Mixed tool calls per step: step 1 has 2 tools, step 2 has 1 tool, step 3 ends.
+#[tokio::test]
+async fn mixed_tool_counts_per_step() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![
+                ToolCall::new("c1", "echo", json!({"message": "a"})),
+                ToolCall::new("c2", "calc", json!({"result": 1})),
+            ],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c3", "echo", json!({"message": "b"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("all done")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm)
+        .with_tool(Arc::new(EchoTool))
+        .with_tool(Arc::new(CalcTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("mixed")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.steps, 3);
+    assert_eq!(result.response, "all done");
+
+    let events = sink.take();
+    let tool_done_count = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::ToolCallDone { .. }))
+        .count();
+    assert_eq!(
+        tool_done_count, 3,
+        "should have 3 total tool completions (2 in step 1, 1 in step 2)"
+    );
+}
+
+/// Suspend, resume, then complete: full lifecycle in 3 runs.
+#[tokio::test]
+async fn full_suspend_resume_complete_lifecycle() {
+    // Run 1: Suspend
+    let llm1 = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
+        "dangerous",
+        "c1",
+        json!({"action": "build"}),
+    )]));
+    let agent1 = AgentConfig::new("test", "m", "sys", llm1).with_tool(Arc::new(SuspendingTool));
+    let runtime = make_runtime();
+    let resolver1 = FixedResolver::new(agent1);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let r1 = run_agent_loop(AgentLoopParams {
+        resolver: &resolver1,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("build it")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(r1.termination, TerminationReason::Suspended);
+
+    // Verify Waiting
+    let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
+    assert_eq!(lifecycle.status, RunStatus::Waiting);
+
+    // Prepare resume
+    prepare_resume(
+        runtime.store(),
+        vec![(
+            "c1".into(),
+            ToolCallResume {
+                decision_id: "d1".into(),
+                action: ResumeDecisionAction::Resume,
+                result: json!({"approved": true}),
+                reason: None,
+                updated_at: 0,
+            },
+        )],
+        ToolCallResumeMode::UseDecisionAsToolResult,
+    )
+    .unwrap();
+
+    // Run 2: Resume -> complete
+    let llm2 = Arc::new(ScriptedLlm::new(vec![])); // LLM just returns text
+    let agent2 = AgentConfig::new("test", "m", "sys", llm2).with_tool(Arc::new(SuspendingTool));
+    let resolver2 = FixedResolver::new(agent2);
+
+    let messages = vec![
+        Message::user("build it"),
+        Message::assistant_with_tool_calls(
+            "",
+            vec![ToolCall::new("c1", "dangerous", json!({"action": "build"}))],
+        ),
+        Message::tool("c1", "needs user approval"),
+    ];
+
+    let r2 = run_agent_loop(AgentLoopParams {
+        resolver: &resolver2,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages,
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(r2.termination, TerminationReason::NaturalEnd);
+
+    // Verify Done
+    let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
+    assert_eq!(lifecycle.status, RunStatus::Done);
+}
