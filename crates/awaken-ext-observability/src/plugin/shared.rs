@@ -1,18 +1,12 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use awaken_contract::contract::inference::TokenUsage;
+use tokio::sync::Mutex;
 
 use crate::metrics::AgentMetrics;
 use crate::sink::MetricsSink;
-
-pub(crate) fn lock_unpoison<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    match m.lock() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
 
 pub(crate) fn extract_token_counts(
     usage: Option<&TokenUsage>,
@@ -33,6 +27,15 @@ pub(crate) fn extract_cache_tokens(usage: Option<&TokenUsage>) -> (Option<i32>, 
         Some(u) => (u.cache_read_tokens, u.cache_creation_tokens),
         None => (None, None),
     }
+}
+
+/// Test-only compatibility wrapper: acquires a `tokio::sync::Mutex` lock
+/// using `try_lock()` so that existing synchronous test assertions
+/// continue to compile unchanged. Safe because tests hold locks only briefly
+/// with no contention.
+#[cfg(test)]
+pub(crate) fn lock_unpoison<T>(m: &Mutex<T>) -> tokio::sync::MutexGuard<'_, T> {
+    m.try_lock().expect("no contention in test")
 }
 
 /// Shared mutable state between the plugin and its phase hooks.

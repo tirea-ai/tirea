@@ -8,14 +8,14 @@ use awaken_runtime::{PhaseContext, PhaseHook, StateCommand};
 
 use crate::metrics::{GenAISpan, ToolSpan};
 
-use super::shared::{Inner, extract_cache_tokens, extract_token_counts, lock_unpoison};
+use super::shared::{Inner, extract_cache_tokens, extract_token_counts};
 
 pub(crate) struct RunStartHook(pub(crate) Arc<Inner>);
 
 #[async_trait]
 impl PhaseHook for RunStartHook {
     async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
-        *lock_unpoison(&self.0.run_start) = Some(Instant::now());
+        *self.0.run_start.lock().await = Some(Instant::now());
         Ok(StateCommand::new())
     }
 }
@@ -28,7 +28,7 @@ impl PhaseHook for BeforeInferenceHook {
         let s = &self.0;
 
         // Close any abandoned inference tracing span from a retried attempt.
-        if let Some(previous_span) = lock_unpoison(&s.inference_tracing_span).take() {
+        if let Some(previous_span) = s.inference_tracing_span.lock().await.take() {
             let message = "A previous inference attempt was retried before completion.";
             previous_span.record("error.type", "inference_retry_interrupted");
             previous_span.record("error.message", message);
@@ -37,10 +37,10 @@ impl PhaseHook for BeforeInferenceHook {
             drop(previous_span);
         }
 
-        *lock_unpoison(&s.inference_start) = Some(Instant::now());
+        *s.inference_start.lock().await = Some(Instant::now());
 
-        let model = lock_unpoison(&s.model).clone();
-        let provider = lock_unpoison(&s.provider).clone();
+        let model = s.model.lock().await.clone();
+        let provider = s.provider.lock().await.clone();
         let span_name = format!("{} {}", s.operation, model);
         let span = tracing::info_span!("gen_ai",
             "otel.name" = %span_name,
@@ -67,17 +67,17 @@ impl PhaseHook for BeforeInferenceHook {
             "gen_ai.error.class" = tracing::field::Empty,
         );
 
-        if let Some(t) = *lock_unpoison(&s.temperature) {
+        if let Some(t) = *s.temperature.lock().await {
             span.record("gen_ai.request.temperature", t);
         }
-        if let Some(t) = *lock_unpoison(&s.top_p) {
+        if let Some(t) = *s.top_p.lock().await {
             span.record("gen_ai.request.top_p", t);
         }
-        if let Some(t) = *lock_unpoison(&s.max_tokens) {
+        if let Some(t) = *s.max_tokens.lock().await {
             span.record("gen_ai.request.max_tokens", t as i64);
         }
         {
-            let seqs = lock_unpoison(&s.stop_sequences);
+            let seqs = s.stop_sequences.lock().await;
             if !seqs.is_empty() {
                 span.record(
                     "gen_ai.request.stop_sequences",
@@ -85,7 +85,7 @@ impl PhaseHook for BeforeInferenceHook {
                 );
             }
         }
-        *lock_unpoison(&s.inference_tracing_span) = Some(span);
+        *s.inference_tracing_span.lock().await = Some(span);
 
         Ok(StateCommand::new())
     }
@@ -98,7 +98,10 @@ impl PhaseHook for AfterInferenceHook {
     async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
         let s = &self.0;
 
-        let duration_ms = lock_unpoison(&s.inference_start)
+        let duration_ms = s
+            .inference_start
+            .lock()
+            .await
             .take()
             .map(|start| start.elapsed().as_millis() as u64)
             .unwrap_or(0);
@@ -116,8 +119,8 @@ impl PhaseHook for AfterInferenceHook {
             extract_token_counts(usage);
         let (cache_read_input_tokens, cache_creation_input_tokens) = extract_cache_tokens(usage);
 
-        let model = lock_unpoison(&s.model).clone();
-        let provider = lock_unpoison(&s.provider).clone();
+        let model = s.model.lock().await.clone();
+        let provider = s.provider.lock().await.clone();
         let span = GenAISpan {
             model,
             provider,
@@ -133,15 +136,15 @@ impl PhaseHook for AfterInferenceHook {
             thinking_tokens,
             cache_read_input_tokens,
             cache_creation_input_tokens,
-            temperature: *lock_unpoison(&s.temperature),
-            top_p: *lock_unpoison(&s.top_p),
-            max_tokens: *lock_unpoison(&s.max_tokens),
-            stop_sequences: lock_unpoison(&s.stop_sequences).clone(),
+            temperature: *s.temperature.lock().await,
+            top_p: *s.top_p.lock().await,
+            max_tokens: *s.max_tokens.lock().await,
+            stop_sequences: s.stop_sequences.lock().await.clone(),
             duration_ms,
         };
 
         // Record tracing span attributes.
-        if let Some(tracing_span) = lock_unpoison(&s.inference_tracing_span).take() {
+        if let Some(tracing_span) = s.inference_tracing_span.lock().await.take() {
             if let Some(v) = span.thinking_tokens {
                 tracing_span.record("gen_ai.usage.thinking_tokens", v);
             }
@@ -182,7 +185,7 @@ impl PhaseHook for AfterInferenceHook {
         }
 
         s.sink.on_inference(&span);
-        lock_unpoison(&s.metrics).inferences.push(span);
+        s.metrics.lock().await.inferences.push(span);
 
         Ok(StateCommand::new())
     }
@@ -199,10 +202,13 @@ impl PhaseHook for BeforeToolExecuteHook {
         let call_id = ctx.tool_call_id.as_deref().unwrap_or_default().to_string();
 
         if !call_id.is_empty() {
-            lock_unpoison(&s.tool_start).insert(call_id.clone(), Instant::now());
+            s.tool_start
+                .lock()
+                .await
+                .insert(call_id.clone(), Instant::now());
         }
 
-        let provider = lock_unpoison(&s.provider).clone();
+        let provider = s.provider.lock().await.clone();
         let span_name = format!("execute_tool {}", tool_name);
         let span = tracing::info_span!("gen_ai",
             "otel.name" = %span_name,
@@ -219,7 +225,7 @@ impl PhaseHook for BeforeToolExecuteHook {
         );
 
         if !call_id.is_empty() {
-            lock_unpoison(&s.tool_tracing_span).insert(call_id, span);
+            s.tool_tracing_span.lock().await.insert(call_id, span);
         }
 
         Ok(StateCommand::new())
@@ -234,7 +240,10 @@ impl PhaseHook for AfterToolExecuteHook {
         let s = &self.0;
 
         let call_id = ctx.tool_call_id.as_deref().unwrap_or_default().to_string();
-        let duration_ms = lock_unpoison(&s.tool_start)
+        let duration_ms = s
+            .tool_start
+            .lock()
+            .await
             .remove(&call_id)
             .map(|start| start.elapsed().as_millis() as u64)
             .unwrap_or(0);
@@ -259,7 +268,7 @@ impl PhaseHook for AfterToolExecuteHook {
             duration_ms,
         };
 
-        let tracing_span = lock_unpoison(&s.tool_tracing_span).remove(&call_id);
+        let tracing_span = s.tool_tracing_span.lock().await.remove(&call_id);
         if let Some(tracing_span) = tracing_span {
             if let (Some(v), Some(msg)) = (&span.error_type, &error_message) {
                 tracing_span.record("error.type", v.as_str());
@@ -271,7 +280,7 @@ impl PhaseHook for AfterToolExecuteHook {
         }
 
         s.sink.on_tool(&span);
-        lock_unpoison(&s.metrics).tools.push(span);
+        s.metrics.lock().await.tools.push(span);
 
         Ok(StateCommand::new())
     }
@@ -284,16 +293,19 @@ impl PhaseHook for RunEndHook {
     async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
         let s = &self.0;
 
-        let session_duration_ms = lock_unpoison(&s.run_start)
+        let session_duration_ms = s
+            .run_start
+            .lock()
+            .await
             .take()
             .map(|start| start.elapsed().as_millis() as u64)
             .unwrap_or(0);
 
-        lock_unpoison(&s.inference_tracing_span).take();
-        lock_unpoison(&s.tool_tracing_span).clear();
-        lock_unpoison(&s.tool_start).clear();
+        s.inference_tracing_span.lock().await.take();
+        s.tool_tracing_span.lock().await.clear();
+        s.tool_start.lock().await.clear();
 
-        let mut metrics = lock_unpoison(&s.metrics).clone();
+        let mut metrics = s.metrics.lock().await.clone();
         metrics.session_duration_ms = session_duration_ms;
         s.sink.on_run_end(&metrics);
 

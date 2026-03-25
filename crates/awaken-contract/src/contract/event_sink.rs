@@ -20,6 +20,10 @@ pub trait EventSink: Send + Sync {
 }
 
 /// Collects events in a `Vec` (default, for backward compatibility).
+///
+/// Uses `std::sync::Mutex` intentionally: the critical sections are trivially
+/// short (push / take / clone) and never cross an `.await` point, making a
+/// blocking mutex both correct and cheaper than `tokio::sync::Mutex`.
 #[derive(Default)]
 pub struct VecEventSink {
     events: std::sync::Mutex<Vec<AgentEvent>>,

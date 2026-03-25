@@ -1,6 +1,8 @@
 //! Forwarding sink: sub-agent TextDelta -> parent ActivityDelta.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use tokio::sync::Mutex;
 
 use async_trait::async_trait;
 use awaken_contract::contract::event::AgentEvent;
@@ -41,7 +43,7 @@ impl EventSink for StreamingSubagentSink {
     async fn emit(&self, event: AgentEvent) {
         match &event {
             AgentEvent::TextDelta { delta } => {
-                self.buffer.lock().expect("buffer poisoned").push_str(delta);
+                self.buffer.lock().await.push_str(delta);
                 self.parent_sink
                     .emit(AgentEvent::ActivityDelta {
                         message_id: self.call_id.clone(),
@@ -105,7 +107,7 @@ mod tests {
         }
 
         // Buffer accumulated both deltas
-        let accumulated = buffer.lock().unwrap().clone();
+        let accumulated = buffer.lock().await.clone();
         assert_eq!(accumulated, "Hello world");
     }
 

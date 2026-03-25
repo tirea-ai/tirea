@@ -71,7 +71,7 @@ pub async fn run_streaming_subagent(
         .await
         .map_err(|e| ToolError::ExecutionFailed(format!("sub-agent failed: {e}")))?;
 
-    let content = buffer.lock().expect("buffer poisoned").clone();
+    let content = buffer.lock().await.clone();
 
     Ok(StreamingSubagentResult {
         content,

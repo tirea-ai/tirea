@@ -1,9 +1,10 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use awaken_contract::StateError;
 use awaken_contract::model::Phase;
 use awaken_runtime::{Plugin, PluginDescriptor, PluginRegistrar};
+use tokio::sync::Mutex;
 
 use crate::metrics::AgentMetrics;
 use crate::sink::MetricsSink;
@@ -12,7 +13,7 @@ use super::hooks::{
     AfterInferenceHook, AfterToolExecuteHook, BeforeInferenceHook, BeforeToolExecuteHook,
     RunEndHook, RunStartHook,
 };
-use super::shared::{Inner, lock_unpoison};
+use super::shared::Inner;
 
 /// Plugin that captures LLM and tool telemetry aligned with OpenTelemetry GenAI conventions.
 pub struct ObservabilityPlugin {
@@ -43,37 +44,61 @@ impl ObservabilityPlugin {
 
     #[must_use]
     pub fn with_model(self, model: impl Into<String>) -> Self {
-        *lock_unpoison(&self.inner.model) = model.into();
+        *self
+            .inner
+            .model
+            .try_lock()
+            .expect("no contention during builder") = model.into();
         self
     }
 
     #[must_use]
     pub fn with_provider(self, provider: impl Into<String>) -> Self {
-        *lock_unpoison(&self.inner.provider) = provider.into();
+        *self
+            .inner
+            .provider
+            .try_lock()
+            .expect("no contention during builder") = provider.into();
         self
     }
 
     #[must_use]
     pub fn with_temperature(self, temperature: f64) -> Self {
-        *lock_unpoison(&self.inner.temperature) = Some(temperature);
+        *self
+            .inner
+            .temperature
+            .try_lock()
+            .expect("no contention during builder") = Some(temperature);
         self
     }
 
     #[must_use]
     pub fn with_top_p(self, top_p: f64) -> Self {
-        *lock_unpoison(&self.inner.top_p) = Some(top_p);
+        *self
+            .inner
+            .top_p
+            .try_lock()
+            .expect("no contention during builder") = Some(top_p);
         self
     }
 
     #[must_use]
     pub fn with_max_tokens(self, max_tokens: u32) -> Self {
-        *lock_unpoison(&self.inner.max_tokens) = Some(max_tokens);
+        *self
+            .inner
+            .max_tokens
+            .try_lock()
+            .expect("no contention during builder") = Some(max_tokens);
         self
     }
 
     #[must_use]
     pub fn with_stop_sequences(self, seqs: Vec<String>) -> Self {
-        *lock_unpoison(&self.inner.stop_sequences) = seqs;
+        *self
+            .inner
+            .stop_sequences
+            .try_lock()
+            .expect("no contention during builder") = seqs;
         self
     }
 }

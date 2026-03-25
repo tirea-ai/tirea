@@ -4,8 +4,8 @@
 //! `McpTool` which adapts an MCP tool definition into an awaken `Tool`.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -29,7 +29,7 @@ use crate::progress::McpProgressUpdate;
 use crate::sampling::SamplingHandler;
 
 type PendingRequestSender = oneshot::Sender<Result<Value, McpTransportError>>;
-type PendingRequests = Arc<Mutex<HashMap<i64, PendingRequestSender>>>;
+type PendingRequests = Arc<tokio::sync::Mutex<HashMap<i64, PendingRequestSender>>>;
 
 // ── Prompt/Resource types ──
 
@@ -173,8 +173,9 @@ struct WriteRequest {
 pub(crate) struct ProgressAwareStdioTransport {
     write_tx: mpsc::Sender<WriteRequest>,
     pending: PendingRequests,
-    progress_subscribers:
-        Arc<Mutex<HashMap<ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>>>>,
+    progress_subscribers: Arc<
+        tokio::sync::Mutex<HashMap<ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>>>,
+    >,
     next_id: AtomicI64,
     next_progress_token: AtomicI64,
     alive: Arc<AtomicBool>,
@@ -223,10 +224,10 @@ impl ProgressAwareStdioTransport {
             .ok_or_else(|| McpTransportError::TransportError("Failed to get stderr".to_string()))?;
 
         let alive = Arc::new(AtomicBool::new(true));
-        let pending: PendingRequests = Arc::new(Mutex::new(HashMap::new()));
+        let pending: PendingRequests = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let progress_subscribers: Arc<
-            Mutex<HashMap<ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>>>,
-        > = Arc::new(Mutex::new(HashMap::new()));
+            tokio::sync::Mutex<HashMap<ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>>>,
+        > = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
         let (write_tx, mut write_rx) = mpsc::channel::<WriteRequest>(256);
         let alive_writer = Arc::clone(&alive);
@@ -267,7 +268,7 @@ impl ProgressAwareStdioTransport {
                     Ok(_) => match serde_json::from_str::<JsonRpcMessage>(&line) {
                         Ok(JsonRpcMessage::Response(response)) => {
                             if let JsonRpcId::Number(id) = response.id {
-                                let tx = pending_reader.lock().expect("lock poisoned").remove(&id);
+                                let tx = pending_reader.lock().await.remove(&id);
                                 if let Some(tx) = tx {
                                     let result = map_response_payload(response.payload);
                                     let _ = tx.send(result);
@@ -275,7 +276,7 @@ impl ProgressAwareStdioTransport {
                             }
                         }
                         Ok(JsonRpcMessage::Notification(notification)) => {
-                            handle_progress_notification(&progress_reader, notification);
+                            handle_progress_notification(&progress_reader, notification).await;
                         }
                         Ok(JsonRpcMessage::Request(request)) => {
                             let handler = sampling_handler_reader.clone();
@@ -306,8 +307,8 @@ impl ProgressAwareStdioTransport {
                 }
             }
 
-            pending_reader.lock().expect("lock poisoned").clear();
-            progress_reader.lock().expect("lock poisoned").clear();
+            pending_reader.lock().await.clear();
+            progress_reader.lock().await.clear();
         });
 
         tokio::spawn(async move {
@@ -396,43 +397,34 @@ impl ProgressAwareStdioTransport {
         let line = format!("{}\n", serde_json::to_string(&request)?);
 
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().expect("lock poisoned").insert(id, tx);
+        self.pending.lock().await.insert(id, tx);
 
         let progress_key = progress_registration.as_ref().map(|(key, _)| key.clone());
         if let Some((key, sender)) = progress_registration {
-            self.progress_subscribers
-                .lock()
-                .unwrap()
-                .insert(key, sender);
+            self.progress_subscribers.lock().await.insert(key, sender);
         }
 
         if self.write_tx.send(WriteRequest { line }).await.is_err() {
-            self.pending.lock().expect("lock poisoned").remove(&id);
+            self.pending.lock().await.remove(&id);
             if let Some(key) = progress_key {
-                self.progress_subscribers
-                    .lock()
-                    .expect("lock poisoned")
-                    .remove(&key);
+                self.progress_subscribers.lock().await.remove(&key);
             }
             return Err(McpTransportError::ConnectionClosed);
         }
 
         let response = tokio::time::timeout(self.timeout, rx).await;
         if let Some(key) = progress_key {
-            self.progress_subscribers
-                .lock()
-                .expect("lock poisoned")
-                .remove(&key);
+            self.progress_subscribers.lock().await.remove(&key);
         }
 
         match response {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => {
-                self.pending.lock().expect("lock poisoned").remove(&id);
+                self.pending.lock().await.remove(&id);
                 Err(McpTransportError::ConnectionClosed)
             }
             Err(_) => {
-                self.pending.lock().expect("lock poisoned").remove(&id);
+                self.pending.lock().await.remove(&id);
                 Err(McpTransportError::Timeout(format!(
                     "Request timed out after {:?}",
                     self.timeout
@@ -792,22 +784,20 @@ fn map_response_payload(payload: JsonRpcPayload) -> Result<Value, McpTransportEr
     }
 }
 
-fn handle_progress_notification(
-    subscribers: &Arc<Mutex<HashMap<ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>>>>,
+async fn handle_progress_notification(
+    subscribers: &Arc<
+        tokio::sync::Mutex<HashMap<ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>>>,
+    >,
     notification: JsonRpcNotification,
 ) {
     let Some((key, update)) = decode_progress_notification(notification) else {
         return;
     };
-    let sender = subscribers
-        .lock()
-        .expect("lock poisoned")
-        .get(&key)
-        .cloned();
+    let sender = subscribers.lock().await.get(&key).cloned();
     if let Some(sender) = sender
         && sender.send(update).is_err()
     {
-        subscribers.lock().expect("lock poisoned").remove(&key);
+        subscribers.lock().await.remove(&key);
     }
 }
 
