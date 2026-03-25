@@ -1,3 +1,5 @@
 e2e/node_modules/
+examples/ai-sdk-starter/node_modules/
+examples/ai-sdk-starter/dist/
 e2e/test-results/
 docs/superpowers/

@@ -1,0 +1,38 @@
+{
+  "name": "awaken-ai-sdk-starter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"vite --port 3001\" \"cargo run -p ai-sdk-starter-agent\" --names ui,agent --prefix-colors blue,green --kill-others",
+    "dev:ui": "vite --port 3001",
+    "dev:agent": "cargo run -p ai-sdk-starter-agent",
+    "dev:mcp": "concurrently \"vite --port 3001\" \"cargo run -p ai-sdk-starter-agent -- --mcp-server-cmd 'python3 -u ../shared/mcp-ui-demo-server.py'\" --names ui,agent --prefix-colors blue,green --kill-others",
+    "build": "vite build",
+    "preview": "vite preview --port 3001",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ai-sdk/react": "^3.0.81",
+    "ai": "^6.0.79",
+    "react": "19",
+    "react-dom": "19",
+    "react-router": "^7"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^4",
+    "autoprefixer": "^10.4",
+    "concurrently": "^9.2",
+    "jsdom": "^28.1.0",
+    "postcss": "^8.5",
+    "tailwindcss": "^3.4",
+    "typescript": "^5",
+    "vite": "^6",
+    "vitest": "^4.0.18"
+  }
+}
