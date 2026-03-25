@@ -1,7 +1,7 @@
 //! Run API lifecycle tests — validates start, list, and contract behavior.
 //!
 //! Mirrors high-value run API tests from uncarve's tirea-agentos-server/tests/run_api.rs,
-//! adapted to awaken's AppState + RunDispatcher architecture.
+//! adapted to awaken's AppState + Mailbox architecture.
 //!
 //! NOTE: Routes using `{id}` path parameters (e.g. `/v1/runs/{id}`,
 //! `/v1/runs/{id}/cancel`) are unreachable due to a mismatch between

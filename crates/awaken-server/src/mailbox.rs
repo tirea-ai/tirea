@@ -1,4 +1,4 @@
-//! Mailbox service: unified persistent run queue replacing `RunDispatcher`.
+//! Mailbox service: unified persistent run queue.
 //!
 //! Every run request (streaming, background, A2A, internal) enters as a
 //! [`MailboxJob`] keyed by `thread_id`. The Mailbox orchestrates persistent
@@ -109,12 +109,10 @@ impl Default for MailboxConfig {
 // ── Internal types ───────────────────────────────────────────────────
 
 /// Per-thread worker status.
-#[allow(dead_code)] // claim_token stored for future ack/nack wiring
 enum MailboxWorkerStatus {
     Idle,
     Running {
         job_id: String,
-        claim_token: String,
         lease_handle: JoinHandle<()>,
     },
 }
@@ -136,7 +134,7 @@ impl Default for MailboxWorker {
 
 // ── Mailbox service ──────────────────────────────────────────────────
 
-/// Unified persistent run queue. Replaces `RunDispatcher`.
+/// Unified persistent run queue.
 ///
 /// Orchestrates `MailboxStore` (persistence) + `AgentRuntime` (execution)
 /// with lease-based distributed claim, per-thread serialization, sweep,
@@ -210,7 +208,6 @@ impl Mailbox {
                 let mut w = worker.lock().await;
                 w.status = MailboxWorkerStatus::Running {
                     job_id: job_id.clone(),
-                    claim_token: claim_token.clone(),
                     lease_handle,
                 };
             }
@@ -447,7 +444,6 @@ impl Mailbox {
             let mut w = worker.lock().await;
             w.status = MailboxWorkerStatus::Running {
                 job_id: job_id.clone(),
-                claim_token: claim_token.clone(),
                 lease_handle,
             };
         }

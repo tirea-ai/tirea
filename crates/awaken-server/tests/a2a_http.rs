@@ -1,7 +1,7 @@
 //! A2A HTTP integration tests — validates discovery and task creation endpoints.
 //!
 //! Mirrors high-value A2A tests from uncarve's tirea-agentos-server/tests/a2a_http.rs,
-//! adapted to awaken's AppState + RunDispatcher architecture.
+//! adapted to awaken's AppState + Mailbox architecture.
 //!
 //! NOTE: Several A2A routes are currently unreachable due to axum 0.7 path
 //! parameter conflicts:

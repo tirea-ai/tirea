@@ -75,15 +75,15 @@ fn convert_messages(msgs: Vec<AiSdkMessage>) -> Vec<Message> {
 /// Reconnect to an active run's event stream.
 ///
 /// Returns 404 if the run is not found or no longer active. Stream
-/// resumption requires broadcast channel infrastructure in RunDispatcher
-/// which is not yet implemented.
+/// resumption requires broadcast channel infrastructure which is not yet
+/// implemented.
 async fn resume_stream(
     State(_st): State<AppState>,
     Path(run_id): Path<String>,
 ) -> Result<Response, ApiError> {
-    // Stream resumption requires RunDispatcher to maintain broadcast channels
-    // for active runs. This is a stub that returns a clear error until the
-    // broadcast infrastructure is in place.
+    // Stream resumption requires broadcast channels for active runs.
+    // This is a stub that returns a clear error until the broadcast
+    // infrastructure is in place.
     Err(ApiError::NotFound(format!(
         "stream resumption not yet available for run {run_id}"
     )))
