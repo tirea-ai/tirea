@@ -12,14 +12,14 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
-tokio = { version = "1", features = ["sync", "rt", "time", "process", "fs"] }
+tokio = { workspace = true, features = ["time", "process", "fs"] }
 serde_yaml = "0.9"
 sha2 = "0.10"
 base64 = "0.22"
 unicode-normalization = "0.1"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { workspace = true }
 tempfile = "3"
 awaken-ext-mcp = { workspace = true }
 mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"] }

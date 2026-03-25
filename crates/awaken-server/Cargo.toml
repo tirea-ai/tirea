@@ -13,7 +13,7 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 uuid = { workspace = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "signal", "time"] }
 axum = { version = "0.7", default-features = false, features = ["http1", "json", "query", "tokio"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace"] }
@@ -25,7 +25,7 @@ bytes = "1"
 awaken-ext-permission = { workspace = true, optional = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 awaken-stores = { workspace = true }

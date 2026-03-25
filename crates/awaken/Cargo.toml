@@ -25,7 +25,7 @@ generative-ui = ["dep:awaken-ext-generative-ui"]
 full = ["permission", "observability", "mcp", "skills", "server", "generative-ui"]
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt", "sync"] }
+tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }

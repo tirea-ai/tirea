@@ -11,12 +11,12 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
-tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { workspace = true, features = ["io-util", "net", "process", "time"] }
+reqwest = { workspace = true }
 mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "time", "sync"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "io-util", "time"] }
 
 [lints]
 workspace = true

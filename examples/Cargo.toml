@@ -15,7 +15,7 @@ awaken-ext-generative-ui = { workspace = true, features = ["openui"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
 uuid = { version = "1", features = ["v4"] }

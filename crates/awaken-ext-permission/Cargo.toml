@@ -16,7 +16,7 @@ regex = { workspace = true }
 async-trait = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { workspace = true }
 
 [lints]
 workspace = true

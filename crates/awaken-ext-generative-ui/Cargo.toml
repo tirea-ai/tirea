@@ -19,7 +19,7 @@ uuid = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { workspace = true }
 
 [lints]
 workspace = true
