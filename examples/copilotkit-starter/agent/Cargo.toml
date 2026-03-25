@@ -1,0 +1,17 @@
+[package]
+name = "copilotkit-starter-agent"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+awaken-examples = { path = "../.." }
+tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
+clap = { version = "4", features = ["derive", "env"] }
+
+[[bin]]
+name = "copilotkit-starter-agent"
+path = "src/main.rs"
+
+[lints]
+workspace = true
