@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
+[lib]
+name = "awaken_examples"
+path = "src/lib.rs"
+
 [dependencies]
 awaken-contract = { workspace = true }
 awaken-runtime = { workspace = true }
@@ -12,34 +16,20 @@ awaken-stores = { workspace = true, features = ["file"] }
 awaken-ext-permission = { workspace = true }
 awaken-ext-observability = { workspace = true }
 awaken-ext-generative-ui = { workspace = true, features = ["openui"] }
+awaken-ext-mcp = { workspace = true }
+awaken-ext-skills = { workspace = true }
+awaken-ext-reminder = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "signal", "time"] }
 tracing = { workspace = true }
-tracing-subscriber = { version = "0.3", features = ["fmt"] }
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 axum = { version = "0.7", default-features = false, features = ["http1", "json", "tokio"] }
-
-[[example]]
-name = "travel"
-path = "examples/travel.rs"
-
-[[example]]
-name = "research"
-path = "examples/research.rs"
-
-[[example]]
-name = "starter_backend"
-path = "examples/starter_backend/main.rs"
-
-[[example]]
-name = "copilotkit_starter"
-path = "examples/copilotkit_starter.rs"
-
-[[example]]
-name = "ai_sdk_starter"
-path = "examples/ai_sdk_starter.rs"
+clap = { version = "4", features = ["derive", "env"] }
+genai = { workspace = true }
+tower-http = { version = "0.6", features = ["cors"] }
 
 [[example]]
 name = "generative_ui"
