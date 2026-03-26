@@ -241,7 +241,8 @@ mod tests {
             model: "test-model".into(),
             system_prompt: "Local agent.".into(),
             ..Default::default()
-        });
+        })
+        .unwrap();
         Arc::new(reg)
     }
 

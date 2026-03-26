@@ -24,8 +24,8 @@ pub(crate) use awaken_runtime::agent::state::AddContextMessage;
 
 pub const SKILLS_PLUGIN_ID: &str = "skills";
 pub const SKILLS_BUNDLE_ID: &str = SKILLS_PLUGIN_ID;
-pub const SKILLS_DISCOVERY_PLUGIN_ID: &str = "skills_discovery";
-pub const SKILLS_ACTIVE_INSTRUCTIONS_PLUGIN_ID: &str = "skills_active_instructions";
+pub const SKILLS_DISCOVERY_PLUGIN_ID: &str = "skills-discovery";
+pub const SKILLS_ACTIVE_INSTRUCTIONS_PLUGIN_ID: &str = "skills-active-instructions";
 
 pub const SKILL_ACTIVATE_TOOL_ID: &str = "skill";
 pub const SKILL_LOAD_RESOURCE_TOOL_ID: &str = "load_skill_resource";

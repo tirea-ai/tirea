@@ -103,15 +103,18 @@ impl ObservabilityPlugin {
     }
 }
 
+/// Stable plugin ID for the observability extension.
+pub const OBSERVABILITY_PLUGIN_ID: &str = "observability";
+
 impl Plugin for ObservabilityPlugin {
     fn descriptor(&self) -> PluginDescriptor {
         PluginDescriptor {
-            name: "observability",
+            name: OBSERVABILITY_PLUGIN_ID,
         }
     }
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-        let id = "observability";
+        let id = OBSERVABILITY_PLUGIN_ID;
         let s = Arc::clone(&self.inner);
         registrar.register_phase_hook(id, Phase::RunStart, RunStartHook(Arc::clone(&s)))?;
         registrar.register_phase_hook(

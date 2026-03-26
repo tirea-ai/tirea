@@ -12,7 +12,7 @@ mod stats;
 pub mod otel;
 
 pub use metrics::{AgentMetrics, GenAISpan, ToolSpan};
-pub use plugin::ObservabilityPlugin;
+pub use plugin::{OBSERVABILITY_PLUGIN_ID, ObservabilityPlugin};
 pub use sink::{InMemorySink, MetricsSink};
 
 #[cfg(feature = "otel")]

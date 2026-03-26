@@ -7,7 +7,7 @@ pub(crate) use hooks::{
     AfterInferenceHook, AfterToolExecuteHook, BeforeInferenceHook, BeforeToolExecuteHook,
     RunEndHook, RunStartHook,
 };
-pub use plugin::ObservabilityPlugin;
+pub use plugin::{OBSERVABILITY_PLUGIN_ID, ObservabilityPlugin};
 #[cfg(test)]
 pub(crate) use shared::{extract_cache_tokens, extract_token_counts};
 

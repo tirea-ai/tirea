@@ -1,5 +1,5 @@
 use crate::state::{MergeStrategy, StateKey};
-use awaken_contract::contract::suspension::ToolCallStatus;
+use awaken_contract::contract::suspension::{ToolCallResumeMode, ToolCallStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -12,6 +12,9 @@ pub struct ToolCallState {
     pub arguments: Value,
     pub status: ToolCallStatus,
     pub updated_at: u64,
+    /// Resume mode from the `SuspendTicket` (set when status becomes Suspended).
+    #[serde(default)]
+    pub resume_mode: ToolCallResumeMode,
 }
 
 /// Keyed collection of tool call states for the current step.
@@ -29,6 +32,8 @@ pub enum ToolCallStatesUpdate {
         arguments: Value,
         status: ToolCallStatus,
         updated_at: u64,
+        /// Resume mode from the `SuspendTicket` (meaningful when status is Suspended).
+        resume_mode: ToolCallResumeMode,
     },
     /// Clear all tool call states (at step boundary).
     Clear,
@@ -52,6 +57,7 @@ impl StateKey for ToolCallStates {
                 arguments,
                 status,
                 updated_at,
+                resume_mode,
             } => {
                 let existing = value.calls.get(&call_id);
                 let current_status = existing.map(|s| s.status).unwrap_or(ToolCallStatus::New);
@@ -66,6 +72,13 @@ impl StateKey for ToolCallStates {
                     return;
                 }
 
+                // Preserve stored resume_mode unless this update explicitly sets Suspended
+                let effective_resume_mode = if status == ToolCallStatus::Suspended {
+                    resume_mode
+                } else {
+                    existing.map(|s| s.resume_mode).unwrap_or(resume_mode)
+                };
+
                 value.calls.insert(
                     call_id.clone(),
                     ToolCallState {
@@ -74,6 +87,7 @@ impl StateKey for ToolCallStates {
                         arguments,
                         status,
                         updated_at,
+                        resume_mode: effective_resume_mode,
                     },
                 );
             }
@@ -103,6 +117,7 @@ mod tests {
                 arguments: serde_json::json!({}),
                 status,
                 updated_at: ts,
+                resume_mode: ToolCallResumeMode::default(),
             },
         );
     }
@@ -275,6 +290,7 @@ mod tests {
                 arguments: serde_json::json!({"query": "test"}),
                 status: ToolCallStatus::Running,
                 updated_at: 100,
+                resume_mode: ToolCallResumeMode::default(),
             },
         );
         let call = &states.calls["c1"];

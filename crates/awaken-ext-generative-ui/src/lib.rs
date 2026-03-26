@@ -15,6 +15,7 @@ pub use sink::StreamingSubagentSink;
 
 // Re-export a2ui public types
 pub use a2ui::{
-    A2uiComponent, A2uiCreateSurface, A2uiDeleteSurface, A2uiMessage, A2uiPlugin, A2uiRenderTool,
-    A2uiUpdateComponents, A2uiUpdateDataModel, A2uiValidationError, validate_a2ui_messages,
+    A2UI_PLUGIN_ID, A2uiComponent, A2uiCreateSurface, A2uiDeleteSurface, A2uiMessage, A2uiPlugin,
+    A2uiRenderTool, A2uiUpdateComponents, A2uiUpdateDataModel, A2uiValidationError,
+    validate_a2ui_messages,
 };

@@ -16,7 +16,7 @@ use awaken_contract::contract::inference::{InferenceOverride, LLMResponse, Strea
 use awaken_contract::contract::lifecycle::TerminationReason;
 use awaken_contract::contract::message::{Message, ToolCall};
 use awaken_contract::contract::storage::ThreadRunStore;
-use awaken_contract::contract::suspension::{ToolCallOutcome, ToolCallStatus};
+use awaken_contract::contract::suspension::{ToolCallOutcome, ToolCallResumeMode, ToolCallStatus};
 use awaken_contract::contract::tool::ToolCallContext;
 use awaken_contract::model::Phase;
 
@@ -89,6 +89,7 @@ fn tool_call_state_cmd(call: &ToolCall, status: ToolCallStatus) -> StateCommand 
         arguments: call.arguments.clone(),
         status,
         updated_at: now_ms(),
+        resume_mode: ToolCallResumeMode::default(),
     });
     cmd
 }
@@ -394,6 +395,7 @@ async fn complete_tool_call(
         arguments: call.arguments.clone(),
         status: terminal_status,
         updated_at: now_ms(),
+        resume_mode: ToolCallResumeMode::default(),
     });
 
     tracing::info!(
@@ -480,6 +482,7 @@ async fn execute_tools_with_interception(
                     arguments: call.arguments.clone(),
                     status: ToolCallStatus::Suspended,
                     updated_at: now_ms(),
+                    resume_mode: ticket.resume_mode,
                 });
                 ctx.runtime.submit_command(ctx.env, cmd).await?;
                 ctx.messages.push(Arc::new(Message::tool(

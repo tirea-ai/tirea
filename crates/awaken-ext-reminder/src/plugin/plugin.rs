@@ -9,7 +9,7 @@ use crate::rule::ReminderRule;
 use super::hook::ReminderHook;
 
 /// Stable plugin name for the reminder extension.
-pub const REMINDER_PLUGIN_NAME: &str = "ext-reminder";
+pub const REMINDER_PLUGIN_NAME: &str = "reminder";
 
 /// Reminder extension plugin.
 ///

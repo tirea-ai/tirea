@@ -106,9 +106,10 @@ impl AgentRuntime {
         };
         messages.extend(request_messages);
 
-        // Apply resume decisions to state if present
+        // Apply resume decisions to state if present.
+        // Each tool call's resume_mode is read from its stored state.
         if !decisions.is_empty() {
-            prepare_resume(&store, decisions).map_err(AgentLoopError::PhaseError)?;
+            prepare_resume(&store, decisions, None).map_err(AgentLoopError::PhaseError)?;
         }
 
         // Create run identity

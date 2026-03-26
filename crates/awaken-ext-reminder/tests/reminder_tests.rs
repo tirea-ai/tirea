@@ -367,5 +367,5 @@ fn reminder_produces_correct_context_message() {
 fn plugin_descriptor_name() {
     let plugin = ReminderPlugin::new(vec![]);
     let desc = plugin.descriptor();
-    assert_eq!(desc.name, "ext-reminder");
+    assert_eq!(desc.name, "reminder");
 }

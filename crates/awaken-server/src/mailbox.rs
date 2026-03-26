@@ -7,19 +7,22 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use thiserror::Error;
 use tokio::sync::{Mutex, RwLock, mpsc};
 use tokio::task::JoinHandle;
 
 use awaken_contract::contract::event::AgentEvent;
+use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::mailbox::{
     MailboxInterrupt, MailboxJob, MailboxJobOrigin, MailboxJobStatus, MailboxStore,
 };
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::StorageError;
-use awaken_contract::contract::suspension::ToolCallResume;
+use awaken_contract::contract::suspension::{ToolCallOutcome, ToolCallResume};
 use awaken_runtime::AgentRuntime;
 
 use crate::routes::ApiError;
@@ -78,6 +81,9 @@ pub enum MailboxRunOutcome {
 pub struct MailboxConfig {
     /// Lease duration in milliseconds (default 30_000).
     pub lease_ms: u64,
+    /// Lease duration in milliseconds when the run is suspended/waiting
+    /// for human input (default 600_000 = 10 minutes).
+    pub suspended_lease_ms: u64,
     /// How often to renew leases (default 10s).
     pub lease_renewal_interval: Duration,
     /// How often to sweep for expired leases (default 30s).
@@ -96,6 +102,7 @@ impl Default for MailboxConfig {
     fn default() -> Self {
         Self {
             lease_ms: 30_000,
+            suspended_lease_ms: 600_000,
             lease_renewal_interval: Duration::from_secs(10),
             sweep_interval: Duration::from_secs(30),
             gc_interval: Duration::from_secs(60),
@@ -129,6 +136,40 @@ impl Default for MailboxWorker {
             status: MailboxWorkerStatus::Idle,
             pending: VecDeque::new(),
         }
+    }
+}
+
+// ── Suspension-aware event sink ──────────────────────────────────────
+
+/// Wraps an inner `EventSink` and sets a shared flag when the run
+/// enters a suspended (waiting) state, detected by a `ToolCallDone`
+/// event with `ToolCallOutcome::Suspended`.
+struct SuspensionAwareSink {
+    inner: Arc<dyn EventSink>,
+    suspended: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl EventSink for SuspensionAwareSink {
+    async fn emit(&self, event: AgentEvent) {
+        if matches!(
+            &event,
+            AgentEvent::ToolCallDone {
+                outcome: ToolCallOutcome::Suspended,
+                ..
+            }
+        ) {
+            self.suspended.store(true, Ordering::Release);
+        }
+        // Reset the flag when the run resumes from suspension.
+        if matches!(&event, AgentEvent::ToolCallResumed { .. }) {
+            self.suspended.store(false, Ordering::Release);
+        }
+        self.inner.emit(event).await;
+    }
+
+    async fn close(&self) {
+        self.inner.close().await;
     }
 }
 
@@ -198,9 +239,16 @@ impl Mailbox {
         if let Some(claimed_job) = claimed {
             let claim_token = claimed_job.claim_token.clone().unwrap_or_default();
 
+            // Shared flag: set by the event sink when a tool call is suspended.
+            let suspended = Arc::new(AtomicBool::new(false));
+
             // Start lease renewal.
-            let lease_handle =
-                self.spawn_lease_renewal(job_id.clone(), claim_token.clone(), mailbox_id.clone());
+            let lease_handle = self.spawn_lease_renewal(
+                job_id.clone(),
+                claim_token.clone(),
+                mailbox_id.clone(),
+                Arc::clone(&suspended),
+            );
 
             // Update worker state.
             let worker = self.get_or_create_worker(&mailbox_id).await;
@@ -213,7 +261,13 @@ impl Mailbox {
             }
 
             // Spawn execution.
-            self.spawn_execution(claimed_job, event_tx.clone(), claim_token, mailbox_id);
+            self.spawn_execution(
+                claimed_job,
+                event_tx.clone(),
+                claim_token,
+                mailbox_id,
+                suspended,
+            );
 
             Ok((
                 MailboxSubmitResult {
@@ -434,9 +488,16 @@ impl Mailbox {
         let job_id = job.job_id.clone();
         let claim_token = job.claim_token.clone().unwrap_or_default();
 
+        // Shared flag: set by the event sink when a tool call is suspended.
+        let suspended = Arc::new(AtomicBool::new(false));
+
         // Start lease renewal.
-        let lease_handle =
-            self.spawn_lease_renewal(job_id.clone(), claim_token.clone(), mailbox_id.to_string());
+        let lease_handle = self.spawn_lease_renewal(
+            job_id.clone(),
+            claim_token.clone(),
+            mailbox_id.to_string(),
+            Arc::clone(&suspended),
+        );
 
         // Update worker state.
         let worker = self.get_or_create_worker(mailbox_id).await;
@@ -451,7 +512,13 @@ impl Mailbox {
         // Create channel for background dispatch (events go nowhere unless observed).
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
 
-        self.spawn_execution(job, event_tx, claim_token, mailbox_id.to_string());
+        self.spawn_execution(
+            job,
+            event_tx,
+            claim_token,
+            mailbox_id.to_string(),
+            suspended,
+        );
     }
 
     /// Pop pending or claim from store for the next job.
@@ -488,15 +555,21 @@ impl Mailbox {
     }
 
     /// Spawn a lease renewal task that periodically extends the lease.
+    ///
+    /// When the `suspended` flag is set (run is waiting for human input),
+    /// the renewal uses `suspended_lease_ms` instead of the default `lease_ms`
+    /// to prevent premature lease expiration during HITL scenarios.
     fn spawn_lease_renewal(
         &self,
         job_id: String,
         claim_token: String,
         mailbox_id: String,
+        suspended: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
         let store = Arc::clone(&self.store);
         let runtime = Arc::clone(&self.runtime);
         let lease_ms = self.config.lease_ms;
+        let suspended_lease_ms = self.config.suspended_lease_ms;
         let interval = self.config.lease_renewal_interval;
 
         tokio::spawn(async move {
@@ -506,8 +579,13 @@ impl Mailbox {
             loop {
                 tick.tick().await;
                 let now = now_ms();
+                let effective_lease_ms = if suspended.load(Ordering::Acquire) {
+                    suspended_lease_ms
+                } else {
+                    lease_ms
+                };
                 match store
-                    .extend_lease(&job_id, &claim_token, lease_ms, now)
+                    .extend_lease(&job_id, &claim_token, effective_lease_ms, now)
                     .await
                 {
                     Ok(true) => {} // Lease extended successfully.
@@ -533,13 +611,18 @@ impl Mailbox {
         event_tx: mpsc::UnboundedSender<AgentEvent>,
         claim_token: String,
         mailbox_id: String,
+        suspended: Arc<AtomicBool>,
     ) {
         let this = Arc::clone(self);
         let job_id = job.job_id.clone();
 
         tokio::spawn(async move {
             let error_tx = event_tx.clone();
-            let sink = ChannelEventSink::new(event_tx);
+            let inner_sink: Arc<dyn EventSink> = Arc::new(ChannelEventSink::new(event_tx));
+            let sink = SuspensionAwareSink {
+                inner: inner_sink,
+                suspended,
+            };
 
             let mut request =
                 awaken_runtime::RunRequest::new(job.mailbox_id.clone(), job.messages.clone());
@@ -833,6 +916,7 @@ mod tests {
     fn mailbox_config_defaults() {
         let config = MailboxConfig::default();
         assert_eq!(config.lease_ms, 30_000);
+        assert_eq!(config.suspended_lease_ms, 600_000);
         assert_eq!(config.lease_renewal_interval, Duration::from_secs(10));
         assert_eq!(config.sweep_interval, Duration::from_secs(30));
         assert_eq!(config.gc_interval, Duration::from_secs(60));
@@ -991,5 +1075,59 @@ mod tests {
         assert_eq!(result.job_id, "job-1");
         assert_eq!(result.thread_id, "thread-1");
         assert!(matches!(result.status, MailboxDispatchStatus::Running));
+    }
+
+    #[tokio::test]
+    async fn suspension_aware_sink_sets_flag_on_suspended_tool_call() {
+        use awaken_contract::contract::event_sink::{EventSink, VecEventSink};
+        use awaken_contract::contract::suspension::ToolCallOutcome;
+        use awaken_contract::contract::tool::{ToolResult, ToolStatus};
+
+        let inner: Arc<dyn EventSink> = Arc::new(VecEventSink::new());
+        let suspended = Arc::new(AtomicBool::new(false));
+        let sink = SuspensionAwareSink {
+            inner: Arc::clone(&inner),
+            suspended: Arc::clone(&suspended),
+        };
+
+        // Non-suspended tool call should not set the flag.
+        sink.emit(AgentEvent::ToolCallDone {
+            id: "c1".into(),
+            message_id: "m1".into(),
+            result: ToolResult {
+                tool_name: "echo".into(),
+                status: ToolStatus::Success,
+                data: serde_json::json!("ok"),
+                message: None,
+                suspension: None,
+            },
+            outcome: ToolCallOutcome::Succeeded,
+        })
+        .await;
+        assert!(!suspended.load(Ordering::Acquire));
+
+        // Suspended tool call should set the flag.
+        sink.emit(AgentEvent::ToolCallDone {
+            id: "c2".into(),
+            message_id: "m2".into(),
+            result: ToolResult {
+                tool_name: "approve".into(),
+                status: ToolStatus::Pending,
+                data: serde_json::json!("pending"),
+                message: None,
+                suspension: None,
+            },
+            outcome: ToolCallOutcome::Suspended,
+        })
+        .await;
+        assert!(suspended.load(Ordering::Acquire));
+
+        // ToolCallResumed should reset the flag.
+        sink.emit(AgentEvent::ToolCallResumed {
+            target_id: "c2".into(),
+            result: serde_json::json!({"approved": true}),
+        })
+        .await;
+        assert!(!suspended.load(Ordering::Acquire));
     }
 }

@@ -24,6 +24,14 @@ pub enum BuildError {
     State(#[from] StateError),
     #[error("agent registry conflict: {0}")]
     AgentRegistryConflict(String),
+    #[error("tool registry conflict: {0}")]
+    ToolRegistryConflict(String),
+    #[error("model registry conflict: {0}")]
+    ModelRegistryConflict(String),
+    #[error("provider registry conflict: {0}")]
+    ProviderRegistryConflict(String),
+    #[error("plugin registry conflict: {0}")]
+    PluginRegistryConflict(String),
     #[error("stop policy registry conflict: {0}")]
     StopPolicyConflict(String),
     #[error("agent validation failed: {0}")]
@@ -45,6 +53,7 @@ pub struct AgentRuntimeBuilder {
     plugins: MapPluginSource,
     thread_run_store: Option<Arc<dyn ThreadRunStore>>,
     profile_store: Option<Arc<dyn awaken_contract::contract::profile_store::ProfileStore>>,
+    errors: Vec<BuildError>,
     #[cfg(feature = "a2a")]
     remote_sources: Vec<RemoteAgentSource>,
 }
@@ -59,6 +68,7 @@ impl AgentRuntimeBuilder {
             plugins: MapPluginSource::new(),
             thread_run_store: None,
             profile_store: None,
+            errors: Vec::new(),
             #[cfg(feature = "a2a")]
             remote_sources: Vec::new(),
         }
@@ -66,39 +76,51 @@ impl AgentRuntimeBuilder {
 
     /// Register an agent spec.
     pub fn with_agent_spec(mut self, spec: AgentSpec) -> Self {
-        self.agents.register(spec);
+        if let Err(e) = self.agents.register(spec) {
+            self.errors.push(e);
+        }
         self
     }
 
     /// Register multiple agent specs.
     pub fn with_agent_specs(mut self, specs: impl IntoIterator<Item = AgentSpec>) -> Self {
         for spec in specs {
-            self.agents.register(spec);
+            if let Err(e) = self.agents.register(spec) {
+                self.errors.push(e);
+            }
         }
         self
     }
 
     /// Register a tool by ID.
     pub fn with_tool(mut self, id: impl Into<String>, tool: Arc<dyn Tool>) -> Self {
-        self.tools.register(id, tool);
+        if let Err(e) = self.tools.register(id, tool) {
+            self.errors.push(e);
+        }
         self
     }
 
     /// Register a plugin by ID.
     pub fn with_plugin(mut self, id: impl Into<String>, plugin: Arc<dyn Plugin>) -> Self {
-        self.plugins.register(id, plugin);
+        if let Err(e) = self.plugins.register(id, plugin) {
+            self.errors.push(e);
+        }
         self
     }
 
     /// Register a model entry by ID.
     pub fn with_model(mut self, id: impl Into<String>, entry: ModelEntry) -> Self {
-        self.models.register(id, entry);
+        if let Err(e) = self.models.register(id, entry) {
+            self.errors.push(e);
+        }
         self
     }
 
     /// Register a provider (LLM executor) by ID.
     pub fn with_provider(mut self, id: impl Into<String>, executor: Arc<dyn LlmExecutor>) -> Self {
-        self.providers.register(id, executor);
+        if let Err(e) = self.providers.register(id, executor) {
+            self.errors.push(e);
+        }
         self
     }
 
@@ -138,8 +160,37 @@ impl AgentRuntimeBuilder {
         self
     }
 
-    /// Build the `AgentRuntime` from the accumulated configuration.
+    /// Build the `AgentRuntime` and validate all registered agents can
+    /// resolve successfully.
+    ///
+    /// Performs a dry-run resolve for every registered agent, catching
+    /// configuration errors (missing models, providers, plugins) at build time.
+    /// Use [`build_unchecked()`](Self::build_unchecked) to skip validation.
     pub fn build(self) -> Result<AgentRuntime, BuildError> {
+        let runtime = self.build_unchecked()?;
+        let resolver = runtime.resolver();
+        let mut errors = Vec::new();
+        for agent_id in resolver.agent_ids() {
+            if let Err(e) = resolver.resolve(&agent_id) {
+                errors.push(format!("{agent_id}: {e}"));
+            }
+        }
+        if !errors.is_empty() {
+            return Err(BuildError::ValidationFailed(errors.join("; ")));
+        }
+        Ok(runtime)
+    }
+
+    /// Build the `AgentRuntime` from the accumulated configuration,
+    /// skipping agent validation.
+    ///
+    /// Prefer [`build()`](Self::build) which validates all registered agents
+    /// can resolve successfully at build time.
+    pub fn build_unchecked(mut self) -> Result<AgentRuntime, BuildError> {
+        if !self.errors.is_empty() {
+            return Err(self.errors.remove(0));
+        }
+
         #[cfg(feature = "a2a")]
         let (agents, composite_registry): (Arc<dyn AgentSpecRegistry>, _) =
             if self.remote_sources.is_empty() {
@@ -185,29 +236,10 @@ impl AgentRuntimeBuilder {
         Ok(runtime)
     }
 
-    /// Build and validate all registered agents can resolve successfully.
-    ///
-    /// Performs a dry-run resolve for every registered agent, catching
-    /// configuration errors (missing models, providers, plugins) at build time.
-    pub fn build_validated(self) -> Result<AgentRuntime, BuildError> {
-        let runtime = self.build()?;
-        let resolver = runtime.resolver();
-        let mut errors = Vec::new();
-        for agent_id in resolver.agent_ids() {
-            if let Err(e) = resolver.resolve(&agent_id) {
-                errors.push(format!("{agent_id}: {e}"));
-            }
-        }
-        if !errors.is_empty() {
-            return Err(BuildError::ValidationFailed(errors.join("; ")));
-        }
-        Ok(runtime)
-    }
-
     /// Build and initialize (async). Discovers remote agents after build.
     #[cfg(feature = "a2a")]
     pub async fn build_and_discover(self) -> Result<AgentRuntime, BuildError> {
-        let runtime = self.build()?;
+        let runtime = self.build_unchecked()?;
         if let Some(composite) = runtime.composite_registry() {
             composite.discover().await?;
         }
@@ -454,7 +486,7 @@ mod tests {
     }
 
     #[test]
-    fn build_validated_catches_missing_model() {
+    fn build_catches_missing_model() {
         let spec = AgentSpec {
             id: "bad-agent".into(),
             model: "nonexistent-model".into(),
@@ -462,13 +494,11 @@ mod tests {
             ..Default::default()
         };
 
-        let result = AgentRuntimeBuilder::new()
-            .with_agent_spec(spec)
-            .build_validated();
+        let result = AgentRuntimeBuilder::new().with_agent_spec(spec).build();
 
         let err = match result {
             Err(e) => e.to_string(),
-            Ok(_) => panic!("expected build_validated to fail for missing model"),
+            Ok(_) => panic!("expected build to fail for missing model"),
         };
         assert!(
             err.contains("bad-agent"),
@@ -477,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn build_validated_succeeds_with_valid_config() {
+    fn build_succeeds_with_valid_config() {
         let spec = AgentSpec {
             id: "good-agent".into(),
             model: "m".into(),
@@ -495,7 +525,7 @@ mod tests {
                 },
             )
             .with_provider("p", Arc::new(MockExecutor))
-            .build_validated();
+            .build();
 
         assert!(result.is_ok());
     }
@@ -569,5 +599,118 @@ mod tests {
             .build()
             .unwrap();
         assert!(runtime.profile_store.is_some());
+    }
+
+    #[test]
+    fn duplicate_agent_spec_errors_at_build() {
+        let spec = AgentSpec {
+            id: "dup-agent".into(),
+            model: "m".into(),
+            system_prompt: "sys".into(),
+            ..Default::default()
+        };
+
+        let result = AgentRuntimeBuilder::new()
+            .with_agent_spec(spec.clone())
+            .with_agent_spec(spec)
+            .with_model(
+                "m",
+                ModelEntry {
+                    provider: "p".into(),
+                    model_name: "n".into(),
+                },
+            )
+            .with_provider("p", Arc::new(MockExecutor))
+            .build();
+
+        match result {
+            Err(e) => {
+                let err = e.to_string();
+                assert!(
+                    err.contains("dup-agent"),
+                    "error should mention the duplicate agent ID: {err}"
+                );
+            }
+            Ok(_) => panic!("expected build to fail for duplicate agent"),
+        }
+    }
+
+    #[test]
+    fn duplicate_tool_errors_at_build() {
+        let result = AgentRuntimeBuilder::new()
+            .with_tool(
+                "dup-tool",
+                Arc::new(MockTool {
+                    id: "dup-tool".into(),
+                }),
+            )
+            .with_tool(
+                "dup-tool",
+                Arc::new(MockTool {
+                    id: "dup-tool".into(),
+                }),
+            )
+            .build();
+
+        match result {
+            Err(e) => {
+                let err = e.to_string();
+                assert!(
+                    err.contains("dup-tool"),
+                    "error should mention the duplicate tool ID: {err}"
+                );
+            }
+            Ok(_) => panic!("expected build to fail for duplicate tool"),
+        }
+    }
+
+    #[test]
+    fn duplicate_model_errors_at_build() {
+        let result = AgentRuntimeBuilder::new()
+            .with_model(
+                "dup-model",
+                ModelEntry {
+                    provider: "p".into(),
+                    model_name: "n1".into(),
+                },
+            )
+            .with_model(
+                "dup-model",
+                ModelEntry {
+                    provider: "p".into(),
+                    model_name: "n2".into(),
+                },
+            )
+            .build();
+
+        match result {
+            Err(e) => {
+                let err = e.to_string();
+                assert!(
+                    err.contains("dup-model"),
+                    "error should mention the duplicate model ID: {err}"
+                );
+            }
+            Ok(_) => panic!("expected build to fail for duplicate model"),
+        }
+    }
+
+    #[test]
+    fn duplicate_provider_errors_at_build() {
+        let result = AgentRuntimeBuilder::new()
+            .with_provider("dup-prov", Arc::new(MockExecutor))
+            .with_provider("dup-prov", Arc::new(MockExecutor))
+            .build();
+
+        match result {
+            Err(e) => {
+                let err = e.to_string();
+                assert!(
+                    err.contains("dup-prov"),
+                    "error should mention the duplicate provider ID: {err}"
+                );
+            }
+            Ok(_) => panic!("expected build to fail for duplicate provider"),
+        }
     }
 }

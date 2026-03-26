@@ -8,7 +8,7 @@ use crate::state::{PermissionOverridesKey, PermissionPolicyKey};
 use super::checker::PermissionInterceptHook;
 
 /// Stable plugin name for the permission extension.
-pub const PERMISSION_PLUGIN_NAME: &str = "ext-permission";
+pub const PERMISSION_PLUGIN_NAME: &str = "permission";
 
 /// Permission extension plugin.
 ///

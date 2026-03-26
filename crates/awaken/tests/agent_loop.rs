@@ -928,7 +928,7 @@ async fn resume_with_use_decision_as_tool_result() {
                 updated_at: 0,
             },
         )],
-        ToolCallResumeMode::UseDecisionAsToolResult,
+        Some(ToolCallResumeMode::UseDecisionAsToolResult),
     )
     .unwrap();
 
@@ -1014,7 +1014,7 @@ async fn resume_with_cancel_marks_tool_cancelled() {
                 updated_at: 0,
             },
         )],
-        ToolCallResumeMode::ReplayToolCall,
+        Some(ToolCallResumeMode::ReplayToolCall),
     )
     .unwrap();
 
@@ -1118,7 +1118,7 @@ async fn resume_with_replay_tool_call() {
                 updated_at: 0,
             },
         )],
-        ToolCallResumeMode::ReplayToolCall,
+        Some(ToolCallResumeMode::ReplayToolCall),
     )
     .unwrap();
 
@@ -1244,7 +1244,7 @@ async fn resume_with_pass_decision_to_tool() {
                 updated_at: 0,
             },
         )],
-        ToolCallResumeMode::PassDecisionToTool,
+        Some(ToolCallResumeMode::PassDecisionToTool),
     )
     .unwrap();
 
@@ -1304,7 +1304,7 @@ async fn resume_rejects_non_waiting_run() {
                 updated_at: 0,
             },
         )],
-        ToolCallResumeMode::ReplayToolCall,
+        Some(ToolCallResumeMode::ReplayToolCall),
     )
     .unwrap_err();
 
@@ -1352,7 +1352,7 @@ async fn resume_rejects_unknown_call_id() {
                 updated_at: 0,
             },
         )],
-        ToolCallResumeMode::ReplayToolCall,
+        Some(ToolCallResumeMode::ReplayToolCall),
     )
     .unwrap_err();
 
@@ -1811,7 +1811,7 @@ async fn frontend_tool_intercept_suspend_and_resume() {
                 updated_at: 0,
             },
         )],
-        ToolCallResumeMode::UseDecisionAsToolResult,
+        Some(ToolCallResumeMode::UseDecisionAsToolResult),
     )
     .unwrap();
 
@@ -2142,7 +2142,7 @@ async fn suspended_tool_preserves_state_across_resume() {
                 updated_at: 0,
             },
         )],
-        ToolCallResumeMode::UseDecisionAsToolResult,
+        Some(ToolCallResumeMode::UseDecisionAsToolResult),
     )
     .unwrap();
 
@@ -2448,7 +2448,7 @@ async fn intercept_suspend_preserves_ticket_resume_mode() {
                 updated_at: 0,
             },
         )],
-        ToolCallResumeMode::UseDecisionAsToolResult,
+        Some(ToolCallResumeMode::UseDecisionAsToolResult),
     )
     .unwrap();
 
@@ -2693,7 +2693,7 @@ async fn resume_with_normalize_decision_result_boolean() {
                 updated_at: 0,
             },
         )],
-        ToolCallResumeMode::UseDecisionAsToolResult,
+        Some(ToolCallResumeMode::UseDecisionAsToolResult),
     )
     .unwrap();
 
@@ -2743,7 +2743,7 @@ async fn resume_with_normalize_decision_result_boolean() {
                 updated_at: 0,
             },
         )],
-        ToolCallResumeMode::UseDecisionAsToolResult,
+        Some(ToolCallResumeMode::UseDecisionAsToolResult),
     )
     .unwrap();
 
@@ -2967,7 +2967,7 @@ async fn tool_call_lifecycle_complete_transitions_in_loop() {
                 updated_at: 0,
             },
         )],
-        ToolCallResumeMode::UseDecisionAsToolResult,
+        Some(ToolCallResumeMode::UseDecisionAsToolResult),
     )
     .unwrap();
 
@@ -4580,7 +4580,7 @@ async fn decision_for_unknown_call_id_returns_error() {
                 updated_at: 0,
             },
         )],
-        ToolCallResumeMode::ReplayToolCall,
+        Some(ToolCallResumeMode::ReplayToolCall),
     );
     assert!(
         err.is_err(),
@@ -4657,7 +4657,7 @@ async fn decision_channel_rejects_illegal_transition() {
                 updated_at: 0,
             },
         )],
-        ToolCallResumeMode::ReplayToolCall,
+        Some(ToolCallResumeMode::ReplayToolCall),
     );
 
     assert!(
@@ -8911,7 +8911,7 @@ async fn replay_tool_call_executes_original_tool() {
                 updated_at: 0,
             },
         )],
-        ToolCallResumeMode::ReplayToolCall,
+        Some(ToolCallResumeMode::ReplayToolCall),
     )
     .unwrap();
 
@@ -9000,7 +9000,7 @@ async fn use_decision_replaces_args_with_decision_result() {
                 updated_at: 0,
             },
         )],
-        ToolCallResumeMode::UseDecisionAsToolResult,
+        Some(ToolCallResumeMode::UseDecisionAsToolResult),
     )
     .unwrap();
 
@@ -9054,7 +9054,7 @@ async fn pass_decision_updates_args_for_tool() {
                 updated_at: 0,
             },
         )],
-        ToolCallResumeMode::PassDecisionToTool,
+        Some(ToolCallResumeMode::PassDecisionToTool),
     )
     .unwrap();
 
@@ -9108,7 +9108,7 @@ async fn cancel_resume_transitions_to_cancelled_status() {
                 updated_at: 0,
             },
         )],
-        ToolCallResumeMode::ReplayToolCall,
+        Some(ToolCallResumeMode::ReplayToolCall),
     )
     .unwrap();
 
@@ -9162,7 +9162,7 @@ async fn resume_with_empty_decision_result_succeeds() {
                 updated_at: 0,
             },
         )],
-        ToolCallResumeMode::UseDecisionAsToolResult,
+        Some(ToolCallResumeMode::UseDecisionAsToolResult),
     );
     assert!(
         result.is_ok(),
@@ -9497,7 +9497,7 @@ async fn full_suspend_resume_complete_lifecycle() {
                 updated_at: 0,
             },
         )],
-        ToolCallResumeMode::UseDecisionAsToolResult,
+        Some(ToolCallResumeMode::UseDecisionAsToolResult),
     )
     .unwrap();
 

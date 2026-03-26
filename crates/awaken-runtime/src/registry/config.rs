@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use awaken_contract::contract::executor::LlmExecutor;
 
+use crate::builder::BuildError;
+
 use super::memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapToolRegistry,
 };
@@ -51,7 +53,7 @@ impl AgentSystemConfig {
     pub fn build_registries(
         &self,
         providers: HashMap<String, Arc<dyn LlmExecutor>>,
-    ) -> RegistrySet {
+    ) -> Result<RegistrySet, BuildError> {
         let mut model_reg = MapModelRegistry::new();
         for (id, cfg) in &self.models {
             model_reg.register(
@@ -60,26 +62,26 @@ impl AgentSystemConfig {
                     provider: cfg.provider.clone(),
                     model_name: cfg.model.clone(),
                 },
-            );
+            )?;
         }
 
         let mut agent_reg = MapAgentSpecRegistry::new();
         for spec in &self.agents {
-            agent_reg.register(spec.clone());
+            agent_reg.register(spec.clone())?;
         }
 
         let mut provider_reg = MapProviderRegistry::new();
         for (id, executor) in providers {
-            provider_reg.register(id, executor);
+            provider_reg.register(id, executor)?;
         }
 
-        RegistrySet {
+        Ok(RegistrySet {
             agents: Arc::new(agent_reg),
             tools: Arc::new(MapToolRegistry::new()),
             models: Arc::new(model_reg),
             providers: Arc::new(provider_reg),
             plugins: Arc::new(MapPluginSource::new()),
-        }
+        })
     }
 }
 
@@ -202,7 +204,7 @@ mod tests {
             Arc::new(StubExecutor) as Arc<dyn LlmExecutor>,
         );
 
-        let reg = config.build_registries(providers);
+        let reg = config.build_registries(providers).unwrap();
 
         // Verify model registry
         let model = reg.models.get_model("m1").unwrap();

@@ -28,7 +28,7 @@ pub use validation::{A2uiValidationError, validate_a2ui_messages};
 
 pub(crate) const A2UI_TOOL_ID: &str = "render_a2ui";
 pub(crate) const A2UI_TOOL_NAME: &str = "render_a2ui";
-pub(crate) const A2UI_PLUGIN_ID: &str = "a2ui";
+pub const A2UI_PLUGIN_ID: &str = "generative-ui";
 pub(crate) const SUPPORTED_VERSION: &str = "v0.9";
 pub(crate) const MESSAGE_KEYS: &[&str] = &[
     "createSurface",

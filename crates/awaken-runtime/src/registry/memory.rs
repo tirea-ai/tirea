@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::builder::BuildError;
 use crate::plugins::Plugin;
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::tool::Tool;
@@ -27,8 +28,20 @@ impl MapToolRegistry {
         Self::default()
     }
 
-    pub fn register(&mut self, id: impl Into<String>, tool: Arc<dyn Tool>) {
-        self.tools.insert(id.into(), tool);
+    pub fn register(
+        &mut self,
+        id: impl Into<String>,
+        tool: Arc<dyn Tool>,
+    ) -> Result<(), BuildError> {
+        let id = id.into();
+        if self.tools.contains_key(&id) {
+            return Err(BuildError::ToolRegistryConflict(format!(
+                "tool '{}' already registered",
+                id
+            )));
+        }
+        self.tools.insert(id, tool);
+        Ok(())
     }
 }
 
@@ -57,8 +70,16 @@ impl MapModelRegistry {
         Self::default()
     }
 
-    pub fn register(&mut self, id: impl Into<String>, entry: ModelEntry) {
-        self.models.insert(id.into(), entry);
+    pub fn register(&mut self, id: impl Into<String>, entry: ModelEntry) -> Result<(), BuildError> {
+        let id = id.into();
+        if self.models.contains_key(&id) {
+            return Err(BuildError::ModelRegistryConflict(format!(
+                "model '{}' already registered",
+                id
+            )));
+        }
+        self.models.insert(id, entry);
+        Ok(())
     }
 }
 
@@ -83,8 +104,20 @@ impl MapProviderRegistry {
         Self::default()
     }
 
-    pub fn register(&mut self, id: impl Into<String>, executor: Arc<dyn LlmExecutor>) {
-        self.providers.insert(id.into(), executor);
+    pub fn register(
+        &mut self,
+        id: impl Into<String>,
+        executor: Arc<dyn LlmExecutor>,
+    ) -> Result<(), BuildError> {
+        let id = id.into();
+        if self.providers.contains_key(&id) {
+            return Err(BuildError::ProviderRegistryConflict(format!(
+                "provider '{}' already registered",
+                id
+            )));
+        }
+        self.providers.insert(id, executor);
+        Ok(())
     }
 }
 
@@ -109,8 +142,15 @@ impl MapAgentSpecRegistry {
         Self::default()
     }
 
-    pub fn register(&mut self, spec: AgentSpec) {
+    pub fn register(&mut self, spec: AgentSpec) -> Result<(), BuildError> {
+        if self.agents.contains_key(&spec.id) {
+            return Err(BuildError::AgentRegistryConflict(format!(
+                "agent '{}' already registered",
+                spec.id
+            )));
+        }
         self.agents.insert(spec.id.clone(), spec);
+        Ok(())
     }
 }
 
@@ -139,8 +179,20 @@ impl MapPluginSource {
         Self::default()
     }
 
-    pub fn register(&mut self, id: impl Into<String>, plugin: Arc<dyn Plugin>) {
-        self.plugins.insert(id.into(), plugin);
+    pub fn register(
+        &mut self,
+        id: impl Into<String>,
+        plugin: Arc<dyn Plugin>,
+    ) -> Result<(), BuildError> {
+        let id = id.into();
+        if self.plugins.contains_key(&id) {
+            return Err(BuildError::PluginRegistryConflict(format!(
+                "plugin '{}' already registered",
+                id
+            )));
+        }
+        self.plugins.insert(id, plugin);
+        Ok(())
     }
 }
 

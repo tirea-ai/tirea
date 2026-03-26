@@ -29,6 +29,10 @@ pub(super) enum WaitOutcome {
 ///   - `ReplayToolCall`: keep original arguments
 ///   - `PassDecisionToTool` / `UseDecisionAsToolResult`: arguments = decision.result
 ///
+/// When `resume_mode_override` is `None`, the resume mode is read from each
+/// tool call's stored state (set when the `SuspendTicket` was applied).
+/// When `Some(mode)`, the override is used for all decisions.
+///
 /// `detect_and_replay_resume` then re-executes all Resuming calls through the
 /// full tool pipeline (BeforeToolExecute → execute → AfterToolExecute).
 /// For `UseDecisionAsToolResult`, the frontend tool plugin intercepts in
@@ -36,7 +40,7 @@ pub(super) enum WaitOutcome {
 pub fn prepare_resume(
     store: &crate::state::StateStore,
     decisions: Vec<(String, ToolCallResume)>,
-    resume_mode: ToolCallResumeMode,
+    resume_mode_override: Option<ToolCallResumeMode>,
 ) -> Result<(), StateError> {
     use awaken_contract::contract::suspension::ResumeDecisionAction;
 
@@ -49,6 +53,10 @@ pub fn prepare_resume(
                 .ok_or_else(|| StateError::UnknownKey {
                     key: format!("tool call {call_id} not found"),
                 })?;
+
+        // Use the override if provided, otherwise read from the stored state.
+        // Stored default is ReplayToolCall (for tools that suspended without a ticket).
+        let resume_mode = resume_mode_override.unwrap_or(call_state.resume_mode);
 
         // Adjust arguments based on resume mode
         let arguments = match (&resume_mode, &decision.action) {
@@ -71,6 +79,7 @@ pub fn prepare_resume(
                     ResumeDecisionAction::Cancel => ToolCallStatus::Cancelled,
                 },
                 updated_at: now_ms(),
+                resume_mode,
             },
         )?;
     }
@@ -146,6 +155,7 @@ pub(super) async fn detect_and_replay_resume(
                 arguments: call_state.arguments.clone(),
                 status,
                 updated_at: now_ms(),
+                resume_mode: call_state.resume_mode,
             },
         )?;
 
@@ -199,9 +209,9 @@ pub(super) async fn wait_for_resume_or_cancel(
             continue;
         }
 
-        // Default to ReplayToolCall when receiving decisions via channel.
-        // Frontend tools override this via BeforeToolExecute interception.
-        prepare_resume(store, decisions, ToolCallResumeMode::ReplayToolCall)?;
+        // Each tool call's resume_mode is read from its stored state (set by SuspendTicket).
+        // Defaults to ReplayToolCall if no ticket was stored (legacy path).
+        prepare_resume(store, decisions, None)?;
         detect_and_replay_resume(agent, store, run_identity, messages).await?;
         if !has_suspended_calls(store) {
             return Ok(WaitOutcome::Resumed);
