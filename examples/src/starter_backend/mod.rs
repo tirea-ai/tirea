@@ -17,6 +17,7 @@ use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::tool::Tool;
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_ext_mcp::{McpServerConnectionConfig, McpToolRegistryManager};
+use awaken_ext_observability::{InMemorySink, ObservabilityPlugin};
 use awaken_ext_permission::PermissionPlugin;
 use awaken_ext_reminder::ReminderPlugin;
 use awaken_ext_skills::{FsSkillRegistryManager, SkillDiscoveryPlugin, SkillRegistry};
@@ -163,7 +164,7 @@ Deterministic compatibility directives:\n\
         model: "default".into(),
         system_prompt: base_prompt.clone(),
         max_rounds: args.max_rounds,
-        plugin_ids: vec!["frontend_tools".into()],
+        plugin_ids: vec!["frontend_tools".into(), "observability".into()],
         ..Default::default()
     };
     let permission_agent = AgentSpec {
@@ -222,6 +223,14 @@ Deterministic compatibility directives:\n\
         system_prompt: base_prompt.clone(),
         max_rounds: args.max_rounds,
         plugin_ids: vec!["skills_discovery".into(), "frontend_tools".into()],
+        ..Default::default()
+    };
+    let limited_agent = AgentSpec {
+        id: "limited".into(),
+        model: "default".into(),
+        system_prompt: "You are a test assistant. Respond briefly to every message.".into(),
+        max_rounds: 1,
+        plugin_ids: vec!["permission".into()],
         ..Default::default()
     };
     let a2a_agent = AgentSpec {
@@ -341,6 +350,9 @@ Deterministic compatibility directives:\n\
     if default_id != "skills" {
         builder = builder.with_agent_spec(skills_agent);
     }
+    if default_id != "limited" {
+        builder = builder.with_agent_spec(limited_agent);
+    }
     if default_id != "a2a" {
         builder = builder.with_agent_spec(a2a_agent);
     }
@@ -379,6 +391,12 @@ Deterministic compatibility directives:\n\
             Arc::new(ReminderPlugin::new(rules)) as Arc<dyn Plugin>,
         );
     }
+
+    // Observability plugin (in-memory sink for demo)
+    let observability = ObservabilityPlugin::new(InMemorySink::new())
+        .with_model(&args.model)
+        .with_provider("default");
+    builder = builder.with_plugin("observability", Arc::new(observability) as Arc<dyn Plugin>);
 
     // Skills discovery plugin (if ./skills/ directory exists)
     if std::path::Path::new("./skills").is_dir() {
