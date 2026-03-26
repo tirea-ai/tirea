@@ -10,7 +10,7 @@ test('start run with mock LLM returns SSE stream', async ({ request }) => {
   // Start a run
   const runRes = await request.post('/v1/runs', {
     data: {
-      agentId: 'starter',
+      agentId: 'default',
       threadId: thread.id,
       messages: [{ role: 'user', content: 'Hello' }],
     },
@@ -26,7 +26,7 @@ test('start run with mock LLM returns SSE stream', async ({ request }) => {
 test('start run without messages returns 400', async ({ request }) => {
   const response = await request.post('/v1/runs', {
     data: {
-      agentId: 'starter',
+      agentId: 'default',
       messages: [],
     },
   });

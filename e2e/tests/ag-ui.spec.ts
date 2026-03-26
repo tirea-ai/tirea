@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 test('AG-UI run endpoint returns SSE stream', async ({ request }) => {
   const response = await request.post('/v1/ag-ui/run', {
     data: {
-      agentId: 'starter',
+      agentId: 'default',
       messages: [{ role: 'user', content: 'Hello agent' }],
     },
   });

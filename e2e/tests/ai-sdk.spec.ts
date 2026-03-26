@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 test('AI SDK chat endpoint returns SSE stream', async ({ request }) => {
   const response = await request.post('/v1/ai-sdk/chat', {
     data: {
-      agentId: 'starter',
+      agentId: 'default',
       messages: [{ role: 'user', content: 'What is the weather?' }],
     },
   });

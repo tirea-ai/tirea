@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 test('get_weather tool returns mock data via run', async ({ request }) => {
   const response = await request.post('/v1/runs', {
     data: {
-      agentId: 'starter',
+      agentId: 'default',
       messages: [{ role: 'user', content: 'What is the weather in Tokyo?' }],
     },
   });
