@@ -1556,8 +1556,6 @@ dependencies = [
 [[package]]
 name = "genai"
 version = "0.6.0-beta.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94491bd37a77b5fcf6f51839af151a7d2d825ad826130c967e25c9141a3e8aff"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -4755,6 +4753,7 @@ name = "tirea-extension-mcp"
 version = "0.5.0"
 dependencies = [
  "async-trait",
+ "genai",
  "model-context-protocol",
  "reqwest 0.12.28",
  "serde",
@@ -4806,6 +4805,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "model-context-protocol",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "serde_yaml",

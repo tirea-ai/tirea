@@ -11,7 +11,7 @@ use mcp::transport::{
     McpServerConnectionConfig, McpTransportError, ServerCapabilities, TransportTypeId,
 };
 use mcp::{CallToolResult, McpToolDefinition, ToolContent};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::{Duration, Instant, SystemTime};
@@ -23,6 +23,7 @@ use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
+use tracing::warn;
 
 pub use client_transport::{McpProgressUpdate, McpToolTransport, SamplingHandler};
 pub use client_transport::{
@@ -205,13 +206,22 @@ impl McpTool {
             .description
             .clone()
             .unwrap_or_else(|| format!("MCP tool {}", def.name));
+        let (input_schema, schema_normalized) = normalize_mcp_input_schema(&def.input_schema);
 
         let mut d = with_mcp_descriptor_metadata(
-            ToolDescriptor::new(tool_id, name, desc).with_parameters(def.input_schema.clone()),
+            ToolDescriptor::new(tool_id, name, desc).with_parameters(input_schema),
             &server_name,
             &def.name,
             transport_type,
         );
+
+        if schema_normalized {
+            warn!(
+                server = %server_name,
+                tool = %def.name,
+                "normalized MCP tool input schema for LLM compatibility"
+            );
+        }
 
         if let Some(group) = def.group.clone() {
             d = d.with_category(group);
@@ -240,6 +250,20 @@ impl McpTool {
 
     fn descriptor(&self) -> ToolDescriptor {
         self.descriptor.clone()
+    }
+}
+
+fn normalize_mcp_input_schema(schema: &Value) -> (Value, bool) {
+    let mut normalized = schema.clone();
+    genai::schema_sanitize::sanitize_tool_schema(&mut normalized);
+
+    let changed = normalized != *schema;
+    let is_object_root = normalized.as_object().is_some()
+        && normalized.get("type").and_then(Value::as_str) == Some("object");
+    if is_object_root {
+        (normalized, changed)
+    } else {
+        (json!({"type": "object", "properties": {}}), true)
     }
 }
 
@@ -2285,6 +2309,65 @@ mod tests {
 
         let desc = tool.descriptor();
         assert!(!desc.metadata.contains_key(MCP_META_UI_RESOURCE_URI));
+    }
+
+    #[test]
+    fn normalize_mcp_input_schema_removes_openai_incompatible_constructs() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "entity": { "$ref": "#/$defs/Entity" },
+                "choice": {
+                    "anyOf": [
+                        { "type": "string" },
+                        { "type": "null" }
+                    ]
+                },
+                "items": {
+                    "type": "array"
+                }
+            },
+            "$defs": {
+                "Entity": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" }
+                    }
+                }
+            }
+        });
+
+        let (normalized, changed) = normalize_mcp_input_schema(&schema);
+        let pretty = serde_json::to_string(&normalized).expect("schema should serialize");
+
+        assert!(changed);
+        assert_eq!(normalized["type"], "object");
+        assert!(normalized["properties"].is_object());
+        assert!(!pretty.contains("\"$defs\""));
+        assert!(!pretty.contains("\"$ref\""));
+        assert!(!pretty.contains("\"anyOf\""));
+        assert!(normalized["properties"]["items"]["items"].is_object());
+    }
+
+    #[test]
+    fn normalize_mcp_input_schema_falls_back_for_non_object_roots() {
+        let schema = json!({
+            "type": "array",
+            "items": {
+                "type": "string"
+            }
+        });
+
+        let (normalized, changed) = normalize_mcp_input_schema(&schema);
+
+        assert!(changed);
+        assert_eq!(
+            normalized,
+            json!({
+                "type": "object",
+                "properties": {}
+            })
+        );
     }
 
     #[tokio::test]

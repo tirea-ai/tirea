@@ -3,7 +3,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tirea_agentos::contracts::runtime::tool_call::{
-    Tool, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult,
+    Tool, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult, TypedTool,
 };
 use tirea_agentos::contracts::AnyStateAction;
 use tirea_agentos::contracts::ToolCallContext;
@@ -242,42 +242,44 @@ pub struct SelectTripArgs {
 pub struct SelectTripTool;
 
 #[async_trait]
-impl Tool for SelectTripTool {
-    fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new(
-            "select_trip",
-            "Select Trip",
-            "Select a trip as the currently active trip",
-        )
-        .with_parameters(json!({
-            "type": "object",
-            "properties": {
-                "trip_id": {
-                    "type": "string",
-                    "description": "ID of the trip to select"
-                }
-            },
-            "required": ["trip_id"]
-        }))
+impl TypedTool for SelectTripTool {
+    type Args = SelectTripArgs;
+
+    fn tool_id(&self) -> &str {
+        "select_trip"
+    }
+
+    fn name(&self) -> &str {
+        "Select Trip"
+    }
+
+    fn description(&self) -> &str {
+        "Select a trip as the currently active trip"
+    }
+
+    fn validate(&self, args: &Self::Args) -> Result<(), String> {
+        if args.trip_id.trim().is_empty() {
+            return Err("trip_id cannot be empty".to_string());
+        }
+        Ok(())
     }
 
     async fn execute(
         &self,
-        args: Value,
-        ctx: &ToolCallContext<'_>,
+        args: SelectTripArgs,
+        _ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
-        Ok(<Self as Tool>::execute_effect(self, args, ctx)
-            .await?
-            .result)
+        Ok(ToolResult::success(
+            "select_trip",
+            json!({ "selected": args.trip_id }),
+        ))
     }
 
     async fn execute_effect(
         &self,
-        args: Value,
+        args: SelectTripArgs,
         _ctx: &ToolCallContext<'_>,
     ) -> Result<ToolExecutionEffect, ToolError> {
-        let args: SelectTripArgs =
-            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
         Ok(ToolExecutionEffect::new(ToolResult::success(
             "select_trip",
             json!({ "selected": args.trip_id }),

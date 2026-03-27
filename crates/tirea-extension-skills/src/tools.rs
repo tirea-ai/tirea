@@ -4,6 +4,8 @@ use crate::{
     SkillState, SkillStateAction, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID,
     SKILL_SCRIPT_TOOL_ID,
 };
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
@@ -12,6 +14,7 @@ use tirea_contract::runtime::state::AnyStateAction;
 use tirea_contract::runtime::tool_call::ToolAccessGranter;
 use tirea_contract::runtime::tool_call::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult, ToolStatus,
+    TypedTool,
 };
 use tirea_contract::scope::{is_scope_allowed, ScopeDomain};
 use tracing::{debug, warn};
@@ -233,6 +236,20 @@ pub struct LoadSkillResourceTool {
     registry: Arc<dyn SkillRegistry>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LoadSkillResourceArgs {
+    skill: String,
+    path: String,
+    kind: Option<LoadSkillResourceKind>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LoadSkillResourceKind {
+    Reference,
+    Asset,
+}
+
 impl std::fmt::Debug for LoadSkillResourceTool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LoadSkillResourceTool")
@@ -251,39 +268,46 @@ impl LoadSkillResourceTool {
 }
 
 #[async_trait::async_trait]
-impl Tool for LoadSkillResourceTool {
-    fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new(
-            SKILL_LOAD_RESOURCE_TOOL_ID,
-            "Load Skill Resource",
-            "Load a skill resource file (references/** or assets/**) into persisted state",
-        )
-        .with_parameters(json!({
-            "type": "object",
-            "properties": {
-                "skill": { "type": "string", "description": "Skill id or name" },
-                "path": { "type": "string", "description": "Relative path under references/** or assets/**" },
-                "kind": { "type": "string", "enum": ["reference", "asset"], "description": "Optional resource kind; when omitted, inferred from path prefix" }
-            },
-            "required": ["skill", "path"]
-        }))
+impl TypedTool for LoadSkillResourceTool {
+    type Args = LoadSkillResourceArgs;
+
+    fn tool_id(&self) -> &str {
+        SKILL_LOAD_RESOURCE_TOOL_ID
+    }
+
+    fn name(&self) -> &str {
+        "Load Skill Resource"
+    }
+
+    fn description(&self) -> &str {
+        "Load a skill resource file (references/** or assets/**) into persisted state"
     }
 
     async fn execute(
         &self,
-        args: Value,
+        args: LoadSkillResourceArgs,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         let tool_name = SKILL_LOAD_RESOURCE_TOOL_ID;
-        let key = match required_string_arg(&args, "skill") {
-            Ok(v) => v,
-            Err(err) => return Ok(err.into_tool_result(tool_name)),
-        };
-        let path = match required_string_arg(&args, "path") {
-            Ok(v) => v,
-            Err(err) => return Ok(err.into_tool_result(tool_name)),
-        };
-        let kind = match parse_resource_kind(args.get("kind"), &path) {
+        let key = args.skill.trim().to_string();
+        if key.is_empty() {
+            return Ok(ToolArgError::new("invalid_arguments", "missing 'skill'")
+                .into_tool_result(tool_name));
+        }
+
+        let path = args.path.trim().to_string();
+        if path.is_empty() {
+            return Ok(ToolArgError::new("invalid_arguments", "missing 'path'")
+                .into_tool_result(tool_name));
+        }
+
+        let kind = match parse_resource_kind(
+            args.kind.map(|kind| match kind {
+                LoadSkillResourceKind::Reference => "reference",
+                LoadSkillResourceKind::Asset => "asset",
+            }),
+            &path,
+        ) {
             Ok(v) => v,
             Err(err) => return Ok(err.into_tool_result(tool_name)),
         };
@@ -374,6 +398,14 @@ pub struct SkillScriptTool {
     registry: Arc<dyn SkillRegistry>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SkillScriptArgs {
+    skill: String,
+    script: String,
+    #[serde(default)]
+    args: Vec<String>,
+}
+
 impl std::fmt::Debug for SkillScriptTool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SkillScriptTool").finish_non_exhaustive()
@@ -391,46 +423,37 @@ impl SkillScriptTool {
 }
 
 #[async_trait::async_trait]
-impl Tool for SkillScriptTool {
-    fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new(
-            SKILL_SCRIPT_TOOL_ID,
-            "Skill Script",
-            "Run a skill script (scripts/**) and persist its result",
-        )
-        .with_parameters(json!({
-            "type": "object",
-            "properties": {
-                "skill": { "type": "string", "description": "Skill id or name" },
-                "script": { "type": "string", "description": "Relative path under scripts/** (e.g. scripts/run.sh)" },
-                "args": { "type": "array", "items": { "type": "string" }, "description": "Optional script arguments" }
-            },
-            "required": ["skill", "script"]
-        }))
+impl TypedTool for SkillScriptTool {
+    type Args = SkillScriptArgs;
+
+    fn tool_id(&self) -> &str {
+        SKILL_SCRIPT_TOOL_ID
+    }
+
+    fn name(&self) -> &str {
+        "Skill Script"
+    }
+
+    fn description(&self) -> &str {
+        "Run a skill script (scripts/**) and persist its result"
     }
 
     async fn execute(
         &self,
-        args: Value,
+        args: SkillScriptArgs,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
-        let key = match required_string_arg(&args, "skill") {
-            Ok(v) => v,
-            Err(err) => return Ok(err.into_tool_result(SKILL_SCRIPT_TOOL_ID)),
-        };
-        let script = match required_string_arg(&args, "script") {
-            Ok(v) => v,
-            Err(err) => return Ok(err.into_tool_result(SKILL_SCRIPT_TOOL_ID)),
-        };
-        let argv: Vec<String> = args
-            .get("args")
-            .and_then(|v| v.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let key = args.skill.trim().to_string();
+        if key.is_empty() {
+            return Ok(ToolArgError::new("invalid_arguments", "missing 'skill'")
+                .into_tool_result(SKILL_SCRIPT_TOOL_ID));
+        }
+        let script = args.script.trim().to_string();
+        if script.is_empty() {
+            return Ok(ToolArgError::new("invalid_arguments", "missing 'script'")
+                .into_tool_result(SKILL_SCRIPT_TOOL_ID));
+        }
+        let argv = args.args;
 
         let skill = self.resolve(&key).ok_or_else(|| {
             tool_error(
@@ -509,8 +532,8 @@ fn is_pattern_like_tool_matcher(tool_id: &str) -> bool {
         || (tool_id.starts_with('/') && tool_id.ends_with('/') && tool_id.len() >= 2)
 }
 
-fn parse_resource_kind(kind: Option<&Value>, path: &str) -> ToolArgResult<SkillResourceKind> {
-    let from_kind = kind.and_then(|v| v.as_str()).map(str::trim);
+fn parse_resource_kind(kind: Option<&str>, path: &str) -> ToolArgResult<SkillResourceKind> {
+    let from_kind = kind.map(str::trim);
 
     if is_obviously_invalid_relative_path(path) {
         return Err(ToolArgError::new("invalid_path", "invalid relative path"));

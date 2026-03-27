@@ -9,6 +9,28 @@
 - Centralizes validation in Rust instead of manual `Value` parsing
 - Keeps descriptor metadata and argument schema aligned
 
+## When Not To Use `TypedTool`
+
+`TypedTool` is the default for stable, form-like inputs. Do not use it when the
+tool input is intentionally dynamic or protocol-shaped.
+
+Prefer plain `Tool` with a hand-written schema when your input needs:
+
+- Arbitrary JSON values (`serde_json::Value`)
+- Dynamic key/value bags (`HashMap<String, _>`, `BTreeMap<String, _>`)
+- `#[serde(flatten)]`
+- Untagged or complex enum unions
+- Recursive types
+- External schemas that your code does not control
+
+Examples in this repository:
+
+- A2UI render payloads are protocol messages with open-ended component fields.
+- MCP tools can expose external schemas that may contain `$ref`, `$defs`, or provider-incompatible constructs.
+
+In those cases, write a smaller, provider-friendly schema for the model and do
+strict validation inside the tool implementation.
+
 ## Trait Shape
 
 ```rust,edition2021
@@ -111,6 +133,71 @@ That means:
 - Missing required fields fail at deserialization time
 - Type mismatches fail at deserialization time
 - Cross-field or domain rules belong in `validate`
+
+`TypedTool` validation is runtime validation of deserialized Rust values. It is
+not a guarantee that every provider will accept the generated JSON Schema
+without transformation.
+
+In this repository, tool schemas are sanitized before they are sent to LLM
+providers. That keeps requests compatible, but can weaken schema semantics for
+complex types. Your Rust-side `validate()` remains the authoritative check.
+
+## Provider Differences
+
+Tool schemas are not interpreted identically across providers.
+
+| Provider | Request shape | Practical support level |
+|---|---|---|
+| OpenAI / OpenAI-compatible | JSON Schema subset in `function.parameters` | Best support for structured schemas, but still a subset with strict rules |
+| Gemini | Subset of OpenAPI schema | Simpler object schemas work best; large or deeply nested schemas are more fragile |
+| Claude | JSON Schema with limitations | Strong validation in strict mode, but unsupported features and complex schemas can still fail |
+
+Operational guidance:
+
+- Do not assume that `schemars` output is directly portable across providers.
+- Treat `$ref`, `$defs`, `anyOf`, `oneOf`, recursive shapes, and dynamic objects as portability risks.
+- For cross-provider use, keep inputs as simple object schemas and enforce additional rules in Rust.
+
+## Type Design Guide
+
+Write `TypedTool::Args` like a form object, not like an internal domain model.
+
+Good patterns:
+
+- Top-level `struct`
+- Primitive fields: `String`, `bool`, `i64`, `u64`, `f64`
+- Nested fixed-shape structs
+- `Vec<String>` or `Vec<SimpleStruct>`
+- Simple string enums with `#[serde(rename_all = "snake_case")]`
+- Small numbers of optional primitive fields
+
+Avoid these patterns in `TypedTool::Args`:
+
+- `serde_json::Value`
+- `HashMap<String, T>` / `BTreeMap<String, T>`
+- `#[serde(flatten)]`
+- Recursive trees
+- Untagged enums
+- Nested union-heavy structures
+- Arrays of arbitrary JSON values
+
+If you need one of those shapes:
+
+1. Switch the tool to plain `Tool`
+2. Hand-write a simpler model-facing schema
+3. Parse and validate the full payload in Rust
+
+## Schema Design Checklist
+
+Before committing a `TypedTool`, check:
+
+- Root type is an object
+- All model-facing fields are explicit named properties
+- Arrays have a single explicit item type
+- Enums serialize to strings, not object variants
+- Optional fields are few and shallow
+- Business invariants are in `validate()`, not encoded through complex schema tricks
+- The schema would still make sense if `anyOf`/`$ref` had to be removed for compatibility
 
 ## State-Writing Example
 

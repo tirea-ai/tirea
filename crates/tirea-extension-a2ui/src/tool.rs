@@ -12,7 +12,9 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tirea_contract::runtime::tool_call::{ToolCallContext, ToolError, ToolResult, TypedTool};
+use tirea_contract::runtime::tool_call::{
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
+};
 use tracing::debug;
 
 const TOOL_ID: &str = "render_a2ui";
@@ -173,50 +175,119 @@ pub struct A2uiDeleteSurface {
 }
 
 /// Arguments for the A2UI render tool.
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct A2uiRenderArgs {
     /// Array of A2UI v0.9 messages to send to the client.
     pub messages: Vec<A2uiMessage>,
 }
 
+fn a2ui_tool_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "messages": {
+                "type": "array",
+                "description": "Array of A2UI v0.9 messages to send to the client.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "version": {
+                            "type": "string",
+                            "description": "Protocol version. Must be 'v0.9'."
+                        },
+                        "createSurface": {
+                            "type": "object",
+                            "properties": {
+                                "surfaceId": { "type": "string" },
+                                "catalogId": { "type": "string" }
+                            }
+                        },
+                        "updateComponents": {
+                            "type": "object",
+                            "properties": {
+                                "surfaceId": { "type": "string" },
+                                "components": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": { "type": "string" },
+                                            "component": { "type": "string" },
+                                            "child": { "type": "string" },
+                                            "children": {
+                                                "type": "array",
+                                                "items": { "type": "string" }
+                                            },
+                                            "text": { "type": "string" },
+                                            "label": { "type": "string" }
+                                        },
+                                        "description": "A2UI component definition. Additional component-specific properties are allowed and validated by the render tool."
+                                    }
+                                }
+                            }
+                        },
+                        "updateDataModel": {
+                            "type": "object",
+                            "properties": {
+                                "surfaceId": { "type": "string" },
+                                "path": { "type": "string" },
+                                "value": {
+                                    "type": "object",
+                                    "description": "JSON object payload written to the target data path."
+                                }
+                            }
+                        },
+                        "deleteSurface": {
+                            "type": "object",
+                            "properties": {
+                                "surfaceId": { "type": "string" }
+                            }
+                        }
+                    },
+                    "required": ["version"]
+                }
+            }
+        },
+        "required": ["messages"]
+    })
+}
+
+fn validate_a2ui_args(args: &A2uiRenderArgs) -> Result<(), String> {
+    if args.messages.is_empty() {
+        return Err("messages array must not be empty".to_string());
+    }
+    let values = messages_to_values(&args.messages);
+    let errors = validate_a2ui_messages(&values);
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        let details: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
+        Err(format!("A2UI validation failed: {}", details.join("; ")))
+    }
+}
+
 #[async_trait]
-impl TypedTool for A2uiRenderTool {
-    type Args = A2uiRenderArgs;
-
-    fn tool_id(&self) -> &str {
-        TOOL_ID
-    }
-
-    fn name(&self) -> &str {
-        TOOL_NAME
-    }
-
-    fn description(&self) -> &str {
-        "Sends A2UI JSON to the client to render declarative UI. \
-         Each message must be a v0.9 A2UI object with exactly one of: \
-         createSurface, updateComponents, updateDataModel, or deleteSurface. \
-         The messages array is sent to the frontend for rendering."
-    }
-
-    fn validate(&self, args: &Self::Args) -> Result<(), String> {
-        if args.messages.is_empty() {
-            return Err("messages array must not be empty".to_string());
-        }
-        let values = messages_to_values(&args.messages);
-        let errors = validate_a2ui_messages(&values);
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            let details: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
-            Err(format!("A2UI validation failed: {}", details.join("; ")))
-        }
+impl Tool for A2uiRenderTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new(
+            TOOL_ID,
+            TOOL_NAME,
+            "Sends A2UI JSON to the client to render declarative UI. \
+             Each message must be a v0.9 A2UI object with exactly one of: \
+             createSurface, updateComponents, updateDataModel, or deleteSurface. \
+             The messages array is sent to the frontend for rendering.",
+        )
+        .with_parameters(a2ui_tool_schema())
     }
 
     async fn execute(
         &self,
-        args: Self::Args,
+        args: Value,
         _ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
+        let args: A2uiRenderArgs =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        validate_a2ui_args(&args).map_err(ToolError::InvalidArguments)?;
         debug!(
             count = args.messages.len(),
             "A2UI render tool: validated {} message(s)",
@@ -292,24 +363,22 @@ mod tests {
 
     #[test]
     fn validate_accepts_valid_messages() {
-        let tool = A2uiRenderTool::new();
+        let _tool = A2uiRenderTool::new();
         let args = A2uiRenderArgs {
             messages: contact_form_messages(),
         };
-        assert!(tool.validate(&args).is_ok());
+        assert!(validate_a2ui_args(&args).is_ok());
     }
 
     #[test]
     fn validate_rejects_empty_messages() {
-        let tool = A2uiRenderTool::new();
         let args = A2uiRenderArgs { messages: vec![] };
-        let err = tool.validate(&args).unwrap_err();
+        let err = validate_a2ui_args(&args).unwrap_err();
         assert!(err.contains("must not be empty"));
     }
 
     #[test]
     fn validate_rejects_invalid_a2ui() {
-        let tool = A2uiRenderTool::new();
         let args = A2uiRenderArgs {
             messages: vec![A2uiMessage {
                 version: "v0.9".to_string(),
@@ -319,23 +388,37 @@ mod tests {
                 delete_surface: None,
             }],
         };
-        let err = tool.validate(&args).unwrap_err();
+        let err = validate_a2ui_args(&args).unwrap_err();
         assert!(err.contains("missing message type"));
     }
 
     #[tokio::test]
     async fn execute_returns_validated_payload() {
         let tool = A2uiRenderTool::new();
-        let args = A2uiRenderArgs {
+        let args = serde_json::to_value(A2uiRenderArgs {
             messages: contact_form_messages(),
-        };
+        })
+        .expect("args should serialize");
         let fixture = TestFixture::new();
-        let result = TypedTool::execute(&tool, args, &fixture.ctx())
-            .await
-            .unwrap();
+        let result = Tool::execute(&tool, args, &fixture.ctx()).await.unwrap();
         assert_eq!(result.tool_name, TOOL_NAME);
         assert_eq!(result.data["rendered"], true);
         assert!(result.data["a2ui"].is_array());
         assert_eq!(result.data["a2ui"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn descriptor_schema_stays_llm_friendly() {
+        use tirea_contract::runtime::tool_call::Tool;
+
+        let schema = A2uiRenderTool::new().descriptor().parameters;
+        let pretty = serde_json::to_string(&schema).expect("schema should serialize");
+
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"].is_object());
+        assert!(!pretty.contains("\"$defs\""));
+        assert!(!pretty.contains("\"$ref\""));
+        assert!(!pretty.contains("\"anyOf\""));
+        assert!(!pretty.contains("\"oneOf\""));
     }
 }

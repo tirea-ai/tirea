@@ -6,9 +6,11 @@ use genai::chat::{ChatMessage, ChatRequest, MessageContent, ToolResponse};
 
 /// Convert a ToolDescriptor to a genai Tool.
 pub fn to_genai_tool(desc: &ToolDescriptor) -> genai::chat::Tool {
+    let mut schema = desc.parameters.clone();
+    genai::schema_sanitize::sanitize_tool_schema(&mut schema);
     genai::chat::Tool::new(&desc.id)
         .with_description(&desc.description)
-        .with_schema(desc.parameters.clone())
+        .with_schema(schema)
 }
 
 /// Convert a Message to a genai ChatMessage.
@@ -511,5 +513,136 @@ mod tests {
 
         let msg = tool_response("call_api", &result);
         assert!(msg.content.contains("users") || msg.content.contains("Alice"));
+    }
+
+    fn assert_schema_sanitized(schema: &serde_json::Value) {
+        let pretty = serde_json::to_string(schema).expect("schema should serialize");
+        assert!(
+            !pretty.contains("\"$defs\""),
+            "sanitized schema should not contain $defs: {pretty}"
+        );
+        assert!(
+            !pretty.contains("\"$ref\""),
+            "sanitized schema should not contain $ref: {pretty}"
+        );
+        assert!(
+            !pretty.contains("\"anyOf\""),
+            "sanitized schema should not contain anyOf: {pretty}"
+        );
+    }
+
+    #[test]
+    fn test_build_request_sanitizes_tool_schemas() {
+        struct EmptyObjectTool;
+        struct RefsTool;
+        struct UnionTool;
+
+        #[async_trait::async_trait]
+        impl Tool for EmptyObjectTool {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor::new("empty_object", "Empty Object", "missing properties")
+                    .with_parameters(json!({
+                        "type": "object"
+                    }))
+            }
+
+            async fn execute(
+                &self,
+                _args: serde_json::Value,
+                _ctx: &crate::contracts::ToolCallContext<'_>,
+            ) -> Result<ToolResult, crate::contracts::runtime::tool_call::ToolError> {
+                Ok(ToolResult::success("empty_object", json!({})))
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl Tool for RefsTool {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor::new("refs_tool", "Refs Tool", "contains refs").with_parameters(
+                    json!({
+                        "$defs": {
+                            "Payload": {
+                                "type": "object",
+                                "properties": {
+                                    "primaryKey": { "type": "string" },
+                                    "basePath": { "type": "string" }
+                                }
+                            }
+                        },
+                        "type": "object",
+                        "properties": {
+                            "payload": { "$ref": "#/$defs/Payload" }
+                        }
+                    }),
+                )
+            }
+
+            async fn execute(
+                &self,
+                _args: serde_json::Value,
+                _ctx: &crate::contracts::ToolCallContext<'_>,
+            ) -> Result<ToolResult, crate::contracts::runtime::tool_call::ToolError> {
+                Ok(ToolResult::success("refs_tool", json!({})))
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl Tool for UnionTool {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor::new("union_tool", "Union Tool", "contains anyOf").with_parameters(
+                    json!({
+                        "type": "object",
+                        "properties": {
+                            "selection": {
+                                "anyOf": [
+                                    {
+                                        "type": "object",
+                                        "required": ["kind"],
+                                        "properties": {
+                                            "kind": { "type": "string" },
+                                            "items": { "type": "array" }
+                                        }
+                                    },
+                                    { "type": "null" }
+                                ]
+                            }
+                        }
+                    }),
+                )
+            }
+
+            async fn execute(
+                &self,
+                _args: serde_json::Value,
+                _ctx: &crate::contracts::ToolCallContext<'_>,
+            ) -> Result<ToolResult, crate::contracts::runtime::tool_call::ToolError> {
+                Ok(ToolResult::success("union_tool", json!({})))
+            }
+        }
+
+        let empty = EmptyObjectTool;
+        let refs = RefsTool;
+        let union = UnionTool;
+        let tools: Vec<&dyn Tool> = vec![&empty, &refs, &union];
+
+        let request = build_request(&[Message::user("test")], &tools);
+        let built_tools = request.tools.expect("tools should be present");
+        assert_eq!(built_tools.len(), 3);
+
+        let empty_schema = built_tools[0].schema.as_ref().expect("schema should exist");
+        assert_eq!(empty_schema["type"], "object");
+        assert!(empty_schema["properties"].is_object());
+        assert_schema_sanitized(empty_schema);
+
+        let refs_schema = built_tools[1].schema.as_ref().expect("schema should exist");
+        assert_schema_sanitized(refs_schema);
+        assert!(refs_schema["properties"]["payload"]["properties"].is_object());
+
+        let union_schema = built_tools[2].schema.as_ref().expect("schema should exist");
+        assert_schema_sanitized(union_schema);
+        assert!(union_schema["properties"]["selection"]["properties"].is_object());
+        assert!(
+            union_schema["properties"]["selection"]["properties"]["items"]["items"].is_object()
+        );
     }
 }

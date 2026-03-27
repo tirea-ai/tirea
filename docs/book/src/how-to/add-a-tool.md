@@ -13,6 +13,7 @@ If your tool arguments have a stable Rust shape, start with [`TypedTool`](../ref
 ## Steps
 
 1. Choose `TypedTool` for fixed schemas, or `Tool` for dynamic/manual schemas.
+   Use plain `Tool` for protocol-shaped payloads, arbitrary JSON, flattened maps, or externally supplied schemas.
 2. Implement the tool with a stable descriptor id (`tool_id()` for `TypedTool`, `descriptor().id` for `Tool`).
 3. Validate arguments explicitly (`validate()` for `TypedTool`, `execute` or `validate_args` for `Tool`).
 4. Keep execution deterministic on the same `(args, state)` when possible.
@@ -93,6 +94,10 @@ impl Tool for MyUntypedTool {
 }
 ```
 
+Use this path intentionally when provider compatibility matters more than
+preserving a full Rust type model in JSON Schema. A hand-written schema can be
+smaller, flatter, and more portable than raw `schemars` output.
+
 ## Verify
 
 - Run event stream includes `ToolCallStart` and `ToolCallDone` for `my_tool`.
@@ -120,6 +125,7 @@ For concrete examples, see [Typed Tool](../reference/typed-tool.md).
 - Silent argument defaults: prefer explicit validation for required fields.
 - Non-deterministic side effects: hard to replay/debug and can break tests.
 - Choosing plain `Tool` for a fixed schema: this usually adds parsing noise and drifts schema away from Rust types.
+- Choosing `TypedTool` for dynamic/protocol payloads: this usually generates a schema that has to be sanitized and loses semantic precision.
 
 ## Related Example
 

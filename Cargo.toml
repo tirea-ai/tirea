@@ -81,3 +81,6 @@ missing_docs = "warn"
 
 [workspace.lints.clippy]
 all = "warn"
+
+[patch.crates-io]
+genai = { path = "vendor/genai" }

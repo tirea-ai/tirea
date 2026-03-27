@@ -2,9 +2,11 @@ use super::manager::SubAgentCompletion;
 use super::*;
 use crate::composition::{A2aAgentBinding, AgentBinding, ResolvedAgent};
 use crate::contracts::runtime::state::AnyStateAction;
-use crate::contracts::runtime::tool_call::ToolExecutionEffect;
+use crate::contracts::runtime::tool_call::{ToolError, ToolExecutionEffect};
 use crate::contracts::Thread;
 use crate::contracts::ToolCallContext;
+use schemars::JsonSchema;
+use serde::Deserialize;
 
 pub(super) fn to_tool_result(tool_name: &str, summary: SubAgentSummary) -> ToolResult {
     ToolResult::success(
@@ -874,6 +876,12 @@ pub struct AgentStopTool {
     handles: Arc<SubAgentHandleTable>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+#[allow(dead_code)]
+pub struct AgentStopArgs {
+    run_id: String,
+}
+
 impl AgentStopTool {
     #[cfg(test)]
     pub fn new(handles: Arc<SubAgentHandleTable>) -> Self {
@@ -899,33 +907,29 @@ impl AgentStopTool {
 #[async_trait]
 impl Tool for AgentStopTool {
     fn descriptor(&self) -> ToolDescriptor {
+        let schema = serde_json::to_value(schemars::schema_for!(AgentStopArgs))
+            .unwrap_or_else(|_| json!({"type": "object", "properties": {}}));
         ToolDescriptor::new(
             AGENT_STOP_TOOL_ID,
             "Agent Stop",
             "Stop a delegated run by run_id",
         )
-        .with_parameters(json!({
-            "type": "object",
-            "properties": {
-                "run_id": { "type": "string", "description": "Run id returned by agent_run" }
-            },
-            "required": ["run_id"]
-        }))
+        .with_parameters(schema)
     }
 
     async fn execute(
         &self,
         args: Value,
         ctx: &ToolCallContext<'_>,
-    ) -> Result<ToolResult, crate::contracts::runtime::tool_call::ToolError> {
-        self.execute_effect(args, ctx).await.map(|e| e.result)
+    ) -> Result<ToolResult, ToolError> {
+        Ok(self.execute_effect(args, ctx).await?.result)
     }
 
     async fn execute_effect(
         &self,
         args: Value,
         ctx: &ToolCallContext<'_>,
-    ) -> Result<ToolExecutionEffect, crate::contracts::runtime::tool_call::ToolError> {
+    ) -> Result<ToolExecutionEffect, ToolError> {
         let tool_name = AGENT_STOP_TOOL_ID;
         let run_id = match required_string(&args, "run_id") {
             Ok(run_id) => run_id,
@@ -1133,6 +1137,12 @@ pub struct AgentOutputTool {
     os: AgentOs,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+#[allow(dead_code)]
+pub struct AgentOutputArgs {
+    run_id: String,
+}
+
 impl AgentOutputTool {
     pub fn new(os: AgentOs) -> Self {
         Self { os }
@@ -1149,33 +1159,29 @@ impl AgentOutputTool {
 #[async_trait]
 impl Tool for AgentOutputTool {
     fn descriptor(&self) -> ToolDescriptor {
+        let schema = serde_json::to_value(schemars::schema_for!(AgentOutputArgs))
+            .unwrap_or_else(|_| json!({"type": "object", "properties": {}}));
         ToolDescriptor::new(
             AGENT_OUTPUT_TOOL_ID,
             "Agent Output",
             "Retrieve the latest output from a delegated run",
         )
-        .with_parameters(json!({
-            "type": "object",
-            "properties": {
-                "run_id": { "type": "string", "description": "Run id returned by agent_run" }
-            },
-            "required": ["run_id"]
-        }))
+        .with_parameters(schema)
     }
 
     async fn execute(
         &self,
         args: Value,
         ctx: &ToolCallContext<'_>,
-    ) -> Result<ToolResult, crate::contracts::runtime::tool_call::ToolError> {
-        self.execute_effect(args, ctx).await.map(|e| e.result)
+    ) -> Result<ToolResult, ToolError> {
+        Ok(self.execute_effect(args, ctx).await?.result)
     }
 
     async fn execute_effect(
         &self,
         args: Value,
         ctx: &ToolCallContext<'_>,
-    ) -> Result<ToolExecutionEffect, crate::contracts::runtime::tool_call::ToolError> {
+    ) -> Result<ToolExecutionEffect, ToolError> {
         let tool_name = AGENT_OUTPUT_TOOL_ID;
         let run_id = match required_string(&args, "run_id") {
             Ok(run_id) => run_id,
@@ -1289,6 +1295,13 @@ impl Tool for AgentOutputTool {
 pub struct AgentHandoffTool;
 
 #[cfg(feature = "handoff")]
+#[derive(Debug, Deserialize, JsonSchema)]
+struct AgentHandoffArgs {
+    agent_id: String,
+    message: Option<String>,
+}
+
+#[cfg(feature = "handoff")]
 #[async_trait]
 impl Tool for AgentHandoffTool {
     fn descriptor(&self) -> ToolDescriptor {
@@ -1299,34 +1312,19 @@ impl Tool for AgentHandoffTool {
              The current agent stops and the target agent continues \
              with full conversation history.",
         )
-        .with_parameters(json!({
-            "type": "object",
-            "properties": {
-                "agent_id": {
-                    "type": "string",
-                    "description": "The agent to hand off to."
-                },
-                "message": {
-                    "type": "string",
-                    "description": "Optional context message for the receiving agent."
-                }
-            },
-            "required": ["agent_id"],
-            "additionalProperties": false
-        }))
+        .with_parameters(
+            serde_json::to_value(schemars::schema_for!(AgentHandoffArgs))
+                .unwrap_or_else(|_| json!({"type": "object", "properties": {}})),
+        )
         .with_category("meta")
     }
 
     async fn execute(
         &self,
-        _args: Value,
-        _ctx: &ToolCallContext<'_>,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, crate::contracts::runtime::tool_call::ToolError> {
-        Err(
-            crate::contracts::runtime::tool_call::ToolError::ExecutionFailed(
-                "AgentHandoffTool requires execute_effect path".into(),
-            ),
-        )
+        self.execute_effect(args, ctx).await.map(|e| e.result)
     }
 
     async fn execute_effect(
@@ -1338,11 +1336,16 @@ impl Tool for AgentHandoffTool {
         use tirea_extension_handoff::request_handoff_action;
 
         let tool_name = AGENT_HANDOFF_TOOL_ID;
-
-        let agent_id = match required_string(&args, "agent_id") {
-            Ok(id) => id,
-            Err(err) => return Ok(ToolExecutionEffect::from(err.into_tool_result(tool_name))),
-        };
+        let args: AgentHandoffArgs =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        if args.agent_id.trim().is_empty() {
+            return Ok(ToolExecutionEffect::from(tool_error(
+                tool_name,
+                "invalid_arguments",
+                "agent_id cannot be empty",
+            )));
+        }
+        let agent_id = args.agent_id;
 
         let state_action = request_handoff_action(&agent_id);
 
@@ -1352,7 +1355,11 @@ impl Tool for AgentHandoffTool {
         ))
         .with_action(AfterToolExecuteAction::State(state_action));
 
-        if let Some(message) = optional_string(&args, "message") {
+        if let Some(message) = args
+            .message
+            .map(|message| message.trim().to_string())
+            .filter(|message| !message.is_empty())
+        {
             effect = effect.with_action(AfterToolExecuteAction::AddMessage(
                 crate::contracts::runtime::inference::ContextMessage::conversation_user(message),
             ));
