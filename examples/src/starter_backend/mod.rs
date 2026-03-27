@@ -108,13 +108,18 @@ impl StarterBackendConfig {
 
 /// Build a genai Client, routing through OPENAI_BASE_URL if set.
 pub fn build_genai_client() -> genai::Client {
-    if let (Ok(base_url), Ok(api_key)) = (
+    if let (Ok(mut base_url), Ok(api_key)) = (
         std::env::var("OPENAI_BASE_URL"),
         std::env::var("OPENAI_API_KEY"),
     ) {
         use genai::adapter::AdapterKind;
         use genai::resolver::{AuthData, Endpoint};
         use genai::{ModelIden, ServiceTarget};
+
+        // genai's Url::join requires trailing slash to avoid path replacement
+        if !base_url.ends_with('/') {
+            base_url.push('/');
+        }
 
         genai::Client::builder()
             .with_service_target_resolver_fn(move |st: ServiceTarget| {
