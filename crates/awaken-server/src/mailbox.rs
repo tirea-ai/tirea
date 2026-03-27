@@ -25,7 +25,6 @@ use awaken_contract::contract::storage::StorageError;
 use awaken_contract::contract::suspension::{ToolCallOutcome, ToolCallResume};
 use awaken_runtime::AgentRuntime;
 
-use crate::routes::ApiError;
 use crate::transport::channel_sink::ChannelEventSink;
 
 // ── Public types ─────────────────────────────────────────────────────
@@ -790,46 +789,6 @@ impl Mailbox {
 ///
 /// Checks that messages are non-empty, trims/generates thread_id.
 /// Returns `(thread_id, messages)`.
-pub fn prepare_run_inputs(
-    thread_id: Option<String>,
-    messages: Vec<Message>,
-    frontend_state: Option<serde_json::Value>,
-) -> Result<(String, Vec<Message>), ApiError> {
-    if messages.is_empty() {
-        return Err(ApiError::BadRequest(
-            "at least one message is required".to_string(),
-        ));
-    }
-    let thread_id = thread_id
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
-
-    let mut messages = messages;
-    if let Some(state) = frontend_state {
-        if !state.is_null() {
-            let state_text = serde_json::to_string(&state).unwrap_or_default();
-            if !state_text.is_empty() && state_text != "{}" {
-                // Append frontend state to the last user message as XML-tagged context.
-                // Models handle XML structure reliably and won't confuse data with instructions.
-                let suffix = format!("\n\n<frontend-state>\n{state_text}\n</frontend-state>");
-                if let Some(last_user) = messages
-                    .iter_mut()
-                    .rev()
-                    .find(|m| m.role == awaken_contract::contract::message::Role::User)
-                {
-                    let mut text = last_user.text();
-                    text.push_str(&suffix);
-                    last_user.content =
-                        vec![awaken_contract::contract::content::ContentBlock::text(text)];
-                }
-            }
-        }
-    }
-
-    Ok((thread_id, messages))
-}
-
 /// Internal validation for mailbox submit paths.
 fn validate_run_inputs(
     thread_id: String,
@@ -983,48 +942,6 @@ mod tests {
         assert!(result.is_ok());
         let (thread_id, _) = result.unwrap();
         assert_eq!(thread_id, "my-thread");
-    }
-
-    #[test]
-    fn prepare_run_inputs_generates_thread_id() {
-        let msgs = vec![Message::user("hi")];
-        let (thread_id, messages) = prepare_run_inputs(None, msgs, None).unwrap();
-        assert!(!thread_id.is_empty());
-        assert_eq!(messages.len(), 1);
-    }
-
-    #[test]
-    fn prepare_run_inputs_empty_messages_errors() {
-        let result = prepare_run_inputs(None, vec![], None);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn prepare_run_inputs_appends_state_to_last_user_message() {
-        let msgs = vec![Message::user("hello")];
-        let state = Some(serde_json::json!({"todos": ["buy milk"]}));
-        let (_, prepared) = prepare_run_inputs(None, msgs, state).unwrap();
-        assert_eq!(prepared.len(), 1); // no extra message, appended to user msg
-        let text = prepared[0].text();
-        assert!(text.starts_with("hello"));
-        assert!(text.contains("<frontend-state>"));
-        assert!(text.contains("todos"));
-        assert!(text.contains("</frontend-state>"));
-    }
-
-    #[test]
-    fn prepare_run_inputs_skips_empty_state() {
-        let msgs = vec![Message::user("hello")];
-        let state = Some(serde_json::json!({}));
-        let (_, prepared) = prepare_run_inputs(None, msgs, state).unwrap();
-        assert_eq!(prepared.len(), 1);
-    }
-
-    #[test]
-    fn prepare_run_inputs_skips_null_state() {
-        let msgs = vec![Message::user("hello")];
-        let (_, prepared) = prepare_run_inputs(None, msgs, None).unwrap();
-        assert_eq!(prepared.len(), 1);
     }
 
     #[test]

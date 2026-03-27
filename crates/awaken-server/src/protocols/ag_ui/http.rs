@@ -143,8 +143,8 @@ async fn ag_ui_run(
 ) -> Result<Response, ApiError> {
     let agent_id = payload.agent_id;
     let messages = convert_messages(payload.messages);
-    let (thread_id, messages) =
-        crate::mailbox::prepare_run_inputs(payload.thread_id, messages, payload.state)?;
+    let (thread_id, messages) = crate::request::prepare_run_inputs(payload.thread_id, messages)?;
+    let messages = crate::request::inject_frontend_context(messages, payload.state);
 
     let spec = RunSpec {
         thread_id,

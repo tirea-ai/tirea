@@ -485,8 +485,7 @@ async fn start_run(
     }
 
     let messages = convert_run_messages(payload.messages);
-    let (thread_id, messages) =
-        crate::mailbox::prepare_run_inputs(payload.thread_id, messages, None)?;
+    let (thread_id, messages) = crate::request::prepare_run_inputs(payload.thread_id, messages)?;
 
     let spec = RunSpec {
         thread_id,
