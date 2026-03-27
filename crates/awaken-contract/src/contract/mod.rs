@@ -17,5 +17,6 @@ pub mod storage;
 pub mod suspension;
 pub mod tool;
 pub mod tool_intercept;
+pub mod tool_schema;
 pub mod transform;
 pub mod transport;

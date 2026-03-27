@@ -393,6 +393,91 @@ pub trait Tool: Send + Sync {
     async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError>;
 }
 
+/// A strongly-typed tool trait that derives its descriptor schema from `Args`.
+///
+/// Implementors define an associated `Args` type that is both deserializable and
+/// JSON-Schema-capable. The blanket `impl Tool for T where T: TypedTool`
+/// automatically generates the [`ToolDescriptor`] (including a JSON Schema for
+/// parameters) and handles argument deserialization + optional business validation
+/// before dispatching to the typed [`execute`](TypedTool::execute) method.
+///
+/// # Example
+///
+/// ```ignore
+/// #[derive(Deserialize, JsonSchema)]
+/// struct EchoArgs { message: String }
+///
+/// struct EchoTool;
+///
+/// #[async_trait]
+/// impl TypedTool for EchoTool {
+///     type Args = EchoArgs;
+///     fn tool_id(&self) -> &str { "echo" }
+///     fn name(&self) -> &str { "echo" }
+///     fn description(&self) -> &str { "Echoes back the message" }
+///     async fn execute(&self, args: EchoArgs, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+///         Ok(ToolResult::success("echo", serde_json::json!({ "echo": args.message })))
+///     }
+/// }
+/// ```
+#[async_trait]
+pub trait TypedTool: Send + Sync {
+    /// The deserialized arguments type. Must implement `JsonSchema` for
+    /// automatic schema generation and `Deserialize` for argument parsing.
+    type Args: for<'de> Deserialize<'de> + schemars::JsonSchema + Send;
+
+    /// Stable identifier used in tool-call routing.
+    fn tool_id(&self) -> &str;
+
+    /// Human-readable name shown to LLMs and UIs.
+    fn name(&self) -> &str;
+
+    /// One-line description of what the tool does.
+    fn description(&self) -> &str;
+
+    /// Optional category for grouping in registries or UIs.
+    fn category(&self) -> Option<&str> {
+        None
+    }
+
+    /// Optional business-logic validation run after deserialization but before
+    /// execution. Return `Err(message)` to reject the arguments.
+    fn validate(&self, _args: &Self::Args) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Execute the tool with strongly-typed, already-validated arguments.
+    async fn execute(
+        &self,
+        args: Self::Args,
+        ctx: &ToolCallContext,
+    ) -> Result<ToolResult, ToolError>;
+}
+
+#[async_trait]
+impl<T: TypedTool> Tool for T {
+    fn descriptor(&self) -> ToolDescriptor {
+        let schema = super::tool_schema::generate_tool_schema::<T::Args>();
+        let mut desc = ToolDescriptor::new(self.tool_id(), self.name(), self.description())
+            .with_parameters(schema);
+        if let Some(cat) = self.category() {
+            desc = desc.with_category(cat);
+        }
+        desc
+    }
+
+    fn validate_args(&self, _args: &Value) -> Result<(), ToolError> {
+        Ok(())
+    }
+
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+        let typed: T::Args =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        self.validate(&typed).map_err(ToolError::InvalidArguments)?;
+        TypedTool::execute(self, typed, ctx).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1274,5 +1359,208 @@ mod tests {
         assert!(
             matches!(&events[2], AgentEvent::ActivitySnapshot { content, .. } if content == &json!("three"))
         );
+    }
+
+    mod typed_tool_tests {
+        use super::super::super::tool_schema::validate_against_schema;
+        use super::super::*;
+        use schemars::JsonSchema;
+        use serde::Deserialize;
+        use serde_json::json;
+
+        // ── Test structs and tools ──
+
+        #[derive(Deserialize, JsonSchema)]
+        struct EchoArgs {
+            message: String,
+        }
+
+        struct TypedEchoTool;
+
+        #[async_trait]
+        impl TypedTool for TypedEchoTool {
+            type Args = EchoArgs;
+            fn tool_id(&self) -> &str {
+                "echo"
+            }
+            fn name(&self) -> &str {
+                "echo"
+            }
+            fn description(&self) -> &str {
+                "Echoes back the message"
+            }
+            async fn execute(
+                &self,
+                args: EchoArgs,
+                _ctx: &ToolCallContext,
+            ) -> Result<ToolResult, ToolError> {
+                Ok(ToolResult::success("echo", json!({ "echo": args.message })))
+            }
+        }
+
+        #[derive(Deserialize, JsonSchema)]
+        struct StrictArgs {
+            name: String,
+        }
+
+        struct StrictTool;
+
+        #[async_trait]
+        impl TypedTool for StrictTool {
+            type Args = StrictArgs;
+            fn tool_id(&self) -> &str {
+                "strict"
+            }
+            fn name(&self) -> &str {
+                "strict"
+            }
+            fn description(&self) -> &str {
+                "Rejects empty names"
+            }
+            fn validate(&self, args: &StrictArgs) -> Result<(), String> {
+                if args.name.is_empty() {
+                    Err("name must not be empty".into())
+                } else {
+                    Ok(())
+                }
+            }
+            async fn execute(
+                &self,
+                args: StrictArgs,
+                _ctx: &ToolCallContext,
+            ) -> Result<ToolResult, ToolError> {
+                Ok(ToolResult::success("strict", json!({ "name": args.name })))
+            }
+        }
+
+        struct CategorizedTool;
+
+        #[async_trait]
+        impl TypedTool for CategorizedTool {
+            type Args = EchoArgs;
+            fn tool_id(&self) -> &str {
+                "categorized"
+            }
+            fn name(&self) -> &str {
+                "categorized"
+            }
+            fn description(&self) -> &str {
+                "Has a category"
+            }
+            fn category(&self) -> Option<&str> {
+                Some("utility")
+            }
+            async fn execute(
+                &self,
+                args: EchoArgs,
+                _ctx: &ToolCallContext,
+            ) -> Result<ToolResult, ToolError> {
+                Ok(ToolResult::success(
+                    "categorized",
+                    json!({ "echo": args.message }),
+                ))
+            }
+        }
+
+        // ── Tests ──
+
+        #[test]
+        fn typed_tool_descriptor_has_schema() {
+            let tool = TypedEchoTool;
+            let desc = tool.descriptor();
+            assert_eq!(desc.id, "echo");
+            assert_eq!(desc.name, "echo");
+            assert_eq!(desc.parameters["type"], "object");
+            assert!(desc.parameters["properties"]["message"].is_object());
+        }
+
+        #[test]
+        fn typed_tool_descriptor_schema_is_valid() {
+            let tool = TypedEchoTool;
+            let desc = tool.descriptor();
+            assert!(jsonschema::validator_for(&desc.parameters).is_ok());
+        }
+
+        #[tokio::test]
+        async fn typed_tool_execute_valid_args() {
+            let tool = TypedEchoTool;
+            let result = Tool::execute(
+                &tool,
+                json!({"message": "hello"}),
+                &ToolCallContext::test_default(),
+            )
+            .await
+            .unwrap();
+            assert!(result.is_success());
+            assert_eq!(result.data["echo"], "hello");
+        }
+
+        #[tokio::test]
+        async fn typed_tool_rejects_wrong_type() {
+            let tool = TypedEchoTool;
+            let err = Tool::execute(
+                &tool,
+                json!({"message": 123}),
+                &ToolCallContext::test_default(),
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(err, ToolError::InvalidArguments(_)));
+        }
+
+        #[tokio::test]
+        async fn typed_tool_rejects_missing_required() {
+            let tool = TypedEchoTool;
+            let err = Tool::execute(&tool, json!({}), &ToolCallContext::test_default())
+                .await
+                .unwrap_err();
+            assert!(matches!(err, ToolError::InvalidArguments(_)));
+        }
+
+        #[tokio::test]
+        async fn typed_tool_business_validation_rejects() {
+            let tool = StrictTool;
+            let err = Tool::execute(&tool, json!({"name": ""}), &ToolCallContext::test_default())
+                .await
+                .unwrap_err();
+            assert!(matches!(err, ToolError::InvalidArguments(_)));
+        }
+
+        #[tokio::test]
+        async fn typed_tool_business_validation_passes() {
+            let tool = StrictTool;
+            let result = Tool::execute(
+                &tool,
+                json!({"name": "Alice"}),
+                &ToolCallContext::test_default(),
+            )
+            .await
+            .unwrap();
+            assert!(result.is_success());
+            assert_eq!(result.data["name"], "Alice");
+        }
+
+        #[test]
+        fn typed_tool_category_propagated() {
+            let tool = CategorizedTool;
+            let desc = tool.descriptor();
+            assert_eq!(desc.category.as_deref(), Some("utility"));
+        }
+
+        #[test]
+        fn typed_tool_schema_validates_correct_input() {
+            let tool = TypedEchoTool;
+            let desc = tool.descriptor();
+            let args = json!({"message": "hello"});
+            assert!(validate_against_schema(&desc.parameters, &args).is_ok());
+        }
+
+        #[test]
+        fn typed_tool_schema_rejects_incorrect_input() {
+            let tool = TypedEchoTool;
+            let desc = tool.descriptor();
+            let args = json!({"message": 123});
+            assert!(validate_against_schema(&desc.parameters, &args).is_err());
+        }
     }
 }
