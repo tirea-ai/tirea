@@ -215,7 +215,7 @@ Deterministic compatibility directives:\n\
             "active trip with select_trip after creating it."
         )
         .into(),
-        max_rounds: args.max_rounds,
+        max_rounds: 3,
         plugin_ids: vec!["permission".into()],
         ..Default::default()
     };
@@ -233,7 +233,7 @@ Deterministic compatibility directives:\n\
             "Always keep the user informed of your progress."
         )
         .into(),
-        max_rounds: args.max_rounds,
+        max_rounds: 3,
         plugin_ids: vec!["permission".into()],
         ..Default::default()
     };
@@ -279,7 +279,7 @@ Deterministic compatibility directives:\n\
             "describe what UI is needed. The system will generate the appropriate schema."
         )
         .into(),
-        max_rounds: args.max_rounds,
+        max_rounds: 2,
         plugin_ids: vec!["permission".into()],
         ..Default::default()
     };
@@ -298,7 +298,7 @@ Deterministic compatibility directives:\n\
             "\"Hello A2UI\", then updateDataModel with an empty root object."
         )
         .into(),
-        max_rounds: args.max_rounds,
+        max_rounds: 2,
         plugin_ids: vec!["generative-ui".into()],
         ..Default::default()
     };
@@ -313,7 +313,7 @@ Deterministic compatibility directives:\n\
             across runs using profile storage. When the user sets a preference, \
             acknowledge it. When asked to recall, retrieve it from the profile store."
             .into(),
-        max_rounds: args.max_rounds,
+        max_rounds: 3,
         plugin_ids: vec!["permission".into()],
         ..Default::default()
     };
@@ -328,7 +328,7 @@ Deterministic compatibility directives:\n\
         system_prompt: "You are a creative writing assistant. Produce vivid, \
             imaginative prose. Use metaphors and varied sentence structures."
             .into(),
-        max_rounds: args.max_rounds,
+        max_rounds: 3,
         context_policy: Some(ContextWindowPolicy {
             max_context_tokens: 128_000,
             max_output_tokens: 4_096,
@@ -347,7 +347,7 @@ Deterministic compatibility directives:\n\
         system_prompt: "You are a context-aware assistant. Your context window is managed \
             with auto-compaction so long conversations stay within token limits."
             .into(),
-        max_rounds: args.max_rounds,
+        max_rounds: 3,
         context_policy: Some(ContextWindowPolicy {
             max_context_tokens: 4096,
             max_output_tokens: 1024,
@@ -378,12 +378,10 @@ Deterministic compatibility directives:\n\
     let secured_agent = AgentSpec {
         id: "secured".into(),
         model: "default".into(),
-        system_prompt: format!(
-            "{}\n\nYou are a security-conscious assistant. \
-             Some tools require explicit approval before execution.",
-            base_prompt
-        ),
-        max_rounds: args.max_rounds,
+        system_prompt: "You are a security-conscious assistant. \
+             Some tools require explicit approval before execution."
+            .into(),
+        max_rounds: 3,
         plugin_ids: vec!["permission".into(), "frontend_tools".into()],
         ..Default::default()
     };
