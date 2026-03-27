@@ -48,7 +48,7 @@ uuid = { version = "1", features = ["v7"] }
 genai = "0.6.0-beta.10"
 tokio = { version = "1", features = ["macros", "rt", "sync"] }
 reqwest = { version = "0.13", features = ["json"] }
-schemars = "0.8"
+schemars = "1"
 jsonschema = "0.45"
 parking_lot = "0.12"
 

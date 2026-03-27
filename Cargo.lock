@@ -204,7 +204,7 @@ dependencies = [
  "async-trait",
  "futures",
  "jsonschema",
- "schemars 0.8.22",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -298,7 +298,7 @@ dependencies = [
  "awaken-tool-pattern",
  "glob-match",
  "regex",
- "schemars 0.8.22",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -313,7 +313,7 @@ dependencies = [
  "awaken-contract",
  "awaken-runtime",
  "awaken-tool-pattern",
- "schemars 0.8.22",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -355,7 +355,7 @@ dependencies = [
  "jsonschema",
  "parking_lot",
  "reqwest 0.13.2",
- "schemars 0.8.22",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -2933,18 +2933,6 @@ dependencies = [
 
 [[package]]
 name = "schemars"
-version = "0.8.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3fbf2ae1b8bc8e02df939598064d22402220cd5bbcca1c76f7d6a310974d5615"
-dependencies = [
- "dyn-clone",
- "schemars_derive",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "schemars"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4cd191f9397d57d581cddd31014772520aa448f65ef991055d7f61582c65165f"
@@ -2963,15 +2951,16 @@ checksum = "a2b42f36aa1cd011945615b92222f6bf73c599a102a300334cd7f8dbeec726cc"
 dependencies = [
  "dyn-clone",
  "ref-cast",
+ "schemars_derive",
  "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "schemars_derive"
-version = "0.8.22"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32e265784ad618884abaea0600a9adf15393368d840e0222d101a072f3f7534d"
+checksum = "7d115b50f4aaeea07e79c1912f645c7513d81715d0420f8bc77a18c6260b307f"
 dependencies = [
  "proc-macro2",
  "quote",
