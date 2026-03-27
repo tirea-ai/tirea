@@ -142,12 +142,13 @@ async fn ag_ui_run(
     State(st): State<AppState>,
     Json(payload): Json<AgUiRunRequest>,
 ) -> Result<Response, ApiError> {
+    let agent_id = payload.agent_id;
     let messages = convert_messages(payload.messages);
     let (thread_id, messages) = crate::mailbox::prepare_run_inputs(payload.thread_id, messages)?;
 
     let spec = RunSpec {
         thread_id,
-        agent_id: payload.agent_id,
+        agent_id,
         messages,
     };
     let (_result, event_rx) = st
@@ -155,6 +156,7 @@ async fn ag_ui_run(
         .submit(spec)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+
     let encoder = AgUiEncoder::new();
     let sse_rx = wire_sse_relay(event_rx, encoder, st.config.sse_buffer_size);
 

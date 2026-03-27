@@ -187,12 +187,13 @@ async fn ai_sdk_chat(
     State(st): State<AppState>,
     Json(payload): Json<AiSdkChatRequest>,
 ) -> Result<Response, ApiError> {
+    let agent_id = payload.agent_id;
     let messages = convert_messages(payload.messages);
     let (thread_id, messages) = crate::mailbox::prepare_run_inputs(payload.thread_id, messages)?;
 
     let spec = RunSpec {
         thread_id,
-        agent_id: payload.agent_id,
+        agent_id,
         messages,
     };
     let (_result, event_rx) = st
@@ -200,6 +201,7 @@ async fn ai_sdk_chat(
         .submit(spec)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+
     let encoder = AiSdkEncoder::new();
     let sse_rx = wire_sse_relay(event_rx, encoder, st.config.sse_buffer_size);
 
