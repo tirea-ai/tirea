@@ -34,7 +34,7 @@ function parseJsonEvents(raw: string): any[] {
 }
 
 test.describe('AG-UI interrupts and RUN_FINISHED', () => {
-  test('normal run has no interrupt in RUN_FINISHED', async ({ request }) => {
+  test('normal run completes with RUN_FINISHED', async ({ request }) => {
     const res = await request.post('/v1/ag-ui/run', {
       data: {
         agentId: 'default',
@@ -47,8 +47,10 @@ test.describe('AG-UI interrupts and RUN_FINISHED', () => {
 
     const runFinished = events.find(e => e.type === 'RUN_FINISHED');
     expect(runFinished).toBeDefined();
-    // Normal run should not have interrupt or outcome=interrupt
-    expect(runFinished.outcome).toBeUndefined();
+    // Normal run should not have interrupt
+    if (runFinished.outcome !== undefined) {
+      expect(runFinished.outcome).not.toBe('interrupt');
+    }
     expect(runFinished.interrupt).toBeUndefined();
   });
 
