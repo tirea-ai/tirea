@@ -40,5 +40,9 @@ pub use contract::mailbox::{
 // ── profile store ──
 pub use contract::profile_store::{ProfileEntry, ProfileKey, ProfileOwner, ProfileStore};
 
+// ── tool schema ──
+pub use contract::tool::TypedTool;
+pub use contract::tool_schema::{generate_tool_schema, sanitize_for_llm, validate_against_schema};
+
 // ── thread ──
 pub use thread::{Thread, ThreadMetadata};
