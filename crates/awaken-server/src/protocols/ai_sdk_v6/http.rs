@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
@@ -26,12 +26,19 @@ use awaken_runtime::RunRequest;
 use super::encoder::AiSdkEncoder;
 
 /// Build AI SDK v6 routes.
+///
+/// The resume route `{api}/{chatId}/stream` matches the AI SDK's
+/// `HttpChatTransport.reconnectToStream()` URL pattern, where `chatId`
+/// maps to awaken's `threadId`.
 pub fn ai_sdk_routes() -> Router<AppState> {
     Router::new()
         .route("/v1/ai-sdk/chat", post(ai_sdk_chat))
-        .route("/v1/ai-sdk/streams/:run_id", get(resume_stream))
-        .route("/v1/ai-sdk/runs/:run_id/stream", get(resume_stream))
-        .route("/v1/ai-sdk/threads/:id/messages", get(thread_messages))
+        // AI SDK reconnect: GET {api}/{chatId}/stream → chatId = thread_id
+        .route("/v1/ai-sdk/chat/:thread_id/stream", get(resume_stream))
+        .route(
+            "/v1/ai-sdk/threads/:thread_id/messages",
+            get(thread_messages),
+        )
 }
 
 #[derive(Debug, Deserialize)]
@@ -119,28 +126,33 @@ fn convert_messages(msgs: Vec<AiSdkMessage>) -> Vec<Message> {
         .collect()
 }
 
-/// Reconnect to an active run's event stream.
+/// Reconnect to an active thread's event stream.
+///
+/// Called by AI SDK's `HttpChatTransport.reconnectToStream()` which issues
+/// `GET {api}/{chatId}/stream`. In awaken, `chatId` maps to `thread_id`.
 ///
 /// Replays buffered frames after the client's `Last-Event-ID` and then
 /// streams any new frames produced by the still-running agent.
-/// Returns 404 if the run has no active replay buffer.
+///
+/// Returns **204 No Content** if no active stream exists for the thread.
+/// AI SDK treats 204 as "nothing to resume" and returns `null` to the caller.
 async fn resume_stream(
     State(st): State<AppState>,
-    Path(run_id): Path<String>,
+    Path(thread_id): Path<String>,
     headers: HeaderMap,
-) -> Result<Response, ApiError> {
+) -> Response {
     let last_event_id: u64 = headers
         .get("last-event-id")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
-    let buffer = st
-        .replay_buffers
-        .lock()
-        .get(&run_id)
-        .cloned()
-        .ok_or_else(|| ApiError::NotFound(format!("no active stream for run {run_id}")))?;
+    let buffer = st.replay_buffers.lock().get(&thread_id).cloned();
+
+    let Some(buffer) = buffer else {
+        // AI SDK expects 204 for "no active stream" — not 404.
+        return axum::http::StatusCode::NO_CONTENT.into_response();
+    };
 
     // Atomically replay + subscribe under a single lock hold.
     // This guarantees no duplicates and no gaps.
@@ -151,7 +163,7 @@ async fn resume_stream(
         tokio_stream::wrappers::UnboundedReceiverStream::new(live_rx).map(Ok::<Bytes, Infallible>);
     let combined = replay_stream.chain(live_stream);
 
-    Ok(sse_response(combined))
+    sse_response(combined)
 }
 
 #[derive(Debug, Deserialize)]
@@ -219,23 +231,24 @@ async fn ai_sdk_chat(
     let (thread_id, messages) = crate::request::prepare_run_inputs(payload.thread_id, messages)?;
     let messages = crate::request::inject_frontend_context(messages, payload.state);
 
-    let mut request = RunRequest::new(thread_id, messages);
+    let mut request = RunRequest::new(thread_id.clone(), messages);
     if let Some(id) = agent_id {
         request = request.with_agent_id(id);
     }
-    let (result, event_rx) = st
+    let (_result, event_rx) = st
         .mailbox
         .submit(request)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     let replay_buffer = Arc::new(EventReplayBuffer::new(st.config.replay_buffer_capacity));
-    let run_id = result.job_id.clone();
 
-    // Register buffer so resume_stream can find it.
+    // Register buffer by thread_id (not run_id). External consumers only see
+    // threads — runs are internal state. This matches AI SDK's reconnect URL
+    // pattern: `{api}/{chatId}/stream` where chatId = threadId.
     st.replay_buffers
         .lock()
-        .insert(run_id.clone(), Arc::clone(&replay_buffer));
+        .insert(thread_id.clone(), Arc::clone(&replay_buffer));
 
     let encoder = AiSdkEncoder::new();
     let sse_rx =
@@ -246,8 +259,8 @@ async fn ai_sdk_chat(
     // reconnecting clients to use resume_stream even after the original client
     // disconnects.
     let buffers = Arc::clone(&st.replay_buffers);
-    let replay_buf_for_cleanup = Arc::clone(st.replay_buffers.lock().get(&run_id).unwrap());
-    let cleanup_run_id = run_id;
+    let replay_buf_for_cleanup = Arc::clone(st.replay_buffers.lock().get(&thread_id).unwrap());
+    let cleanup_thread_id = thread_id;
     let mut sse_rx_forwarded = sse_rx;
     let (final_tx, final_rx) = tokio::sync::mpsc::channel::<Bytes>(st.config.sse_buffer_size);
     tokio::spawn(async move {
@@ -259,7 +272,7 @@ async fn ai_sdk_chat(
         // Run is done — close subscribers so reconnected clients get EOF,
         // then remove the buffer from registry.
         replay_buf_for_cleanup.close_subscribers();
-        buffers.lock().remove(&cleanup_run_id);
+        buffers.lock().remove(&cleanup_thread_id);
     });
 
     Ok(sse_response(sse_body_stream(final_rx)))

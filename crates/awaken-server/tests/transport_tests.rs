@@ -502,6 +502,200 @@ async fn wire_sse_relay_with_acp_encoder() {
 }
 
 // ============================================================================
+// Resumable SSE relay
+// ============================================================================
+
+#[tokio::test]
+async fn resumable_relay_frames_have_sequential_ids() {
+    use awaken_server::http_run::wire_sse_relay_resumable;
+    use awaken_server::transport::replay_buffer::EventReplayBuffer;
+    use std::sync::Arc;
+
+    let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let buffer = Arc::new(EventReplayBuffer::new(100));
+    let mut sse_rx = wire_sse_relay_resumable(rx, Identity::<AgentEvent>::default(), 16, buffer);
+
+    tx.send(AgentEvent::TextDelta { delta: "a".into() })
+        .unwrap();
+    tx.send(AgentEvent::TextDelta { delta: "b".into() })
+        .unwrap();
+    tx.send(AgentEvent::StepEnd).unwrap();
+    drop(tx);
+
+    let mut chunks = Vec::new();
+    while let Some(chunk) = sse_rx.recv().await {
+        chunks.push(String::from_utf8(chunk.to_vec()).unwrap());
+    }
+
+    assert_eq!(chunks.len(), 3);
+    assert!(
+        chunks[0].starts_with("id: 1\n"),
+        "first frame should have id 1: {}",
+        chunks[0]
+    );
+    assert!(
+        chunks[1].starts_with("id: 2\n"),
+        "second frame should have id 2: {}",
+        chunks[1]
+    );
+    assert!(
+        chunks[2].starts_with("id: 3\n"),
+        "third frame should have id 3: {}",
+        chunks[2]
+    );
+}
+
+#[tokio::test]
+async fn resumable_relay_populates_buffer() {
+    use awaken_server::http_run::wire_sse_relay_resumable;
+    use awaken_server::transport::replay_buffer::EventReplayBuffer;
+    use std::sync::Arc;
+
+    let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let buffer = Arc::new(EventReplayBuffer::new(100));
+    let buffer_clone = Arc::clone(&buffer);
+    let mut sse_rx = wire_sse_relay_resumable(rx, Identity::<AgentEvent>::default(), 16, buffer);
+
+    tx.send(AgentEvent::TextDelta { delta: "x".into() })
+        .unwrap();
+    tx.send(AgentEvent::TextDelta { delta: "y".into() })
+        .unwrap();
+    drop(tx);
+
+    // Drain the receiver to let the relay task finish
+    while sse_rx.recv().await.is_some() {}
+
+    assert_eq!(buffer_clone.len(), 2);
+    assert_eq!(buffer_clone.current_seq(), 2);
+}
+
+#[tokio::test]
+async fn resumable_relay_replay_after_partial_consumption() {
+    use awaken_server::http_run::wire_sse_relay_resumable;
+    use awaken_server::transport::replay_buffer::EventReplayBuffer;
+    use std::sync::Arc;
+
+    let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let buffer = Arc::new(EventReplayBuffer::new(100));
+    let buffer_clone = Arc::clone(&buffer);
+    let mut sse_rx = wire_sse_relay_resumable(rx, Identity::<AgentEvent>::default(), 16, buffer);
+
+    for i in 0..5 {
+        tx.send(AgentEvent::TextDelta {
+            delta: format!("msg{i}"),
+        })
+        .unwrap();
+    }
+    drop(tx);
+
+    // Drain all
+    while sse_rx.recv().await.is_some() {}
+
+    // Simulate client reconnect: "I last saw event 2"
+    let replayed = buffer_clone.replay_after(2);
+    assert_eq!(replayed.len(), 3, "should replay events 3, 4, 5");
+    assert!(String::from_utf8_lossy(&replayed[0]).starts_with("id: 3\n"));
+    assert!(String::from_utf8_lossy(&replayed[1]).starts_with("id: 4\n"));
+    assert!(String::from_utf8_lossy(&replayed[2]).starts_with("id: 5\n"));
+}
+
+#[tokio::test]
+async fn resumable_relay_subscribe_after_catches_live_events() {
+    use awaken_server::transport::replay_buffer::EventReplayBuffer;
+    use std::sync::Arc;
+
+    let buffer = Arc::new(EventReplayBuffer::new(100));
+
+    // Push some initial events
+    buffer.push_json(r#"{"n":1}"#);
+    buffer.push_json(r#"{"n":2}"#);
+    buffer.push_json(r#"{"n":3}"#);
+
+    // Client reconnects after event 1 — gets replay + live subscription
+    let (replayed, mut live_rx) = buffer.subscribe_after(1);
+    assert_eq!(replayed.len(), 2); // events 2, 3
+
+    // New event pushed after subscribe
+    buffer.push_json(r#"{"n":4}"#);
+
+    let live_frame = live_rx.recv().await.unwrap();
+    assert!(String::from_utf8_lossy(&live_frame).contains("id: 4\n"));
+
+    // No duplicate of events 2 or 3 in live stream
+    assert!(live_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn resumable_relay_close_subscribers_terminates_stream() {
+    use awaken_server::transport::replay_buffer::EventReplayBuffer;
+    use std::sync::Arc;
+
+    let buffer = Arc::new(EventReplayBuffer::new(100));
+    buffer.push_json("{}");
+
+    let (_replayed, mut live_rx) = buffer.subscribe_after(0);
+
+    // Simulate run completion
+    buffer.close_subscribers();
+
+    // Live stream should terminate (recv returns None)
+    assert!(live_rx.recv().await.is_none());
+}
+
+#[tokio::test]
+async fn resumable_relay_with_ai_sdk_encoder() {
+    use awaken_server::http_run::wire_sse_relay_resumable;
+    use awaken_server::transport::replay_buffer::EventReplayBuffer;
+    use std::sync::Arc;
+
+    let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let buffer = Arc::new(EventReplayBuffer::new(100));
+    let buffer_clone = Arc::clone(&buffer);
+    let mut sse_rx = wire_sse_relay_resumable(rx, AiSdkEncoder::new(), 16, buffer);
+
+    tx.send(AgentEvent::RunStart {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        parent_run_id: None,
+    })
+    .unwrap();
+    tx.send(AgentEvent::TextDelta {
+        delta: "hello".into(),
+    })
+    .unwrap();
+    tx.send(AgentEvent::RunFinish {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        result: None,
+        termination: TerminationReason::NaturalEnd,
+    })
+    .unwrap();
+    drop(tx);
+
+    let mut chunks = Vec::new();
+    while let Some(chunk) = sse_rx.recv().await {
+        chunks.push(String::from_utf8(chunk.to_vec()).unwrap());
+    }
+
+    // All frames should have id: N prefix
+    for (i, chunk) in chunks.iter().enumerate() {
+        assert!(
+            chunk.starts_with(&format!("id: {}\n", i + 1)),
+            "chunk {} should have sequential id: {}",
+            i,
+            chunk,
+        );
+    }
+
+    // Buffer should contain all frames
+    assert_eq!(buffer_clone.len(), chunks.len());
+
+    // Replay all from 0 should return same count
+    let replayed = buffer_clone.replay_after(0);
+    assert_eq!(replayed.len(), chunks.len());
+}
+
+// ============================================================================
 // Channel sink behavior
 // ============================================================================
 
