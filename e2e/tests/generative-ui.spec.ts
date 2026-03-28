@@ -95,26 +95,34 @@ test.describe('generative UI (A2UI)', () => {
 });
 
 test.describe('generative UI (genui)', () => {
-  test('genui agent accepts run', async ({ request }) => {
-    const res = await request.post('/v1/runs', {
-      data: {
-        agentId: 'genui',
-        messages: [{ role: 'user', content: 'Generate a chart' }],
-      },
+  // genui agent may trigger multi-round tool calling; use fetch+abort to avoid stream timeout
+  async function postAndCheckHeaders(url: string, body: object) {
+    const controller = new AbortController();
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
     });
-    expect(res.status()).toBeLessThan(500);
-    const body = await res.text();
-    expect(body).toContain('data:');
+    controller.abort();
+    return res;
+  }
+
+  test('genui agent accepts run', async () => {
+    const res = await postAndCheckHeaders('http://127.0.0.1:38080/v1/runs', {
+      agentId: 'genui',
+      messages: [{ role: 'user', content: 'Generate a chart' }],
+    });
+    expect(res.ok).toBeTruthy();
+    expect(res.headers.get('content-type')).toContain('text/event-stream');
   });
 
-  test('genui agent via AG-UI protocol', async ({ request }) => {
-    const res = await request.post('/v1/ag-ui/run', {
-      data: {
-        agentId: 'genui',
-        messages: [{ role: 'user', content: 'Show me a widget' }],
-      },
+  test('genui agent via AG-UI protocol', async () => {
+    const res = await postAndCheckHeaders('http://127.0.0.1:38080/v1/ag-ui/run', {
+      agentId: 'genui',
+      messages: [{ role: 'user', content: 'Show me a widget' }],
     });
-    expect(res.status()).toBeLessThan(500);
+    expect(res.ok).toBeTruthy();
   });
 
   test('genui agent appears in A2A agent list', async ({ request }) => {

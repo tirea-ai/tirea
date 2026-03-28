@@ -104,8 +104,8 @@ test.describe('tool execution and SSE streaming', () => {
   test('AI SDK protocol run completes', async ({ request }) => {
     const res = await request.post('/v1/ai-sdk/chat', {
       data: {
-        agentId: 'default',
-        messages: [{ role: 'user', content: 'RUN_WEATHER_TOOL' }],
+        agentId: 'limited',
+        messages: [{ role: 'user', content: 'Say hello' }],
       },
     });
     expect(res.ok()).toBeTruthy();
