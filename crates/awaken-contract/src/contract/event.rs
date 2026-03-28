@@ -137,31 +137,6 @@ impl AgentEvent {
     }
 }
 
-// ── Wire format envelope ────────────────────────────────────────────
-
-/// Wire-format envelope wrapping an [`AgentEvent`] with sequence and timestamp.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WireEvent {
-    /// Monotonically increasing sequence number within a run.
-    pub seq: u64,
-    /// ISO 8601 timestamp (e.g. "2025-01-15T12:34:56.789Z").
-    pub timestamp: String,
-    /// The wrapped agent event.
-    #[serde(flatten)]
-    pub event: AgentEvent,
-}
-
-impl WireEvent {
-    /// Create a new stream event envelope.
-    pub fn new(seq: u64, timestamp: impl Into<String>, event: AgentEvent) -> Self {
-        Self {
-            seq,
-            timestamp: timestamp.into(),
-            event,
-        }
-    }
-}
-
 /// Output stream type alias for a run.
 pub type RunOutput = futures::stream::BoxStream<'static, AgentEvent>;
 
@@ -558,43 +533,6 @@ mod tests {
         }
     }
 
-    // ── WireEvent tests ──
-
-    #[test]
-    fn stream_event_serde_roundtrip() {
-        let se = WireEvent::new(
-            1,
-            "2025-01-15T12:34:56.789Z",
-            AgentEvent::TextDelta { delta: "hi".into() },
-        );
-        let json = serde_json::to_string(&se).unwrap();
-        assert!(json.contains("\"seq\":1"));
-        assert!(json.contains("\"timestamp\":\"2025-01-15T12:34:56.789Z\""));
-        assert!(json.contains("\"event_type\":\"text_delta\""));
-
-        let parsed: WireEvent = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.seq, 1);
-        assert_eq!(parsed.timestamp, "2025-01-15T12:34:56.789Z");
-        assert!(matches!(parsed.event, AgentEvent::TextDelta { .. }));
-    }
-
-    #[test]
-    fn stream_event_with_run_start() {
-        let se = WireEvent::new(
-            0,
-            "2025-01-15T00:00:00Z",
-            AgentEvent::RunStart {
-                thread_id: "t1".into(),
-                run_id: "r1".into(),
-                parent_run_id: None,
-            },
-        );
-        let json = serde_json::to_string(&se).unwrap();
-        let parsed: WireEvent = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.seq, 0);
-        assert!(matches!(parsed.event, AgentEvent::RunStart { .. }));
-    }
-
     // ── Wire format detail tests ──
 
     #[test]
@@ -761,22 +699,5 @@ mod tests {
                 "event_type mismatch"
             );
         }
-    }
-
-    #[test]
-    fn stream_event_preserves_all_fields() {
-        let se = WireEvent::new(
-            42,
-            "2026-03-25T12:00:00Z",
-            AgentEvent::Error {
-                message: "test".into(),
-                code: None,
-            },
-        );
-        let json = serde_json::to_string(&se).unwrap();
-        let parsed: WireEvent = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.seq, 42);
-        assert_eq!(parsed.timestamp, "2026-03-25T12:00:00Z");
-        assert!(matches!(parsed.event, AgentEvent::Error { .. }));
     }
 }

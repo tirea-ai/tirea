@@ -1,7 +1,7 @@
 //! Integration tests verifying cross-module contract compatibility in awaken-contract.
 
 use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::event::{AgentEvent, WireEvent};
+use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::inference::{
     ContextCompactionMode, ContextWindowPolicy, InferenceError, InferenceModelOverride,
     InferenceOverride, LLMResponse, ReasoningEffort, StopReason, StreamResult, TokenUsage,
@@ -45,34 +45,6 @@ fn message_embeds_in_run_finish_result_and_survives_roundtrip() {
         assert_eq!(calls[0].arguments["query"], "rust");
     } else {
         panic!("expected RunFinish");
-    }
-}
-
-#[test]
-fn stream_event_wraps_tool_call_done_with_tool_result() {
-    let result = ToolResult::success_with_message("calc", json!(42), "computed");
-    let event = AgentEvent::ToolCallDone {
-        id: "c1".into(),
-        message_id: "m1".into(),
-        result: result.clone(),
-        outcome: ToolCallOutcome::Succeeded,
-    };
-
-    let se = WireEvent::new(5, "2026-01-01T00:00:00Z", event);
-    let wire = serde_json::to_string(&se).unwrap();
-    let parsed: WireEvent = serde_json::from_str(&wire).unwrap();
-
-    assert_eq!(parsed.seq, 5);
-    if let AgentEvent::ToolCallDone {
-        result, outcome, ..
-    } = &parsed.event
-    {
-        assert!(result.is_success());
-        assert_eq!(result.data, json!(42));
-        assert_eq!(result.message.as_deref(), Some("computed"));
-        assert_eq!(*outcome, ToolCallOutcome::Succeeded);
-    } else {
-        panic!("expected ToolCallDone");
     }
 }
 
