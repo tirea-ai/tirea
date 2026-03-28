@@ -492,6 +492,29 @@ async fn execute_tools_with_interception(
                     resume_mode: ticket.resume_mode,
                 });
                 ctx.runtime.submit_command(&ctx.agent.env, cmd).await?;
+
+                // For approval-style suspensions (ReplayToolCall), emit ToolCallDone
+                // with Pending status so protocol encoders generate approval request
+                // events (e.g. AI SDK ToolApprovalRequest → Allow/Deny UI).
+                //
+                // For frontend-tool suspensions (UseDecisionAsToolResult, PassDecisionToTool),
+                // do NOT emit ToolCallDone — the tool stays in input-available state so the
+                // frontend renders a custom input UI (e.g. AskUserDialog, color picker).
+                if ticket.resume_mode == ToolCallResumeMode::ReplayToolCall {
+                    let suspend_result = awaken_contract::contract::tool::ToolResult::suspended(
+                        &call.name,
+                        &format!("Tool '{}' suspended: awaiting approval", call.name),
+                    );
+                    ctx.sink
+                        .emit(AgentEvent::ToolCallDone {
+                            id: call.id.clone(),
+                            message_id: String::new(),
+                            result: suspend_result,
+                            outcome: ToolCallOutcome::Suspended,
+                        })
+                        .await;
+                }
+
                 ctx.messages.push(Arc::new(Message::tool(
                     &call.id,
                     format!("Tool '{}' suspended: awaiting decision", call.name),
