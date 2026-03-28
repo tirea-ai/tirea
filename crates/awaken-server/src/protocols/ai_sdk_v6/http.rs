@@ -240,18 +240,27 @@ async fn thread_messages(
         .skip(offset)
         .take(limit)
         .map(|m| {
+            let role = match m.role {
+                awaken_contract::contract::message::Role::System => "system",
+                awaken_contract::contract::message::Role::User => "user",
+                awaken_contract::contract::message::Role::Assistant => "assistant",
+                awaken_contract::contract::message::Role::Tool => "tool",
+            };
+            // Return AI SDK v6 UIMessage format with `parts` (not `content`)
+            let parts: Vec<Value> = m
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => {
+                        Some(serde_json::json!({"type": "text", "text": text}))
+                    }
+                    _ => None,
+                })
+                .collect();
             serde_json::json!({
                 "id": m.id,
-                "role": match m.role {
-                    awaken_contract::contract::message::Role::System => "system",
-                    awaken_contract::contract::message::Role::User => "user",
-                    awaken_contract::contract::message::Role::Assistant => "assistant",
-                    awaken_contract::contract::message::Role::Tool => "tool",
-                },
-                "content": [{
-                    "type": "text",
-                    "text": m.content
-                }],
+                "role": role,
+                "parts": parts,
             })
         })
         .collect();
