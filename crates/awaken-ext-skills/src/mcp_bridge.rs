@@ -746,7 +746,7 @@ impl McpPromptSkillRegistryManager {
     }
 
     /// Stop the periodic refresh task. Returns true if it was running.
-    pub fn stop_periodic_refresh(&self) -> bool {
+    pub async fn stop_periodic_refresh(&self) -> bool {
         let runtime = {
             let mut guard = mutex_lock(&self.state.periodic_refresh);
             guard.take()
@@ -759,7 +759,7 @@ impl McpPromptSkillRegistryManager {
         if let Some(stop_tx) = runtime.stop_tx.take() {
             let _ = stop_tx.send(());
         }
-        runtime.join.abort();
+        let _ = runtime.join.await;
         true
     }
 
@@ -802,7 +802,10 @@ impl SkillRegistry for McpPromptSkillRegistryManager {
     }
 
     fn stop_periodic_refresh(&self) -> bool {
-        McpPromptSkillRegistryManager::stop_periodic_refresh(self)
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(McpPromptSkillRegistryManager::stop_periodic_refresh(self))
+        })
     }
 
     fn periodic_refresh_running(&self) -> bool {
@@ -1392,7 +1395,7 @@ mod tests {
         }
 
         assert!(registry.ids().iter().any(|id| id == "mcp:github:fix"));
-        assert!(registry.stop_periodic_refresh());
+        assert!(registry.stop_periodic_refresh().await);
     }
 
     #[test]
