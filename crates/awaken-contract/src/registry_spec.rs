@@ -52,7 +52,7 @@ pub trait PluginConfigKey: 'static + Send + Sync {
 /// Serializable agent definition referencing registries by ID.
 ///
 /// Can be saved to JSON, loaded from config files, or transmitted over the network.
-/// Resolved at runtime via [`super::resolve::resolve`] into a [`super::resolve::ResolvedRun`].
+/// Resolved at runtime via the resolve pipeline into a `ResolvedAgent`.
 ///
 /// Also serves as the runtime behavior configuration passed to hooks via
 /// `PhaseContext.agent_spec`. Plugins read their typed config via `spec.config::<K>()`.
