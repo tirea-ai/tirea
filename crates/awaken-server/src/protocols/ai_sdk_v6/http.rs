@@ -33,6 +33,14 @@ use super::encoder::AiSdkEncoder;
 pub fn ai_sdk_routes() -> Router<AppState> {
     Router::new()
         .route("/v1/ai-sdk/chat", post(ai_sdk_chat))
+        .route(
+            "/v1/ai-sdk/threads/:thread_id/runs",
+            post(ai_sdk_chat_threaded),
+        )
+        .route(
+            "/v1/ai-sdk/agents/:agent_id/runs",
+            post(ai_sdk_chat_agent_scoped),
+        )
         // AI SDK reconnect: GET {api}/{chatId}/stream → chatId = thread_id
         .route("/v1/ai-sdk/chat/:thread_id/stream", get(resume_stream))
         .route(
@@ -214,6 +222,30 @@ async fn ai_sdk_chat(
     State(st): State<AppState>,
     Json(payload): Json<AiSdkChatRequest>,
 ) -> Result<Response, ApiError> {
+    ai_sdk_chat_inner(st, payload).await
+}
+
+/// Thread-centric route: `POST /v1/ai-sdk/threads/:thread_id/runs`
+async fn ai_sdk_chat_threaded(
+    State(st): State<AppState>,
+    Path(thread_id): Path<String>,
+    Json(mut payload): Json<AiSdkChatRequest>,
+) -> Result<Response, ApiError> {
+    payload.thread_id = Some(thread_id);
+    ai_sdk_chat_inner(st, payload).await
+}
+
+/// Agent-scoped route: `POST /v1/ai-sdk/agents/:agent_id/runs`
+async fn ai_sdk_chat_agent_scoped(
+    State(st): State<AppState>,
+    Path(agent_id): Path<String>,
+    Json(mut payload): Json<AiSdkChatRequest>,
+) -> Result<Response, ApiError> {
+    payload.agent_id = Some(agent_id);
+    ai_sdk_chat_inner(st, payload).await
+}
+
+async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Response, ApiError> {
     let agent_id = payload.agent_id;
     let messages = convert_messages(payload.messages);
     let (thread_id, messages) = crate::request::prepare_run_inputs(payload.thread_id, messages)?;

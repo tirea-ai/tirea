@@ -22,6 +22,14 @@ use super::types::Role;
 pub fn ag_ui_routes() -> Router<AppState> {
     Router::new()
         .route("/v1/ag-ui/run", post(ag_ui_run))
+        .route(
+            "/v1/ag-ui/threads/:thread_id/runs",
+            post(ag_ui_run_threaded),
+        )
+        .route(
+            "/v1/ag-ui/agents/:agent_id/runs",
+            post(ag_ui_run_agent_scoped),
+        )
         .route("/v1/ag-ui/threads/:id/messages", get(thread_messages))
 }
 
@@ -141,6 +149,30 @@ async fn ag_ui_run(
     State(st): State<AppState>,
     Json(payload): Json<AgUiRunRequest>,
 ) -> Result<Response, ApiError> {
+    ag_ui_run_inner(st, payload).await
+}
+
+/// Thread-centric route: `POST /v1/ag-ui/threads/:thread_id/runs`
+async fn ag_ui_run_threaded(
+    State(st): State<AppState>,
+    Path(thread_id): Path<String>,
+    Json(mut payload): Json<AgUiRunRequest>,
+) -> Result<Response, ApiError> {
+    payload.thread_id = Some(thread_id);
+    ag_ui_run_inner(st, payload).await
+}
+
+/// Agent-scoped route: `POST /v1/ag-ui/agents/:agent_id/runs`
+async fn ag_ui_run_agent_scoped(
+    State(st): State<AppState>,
+    Path(agent_id): Path<String>,
+    Json(mut payload): Json<AgUiRunRequest>,
+) -> Result<Response, ApiError> {
+    payload.agent_id = Some(agent_id);
+    ag_ui_run_inner(st, payload).await
+}
+
+async fn ag_ui_run_inner(st: AppState, payload: AgUiRunRequest) -> Result<Response, ApiError> {
     let agent_id = payload.agent_id;
     let messages = convert_messages(payload.messages);
     let (thread_id, messages) = crate::request::prepare_run_inputs(payload.thread_id, messages)?;
