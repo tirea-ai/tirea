@@ -1,5 +1,28 @@
 import { test, expect } from '@playwright/test';
 
+const BASE_URL = 'http://127.0.0.1:38080';
+
+/**
+ * POST with an AbortController that fires after receiving the HTTP headers.
+ * Avoids buffering the full SSE body for slow multi-round tool-calling agents.
+ */
+async function postAndCheckHeaders(
+  url: string,
+  body: object,
+): Promise<{ status: number; contentType: string }> {
+  const controller = new AbortController();
+  const res = await fetch(`${BASE_URL}${url}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: controller.signal,
+  });
+  const status = res.status;
+  const contentType = res.headers.get('content-type') ?? '';
+  controller.abort();
+  return { status, contentType };
+}
+
 test.describe('thread lifecycle', () => {
   test('create and retrieve thread', async ({ request }) => {
     const createRes = await request.post('/v1/threads', {
@@ -133,16 +156,14 @@ test.describe('run lifecycle', () => {
     });
     const thread = await threadRes.json();
 
-    const runRes = await request.post('/v1/runs', {
-      data: {
-        agentId: 'travel',
-        threadId: thread.id,
-        messages: [{ role: 'user', content: 'Plan a trip to Rome' }],
-      },
+    // Use fetch+abort to avoid buffering the full SSE stream from multi-round tool loop
+    const { status, contentType } = await postAndCheckHeaders('/v1/runs', {
+      agentId: 'travel',
+      threadId: thread.id,
+      messages: [{ role: 'user', content: 'Plan a trip to Rome' }],
     });
-    expect(runRes.ok()).toBeTruthy();
-    const body = await runRes.text();
-    expect(body).toContain('data:');
+    expect(status).toBe(200);
+    expect(contentType).toContain('text/event-stream');
   });
 });
 

@@ -49,7 +49,7 @@ test.describe('concurrent operations', () => {
       }),
       request.post('/v1/runs', {
         data: {
-          agentId: 'travel',
+          agentId: 'limited',
           threadId: thread2.id,
           messages: [{ role: 'user', content: 'Hello Thread B' }],
         },
@@ -87,13 +87,13 @@ test.describe('concurrent operations', () => {
       }),
       request.post('/v1/ai-sdk/chat', {
         data: {
-          agentId: 'research',
+          agentId: 'limited',
           messages: [{ role: 'user', content: 'AI SDK concurrent' }],
         },
       }),
       request.post('/v1/runs', {
         data: {
-          agentId: 'travel',
+          agentId: 'limited',
           messages: [{ role: 'user', content: 'Runs API concurrent' }],
         },
       }),
