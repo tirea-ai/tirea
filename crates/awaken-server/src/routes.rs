@@ -129,29 +129,12 @@ async fn list_thread_summaries(
 ) -> Result<Json<Value>, ApiError> {
     let offset = params.offset.unwrap_or(0);
     let limit = params.limit.clamp(1, 200);
-    let ids = st
-        .store
-        .list_threads(offset, limit)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
-
-    let mut items = Vec::with_capacity(ids.len());
-    for id in ids {
-        if let Some(thread) = st
-            .store
-            .load_thread(&id)
+    let summaries =
+        crate::services::thread_service::list_summaries(st.store.as_ref(), offset, limit)
             .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?
-        {
-            items.push(json!({
-                "id": thread.id,
-                "title": thread.metadata.title,
-                "updated_at": thread.metadata.updated_at,
-            }));
-        }
-    }
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(
-        json!({ "items": items, "offset": offset, "limit": limit }),
+        json!({ "items": summaries, "offset": offset, "limit": limit }),
     ))
 }
 
@@ -190,18 +173,16 @@ async fn delete_thread(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    // Verify thread exists
-    st.store
-        .load_thread(&id)
+    crate::services::thread_service::delete_thread(st.store.as_ref(), &id)
         .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or(ApiError::ThreadNotFound(id.clone()))?;
-
-    st.store
-        .delete_thread(&id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
-
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("not found") || msg.contains("NotFound") {
+                ApiError::ThreadNotFound(id.clone())
+            } else {
+                ApiError::Internal(msg)
+            }
+        })?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -218,33 +199,21 @@ async fn patch_thread(
     Path(id): Path<String>,
     Json(payload): Json<PatchThreadPayload>,
 ) -> Result<Json<Value>, ApiError> {
-    let mut thread = st
-        .store
-        .load_thread(&id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or(ApiError::ThreadNotFound(id.clone()))?;
-
-    if let Some(title) = payload.title {
-        thread.metadata.title = Some(title);
-    }
-    if let Some(custom) = payload.custom {
-        for (key, value) in custom {
-            thread.metadata.custom.insert(key, value);
+    let thread = crate::services::thread_service::patch_thread(
+        st.store.as_ref(),
+        &id,
+        payload.title,
+        payload.custom,
+    )
+    .await
+    .map_err(|e| {
+        let msg = e.to_string();
+        if msg.contains("not found") || msg.contains("NotFound") {
+            ApiError::ThreadNotFound(id.clone())
+        } else {
+            ApiError::Internal(msg)
         }
-    }
-    thread.metadata.updated_at = Some(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0),
-    );
-
-    st.store
-        .save_thread(&thread)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
-
+    })?;
     let value = serde_json::to_value(thread).map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(value))
 }
