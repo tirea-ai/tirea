@@ -243,35 +243,27 @@ impl StateStore {
             }
         }
         self.commit(patch).map(|_| ())?;
-        self.unregister_plugin_type_id(plugin_type_id, false)
+        self.unregister_plugin_type_id(plugin_type_id)
     }
 
-    fn unregister_plugin_type_id(
-        &self,
-        plugin_type_id: TypeId,
-        rollback_install: bool,
-    ) -> Result<(), StateError> {
-        let removed =
-            {
-                let mut registry = self.registry.lock();
-                let installed = registry.plugins.remove(&plugin_type_id).ok_or(
-                    StateError::PluginNotInstalled {
+    fn unregister_plugin_type_id(&self, plugin_type_id: TypeId) -> Result<(), StateError> {
+        {
+            let mut registry = self.registry.lock();
+            let installed =
+                registry
+                    .plugins
+                    .remove(&plugin_type_id)
+                    .ok_or(StateError::PluginNotInstalled {
                         type_name: "unknown",
-                    },
-                )?;
+                    })?;
 
-                let mut removed = Vec::new();
-                for type_id in &installed.owned_key_type_ids {
-                    if let Some(reg) = registry.keys_by_type.remove(type_id) {
-                        registry.keys_by_name.remove(&reg.key);
-                        removed.push(reg);
-                    }
+            for type_id in &installed.owned_key_type_ids {
+                if let Some(reg) = registry.keys_by_type.remove(type_id) {
+                    registry.keys_by_name.remove(&reg.key);
                 }
-                removed
-            };
+            }
+        }
 
-        let _ = rollback_install;
-        let _ = removed;
         Ok(())
     }
 }
