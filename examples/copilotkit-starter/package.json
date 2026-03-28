@@ -15,10 +15,10 @@
     "smoke": "bash scripts/smoke.sh"
   },
   "dependencies": {
-    "@ag-ui/client": "^0.0.45",
-    "@copilotkit/react-core": "1.51.4",
-    "@copilotkit/react-ui": "1.51.4",
-    "@copilotkit/runtime": "1.51.4",
+    "@ag-ui/client": "^0.0.48",
+    "@copilotkit/react-core": "^1.54.1",
+    "@copilotkit/react-ui": "^1.54.1",
+    "@copilotkit/runtime": "^1.54.1",
     "leaflet": "^1.9.4",
     "next": "15",
     "react": "19",
