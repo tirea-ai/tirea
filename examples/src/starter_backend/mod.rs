@@ -195,14 +195,37 @@ Deterministic compatibility directives:\n\
         plugin_ids: vec!["permission".into(), "frontend_tools".into()],
         ..Default::default()
     };
-    let stopper_agent = AgentSpec {
-        id: "stopper".into(),
-        model: "default".into(),
-        system_prompt: base_prompt.clone(),
-        max_rounds: args.max_rounds,
-        plugin_ids: vec!["frontend_tools".into()],
-        ..Default::default()
-    };
+    let permission_agent = permission_agent
+        .with_config::<PermissionConfigKey>(PermissionRulesConfig {
+            default_behavior: ToolPermissionBehavior::Ask,
+            rules: vec![
+                // Allow all read-like tools (get_*) automatically
+                PermissionRuleEntry {
+                    tool: "get_*".into(),
+                    behavior: ToolPermissionBehavior::Allow,
+                    scope: Default::default(),
+                },
+                // Allow serverInfo — safe, read-only
+                PermissionRuleEntry {
+                    tool: "serverInfo".into(),
+                    behavior: ToolPermissionBehavior::Allow,
+                    scope: Default::default(),
+                },
+                // Deny the known-broken tool unconditionally
+                PermissionRuleEntry {
+                    tool: "failingTool".into(),
+                    behavior: ToolPermissionBehavior::Deny,
+                    scope: Default::default(),
+                },
+                // Deny any tool that deletes resources
+                PermissionRuleEntry {
+                    tool: "delete_*".into(),
+                    behavior: ToolPermissionBehavior::Deny,
+                    scope: Default::default(),
+                },
+            ],
+        })
+        .expect("invalid permission config for permission agent");
     let travel_agent = AgentSpec {
         id: "travel".into(),
         model: "default".into(),
@@ -275,8 +298,23 @@ Deterministic compatibility directives:\n\
         id: "genui".into(),
         model: "default".into(),
         system_prompt: concat!(
-            "You are a generative UI assistant. When users ask for forms or interfaces, ",
-            "describe what UI is needed. The system will generate the appropriate schema."
+            "You are a generative UI assistant that outputs JSON Render documents.\n\n",
+            "When users ask for forms or interfaces, respond with ONLY a JSON object in this format:\n",
+            "```json\n",
+            "{\n",
+            "  \"root\": \"elementId\",\n",
+            "  \"elements\": {\n",
+            "    \"elementId\": {\n",
+            "      \"type\": \"ComponentName\",\n",
+            "      \"props\": {},\n",
+            "      \"children\": [\"childId\"]\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "```\n\n",
+            "Available component types: Card, Text, Button, Input, Form, Stack, Grid, Image, Badge.\n",
+            "Each element has an id, a type, optional props, and optional children (array of element ids).\n\n",
+            "Output ONLY valid JSON. No markdown fences, no explanation outside the JSON."
         )
         .into(),
         max_rounds: 2,
@@ -372,50 +410,6 @@ Deterministic compatibility directives:\n\
         plugin_ids: vec!["permission".into(), "budget-stop".into()],
         ..Default::default()
     };
-
-    // Secured agent: demonstrates advanced permission rules via PermissionConfigKey.
-    // Rules are evaluated with firewall-like priority: Deny > Allow > Ask.
-    let secured_agent = AgentSpec {
-        id: "secured".into(),
-        model: "default".into(),
-        system_prompt: "You are a security-conscious assistant. \
-             Some tools require explicit approval before execution."
-            .into(),
-        max_rounds: 3,
-        plugin_ids: vec!["permission".into(), "frontend_tools".into()],
-        ..Default::default()
-    };
-    let secured_agent = secured_agent
-        .with_config::<PermissionConfigKey>(PermissionRulesConfig {
-            default_behavior: ToolPermissionBehavior::Ask,
-            rules: vec![
-                // Allow all read-like tools (get_*) automatically
-                PermissionRuleEntry {
-                    tool: "get_*".into(),
-                    behavior: ToolPermissionBehavior::Allow,
-                    scope: Default::default(),
-                },
-                // Allow serverInfo — safe, read-only
-                PermissionRuleEntry {
-                    tool: "serverInfo".into(),
-                    behavior: ToolPermissionBehavior::Allow,
-                    scope: Default::default(),
-                },
-                // Deny the known-broken tool unconditionally
-                PermissionRuleEntry {
-                    tool: "failingTool".into(),
-                    behavior: ToolPermissionBehavior::Deny,
-                    scope: Default::default(),
-                },
-                // Deny any tool that deletes resources
-                PermissionRuleEntry {
-                    tool: "delete_*".into(),
-                    behavior: ToolPermissionBehavior::Deny,
-                    scope: Default::default(),
-                },
-            ],
-        })
-        .expect("invalid permission config for secured agent");
 
     // -- Tools --
 
@@ -529,9 +523,6 @@ Deterministic compatibility directives:\n\
     if default_id != "permission" {
         builder = builder.with_agent_spec(permission_agent);
     }
-    if default_id != "stopper" {
-        builder = builder.with_agent_spec(stopper_agent);
-    }
     if default_id != "travel" {
         builder = builder.with_agent_spec(travel_agent);
     }
@@ -568,10 +559,6 @@ Deterministic compatibility directives:\n\
     if default_id != "budget" {
         builder = builder.with_agent_spec(budget_agent);
     }
-    if default_id != "secured" {
-        builder = builder.with_agent_spec(secured_agent);
-    }
-
     // -- A2A remote agents --
 
     if let Some(ref remote_url) = args.a2a_remote_url {
