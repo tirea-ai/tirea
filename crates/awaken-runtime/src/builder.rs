@@ -32,8 +32,6 @@ pub enum BuildError {
     ProviderRegistryConflict(String),
     #[error("plugin registry conflict: {0}")]
     PluginRegistryConflict(String),
-    #[error("stop policy registry conflict: {0}")]
-    StopPolicyConflict(String),
     #[error("agent validation failed: {0}")]
     ValidationFailed(String),
     #[cfg(feature = "a2a")]
