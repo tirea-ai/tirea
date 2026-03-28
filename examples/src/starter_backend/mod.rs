@@ -183,7 +183,7 @@ Deterministic compatibility directives:\n\
         id: default_id.clone(),
         model: "default".into(),
         system_prompt: base_prompt.clone(),
-        max_rounds: args.max_rounds,
+        max_rounds: 3,
         plugin_ids: vec!["frontend_tools".into(), "observability".into()],
         ..Default::default()
     };
