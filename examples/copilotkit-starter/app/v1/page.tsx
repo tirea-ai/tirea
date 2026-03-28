@@ -15,6 +15,11 @@ import { DefaultToolComponent } from "@/components/default-tool-ui";
 import { RecommendedActions } from "@/components/recommended-actions";
 import { WeatherCard } from "@/components/weather";
 import {
+  JsonRenderPanel,
+  OpenUIPanel,
+  A2UIPanel,
+} from "@/components/generative-ui-renderers";
+import {
   RECOMMENDED_ACTIONS,
   V1_RECOMMENDED_SUGGESTIONS,
 } from "@/lib/recommended-actions";
@@ -118,6 +123,9 @@ function BaseStarterDemo({ agentId }: { agentId: "default" | "permission" | "sto
     null,
   );
   const [showMcpAppPreview, setShowMcpAppPreview] = useState(false);
+  const [rendererPreview, setRendererPreview] = useState<
+    "none" | "json-render" | "openui" | "a2ui"
+  >("none");
 
   const { state, setState } = useCoAgent<DemoState>({
     name: "default",
@@ -356,6 +364,91 @@ function BaseStarterDemo({ agentId }: { agentId: "default" | "permission" | "sto
               itemTestId="generative-ui-local-checklist-item"
             />
           ) : null}
+          <div className="mt-4 border-t border-slate-200 pt-3">
+            <div className="text-xs font-semibold text-slate-500 mb-2">
+              Official Renderer Previews
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                data-testid="renderer-json-render"
+                className={buttonClass}
+                onClick={() =>
+                  setRendererPreview(
+                    rendererPreview === "json-render" ? "none" : "json-render",
+                  )
+                }
+              >
+                JSON Render
+              </button>
+              <button
+                data-testid="renderer-openui"
+                className={buttonClass}
+                onClick={() =>
+                  setRendererPreview(
+                    rendererPreview === "openui" ? "none" : "openui",
+                  )
+                }
+              >
+                OpenUI
+              </button>
+              <button
+                data-testid="renderer-a2ui"
+                className={buttonClass}
+                onClick={() =>
+                  setRendererPreview(
+                    rendererPreview === "a2ui" ? "none" : "a2ui",
+                  )
+                }
+              >
+                A2UI
+              </button>
+            </div>
+            {rendererPreview === "json-render" && (
+              <JsonRenderPanel
+                data={{
+                  root: "card-1",
+                  elements: {
+                    "card-1": {
+                      type: "Card",
+                      props: { title: "Release Status" },
+                      children: ["text-1", "text-2"],
+                    },
+                    "text-1": {
+                      type: "Text",
+                      props: { content: "All checks passed" },
+                      children: [],
+                    },
+                    "text-2": {
+                      type: "Text",
+                      props: { content: "Ready for deployment" },
+                      children: [],
+                    },
+                  },
+                }}
+              />
+            )}
+            {rendererPreview === "openui" && (
+              <OpenUIPanel
+                response={[
+                  "<Card title='Build Report'>",
+                  "  <Text>Tests: 42 passed, 0 failed</Text>",
+                  "  <Text>Coverage: 91%</Text>",
+                  "</Card>",
+                ].join("\n")}
+              />
+            )}
+            {rendererPreview === "a2ui" && (
+              <A2UIPanel
+                messages={[
+                  {
+                    type: "surface",
+                    surfaceId: "preview-1",
+                    content: { kind: "text", text: "A2UI surface preview" },
+                  },
+                ]}
+              />
+            )}
+          </div>
           <p data-testid="backend-tool-prompt" className={subtleHintClass}>
             Optional backend-tool prompt: "What's the weather in San Francisco?" or "Show AAPL latest
             price."
