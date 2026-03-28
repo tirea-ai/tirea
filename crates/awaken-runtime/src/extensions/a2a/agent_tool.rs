@@ -118,12 +118,7 @@ impl Tool for AgentTool {
 
         match self.backend.execute(&self.agent_id, messages).await {
             Ok(result) => {
-                let status_str = match &result.status {
-                    DelegateRunStatus::Completed => "completed".to_string(),
-                    DelegateRunStatus::Failed(msg) => format!("failed: {msg}"),
-                    DelegateRunStatus::Cancelled => "cancelled".to_string(),
-                    DelegateRunStatus::Timeout => "timeout".to_string(),
-                };
+                let status_str = result.status.to_string();
                 Ok(ToolResult::success(
                     &tool_id,
                     json!({
