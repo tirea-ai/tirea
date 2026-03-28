@@ -185,7 +185,20 @@ export function useChatSession(threadId: string, agentId = "default") {
     onData: onData as never,
     sendAutomaticallyWhen,
   });
-  const { setMessages } = chat;
+  const { setMessages, messages: rawMessages } = chat;
+
+  // Deduplicate messages by id. The AI SDK's shared global store (keyed by
+  // `id: threadId`) can accumulate duplicates when StrictMode double-invokes
+  // effects or when `setMessages` from history loading overlaps with streamed
+  // messages that share the same id.
+  const messages = useMemo(() => {
+    const seen = new Set<string>();
+    return rawMessages.filter((m) => {
+      if (seen.has(m.id)) return false;
+      seen.add(m.id);
+      return true;
+    });
+  }, [rawMessages]);
 
   useEffect(() => {
     let cancelled = false;
@@ -223,6 +236,7 @@ export function useChatSession(threadId: string, agentId = "default") {
 
   return {
     ...chat,
+    messages,
     historyLoaded,
     metrics,
     toolProgress,
