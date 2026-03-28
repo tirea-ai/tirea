@@ -52,7 +52,7 @@ pub fn ai_sdk_routes() -> Router<AppState> {
 #[derive(Debug, Deserialize)]
 struct AiSdkChatRequest {
     #[serde(default)]
-    messages: Vec<AiSdkMessage>,
+    messages: Vec<UIMessage>,
     #[serde(rename = "threadId", alias = "thread_id", default)]
     thread_id: Option<String>,
     #[serde(rename = "agentId", alias = "agent_id", default)]
@@ -61,11 +61,60 @@ struct AiSdkChatRequest {
     state: Option<Value>,
 }
 
+// ── AI SDK v6 UIMessage types ────────────────────────────────────────
+//
+// Maps directly to the TypeScript `UIMessage` / `UIMessagePart` types
+// from the `ai` npm package (v6). No legacy `content` field.
+//
+// Reference: https://ai-sdk.dev/docs/ai-sdk-ui/chatbot
+
+/// A single part of a `UIMessage`.
 #[derive(Debug, Deserialize)]
-struct AiSdkMessage {
+#[serde(tag = "type", rename_all = "kebab-case")]
+enum UIPart {
+    Text {
+        text: String,
+    },
+    Reasoning {
+        text: String,
+    },
+    File {
+        url: String,
+        #[serde(rename = "mediaType")]
+        media_type: String,
+    },
+    SourceUrl {
+        #[serde(rename = "sourceId")]
+        source_id: String,
+        url: String,
+        #[serde(default)]
+        title: Option<String>,
+    },
+    SourceDocument {
+        #[serde(rename = "sourceId")]
+        source_id: String,
+        #[serde(rename = "mediaType")]
+        media_type: String,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        filename: Option<String>,
+    },
+    StepStart,
+    /// Catch-all for tool invocations (`tool-*`), dynamic tools, and data parts (`data-*`).
+    /// These don't map to LLM content blocks — they are UI state, not input.
+    #[serde(other)]
+    Other,
+}
+
+/// AI SDK v6 `UIMessage` — the wire format sent by `DefaultChatTransport`.
+#[derive(Debug, Deserialize)]
+struct UIMessage {
+    #[serde(default)]
+    id: Option<String>,
     role: String,
     #[serde(default)]
-    content: Value,
+    parts: Vec<UIPart>,
 }
 
 /// Parse a data-URI of the form `data:<media_type>;base64,<data>`.
@@ -76,58 +125,54 @@ fn parse_data_uri(url: &str) -> Option<(String, String)> {
     Some((media_type.to_string(), data.to_string()))
 }
 
-/// Parse a single content part from the AI SDK array format into a `ContentBlock`.
-fn parse_content_part(part: &Value) -> Option<ContentBlock> {
-    match part.get("type").and_then(Value::as_str)? {
-        "text" => {
-            let text = part.get("text").and_then(Value::as_str)?;
-            Some(ContentBlock::text(text))
-        }
-        "image_url" => {
-            let url = part
-                .get("image_url")
-                .and_then(|v| v.get("url"))
-                .and_then(Value::as_str)
-                // Also support flat `url` field (seen in some clients).
-                .or_else(|| part.get("url").and_then(Value::as_str))?;
-            if let Some((media_type, data)) = parse_data_uri(url) {
-                Some(ContentBlock::image_base64(media_type, data))
+/// Convert a `UIPart` to a `ContentBlock`.
+fn part_to_content_block(part: &UIPart) -> Option<ContentBlock> {
+    match part {
+        UIPart::Text { text } => Some(ContentBlock::text(text.as_str())),
+        UIPart::File { url, media_type } => {
+            if let Some((mime, data)) = parse_data_uri(url) {
+                // Classify by MIME prefix
+                if mime.starts_with("image/") {
+                    Some(ContentBlock::image_base64(mime, data))
+                } else if mime.starts_with("audio/") {
+                    Some(ContentBlock::audio_base64(mime, data))
+                } else if mime.starts_with("video/") {
+                    Some(ContentBlock::video_base64(mime, data))
+                } else {
+                    Some(ContentBlock::document_base64(mime, data, None))
+                }
+            } else if media_type.starts_with("image/") {
+                Some(ContentBlock::image_url(url.as_str()))
+            } else if media_type.starts_with("audio/") {
+                Some(ContentBlock::audio_url(url.as_str()))
+            } else if media_type.starts_with("video/") {
+                Some(ContentBlock::video_url(url.as_str()))
             } else {
-                Some(ContentBlock::image_url(url))
+                Some(ContentBlock::document_url(url.as_str(), None))
             }
         }
+        // Reasoning, SourceUrl, SourceDocument, StepStart, Other — not LLM input
         _ => None,
     }
 }
 
-/// Extract content blocks from an AI SDK content value (string or array of parts).
-fn extract_content_blocks(content: &Value) -> Option<Vec<ContentBlock>> {
-    match content {
-        Value::String(s) => Some(vec![ContentBlock::text(s.as_str())]),
-        Value::Array(arr) => {
-            let blocks: Vec<ContentBlock> = arr.iter().filter_map(parse_content_part).collect();
-            if blocks.is_empty() {
-                None
-            } else {
-                Some(blocks)
-            }
-        }
-        _ => None,
-    }
-}
-
-fn convert_messages(msgs: Vec<AiSdkMessage>) -> Vec<Message> {
-    use awaken_contract::contract::content::extract_text;
-
+/// Convert `UIMessage` list to awaken `Message` list.
+fn convert_messages(msgs: Vec<UIMessage>) -> Vec<Message> {
     msgs.into_iter()
         .filter_map(|m| {
-            let blocks = extract_content_blocks(&m.content)?;
+            let blocks: Vec<ContentBlock> =
+                m.parts.iter().filter_map(part_to_content_block).collect();
+            if blocks.is_empty() {
+                return None;
+            }
             match m.role.as_str() {
                 "user" => Some(Message::user_with_content(blocks)),
-                // Assistant and system messages are text-only in practice;
-                // extract concatenated text for backward compatibility.
-                "assistant" => Some(Message::assistant(extract_text(&blocks))),
-                "system" => Some(Message::system(extract_text(&blocks))),
+                "assistant" => Some(Message::assistant(
+                    awaken_contract::contract::content::extract_text(&blocks),
+                )),
+                "system" => Some(Message::system(
+                    awaken_contract::contract::content::extract_text(&blocks),
+                )),
                 _ => None,
             }
         })
@@ -304,101 +349,169 @@ mod tests {
     use awaken_contract::contract::content::ContentBlock;
     use serde_json::json;
 
+    // ── UIMessage deserialization ──
+
     #[test]
-    fn convert_string_content_messages() {
-        let msgs = vec![
-            AiSdkMessage {
-                role: "user".into(),
-                content: json!("hello"),
-            },
-            AiSdkMessage {
-                role: "assistant".into(),
-                content: json!("hi there"),
-            },
-        ];
-        let converted = convert_messages(msgs);
-        assert_eq!(converted.len(), 2);
-        assert_eq!(converted[0].text(), "hello");
-        assert_eq!(converted[1].text(), "hi there");
+    fn deserialize_user_text_message() {
+        let raw = json!({
+            "id": "msg-1",
+            "role": "user",
+            "parts": [{"type": "text", "text": "hello"}]
+        });
+        let msg: UIMessage = serde_json::from_value(raw).unwrap();
+        assert_eq!(msg.role, "user");
+        assert_eq!(msg.parts.len(), 1);
+        assert!(matches!(&msg.parts[0], UIPart::Text { text } if text == "hello"));
     }
 
     #[test]
-    fn convert_array_content_preserves_image_url() {
-        let msgs = vec![AiSdkMessage {
+    fn deserialize_message_with_file_part() {
+        let raw = json!({
+            "id": "msg-2",
+            "role": "user",
+            "parts": [
+                {"type": "text", "text": "Look at this"},
+                {"type": "file", "url": "https://example.com/img.png", "mediaType": "image/png"}
+            ]
+        });
+        let msg: UIMessage = serde_json::from_value(raw).unwrap();
+        assert_eq!(msg.parts.len(), 2);
+        assert!(
+            matches!(&msg.parts[1], UIPart::File { url, media_type } if url == "https://example.com/img.png" && media_type == "image/png")
+        );
+    }
+
+    #[test]
+    fn deserialize_tool_parts_as_other() {
+        let raw = json!({
+            "id": "msg-3",
+            "role": "assistant",
+            "parts": [
+                {"type": "text", "text": "Let me search"},
+                {"type": "tool-search", "toolCallId": "c1", "state": "output-available", "input": {}, "output": "results"},
+                {"type": "step-start"}
+            ]
+        });
+        let msg: UIMessage = serde_json::from_value(raw).unwrap();
+        assert_eq!(msg.parts.len(), 3);
+        // tool-search → Other, step-start → StepStart
+        assert!(matches!(&msg.parts[1], UIPart::Other));
+        assert!(matches!(&msg.parts[2], UIPart::StepStart));
+    }
+
+    // ── convert_messages ──
+
+    #[test]
+    fn convert_user_text_message() {
+        let msgs = vec![UIMessage {
+            id: Some("m1".into()),
             role: "user".into(),
-            content: json!([
-                {"type": "text", "text": "Look at "},
-                {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}},
-                {"type": "text", "text": "this"}
-            ]),
+            parts: vec![UIPart::Text {
+                text: "hello".into(),
+            }],
         }];
         let converted = convert_messages(msgs);
         assert_eq!(converted.len(), 1);
-        assert_eq!(converted[0].content.len(), 3);
-        assert_eq!(converted[0].content[0], ContentBlock::text("Look at "));
-        assert_eq!(
-            converted[0].content[1],
-            ContentBlock::image_url("https://example.com/img.png")
-        );
-        assert_eq!(converted[0].content[2], ContentBlock::text("this"));
+        assert_eq!(converted[0].text(), "hello");
     }
 
     #[test]
-    fn convert_array_content_parses_base64_image() {
-        let msgs = vec![AiSdkMessage {
+    fn convert_user_message_with_image_file() {
+        let msgs = vec![UIMessage {
+            id: Some("m2".into()),
             role: "user".into(),
-            content: json!([
-                {"type": "text", "text": "Describe"},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBOR"}}
-            ]),
+            parts: vec![
+                UIPart::Text {
+                    text: "Describe".into(),
+                },
+                UIPart::File {
+                    url: "https://example.com/img.png".into(),
+                    media_type: "image/png".into(),
+                },
+            ],
         }];
         let converted = convert_messages(msgs);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].content.len(), 2);
+        assert_eq!(converted[0].content[0], ContentBlock::text("Describe"));
         assert_eq!(
             converted[0].content[1],
+            ContentBlock::image_url("https://example.com/img.png")
+        );
+    }
+
+    #[test]
+    fn convert_user_message_with_base64_image() {
+        let msgs = vec![UIMessage {
+            id: None,
+            role: "user".into(),
+            parts: vec![UIPart::File {
+                url: "data:image/png;base64,iVBOR".into(),
+                media_type: "image/png".into(),
+            }],
+        }];
+        let converted = convert_messages(msgs);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(
+            converted[0].content[0],
             ContentBlock::image_base64("image/png", "iVBOR")
         );
     }
 
     #[test]
-    fn convert_array_content_flat_url_fallback() {
-        // Some clients send {"type": "image_url", "url": "..."} without nesting.
-        let msgs = vec![AiSdkMessage {
+    fn convert_user_message_with_audio_file() {
+        let msgs = vec![UIMessage {
+            id: None,
             role: "user".into(),
-            content: json!([
-                {"type": "text", "text": "Look"},
-                {"type": "image_url", "url": "https://example.com/img.png"}
-            ]),
+            parts: vec![UIPart::File {
+                url: "https://example.com/audio.mp3".into(),
+                media_type: "audio/mpeg".into(),
+            }],
         }];
         let converted = convert_messages(msgs);
         assert_eq!(converted.len(), 1);
-        assert_eq!(converted[0].content.len(), 2);
         assert_eq!(
-            converted[0].content[1],
-            ContentBlock::image_url("https://example.com/img.png")
+            converted[0].content[0],
+            ContentBlock::audio_url("https://example.com/audio.mp3")
         );
     }
 
     #[test]
     fn convert_skips_unknown_roles() {
-        let msgs = vec![AiSdkMessage {
+        let msgs = vec![UIMessage {
+            id: None,
             role: "function".into(),
-            content: json!("result"),
+            parts: vec![UIPart::Text {
+                text: "result".into(),
+            }],
         }];
         let converted = convert_messages(msgs);
         assert!(converted.is_empty());
     }
 
     #[test]
-    fn convert_system_messages() {
-        let msgs = vec![AiSdkMessage {
+    fn convert_skips_messages_with_only_non_content_parts() {
+        let msgs = vec![UIMessage {
+            id: None,
+            role: "assistant".into(),
+            parts: vec![UIPart::StepStart, UIPart::Other],
+        }];
+        let converted = convert_messages(msgs);
+        assert!(converted.is_empty());
+    }
+
+    #[test]
+    fn convert_system_message() {
+        let msgs = vec![UIMessage {
+            id: None,
             role: "system".into(),
-            content: json!("You are a helpful assistant"),
+            parts: vec![UIPart::Text {
+                text: "You are helpful".into(),
+            }],
         }];
         let converted = convert_messages(msgs);
         assert_eq!(converted.len(), 1);
-        assert_eq!(converted[0].text(), "You are a helpful assistant");
+        assert_eq!(converted[0].text(), "You are helpful");
     }
 
     #[test]
