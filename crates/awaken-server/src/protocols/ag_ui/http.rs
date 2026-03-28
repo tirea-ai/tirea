@@ -162,22 +162,10 @@ async fn ag_ui_run(
     Ok(sse_response(sse_body_stream(sse_rx)))
 }
 
-#[derive(Debug, Deserialize)]
-struct MessageQueryParams {
-    #[serde(default)]
-    offset: Option<usize>,
-    #[serde(default = "default_limit")]
-    limit: usize,
-}
-
-fn default_limit() -> usize {
-    50
-}
-
 async fn thread_messages(
     State(st): State<AppState>,
     Path(id): Path<String>,
-    Query(params): Query<MessageQueryParams>,
+    Query(params): Query<crate::query::MessageQueryParams>,
 ) -> Result<Json<Value>, ApiError> {
     let messages = st
         .store
@@ -186,8 +174,8 @@ async fn thread_messages(
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .unwrap_or_default();
 
-    let offset = params.offset.unwrap_or(0);
-    let limit = params.limit.clamp(1, 200);
+    let offset = params.offset_or_default();
+    let limit = params.clamped_limit();
     let total = messages.len();
 
     let encoded: Vec<Value> = messages

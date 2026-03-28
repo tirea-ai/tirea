@@ -17,6 +17,7 @@ use crate::mailbox::MailboxDispatchStatus;
 use crate::protocols::a2a::http::a2a_routes;
 use crate::protocols::ag_ui::http::ag_ui_routes;
 use crate::protocols::ai_sdk_v6::http::ai_sdk_routes;
+use crate::query::{self, MessageQueryParams};
 use awaken_runtime::RunRequest;
 
 /// API error type returned by route handlers.
@@ -98,15 +99,11 @@ async fn health() -> impl IntoResponse {
 
 // ── Threads ──
 
-fn default_limit() -> usize {
-    50
-}
-
 #[derive(Debug, Deserialize)]
 struct ListParams {
     #[serde(default)]
     offset: Option<usize>,
-    #[serde(default = "default_limit")]
+    #[serde(default = "query::default_limit")]
     limit: usize,
 }
 
@@ -276,17 +273,6 @@ async fn interrupt_thread(
     Err(ApiError::ThreadNotFound(id))
 }
 
-#[derive(Debug, Deserialize)]
-struct MessageQueryParams {
-    #[serde(default)]
-    offset: Option<usize>,
-    #[serde(default = "default_limit")]
-    limit: usize,
-    /// Pass `visibility=all` to include internal messages; otherwise they are filtered out.
-    #[serde(default)]
-    visibility: Option<String>,
-}
-
 async fn get_thread_messages(
     State(st): State<AppState>,
     Path(id): Path<String>,
@@ -323,8 +309,8 @@ async fn get_thread_messages(
             .collect()
     };
 
-    let offset = params.offset.unwrap_or(0);
-    let limit = params.limit.clamp(1, 200);
+    let offset = params.offset_or_default();
+    let limit = params.clamped_limit();
     let total = messages.len();
     let slice: Vec<_> = messages.into_iter().skip(offset).take(limit).collect();
     let has_more = offset + slice.len() < total;
@@ -672,7 +658,7 @@ async fn submit_decision(
 struct ListRunsParams {
     #[serde(default)]
     offset: Option<usize>,
-    #[serde(default = "default_limit")]
+    #[serde(default = "query::default_limit")]
     limit: usize,
     #[serde(default)]
     status: Option<String>,
