@@ -1,0 +1,448 @@
+//! Integration tests for the runtime event lifecycle.
+//!
+//! Verifies the actual event sequences produced by `AgentRuntime::run()`
+//! under different scenarios: simple text, max-rounds termination, and
+//! tool-call flows.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use async_trait::async_trait;
+use serde_json::{Value, json};
+
+use awaken_contract::contract::content::ContentBlock;
+use awaken_contract::contract::event::AgentEvent;
+use awaken_contract::contract::event_sink::{EventSink, VecEventSink};
+use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
+use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_contract::contract::lifecycle::TerminationReason;
+use awaken_contract::contract::message::{Message, ToolCall};
+use awaken_contract::contract::tool::{
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
+};
+
+use awaken_runtime::engine::MockLlmExecutor;
+use awaken_runtime::loop_runner::build_agent_env;
+use awaken_runtime::plugins::Plugin;
+use awaken_runtime::registry::{AgentResolver, ResolvedAgent};
+use awaken_runtime::runtime::{AgentRuntime, RunRequest};
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+struct FixedResolver {
+    agent: ResolvedAgent,
+    plugins: Vec<Arc<dyn Plugin>>,
+}
+
+impl AgentResolver for FixedResolver {
+    fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, awaken_runtime::RuntimeError> {
+        let mut agent = self.agent.clone();
+        agent.env = build_agent_env(&self.plugins, &agent)?;
+        Ok(agent)
+    }
+}
+
+fn event_type(e: &AgentEvent) -> &'static str {
+    match e {
+        AgentEvent::RunStart { .. } => "run_start",
+        AgentEvent::RunFinish { .. } => "run_finish",
+        AgentEvent::StepStart { .. } => "step_start",
+        AgentEvent::StepEnd => "step_end",
+        AgentEvent::TextDelta { .. } => "text_delta",
+        AgentEvent::ToolCallStart { .. } => "tool_call_start",
+        AgentEvent::ToolCallDelta { .. } => "tool_call_delta",
+        AgentEvent::ToolCallReady { .. } => "tool_call_ready",
+        AgentEvent::ToolCallDone { .. } => "tool_call_done",
+        AgentEvent::InferenceComplete { .. } => "inference_complete",
+        AgentEvent::StateSnapshot { .. } => "state_snapshot",
+        AgentEvent::StateDelta { .. } => "state_delta",
+        AgentEvent::ReasoningDelta { .. } => "reasoning_delta",
+        AgentEvent::ReasoningEncryptedValue { .. } => "reasoning_encrypted_value",
+        AgentEvent::MessagesSnapshot { .. } => "messages_snapshot",
+        AgentEvent::ActivitySnapshot { .. } => "activity_snapshot",
+        AgentEvent::ActivityDelta { .. } => "activity_delta",
+        AgentEvent::ToolCallResumed { .. } => "tool_call_resumed",
+        AgentEvent::Error { .. } => "error",
+    }
+}
+
+fn verify_event_ordering(events: &[AgentEvent]) {
+    let types: Vec<&str> = events.iter().map(event_type).collect();
+
+    assert!(!types.is_empty(), "no events emitted");
+    assert_eq!(
+        types[0], "run_start",
+        "first event must be run_start, got: {types:?}"
+    );
+    assert_eq!(
+        *types.last().unwrap(),
+        "run_finish",
+        "last event must be run_finish, got: {types:?}"
+    );
+
+    let mut step_depth = 0i32;
+    for (i, t) in types.iter().enumerate() {
+        match *t {
+            "step_start" => {
+                step_depth += 1;
+                assert_eq!(
+                    step_depth, 1,
+                    "nested step_start without step_end at index {i}: {types:?}"
+                );
+            }
+            "step_end" => {
+                step_depth -= 1;
+                assert!(
+                    step_depth >= 0,
+                    "step_end without step_start at index {i}: {types:?}"
+                );
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        step_depth, 0,
+        "unclosed step: step_start without step_end: {types:?}"
+    );
+}
+
+fn count_event(events: &[AgentEvent], target: &str) -> usize {
+    events.iter().filter(|e| event_type(e) == target).count()
+}
+
+// ---------------------------------------------------------------------------
+// Test 1: Simple text response — event sequence
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn simple_text_response_event_sequence() {
+    let llm = Arc::new(MockLlmExecutor::new().with_responses(vec!["Hello!".into()]));
+    let resolver = Arc::new(FixedResolver {
+        agent: ResolvedAgent::new("test", "m", "You are a test assistant.", llm),
+        plugins: vec![],
+    });
+    let runtime = AgentRuntime::new(resolver);
+    let sink = Arc::new(VecEventSink::new());
+
+    runtime
+        .run(
+            RunRequest::new("thread-1", vec![Message::user("hello")]).with_agent_id("test"),
+            sink.clone() as Arc<dyn EventSink>,
+        )
+        .await
+        .expect("run should succeed");
+
+    let events = sink.take();
+    let types: Vec<&str> = events.iter().map(event_type).collect();
+
+    // Verify ordering invariants
+    verify_event_ordering(&events);
+
+    // Verify expected event types are present
+    assert!(
+        types.contains(&"text_delta"),
+        "should contain text_delta: {types:?}"
+    );
+    assert!(
+        types.contains(&"inference_complete"),
+        "should contain inference_complete: {types:?}"
+    );
+
+    // Verify counts
+    assert_eq!(count_event(&events, "run_start"), 1);
+    assert_eq!(count_event(&events, "run_finish"), 1);
+    assert_eq!(count_event(&events, "step_start"), 1);
+    assert_eq!(count_event(&events, "step_end"), 1);
+
+    // Verify termination reason is NaturalEnd
+    if let AgentEvent::RunFinish { termination, .. } = events.last().unwrap() {
+        assert_eq!(*termination, TerminationReason::NaturalEnd);
+    } else {
+        panic!("last event should be RunFinish");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 2: Max rounds termination — StepEnd emitted before RunFinish
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn max_rounds_termination_emits_step_end() {
+    let llm = Arc::new(MockLlmExecutor::new().with_responses(vec!["Response".into()]));
+    let resolver = Arc::new(FixedResolver {
+        agent: ResolvedAgent::new("test", "m", "sys", llm).with_max_rounds(1),
+        plugins: vec![],
+    });
+    let runtime = AgentRuntime::new(resolver);
+    let sink = Arc::new(VecEventSink::new());
+
+    runtime
+        .run(
+            RunRequest::new("thread-max", vec![Message::user("hi")]).with_agent_id("test"),
+            sink.clone() as Arc<dyn EventSink>,
+        )
+        .await
+        .expect("run should succeed");
+
+    let events = sink.take();
+    let types: Vec<&str> = events.iter().map(event_type).collect();
+
+    // Verify ordering invariants
+    verify_event_ordering(&events);
+
+    // Verify StepEnd is emitted before RunFinish
+    let step_end_idx = types.iter().rposition(|t| *t == "step_end");
+    let run_finish_idx = types.iter().rposition(|t| *t == "run_finish");
+    assert!(
+        step_end_idx.is_some() && run_finish_idx.is_some(),
+        "both step_end and run_finish should exist: {types:?}"
+    );
+    assert!(
+        step_end_idx.unwrap() < run_finish_idx.unwrap(),
+        "step_end should come before run_finish: {types:?}"
+    );
+
+    // With max_rounds=1 and a simple text response (no tool calls),
+    // the run should finish naturally since the LLM returned EndTurn
+    if let AgentEvent::RunFinish { termination, .. } = events.last().unwrap() {
+        // NaturalEnd is expected because the mock returns EndTurn stop reason
+        assert_eq!(*termination, TerminationReason::NaturalEnd);
+    } else {
+        panic!("last event should be RunFinish");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 3: Tool call flow — complete lifecycle
+// ---------------------------------------------------------------------------
+
+struct ToolCallMockExecutor {
+    call_count: AtomicUsize,
+}
+
+#[async_trait]
+impl LlmExecutor for ToolCallMockExecutor {
+    async fn execute(
+        &self,
+        _req: InferenceRequest,
+    ) -> Result<StreamResult, InferenceExecutionError> {
+        let count = self.call_count.fetch_add(1, Ordering::Relaxed);
+        if count == 0 {
+            // First call: return a tool call
+            Ok(StreamResult {
+                content: vec![],
+                tool_calls: vec![ToolCall::new(
+                    "call_1",
+                    "get_weather",
+                    json!({"location": "Tokyo"}),
+                )],
+                usage: Some(TokenUsage::default()),
+                stop_reason: Some(StopReason::ToolUse),
+                has_incomplete_tool_calls: false,
+            })
+        } else {
+            // Second call: return text (after tool result)
+            Ok(StreamResult {
+                content: vec![ContentBlock::text("It's sunny in Tokyo")],
+                tool_calls: vec![],
+                usage: Some(TokenUsage::default()),
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            })
+        }
+    }
+
+    fn name(&self) -> &str {
+        "tool-mock"
+    }
+}
+
+struct GetWeatherTool;
+
+#[async_trait]
+impl Tool for GetWeatherTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new(
+            "get_weather",
+            "get_weather",
+            "Gets the weather for a location",
+        )
+    }
+
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+        Ok(ToolResult::success(
+            "get_weather",
+            json!({"temp": 25, "condition": "sunny"}),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn tool_call_flow_complete_lifecycle() {
+    let llm = Arc::new(ToolCallMockExecutor {
+        call_count: AtomicUsize::new(0),
+    });
+    let resolver = Arc::new(FixedResolver {
+        agent: ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(GetWeatherTool)),
+        plugins: vec![],
+    });
+    let runtime = AgentRuntime::new(resolver);
+    let sink = Arc::new(VecEventSink::new());
+
+    runtime
+        .run(
+            RunRequest::new(
+                "thread-tool",
+                vec![Message::user("What's the weather in Tokyo?")],
+            )
+            .with_agent_id("test"),
+            sink.clone() as Arc<dyn EventSink>,
+        )
+        .await
+        .expect("run should succeed");
+
+    let events = sink.take();
+    let types: Vec<&str> = events.iter().map(event_type).collect();
+
+    // Verify ordering invariants
+    verify_event_ordering(&events);
+
+    // Verify tool call events are present
+    assert!(
+        types.contains(&"tool_call_start"),
+        "should contain tool_call_start: {types:?}"
+    );
+    assert!(
+        types.contains(&"tool_call_done"),
+        "should contain tool_call_done: {types:?}"
+    );
+
+    // Verify text delta from the second inference call
+    assert!(
+        types.contains(&"text_delta"),
+        "should contain text_delta: {types:?}"
+    );
+
+    // Verify: 2 StepStart and 2 StepEnd (one for tool call round, one for text round)
+    assert_eq!(
+        count_event(&events, "step_start"),
+        2,
+        "expected 2 step_start events: {types:?}"
+    );
+    assert_eq!(
+        count_event(&events, "step_end"),
+        2,
+        "expected 2 step_end events: {types:?}"
+    );
+
+    // Verify tool_call_done comes before the second step_start
+    let tool_done_idx = types.iter().position(|t| *t == "tool_call_done").unwrap();
+    let second_step_start_idx = types
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| **t == "step_start")
+        .nth(1)
+        .map(|(i, _)| i)
+        .unwrap();
+    assert!(
+        tool_done_idx < second_step_start_idx,
+        "tool_call_done ({tool_done_idx}) should come before second step_start ({second_step_start_idx}): {types:?}"
+    );
+
+    // Verify termination is NaturalEnd
+    if let AgentEvent::RunFinish { termination, .. } = events.last().unwrap() {
+        assert_eq!(*termination, TerminationReason::NaturalEnd);
+    } else {
+        panic!("last event should be RunFinish");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 4: Event ordering invariants on all scenarios combined
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn event_ordering_invariants_hold_across_scenarios() {
+    // Scenario A: simple text
+    {
+        let llm = Arc::new(MockLlmExecutor::new());
+        let resolver = Arc::new(FixedResolver {
+            agent: ResolvedAgent::new("test", "m", "sys", llm),
+            plugins: vec![],
+        });
+        let runtime = AgentRuntime::new(resolver);
+        let sink = Arc::new(VecEventSink::new());
+
+        runtime
+            .run(
+                RunRequest::new("thread-inv-a", vec![Message::user("hi")]).with_agent_id("test"),
+                sink.clone() as Arc<dyn EventSink>,
+            )
+            .await
+            .expect("run should succeed");
+
+        verify_event_ordering(&sink.take());
+    }
+
+    // Scenario B: tool call flow
+    {
+        let llm = Arc::new(ToolCallMockExecutor {
+            call_count: AtomicUsize::new(0),
+        });
+        let resolver = Arc::new(FixedResolver {
+            agent: ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(GetWeatherTool)),
+            plugins: vec![],
+        });
+        let runtime = AgentRuntime::new(resolver);
+        let sink = Arc::new(VecEventSink::new());
+
+        runtime
+            .run(
+                RunRequest::new("thread-inv-b", vec![Message::user("weather?")])
+                    .with_agent_id("test"),
+                sink.clone() as Arc<dyn EventSink>,
+            )
+            .await
+            .expect("run should succeed");
+
+        verify_event_ordering(&sink.take());
+    }
+
+    // Scenario C: max_rounds=1 with tool call (forced early stop)
+    {
+        let llm = Arc::new(ToolCallMockExecutor {
+            call_count: AtomicUsize::new(0),
+        });
+        let resolver = Arc::new(FixedResolver {
+            agent: ResolvedAgent::new("test", "m", "sys", llm)
+                .with_max_rounds(1)
+                .with_tool(Arc::new(GetWeatherTool)),
+            plugins: vec![],
+        });
+        let runtime = AgentRuntime::new(resolver);
+        let sink = Arc::new(VecEventSink::new());
+
+        runtime
+            .run(
+                RunRequest::new("thread-inv-c", vec![Message::user("weather?")])
+                    .with_agent_id("test"),
+                sink.clone() as Arc<dyn EventSink>,
+            )
+            .await
+            .expect("run should succeed");
+
+        let events = sink.take();
+        verify_event_ordering(&events);
+
+        // With max_rounds=1 and a tool call, the run should be stopped
+        if let AgentEvent::RunFinish { termination, .. } = events.last().unwrap() {
+            // After 1 round with tool use, the loop hits max_rounds
+            assert!(
+                matches!(termination, TerminationReason::Stopped(_)),
+                "expected Stopped termination with max_rounds=1 + tool call, got: {termination:?}"
+            );
+        }
+    }
+}
