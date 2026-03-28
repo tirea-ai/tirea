@@ -127,7 +127,13 @@ pub(super) async fn execute_streaming(
                 has_incomplete_tool_calls = true;
                 continue; // truncated JSON, skip
             }
-            tool_calls.push(ToolCall::new(id.clone(), name, arguments));
+            tool_calls.push(ToolCall::new(id.clone(), name.clone(), arguments.clone()));
+            sink.emit(AgentEvent::ToolCallReady {
+                id: id.clone(),
+                name,
+                arguments,
+            })
+            .await;
         }
     }
 
