@@ -71,7 +71,12 @@ async fn sse_body_stream_yields_all_chunks() {
     drop(tx);
 
     let items: Vec<Bytes> = stream.map(|r| r.unwrap()).collect().await;
-    assert_eq!(items, vec![Bytes::from("a"), Bytes::from("b")]);
+    // Filter out any heartbeat comments that may have been injected.
+    let data: Vec<Bytes> = items
+        .into_iter()
+        .filter(|b| !b.starts_with(b": heartbeat"))
+        .collect();
+    assert_eq!(data, vec![Bytes::from("a"), Bytes::from("b")]);
 }
 
 #[tokio::test]
@@ -82,7 +87,11 @@ async fn sse_body_stream_empty_on_immediate_close() {
     drop(_tx);
 
     let items: Vec<Bytes> = stream.map(|r| r.unwrap()).collect().await;
-    assert!(items.is_empty());
+    let data: Vec<Bytes> = items
+        .into_iter()
+        .filter(|b| !b.starts_with(b": heartbeat"))
+        .collect();
+    assert!(data.is_empty());
 }
 
 // ============================================================================
