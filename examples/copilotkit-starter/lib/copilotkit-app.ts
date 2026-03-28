@@ -4,8 +4,7 @@ import {
   copilotRuntimeNextJSAppRouterEndpoint,
 } from "@copilotkit/runtime";
 
-import { PersistedThreadHttpAgent } from "@/lib/persisted-http-agent";
-import { loadThreadSnapshotFromBackend } from "@/lib/awaken-backend";
+import { HttpAgent } from "@ag-ui/client";
 
 const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:38080";
 const AGENT_IDS = [
@@ -19,11 +18,11 @@ const AGENT_IDS = [
 const agents = Object.fromEntries(
   AGENT_IDS.map((agentId) => [
     agentId,
-    // Type cast avoids minor transitive @ag-ui type drift inside CopilotKit runtime deps.
+    // Frontend sends only new messages + threadId.
+    // Backend loads thread history from store automatically.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    new PersistedThreadHttpAgent({
+    new HttpAgent({
       url: `${BACKEND_URL}/v1/ag-ui/agents/${agentId}/runs`,
-      loadThreadSnapshot: loadThreadSnapshotFromBackend,
     }) as any,
   ]),
 );
