@@ -85,13 +85,13 @@ test.describe('interrupt and cancellation', () => {
     expect(res.status()).toBe(404);
   });
 
-  test('cancel nonexistent run returns 404', async ({ request }) => {
-    const res = await request.post('/v1/runs/nonexistent-run-id/cancel');
+  test('cancel nonexistent thread returns 404', async ({ request }) => {
+    const res = await request.post('/v1/threads/nonexistent-thread-id/cancel');
     expect(res.status()).toBe(404);
   });
 
-  test('submit decision to nonexistent run returns 404', async ({ request }) => {
-    const res = await request.post('/v1/runs/nonexistent-run-id/decision', {
+  test('submit decision to nonexistent thread returns 404', async ({ request }) => {
+    const res = await request.post('/v1/threads/nonexistent-thread-id/decision', {
       data: {
         toolCallId: 'fake-id',
         action: 'resume',
@@ -101,53 +101,12 @@ test.describe('interrupt and cancellation', () => {
   });
 
   test('submit decision with invalid action returns 400', async ({ request }) => {
-    const res = await request.post('/v1/runs/nonexistent-run-id/decision', {
+    const res = await request.post('/v1/threads/nonexistent-thread-id/decision', {
       data: {
         toolCallId: 'fake-id',
         action: 'approve',
       },
     });
     expect(res.status()).toBe(400);
-  });
-
-  test('push inputs to nonexistent run returns 404', async ({ request }) => {
-    const res = await request.post('/v1/runs/nonexistent-run-id/inputs', {
-      data: {
-        messages: [{ role: 'user', content: 'Input' }],
-      },
-    });
-    expect(res.status()).toBe(404);
-  });
-
-  test('push inputs to completed run returns 404', async ({ request }) => {
-    // Create a thread and run, then try to push inputs after it completes
-    const threadRes = await request.post('/v1/threads', {
-      data: { title: 'Completed Run Inputs Test' },
-    });
-    const thread = await threadRes.json();
-
-    // Start a run and wait for it to complete
-    const runRes = await request.post('/v1/runs', {
-      data: {
-        agentId: 'default',
-        threadId: thread.id,
-        messages: [{ role: 'user', content: 'Hello' }],
-      },
-    });
-    // Consume the SSE stream (run completes)
-    await runRes.text();
-
-    // List runs to find the run ID
-    const listRes = await request.get(`/v1/threads/${thread.id}/runs`);
-    const listBody = await listRes.json();
-
-    if (listBody.items.length > 0) {
-      const runId = listBody.items[0].id;
-      // Completed run is no longer accepting inputs, so server returns 404
-      const inputsRes = await request.post(`/v1/runs/${runId}/inputs`, {
-        data: { messages: [] },
-      });
-      expect(inputsRes.status()).toBe(404);
-    }
   });
 });

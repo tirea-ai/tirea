@@ -1,4 +1,9 @@
 import type { UIMessage } from "@ai-sdk/react";
+import {
+  parseHistoryPayload,
+  parseThreadSummariesPayload,
+  type ThreadSummary,
+} from "./protocol";
 
 const BACKEND_URL =
   import.meta.env.VITE_BACKEND_URL ?? "http://localhost:38080";
@@ -12,25 +17,15 @@ export function historyApiUrl(sessionId: string): string {
 }
 
 export function threadSummariesUrl(): string {
-  return `${BACKEND_URL}/v1/threads/summaries`;
+  return `${BACKEND_URL}/v1/threads/summaries?limit=200`;
 }
-
-export type ThreadSummary = {
-  id: string;
-  title: string | null;
-  updated_at: number | null;
-  created_at: number | null;
-  message_count: number;
-};
 
 export async function fetchHistory(sessionId: string): Promise<UIMessage[]> {
   try {
     const res = await fetch(historyApiUrl(sessionId));
     if (!res.ok) return [];
     const data = await res.json();
-    if (Array.isArray(data.messages)) return data.messages;
-    if (Array.isArray(data.items)) return data.items;
-    return [];
+    return parseHistoryPayload(data);
   } catch {
     return [];
   }
@@ -41,7 +36,7 @@ export async function fetchThreadSummaries(): Promise<ThreadSummary[]> {
     const res = await fetch(threadSummariesUrl());
     if (!res.ok) return [];
     const data = await res.json();
-    return Array.isArray(data) ? data : [];
+    return parseThreadSummariesPayload(data);
   } catch {
     return [];
   }
@@ -50,9 +45,9 @@ export async function fetchThreadSummaries(): Promise<ThreadSummary[]> {
 export async function patchThreadTitle(
   threadId: string,
   title: string,
-): Promise<void> {
+): Promise<boolean> {
   try {
-    await fetch(
+    const res = await fetch(
       `${BACKEND_URL}/v1/threads/${encodeURIComponent(threadId)}/metadata`,
       {
         method: "PATCH",
@@ -60,10 +55,9 @@ export async function patchThreadTitle(
         body: JSON.stringify({ title }),
       },
     );
-    // Silently ignore non-OK responses — thread may not exist yet
-    // (created on first run, not when frontend generates session ID)
+    return res.ok;
   } catch {
-    // Ignore network errors for non-critical metadata update
+    return false;
   }
 }
 

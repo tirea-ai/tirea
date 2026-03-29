@@ -39,7 +39,7 @@ export function MetricsPanel({ metrics }: { metrics: InferenceMetrics[] }) {
                 in: {promptTokens} / out: {completionTokens}
               </span>
             )}
-            <span className="text-slate-400">({m.duration_ms}ms)</span>
+            <span className="text-slate-400">({m.durationMs}ms)</span>
           </div>
         );
       })}

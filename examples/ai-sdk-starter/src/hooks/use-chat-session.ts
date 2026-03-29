@@ -88,12 +88,6 @@ function parseToolCallProgressSnapshot(data: unknown): ToolCallProgressNode | nu
   };
 }
 
-export interface GenerativeUISnapshot {
-  activityType: string;
-  messageId?: string;
-  content: unknown;
-}
-
 export function useChatSession(
   threadId: string,
   agentId = "default",
@@ -102,7 +96,6 @@ export function useChatSession(
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [metrics, setMetrics] = useState<InferenceMetrics[]>([]);
   const [toolProgress, setToolProgress] = useState<Record<string, ToolCallProgressNode>>({});
-  const [generativeUI, setGenerativeUI] = useState<Record<string, GenerativeUISnapshot>>({});
   const [askAnswers, setAskAnswers] = useState<Record<string, string>>({});
   const historyLoadToken = useRef(0);
 
@@ -127,23 +120,8 @@ export function useChatSession(
           ...prev,
           [node.node_id]: node,
         }));
-        return;
       }
-      // Generative UI activity snapshots
-      if (isRecord(dataPart.data)) {
-        const activityType = asString(dataPart.data.activityType);
-        if (activityType?.startsWith("generative-ui.")) {
-          const messageId = asString(dataPart.data.messageId) ?? activityType;
-          setGenerativeUI((prev) => ({
-            ...prev,
-            [messageId]: {
-              activityType,
-              messageId,
-              content: dataPart.data,
-            } as GenerativeUISnapshot,
-          }));
-        }
-      }
+      return;
     }
   }, [onInferenceComplete]);
 
@@ -201,7 +179,6 @@ export function useChatSession(
     setHistoryLoaded(false);
     setMetrics([]);
     setToolProgress({});
-    setGenerativeUI({});
     setAskAnswers({});
     setMessages([]);
 
@@ -234,7 +211,6 @@ export function useChatSession(
     historyLoaded,
     metrics,
     toolProgress,
-    generativeUI,
     askAnswers,
     setAskAnswers,
   };

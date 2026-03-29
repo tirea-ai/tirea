@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@a2ui/lit": "^0.8.3",
+    "@a2ui/react": "^0.8.0",
     "@ag-ui/client": "^0.0.48",
     "@copilotkit/react-core": "^1.54.1",
     "@copilotkit/react-ui": "^1.54.1",

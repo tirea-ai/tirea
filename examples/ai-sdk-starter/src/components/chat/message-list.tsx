@@ -11,10 +11,17 @@ import { PermissionDialog } from "@/components/tools/permission-dialog";
 import { AskUserDialog } from "@/components/tools/ask-user-dialog";
 import { WeatherCard } from "@/components/tools/weather-card";
 import { getMcpUiContent, McpAppFrame } from "@/components/tools/mcp-app-frame";
-import { A2uiSurface, extractSurfaceId, type A2uiMessage } from "@/components/tools/a2ui-surface";
+import {
+  extractSurfaceId,
+  normalizeA2uiMessages,
+  type A2uiMessage,
+} from "@/components/tools/a2ui-protocol";
 import { JsonRenderPanel, OpenUIPanel, A2UIPanel } from "@/components/tools/generative-ui-renderers";
-import type { GenerativeUISnapshot } from "@/hooks/use-chat-session";
 import { useMemo } from "react";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 type MessageListProps = {
   messages: UIMessage[];
@@ -32,7 +39,6 @@ type MessageListProps = {
     output: Record<string, unknown>,
   ) => Promise<void> | void;
   onSendMessage?: (text: string) => void;
-  generativeUI?: Record<string, GenerativeUISnapshot>;
 };
 
 export function MessageList({
@@ -47,7 +53,6 @@ export function MessageList({
   onAskSubmit,
   onFrontendToolSubmit,
   onSendMessage,
-  generativeUI = {},
 }: MessageListProps) {
   const isDark = themeMode === "dark";
   const itemClass = isDark ? "border-slate-700" : "border-slate-100";
@@ -57,24 +62,23 @@ export function MessageList({
 
   // Build a registry that merges all render_a2ui tool calls by surfaceId.
   // Only the last tool call for each surfaceId renders the actual surface.
+  // Reads from tool INPUT (the A2UI message the LLM sent), not output.
   const a2uiRegistry = useMemo(() => {
     const registry = new Map<string, { allMessages: A2uiMessage[]; lastToolCallId: string }>();
     for (const m of messages) {
       for (const p of m.parts) {
-        const tp = p as { type: string; toolName?: string; toolCallId?: string; output?: unknown };
+        const tp = p as { type: string; toolName?: string; toolCallId?: string; input?: unknown };
         const name = tp.toolName ?? (typeof tp.type === "string" ? tp.type.replace("tool-", "") : "");
-        if (name !== "render_a2ui" || tp.output == null) continue;
-        const output = tp.output as { data?: { a2ui?: unknown[] } };
-        const a2uiMsgs = output.data?.a2ui;
-        if (!Array.isArray(a2uiMsgs) || a2uiMsgs.length === 0) continue;
-        const sid = extractSurfaceId(a2uiMsgs as A2uiMessage[]);
+        if (name !== "render_a2ui" || tp.input == null) continue;
+        const a2uiMessages = normalizeA2uiMessages(tp.input);
+        const sid = extractSurfaceId(a2uiMessages);
         if (!sid || !tp.toolCallId) continue;
         const existing = registry.get(sid);
         if (existing) {
-          existing.allMessages = [...existing.allMessages, ...(a2uiMsgs as A2uiMessage[])];
+          existing.allMessages = [...existing.allMessages, ...a2uiMessages];
           existing.lastToolCallId = tp.toolCallId;
         } else {
-          registry.set(sid, { allMessages: [...(a2uiMsgs as A2uiMessage[])], lastToolCallId: tp.toolCallId });
+          registry.set(sid, { allMessages: a2uiMessages, lastToolCallId: tp.toolCallId });
         }
       }
     }
@@ -135,10 +139,6 @@ export function MessageList({
           )}
         </div>
       ))}
-      {/* Generative UI panels from activity snapshots */}
-      {Object.values(generativeUI).map((snapshot) => (
-        <GenerativeUIRenderer key={snapshot.messageId ?? snapshot.activityType} snapshot={snapshot} isStreaming={isLoading} />
-      ))}
       {isLoading && (
         <div className={`py-2 text-sm ${loadingClass}`}>Thinking...</div>
       )}
@@ -186,6 +186,7 @@ function PartRenderer({
   onSendMessage,
   themeMode,
   a2uiRegistry,
+  liveGenerativeUiMessageIds,
 }: {
   part: Record<string, unknown>;
   isLoading: boolean;
@@ -275,6 +276,7 @@ function ToolPartRenderer({
     state: string;
     input?: unknown;
     output?: unknown;
+    preliminary?: boolean;
     errorText?: string;
     approval?: { id: string; approved?: boolean; reason?: string };
   };
@@ -287,16 +289,15 @@ function ToolPartRenderer({
     return <WeatherCard location={output.location ?? ""} />;
   }
 
-  // A2UI surface renderer for render_a2ui tool
-  if (name === "render_a2ui" && tool.output != null) {
-    const output = tool.output as { data?: { a2ui?: unknown[] } };
-    const a2uiMessages = output.data?.a2ui;
-    if (Array.isArray(a2uiMessages) && a2uiMessages.length > 0) {
-      const sid = extractSurfaceId(a2uiMessages as A2uiMessage[]);
-      const entry = sid && a2uiRegistry ? a2uiRegistry.get(sid) : null;
-      // Only render the surface at the last tool call for this surfaceId
+  // A2UI surface renderer for render_a2ui tool — reads from INPUT (the A2UI
+  // message the LLM sent), not output.  The tool output is just a confirmation.
+  if (name === "render_a2ui" && tool.input != null) {
+    const inputMessages = normalizeA2uiMessages(tool.input);
+    const sid = extractSurfaceId(inputMessages);
+    if (sid) {
+      const entry = a2uiRegistry ? a2uiRegistry.get(sid) : null;
       const isLastForSurface = !entry || entry.lastToolCallId === tool.toolCallId;
-      const surfaceMessages = entry ? entry.allMessages : (a2uiMessages as A2uiMessage[]);
+      const surfaceMessages = entry ? entry.allMessages : inputMessages;
       return (
         <div>
           <ToolCard
@@ -308,18 +309,10 @@ function ToolPartRenderer({
           />
           {isLastForSurface && (
             <>
-              {/* Official @a2ui/lit Web Component renderer */}
-              <A2UIPanel messages={surfaceMessages} />
-              {/* Fallback pure-React renderer */}
-              <A2uiSurface
-                messages={surfaceMessages as never[]}
-                onEvent={(surfaceId, eventName, context) => {
-                  if (onSendMessage) {
-                    const ctx = JSON.stringify(context);
-                    onSendMessage(
-                      `[A2UI event on surface "${surfaceId}": ${eventName}] ${ctx}`,
-                    );
-                  }
+              <A2UIPanel
+                messages={surfaceMessages}
+                onAction={(text) => {
+                  onSendMessage?.(text);
                 }}
               />
             </>
@@ -327,6 +320,52 @@ function ToolPartRenderer({
         </div>
       );
     }
+  }
+
+  if (name === "render_json_ui" && tool.output != null) {
+    const output = isRecord(tool.output) ? tool.output : null;
+    const content = output?.content ?? tool.output;
+    return (
+      <div>
+        <ToolCard
+          name={name}
+          state={tool.state}
+          input={tool.input}
+          output={tool.output}
+          errorText={tool.errorText}
+        />
+        <JsonRenderPanel
+          data={content}
+          isStreaming={isLoading || tool.preliminary === true}
+        />
+      </div>
+    );
+  }
+
+  if (name === "render_openui_ui" && tool.output != null) {
+    const output = isRecord(tool.output) ? tool.output : null;
+    const content = output?.content;
+    const response =
+      typeof content === "string"
+        ? content
+        : typeof tool.output === "string"
+          ? tool.output
+          : "";
+    return (
+      <div>
+        <ToolCard
+          name={name}
+          state={tool.state}
+          input={tool.input}
+          output={tool.output}
+          errorText={tool.errorText}
+        />
+        <OpenUIPanel
+          response={response}
+          isStreaming={isLoading || tool.preliminary === true}
+        />
+      </div>
+    );
   }
 
   // MCP App iframe for tools with mcp.ui.content metadata
@@ -511,45 +550,6 @@ function ToolPartRenderer({
           Permission denied
         </div>
       )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Generative UI activity snapshot renderer
-// ---------------------------------------------------------------------------
-
-function GenerativeUIRenderer({
-  snapshot,
-  isStreaming,
-}: {
-  snapshot: GenerativeUISnapshot;
-  isStreaming: boolean;
-}) {
-  const content = snapshot.content as Record<string, unknown> | undefined;
-  if (!content) return null;
-
-  const activityType = snapshot.activityType;
-
-  if (activityType === "generative-ui.json-render") {
-    // content.content holds the json-render Spec
-    const specData = content.content ?? content;
-    return <JsonRenderPanel data={specData} />;
-  }
-
-  if (activityType === "generative-ui.openui-lang") {
-    // content.content holds the raw openui-lang text
-    const response = typeof content.content === "string" ? content.content : "";
-    return <OpenUIPanel response={response} isStreaming={isStreaming} />;
-  }
-
-  // Fallback: render raw JSON for unknown generative-ui types
-  return (
-    <div data-testid="generative-ui-unknown" className="my-2 rounded-lg border border-slate-200 bg-slate-50 p-2">
-      <div className="text-xs font-semibold text-slate-500 mb-1">{activityType}</div>
-      <pre className="text-xs text-slate-600 overflow-x-auto">
-        {JSON.stringify(content, null, 2)}
-      </pre>
     </div>
   );
 }

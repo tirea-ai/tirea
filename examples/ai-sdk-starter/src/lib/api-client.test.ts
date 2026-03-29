@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { UIMessage } from "@ai-sdk/react";
-import { fetchHistory } from "./api-client";
+import { fetchHistory, patchThreadTitle } from "./api-client";
 
 describe("fetchHistory", () => {
   afterEach(() => {
@@ -20,11 +19,11 @@ describe("fetchHistory", () => {
     );
 
     const result = await fetchHistory("thread-1");
-    expect((result as UIMessage[]).length).toBe(1);
+    expect(result.length).toBe(1);
     expect(result[0]?.id).toBe("m1");
   });
 
-  it("falls back to items when messages is missing", async () => {
+  it("returns an empty list for nonstandard history payloads", async () => {
     const payload = {
       items: [{ id: "m2", role: "assistant", parts: [{ type: "text", text: "ok" }] }],
     };
@@ -37,8 +36,34 @@ describe("fetchHistory", () => {
     );
 
     const result = await fetchHistory("thread-2");
-    expect((result as UIMessage[]).length).toBe(1);
-    expect(result[0]?.id).toBe("m2");
+    expect(result).toEqual([]);
   });
 });
 
+describe("patchThreadTitle", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("returns true when metadata patch succeeds", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+      }),
+    );
+
+    await expect(patchThreadTitle("thread-1", "hello")).resolves.toBe(true);
+  });
+
+  it("returns false when metadata patch fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+      }),
+    );
+
+    await expect(patchThreadTitle("thread-1", "hello")).resolves.toBe(false);
+  });
+});

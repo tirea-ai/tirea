@@ -4,10 +4,79 @@ export type StarterAction = {
   title: string;
   capability: string;
   prompt: string;
-  agentId?: "default" | "permission" | "stopper";
+  agentId?:
+    | "default"
+    | "permission"
+    | "stopper"
+    | "a2ui"
+    | "json-render"
+    | "openui";
 };
 
-export const RECOMMENDED_ACTIONS: StarterAction[] = [
+export const RECOMMENDED_ACTIONS: readonly StarterAction[] = [
+  {
+    id: "a2ui-expense-approval",
+    scenarioId: "a2ui.expense_approval",
+    title: "Expense Approval",
+    capability: "Generative UI",
+    prompt:
+      "Create an expense approval form for an operations manager. Include requester name, department, amount, business justification, a priority selector, and a submit button. Use realistic business copy.",
+    agentId: "a2ui",
+  },
+  {
+    id: "a2ui-site-visit",
+    scenarioId: "a2ui.site_visit",
+    title: "Site Visit Request",
+    capability: "Generative UI",
+    prompt:
+      "Create a site visit request form for an operations coordinator. Include requester name, facility location, visit date and time, an on-site escort required checkbox, visit purpose, and a submit button. Use realistic business copy.",
+    agentId: "a2ui",
+  },
+  {
+    id: "a2ui-vendor-intake",
+    scenarioId: "a2ui.vendor_intake",
+    title: "Vendor Intake",
+    capability: "Generative UI",
+    prompt:
+      "Create a vendor onboarding intake form for a procurement team. Include supplier name, category, contract start date, payment terms, risk level, and a submit button. Use realistic business copy.",
+    agentId: "a2ui",
+  },
+  {
+    id: "json-render-procurement-workspace",
+    scenarioId: "json_render.procurement_workspace",
+    title: "Procurement Workspace",
+    capability: "Generative UI",
+    prompt:
+      "Create a procurement request workspace for an internal operations team. Include a summary card, current approval status, requester details, line items table, and primary action buttons. Use realistic product copy.",
+    agentId: "json-render",
+  },
+  {
+    id: "json-render-kpi-dashboard",
+    scenarioId: "json_render.kpi_dashboard",
+    title: "KPI Dashboard",
+    capability: "Generative UI",
+    prompt:
+      "Create a quarterly service operations dashboard with KPI summary cards, a trend chart area, a regional performance table, and status badges. Use realistic enterprise copy.",
+    agentId: "json-render",
+  },
+  {
+    id: "openui-escalation-review",
+    scenarioId: "openui.escalation_review",
+    title: "Escalation Review",
+    capability: "Generative UI",
+    prompt:
+      "Create a customer escalation review panel for a support lead. Include a case summary, severity tag, response owner, remediation notes, and action buttons. Use realistic business copy.",
+    agentId: "openui",
+  },
+  {
+    id: "openui-compliance-intake",
+    scenarioId: "openui.compliance_intake",
+    title: "Compliance Intake",
+    capability: "Generative UI",
+    prompt:
+      "Create a compliance incident intake screen for an internal audit team. Include incident type, affected system, detection date, impact summary, current status, and next-step actions. Use realistic business copy.",
+    agentId: "openui",
+  },
   {
     id: "demo-weather",
     scenarioId: "backend.weather",
@@ -104,7 +173,7 @@ export const RECOMMENDED_ACTIONS: StarterAction[] = [
     title: "Ask User",
     capability: "Frontend Tool",
     prompt:
-      "Use the askUserQuestion frontend tool and ask me a short question.",
+      "Call the askUserQuestion frontend tool now. Do not answer in plain text first. Ask exactly: What should I do next?",
     agentId: "default",
   },
   {
@@ -113,7 +182,7 @@ export const RECOMMENDED_ACTIONS: StarterAction[] = [
     title: "Background Color",
     capability: "Client-side Action",
     prompt:
-      "Use the set_background_color frontend tool (not agent_run) and provide colors ['#dbeafe','#dcfce7'].",
+      "Call the set_background_color frontend tool now. Do not answer in plain text first. Pass colors ['#dbeafe', '#dcfce7'] so the frontend can let me pick one.",
     agentId: "default",
   },
   {
@@ -122,7 +191,7 @@ export const RECOMMENDED_ACTIONS: StarterAction[] = [
     title: "Permission Approve",
     capability: "Approval Flow",
     prompt:
-      "Use the serverInfo tool. I want to test permission approval flow.",
+      "Call the append_note tool now. Do not answer in plain text first. Append exactly this note: permission approve demo accepted.",
     agentId: "permission",
   },
   {
@@ -131,7 +200,7 @@ export const RECOMMENDED_ACTIONS: StarterAction[] = [
     title: "Permission Deny",
     capability: "Approval Flow",
     prompt:
-      "Use the serverInfo tool. I want to test permission denial flow.",
+      "Call the append_note tool now. Do not answer in plain text first. Append exactly this note: permission deny demo requested.",
     agentId: "permission",
   },
 ];

@@ -15,15 +15,26 @@ const AGENT_OPTIONS = [
     title: "Permission Agent",
     desc: "PermissionConfirm flow with one-click approve/deny",
   },
-{
+  {
     id: "a2ui",
     title: "A2UI Agent",
     desc: "Declarative UI via A2UI protocol (render_a2ui tool)",
+  },
+  {
+    id: "json-render",
+    title: "JSON Render Agent",
+    desc: "Streaming JSON Render UI generation for business forms and dashboards",
+  },
+  {
+    id: "openui",
+    title: "OpenUI Agent",
+    desc: "Streaming OpenUI Lang generation rendered with the official React library",
   },
 ] as const;
 
 export function PlaygroundPage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const agentId = searchParams.get("agentId")?.trim() || "default";
   const {
     threads,
     activeThreadId,
@@ -32,11 +43,9 @@ export function PlaygroundPage() {
     createThread,
     renameThread,
     removeThread,
-    autoTitle,
+    refreshThreadList,
     loaded,
-  } = useThreads();
-
-  const agentId = searchParams.get("agentId")?.trim() || "default";
+  } = useThreads(agentId);
   const activeAgent =
     AGENT_OPTIONS.find((item) => item.id === agentId) ?? AGENT_OPTIONS[0];
   const recommendedActions = RECOMMENDED_ACTIONS.filter(
@@ -64,7 +73,9 @@ export function PlaygroundPage() {
         agentId={agentId}
         recommendedActions={recommendedActions}
         onRequestThread={!activeThreadId ? createThread : undefined}
-        onFirstMessage={(threadId, text) => autoTitle(threadId, text)}
+        onInferenceComplete={() => {
+          void refreshThreadList();
+        }}
       />
     );
 

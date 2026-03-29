@@ -1,32 +1,88 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   fetchThreadSummaries,
   patchThreadTitle,
   deleteThread as apiDeleteThread,
-  type ThreadSummary,
 } from "@/lib/api-client";
+import type { ThreadSummary } from "@/lib/protocol";
 
 export type { ThreadSummary };
 
-export function useThreads() {
-  const [threads, setThreads] = useState<ThreadSummary[]>([]);
-  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+function sortThreads(threads: ThreadSummary[]): ThreadSummary[] {
+  return [...threads].sort((a, b) => {
+    const aUpdated = a.updated_at ?? a.created_at ?? 0;
+    const bUpdated = b.updated_at ?? b.created_at ?? 0;
+    if (aUpdated !== bUpdated) return bUpdated - aUpdated;
+    return a.id.localeCompare(b.id);
+  });
+}
+
+function mergeThreads(
+  fetched: ThreadSummary[],
+  existing: ThreadSummary[],
+): ThreadSummary[] {
+  const merged = new Map(existing.map((thread) => [thread.id, thread]));
+
+  for (const thread of fetched) {
+    const current = merged.get(thread.id);
+    merged.set(thread.id, current ? { ...current, ...thread } : thread);
+  }
+
+  return sortThreads([...merged.values()]);
+}
+
+function filterThreadsByAgent(
+  threads: ThreadSummary[],
+  agentId: string,
+): ThreadSummary[] {
+  return threads.filter((thread) => thread.agentId === agentId);
+}
+
+export function useThreads(agentId: string) {
+  const [allThreads, setAllThreads] = useState<ThreadSummary[]>([]);
+  const [activeThreadId, setActiveThreadIdState] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const hasUserSelectedThread = useRef(false);
+
+  const setActiveThreadId = useCallback((id: string | null) => {
+    hasUserSelectedThread.current = true;
+    setActiveThreadIdState(id);
+  }, []);
 
   const refreshThreadList = useCallback(async () => {
     const summaries = await fetchThreadSummaries();
-    setThreads(summaries);
-    return summaries;
-  }, []);
+    let mergedThreads: ThreadSummary[] = [];
+    setAllThreads((prev) => {
+      mergedThreads = mergeThreads(summaries, prev);
+      return mergedThreads;
+    });
+    const visibleThreads = filterThreadsByAgent(mergedThreads, agentId);
+    if (
+      activeThreadId != null &&
+      visibleThreads.length > 0 &&
+      !visibleThreads.some((thread) => thread.id === activeThreadId)
+    ) {
+      setActiveThreadIdState(visibleThreads[0].id);
+    }
+    if (activeThreadId != null && visibleThreads.length === 0) {
+      setActiveThreadIdState(null);
+    }
+    return visibleThreads;
+  }, [activeThreadId, agentId]);
 
   useEffect(() => {
     let cancelled = false;
 
     fetchThreadSummaries().then((summaries) => {
       if (cancelled) return;
-      setThreads(summaries);
-      if (summaries.length > 0) {
-        setActiveThreadId(summaries[0].id);
+      let mergedThreads: ThreadSummary[] = [];
+      setAllThreads((prev) => {
+        mergedThreads = mergeThreads(summaries, prev);
+        return mergedThreads;
+      });
+      const visibleThreads = filterThreadsByAgent(mergedThreads, agentId);
+      if (!hasUserSelectedThread.current && visibleThreads.length > 0) {
+        setActiveThreadIdState(visibleThreads[0].id);
       }
       setLoaded(true);
     });
@@ -34,11 +90,11 @@ export function useThreads() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [agentId]);
 
   const startNewChat = useCallback(() => {
     setActiveThreadId(null);
-  }, []);
+  }, [setActiveThreadId]);
 
   const createThread = useCallback(() => {
     const id = crypto.randomUUID();
@@ -48,16 +104,17 @@ export function useThreads() {
       updated_at: Date.now(),
       created_at: Date.now(),
       message_count: 0,
+      agentId,
     };
-    setThreads((prev) => [thread, ...prev]);
+    setAllThreads((prev) => [thread, ...prev]);
     setActiveThreadId(id);
     return id;
-  }, []);
+  }, [agentId, setActiveThreadId]);
 
   const renameThread = useCallback(
     async (id: string, title: string) => {
-      setThreads((prev) =>
-        prev.map((t) => (t.id === id ? { ...t, title } : t)),
+      setAllThreads((prev) =>
+        sortThreads(prev.map((t) => (t.id === id ? { ...t, title } : t))),
       );
       await patchThreadTitle(id, title);
     },
@@ -66,28 +123,22 @@ export function useThreads() {
 
   const removeThread = useCallback(
     async (id: string) => {
-      setThreads((prev) => {
+      setAllThreads((prev) => {
         const next = prev.filter((t) => t.id !== id);
-        // If we removed the active thread, switch to next available
+        const visibleThreads = filterThreadsByAgent(next, agentId);
         if (activeThreadId === id) {
-          setActiveThreadId(next.length > 0 ? next[0].id : null);
+          setActiveThreadId(visibleThreads.length > 0 ? visibleThreads[0].id : null);
         }
         return next;
       });
       await apiDeleteThread(id);
     },
-    [activeThreadId],
+    [activeThreadId, agentId, setActiveThreadId],
   );
 
-  const autoTitle = useCallback(
-    async (threadId: string, firstMessage: string) => {
-      const title = firstMessage.slice(0, 50).trim() || "New Chat";
-      setThreads((prev) =>
-        prev.map((t) => (t.id === threadId ? { ...t, title } : t)),
-      );
-      await patchThreadTitle(threadId, title);
-    },
-    [],
+  const threads = useMemo(
+    () => filterThreadsByAgent(allThreads, agentId),
+    [agentId, allThreads],
   );
 
   return {
@@ -98,7 +149,6 @@ export function useThreads() {
     createThread,
     renameThread,
     removeThread,
-    autoTitle,
     refreshThreadList,
     loaded,
   };

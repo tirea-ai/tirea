@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@a2ui/lit": "^0.8.3",
+    "@a2ui/react": "^0.8.0",
     "@ai-sdk/react": "^3.0.81",
     "@json-render/react": "^0.16.0",
     "@openuidev/react-lang": "^0.1.4",

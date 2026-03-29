@@ -145,7 +145,6 @@ function ActiveChatPanel({
     toolProgress,
     askAnswers,
     setAskAnswers,
-    generativeUI,
   } = useChatSession(threadId, agentId, onInferenceComplete);
 
   const isLoading = status === "streaming" || status === "submitted";
@@ -234,7 +233,6 @@ function ActiveChatPanel({
               onSendMessage={(text) => handleSend(text)}
               themeMode={themeMode}
               layout={layout}
-              generativeUI={generativeUI}
             />
           </div>
         </div>
