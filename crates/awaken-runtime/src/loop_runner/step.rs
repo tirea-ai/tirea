@@ -16,7 +16,9 @@ use awaken_contract::contract::inference::{InferenceOverride, LLMResponse, Strea
 use awaken_contract::contract::lifecycle::TerminationReason;
 use awaken_contract::contract::message::{Message, ToolCall};
 use awaken_contract::contract::storage::ThreadRunStore;
-use awaken_contract::contract::suspension::{ToolCallOutcome, ToolCallResumeMode, ToolCallStatus};
+use awaken_contract::contract::suspension::{
+    SuspendTicket, ToolCallOutcome, ToolCallResumeMode, ToolCallStatus,
+};
 use awaken_contract::contract::tool::ToolCallContext;
 use awaken_contract::model::Phase;
 
@@ -371,34 +373,30 @@ async fn intercept_tool_call(
     Ok(resolve_intercept_payloads(intercept_payloads))
 }
 
-/// Complete a tool call: update lifecycle state, emit event via Effect,
-/// run AfterToolExecute phase, and append tool message.
+/// Build a StateCommand for a completed tool call (lifecycle + AfterToolExecute).
 ///
-/// Handles the complete lifecycle: state transition, event emission,
-/// AfterToolExecute phase hooks, and message append.
-async fn complete_tool_call(
+/// Pure state construction — no side effects (no events, no messages, no commit).
+/// Follows the same collect → merge pattern as plugin hooks.
+async fn build_tool_state_command(
     ctx: &mut StepContext<'_>,
     call: &ToolCall,
     tool_result: &awaken_contract::contract::tool::ToolResult,
     outcome: ToolCallOutcome,
-) -> Result<(), AgentLoopError> {
+) -> Result<StateCommand, AgentLoopError> {
     let store = ctx.runtime.store();
     let terminal_status = match outcome {
         ToolCallOutcome::Suspended => ToolCallStatus::Suspended,
         ToolCallOutcome::Succeeded => ToolCallStatus::Succeeded,
         ToolCallOutcome::Failed => ToolCallStatus::Failed,
     };
-
-    // Extract resume_mode from suspension ticket (if any)
     let resume_mode = tool_result
         .suspension
         .as_ref()
         .map(|t| t.resume_mode)
         .unwrap_or_default();
 
-    // State transition: Running → terminal status
-    let mut lifecycle_cmd = tool_call_state_cmd(call, ToolCallStatus::Running);
-    lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
+    let mut cmd = tool_call_state_cmd(call, ToolCallStatus::Running);
+    cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
         call_id: call.id.clone(),
         tool_name: call.name.clone(),
         arguments: call.arguments.clone(),
@@ -407,31 +405,7 @@ async fn complete_tool_call(
         resume_mode,
     });
 
-    tracing::info!(
-        tool_name = %call.name,
-        call_id = %call.id,
-        outcome = ?outcome,
-        "tool_call_done"
-    );
-
-    // Event emission — for frontend-tool suspensions (UseDecisionAsToolResult),
-    // do NOT emit ToolCallDone so the tool stays in input-available state.
-    if outcome == ToolCallOutcome::Suspended
-        && resume_mode == ToolCallResumeMode::UseDecisionAsToolResult
-    {
-        // Skip ToolCallDone — frontend renders custom input UI
-    } else {
-        ctx.sink
-            .emit(AgentEvent::ToolCallDone {
-                id: call.id.clone(),
-                message_id: String::new(),
-                result: tool_result.clone(),
-                outcome,
-            })
-            .await;
-    }
-
-    // AfterToolExecute phase
+    // Collect AfterToolExecute hook commands (same as plugin gather)
     let after_ctx = make_ctx(
         Phase::AfterToolExecute,
         ctx.messages,
@@ -446,31 +420,115 @@ async fn complete_tool_call(
         .collect_commands(&ctx.agent.env, after_ctx)
         .await?;
     if !after_cmd.is_empty() {
-        lifecycle_cmd.extend(after_cmd)?;
+        cmd.extend(after_cmd)?;
+    }
+    Ok(cmd)
+}
+
+/// Emit events and append message for a completed tool call.
+///
+/// Side-effect only — no state mutation.
+async fn emit_tool_completion(
+    ctx: &mut StepContext<'_>,
+    call: &ToolCall,
+    tool_result: &awaken_contract::contract::tool::ToolResult,
+    outcome: ToolCallOutcome,
+) {
+    let resume_mode = tool_result
+        .suspension
+        .as_ref()
+        .map(|t| t.resume_mode)
+        .unwrap_or_default();
+
+    tracing::info!(
+        tool_name = %call.name,
+        call_id = %call.id,
+        outcome = ?outcome,
+        "tool_call_done"
+    );
+
+    if !(outcome == ToolCallOutcome::Suspended
+        && resume_mode == ToolCallResumeMode::UseDecisionAsToolResult)
+    {
+        ctx.sink
+            .emit(AgentEvent::ToolCallDone {
+                id: call.id.clone(),
+                message_id: String::new(),
+                result: tool_result.clone(),
+                outcome,
+            })
+            .await;
     }
 
-    // Commit state
-    ctx.runtime
-        .submit_command(&ctx.agent.env, lifecycle_cmd)
-        .await?;
-
-    // Append tool message to conversation
     let tool_content = tool_result_to_content(tool_result);
     ctx.messages
         .push(Arc::new(Message::tool(&call.id, tool_content)));
+}
 
+/// Complete a single tool call: build state, emit events, commit.
+///
+/// Convenience wrapper for the interception pipeline and incremental executor
+/// where each tool commits individually.
+async fn complete_tool_call(
+    ctx: &mut StepContext<'_>,
+    call: &ToolCall,
+    tool_result: &awaken_contract::contract::tool::ToolResult,
+    outcome: ToolCallOutcome,
+) -> Result<(), AgentLoopError> {
+    let cmd = build_tool_state_command(ctx, call, tool_result, outcome).await?;
+    emit_tool_completion(ctx, call, tool_result, outcome).await;
+    ctx.runtime.submit_command(&ctx.agent.env, cmd).await?;
     Ok(())
+}
+
+/// Build a suspend-only StateCommand (no AfterToolExecute — runs on resume).
+fn build_suspend_state_command(call: &ToolCall, ticket: &SuspendTicket) -> StateCommand {
+    let mut cmd = StateCommand::new();
+    cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
+        call_id: call.id.clone(),
+        tool_name: call.name.clone(),
+        arguments: call.arguments.clone(),
+        status: ToolCallStatus::Suspended,
+        updated_at: now_ms(),
+        resume_mode: ticket.resume_mode,
+    });
+    cmd
+}
+
+/// Emit suspend-related events and append message.
+async fn emit_suspend_completion(
+    ctx: &mut StepContext<'_>,
+    call: &ToolCall,
+    ticket: &SuspendTicket,
+) {
+    if ticket.resume_mode == ToolCallResumeMode::ReplayToolCall {
+        let suspend_result = awaken_contract::contract::tool::ToolResult::suspended(
+            &call.name,
+            &format!("Tool '{}' suspended: awaiting approval", call.name),
+        );
+        ctx.sink
+            .emit(AgentEvent::ToolCallDone {
+                id: call.id.clone(),
+                message_id: String::new(),
+                result: suspend_result,
+                outcome: ToolCallOutcome::Suspended,
+            })
+            .await;
+    }
+    ctx.messages.push(Arc::new(Message::tool(
+        &call.id,
+        format!("Tool '{}' suspended: awaiting decision", call.name),
+    )));
 }
 
 /// Execute tool calls with interception pipeline.
 ///
-/// For each tool call:
-/// 1. Run BeforeToolExecute phase (hooks + action handlers)
-/// 2. Check for intercept (Block/Suspend/SetResult)
-/// 3. If no intercept: execute the tool normally
-/// 4. Run AfterToolExecute phase
+/// Each tool call runs its full lifecycle serially (before → execute → after),
+/// producing a StateCommand. All commands are committed per-tool as each
+/// completes — same model as plugin hooks but with per-tool commit for
+/// checkpoint durability.
 ///
-/// Returns whether any call was suspended.
+/// Returns (block_reason, any_suspended).
 async fn execute_tools_with_interception(
     ctx: &mut StepContext<'_>,
     calls: &[ToolCall],
@@ -481,63 +539,28 @@ async fn execute_tools_with_interception(
     let mut suspended = false;
     let mut allowed_calls: Vec<ToolCall> = Vec::new();
 
+    // Phase 1: Interception — before → intercept per call
     for call in calls {
-        // --- Interception check ---
         let intercept = intercept_tool_call(ctx, call).await?;
 
         match intercept {
             Some(ToolInterceptPayload::Block { reason }) => {
-                // Block: result determined (failure), run full lifecycle including AfterToolExecute
                 let result =
                     awaken_contract::contract::tool::ToolResult::error(&call.name, &reason);
-                complete_tool_call(ctx, call, &result, ToolCallOutcome::Failed).await?;
+                let cmd =
+                    build_tool_state_command(ctx, call, &result, ToolCallOutcome::Failed).await?;
+                ctx.runtime.submit_command(&ctx.agent.env, cmd).await?;
+                emit_tool_completion(ctx, call, &result, ToolCallOutcome::Failed).await;
                 return Ok((Some(reason), suspended));
             }
             Some(ToolInterceptPayload::Suspend(ticket)) => {
-                // Suspend: result NOT yet determined — mark as suspended, do NOT run AfterToolExecute.
-                // AfterToolExecute runs later when resume/cancel decision arrives.
-                let mut cmd = StateCommand::new();
-                cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
-                    call_id: call.id.clone(),
-                    tool_name: call.name.clone(),
-                    arguments: call.arguments.clone(),
-                    status: ToolCallStatus::Suspended,
-                    updated_at: now_ms(),
-                    resume_mode: ticket.resume_mode,
-                });
+                let cmd = build_suspend_state_command(call, &ticket);
                 ctx.runtime.submit_command(&ctx.agent.env, cmd).await?;
-
-                // For approval-style suspensions (ReplayToolCall), emit ToolCallDone
-                // with Pending status so protocol encoders generate approval request
-                // events (e.g. AI SDK ToolApprovalRequest → Allow/Deny UI).
-                //
-                // For frontend-tool suspensions (UseDecisionAsToolResult, PassDecisionToTool),
-                // do NOT emit ToolCallDone — the tool stays in input-available state so the
-                // frontend renders a custom input UI (e.g. AskUserDialog, color picker).
-                if ticket.resume_mode == ToolCallResumeMode::ReplayToolCall {
-                    let suspend_result = awaken_contract::contract::tool::ToolResult::suspended(
-                        &call.name,
-                        &format!("Tool '{}' suspended: awaiting approval", call.name),
-                    );
-                    ctx.sink
-                        .emit(AgentEvent::ToolCallDone {
-                            id: call.id.clone(),
-                            message_id: String::new(),
-                            result: suspend_result,
-                            outcome: ToolCallOutcome::Suspended,
-                        })
-                        .await;
-                }
-
-                ctx.messages.push(Arc::new(Message::tool(
-                    &call.id,
-                    format!("Tool '{}' suspended: awaiting decision", call.name),
-                )));
+                emit_suspend_completion(ctx, call, &ticket).await;
                 suspended = true;
                 continue;
             }
             Some(ToolInterceptPayload::SetResult(result)) => {
-                // SetResult: result determined (externally), run full lifecycle including AfterToolExecute
                 let outcome = ToolCallOutcome::from_tool_result(&result);
                 complete_tool_call(ctx, call, &result, outcome).await?;
                 if outcome == ToolCallOutcome::Suspended {
@@ -546,15 +569,12 @@ async fn execute_tools_with_interception(
                 continue;
             }
             None => {
-                // No intercept — execute tool normally
+                allowed_calls.push(call.clone());
             }
         }
-
-        // Collect calls that passed interception for execution
-        allowed_calls.push(call.clone());
     }
 
-    // Execute allowed calls via the configured executor strategy
+    // Phase 2: Execute non-intercepted calls
     if allowed_calls.is_empty() {
         return Ok((None, suspended));
     }
@@ -568,8 +588,8 @@ async fn execute_tools_with_interception(
         activity_sink: Some(ctx.sink.clone()),
     };
 
-    // Incremental-state executors: execute one-by-one, submit state after each
     if ctx.agent.tool_executor.requires_incremental_state() {
+        // Incremental: execute one-by-one, commit per call
         for call in &allowed_calls {
             let mut tool_ctx = base_tool_ctx.clone();
             tool_ctx.call_id = call.id.clone();
@@ -585,7 +605,6 @@ async fn execute_tools_with_interception(
             let Some(exec_result) = batch.first() else {
                 continue;
             };
-            let is_suspended = exec_result.outcome == ToolCallOutcome::Suspended;
 
             complete_tool_call(
                 ctx,
@@ -595,32 +614,31 @@ async fn execute_tools_with_interception(
             )
             .await?;
 
-            if is_suspended {
+            if exec_result.outcome == ToolCallOutcome::Suspended {
                 suspended = true;
                 break;
             }
         }
-        return Ok((None, suspended));
-    }
+    } else {
+        // Parallel: batch execute, commit per completed tool
+        let exec_results = ctx
+            .agent
+            .tool_executor
+            .execute(&ctx.agent.tools, &allowed_calls, &base_tool_ctx)
+            .await
+            .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
 
-    // Parallel executors: batch execute, then process results
-    let exec_results = ctx
-        .agent
-        .tool_executor
-        .execute(&ctx.agent.tools, &allowed_calls, &base_tool_ctx)
-        .await
-        .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
-
-    for exec_result in &exec_results {
-        complete_tool_call(
-            ctx,
-            &exec_result.call,
-            &exec_result.result,
-            exec_result.outcome,
-        )
-        .await?;
-        if exec_result.outcome == ToolCallOutcome::Suspended {
-            suspended = true;
+        for exec_result in &exec_results {
+            complete_tool_call(
+                ctx,
+                &exec_result.call,
+                &exec_result.result,
+                exec_result.outcome,
+            )
+            .await?;
+            if exec_result.outcome == ToolCallOutcome::Suspended {
+                suspended = true;
+            }
         }
     }
 
