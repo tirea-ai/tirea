@@ -727,10 +727,12 @@ async fn structured_mcp_results_are_preserved_in_tool_output() {
     let result = tool.execute(json!({}), &ctx).await.expect("tool result");
     assert!(result.is_success());
 
-    // Structured content should be preserved in the _mcp metadata
-    let mcp_meta = &result.data["_mcp"];
-    assert_eq!(mcp_meta["mcp.result.structuredContent"]["sum"], json!(3));
-    assert!(mcp_meta["mcp.result.content"].is_array());
+    // Structured content should be preserved in result.metadata
+    assert_eq!(
+        result.metadata["mcp.result.structuredContent"]["sum"],
+        json!(3)
+    );
+    assert!(result.metadata["mcp.result.content"].is_array());
 }
 
 #[tokio::test]
@@ -1137,10 +1139,15 @@ async fn mcp_tool_execute_fetches_ui_resource() {
     let result = tool.execute(json!({}), &ctx).await.unwrap();
 
     assert!(result.is_success());
-    let mcp_meta = &result.data["_mcp"];
-    assert_eq!(mcp_meta["mcp.ui.content"], json!("<html>chart</html>"));
-    assert_eq!(mcp_meta["mcp.ui.mimeType"], json!("text/html"));
-    assert_eq!(mcp_meta["mcp.ui.resourceUri"], json!("ui://chart/render"));
+    assert_eq!(
+        result.metadata["mcp.ui.content"],
+        json!("<html>chart</html>")
+    );
+    assert_eq!(result.metadata["mcp.ui.mimeType"], json!("text/html"));
+    assert_eq!(
+        result.metadata["mcp.ui.resourceUri"],
+        json!("ui://chart/render")
+    );
 }
 
 #[tokio::test]
@@ -1168,8 +1175,7 @@ async fn mcp_tool_execute_ui_fetch_failure_non_fatal() {
 
     assert!(result.is_success());
     // UI content should not be present when fetch fails
-    let mcp_meta = &result.data["_mcp"];
-    assert!(mcp_meta.get("mcp.ui.content").is_none());
+    assert!(result.metadata.get("mcp.ui.content").is_none());
 }
 
 #[tokio::test]
@@ -1190,8 +1196,7 @@ async fn mcp_tool_without_ui_meta_has_no_ui_uri_in_result() {
 
     let ctx = ToolCallContext::test_default();
     let result = tool.execute(json!({}), &ctx).await.unwrap();
-    let mcp_meta = &result.data["_mcp"];
-    assert!(mcp_meta.get("mcp.ui.resourceUri").is_none());
+    assert!(result.metadata.get("mcp.ui.resourceUri").is_none());
 }
 
 // ── Sampling handler tests ──
@@ -1460,8 +1465,10 @@ async fn http_call_tool_preserves_structured_content() {
         .expect("structured tool result");
     server.abort();
 
-    let mcp_meta = &result.data["_mcp"];
-    assert_eq!(mcp_meta["mcp.result.structuredContent"]["sum"], json!(3));
+    assert_eq!(
+        result.metadata["mcp.result.structuredContent"]["sum"],
+        json!(3)
+    );
 }
 
 #[tokio::test]
@@ -1697,9 +1704,9 @@ async fn plain_text_result_becomes_string_data() {
 
     let ctx = ToolCallContext::test_default();
     let result = tool.execute(json!({}), &ctx).await.unwrap();
-    // Plain text "ok" wraps as: {"value": "ok", "_mcp": {...}}
-    assert_eq!(result.data["value"], json!("ok"));
-    assert!(result.data["_mcp"]["mcp.server"].is_string());
+    // Plain text "ok" is stored directly as a string in data (no wrapping)
+    assert_eq!(result.data, json!("ok"));
+    assert!(result.metadata["mcp.server"].is_string());
 }
 
 // ── Error variant tests ──

@@ -9,8 +9,8 @@ use awaken_contract::contract::progress::ProgressStatus;
 use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
 };
+use mcp::McpToolDefinition;
 use mcp::transport::{McpTransportError, ServerCapabilities, TransportTypeId};
-use mcp::{CallToolResult, McpToolDefinition};
 use serde_json::Value;
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
@@ -64,31 +64,6 @@ pub struct McpResourceEntry {
 }
 
 // ── McpTool: wraps an MCP tool as an awaken Tool ──
-
-/// Metadata embedded in the `data` field of a ToolResult as a `_mcp` sub-object.
-fn build_mcp_metadata(server_name: &str, tool_name: &str, call_result: &CallToolResult) -> Value {
-    let mut meta = serde_json::Map::new();
-    meta.insert(
-        MCP_META_SERVER.to_string(),
-        Value::String(server_name.to_string()),
-    );
-    meta.insert(
-        MCP_META_TOOL.to_string(),
-        Value::String(tool_name.to_string()),
-    );
-
-    if !call_result.content.is_empty()
-        && let Ok(content) = serde_json::to_value(&call_result.content)
-    {
-        meta.insert(MCP_META_RESULT_CONTENT.to_string(), content);
-    }
-
-    if let Some(structured) = call_result.structured_content.clone() {
-        meta.insert(MCP_META_RESULT_STRUCTURED_CONTENT.to_string(), structured);
-    }
-
-    Value::Object(meta)
-}
 
 struct McpTool {
     descriptor: ToolDescriptor,
@@ -176,35 +151,41 @@ impl Tool for McpTool {
         }
 
         let data = call_result_to_tool_data(&res);
-        let mcp_meta = build_mcp_metadata(&self.server_name, &self.tool_name, &res);
+        let mut result = ToolResult::success(self.descriptor.id.clone(), data);
 
-        // Wrap data with _mcp metadata in result
-        let enriched_data = match data {
-            Value::Object(mut map) => {
-                map.insert("_mcp".to_string(), mcp_meta);
-                Value::Object(map)
-            }
-            other => {
-                serde_json::json!({
-                    "value": other,
-                    "_mcp": mcp_meta,
-                })
-            }
-        };
+        result.metadata.insert(
+            MCP_META_SERVER.to_string(),
+            Value::String(self.server_name.clone()),
+        );
+        result.metadata.insert(
+            MCP_META_TOOL.to_string(),
+            Value::String(self.tool_name.clone()),
+        );
 
-        let mut result = ToolResult::success(self.descriptor.id.clone(), enriched_data);
+        if !res.content.is_empty() {
+            if let Ok(content) = serde_json::to_value(&res.content) {
+                result
+                    .metadata
+                    .insert(MCP_META_RESULT_CONTENT.to_string(), content);
+            }
+        }
+        if let Some(structured) = res.structured_content.clone() {
+            result
+                .metadata
+                .insert(MCP_META_RESULT_STRUCTURED_CONTENT.to_string(), structured);
+        }
 
         if let Some(ref uri) = self.ui_resource_uri
             && let Some(content) = fetch_ui_resource(&self.transport, uri).await
-            && let Value::Object(ref mut map) = result.data
-            && let Some(Value::Object(mcp)) = map.get_mut("_mcp")
         {
-            mcp.insert(
+            result.metadata.insert(
                 MCP_META_UI_RESOURCE_URI.to_string(),
                 Value::String(uri.clone()),
             );
-            mcp.insert(MCP_META_UI_CONTENT.to_string(), Value::String(content.text));
-            mcp.insert(
+            result
+                .metadata
+                .insert(MCP_META_UI_CONTENT.to_string(), Value::String(content.text));
+            result.metadata.insert(
                 MCP_META_UI_MIME_TYPE.to_string(),
                 Value::String(content.mime_type),
             );
@@ -1079,10 +1060,10 @@ mod tests {
 
         let result = tool.execute(json!({}), &ctx).await.unwrap();
         assert!(result.is_success());
-        // Should have _mcp metadata
-        assert!(result.data.get("_mcp").is_some());
-        assert_eq!(result.data["_mcp"]["mcp.server"], "srv");
-        assert_eq!(result.data["_mcp"]["mcp.tool"], "echo");
+        // MCP metadata is in result.metadata, not result.data
+        assert_eq!(result.metadata["mcp.server"], "srv");
+        assert_eq!(result.metadata["mcp.tool"], "echo");
+        assert!(result.data.get("_mcp").is_none());
     }
 
     // ── Helper function tests ──
@@ -1139,32 +1120,40 @@ mod tests {
         assert!(matches!(err, ToolError::ExecutionFailed(_)));
     }
 
-    #[test]
-    fn build_mcp_metadata_includes_server_and_tool() {
-        let result = CallToolResult {
-            content: Vec::new(),
-            structured_content: None,
-            is_error: None,
-        };
-        let meta = build_mcp_metadata("my-srv", "my-tool", &result);
-        assert_eq!(meta["mcp.server"], "my-srv");
-        assert_eq!(meta["mcp.tool"], "my-tool");
+    #[tokio::test]
+    async fn mcp_tool_execute_populates_metadata_server_and_tool() {
+        let mgr =
+            make_manager_with(vec![("my-srv", vec![MockTransport::tool_def("my-tool")])]).await;
+        let registry = mgr.registry();
+        let tool_id = registry
+            .ids()
+            .into_iter()
+            .find(|id| id.contains("my_tool"))
+            .expect("my-tool");
+        let tool = registry.get(&tool_id).unwrap();
+        let ctx = awaken_contract::contract::tool::ToolCallContext::test_default();
+
+        let result = tool.execute(json!({}), &ctx).await.unwrap();
+        assert_eq!(result.metadata["mcp.server"], "my-srv");
+        assert_eq!(result.metadata["mcp.tool"], "my-tool");
     }
 
-    #[test]
-    fn build_mcp_metadata_includes_content_when_present() {
-        let result = CallToolResult {
-            content: vec![mcp::ToolContent::Text {
-                text: "hello".to_string(),
-                annotations: None,
-                meta: None,
-            }],
-            structured_content: Some(json!({"key": "value"})),
-            is_error: None,
-        };
-        let meta = build_mcp_metadata("s", "t", &result);
-        assert!(meta.get(MCP_META_RESULT_CONTENT).is_some());
-        assert!(meta.get(MCP_META_RESULT_STRUCTURED_CONTENT).is_some());
+    #[tokio::test]
+    async fn mcp_tool_execute_populates_result_content_in_metadata() {
+        // MockTransport.call_tool always returns a Text content item
+        let mgr = make_manager_with(vec![("s", vec![MockTransport::tool_def("t")])]).await;
+        let registry = mgr.registry();
+        let tool_id = registry
+            .ids()
+            .into_iter()
+            .find(|id| id.contains("__t"))
+            .expect("tool t");
+        let tool = registry.get(&tool_id).unwrap();
+        let ctx = awaken_contract::contract::tool::ToolCallContext::test_default();
+
+        let result = tool.execute(json!({}), &ctx).await.unwrap();
+        assert!(result.metadata.contains_key(MCP_META_RESULT_CONTENT));
+        assert!(result.data.get("_mcp").is_none());
     }
 
     // ── Progress emission ──
