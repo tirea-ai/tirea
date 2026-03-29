@@ -120,10 +120,17 @@ fn to_content_parts(blocks: &[ContentBlock]) -> Vec<ContentPart> {
 }
 
 fn to_genai_tool_call(call: &ToolCall) -> GenaiToolCall {
+    // Defend against null arguments from streaming parsers — Anthropic API
+    // requires `input` to be an object, never null.
+    let fn_arguments = if call.arguments.is_null() {
+        serde_json::Value::Object(serde_json::Map::new())
+    } else {
+        call.arguments.clone()
+    };
     GenaiToolCall {
         call_id: call.id.clone(),
         fn_name: call.name.clone(),
-        fn_arguments: call.arguments.clone(),
+        fn_arguments,
         thought_signatures: None,
     }
 }
