@@ -100,6 +100,10 @@ pub enum UIStreamEvent {
         /// that will be superseded by a final output with `preliminary: false`.
         #[serde(skip_serializing_if = "Option::is_none")]
         preliminary: Option<bool>,
+        /// When `true`, the tool was executed by the provider (server-side).
+        /// AI SDK uses this to skip auto-resubmission for server-executed tools.
+        #[serde(rename = "providerExecuted", skip_serializing_if = "Option::is_none")]
+        provider_executed: Option<bool>,
     },
 
     /// Tool output error.
@@ -298,12 +302,14 @@ impl UIStreamEvent {
         }
     }
 
+    /// Server-executed tool output (providerExecuted = true).
     pub fn tool_output_available(tool_call_id: impl Into<String>, output: Value) -> Self {
         Self::ToolOutputAvailable {
             tool_call_id: tool_call_id.into(),
             output,
             dynamic: None,
             preliminary: None,
+            provider_executed: Some(true),
         }
     }
 
@@ -313,6 +319,18 @@ impl UIStreamEvent {
             output,
             dynamic: None,
             preliminary: Some(true),
+            provider_executed: Some(true),
+        }
+    }
+
+    /// Client-side (resumed) tool output — no providerExecuted flag.
+    pub fn tool_output_resumed(tool_call_id: impl Into<String>, output: Value) -> Self {
+        Self::ToolOutputAvailable {
+            tool_call_id: tool_call_id.into(),
+            output,
+            dynamic: None,
+            preliminary: None,
+            provider_executed: None,
         }
     }
 

@@ -1,5 +1,4 @@
 import { useChat } from "@ai-sdk/react";
-import type { UIMessage } from "@ai-sdk/react";
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { fetchHistory } from "@/lib/api-client";
 import { parseInferenceMetrics, type InferenceMetrics } from "@/lib/protocol";
@@ -54,35 +53,6 @@ function asStatus(value: unknown): ToolCallProgressStatus {
     default:
       return "running";
   }
-}
-
-/** States that indicate a tool invocation has completed (backend or frontend). */
-const TOOL_TERMINAL_STATES = new Set([
-  "output-available",
-  "output-error",
-  "output-denied",
-]);
-
-function isToolPart(
-  part: UIMessage["parts"][number],
-): part is UIMessage["parts"][number] & { state: string } {
-  if (!part || typeof part !== "object" || !("type" in part)) return false;
-  const t = (part as { type: string }).type;
-  return t === "dynamic-tool" || t.startsWith("tool-");
-}
-
-/**
- * Return true when the last assistant message contains tool parts and ALL of
- * them have reached a terminal state (output-available / output-error /
- * output-denied).  This covers both backend-executed tools and frontend tools
- * that received output via `addToolOutput`.
- */
-function allToolPartsComplete(messages: UIMessage[]): boolean {
-  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
-  if (!lastAssistant) return false;
-  const toolParts = lastAssistant.parts.filter(isToolPart);
-  if (toolParts.length === 0) return false;
-  return toolParts.every((p) => TOOL_TERMINAL_STATES.has(p.state));
 }
 
 function parseToolCallProgressSnapshot(data: unknown): ToolCallProgressNode | null {
@@ -180,8 +150,34 @@ export function useChatSession(
   const chat = useChat({
     id: threadId,
     transport,
+    sendAutomaticallyWhen: ({ messages }) => {
+      // Auto-send when the latest assistant message has a client-side tool
+      // part with a completed interaction state. Server-executed tools
+      // (providerExecuted=true) are excluded — their results arrive via
+      // the stream and don't need re-submission.
+      const lastAssistant = [...messages]
+        .reverse()
+        .find((m) => m.role === "assistant");
+      if (!lastAssistant) return false;
+      const clientToolParts = lastAssistant.parts.filter((part) => {
+        if (!part || typeof part !== "object" || !("state" in part))
+          return false;
+        // Skip server-executed tools
+        if ("providerExecuted" in part && (part as { providerExecuted?: boolean }).providerExecuted)
+          return false;
+        return true;
+      });
+      return clientToolParts.some((part) => {
+        const state = (part as { state?: string }).state;
+        return (
+          state === "output-available" ||
+          state === "output-denied" ||
+          state === "output-error" ||
+          state === "approval-responded"
+        );
+      });
+    },
     onData: onData as never,
-    sendAutomaticallyWhen: ({ messages }) => allToolPartsComplete(messages),
   });
   const { setMessages, messages: rawMessages } = chat;
 

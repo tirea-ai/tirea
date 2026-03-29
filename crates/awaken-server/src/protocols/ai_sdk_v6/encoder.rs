@@ -197,7 +197,7 @@ impl AiSdkEncoder {
                         vec![UIStreamEvent::tool_output_denied(target_id)]
                     }
                     shared::ResumedOutcome::Success => {
-                        vec![UIStreamEvent::tool_output_available(
+                        vec![UIStreamEvent::tool_output_resumed(
                             target_id,
                             result.clone(),
                         )]

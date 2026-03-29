@@ -13,7 +13,7 @@ type ChatPanelProps = {
   layout?: "default" | "conversation";
   recommendedActions?: StarterAction[];
   onRequestThread?: () => string;
-  onFirstMessage?: (threadId: string, text: string) => void;
+  onInferenceComplete?: () => void;
 };
 
 export function ChatPanel({
@@ -23,16 +23,14 @@ export function ChatPanel({
   layout = "conversation",
   recommendedActions = [],
   onRequestThread,
-  onFirstMessage,
+  onInferenceComplete,
 }: ChatPanelProps) {
   const [frontendBgColor, setFrontendBgColor] = useState<string | null>(null);
   const [resolvedThreadId, setResolvedThreadId] = useState(threadId);
   const pendingRef = useRef<string | null>(null);
-  const hasSentFirst = useRef(false);
 
   useEffect(() => {
     setResolvedThreadId(threadId);
-    hasSentFirst.current = false;
     setFrontendBgColor(null);
   }, [threadId]);
 
@@ -42,9 +40,7 @@ export function ChatPanel({
       if (onRequestThread) {
         const newId = onRequestThread();
         pendingRef.current = text;
-        hasSentFirst.current = false;
         setResolvedThreadId(newId);
-        onFirstMessage?.(newId, text);
       }
     };
 
@@ -71,8 +67,7 @@ export function ChatPanel({
       frontendBgColor={frontendBgColor}
       setFrontendBgColor={setFrontendBgColor}
       pendingRef={pendingRef}
-      hasSentFirst={hasSentFirst}
-      onFirstMessage={onFirstMessage}
+      onInferenceComplete={onInferenceComplete}
     />
   );
 }
@@ -126,8 +121,7 @@ function ActiveChatPanel({
   frontendBgColor,
   setFrontendBgColor,
   pendingRef,
-  hasSentFirst,
-  onFirstMessage,
+  onInferenceComplete,
 }: {
   threadId: string;
   agentId: string;
@@ -137,8 +131,7 @@ function ActiveChatPanel({
   frontendBgColor: string | null;
   setFrontendBgColor: (c: string | null) => void;
   pendingRef: React.MutableRefObject<string | null>;
-  hasSentFirst: React.MutableRefObject<boolean>;
-  onFirstMessage?: (threadId: string, text: string) => void;
+  onInferenceComplete?: () => void;
 }) {
   const {
     messages,
@@ -146,13 +139,14 @@ function ActiveChatPanel({
     status,
     error,
     addToolOutput,
+    addToolApprovalResponse,
     historyLoaded,
     metrics,
     toolProgress,
     askAnswers,
     setAskAnswers,
     generativeUI,
-  } = useChatSession(threadId, agentId);
+  } = useChatSession(threadId, agentId, onInferenceComplete);
 
   const isLoading = status === "streaming" || status === "submitted";
 
@@ -166,10 +160,6 @@ function ActiveChatPanel({
   }, [historyLoaded, sendMessage, pendingRef]);
 
   const handleSend = (text: string) => {
-    if (!hasSentFirst.current) {
-      hasSentFirst.current = true;
-      onFirstMessage?.(threadId, text);
-    }
     sendMessage({ text });
   };
 
@@ -213,20 +203,10 @@ function ActiveChatPanel({
                 setAskAnswers((prev) => ({ ...prev, [toolCallId]: value }))
               }
               onApprove={async (id) => {
-                await addToolOutput({
-                  tool: "PermissionConfirm" as never,
-                  toolCallId: id,
-                  state: "output-available",
-                  output: { approved: true } as never,
-                });
+                await addToolApprovalResponse({ id, approved: true });
               }}
               onDeny={async (id) => {
-                await addToolOutput({
-                  tool: "PermissionConfirm" as never,
-                  toolCallId: id,
-                  state: "output-denied",
-                  output: { approved: false } as never,
-                });
+                await addToolApprovalResponse({ id, approved: false });
               }}
               onAskSubmit={async (toolCallId, answer) => {
                 await addToolOutput({

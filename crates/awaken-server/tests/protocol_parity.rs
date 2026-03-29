@@ -273,7 +273,7 @@ async fn agui_and_aisdk_both_return_sse_for_same_agent() {
         "/v1/ai-sdk/chat",
         json!({
             "agentId": "test",
-            "messages": [{"role": "user", "content": "hello parity"}]
+            "messages": [{"id": "u1", "role": "user", "parts": [{"type": "text", "text": "hello parity"}]}]
         }),
     )
     .await;
@@ -312,7 +312,7 @@ async fn agui_and_aisdk_both_contain_run_lifecycle_markers() {
         "/v1/ai-sdk/chat",
         json!({
             "agentId": "test",
-            "messages": [{"role": "user", "content": "lifecycle test"}]
+            "messages": [{"id": "u1", "role": "user", "parts": [{"type": "text", "text": "lifecycle test"}]}]
         }),
     )
     .await;

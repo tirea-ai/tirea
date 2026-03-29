@@ -1,0 +1,636 @@
+//! AI SDK v6 request processing: wire-format parsing, message deduplication,
+//! tool-call decision extraction, and conversion to runtime types.
+//!
+//! All AI SDK–specific request logic lives here so that `http.rs` can focus
+//! purely on routing and SSE wiring.
+
+use std::collections::HashSet;
+
+use serde::Deserialize;
+use serde_json::{Value, json};
+
+use awaken_contract::contract::content::ContentBlock;
+use awaken_contract::contract::message::Message;
+use awaken_contract::contract::storage::ThreadRunStore;
+use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
+
+// ── AI SDK v6 wire types ────────────────────────────────────────────
+//
+// Maps directly to the TypeScript `UIMessage` / `UIMessagePart` types
+// from the `ai` npm package (v6). No legacy `content` field.
+//
+// Reference: https://ai-sdk.dev/docs/ai-sdk-ui/chatbot
+
+/// Top-level request body sent by `DefaultChatTransport`.
+#[derive(Debug, Deserialize)]
+pub(crate) struct AiSdkChatRequest {
+    #[serde(default)]
+    pub messages: Vec<UIMessage>,
+    #[serde(rename = "threadId", alias = "thread_id", default)]
+    pub thread_id: Option<String>,
+    #[serde(rename = "agentId", alias = "agent_id", default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub state: Option<Value>,
+}
+
+/// A single part of a `UIMessage`.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+enum UIPart {
+    Text {
+        text: String,
+    },
+    Reasoning {
+        #[allow(dead_code)]
+        text: String,
+    },
+    File {
+        url: String,
+        #[serde(rename = "mediaType")]
+        media_type: String,
+    },
+    SourceUrl {
+        #[allow(dead_code)]
+        #[serde(rename = "sourceId")]
+        source_id: String,
+        #[allow(dead_code)]
+        url: String,
+        #[allow(dead_code)]
+        #[serde(default)]
+        title: Option<String>,
+    },
+    SourceDocument {
+        #[allow(dead_code)]
+        #[serde(rename = "sourceId")]
+        source_id: String,
+        #[allow(dead_code)]
+        #[serde(rename = "mediaType")]
+        media_type: String,
+        #[allow(dead_code)]
+        #[serde(default)]
+        title: Option<String>,
+        #[allow(dead_code)]
+        #[serde(default)]
+        filename: Option<String>,
+    },
+    StepStart,
+    /// Catch-all for tool invocations (`tool-*`), dynamic tools, and data parts (`data-*`).
+    /// These don't map to LLM content blocks — they are UI state, not input.
+    #[serde(other)]
+    Other,
+}
+
+/// AI SDK v6 `UIMessage` — the wire format sent by `DefaultChatTransport`.
+#[derive(Debug, Deserialize)]
+pub(crate) struct UIMessage {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub role: String,
+    #[serde(default)]
+    pub parts: Vec<Value>,
+}
+
+// ── Result of processing an AI SDK request ──────────────────────────
+
+/// Processed AI SDK request ready for the runtime.
+pub(crate) struct ProcessedRequest {
+    pub thread_id: String,
+    pub messages: Vec<Message>,
+    pub decisions: Vec<(String, ToolCallResume)>,
+    pub state: Option<Value>,
+    pub agent_id: Option<String>,
+}
+
+impl ProcessedRequest {
+    /// True when the request carries only tool-call decisions (no new content).
+    pub(crate) fn is_resume_only(&self) -> bool {
+        self.messages.is_empty() && !self.decisions.is_empty()
+    }
+}
+
+// ── Public entry point ──────────────────────────────────────────────
+
+/// Process a raw AI SDK chat request: resolve thread ID, deduplicate
+/// messages against the persisted store, extract tool-call decisions,
+/// and convert new messages to runtime format.
+pub(crate) async fn process_chat_request(
+    store: &dyn ThreadRunStore,
+    payload: AiSdkChatRequest,
+) -> Result<ProcessedRequest, String> {
+    let agent_id = payload.agent_id;
+    let state = payload.state;
+
+    // Extract decisions from ALL messages (including old ones with tool responses).
+    // This must happen before dedup because decisions live in historical assistant
+    // messages that the store already knows about.
+    let decisions = extract_tool_call_decisions(&payload.messages);
+
+    let thread_id = payload
+        .thread_id
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+
+    // Load persisted message IDs to deduplicate incoming messages.
+    let known_ids: HashSet<String> = store
+        .load_messages(&thread_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|m| m.id)
+        .collect();
+
+    // Only convert NEW messages (not already in store) for the runtime.
+    let new_ui_messages = dedup_messages(payload.messages, &known_ids);
+    let messages = convert_messages(new_ui_messages);
+
+    if messages.is_empty() && decisions.is_empty() {
+        return Err("no new messages or interaction responses".to_string());
+    }
+
+    Ok(ProcessedRequest {
+        thread_id,
+        messages,
+        decisions,
+        state,
+        agent_id,
+    })
+}
+
+// ── Internal helpers ────────────────────────────────────────────────
+
+/// Parse a data-URI of the form `data:<media_type>;base64,<data>`.
+fn parse_data_uri(url: &str) -> Option<(String, String)> {
+    let rest = url.strip_prefix("data:")?;
+    let (meta, data) = rest.split_once(",")?;
+    let media_type = meta.strip_suffix(";base64")?;
+    Some((media_type.to_string(), data.to_string()))
+}
+
+pub(crate) fn part_kind(part: &Value) -> Option<&str> {
+    part.get("type").and_then(Value::as_str)
+}
+
+/// Convert a raw UI part to a `ContentBlock`.
+fn part_to_content_block(part: &Value) -> Option<ContentBlock> {
+    match serde_json::from_value::<UIPart>(part.clone()).ok()? {
+        UIPart::Text { text } => Some(ContentBlock::text(text.as_str())),
+        UIPart::File { url, media_type } => {
+            if let Some((mime, data)) = parse_data_uri(&url) {
+                if mime.starts_with("image/") {
+                    Some(ContentBlock::image_base64(mime, data))
+                } else if mime.starts_with("audio/") {
+                    Some(ContentBlock::audio_base64(mime, data))
+                } else if mime.starts_with("video/") {
+                    Some(ContentBlock::video_base64(mime, data))
+                } else {
+                    Some(ContentBlock::document_base64(mime, data, None))
+                }
+            } else if media_type.starts_with("image/") {
+                Some(ContentBlock::image_url(url.as_str()))
+            } else if media_type.starts_with("audio/") {
+                Some(ContentBlock::audio_url(url.as_str()))
+            } else if media_type.starts_with("video/") {
+                Some(ContentBlock::video_url(url.as_str()))
+            } else {
+                Some(ContentBlock::document_url(url.as_str(), None))
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Convert `UIMessage` list to awaken `Message` list.
+///
+/// Preserves the frontend-assigned message ID so that subsequent requests
+/// sending the full messages array can be deduplicated against the store.
+fn convert_messages(msgs: Vec<UIMessage>) -> Vec<Message> {
+    msgs.into_iter()
+        .filter_map(|m| {
+            let blocks: Vec<ContentBlock> =
+                m.parts.iter().filter_map(part_to_content_block).collect();
+            if blocks.is_empty() {
+                return None;
+            }
+            let mut msg = match m.role.as_str() {
+                "user" => Message::user_with_content(blocks),
+                "assistant" => {
+                    Message::assistant(awaken_contract::contract::content::extract_text(&blocks))
+                }
+                "system" => {
+                    Message::system(awaken_contract::contract::content::extract_text(&blocks))
+                }
+                _ => return None,
+            };
+            // Preserve frontend ID for deduplication; fall back to generated UUID.
+            if let Some(id) = m.id {
+                msg.id = Some(id);
+            }
+            Some(msg)
+        })
+        .collect()
+}
+
+/// Filter out messages whose IDs are already persisted in the store.
+/// Messages without an ID are always kept (treated as new).
+fn dedup_messages(msgs: Vec<UIMessage>, known_ids: &HashSet<String>) -> Vec<UIMessage> {
+    if known_ids.is_empty() {
+        return msgs;
+    }
+    msgs.into_iter()
+        .filter(|m| match &m.id {
+            Some(id) => !known_ids.contains(id),
+            None => true,
+        })
+        .collect()
+}
+
+/// Extract tool-call decisions from assistant message parts.
+fn extract_tool_call_decisions(msgs: &[UIMessage]) -> Vec<(String, ToolCallResume)> {
+    msgs.iter()
+        .filter(|m| m.role == "assistant")
+        .flat_map(|m| m.parts.iter())
+        .filter_map(|part| {
+            let part_type = part_kind(part)?;
+            if !part_type.starts_with("tool-") {
+                return None;
+            }
+
+            let state = part.get("state").and_then(Value::as_str)?;
+            let tool_call_id = part
+                .get("toolCallId")
+                .and_then(Value::as_str)
+                .map(str::to_owned)?;
+
+            let (action, result) = match state {
+                "output-available" => (
+                    ResumeDecisionAction::Resume,
+                    part.get("output").cloned().unwrap_or(Value::Null),
+                ),
+                "output-error" => (
+                    ResumeDecisionAction::Resume,
+                    json!({
+                        "error": part
+                            .get("errorText")
+                            .and_then(Value::as_str)
+                            .unwrap_or("tool execution error")
+                    }),
+                ),
+                "output-denied" => (ResumeDecisionAction::Cancel, json!({ "approved": false })),
+                "approval-responded" => {
+                    let approval = part.get("approval")?;
+                    let approved = approval.get("approved").and_then(Value::as_bool);
+                    let action = if approved == Some(false) {
+                        ResumeDecisionAction::Cancel
+                    } else {
+                        ResumeDecisionAction::Resume
+                    };
+                    (action, approval.clone())
+                }
+                _ => return None,
+            };
+
+            Some((
+                tool_call_id,
+                ToolCallResume {
+                    decision_id: uuid::Uuid::now_v7().to_string(),
+                    action,
+                    result,
+                    reason: None,
+                    updated_at: awaken_contract::now_ms(),
+                },
+            ))
+        })
+        .collect()
+}
+
+// ── Tests ───────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_contract::contract::content::ContentBlock;
+    use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
+    use serde_json::json;
+
+    fn raw_part(value: Value) -> Value {
+        value
+    }
+
+    // ── UIMessage deserialization ──
+
+    #[test]
+    fn deserialize_user_text_message() {
+        let raw = json!({
+            "id": "msg-1",
+            "role": "user",
+            "parts": [{"type": "text", "text": "hello"}]
+        });
+        let msg: UIMessage = serde_json::from_value(raw).unwrap();
+        assert_eq!(msg.role, "user");
+        assert_eq!(msg.parts.len(), 1);
+        assert_eq!(part_kind(&msg.parts[0]), Some("text"));
+    }
+
+    #[test]
+    fn deserialize_message_with_file_part() {
+        let raw = json!({
+            "id": "msg-2",
+            "role": "user",
+            "parts": [
+                {"type": "text", "text": "Look at this"},
+                {"type": "file", "url": "https://example.com/img.png", "mediaType": "image/png"}
+            ]
+        });
+        let msg: UIMessage = serde_json::from_value(raw).unwrap();
+        assert_eq!(msg.parts.len(), 2);
+        assert_eq!(part_kind(&msg.parts[1]), Some("file"));
+    }
+
+    #[test]
+    fn deserialize_tool_parts_as_other() {
+        let raw = json!({
+            "id": "msg-3",
+            "role": "assistant",
+            "parts": [
+                {"type": "text", "text": "Let me search"},
+                {"type": "tool-search", "toolCallId": "c1", "state": "output-available", "input": {}, "output": "results"},
+                {"type": "step-start"}
+            ]
+        });
+        let msg: UIMessage = serde_json::from_value(raw).unwrap();
+        assert_eq!(msg.parts.len(), 3);
+        assert_eq!(part_kind(&msg.parts[1]), Some("tool-search"));
+        assert_eq!(part_kind(&msg.parts[2]), Some("step-start"));
+    }
+
+    // ── convert_messages ──
+
+    #[test]
+    fn convert_user_text_message() {
+        let msgs = vec![UIMessage {
+            id: Some("m1".into()),
+            role: "user".into(),
+            parts: vec![raw_part(json!({"type": "text", "text": "hello"}))],
+        }];
+        let converted = convert_messages(msgs);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].text(), "hello");
+    }
+
+    #[test]
+    fn convert_user_message_with_image_file() {
+        let msgs = vec![UIMessage {
+            id: Some("m2".into()),
+            role: "user".into(),
+            parts: vec![
+                raw_part(json!({"type": "text", "text": "Describe"})),
+                raw_part(json!({
+                    "type": "file",
+                    "url": "https://example.com/img.png",
+                    "mediaType": "image/png"
+                })),
+            ],
+        }];
+        let converted = convert_messages(msgs);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].content.len(), 2);
+        assert_eq!(converted[0].content[0], ContentBlock::text("Describe"));
+        assert_eq!(
+            converted[0].content[1],
+            ContentBlock::image_url("https://example.com/img.png")
+        );
+    }
+
+    #[test]
+    fn convert_user_message_with_base64_image() {
+        let msgs = vec![UIMessage {
+            id: None,
+            role: "user".into(),
+            parts: vec![raw_part(json!({
+                "type": "file",
+                "url": "data:image/png;base64,iVBOR",
+                "mediaType": "image/png"
+            }))],
+        }];
+        let converted = convert_messages(msgs);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(
+            converted[0].content[0],
+            ContentBlock::image_base64("image/png", "iVBOR")
+        );
+    }
+
+    #[test]
+    fn convert_user_message_with_audio_file() {
+        let msgs = vec![UIMessage {
+            id: None,
+            role: "user".into(),
+            parts: vec![raw_part(json!({
+                "type": "file",
+                "url": "https://example.com/audio.mp3",
+                "mediaType": "audio/mpeg"
+            }))],
+        }];
+        let converted = convert_messages(msgs);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(
+            converted[0].content[0],
+            ContentBlock::audio_url("https://example.com/audio.mp3")
+        );
+    }
+
+    #[test]
+    fn convert_skips_unknown_roles() {
+        let msgs = vec![UIMessage {
+            id: None,
+            role: "function".into(),
+            parts: vec![raw_part(json!({"type": "text", "text": "result"}))],
+        }];
+        let converted = convert_messages(msgs);
+        assert!(converted.is_empty());
+    }
+
+    #[test]
+    fn convert_skips_messages_with_only_non_content_parts() {
+        let msgs = vec![UIMessage {
+            id: None,
+            role: "assistant".into(),
+            parts: vec![
+                raw_part(json!({"type": "step-start"})),
+                raw_part(json!({"type": "tool-search", "toolCallId": "c1"})),
+            ],
+        }];
+        let converted = convert_messages(msgs);
+        assert!(converted.is_empty());
+    }
+
+    #[test]
+    fn convert_system_message() {
+        let msgs = vec![UIMessage {
+            id: None,
+            role: "system".into(),
+            parts: vec![raw_part(json!({"type": "text", "text": "You are helpful"}))],
+        }];
+        let converted = convert_messages(msgs);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].text(), "You are helpful");
+    }
+
+    #[test]
+    fn convert_empty_messages() {
+        let converted = convert_messages(vec![]);
+        assert!(converted.is_empty());
+    }
+
+    // ── extract_tool_call_decisions ──
+
+    #[test]
+    fn extract_decisions_from_tool_output_parts() {
+        let msgs = vec![UIMessage {
+            id: Some("a1".into()),
+            role: "assistant".into(),
+            parts: vec![
+                raw_part(json!({
+                    "type": "tool-PermissionConfirm",
+                    "toolCallId": "perm_call",
+                    "state": "output-denied"
+                })),
+                raw_part(json!({
+                    "type": "tool-askUserQuestion",
+                    "toolCallId": "ask_call",
+                    "state": "output-available",
+                    "output": { "message": "continue" }
+                })),
+            ],
+        }];
+
+        let decisions = extract_tool_call_decisions(&msgs);
+        assert_eq!(decisions.len(), 2);
+        assert_eq!(decisions[0].0, "perm_call");
+        assert_eq!(decisions[0].1.action, ResumeDecisionAction::Cancel);
+        assert_eq!(decisions[1].0, "ask_call");
+        assert_eq!(decisions[1].1.action, ResumeDecisionAction::Resume);
+        assert_eq!(decisions[1].1.result, json!({ "message": "continue" }));
+    }
+
+    // ── dedup_messages ──
+
+    #[test]
+    fn dedup_messages_filters_known_ids() {
+        let known_ids: HashSet<String> = ["m1", "m2"].iter().map(|s| s.to_string()).collect();
+        let msgs = vec![
+            UIMessage {
+                id: Some("m1".into()),
+                role: "user".into(),
+                parts: vec![raw_part(json!({"type": "text", "text": "old"}))],
+            },
+            UIMessage {
+                id: Some("m2".into()),
+                role: "assistant".into(),
+                parts: vec![raw_part(json!({"type": "text", "text": "reply"}))],
+            },
+            UIMessage {
+                id: Some("m3".into()),
+                role: "user".into(),
+                parts: vec![raw_part(json!({"type": "text", "text": "new"}))],
+            },
+        ];
+        let new_msgs = dedup_messages(msgs, &known_ids);
+        assert_eq!(new_msgs.len(), 1);
+        assert_eq!(new_msgs[0].id.as_deref(), Some("m3"));
+    }
+
+    #[test]
+    fn dedup_messages_keeps_all_when_no_known_ids() {
+        let known_ids: HashSet<String> = HashSet::new();
+        let msgs = vec![UIMessage {
+            id: Some("m1".into()),
+            role: "user".into(),
+            parts: vec![raw_part(json!({"type": "text", "text": "hello"}))],
+        }];
+        let new_msgs = dedup_messages(msgs, &known_ids);
+        assert_eq!(new_msgs.len(), 1);
+    }
+
+    #[test]
+    fn dedup_messages_keeps_messages_without_id() {
+        let known_ids: HashSet<String> = ["m1"].iter().map(|s| s.to_string()).collect();
+        let msgs = vec![
+            UIMessage {
+                id: Some("m1".into()),
+                role: "user".into(),
+                parts: vec![raw_part(json!({"type": "text", "text": "old"}))],
+            },
+            UIMessage {
+                id: None,
+                role: "user".into(),
+                parts: vec![raw_part(json!({"type": "text", "text": "no-id"}))],
+            },
+        ];
+        let new_msgs = dedup_messages(msgs, &known_ids);
+        assert_eq!(new_msgs.len(), 1);
+        assert_eq!(new_msgs[0].id, None);
+    }
+
+    // ── ProcessedRequest::is_resume_only ──
+
+    #[test]
+    fn is_resume_only_true_when_no_messages_and_has_decisions() {
+        let req = ProcessedRequest {
+            thread_id: "t1".into(),
+            messages: vec![],
+            decisions: vec![(
+                "tc1".into(),
+                ToolCallResume {
+                    decision_id: "d1".into(),
+                    action: ResumeDecisionAction::Resume,
+                    result: json!({"approved": true}),
+                    reason: None,
+                    updated_at: 0,
+                },
+            )],
+            state: None,
+            agent_id: None,
+        };
+        assert!(req.is_resume_only());
+    }
+
+    #[test]
+    fn is_resume_only_false_when_has_messages() {
+        let req = ProcessedRequest {
+            thread_id: "t1".into(),
+            messages: vec![awaken_contract::contract::message::Message::user("hello")],
+            decisions: vec![(
+                "tc1".into(),
+                ToolCallResume {
+                    decision_id: "d1".into(),
+                    action: ResumeDecisionAction::Resume,
+                    result: json!({"approved": true}),
+                    reason: None,
+                    updated_at: 0,
+                },
+            )],
+            state: None,
+            agent_id: None,
+        };
+        assert!(!req.is_resume_only());
+    }
+
+    // ── parse_data_uri ──
+
+    #[test]
+    fn parse_data_uri_valid() {
+        let (mime, data) = parse_data_uri("data:image/jpeg;base64,/9j/4AA").unwrap();
+        assert_eq!(mime, "image/jpeg");
+        assert_eq!(data, "/9j/4AA");
+    }
+
+    #[test]
+    fn parse_data_uri_invalid() {
+        assert!(parse_data_uri("https://example.com/img.png").is_none());
+        assert!(parse_data_uri("data:image/png,raw-data").is_none());
+    }
+}
