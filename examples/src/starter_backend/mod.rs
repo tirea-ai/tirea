@@ -121,12 +121,27 @@ pub fn build_genai_client() -> genai::Client {
             base_url.push('/');
         }
 
+        // Select adapter via OPENAI_ADAPTER env var. Default "deepseek" works for
+        // most OpenAI-compatible providers because it parses streaming usage from
+        // the finish_reason chunk (genai's OpenAI adapter only parses usage from a
+        // separate choices-empty chunk, which many providers don't send).
+        let adapter_kind = match std::env::var("OPENAI_ADAPTER")
+            .unwrap_or_default()
+            .to_lowercase()
+            .as_str()
+        {
+            "openai" => AdapterKind::OpenAI,
+            "together" => AdapterKind::Together,
+            "fireworks" => AdapterKind::Fireworks,
+            _ => AdapterKind::DeepSeek, // default: handles inline usage
+        };
+
         genai::Client::builder()
             .with_service_target_resolver_fn(move |st: ServiceTarget| {
                 Ok(ServiceTarget {
                     endpoint: Endpoint::from_owned(base_url.clone()),
                     auth: AuthData::from_single(api_key.clone()),
-                    model: ModelIden::new(AdapterKind::OpenAI, st.model.model_name),
+                    model: ModelIden::new(adapter_kind, st.model.model_name),
                 })
             })
             .build()
