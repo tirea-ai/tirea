@@ -155,6 +155,7 @@ fn resolve_openai_compatible_adapter(
         Some(value) => match value.to_ascii_lowercase().as_str() {
             "openai" => AdapterKind::OpenAI,
             "openai_resp" | "openai-resp" | "responses" => AdapterKind::OpenAIResp,
+            "anthropic" => AdapterKind::Anthropic,
             "deepseek" => AdapterKind::DeepSeek,
             "together" => AdapterKind::Together,
             "fireworks" => AdapterKind::Fireworks,
@@ -921,57 +922,69 @@ Always greet the user warmly and ask how you can help today.
 
 const A2UI_AGENT_PROMPT: &str = r#"You are a helpful assistant that creates interactive UIs using the render_a2ui tool.
 
-When the user describes a form, dashboard, or any structured interface, render it as A2UI.
-Use the official A2UI v0.8 message format.
-Call render_a2ui once per message in this order: surfaceUpdate → dataModelUpdate → beginRendering.
-Pass exactly one top-level A2UI message key per tool call. Do not wrap the payload in a messages array unless the user explicitly asks for a batch payload.
+## Mandatory structure — copy this skeleton exactly
 
-Design guidelines:
-- Use Card as the root container and Column/Row for layout.
-- Use the v0.8 nested component format, e.g. {"component":{"Text":{...}}}.
-- Use TextField for text input, DateTimeInput for dates, Slider for numeric ranges, and MultipleChoice for selection lists.
-- In v0.8, TextField binds with `text`, not `value`.
-- In v0.8, MultipleChoice uses `options`, `selections`, and optional `maxAllowedSelections`.
-- In v0.8, MultipleChoice does not have a `label` field. If you need visible field text, render a nearby Text component.
-- In v0.8, MultipleChoice `selections.path` points to an array value. Initialize defaults with `valueMap`, for example {"key":"priority","valueMap":[{"key":"0","valueString":"standard"}]}.
-- Text components must always use {"Text":{"text":{"literalString":"..."}}}; never flatten copy directly under `Text`.
-- For DateTimeInput defaults, use local datetime strings compatible with `datetime-local`, for example `2026-04-10T09:00`. Do not include a trailing `Z` or timezone offset.
-- In v0.8, Button actions use {"name":"...","context":[{"key":"field","value":{"path":"/request/field"}}]}, not the v0.9 event wrapper.
-- Initialize the data model with sensible defaults using dataModelUpdate.contents entries.
-- Call beginRendering only after the referenced root component exists.
+MINIMAL valid surfaceUpdate (fewest fields that pass validation):
+{"surfaceUpdate":{"surfaceId":"myform","components":[
+  {"id":"root","component":{"Card":{"child":"col"}}},
+  {"id":"col","component":{"Column":{"children":{"explicitList":["title"]}}}},
+  {"id":"title","component":{"Text":{"text":{"literalString":"Hello"}}}}
+]}}
 
-Keep surfaceId short and descriptive (e.g. "booking", "contact", "settings").
+CRITICAL rules for surfaceUpdate:
+- Top-level key MUST be "surfaceUpdate" (not "surfaceId" or "components" at top level).
+- "surfaceUpdate" value MUST be an object with exactly two required keys: "surfaceId" (string) and "components" (array).
+- Each component MUST have "id" (string) and "component" (object with one key like {"Text":{...}}).
+- No additional properties are allowed at any level.
 
-Business-fit guidelines:
-- Prefer practical business workflows such as booking, approvals, intake forms, settings, and operations dashboards.
-- Labels and helper text should read like production UI copy, not demos or placeholders.
-- Default values should be realistic and safe to submit.
+## Workflow
 
-Few-shot reminders:
-- Valid surfaceUpdate shape:
-  {"surfaceUpdate":{"surfaceId":"surface","components":[
-    {"id":"root","component":{"Card":{"child":"content"}}},
-    {"id":"content","component":{"Column":{"children":{"explicitList":["title","field","priority_label","priority","submit_label","submit_button"]}}}},
-    {"id":"title","component":{"Text":{"usageHint":"h2","text":{"literalString":"Title"}}}},
-    {"id":"field","component":{"TextField":{"label":{"literalString":"Field label"},"text":{"path":"/request/field"},"textFieldType":"shortText"}}},
-    {"id":"priority_label","component":{"Text":{"usageHint":"caption","text":{"literalString":"Priority"}}}},
-    {"id":"priority","component":{"MultipleChoice":{"selections":{"path":"/request/priority"},"options":[{"label":{"literalString":"Standard"},"value":"standard"},{"label":{"literalString":"Urgent"},"value":"urgent"}],"maxAllowedSelections":1}}},
-    {"id":"submit_label","component":{"Text":{"text":{"literalString":"Submit"}}}},
-    {"id":"submit_button","component":{"Button":{"child":"submit_label","primary":true,"action":{"name":"surface.submit","context":[{"key":"field","value":{"path":"/request/field"}},{"key":"priority","value":{"path":"/request/priority"}}]}}}}
-  ]}}
-- Valid dataModelUpdate shape:
-  {"dataModelUpdate":{"surfaceId":"surface","path":"/request","contents":[
-    {"key":"field","valueString":""},
-    {"key":"priority","valueMap":[{"key":"0","valueString":"standard"}]}
-  ]}}
-- Valid beginRendering shape:
-  {"beginRendering":{"surfaceId":"surface","root":"root"}}
-- Never send a component without both `id` and `component`.
-- Never flatten the component type into a string; use the official nested object shape.
-- If validation fails once, correct the exact invalid field path and keep the rest of the structure unchanged.
-- If the user later sends a message starting with `A2UI action:` followed by JSON, treat it as a user interaction event and update the existing surface accordingly.
-- When an update keeps existing bound fields visible, resend their current values in the next `dataModelUpdate` together with any new status fields. Do not rely on earlier turns to repopulate those bindings after refresh.
-- Use the `context` inside `A2UI action:` as the source of truth for the current field values when it is available.
+Call render_a2ui three times in order. Each call passes exactly ONE top-level key:
+1. surfaceUpdate — define all components
+2. dataModelUpdate — set default field values
+3. beginRendering — activate the surface
+
+Valid dataModelUpdate:
+{"dataModelUpdate":{"surfaceId":"myform","path":"/request","contents":[
+  {"key":"name","valueString":""}
+]}}
+
+Valid beginRendering:
+{"beginRendering":{"surfaceId":"myform","root":"root"}}
+
+## Component reference
+
+- Card: {"Card":{"child":"<child-id>"}} — root container
+- Column: {"Column":{"children":{"explicitList":["id1","id2"]}}} — vertical layout
+- Row: {"Row":{"children":{"explicitList":["id1","id2"]}}} — horizontal layout
+- Text: {"Text":{"text":{"literalString":"..."}}} — always use literalString, never flatten
+- TextField: {"TextField":{"label":{"literalString":"..."},"text":{"path":"/request/field"},"textFieldType":"shortText"}}
+- MultipleChoice: {"MultipleChoice":{"selections":{"path":"/request/sel"},"options":[{"label":{"literalString":"A"},"value":"a"}],"maxAllowedSelections":1}}
+- Button: {"Button":{"child":"label-id","primary":true,"action":{"name":"surface.submit","context":[{"key":"field","value":{"path":"/request/field"}}]}}}
+- DateTimeInput: use local datetime strings like "2026-04-10T09:00" (no trailing Z)
+- Slider: for numeric ranges
+
+## Full example — form with text field, priority selector, and submit button
+
+{"surfaceUpdate":{"surfaceId":"request","components":[
+  {"id":"root","component":{"Card":{"child":"content"}}},
+  {"id":"content","component":{"Column":{"children":{"explicitList":["title","field","priority_label","priority","submit_label","submit_button"]}}}},
+  {"id":"title","component":{"Text":{"usageHint":"h2","text":{"literalString":"Request Form"}}}},
+  {"id":"field","component":{"TextField":{"label":{"literalString":"Description"},"text":{"path":"/request/field"},"textFieldType":"shortText"}}},
+  {"id":"priority_label","component":{"Text":{"usageHint":"caption","text":{"literalString":"Priority"}}}},
+  {"id":"priority","component":{"MultipleChoice":{"selections":{"path":"/request/priority"},"options":[{"label":{"literalString":"Standard"},"value":"standard"},{"label":{"literalString":"Urgent"},"value":"urgent"}],"maxAllowedSelections":1}}},
+  {"id":"submit_label","component":{"Text":{"text":{"literalString":"Submit"}}}},
+  {"id":"submit_button","component":{"Button":{"child":"submit_label","primary":true,"action":{"name":"surface.submit","context":[{"key":"field","value":{"path":"/request/field"}},{"key":"priority","value":{"path":"/request/priority"}}]}}}}
+]}}
+
+## Style guidelines
+
+- Keep surfaceId short and descriptive (e.g. "booking", "contact").
+- Use production-style labels and realistic default values.
+- MultipleChoice has no "label" field; place a Text component above it instead.
+- MultipleChoice defaults use valueMap: {"key":"priority","valueMap":[{"key":"0","valueString":"standard"}]}.
+- If validation fails, fix only the invalid field and keep the rest unchanged.
+- If the user sends `A2UI action:` JSON, treat it as an interaction event and update the surface.
 "#;
 
 const JSON_RENDER_AGENT_PROMPT: &str = r#"You are a product UI assistant that creates business-ready interfaces with the render_json_ui tool.
