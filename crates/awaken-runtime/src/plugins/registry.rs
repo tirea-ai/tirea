@@ -275,6 +275,12 @@ impl PluginRegistrar {
     pub fn profile_keys_for_test(&self) -> Vec<ProfileKeyRegistration> {
         self.profile_keys.clone()
     }
+
+    /// Returns the list of registered tool IDs (test helper).
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn tool_ids_for_test(&self) -> Vec<String> {
+        self.tools.iter().map(|t| t.id.clone()).collect()
+    }
 }
 
 #[cfg(test)]

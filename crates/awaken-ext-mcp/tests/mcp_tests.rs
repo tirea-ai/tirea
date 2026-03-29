@@ -1568,12 +1568,16 @@ async fn http_list_resources_parses_resource_definitions() {
 
 // ── Plugin test ──
 
-#[test]
-fn mcp_plugin_descriptor() {
+#[tokio::test]
+async fn mcp_plugin_descriptor() {
     use awaken_ext_mcp::McpPlugin;
     use awaken_runtime::Plugin;
 
-    let plugin = McpPlugin;
+    let transport = Arc::new(FakeTransport::new(vec![])) as Arc<dyn McpToolTransport>;
+    let manager = McpToolRegistryManager::from_transports([(cfg("s1"), transport)])
+        .await
+        .unwrap();
+    let plugin = McpPlugin::new(manager.registry());
     let desc = plugin.descriptor();
     assert_eq!(desc.name, "mcp");
 }

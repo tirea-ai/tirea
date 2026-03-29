@@ -21,7 +21,7 @@ use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::tool::Tool;
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_ext_generative_ui::A2uiPlugin;
-use awaken_ext_mcp::{McpServerConnectionConfig, McpToolRegistryManager};
+use awaken_ext_mcp::{McpPlugin, McpServerConnectionConfig, McpToolRegistryManager};
 use awaken_ext_observability::{InMemorySink, ObservabilityPlugin};
 use awaken_ext_permission::{
     PermissionConfigKey, PermissionPlugin, PermissionRuleEntry, PermissionRulesConfig,
@@ -525,12 +525,12 @@ Deterministic compatibility directives:\n\
         builder = builder.with_tool(*id, Arc::clone(tool));
     }
 
-    // Register MCP tools
+    // Register MCP tools via plugin lifecycle
     if let Some(ref manager) = mcp_manager {
-        let snapshot = manager.registry().snapshot();
-        for (id, tool) in snapshot {
-            builder = builder.with_tool(id, tool);
-        }
+        builder = builder.with_plugin(
+            "mcp",
+            Arc::new(McpPlugin::new(manager.registry())) as Arc<dyn Plugin>,
+        );
     }
 
     // -- Agent specs (skip if already the default) --
