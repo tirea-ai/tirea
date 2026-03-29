@@ -34,12 +34,10 @@ export function MetricsPanel({ metrics }: { metrics: InferenceMetrics[] }) {
             className="mt-0.5 flex items-center gap-2 text-slate-600"
           >
             <span className="font-medium">{m.model}</span>
-            {hasUsage ? (
+            {hasUsage && (
               <span className="tabular-nums">
                 in: {promptTokens} / out: {completionTokens}
               </span>
-            ) : (
-              <span>no usage data</span>
             )}
             <span className="text-slate-400">({m.duration_ms}ms)</span>
           </div>

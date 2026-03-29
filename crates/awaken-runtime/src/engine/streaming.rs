@@ -31,6 +31,8 @@ pub struct StreamCollector {
     tool_call_order: Vec<String>,
     usage: Option<TokenUsage>,
     stop_reason: Option<awaken_contract::contract::inference::StopReason>,
+    /// Set to true after `ChatStreamEvent::End` is processed.
+    end_seen: bool,
 }
 
 struct PartialToolCall {
@@ -49,6 +51,7 @@ impl StreamCollector {
     pub fn new() -> Self {
         Self {
             text: String::new(),
+            end_seen: false,
             tool_calls: HashMap::new(),
             tool_call_order: Vec::new(),
             usage: None,
@@ -122,7 +125,18 @@ impl StreamCollector {
         }
     }
 
+    /// Take accumulated usage data, if any. Returns `Some` once, then `None`.
+    pub fn take_usage(&mut self) -> Option<TokenUsage> {
+        self.usage.take()
+    }
+
+    /// Whether `ChatStreamEvent::End` has been processed.
+    pub fn end_seen(&self) -> bool {
+        self.end_seen
+    }
+
     fn apply_end(&mut self, end: StreamEnd) {
+        self.end_seen = true;
         // Usage
         if let Some(ref usage) = end.captured_usage {
             self.usage = Some(map_usage(usage));

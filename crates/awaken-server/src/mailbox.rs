@@ -659,11 +659,9 @@ impl Mailbox {
                     {
                         tracing::warn!(job_id, error = %e, "dead_letter failed");
                     }
-                    // Notify the caller.
-                    let _ = error_tx.send(AgentEvent::Error {
-                        message: msg,
-                        code: None,
-                    });
+                    // The runtime's RunFinish with TerminationReason::Error is the
+                    // authoritative error signal. Do NOT emit a second Error event
+                    // here — AG-UI clients reject duplicate RUN_ERROR events.
                 }
             }
 

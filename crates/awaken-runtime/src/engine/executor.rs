@@ -177,6 +177,16 @@ impl LlmExecutor for GenaiExecutor {
             let event_stream = futures::stream::unfold(
                 (stream_response.stream, StreamCollector::new()),
                 |(mut stream, mut collector)| async move {
+                    // If we already saw End (emitted Usage on previous poll),
+                    // emit the final Stop event now.
+                    if collector.end_seen() {
+                        let result = collector.finish();
+                        let stop = result.stop_reason.unwrap_or(StopReason::EndTurn);
+                        return Some((
+                            Ok(LlmStreamEvent::Stop(stop)),
+                            (stream, StreamCollector::new()),
+                        ));
+                    }
                     loop {
                         match stream.next().await {
                             Some(Ok(event)) => {
@@ -209,7 +219,15 @@ impl LlmExecutor for GenaiExecutor {
                                     }
                                     StreamOutput::None => {
                                         if is_end {
-                                            // Emit final result
+                                            // Emit usage event if available, then
+                                            // mark end_pending so the next poll
+                                            // emits Stop.
+                                            if let Some(usage) = collector.take_usage() {
+                                                return Some((
+                                                    Ok(LlmStreamEvent::Usage(usage)),
+                                                    (stream, collector),
+                                                ));
+                                            }
                                             let result = collector.finish();
                                             let stop =
                                                 result.stop_reason.unwrap_or(StopReason::EndTurn);
