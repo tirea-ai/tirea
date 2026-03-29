@@ -1,6 +1,6 @@
 # ADR-0008: State Scoping and Parallel Safety
 
-- **Status**: Not Implemented
+- **Status**: Partially Implemented
 - **Date**: 2026-03-21
 - **Depends on**: ADR-0002
 
@@ -25,6 +25,22 @@ Specified in `StateKeyOptions` at registration. Lifecycle: `StateStore::begin_ru
 **Parallel merge**: ToolCall-scoped keys cannot conflict (disjoint namespaces). Run/Global-scoped keys require disjoint-write validation: two tools modifying different keys → merge; same key → reject. `MutationBatch` gains a disjoint merge operation.
 
 Rejected key-level CRDT merge: would require every `StateKey` to implement a merge function. The common case (tools writing to their own ToolCall-scoped keys) is conflict-free by construction.
+
+## Current State
+
+The implemented `KeyScope` enum diverges from the design above:
+
+```rust
+pub enum KeyScope {
+    Run,     // cleared at run start (default)
+    Thread,  // persists across runs on the same thread
+}
+```
+
+- `Global` was replaced by `Thread`, which serves the same persistence use case scoped to a thread rather than being truly global
+- `ToolCall` scope is deferred; it will be needed when parallel tool execution (ADR-0007) requires per-call isolation
+- `MergeStrategy` (Exclusive, Commutative) is implemented on `StateKey` for future parallel merge validation
+- `StateKeyOptions` includes the `scope` field as designed
 
 ## Consequences
 

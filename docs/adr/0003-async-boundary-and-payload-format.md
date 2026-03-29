@@ -1,6 +1,6 @@
 # ADR-0003: Async Boundary and Payload Format
 
-- **Status**: Partially Implemented
+- **Status**: Implemented
 - **Date**: 2026-03-21
 - **Depends on**: ADR-0001, ADR-0002
 
@@ -23,7 +23,7 @@ State operations are pure in-memory mutations (sub-microsecond). Async would for
 
 - Sync state engine: implemented
 - JSON payloads (`serde_json::Value`): implemented
-- Async hooks / handlers / `run_phase()`: not yet migrated — currently sync
+- Async hooks / handlers / `run_phase()`: implemented (all phase hooks, action handlers, effect handlers, and `PhaseRuntime::run_phase()` use async fn signatures)
 
 ## Consequences
 
