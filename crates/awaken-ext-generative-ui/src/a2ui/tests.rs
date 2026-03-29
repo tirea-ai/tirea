@@ -496,3 +496,73 @@ fn plugin_instructions_mention_all_message_types() {
     assert!(text.contains("beginRendering"));
     assert!(text.contains("deleteSurface"));
 }
+
+// -- normalize_args tests ---------------------------------------------------
+
+#[test]
+fn normalize_rewraps_flattened_surface_update() {
+    use super::tool::normalize_args;
+
+    // Model generates surfaceId+components at top level alongside surfaceUpdate key
+    let flattened = json!({
+        "surfaceUpdate": {},
+        "surfaceId": "form1",
+        "components": [{"id": "root", "component": {"Card": {"child": "c"}}}]
+    });
+
+    let normalized = normalize_args(&flattened);
+    let su = normalized.get("surfaceUpdate").expect("surfaceUpdate key");
+    assert_eq!(su.get("surfaceId").unwrap(), "form1");
+    assert!(su.get("components").unwrap().is_array());
+    // Top-level should only have surfaceUpdate now
+    assert!(normalized.get("surfaceId").is_none());
+}
+
+#[test]
+fn normalize_rewraps_flattened_begin_rendering() {
+    use super::tool::normalize_args;
+
+    let flattened = json!({
+        "beginRendering": {},
+        "surfaceId": "form1",
+        "root": "root",
+        "components": []
+    });
+
+    let normalized = normalize_args(&flattened);
+    let br = normalized
+        .get("beginRendering")
+        .expect("beginRendering key");
+    assert_eq!(br.get("surfaceId").unwrap(), "form1");
+    assert_eq!(br.get("root").unwrap(), "root");
+}
+
+#[test]
+fn normalize_leaves_correct_args_unchanged() {
+    use super::tool::normalize_args;
+
+    let correct = json!({
+        "surfaceUpdate": {
+            "surfaceId": "form1",
+            "components": [{"id": "r", "component": {"Text": {"text": {"literalString": "hi"}}}}]
+        }
+    });
+
+    let normalized = normalize_args(&correct);
+    assert_eq!(normalized, correct);
+}
+
+#[test]
+fn normalize_infers_surface_update_when_no_message_key() {
+    use super::tool::normalize_args;
+
+    // Model omits the message key entirely, just puts surfaceId+components
+    let bare = json!({
+        "surfaceId": "form1",
+        "components": [{"id": "r", "component": {"Text": {"text": {"literalString": "hi"}}}}]
+    });
+
+    let normalized = normalize_args(&bare);
+    assert!(normalized.get("surfaceUpdate").is_some());
+    assert_eq!(normalized["surfaceUpdate"]["surfaceId"], "form1");
+}

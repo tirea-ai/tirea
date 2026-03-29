@@ -31,6 +31,52 @@ impl Default for A2uiRenderTool {
     }
 }
 
+/// Normalize LLM-provided args to fix common structural mistakes.
+///
+/// Weaker models often flatten `surfaceUpdate`/`dataModelUpdate` fields to the
+/// top level instead of nesting them. For example, they produce:
+///   `{"surfaceUpdate": {...}, "surfaceId": "x", "components": [...]}`
+/// instead of:
+///   `{"surfaceUpdate": {"surfaceId": "x", "components": [...]}}`
+///
+/// This function detects the flattened pattern and rewraps it, so the tool
+/// can accept the model's intent without a validation round-trip.
+pub(crate) fn normalize_args(args: &Value) -> Value {
+    let Some(obj) = args.as_object() else {
+        return args.clone();
+    };
+
+    // Detect flattened surfaceUpdate: has "surfaceId" + "components" at top level
+    // alongside a message key whose value is NOT the correct nested object.
+    if obj.contains_key("surfaceId") && obj.contains_key("components") {
+        // Find which message key is present (if any)
+        let msg_key = MESSAGE_KEYS.iter().find(|k| obj.contains_key(**k)).copied();
+
+        // Build the inner object from surfaceId + components + optional path
+        let mut inner = serde_json::Map::new();
+        if let Some(v) = obj.get("surfaceId") {
+            inner.insert("surfaceId".into(), v.clone());
+        }
+        if let Some(v) = obj.get("components") {
+            inner.insert("components".into(), v.clone());
+        }
+        if let Some(v) = obj.get("contents") {
+            inner.insert("contents".into(), v.clone());
+        }
+        if let Some(v) = obj.get("path") {
+            inner.insert("path".into(), v.clone());
+        }
+        if let Some(v) = obj.get("root") {
+            inner.insert("root".into(), v.clone());
+        }
+
+        let key = msg_key.unwrap_or("surfaceUpdate");
+        return json!({ key: inner });
+    }
+
+    args.clone()
+}
+
 /// Extract the A2UI messages array from LLM-provided args.
 ///
 /// Accepts multiple input shapes:
@@ -228,7 +274,8 @@ impl Tool for A2uiRenderTool {
     }
 
     fn validate_args(&self, args: &Value) -> Result<(), ToolError> {
-        let messages = extract_messages(args);
+        let args = normalize_args(args);
+        let messages = extract_messages(&args);
 
         if messages.is_empty() {
             return Err(ToolError::InvalidArguments(
@@ -237,7 +284,7 @@ impl Tool for A2uiRenderTool {
             ));
         }
 
-        validate_against_schema(&tool_parameters_schema(), args)?;
+        validate_against_schema(&tool_parameters_schema(), &args)?;
 
         let errors = validate_a2ui_messages(&messages);
         if errors.is_empty() {
@@ -252,6 +299,7 @@ impl Tool for A2uiRenderTool {
     }
 
     async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+        let args = normalize_args(&args);
         let messages = extract_messages(&args);
 
         tracing::debug!(
