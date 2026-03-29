@@ -490,6 +490,90 @@ fn multiple_include_only_actions_union() {
 }
 
 // -----------------------------------------------------------------------
+// Permission × deferred-tools interaction tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn duplicate_exclude_from_permission_and_deferred_is_idempotent() {
+    // Both permission plugin and deferred-tools plugin schedule ExcludeTool
+    // for the same tool. The combined exclusion set should deduplicate.
+    let mut tools = vec![
+        tool("allowed"),
+        tool("denied_and_deferred"),
+        tool("ToolSearch"),
+    ];
+
+    // Simulate: permission hook excludes "denied_and_deferred"
+    let mut actions = make_exclude_actions(&["denied_and_deferred"]);
+    // Simulate: deferred-tools hook also excludes "denied_and_deferred"
+    actions.extend(make_exclude_actions(&["denied_and_deferred"]));
+
+    let exclusion_payloads = extract_actions::<ExcludeTool>(&mut actions);
+    apply_tool_filter_payloads(&mut tools, exclusion_payloads, vec![]);
+
+    let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
+    assert_eq!(ids, vec!["allowed", "ToolSearch"]);
+}
+
+#[test]
+fn permission_exclude_wins_over_deferred_promote() {
+    // A tool was deferred, then promoted via ToolSearch (so deferred-tools
+    // no longer schedules ExcludeTool for it). But permission still denies
+    // it unconditionally, so the permission hook still schedules ExcludeTool.
+    let mut tools = vec![
+        tool("safe_tool"),
+        tool("promoted_but_denied"),
+        tool("ToolSearch"),
+    ];
+
+    // Only permission hook excludes (deferred-tools promoted it, so no exclusion from there)
+    let mut actions = make_exclude_actions(&["promoted_but_denied"]);
+    let exclusion_payloads = extract_actions::<ExcludeTool>(&mut actions);
+    apply_tool_filter_payloads(&mut tools, exclusion_payloads, vec![]);
+
+    let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
+    assert_eq!(ids, vec!["safe_tool", "ToolSearch"]);
+}
+
+#[test]
+fn deferred_excludes_and_permission_excludes_are_additive() {
+    // Permission denies "rm", deferred-tools defers "calculator" and "browser".
+    // Both exclusion sets should be applied.
+    let mut tools = vec![
+        tool("rm"),
+        tool("calculator"),
+        tool("browser"),
+        tool("search"),
+        tool("ToolSearch"),
+    ];
+
+    let mut actions = Vec::new();
+    // Permission: exclude "rm"
+    actions.extend(make_exclude_actions(&["rm"]));
+    // Deferred-tools: exclude "calculator" and "browser"
+    actions.extend(make_exclude_actions(&["calculator", "browser"]));
+
+    let exclusion_payloads = extract_actions::<ExcludeTool>(&mut actions);
+    apply_tool_filter_payloads(&mut tools, exclusion_payloads, vec![]);
+
+    let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
+    assert_eq!(ids, vec!["search", "ToolSearch"]);
+}
+
+#[test]
+fn exclude_nonexistent_tool_is_harmless() {
+    // Permission denies a tool that isn't in the tool list (e.g. it was
+    // never registered, or was already excluded by deferred-tools).
+    let mut tools = vec![tool("a"), tool("b")];
+    let mut actions = make_exclude_actions(&["nonexistent", "also_missing"]);
+    let exclusion_payloads = extract_actions::<ExcludeTool>(&mut actions);
+    apply_tool_filter_payloads(&mut tools, exclusion_payloads, vec![]);
+
+    let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
+    assert_eq!(ids, vec!["a", "b"]);
+}
+
+// -----------------------------------------------------------------------
 // Inference override extraction test
 // -----------------------------------------------------------------------
 

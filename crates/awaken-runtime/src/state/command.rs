@@ -29,6 +29,11 @@ impl StateCommand {
         self.patch.is_empty() && self.scheduled_actions.is_empty() && self.effects.is_empty()
     }
 
+    /// Inspect scheduled actions (useful for testing).
+    pub fn scheduled_actions(&self) -> &[ScheduledAction] {
+        &self.scheduled_actions
+    }
+
     pub fn emit<E: EffectSpec>(&mut self, payload: E::Payload) -> Result<(), StateError> {
         self.effects.push(TypedEffect::from_spec::<E>(&payload)?);
         Ok(())
