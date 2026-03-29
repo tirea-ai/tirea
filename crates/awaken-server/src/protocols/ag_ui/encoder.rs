@@ -134,7 +134,15 @@ impl AgUiEncoder {
                 ..
             } => match result.status {
                 ToolStatus::Success => {
-                    let content = serde_json::to_string(&result.data).unwrap_or_default();
+                    let content = if result.metadata.is_empty() {
+                        serde_json::to_string(&result.data).unwrap_or_default()
+                    } else {
+                        serde_json::to_string(&serde_json::json!({
+                            "data": result.data,
+                            "metadata": result.metadata,
+                        }))
+                        .unwrap_or_default()
+                    };
                     vec![Event::tool_call_result(message_id, id, content)]
                 }
                 ToolStatus::Error => {
@@ -263,6 +271,19 @@ impl AgUiEncoder {
                     target_id,
                     content,
                 )]
+            }
+
+            AgentEvent::ToolCallStreamDelta { id, delta, .. } => {
+                vec![Event::ActivityDelta {
+                    message_id: id.clone(),
+                    activity_type: "tool-stream-output".to_string(),
+                    patch: vec![serde_json::json!({
+                        "op": "add",
+                        "path": "/delta",
+                        "value": delta,
+                    })],
+                    base: BaseEvent::default(),
+                }]
             }
 
             AgentEvent::InferenceComplete { .. } => Vec::new(),
@@ -1241,6 +1262,55 @@ mod tests {
             assert_eq!(messages[0]["content"], "hi");
         } else {
             panic!("expected MESSAGES_SNAPSHOT");
+        }
+    }
+
+    #[test]
+    fn tool_call_done_success_without_metadata_serializes_data_only() {
+        let mut enc = AgUiEncoder::new();
+        let result = ToolResult::success("search", json!({"items": [1, 2]}));
+        let events = enc.on_agent_event(&AgentEvent::ToolCallDone {
+            id: "c1".into(),
+            message_id: "m1".into(),
+            result,
+            outcome: ToolCallOutcome::Succeeded,
+        });
+        assert_eq!(events.len(), 1);
+        if let Event::ToolCallResult { content, .. } = &events[0] {
+            let parsed: serde_json::Value = serde_json::from_str(content).unwrap();
+            assert_eq!(parsed, json!({"items": [1, 2]}));
+        } else {
+            panic!("expected ToolCallResult");
+        }
+    }
+
+    #[test]
+    fn tool_call_done_success_with_metadata_includes_both() {
+        let mut enc = AgUiEncoder::new();
+        let mut result = ToolResult::success("search", json!({"items": [1]}));
+        result
+            .metadata
+            .insert("mcp.server".into(), json!("my-server"));
+        result
+            .metadata
+            .insert("mcp.ui.content".into(), json!({"type": "image"}));
+        let events = enc.on_agent_event(&AgentEvent::ToolCallDone {
+            id: "c1".into(),
+            message_id: "m1".into(),
+            result,
+            outcome: ToolCallOutcome::Succeeded,
+        });
+        assert_eq!(events.len(), 1);
+        if let Event::ToolCallResult { content, .. } = &events[0] {
+            let parsed: serde_json::Value = serde_json::from_str(content).unwrap();
+            assert_eq!(parsed["data"], json!({"items": [1]}));
+            assert_eq!(parsed["metadata"]["mcp.server"], json!("my-server"));
+            assert_eq!(
+                parsed["metadata"]["mcp.ui.content"],
+                json!({"type": "image"})
+            );
+        } else {
+            panic!("expected ToolCallResult");
         }
     }
 

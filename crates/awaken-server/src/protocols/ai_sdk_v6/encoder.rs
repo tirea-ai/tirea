@@ -1,6 +1,6 @@
 //! AI SDK v6 encoder: maps AgentEvent to UIStreamEvent.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::lifecycle::TerminationReason;
@@ -30,6 +30,8 @@ pub struct AiSdkEncoder {
     finished: bool,
     message_id_set: bool,
     open_reasoning_ids: HashSet<String>,
+    /// Accumulated streaming output per tool call id.
+    stream_accumulators: HashMap<String, String>,
 }
 
 impl AiSdkEncoder {
@@ -41,6 +43,7 @@ impl AiSdkEncoder {
             finished: false,
             message_id_set: false,
             open_reasoning_ids: HashSet::new(),
+            stream_accumulators: HashMap::new(),
         }
     }
 
@@ -148,22 +151,41 @@ impl AiSdkEncoder {
                 )]
             }
 
-            AgentEvent::ToolCallDone { id, result, .. } => match result.status {
-                ToolStatus::Success => {
-                    vec![UIStreamEvent::tool_output_available(
-                        id,
-                        result.data.clone(),
-                    )]
+            AgentEvent::ToolCallStreamDelta { id, delta, .. } => {
+                let acc = self.stream_accumulators.entry(id.clone()).or_default();
+                acc.push_str(delta);
+                vec![UIStreamEvent::tool_output_preliminary(
+                    id,
+                    json!(acc.clone()),
+                )]
+            }
+
+            AgentEvent::ToolCallDone { id, result, .. } => {
+                // Clear accumulated stream output for this call
+                self.stream_accumulators.remove(id);
+                match result.status {
+                    ToolStatus::Success => {
+                        let output = if result.metadata.is_empty() {
+                            result.data.clone()
+                        } else {
+                            json!({
+                                "data": result.data,
+                                "metadata": result.metadata,
+                            })
+                        };
+                        vec![UIStreamEvent::tool_output_available(id, output)]
+                    }
+                    ToolStatus::Pending => {
+                        // Suspended tool call — emit approval request
+                        vec![UIStreamEvent::tool_approval_request(id, id)]
+                    }
+                    ToolStatus::Error => {
+                        let error_text =
+                            result.message.as_deref().unwrap_or("tool execution error");
+                        vec![UIStreamEvent::tool_output_error(id, error_text)]
+                    }
                 }
-                ToolStatus::Pending => {
-                    // Suspended tool call — emit approval request
-                    vec![UIStreamEvent::tool_approval_request(id, id)]
-                }
-                ToolStatus::Error => {
-                    let error_text = result.message.as_deref().unwrap_or("tool execution error");
-                    vec![UIStreamEvent::tool_output_error(id, error_text)]
-                }
-            },
+            }
 
             AgentEvent::ToolCallResumed { target_id, result } => {
                 if result.get("error").and_then(|v| v.as_str()).is_some() {
@@ -454,6 +476,45 @@ mod tests {
             &events[0],
             UIStreamEvent::ToolOutputAvailable { tool_call_id, .. } if tool_call_id == "c1"
         ));
+    }
+
+    #[test]
+    fn tool_call_done_success_without_metadata_passes_data_only() {
+        let mut enc = AiSdkEncoder::new();
+        let events = enc.on_agent_event(&AgentEvent::ToolCallDone {
+            id: "c1".into(),
+            message_id: "m1".into(),
+            result: ToolResult::success("search", json!({"items": [1, 2]})),
+            outcome: ToolCallOutcome::Succeeded,
+        });
+        assert_eq!(events.len(), 1);
+        if let UIStreamEvent::ToolOutputAvailable { output, .. } = &events[0] {
+            assert_eq!(*output, json!({"items": [1, 2]}));
+        } else {
+            panic!("expected ToolOutputAvailable");
+        }
+    }
+
+    #[test]
+    fn tool_call_done_success_with_metadata_includes_both() {
+        let mut enc = AiSdkEncoder::new();
+        let mut result = ToolResult::success("search", json!({"items": [1]}));
+        result
+            .metadata
+            .insert("mcp.server".into(), json!("my-server"));
+        let events = enc.on_agent_event(&AgentEvent::ToolCallDone {
+            id: "c1".into(),
+            message_id: "m1".into(),
+            result,
+            outcome: ToolCallOutcome::Succeeded,
+        });
+        assert_eq!(events.len(), 1);
+        if let UIStreamEvent::ToolOutputAvailable { output, .. } = &events[0] {
+            assert_eq!(output["data"], json!({"items": [1]}));
+            assert_eq!(output["metadata"]["mcp.server"], json!("my-server"));
+        } else {
+            panic!("expected ToolOutputAvailable");
+        }
     }
 
     #[test]
