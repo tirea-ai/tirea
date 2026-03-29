@@ -3,32 +3,30 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// A single A2UI v0.9 message.
+/// A single A2UI v0.8 server-to-client message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct A2uiMessage {
-    /// Protocol version, must be "v0.9".
-    pub version: String,
-    /// Create a new surface.
+    /// Populate the component map for a surface.
     #[serde(
-        rename = "createSurface",
+        rename = "surfaceUpdate",
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub create_surface: Option<A2uiCreateSurface>,
-    /// Update components on a surface.
+    pub surface_update: Option<A2uiSurfaceUpdate>,
+    /// Populate or mutate the surface data model.
     #[serde(
-        rename = "updateComponents",
+        rename = "dataModelUpdate",
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub update_components: Option<A2uiUpdateComponents>,
-    /// Update the data model of a surface.
+    pub data_model_update: Option<A2uiDataModelUpdate>,
+    /// Signal the root component for initial render.
     #[serde(
-        rename = "updateDataModel",
+        rename = "beginRendering",
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub update_data_model: Option<A2uiUpdateDataModel>,
+    pub begin_rendering: Option<A2uiBeginRendering>,
     /// Delete a surface.
     #[serde(
         rename = "deleteSurface",
@@ -38,47 +36,68 @@ pub struct A2uiMessage {
     pub delete_surface: Option<A2uiDeleteSurface>,
 }
 
-/// Parameters for creating a new A2UI surface.
+/// Parameters for starting a surface render.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct A2uiCreateSurface {
+pub struct A2uiBeginRendering {
     #[serde(rename = "surfaceId")]
     pub surface_id: String,
-    #[serde(rename = "catalogId")]
-    pub catalog_id: String,
+    pub root: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub styles: Option<HashMap<String, String>>,
 }
 
 /// Parameters for updating components on a surface.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct A2uiUpdateComponents {
+pub struct A2uiSurfaceUpdate {
     #[serde(rename = "surfaceId")]
     pub surface_id: String,
     pub components: Vec<A2uiComponent>,
 }
 
-/// A single A2UI component definition.
+/// A single raw A2UI component definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct A2uiComponent {
     pub id: String,
-    pub component: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub child: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub children: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-    #[serde(flatten)]
-    pub extra: HashMap<String, Value>,
+    pub weight: Option<f64>,
+    /// v0.8 component payload, e.g. `{ "Text": { ... } }`.
+    pub component: Value,
 }
 
 /// Parameters for updating the data model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct A2uiUpdateDataModel {
+pub struct A2uiDataModelUpdate {
     #[serde(rename = "surfaceId")]
     pub surface_id: String,
-    pub path: String,
-    pub value: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    pub contents: Vec<A2uiDataModelEntry>,
+}
+
+/// A single data model entry in the v0.8 `contents` array.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct A2uiDataModelEntry {
+    pub key: String,
+    #[serde(
+        rename = "valueString",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub value_string: Option<String>,
+    #[serde(
+        rename = "valueNumber",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub value_number: Option<f64>,
+    #[serde(
+        rename = "valueBoolean",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub value_boolean: Option<bool>,
+    #[serde(rename = "valueMap", default, skip_serializing_if = "Option::is_none")]
+    pub value_map: Option<Vec<A2uiDataModelEntry>>,
 }
 
 /// Parameters for deleting a surface.

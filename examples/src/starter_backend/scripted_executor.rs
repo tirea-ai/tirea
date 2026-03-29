@@ -86,36 +86,46 @@ impl LlmExecutor for ScriptedLlmExecutor {
                     json!({
                         "messages": [
                             {
-                                "version": "v0.9",
-                                "createSurface": {
-                                    "surfaceId": "demo",
-                                    "catalogId": "https://a2ui.org/specification/v0_9/basic_catalog.json"
-                                }
-                            },
-                            {
-                                "version": "v0.9",
-                                "updateComponents": {
+                                "surfaceUpdate": {
                                     "surfaceId": "demo",
                                     "components": [
                                         {
                                             "id": "root",
-                                            "component": "Card",
-                                            "child": "text1"
+                                            "component": {
+                                                "Card": {
+                                                    "child": "text1"
+                                                }
+                                            }
                                         },
                                         {
                                             "id": "text1",
-                                            "component": "Text",
-                                            "text": "Hello A2UI"
+                                            "component": {
+                                                "Text": {
+                                                    "text": {
+                                                        "literalString": "Hello A2UI"
+                                                    }
+                                                }
+                                            }
                                         }
                                     ]
                                 }
                             },
                             {
-                                "version": "v0.9",
-                                "updateDataModel": {
+                                "dataModelUpdate": {
                                     "surfaceId": "demo",
                                     "path": "/",
-                                    "value": {}
+                                    "contents": [
+                                        {
+                                            "key": "greeting",
+                                            "valueString": "Hello A2UI"
+                                        }
+                                    ]
+                                }
+                            },
+                            {
+                                "beginRendering": {
+                                    "surfaceId": "demo",
+                                    "root": "root"
                                 }
                             }
                         ]

@@ -20,14 +20,14 @@ pub struct StreamingSubagentResult {
 
 /// Run a sub-agent that streams its text output to the parent sink in real-time.
 ///
-/// Text deltas from the sub-agent are forwarded as [`AgentEvent::ActivityDelta`]
-/// events on the parent activity sink, while the full accumulated text is
-/// returned in [`StreamingSubagentResult::content`].
+/// Text deltas from the sub-agent are forwarded as
+/// [`AgentEvent::ToolCallStreamDelta`] events on the parent sink so the caller
+/// can stream preliminary tool output.
+/// The full accumulated text is returned in [`StreamingSubagentResult::content`].
 pub async fn run_streaming_subagent(
     resolver: &dyn AgentResolver,
     agent_id: &str,
     prompt: &str,
-    activity_type: &str,
     ctx: &ToolCallContext,
 ) -> Result<StreamingSubagentResult, ToolError> {
     let parent_sink = ctx
@@ -35,7 +35,7 @@ pub async fn run_streaming_subagent(
         .clone()
         .unwrap_or_else(|| Arc::new(awaken_contract::contract::event_sink::NullEventSink));
     let (streaming_sink, buffer) =
-        StreamingSubagentSink::new(ctx.call_id.clone(), activity_type.to_string(), parent_sink);
+        StreamingSubagentSink::new(ctx.call_id.clone(), ctx.tool_name.clone(), parent_sink);
     let sink: Arc<dyn EventSink> = Arc::new(streaming_sink);
 
     let store = awaken_runtime::StateStore::new();

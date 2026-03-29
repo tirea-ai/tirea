@@ -5,30 +5,27 @@ use awaken_runtime::plugins::Plugin;
 
 use super::*;
 
-const TEST_CATALOG: &str = "https://a2ui.org/specification/v0_9/basic_catalog.json";
+const TEST_CATALOG: &str = "https://a2ui.org/specification/v0_8/standard_catalog_definition.json";
 
 #[test]
-fn valid_create_surface() {
+fn valid_begin_rendering() {
     let msgs = vec![json!({
-        "version": "v0.9",
-        "createSurface": {
+        "beginRendering": {
             "surfaceId": "s1",
-            "catalogId": TEST_CATALOG,
+            "root": "root",
         }
     })];
     assert!(validate_a2ui_messages(&msgs).is_empty());
 }
 
 #[test]
-fn valid_update_components() {
+fn valid_surface_update() {
     let msgs = vec![json!({
-        "version": "v0.9",
-        "updateComponents": {
+        "surfaceUpdate": {
             "surfaceId": "s1",
             "components": [
-                {"id": "root", "component": "Card", "child": "col"},
-                {"id": "col", "component": "Column", "children": ["title"]},
-                {"id": "title", "component": "Text", "text": "Hello"}
+                {"id": "root", "component": {"Card": {"child": "content"}}},
+                {"id": "content", "component": {"Text": {"text": {"literalString": "Hello"}}}}
             ]
         }
     })];
@@ -36,13 +33,15 @@ fn valid_update_components() {
 }
 
 #[test]
-fn valid_update_data_model() {
+fn valid_data_model_update() {
     let msgs = vec![json!({
-        "version": "v0.9",
-        "updateDataModel": {
+        "dataModelUpdate": {
             "surfaceId": "s1",
-            "path": "/user",
-            "value": {"name": "Alice"}
+            "path": "/request",
+            "contents": [
+                {"key": "requester", "valueString": "Alice"},
+                {"key": "priority", "valueNumber": 2.0}
+            ]
         }
     })];
     assert!(validate_a2ui_messages(&msgs).is_empty());
@@ -51,36 +50,14 @@ fn valid_update_data_model() {
 #[test]
 fn valid_delete_surface() {
     let msgs = vec![json!({
-        "version": "v0.9",
         "deleteSurface": {"surfaceId": "s1"}
     })];
     assert!(validate_a2ui_messages(&msgs).is_empty());
 }
 
 #[test]
-fn rejects_missing_version() {
-    let msgs = vec![json!({
-        "createSurface": {"surfaceId": "s1", "catalogId": "c"}
-    })];
-    let errs = validate_a2ui_messages(&msgs);
-    assert_eq!(errs.len(), 1);
-    assert!(errs[0].message.contains("version"));
-}
-
-#[test]
-fn rejects_wrong_version() {
-    let msgs = vec![json!({
-        "version": "v0.8",
-        "createSurface": {"surfaceId": "s1", "catalogId": "c"}
-    })];
-    let errs = validate_a2ui_messages(&msgs);
-    assert_eq!(errs.len(), 1);
-    assert!(errs[0].message.contains("unsupported version"));
-}
-
-#[test]
 fn rejects_no_message_type() {
-    let msgs = vec![json!({"version": "v0.9"})];
+    let msgs = vec![json!({})];
     let errs = validate_a2ui_messages(&msgs);
     assert_eq!(errs.len(), 1);
     assert!(errs[0].message.contains("missing message type"));
@@ -89,8 +66,7 @@ fn rejects_no_message_type() {
 #[test]
 fn rejects_multiple_message_types() {
     let msgs = vec![json!({
-        "version": "v0.9",
-        "createSurface": {"surfaceId": "s1", "catalogId": "c"},
+        "beginRendering": {"surfaceId": "s1", "root": "root"},
         "deleteSurface": {"surfaceId": "s1"}
     })];
     let errs = validate_a2ui_messages(&msgs);
@@ -101,7 +77,6 @@ fn rejects_multiple_message_types() {
 #[test]
 fn rejects_missing_surface_id() {
     let msgs = vec![json!({
-        "version": "v0.9",
         "deleteSurface": {}
     })];
     let errs = validate_a2ui_messages(&msgs);
@@ -112,8 +87,7 @@ fn rejects_missing_surface_id() {
 #[test]
 fn rejects_empty_surface_id() {
     let msgs = vec![json!({
-        "version": "v0.9",
-        "createSurface": {"surfaceId": "", "catalogId": "c"}
+        "beginRendering": {"surfaceId": "", "root": "root"}
     })];
     let errs = validate_a2ui_messages(&msgs);
     assert_eq!(errs.len(), 1);
@@ -121,21 +95,19 @@ fn rejects_empty_surface_id() {
 }
 
 #[test]
-fn rejects_missing_catalog_id() {
+fn rejects_missing_root() {
     let msgs = vec![json!({
-        "version": "v0.9",
-        "createSurface": {"surfaceId": "s1"}
+        "beginRendering": {"surfaceId": "s1"}
     })];
     let errs = validate_a2ui_messages(&msgs);
     assert_eq!(errs.len(), 1);
-    assert!(errs[0].message.contains("catalogId"));
+    assert!(errs[0].message.contains("root"));
 }
 
 #[test]
 fn rejects_empty_components() {
     let msgs = vec![json!({
-        "version": "v0.9",
-        "updateComponents": {"surfaceId": "s1", "components": []}
+        "surfaceUpdate": {"surfaceId": "s1", "components": []}
     })];
     let errs = validate_a2ui_messages(&msgs);
     assert_eq!(errs.len(), 1);
@@ -145,10 +117,9 @@ fn rejects_empty_components() {
 #[test]
 fn rejects_component_missing_id() {
     let msgs = vec![json!({
-        "version": "v0.9",
-        "updateComponents": {
+        "surfaceUpdate": {
             "surfaceId": "s1",
-            "components": [{"component": "Text", "text": "hi"}]
+            "components": [{"component": {"Text": {"text": {"literalString": "hi"}}}}]
         }
     })];
     let errs = validate_a2ui_messages(&msgs);
@@ -157,10 +128,9 @@ fn rejects_component_missing_id() {
 }
 
 #[test]
-fn rejects_component_missing_component_type() {
+fn rejects_component_missing_component_payload() {
     let msgs = vec![json!({
-        "version": "v0.9",
-        "updateComponents": {
+        "surfaceUpdate": {
             "surfaceId": "s1",
             "components": [{"id": "root"}]
         }
@@ -171,11 +141,37 @@ fn rejects_component_missing_component_type() {
 }
 
 #[test]
+fn rejects_empty_data_model_contents() {
+    let msgs = vec![json!({
+        "dataModelUpdate": {
+            "surfaceId": "s1",
+            "contents": []
+        }
+    })];
+    let errs = validate_a2ui_messages(&msgs);
+    assert_eq!(errs.len(), 1);
+    assert!(errs[0].message.contains("contents"));
+}
+
+#[test]
+fn rejects_data_model_entry_missing_key() {
+    let msgs = vec![json!({
+        "dataModelUpdate": {
+            "surfaceId": "s1",
+            "contents": [{"valueString": "hi"}]
+        }
+    })];
+    let errs = validate_a2ui_messages(&msgs);
+    assert_eq!(errs.len(), 1);
+    assert!(errs[0].message.contains("contents[0].key"));
+}
+
+#[test]
 fn reports_per_message_errors() {
     let msgs = vec![
-        json!({"version": "v0.9", "deleteSurface": {"surfaceId": "ok"}}),
-        json!({"version": "v0.9"}),
-        json!({"version": "v0.9", "deleteSurface": {"surfaceId": "ok"}}),
+        json!({"deleteSurface": {"surfaceId": "ok"}}),
+        json!({}),
+        json!({"deleteSurface": {"surfaceId": "ok"}}),
         json!(42),
     ];
     let errs = validate_a2ui_messages(&msgs);
@@ -194,64 +190,273 @@ fn tool_descriptor_has_correct_id() {
 }
 
 #[test]
-fn tool_validates_missing_messages() {
+fn tool_descriptor_exposes_strict_nested_schema() {
+    let tool = A2uiRenderTool::new();
+    let desc = tool.descriptor();
+    let schema = &desc.parameters;
+
+    assert_eq!(schema["type"], json!("object"));
+    assert_eq!(schema["additionalProperties"], json!(false));
+    assert_eq!(
+        schema["properties"]["surfaceUpdate"]["required"],
+        json!(["surfaceId", "components"])
+    );
+    assert_eq!(
+        schema["properties"]["surfaceUpdate"]["properties"]["components"]["items"]["required"],
+        json!(["id", "component"])
+    );
+}
+
+#[test]
+fn tool_rejects_empty_args() {
     let tool = A2uiRenderTool::new();
     assert!(tool.validate_args(&json!({})).is_err());
 }
 
 #[test]
-fn tool_validates_empty_messages() {
+fn tool_accepts_flat_begin_rendering() {
     let tool = A2uiRenderTool::new();
-    let err = tool.validate_args(&json!({"messages": []})).unwrap_err();
-    assert!(err.to_string().contains("must not be empty"));
+    let args = json!({
+        "beginRendering": {"surfaceId": "s1", "root": "root"}
+    });
+    assert!(tool.validate_args(&args).is_ok());
 }
 
 #[test]
-fn tool_validates_valid_messages() {
+fn tool_accepts_flat_surface_update() {
+    let tool = A2uiRenderTool::new();
+    let args = json!({
+        "surfaceUpdate": {
+            "surfaceId": "s1",
+            "components": [{"id": "root", "component": {"Card": {"child": "content"}}}]
+        }
+    });
+    assert!(tool.validate_args(&args).is_ok());
+}
+
+#[test]
+fn tool_accepts_flat_data_model_update() {
+    let tool = A2uiRenderTool::new();
+    let args = json!({
+        "dataModelUpdate": {
+            "surfaceId": "s1",
+            "path": "/request",
+            "contents": [{"key": "requester", "valueString": "Alice"}]
+        }
+    });
+    assert!(tool.validate_args(&args).is_ok());
+}
+
+#[test]
+fn tool_accepts_flat_delete_surface() {
+    let tool = A2uiRenderTool::new();
+    let args = json!({
+        "deleteSurface": {"surfaceId": "s1"}
+    });
+    assert!(tool.validate_args(&args).is_ok());
+}
+
+#[test]
+fn tool_rejects_structural_error() {
+    let tool = A2uiRenderTool::new();
+    let args = json!({
+        "beginRendering": {"surfaceId": "s1"}
+    });
+    let err = tool.validate_args(&args).unwrap_err();
+    assert!(err.to_string().contains("root"));
+}
+
+#[test]
+fn tool_rejects_legacy_multiple_choice_shape() {
+    let tool = A2uiRenderTool::new();
+    let args = json!({
+        "surfaceUpdate": {
+            "surfaceId": "approval",
+            "components": [
+                {
+                    "id": "priority",
+                    "component": {
+                        "MultipleChoice": {
+                            "choices": [
+                                {
+                                    "label": { "literalString": "High" },
+                                    "value": "high"
+                                }
+                            ],
+                            "label": { "literalString": "Priority" },
+                            "value": { "path": "/request/priority" }
+                        }
+                    }
+                }
+            ]
+        }
+    });
+
+    let err = tool.validate_args(&args).unwrap_err();
+    assert!(err.to_string().contains("choices") || err.to_string().contains("MultipleChoice"));
+}
+
+#[test]
+fn tool_rejects_button_context_object_shape() {
+    let tool = A2uiRenderTool::new();
+    let args = json!({
+        "surfaceUpdate": {
+            "surfaceId": "approval",
+            "components": [
+                {
+                    "id": "submit_text",
+                    "component": {
+                        "Text": {
+                            "text": { "literalString": "Submit" }
+                        }
+                    }
+                },
+                {
+                    "id": "submit_button",
+                    "component": {
+                        "Button": {
+                            "child": "submit_text",
+                            "action": {
+                                "name": "approval.submit",
+                                "context": {
+                                    "requester": { "path": "/request/requester" }
+                                }
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    });
+
+    let err = tool.validate_args(&args).unwrap_err();
+    assert!(err.to_string().contains("context") || err.to_string().contains("Button"));
+}
+
+#[test]
+fn tool_accepts_official_multiple_choice_and_button_shapes() {
+    let tool = A2uiRenderTool::new();
+    let args = json!({
+        "surfaceUpdate": {
+            "surfaceId": "approval",
+            "components": [
+                {
+                    "id": "root",
+                    "component": {
+                        "Card": {
+                            "child": "content"
+                        }
+                    }
+                },
+                {
+                    "id": "content",
+                    "component": {
+                        "Column": {
+                            "children": {
+                                "explicitList": ["priority_label", "priority", "submit_text", "submit_button"]
+                            },
+                            "distribution": "start",
+                            "alignment": "stretch"
+                        }
+                    }
+                },
+                {
+                    "id": "priority_label",
+                    "component": {
+                        "Text": {
+                            "usageHint": "caption",
+                            "text": { "literalString": "Priority" }
+                        }
+                    }
+                },
+                {
+                    "id": "priority",
+                    "component": {
+                        "MultipleChoice": {
+                            "selections": { "path": "/request/priority" },
+                            "options": [
+                                {
+                                    "label": { "literalString": "Standard" },
+                                    "value": "standard"
+                                }
+                            ],
+                            "maxAllowedSelections": 1
+                        }
+                    }
+                },
+                {
+                    "id": "submit_text",
+                    "component": {
+                        "Text": {
+                            "text": { "literalString": "Submit" }
+                        }
+                    }
+                },
+                {
+                    "id": "submit_button",
+                    "component": {
+                        "Button": {
+                            "child": "submit_text",
+                            "action": {
+                                "name": "approval.submit",
+                                "context": [
+                                    {
+                                        "key": "priority",
+                                        "value": { "path": "/request/priority" }
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    });
+
+    assert!(tool.validate_args(&args).is_ok());
+}
+
+#[tokio::test]
+async fn tool_execute_flat_args() {
+    let tool = A2uiRenderTool::new();
+    let ctx = ToolCallContext::test_default();
+    let args = json!({
+        "beginRendering": {"surfaceId": "s1", "root": "root"}
+    });
+    let result = tool.execute(args, &ctx).await.unwrap();
+    assert_eq!(result.data["rendered"], true);
+    assert_eq!(result.data["count"], 1);
+}
+
+#[test]
+fn tool_accepts_legacy_messages_array() {
     let tool = A2uiRenderTool::new();
     let args = json!({"messages": [
-        {
-            "version": "v0.9",
-            "createSurface": {
-                "surfaceId": "s1",
-                "catalogId": TEST_CATALOG,
-            }
-        }
+        {"surfaceUpdate": {"surfaceId": "s1", "components": [{"id": "root", "component": {"Card": {"child": "content"}}}]}},
+        {"beginRendering": {"surfaceId": "s1", "root": "root"}}
     ]});
     assert!(tool.validate_args(&args).is_ok());
 }
 
 #[test]
-fn tool_validates_invalid_a2ui() {
+fn tool_rejects_empty_messages_array() {
     let tool = A2uiRenderTool::new();
-    let args = json!({"messages": [{"version": "v0.9"}]});
-    let err = tool.validate_args(&args).unwrap_err();
-    assert!(err.to_string().contains("missing message type"));
+    let err = tool.validate_args(&json!({"messages": []})).unwrap_err();
+    assert!(err.to_string().contains("at least one"));
 }
 
 #[tokio::test]
-async fn tool_execute_returns_validated_payload() {
+async fn tool_execute_legacy_messages_array() {
     let tool = A2uiRenderTool::new();
     let ctx = ToolCallContext::test_default();
     let args = json!({"messages": [
-        {
-            "version": "v0.9",
-            "createSurface": {"surfaceId": "s1", "catalogId": TEST_CATALOG}
-        },
-        {
-            "version": "v0.9",
-            "updateComponents": {
-                "surfaceId": "s1",
-                "components": [{"id": "root", "component": "Card"}]
-            }
-        }
+        {"surfaceUpdate": {"surfaceId": "s1", "components": [{"id": "root", "component": {"Card": {"child": "content"}}}]}},
+        {"beginRendering": {"surfaceId": "s1", "root": "root"}}
     ]});
-
     let result = tool.execute(args, &ctx).await.unwrap();
     assert_eq!(result.tool_name, A2UI_TOOL_NAME);
     assert_eq!(result.data["rendered"], true);
-    assert!(result.data["a2ui"].is_array());
-    assert_eq!(result.data["a2ui"].as_array().unwrap().len(), 2);
+    assert_eq!(result.data["count"], 2);
 }
 
 #[test]
@@ -286,8 +491,8 @@ fn plugin_instructions_mention_all_message_types() {
     let plugin = A2uiPlugin::with_catalog_id(TEST_CATALOG);
     let text = plugin.instructions();
     assert!(text.contains("render_a2ui"));
-    assert!(text.contains("createSurface"));
-    assert!(text.contains("updateComponents"));
-    assert!(text.contains("updateDataModel"));
+    assert!(text.contains("surfaceUpdate"));
+    assert!(text.contains("dataModelUpdate"));
+    assert!(text.contains("beginRendering"));
     assert!(text.contains("deleteSurface"));
 }

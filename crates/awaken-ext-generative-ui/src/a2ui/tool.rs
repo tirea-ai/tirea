@@ -4,14 +4,17 @@ use serde_json::{Value, json};
 use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
 };
+use awaken_contract::validate_against_schema;
 
 use super::validation::validate_a2ui_messages;
-use super::{A2UI_TOOL_ID, A2UI_TOOL_NAME};
+use super::{A2UI_TOOL_ID, A2UI_TOOL_NAME, MESSAGE_KEYS};
 
 /// Tool for rendering A2UI declarative UI.
 ///
-/// The LLM calls this tool with an array of A2UI messages (v0.9). The tool
-/// validates the structural integrity and returns the validated payload.
+/// The LLM passes A2UI v0.8 message keys directly as tool arguments. The tool
+/// schema stays intentionally message-level and defers component-shape details
+/// to prompt guidance plus server-side validation. This keeps the function
+/// signature small enough for real models to use reliably.
 pub struct A2uiRenderTool {
     _private: (),
 }
@@ -28,46 +31,215 @@ impl Default for A2uiRenderTool {
     }
 }
 
+/// Extract the A2UI messages array from LLM-provided args.
+///
+/// Accepts multiple input shapes:
+/// 1. A2UI keys at top level → single-element array
+///    `{"surfaceUpdate": {...}}` → `[{"surfaceUpdate": {...}}]`
+/// 2. Legacy `messages` array → use directly
+///    `{"messages": [{...}, {...}]}` → `[{...}, {...}]`
+fn extract_messages(args: &Value) -> Vec<Value> {
+    if let Some(arr) = args.get("messages").and_then(Value::as_array) {
+        return arr.clone();
+    }
+
+    if let Some(obj) = args.as_object() {
+        if MESSAGE_KEYS.iter().any(|key| obj.contains_key(*key)) {
+            return vec![args.clone()];
+        }
+    }
+
+    vec![]
+}
+
+fn non_empty_string_schema() -> Value {
+    json!({
+        "type": "string",
+        "minLength": 1
+    })
+}
+
+fn component_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "component"],
+        "properties": {
+            "id": non_empty_string_schema(),
+            "weight": { "type": "number" },
+            "component": {
+                "type": "object",
+                "minProperties": 1,
+                "maxProperties": 1,
+                "additionalProperties": {
+                    "type": "object"
+                },
+                "description": "A single official A2UI v0.8 component payload such as {\"Text\": {...}}."
+            }
+        }
+    })
+}
+
+fn data_model_entry_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key"],
+        "properties": {
+            "key": non_empty_string_schema(),
+            "valueString": { "type": "string" },
+            "valueNumber": { "type": "number" },
+            "valueBoolean": { "type": "boolean" },
+            "valueMap": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                }
+            }
+        }
+    })
+}
+
+fn surface_update_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["surfaceId", "components"],
+        "properties": {
+            "surfaceId": non_empty_string_schema(),
+            "components": {
+                "type": "array",
+                "minItems": 1,
+                "items": component_schema(),
+                "description": "Flat component list. Every item must include id and component."
+            }
+        }
+    })
+}
+
+fn data_model_update_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["surfaceId", "contents"],
+        "properties": {
+            "surfaceId": non_empty_string_schema(),
+            "path": { "type": "string" },
+            "contents": {
+                "type": "array",
+                "minItems": 1,
+                "items": data_model_entry_schema()
+            }
+        }
+    })
+}
+
+fn begin_rendering_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["surfaceId", "root"],
+        "properties": {
+            "surfaceId": non_empty_string_schema(),
+            "root": non_empty_string_schema(),
+            "styles": {
+                "type": "object",
+                "additionalProperties": { "type": "string" }
+            }
+        }
+    })
+}
+
+fn delete_surface_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["surfaceId"],
+        "properties": {
+            "surfaceId": non_empty_string_schema()
+        }
+    })
+}
+
+fn message_variant_schema() -> Value {
+    json!({
+        "oneOf": [
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["surfaceUpdate"],
+                "properties": { "surfaceUpdate": surface_update_schema() }
+            },
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["dataModelUpdate"],
+                "properties": { "dataModelUpdate": data_model_update_schema() }
+            },
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["beginRendering"],
+                "properties": { "beginRendering": begin_rendering_schema() }
+            },
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["deleteSurface"],
+                "properties": { "deleteSurface": delete_surface_schema() }
+            }
+        ]
+    })
+}
+
+fn tool_parameters_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+            "surfaceUpdate": surface_update_schema(),
+            "dataModelUpdate": data_model_update_schema(),
+            "beginRendering": begin_rendering_schema(),
+            "deleteSurface": delete_surface_schema(),
+            "messages": {
+                "type": "array",
+                "minItems": 1,
+                "items": message_variant_schema(),
+                "description": "Optional batch format. Prefer the flat single-message shape above."
+            }
+        },
+        "description": "Provide exactly one of surfaceUpdate, dataModelUpdate, beginRendering, deleteSurface, or messages."
+    })
+}
+
 #[async_trait]
 impl Tool for A2uiRenderTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor::new(
             A2UI_TOOL_ID,
             A2UI_TOOL_NAME,
-            "Sends A2UI JSON to the client to render declarative UI. \
-             Each message must be a v0.9 A2UI object with exactly one of: \
-             createSurface, updateComponents, updateDataModel, or deleteSurface.",
+            "Sends A2UI v0.8 declarative UI to the client. Pass exactly one of \
+             surfaceUpdate, dataModelUpdate, beginRendering, or deleteSurface \
+             as a top-level key.",
         )
-        .with_parameters(serde_json::json!({
-            "type": "object",
-            "required": ["messages"],
-            "properties": {
-                "messages": {
-                    "type": "array",
-                    "description": "Array of A2UI v0.9 message objects. Each object must include \
-                        \"version\": \"v0.9\" and exactly one of: createSurface, \
-                        updateComponents, updateDataModel, or deleteSurface.",
-                    "items": { "type": "object" }
-                }
-            }
-        }))
+        .with_parameters(tool_parameters_schema())
     }
 
     fn validate_args(&self, args: &Value) -> Result<(), ToolError> {
-        let messages = args
-            .get("messages")
-            .and_then(Value::as_array)
-            .ok_or_else(|| {
-                ToolError::InvalidArguments("missing required field \"messages\"".into())
-            })?;
+        let messages = extract_messages(args);
 
         if messages.is_empty() {
             return Err(ToolError::InvalidArguments(
-                "messages array must not be empty".into(),
+                "expected at least one A2UI message key (surfaceUpdate, dataModelUpdate, beginRendering, or deleteSurface)"
+                    .into(),
             ));
         }
 
-        let errors = validate_a2ui_messages(messages);
+        validate_against_schema(&tool_parameters_schema(), args)?;
+
+        let errors = validate_a2ui_messages(&messages);
         if errors.is_empty() {
             Ok(())
         } else {
@@ -80,11 +252,7 @@ impl Tool for A2uiRenderTool {
     }
 
     async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
-        let messages = args
-            .get("messages")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+        let messages = extract_messages(&args);
 
         tracing::debug!(
             count = messages.len(),
@@ -94,10 +262,7 @@ impl Tool for A2uiRenderTool {
 
         Ok(ToolResult::success(
             A2UI_TOOL_NAME,
-            json!({
-                "a2ui": messages,
-                "rendered": true,
-            }),
+            json!({ "rendered": true, "count": messages.len() }),
         ))
     }
 }

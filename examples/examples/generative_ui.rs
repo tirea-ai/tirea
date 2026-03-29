@@ -3,7 +3,7 @@
 //! Demonstrates the full pipeline:
 //! 1. Parent agent receives "create a dashboard" and returns a tool call to `render_ui`
 //! 2. `render_ui` tool calls `run_streaming_subagent()` which spins up a sub-agent
-//! 3. Sub-agent returns OpenUI Lang text, streamed as ActivityDelta events
+//! 3. Sub-agent returns OpenUI Lang text, streamed as ToolCallStreamDelta events
 //! 4. Parent agent gets a second inference (no tools) and returns final text
 
 use std::sync::{Arc, Mutex};
@@ -21,8 +21,7 @@ use awaken_contract::contract::message::{Message, ToolCall};
 use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
 };
-use awaken_ext_generative_ui::openui;
-use awaken_ext_generative_ui::run_streaming_subagent;
+use awaken_ext_generative_ui::{openui, run_streaming_subagent};
 use awaken_runtime::loop_runner::{AgentLoopParams, build_agent_env, run_agent_loop};
 use awaken_runtime::plugins::Plugin;
 use awaken_runtime::{AgentResolver, PhaseRuntime, ResolvedAgent, RuntimeError, StateStore};
@@ -111,14 +110,8 @@ impl Tool for RenderUITool {
             .and_then(Value::as_str)
             .unwrap_or_default();
 
-        let result = run_streaming_subagent(
-            self.resolver.as_ref(),
-            "ui-agent",
-            prompt,
-            openui::ACTIVITY_TYPE,
-            ctx,
-        )
-        .await?;
+        let result =
+            run_streaming_subagent(self.resolver.as_ref(), "ui-agent", prompt, ctx).await?;
 
         Ok(ToolResult::success(
             "render_ui",
@@ -319,12 +312,8 @@ async fn main() {
     tracing::info!(total = events.len(), "collected events");
     for (i, event) in events.iter().enumerate() {
         match event {
-            AgentEvent::ActivityDelta {
-                message_id,
-                activity_type,
-                patch,
-            } => {
-                tracing::info!(idx = i, message_id, activity_type, ?patch, "ActivityDelta");
+            AgentEvent::ToolCallStreamDelta { id, name, delta } => {
+                tracing::info!(idx = i, id, name, delta, "ToolCallStreamDelta");
             }
             AgentEvent::ToolCallDone {
                 id,
@@ -341,14 +330,14 @@ async fn main() {
     }
 
     // -- Verify key expectations --
-    let activity_deltas: Vec<_> = events
+    let tool_stream_deltas: Vec<_> = events
         .iter()
-        .filter(|e| matches!(e, AgentEvent::ActivityDelta { .. }))
+        .filter(|e| matches!(e, AgentEvent::ToolCallStreamDelta { .. }))
         .collect();
 
     assert!(
-        !activity_deltas.is_empty(),
-        "expected at least one ActivityDelta from the streaming sub-agent"
+        !tool_stream_deltas.is_empty(),
+        "expected at least one ToolCallStreamDelta from the streaming sub-agent"
     );
 
     let tool_done_events: Vec<_> = events

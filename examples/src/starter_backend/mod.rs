@@ -1,4 +1,5 @@
 pub mod frontend_tools;
+pub mod generative_ui_tools;
 pub mod phase_logger;
 pub mod research;
 pub mod scripted_executor;
@@ -20,7 +21,7 @@ use awaken_contract::contract::inference::ContextWindowPolicy;
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::tool::Tool;
 use awaken_contract::registry_spec::AgentSpec;
-use awaken_ext_generative_ui::A2uiPlugin;
+use awaken_ext_generative_ui::{A2uiPlugin, json_render, openui};
 use awaken_ext_mcp::{McpPlugin, McpServerConnectionConfig, McpToolRegistryManager};
 use awaken_ext_observability::{InMemorySink, ObservabilityPlugin};
 use awaken_ext_permission::{
@@ -45,6 +46,7 @@ use awaken_server::routes::build_router;
 use awaken_stores::FileStore;
 
 use crate::starter_backend::frontend_tools::FrontendToolPlugin;
+use crate::starter_backend::generative_ui_tools::{SharedAgentResolver, StreamingGenerativeUiTool};
 use crate::starter_backend::phase_logger::PhaseLoggerPlugin;
 use crate::starter_backend::research::{
     DeleteResourcesTool, ExtractResourcesTool, SearchTool, SetQuestionTool, WriteReportTool,
@@ -112,7 +114,6 @@ pub fn build_genai_client() -> genai::Client {
         std::env::var("OPENAI_BASE_URL"),
         std::env::var("OPENAI_API_KEY"),
     ) {
-        use genai::adapter::AdapterKind;
         use genai::resolver::{AuthData, Endpoint};
         use genai::{ModelIden, ServiceTarget};
 
@@ -121,23 +122,14 @@ pub fn build_genai_client() -> genai::Client {
             base_url.push('/');
         }
 
-        // Select adapter via OPENAI_ADAPTER env var. Default "deepseek" works for
-        // most OpenAI-compatible providers because it parses streaming usage from
-        // the finish_reason chunk (genai's OpenAI adapter only parses usage from a
-        // separate choices-empty chunk, which many providers don't send).
-        let adapter_kind = match std::env::var("OPENAI_ADAPTER")
-            .unwrap_or_default()
-            .to_lowercase()
-            .as_str()
-        {
-            "openai" => AdapterKind::OpenAI,
-            "together" => AdapterKind::Together,
-            "fireworks" => AdapterKind::Fireworks,
-            _ => AdapterKind::DeepSeek, // default: handles inline usage
-        };
+        let adapter_override = std::env::var("OPENAI_ADAPTER").ok();
 
         genai::Client::builder()
             .with_service_target_resolver_fn(move |st: ServiceTarget| {
+                let adapter_kind = resolve_openai_compatible_adapter(
+                    &st.model.model_name,
+                    adapter_override.as_deref(),
+                );
                 Ok(ServiceTarget {
                     endpoint: Endpoint::from_owned(base_url.clone()),
                     auth: AuthData::from_single(api_key.clone()),
@@ -147,6 +139,80 @@ pub fn build_genai_client() -> genai::Client {
             .build()
     } else {
         genai::Client::default()
+    }
+}
+
+fn resolve_openai_compatible_adapter(
+    model_name: &str,
+    adapter_override: Option<&str>,
+) -> genai::adapter::AdapterKind {
+    use genai::adapter::AdapterKind;
+
+    match adapter_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => match value.to_ascii_lowercase().as_str() {
+            "openai" => AdapterKind::OpenAI,
+            "openai_resp" | "openai-resp" | "responses" => AdapterKind::OpenAIResp,
+            "deepseek" => AdapterKind::DeepSeek,
+            "together" => AdapterKind::Together,
+            "fireworks" => AdapterKind::Fireworks,
+            _ => infer_openai_compatible_adapter(model_name),
+        },
+        None => infer_openai_compatible_adapter(model_name),
+    }
+}
+
+fn infer_openai_compatible_adapter(model_name: &str) -> genai::adapter::AdapterKind {
+    use genai::adapter::AdapterKind;
+
+    let inferred = AdapterKind::from_model(model_name).unwrap_or(AdapterKind::OpenAI);
+    match inferred {
+        AdapterKind::OpenAI
+        | AdapterKind::OpenAIResp
+        | AdapterKind::DeepSeek
+        | AdapterKind::Together
+        | AdapterKind::Fireworks => inferred,
+        _ => AdapterKind::OpenAI,
+    }
+}
+
+#[cfg(test)]
+mod build_genai_client_tests {
+    use super::{infer_openai_compatible_adapter, resolve_openai_compatible_adapter};
+    use genai::adapter::AdapterKind;
+
+    #[test]
+    fn infers_openai_responses_for_gpt_five_models() {
+        assert_eq!(
+            infer_openai_compatible_adapter("gpt-5.4"),
+            AdapterKind::OpenAIResp
+        );
+    }
+
+    #[test]
+    fn infers_openai_chat_completions_for_gpt_four_models() {
+        assert_eq!(
+            infer_openai_compatible_adapter("gpt-4o-mini"),
+            AdapterKind::OpenAI
+        );
+    }
+
+    #[test]
+    fn supports_explicit_openai_responses_override() {
+        assert_eq!(
+            resolve_openai_compatible_adapter("gpt-4o-mini", Some("openai_resp")),
+            AdapterKind::OpenAIResp
+        );
+    }
+
+    #[test]
+    fn falls_back_to_inferred_adapter_for_unknown_override() {
+        assert_eq!(
+            resolve_openai_compatible_adapter("gpt-5.4", Some("unknown")),
+            AdapterKind::OpenAIResp
+        );
     }
 }
 
@@ -340,19 +406,40 @@ Deterministic compatibility directives:\n\
     let a2ui_agent = AgentSpec {
         id: "a2ui".into(),
         model: "default".into(),
-        system_prompt: concat!(
-            "You are an A2UI demo assistant. When the user asks you to render UI, ",
-            "use the render_a2ui tool to send A2UI declarative UI messages.\n\n",
-            "Deterministic compatibility directives:\n",
-            "- If message contains RUN_A2UI_TOOL, call render_a2ui with a createSurface ",
-            "for surfaceId \"demo\" and catalogId ",
-            "\"https://a2ui.org/specification/v0_9/basic_catalog.json\", ",
-            "then updateComponents with a Card containing a Text component saying ",
-            "\"Hello A2UI\", then updateDataModel with an empty root object."
-        )
-        .into(),
-        max_rounds: 2,
+        system_prompt: A2UI_AGENT_PROMPT.into(),
+        max_rounds: 8,
         plugin_ids: vec!["generative-ui".into()],
+        allowed_tools: Some(vec!["render_a2ui".into()]),
+        ..Default::default()
+    };
+    let json_render_agent = AgentSpec {
+        id: "json-render".into(),
+        model: "default".into(),
+        system_prompt: JSON_RENDER_AGENT_PROMPT.into(),
+        max_rounds: 4,
+        allowed_tools: Some(vec!["render_json_ui".into()]),
+        ..Default::default()
+    };
+    let openui_agent = AgentSpec {
+        id: "openui".into(),
+        model: "default".into(),
+        system_prompt: OPENUI_AGENT_PROMPT.into(),
+        max_rounds: 4,
+        allowed_tools: Some(vec!["render_openui_ui".into()]),
+        ..Default::default()
+    };
+    let json_render_ui_agent = AgentSpec {
+        id: "json-render-ui".into(),
+        model: "default".into(),
+        system_prompt: json_render::system_prompt(JSON_RENDER_COMPONENT_CATALOG),
+        max_rounds: 1,
+        ..Default::default()
+    };
+    let openui_ui_agent = AgentSpec {
+        id: "openui-ui".into(),
+        model: "default".into(),
+        system_prompt: openui::system_prompt(OPENUI_COMPONENT_CATALOG),
+        max_rounds: 1,
         ..Default::default()
     };
 
@@ -428,7 +515,20 @@ Deterministic compatibility directives:\n\
 
     // -- Tools --
 
+    let generative_ui_resolver = SharedAgentResolver::default();
     let tools: Vec<(&str, Arc<dyn Tool>)> = vec![
+        (
+            "render_json_ui",
+            Arc::new(StreamingGenerativeUiTool::json_render(
+                generative_ui_resolver.clone(),
+            )),
+        ),
+        (
+            "render_openui_ui",
+            Arc::new(StreamingGenerativeUiTool::openui(
+                generative_ui_resolver.clone(),
+            )),
+        ),
         ("get_weather", Arc::new(GetWeatherTool)),
         ("get_stock_price", Arc::new(GetStockPriceTool)),
         ("append_note", Arc::new(AppendNoteTool)),
@@ -562,6 +662,18 @@ Deterministic compatibility directives:\n\
     if default_id != "a2ui" {
         builder = builder.with_agent_spec(a2ui_agent);
     }
+    if default_id != "json-render" {
+        builder = builder.with_agent_spec(json_render_agent);
+    }
+    if default_id != "openui" {
+        builder = builder.with_agent_spec(openui_agent);
+    }
+    if default_id != "json-render-ui" {
+        builder = builder.with_agent_spec(json_render_ui_agent);
+    }
+    if default_id != "openui-ui" {
+        builder = builder.with_agent_spec(openui_ui_agent);
+    }
     if default_id != "profile" {
         builder = builder.with_agent_spec(profile_agent);
     }
@@ -587,7 +699,7 @@ Deterministic compatibility directives:\n\
     builder = builder.with_plugin(
         "generative-ui",
         Arc::new(A2uiPlugin::with_catalog_id(
-            "https://a2ui.org/specification/v0_9/basic_catalog.json",
+            "https://a2ui.org/specification/v0_8/standard_catalog_definition.json",
         )) as Arc<dyn Plugin>,
     );
     builder = builder.with_plugin(
@@ -746,6 +858,7 @@ Always greet the user warmly and ask how you can help today.
     let runtime = builder.build().expect("failed to build runtime");
     let runtime = Arc::new(runtime);
     let resolver = runtime.resolver_arc();
+    generative_ui_resolver.set(resolver.clone());
 
     // -- Mailbox --
 
@@ -796,3 +909,153 @@ Always greet the user warmly and ask how you can help today.
         .await
         .expect("server crashed");
 }
+
+// ---------------------------------------------------------------------------
+// A2UI agent system prompt
+// ---------------------------------------------------------------------------
+
+const A2UI_AGENT_PROMPT: &str = r#"You are a helpful assistant that creates interactive UIs using the render_a2ui tool.
+
+When the user describes a form, dashboard, or any structured interface, render it as A2UI.
+Use the official A2UI v0.8 message format.
+Call render_a2ui once per message in this order: surfaceUpdate → dataModelUpdate → beginRendering.
+Pass exactly one top-level A2UI message key per tool call. Do not wrap the payload in a messages array unless the user explicitly asks for a batch payload.
+
+Design guidelines:
+- Use Card as the root container and Column/Row for layout.
+- Use the v0.8 nested component format, e.g. {"component":{"Text":{...}}}.
+- Use TextField for text input, DateTimeInput for dates, Slider for numeric ranges, and MultipleChoice for selection lists.
+- In v0.8, TextField binds with `text`, not `value`.
+- In v0.8, MultipleChoice uses `options`, `selections`, and optional `maxAllowedSelections`.
+- In v0.8, MultipleChoice does not have a `label` field. If you need visible field text, render a nearby Text component.
+- In v0.8, MultipleChoice `selections.path` points to an array value. Initialize defaults with `valueMap`, for example {"key":"priority","valueMap":[{"key":"0","valueString":"standard"}]}.
+- Text components must always use {"Text":{"text":{"literalString":"..."}}}; never flatten copy directly under `Text`.
+- For DateTimeInput defaults, use local datetime strings compatible with `datetime-local`, for example `2026-04-10T09:00`. Do not include a trailing `Z` or timezone offset.
+- In v0.8, Button actions use {"name":"...","context":[{"key":"field","value":{"path":"/request/field"}}]}, not the v0.9 event wrapper.
+- Initialize the data model with sensible defaults using dataModelUpdate.contents entries.
+- Call beginRendering only after the referenced root component exists.
+
+Keep surfaceId short and descriptive (e.g. "booking", "contact", "settings").
+
+Business-fit guidelines:
+- Prefer practical business workflows such as booking, approvals, intake forms, settings, and operations dashboards.
+- Labels and helper text should read like production UI copy, not demos or placeholders.
+- Default values should be realistic and safe to submit.
+
+Few-shot reminders:
+- Valid surfaceUpdate shape:
+  {"surfaceUpdate":{"surfaceId":"surface","components":[
+    {"id":"root","component":{"Card":{"child":"content"}}},
+    {"id":"content","component":{"Column":{"children":{"explicitList":["title","field","priority_label","priority","submit_label","submit_button"]}}}},
+    {"id":"title","component":{"Text":{"usageHint":"h2","text":{"literalString":"Title"}}}},
+    {"id":"field","component":{"TextField":{"label":{"literalString":"Field label"},"text":{"path":"/request/field"},"textFieldType":"shortText"}}},
+    {"id":"priority_label","component":{"Text":{"usageHint":"caption","text":{"literalString":"Priority"}}}},
+    {"id":"priority","component":{"MultipleChoice":{"selections":{"path":"/request/priority"},"options":[{"label":{"literalString":"Standard"},"value":"standard"},{"label":{"literalString":"Urgent"},"value":"urgent"}],"maxAllowedSelections":1}}},
+    {"id":"submit_label","component":{"Text":{"text":{"literalString":"Submit"}}}},
+    {"id":"submit_button","component":{"Button":{"child":"submit_label","primary":true,"action":{"name":"surface.submit","context":[{"key":"field","value":{"path":"/request/field"}},{"key":"priority","value":{"path":"/request/priority"}}]}}}}
+  ]}}
+- Valid dataModelUpdate shape:
+  {"dataModelUpdate":{"surfaceId":"surface","path":"/request","contents":[
+    {"key":"field","valueString":""},
+    {"key":"priority","valueMap":[{"key":"0","valueString":"standard"}]}
+  ]}}
+- Valid beginRendering shape:
+  {"beginRendering":{"surfaceId":"surface","root":"root"}}
+- Never send a component without both `id` and `component`.
+- Never flatten the component type into a string; use the official nested object shape.
+- If validation fails once, correct the exact invalid field path and keep the rest of the structure unchanged.
+- If the user later sends a message starting with `A2UI action:` followed by JSON, treat it as a user interaction event and update the existing surface accordingly.
+- When an update keeps existing bound fields visible, resend their current values in the next `dataModelUpdate` together with any new status fields. Do not rely on earlier turns to repopulate those bindings after refresh.
+- Use the `context` inside `A2UI action:` as the source of truth for the current field values when it is available.
+"#;
+
+const JSON_RENDER_AGENT_PROMPT: &str = r#"You are a product UI assistant that creates business-ready interfaces with the render_json_ui tool.
+
+When the user asks for a form, dashboard, settings page, intake flow, workspace, or structured operational interface, call render_json_ui.
+
+Tool usage rules:
+- Pass a concise but complete UI brief in the tool `prompt`.
+- Preserve the user's business context, domain terms, and requested fields.
+- Prefer realistic product copy, realistic default values, and practical workflows.
+- Do not output raw JSON yourself when the tool is available.
+- After the tool finishes, briefly summarize what was created and how the user would use it.
+
+Quality rules:
+- Use production-style labels and helper text, not toy examples.
+- Keep layouts focused and readable.
+- If the user asks for data-heavy views, prefer summary cards, tables, filters, and clear status labels.
+"#;
+
+const OPENUI_AGENT_PROMPT: &str = r#"You are a product UI assistant that creates business-ready interfaces with the render_openui_ui tool.
+
+When the user asks for a form, dashboard, workflow panel, review screen, or structured operational interface, call render_openui_ui.
+
+Tool usage rules:
+- Pass a concise but complete UI brief in the tool `prompt`.
+- Preserve the user's business context, domain terms, and requested fields.
+- Prefer realistic product copy, realistic default values, and practical workflows.
+- Do not output OpenUI Lang yourself when the tool is available.
+- After the tool finishes, briefly summarize what was created and how the user would use it.
+
+Quality rules:
+- Use production-style labels and helper text, not toy examples.
+- Keep layouts focused and readable.
+- Prefer components common in SaaS and internal tools: cards, tables, forms, status tags, and callouts.
+"#;
+
+const JSON_RENDER_COMPONENT_CATALOG: &str = r#"{
+  "Card": "Container for a logical section or summary block",
+  "Stack": "Vertical or horizontal layout container",
+  "Grid": "Multi-column layout for compact overviews",
+  "Text": "Short text content such as headings, labels, or helper text",
+  "Input": "Single-line text input with props like label and placeholder",
+  "TextArea": "Multi-line text input for explanations or notes",
+  "Select": "Single-select input with props like label and options",
+  "Button": "Primary or secondary action button with props like label",
+  "Badge": "Short status label such as Approved, Pending, or Blocked",
+  "Table": "Tabular records with columns and rows",
+  "Charts": "Chart block for business metrics or trends"
+}
+
+Critical rules:
+- Output one valid JSON object with `root` and `elements`.
+- Every element in `elements` must have `type`, `props`, and `children`.
+- Every key referenced in a `children` array must exist in `elements`.
+- Keep `visible`, `repeat`, `watch`, and `on` as top-level element fields, never inside `props`.
+- Do not wrap the JSON in markdown."#;
+
+const OPENUI_COMPONENT_CATALOG: &str = r#"Available components:
+- Stack(children, direction?, gap?, align?, justify?, wrap?)
+- Card(children, variant?, direction?, gap?, align?, justify?, wrap?)
+- CardHeader(title, subtitle?)
+- TextContent(text, size?)
+- Callout(variant, title, description)
+- Table(columns, rows)
+- Col(label, type?)
+- Tag(text, variant?)
+- Buttons(buttons, direction?)
+- Button(label, action?, variant?, type?, size?)
+- Form(name, buttons, fields)
+- FormControl(label, input, hint?)
+- Input(name, placeholder?, type?, rules?)
+- TextArea(name, placeholder?, rows?, rules?)
+- Select(name, items, placeholder?, rules?)
+- SelectItem(value, label)
+
+Syntax rules:
+- Use the OpenUI Lang statement form `identifier = ComponentName(...)`.
+- Always write `root = Stack([...])` or `root = Card([...])` first.
+- Use references for child nodes inside arrays, for example `root = Stack([title, form])`.
+- Prefer the real library signatures shown above. Example: `status = Tag("Pending finance review", "warning")`.
+- For action bars, prefer `Buttons([primaryAction, secondaryAction], "row")`.
+- For forms, define one `FormControl` reference per field and wrap them with `Form(name, buttons, fields)`.
+- Do not invent ad-hoc props that are not in the component signatures.
+- Keep the output as raw OpenUI Lang only, with no markdown fences or prose.
+
+Few-shot shape reminder:
+root = Stack([title, status, summary, actions])
+title = TextContent("Quarterly budget request", "large-heavy")
+status = Tag("Pending finance review", "warning")
+summary = Callout("info", "Ready for review", "Finance can verify the request before approval.")
+actions = Buttons([primary], "row")
+primary = Button("Submit request", { type: "continue_conversation" }, "primary")"#;
