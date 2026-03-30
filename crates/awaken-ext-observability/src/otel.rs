@@ -5,8 +5,6 @@
 //!
 //! Feature-gated behind `otel`.
 
-use std::sync::Mutex;
-
 use opentelemetry::trace::{SpanKind, Status, Tracer};
 use opentelemetry::{KeyValue, trace::TraceContextExt};
 use opentelemetry_sdk::trace::SdkTracer;
@@ -18,52 +16,16 @@ use crate::sink::MetricsSink;
 /// OpenTelemetry-based metrics sink.
 ///
 /// Records each inference and tool span as an OTel span using the
-/// GenAI semantic conventions, arranged in a proper parent-child
-/// hierarchy:
-///
-/// ```text
-/// agent_session (root, SpanKind::Server)
-///   ├─ chat gpt-4 (inference, SpanKind::Client)
-///   │    ├─ execute_tool search (SpanKind::Internal)
-///   │    └─ execute_tool read   (SpanKind::Internal)
-///   └─ chat gpt-4 (inference, SpanKind::Client)
-///        └─ execute_tool write  (SpanKind::Internal)
-/// ```
-///
-/// The root session span is lazily created on first `record()` and
-/// ended when `on_run_end()` is called.
+/// GenAI semantic conventions. Requires an OTel tracer provider to be
+/// configured before use.
 pub struct OtelMetricsSink {
     tracer: SdkTracer,
-    /// Root session span context — created lazily on first record().
-    root_context: Mutex<Option<opentelemetry::Context>>,
-    /// Current inference span context — tool spans become children of this.
-    current_inference_cx: Mutex<Option<opentelemetry::Context>>,
 }
 
 impl OtelMetricsSink {
     /// Create a new OTel sink with the given SDK tracer.
     pub fn new(tracer: SdkTracer) -> Self {
-        Self {
-            tracer,
-            root_context: Mutex::new(None),
-            current_inference_cx: Mutex::new(None),
-        }
-    }
-
-    /// Return the root session context, creating the root span lazily.
-    fn ensure_root_context(&self) -> opentelemetry::Context {
-        let mut root = self.root_context.lock().unwrap();
-        if let Some(ref cx) = *root {
-            return cx.clone();
-        }
-        let root_span = self
-            .tracer
-            .span_builder("agent_session")
-            .with_kind(SpanKind::Server)
-            .start(&self.tracer);
-        let cx = opentelemetry::Context::new().with_span(root_span);
-        *root = Some(cx.clone());
-        cx
+        Self { tracer }
     }
 
     /// Append common SpanContext attributes to the given vec.
@@ -193,64 +155,38 @@ impl OtelMetricsSink {
         let attrs = Self::genai_attributes(span);
         let span_name = format!("{} {}", span.operation, span.model);
 
-        let end_time = std::time::SystemTime::now();
-        let start_time = end_time - std::time::Duration::from_millis(span.duration_ms);
-
-        let root_cx = self.ensure_root_context();
-
         let otel_span = self
             .tracer
             .span_builder(span_name)
             .with_kind(SpanKind::Client)
             .with_attributes(attrs)
-            .with_start_time(start_time)
-            .start_with_context(&self.tracer, &root_cx);
+            .start(&self.tracer);
 
-        let inference_cx = root_cx.with_span(otel_span);
-
+        let cx = opentelemetry::Context::current_with_span(otel_span);
         if span.error_type.is_some() {
-            inference_cx
-                .span()
+            cx.span()
                 .set_status(Status::error(span.error_type.clone().unwrap_or_default()));
         }
-
-        inference_cx.span().end_with_timestamp(end_time);
-
-        // Store so tool spans become children of this inference.
-        *self.current_inference_cx.lock().unwrap() = Some(inference_cx);
+        cx.span().end();
     }
 
     fn record_tool(&self, span: &ToolSpan) {
         let attrs = Self::tool_attributes(span);
         let span_name = format!("execute_tool {}", span.name);
 
-        let end_time = std::time::SystemTime::now();
-        let start_time = end_time - std::time::Duration::from_millis(span.duration_ms);
-
-        // Prefer current inference as parent; fall back to root.
-        let parent_cx = self
-            .current_inference_cx
-            .lock()
-            .unwrap()
-            .clone()
-            .unwrap_or_else(|| self.ensure_root_context());
-
         let otel_span = self
             .tracer
             .span_builder(span_name)
             .with_kind(SpanKind::Internal)
             .with_attributes(attrs)
-            .with_start_time(start_time)
-            .start_with_context(&self.tracer, &parent_cx);
+            .start(&self.tracer);
 
-        let cx = parent_cx.with_span(otel_span);
-
+        let cx = opentelemetry::Context::current_with_span(otel_span);
         if span.error_type.is_some() {
             cx.span()
                 .set_status(Status::error(span.error_type.clone().unwrap_or_default()));
         }
-
-        cx.span().end_with_timestamp(end_time);
+        cx.span().end();
     }
 }
 
@@ -309,7 +245,7 @@ impl MetricsSink for OtelMetricsSink {
     }
 
     fn on_run_end(&self, metrics: &AgentMetrics) {
-        let session_attrs = [
+        let attrs = vec![
             KeyValue::new(
                 "gen_ai.usage.input_tokens",
                 i64::from(metrics.total_input_tokens()),
@@ -333,16 +269,15 @@ impl MetricsSink for OtelMetricsSink {
             ),
         ];
 
-        // End the root session span (created lazily during record()).
-        let mut root = self.root_context.lock().unwrap();
-        if let Some(cx) = root.take() {
-            let span_ref = cx.span();
-            span_ref.set_attributes(session_attrs);
-            span_ref.end();
-        }
+        let otel_span = self
+            .tracer
+            .span_builder("agent_session")
+            .with_kind(SpanKind::Server)
+            .with_attributes(attrs)
+            .start(&self.tracer);
 
-        // Clear inference context for potential reuse.
-        *self.current_inference_cx.lock().unwrap() = None;
+        let cx = opentelemetry::Context::current_with_span(otel_span);
+        cx.span().end();
     }
 }
 
@@ -583,49 +518,25 @@ mod tests {
                 parent_run_id: None,
             },
             step_index: Some(3),
-            duration_ms: 1200,
             ..sample_genai_span()
         };
 
         sink.record(&MetricsEvent::Inference(span));
-
-        // on_run_end ends the root session span.
-        sink.on_run_end(&AgentMetrics {
-            inferences: vec![sample_genai_span()],
-            ..Default::default()
-        });
 
         // Force the provider to flush so SimpleSpanProcessor exports.
         drop(sink);
         let _ = provider.shutdown();
 
         let spans = exporter.finished_spans();
-        // 1 inference + 1 session root = 2
-        assert_eq!(spans.len(), 2, "expected 2 exported spans");
+        assert_eq!(spans.len(), 1, "expected exactly one exported span");
 
-        let exported = spans
-            .iter()
-            .find(|s| s.name.as_ref() == "chat gpt-4")
-            .expect("inference span not found");
+        let exported = &spans[0];
+
+        // Name format: "chat gpt-4"
+        assert_eq!(exported.name.as_ref(), "chat gpt-4");
 
         // SpanKind
         assert_eq!(exported.span_kind, opentelemetry::trace::SpanKind::Client);
-
-        // The inference span has a parent (the auto-created root session).
-        assert!(
-            exported.parent_span_id != opentelemetry::trace::SpanId::INVALID,
-            "inference span should have a parent (the root session span)"
-        );
-
-        // Verify duration is approximately correct (>= 1s).
-        let duration = exported
-            .end_time
-            .duration_since(exported.start_time)
-            .expect("end > start");
-        assert!(
-            duration >= std::time::Duration::from_millis(1000),
-            "span duration should be >= 1s, got {duration:?}"
-        );
 
         // Attributes
         let attrs = attr_map(exported);
@@ -673,9 +584,6 @@ mod tests {
     fn otlp_tool_span_has_all_required_attributes() {
         let (sink, exporter, provider) = make_capturing_sink();
 
-        // Record an inference first so the tool becomes its child.
-        sink.record(&MetricsEvent::Inference(sample_genai_span()));
-
         let span = ToolSpan {
             context: SpanContext {
                 run_id: "run-42".to_string(),
@@ -688,28 +596,19 @@ mod tests {
         };
 
         sink.record(&MetricsEvent::Tool(span));
-
-        sink.on_run_end(&AgentMetrics::default());
         drop(sink);
         let _ = provider.shutdown();
 
         let spans = exporter.finished_spans();
-        // 1 inference + 1 tool + 1 session = 3
-        assert_eq!(spans.len(), 3, "expected 3 exported spans");
+        assert_eq!(spans.len(), 1, "expected exactly one exported span");
 
-        let exported = spans
-            .iter()
-            .find(|s| s.name.as_ref() == "execute_tool read_file")
-            .expect("tool span not found");
+        let exported = &spans[0];
+
+        // Name format
+        assert_eq!(exported.name.as_ref(), "execute_tool read_file");
 
         // SpanKind
         assert_eq!(exported.span_kind, opentelemetry::trace::SpanKind::Internal);
-
-        // Tool span has a parent (the inference span).
-        assert!(
-            exported.parent_span_id != opentelemetry::trace::SpanId::INVALID,
-            "tool span should have a parent"
-        );
 
         // Attributes
         let attrs = attr_map(exported);
@@ -770,45 +669,6 @@ mod tests {
             .expect("session span not found");
 
         assert_eq!(session.span_kind, opentelemetry::trace::SpanKind::Server);
-
-        // Session span is the root — no parent.
-        assert_eq!(
-            session.parent_span_id,
-            opentelemetry::trace::SpanId::INVALID,
-            "session span should be the root (no parent)"
-        );
-
-        // All other spans share the same trace_id as the session.
-        let trace_id = session.span_context.trace_id();
-        for s in &spans {
-            assert_eq!(
-                s.span_context.trace_id(),
-                trace_id,
-                "span '{}' should share trace_id with session",
-                s.name
-            );
-        }
-
-        // Inference and tool spans should be children (have a parent).
-        let inference = spans
-            .iter()
-            .find(|s| s.name.starts_with("chat"))
-            .expect("inference span not found");
-        assert_eq!(
-            inference.parent_span_id,
-            session.span_context.span_id(),
-            "inference span should be a child of the session"
-        );
-
-        let tool = spans
-            .iter()
-            .find(|s| s.name.starts_with("execute_tool"))
-            .expect("tool span not found");
-        assert_eq!(
-            tool.parent_span_id,
-            inference.span_context.span_id(),
-            "tool span should be a child of the inference"
-        );
 
         let attrs = attr_map(session);
         assert_eq!(
@@ -892,64 +752,28 @@ mod tests {
             ..sample_tool_span()
         }));
 
-        sink.on_run_end(&AgentMetrics {
-            inferences: vec![sample_genai_span(), sample_genai_span()],
-            tools: vec![sample_tool_span(), sample_tool_span(), sample_tool_span()],
-            session_duration_ms: 5000,
-            ..Default::default()
-        });
-
         drop(sink);
         let _ = provider.shutdown();
 
         let spans = exporter.finished_spans();
-        // 2 inferences + 3 tools + 1 session = 6
         assert_eq!(
             spans.len(),
-            6,
-            "expected 6 exported spans (2 inferences + 3 tools + 1 session)"
+            5,
+            "expected 5 exported spans (2 inferences + 3 tools)"
         );
 
-        // All spans share the same trace_id.
-        let trace_id = spans[0].span_context.trace_id();
+        // All spans share the same run.id.
         for s in &spans {
+            let attrs = attr_map(s);
             assert_eq!(
-                s.span_context.trace_id(),
-                trace_id,
-                "span '{}' should share trace_id",
+                attrs.get("run.id").map(|v| v.to_string()),
+                Some("run-99".to_string()),
+                "span '{}' missing run.id",
                 s.name
             );
         }
 
-        // Session span is root (no parent).
-        let session = spans
-            .iter()
-            .find(|s| s.name.as_ref() == "agent_session")
-            .expect("session span not found");
-        assert_eq!(
-            session.parent_span_id,
-            opentelemetry::trace::SpanId::INVALID
-        );
-
-        // Both inference spans are children of the session.
-        let inferences: Vec<_> = spans
-            .iter()
-            .filter(|s| s.name.starts_with("chat"))
-            .collect();
-        assert_eq!(inferences.len(), 2);
-        for inf in &inferences {
-            assert_eq!(
-                inf.parent_span_id,
-                session.span_context.span_id(),
-                "inference span should be child of session"
-            );
-        }
-
-        // Step 0 tools are children of the step-0 inference.
-        let step0_inference = inferences
-            .iter()
-            .find(|s| attr_map(s).get("step.index").map(|v| v.to_string()) == Some("0".to_string()))
-            .expect("step 0 inference not found");
+        // Step 0 tools have step_index=0, step 1 tool has step_index=1.
         let step0_tools: Vec<_> = spans
             .iter()
             .filter(|s| {
@@ -959,19 +783,7 @@ mod tests {
             })
             .collect();
         assert_eq!(step0_tools.len(), 2, "expected 2 tools at step 0");
-        for tool in &step0_tools {
-            assert_eq!(
-                tool.parent_span_id,
-                step0_inference.span_context.span_id(),
-                "step-0 tool should be child of step-0 inference"
-            );
-        }
 
-        // Step 1 tool is child of step-1 inference.
-        let step1_inference = inferences
-            .iter()
-            .find(|s| attr_map(s).get("step.index").map(|v| v.to_string()) == Some("1".to_string()))
-            .expect("step 1 inference not found");
         let step1_tools: Vec<_> = spans
             .iter()
             .filter(|s| {
@@ -981,24 +793,5 @@ mod tests {
             })
             .collect();
         assert_eq!(step1_tools.len(), 1, "expected 1 tool at step 1");
-        assert_eq!(
-            step1_tools[0].parent_span_id,
-            step1_inference.span_context.span_id(),
-            "step-1 tool should be child of step-1 inference"
-        );
-
-        // All spans share the same run.id.
-        for s in &spans {
-            if s.name.as_ref() == "agent_session" {
-                continue; // session span doesn't have run.id attribute
-            }
-            let attrs = attr_map(s);
-            assert_eq!(
-                attrs.get("run.id").map(|v| v.to_string()),
-                Some("run-99".to_string()),
-                "span '{}' missing run.id",
-                s.name
-            );
-        }
     }
 }
