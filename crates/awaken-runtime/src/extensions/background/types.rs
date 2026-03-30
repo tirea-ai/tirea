@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use tokio::sync::watch;
 
 /// Unique identifier for a background task.
 pub type TaskId = String;
@@ -64,41 +63,4 @@ pub struct TaskSummary {
     pub created_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at_ms: Option<u64>,
-}
-
-/// Handle for cancelling a running task.
-#[derive(Clone)]
-pub struct TaskCancellationHandle {
-    sender: watch::Sender<bool>,
-}
-
-impl TaskCancellationHandle {
-    pub(crate) fn new() -> (Self, TaskCancellationToken) {
-        let (tx, rx) = watch::channel(false);
-        (Self { sender: tx }, TaskCancellationToken { receiver: rx })
-    }
-
-    pub fn cancel(&self) {
-        let _ = self.sender.send(true);
-    }
-}
-
-/// Token that a task checks for cancellation.
-#[derive(Clone)]
-pub struct TaskCancellationToken {
-    receiver: watch::Receiver<bool>,
-}
-
-impl TaskCancellationToken {
-    pub fn is_cancelled(&self) -> bool {
-        *self.receiver.borrow()
-    }
-
-    pub async fn cancelled(&mut self) {
-        while !*self.receiver.borrow() {
-            if self.receiver.changed().await.is_err() {
-                return;
-            }
-        }
-    }
 }

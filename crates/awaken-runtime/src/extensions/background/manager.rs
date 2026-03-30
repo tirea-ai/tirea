@@ -5,10 +5,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
+use crate::cancellation::{CancellationHandle, CancellationToken};
+
 use super::state::{BackgroundTaskStateSnapshot, PersistedTaskMeta};
-use super::types::{
-    TaskCancellationHandle, TaskCancellationToken, TaskId, TaskResult, TaskStatus, TaskSummary,
-};
+use super::types::{TaskId, TaskResult, TaskStatus, TaskSummary};
 
 struct LiveTask {
     task_id: TaskId,
@@ -20,7 +20,7 @@ struct LiveTask {
     result: Option<serde_json::Value>,
     created_at_ms: u64,
     completed_at_ms: Option<u64>,
-    cancel_handle: TaskCancellationHandle,
+    cancel_handle: CancellationHandle,
     _join_handle: JoinHandle<()>,
 }
 
@@ -47,7 +47,7 @@ impl BackgroundTaskManager {
 
     /// Spawn a background task.
     ///
-    /// The `task_fn` receives a `TaskCancellationToken` and returns a `TaskResult`.
+    /// The `task_fn` receives a `CancellationToken` and returns a `TaskResult`.
     pub async fn spawn<F, Fut>(
         self: &Arc<Self>,
         owner_thread_id: &str,
@@ -56,11 +56,11 @@ impl BackgroundTaskManager {
         task_fn: F,
     ) -> TaskId
     where
-        F: FnOnce(TaskCancellationToken) -> Fut + Send + 'static,
+        F: FnOnce(CancellationToken) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = TaskResult> + Send + 'static,
     {
         let task_id = self.next_task_id();
-        let (cancel_handle, cancel_token) = TaskCancellationHandle::new();
+        let (cancel_handle, cancel_token) = CancellationToken::new_pair();
         let now = now_ms();
 
         let manager = Arc::clone(self);
@@ -171,7 +171,7 @@ impl BackgroundTaskManager {
                     .fetch_max(n.saturating_add(1), Ordering::Relaxed);
             }
 
-            let (cancel_handle, _cancel_token) = TaskCancellationHandle::new();
+            let (cancel_handle, _cancel_token) = CancellationToken::new_pair();
             let join_handle = tokio::spawn(async {});
             tasks.insert(
                 task_id.clone(),

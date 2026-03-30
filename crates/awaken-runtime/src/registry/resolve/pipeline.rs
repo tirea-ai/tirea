@@ -457,28 +457,32 @@ mod tests {
     ) -> RegistrySet {
         let mut tool_reg = MapToolRegistry::new();
         for (id, tool) in tools {
-            tool_reg.register(id, tool).expect("duplicate tool in test");
+            tool_reg
+                .register_tool(id, tool)
+                .expect("duplicate tool in test");
         }
 
         let mut model_reg = MapModelRegistry::new();
         model_reg
-            .register(model_id, model_entry)
+            .register_model(model_id, model_entry)
             .expect("duplicate model in test");
 
         let mut provider_reg = MapProviderRegistry::new();
         provider_reg
-            .register(provider_id, executor)
+            .register_provider(provider_id, executor)
             .expect("duplicate provider in test");
 
         let mut plugin_reg = MapPluginSource::new();
         for (id, plugin) in plugins {
             plugin_reg
-                .register(id, plugin)
+                .register_plugin(id, plugin)
                 .expect("duplicate plugin in test");
         }
 
         let mut agent_reg = MapAgentSpecRegistry::new();
-        agent_reg.register(spec).expect("duplicate agent in test");
+        agent_reg
+            .register_spec(spec)
+            .expect("duplicate agent in test");
 
         RegistrySet {
             agents: Arc::new(agent_reg),
@@ -1390,13 +1394,13 @@ mod tests {
         use crate::registry::AgentResolver;
 
         let mut agent_reg = MapAgentSpecRegistry::new();
-        agent_reg.register(make_spec("a1")).unwrap();
-        agent_reg.register(make_spec("a2")).unwrap();
-        agent_reg.register(make_spec("a3")).unwrap();
+        agent_reg.register_spec(make_spec("a1")).unwrap();
+        agent_reg.register_spec(make_spec("a2")).unwrap();
+        agent_reg.register_spec(make_spec("a3")).unwrap();
 
         let mut model_reg = MapModelRegistry::new();
         model_reg
-            .register(
+            .register_model(
                 "test-model",
                 ModelEntry {
                     provider: "p".into(),
@@ -1406,7 +1410,9 @@ mod tests {
             .unwrap();
 
         let mut provider_reg = MapProviderRegistry::new();
-        provider_reg.register("p", Arc::new(MockExecutor)).unwrap();
+        provider_reg
+            .register_provider("p", Arc::new(MockExecutor))
+            .unwrap();
 
         let regs = RegistrySet {
             agents: Arc::new(agent_reg),

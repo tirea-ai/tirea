@@ -15,7 +15,9 @@ use super::state::{
     BackgroundTaskStateAction, BackgroundTaskStateKey, BackgroundTaskStateSnapshot,
     BackgroundTaskView, BackgroundTaskViewAction, PersistedTaskMeta, TaskViewEntry,
 };
-use super::types::{TaskCancellationHandle, TaskResult, TaskStatus, TaskSummary};
+use crate::cancellation::CancellationToken;
+
+use super::types::{TaskResult, TaskStatus, TaskSummary};
 
 #[test]
 fn task_status_terminal_check() {
@@ -50,7 +52,7 @@ fn task_result_status() {
 async fn manager_spawn_and_list() {
     let manager = Arc::new(BackgroundTaskManager::new());
     let _id = manager
-        .spawn("thread-1", "test", "my task", |mut cancel| async move {
+        .spawn("thread-1", "test", "my task", |cancel| async move {
             cancel.cancelled().await;
             TaskResult::Cancelled
         })
@@ -105,7 +107,7 @@ async fn manager_task_fails() {
 async fn manager_cancel() {
     let manager = Arc::new(BackgroundTaskManager::new());
     let id = manager
-        .spawn("thread-1", "test", "cancellable", |mut cancel| async move {
+        .spawn("thread-1", "test", "cancellable", |cancel| async move {
             cancel.cancelled().await;
             TaskResult::Cancelled
         })
@@ -311,7 +313,7 @@ fn background_task_view_reduce_clear() {
 
 #[test]
 fn cancellation_token_check() {
-    let (handle, token) = TaskCancellationHandle::new();
+    let (handle, token) = CancellationToken::new_pair();
     assert!(!token.is_cancelled());
     handle.cancel();
     assert!(token.is_cancelled());
@@ -325,13 +327,13 @@ fn cancellation_token_check() {
 async fn manager_multiple_concurrent_tasks() {
     let manager = Arc::new(BackgroundTaskManager::new());
     let id1 = manager
-        .spawn("thread-1", "shell", "task A", |mut cancel| async move {
+        .spawn("thread-1", "shell", "task A", |cancel| async move {
             cancel.cancelled().await;
             TaskResult::Cancelled
         })
         .await;
     let id2 = manager
-        .spawn("thread-1", "http", "task B", |mut cancel| async move {
+        .spawn("thread-1", "http", "task B", |cancel| async move {
             cancel.cancelled().await;
             TaskResult::Cancelled
         })
@@ -436,7 +438,7 @@ async fn manager_restore_skips_existing_live_tasks() {
 
     // Spawn a live task with a known id pattern
     let live_id = manager
-        .spawn("thread-1", "shell", "live task", |mut cancel| async move {
+        .spawn("thread-1", "shell", "live task", |cancel| async move {
             cancel.cancelled().await;
             TaskResult::Cancelled
         })

@@ -87,7 +87,7 @@ impl PhaseRuntime {
     /// Processes pending scheduled actions that match the given phase and have
     /// a registered handler. Used when GATHER was already done via `collect_commands`
     /// and the caller has manually submitted the remaining command.
-    pub async fn run_execute_loop(
+    pub(crate) async fn run_execute_loop(
         &self,
         env: &ExecutionEnv,
         ctx: PhaseContext,

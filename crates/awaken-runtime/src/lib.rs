@@ -20,7 +20,7 @@ pub mod state;
 
 // ── Core re-exports: types used directly by extension crates ──
 
-pub use cancellation::CancellationToken;
+pub use cancellation::{CancellationHandle, CancellationToken};
 pub use error::RuntimeError;
 pub use profile::ProfileAccess;
 

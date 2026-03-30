@@ -15,7 +15,8 @@ pub use awaken_contract::registry_spec::AgentSpec;
 pub use composite::{CompositeAgentSpecRegistry, DiscoveryError, RemoteAgentSource};
 pub use config::{AgentSystemConfig, ModelConfig};
 pub use memory::{
-    MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapToolRegistry,
+    MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapRegistry,
+    MapToolRegistry,
 };
 pub use resolve::ResolveError;
 pub use resolver::{AgentResolver, ResolvedAgent};

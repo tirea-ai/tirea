@@ -14,190 +14,167 @@ use super::traits::{
 use awaken_contract::registry_spec::AgentSpec;
 
 // ---------------------------------------------------------------------------
-// MapToolRegistry
+// MapRegistry<V> — generic in-memory registry
 // ---------------------------------------------------------------------------
 
-/// In-memory tool registry backed by a `HashMap`.
+/// In-memory registry backed by a `HashMap`.
+///
+/// All five concrete registry types (`MapToolRegistry`, `MapModelRegistry`,
+/// `MapProviderRegistry`, `MapAgentSpecRegistry`, `MapPluginSource`) are type
+/// aliases over this single generic struct.
 #[derive(Default)]
-pub struct MapToolRegistry {
-    tools: HashMap<String, Arc<dyn Tool>>,
+pub struct MapRegistry<V> {
+    items: HashMap<String, V>,
 }
 
-impl MapToolRegistry {
+impl<V> MapRegistry<V> {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            items: HashMap::new(),
+        }
     }
 
+    /// Register a value under `id`, returning an error (via `make_err`) on
+    /// duplicate keys.
     pub fn register(
+        &mut self,
+        id: impl Into<String>,
+        value: V,
+        make_err: impl FnOnce(String) -> BuildError,
+    ) -> Result<(), BuildError> {
+        let id = id.into();
+        if self.items.contains_key(&id) {
+            return Err(make_err(format!("'{}' already registered", id)));
+        }
+        self.items.insert(id, value);
+        Ok(())
+    }
+
+    pub fn get(&self, id: &str) -> Option<&V> {
+        self.items.get(id)
+    }
+
+    pub fn ids(&self) -> Vec<String> {
+        self.items.keys().cloned().collect()
+    }
+}
+
+impl<V: Clone> MapRegistry<V> {
+    pub fn get_cloned(&self, id: &str) -> Option<V> {
+        self.items.get(id).cloned()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Type aliases
+// ---------------------------------------------------------------------------
+
+pub type MapToolRegistry = MapRegistry<Arc<dyn Tool>>;
+pub type MapModelRegistry = MapRegistry<ModelEntry>;
+pub type MapProviderRegistry = MapRegistry<Arc<dyn LlmExecutor>>;
+pub type MapAgentSpecRegistry = MapRegistry<AgentSpec>;
+pub type MapPluginSource = MapRegistry<Arc<dyn Plugin>>;
+
+// ---------------------------------------------------------------------------
+// Convenience register methods (preserve original call-site signatures)
+// ---------------------------------------------------------------------------
+
+impl MapToolRegistry {
+    pub fn register_tool(
         &mut self,
         id: impl Into<String>,
         tool: Arc<dyn Tool>,
     ) -> Result<(), BuildError> {
-        let id = id.into();
-        if self.tools.contains_key(&id) {
-            return Err(BuildError::ToolRegistryConflict(format!(
-                "tool '{}' already registered",
-                id
-            )));
-        }
-        self.tools.insert(id, tool);
-        Ok(())
+        self.register(id, tool, |msg| {
+            BuildError::ToolRegistryConflict(format!("tool {msg}"))
+        })
     }
-}
-
-impl ToolRegistry for MapToolRegistry {
-    fn get_tool(&self, id: &str) -> Option<Arc<dyn Tool>> {
-        self.tools.get(id).cloned()
-    }
-
-    fn tool_ids(&self) -> Vec<String> {
-        self.tools.keys().cloned().collect()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// MapModelRegistry
-// ---------------------------------------------------------------------------
-
-/// In-memory model registry backed by a `HashMap`.
-#[derive(Default)]
-pub struct MapModelRegistry {
-    models: HashMap<String, ModelEntry>,
 }
 
 impl MapModelRegistry {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn register_model(
+        &mut self,
+        id: impl Into<String>,
+        entry: ModelEntry,
+    ) -> Result<(), BuildError> {
+        self.register(id, entry, |msg| {
+            BuildError::ModelRegistryConflict(format!("model {msg}"))
+        })
+    }
+}
+
+impl MapProviderRegistry {
+    pub fn register_provider(
+        &mut self,
+        id: impl Into<String>,
+        executor: Arc<dyn LlmExecutor>,
+    ) -> Result<(), BuildError> {
+        self.register(id, executor, |msg| {
+            BuildError::ProviderRegistryConflict(format!("provider {msg}"))
+        })
+    }
+}
+
+impl MapAgentSpecRegistry {
+    /// Register an `AgentSpec`, extracting the ID from `spec.id`.
+    pub fn register_spec(&mut self, spec: AgentSpec) -> Result<(), BuildError> {
+        let id = spec.id.clone();
+        self.register(id, spec, |msg| {
+            BuildError::AgentRegistryConflict(format!("agent {msg}"))
+        })
+    }
+}
+
+impl MapPluginSource {
+    pub fn register_plugin(
+        &mut self,
+        id: impl Into<String>,
+        plugin: Arc<dyn Plugin>,
+    ) -> Result<(), BuildError> {
+        self.register(id, plugin, |msg| {
+            BuildError::PluginRegistryConflict(format!("plugin {msg}"))
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Trait implementations
+// ---------------------------------------------------------------------------
+
+impl ToolRegistry for MapToolRegistry {
+    fn get_tool(&self, id: &str) -> Option<Arc<dyn Tool>> {
+        self.get_cloned(id)
     }
 
-    pub fn register(&mut self, id: impl Into<String>, entry: ModelEntry) -> Result<(), BuildError> {
-        let id = id.into();
-        if self.models.contains_key(&id) {
-            return Err(BuildError::ModelRegistryConflict(format!(
-                "model '{}' already registered",
-                id
-            )));
-        }
-        self.models.insert(id, entry);
-        Ok(())
+    fn tool_ids(&self) -> Vec<String> {
+        self.ids()
     }
 }
 
 impl ModelRegistry for MapModelRegistry {
     fn get_model(&self, id: &str) -> Option<&ModelEntry> {
-        self.models.get(id)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// MapProviderRegistry
-// ---------------------------------------------------------------------------
-
-/// In-memory provider registry backed by a `HashMap`.
-#[derive(Default)]
-pub struct MapProviderRegistry {
-    providers: HashMap<String, Arc<dyn LlmExecutor>>,
-}
-
-impl MapProviderRegistry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn register(
-        &mut self,
-        id: impl Into<String>,
-        executor: Arc<dyn LlmExecutor>,
-    ) -> Result<(), BuildError> {
-        let id = id.into();
-        if self.providers.contains_key(&id) {
-            return Err(BuildError::ProviderRegistryConflict(format!(
-                "provider '{}' already registered",
-                id
-            )));
-        }
-        self.providers.insert(id, executor);
-        Ok(())
+        self.get(id)
     }
 }
 
 impl ProviderRegistry for MapProviderRegistry {
     fn get_provider(&self, id: &str) -> Option<Arc<dyn LlmExecutor>> {
-        self.providers.get(id).cloned()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// MapAgentSpecRegistry
-// ---------------------------------------------------------------------------
-
-/// In-memory agent spec registry backed by a `HashMap`.
-#[derive(Default)]
-pub struct MapAgentSpecRegistry {
-    agents: HashMap<String, AgentSpec>,
-}
-
-impl MapAgentSpecRegistry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn register(&mut self, spec: AgentSpec) -> Result<(), BuildError> {
-        if self.agents.contains_key(&spec.id) {
-            return Err(BuildError::AgentRegistryConflict(format!(
-                "agent '{}' already registered",
-                spec.id
-            )));
-        }
-        self.agents.insert(spec.id.clone(), spec);
-        Ok(())
+        self.get_cloned(id)
     }
 }
 
 impl AgentSpecRegistry for MapAgentSpecRegistry {
     fn get_agent(&self, id: &str) -> Option<AgentSpec> {
-        self.agents.get(id).cloned()
+        self.get_cloned(id)
     }
 
     fn agent_ids(&self) -> Vec<String> {
-        self.agents.keys().cloned().collect()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// MapPluginSource
-// ---------------------------------------------------------------------------
-
-/// In-memory plugin source backed by a `HashMap`.
-#[derive(Default)]
-pub struct MapPluginSource {
-    plugins: HashMap<String, Arc<dyn Plugin>>,
-}
-
-impl MapPluginSource {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn register(
-        &mut self,
-        id: impl Into<String>,
-        plugin: Arc<dyn Plugin>,
-    ) -> Result<(), BuildError> {
-        let id = id.into();
-        if self.plugins.contains_key(&id) {
-            return Err(BuildError::PluginRegistryConflict(format!(
-                "plugin '{}' already registered",
-                id
-            )));
-        }
-        self.plugins.insert(id, plugin);
-        Ok(())
+        self.ids()
     }
 }
 
 impl PluginSource for MapPluginSource {
     fn get_plugin(&self, id: &str) -> Option<Arc<dyn Plugin>> {
-        self.plugins.get(id).cloned()
+        self.get_cloned(id)
     }
 }

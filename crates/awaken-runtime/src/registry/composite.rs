@@ -231,7 +231,7 @@ mod tests {
 
     fn make_local_registry() -> Arc<dyn AgentSpecRegistry> {
         let mut reg = MapAgentSpecRegistry::new();
-        reg.register(AgentSpec {
+        reg.register_spec(AgentSpec {
             id: "local-agent".into(),
             model: "test-model".into(),
             system_prompt: "Local agent.".into(),

@@ -30,6 +30,19 @@ impl CancellationToken {
         Self::default()
     }
 
+    /// Create a split pair: a write-only handle and a read-only token.
+    ///
+    /// Useful when the cancellation signal sender and the receiver should be
+    /// passed to different components independently.
+    pub fn new_pair() -> (CancellationHandle, Self) {
+        let token = Self::new();
+        let handle = CancellationHandle {
+            cancelled: Arc::clone(&token.cancelled),
+            notify: Arc::clone(&token.notify),
+        };
+        (handle, token)
+    }
+
     /// Signal cancellation. Wakes all async waiters immediately.
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
@@ -47,6 +60,24 @@ impl CancellationToken {
             return;
         }
         self.notify.notified().await;
+    }
+}
+
+/// Write-only handle that can signal cancellation.
+///
+/// Obtained via [`CancellationToken::new_pair`]. Cloning shares the same
+/// underlying signal so any clone can trigger cancellation.
+#[derive(Clone)]
+pub struct CancellationHandle {
+    cancelled: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+}
+
+impl CancellationHandle {
+    /// Signal cancellation. Wakes all async waiters on the paired token.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
     }
 }
 
@@ -129,6 +160,35 @@ mod tests {
         token.cancel();
         let result = handle.await.unwrap();
         assert!(result);
+    }
+
+    #[test]
+    fn handle_token_pair_cancel() {
+        let (handle, token) = CancellationToken::new_pair();
+        assert!(!token.is_cancelled());
+        handle.cancel();
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn handle_clone_shares_state() {
+        let (handle, token) = CancellationToken::new_pair();
+        let handle2 = handle.clone();
+        handle2.cancel();
+        assert!(token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn handle_wakes_async_waiter() {
+        let (handle, token) = CancellationToken::new_pair();
+        let t = token.clone();
+        let jh = tokio::spawn(async move {
+            t.cancelled().await;
+            true
+        });
+        tokio::task::yield_now().await;
+        handle.cancel();
+        assert!(jh.await.unwrap());
     }
 
     #[tokio::test]

@@ -56,7 +56,7 @@ impl AgentSystemConfig {
     ) -> Result<RegistrySet, BuildError> {
         let mut model_reg = MapModelRegistry::new();
         for (id, cfg) in &self.models {
-            model_reg.register(
+            model_reg.register_model(
                 id.clone(),
                 ModelEntry {
                     provider: cfg.provider.clone(),
@@ -67,12 +67,12 @@ impl AgentSystemConfig {
 
         let mut agent_reg = MapAgentSpecRegistry::new();
         for spec in &self.agents {
-            agent_reg.register(spec.clone())?;
+            agent_reg.register_spec(spec.clone())?;
         }
 
         let mut provider_reg = MapProviderRegistry::new();
         for (id, executor) in providers {
-            provider_reg.register(id, executor)?;
+            provider_reg.register_provider(id, executor)?;
         }
 
         Ok(RegistrySet {

@@ -74,7 +74,7 @@ impl AgentRuntimeBuilder {
 
     /// Register an agent spec.
     pub fn with_agent_spec(mut self, spec: AgentSpec) -> Self {
-        if let Err(e) = self.agents.register(spec) {
+        if let Err(e) = self.agents.register_spec(spec) {
             self.errors.push(e);
         }
         self
@@ -83,7 +83,7 @@ impl AgentRuntimeBuilder {
     /// Register multiple agent specs.
     pub fn with_agent_specs(mut self, specs: impl IntoIterator<Item = AgentSpec>) -> Self {
         for spec in specs {
-            if let Err(e) = self.agents.register(spec) {
+            if let Err(e) = self.agents.register_spec(spec) {
                 self.errors.push(e);
             }
         }
@@ -92,7 +92,7 @@ impl AgentRuntimeBuilder {
 
     /// Register a tool by ID.
     pub fn with_tool(mut self, id: impl Into<String>, tool: Arc<dyn Tool>) -> Self {
-        if let Err(e) = self.tools.register(id, tool) {
+        if let Err(e) = self.tools.register_tool(id, tool) {
             self.errors.push(e);
         }
         self
@@ -100,7 +100,7 @@ impl AgentRuntimeBuilder {
 
     /// Register a plugin by ID.
     pub fn with_plugin(mut self, id: impl Into<String>, plugin: Arc<dyn Plugin>) -> Self {
-        if let Err(e) = self.plugins.register(id, plugin) {
+        if let Err(e) = self.plugins.register_plugin(id, plugin) {
             self.errors.push(e);
         }
         self
@@ -108,7 +108,7 @@ impl AgentRuntimeBuilder {
 
     /// Register a model entry by ID.
     pub fn with_model(mut self, id: impl Into<String>, entry: ModelEntry) -> Self {
-        if let Err(e) = self.models.register(id, entry) {
+        if let Err(e) = self.models.register_model(id, entry) {
             self.errors.push(e);
         }
         self
@@ -116,7 +116,7 @@ impl AgentRuntimeBuilder {
 
     /// Register a provider (LLM executor) by ID.
     pub fn with_provider(mut self, id: impl Into<String>, executor: Arc<dyn LlmExecutor>) -> Self {
-        if let Err(e) = self.providers.register(id, executor) {
+        if let Err(e) = self.providers.register_provider(id, executor) {
             self.errors.push(e);
         }
         self
