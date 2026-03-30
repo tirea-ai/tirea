@@ -614,8 +614,7 @@ impl Mailbox {
         let job_id = job.job_id.clone();
 
         tokio::spawn(async move {
-            let error_tx = event_tx.clone();
-            let inner_sink: Arc<dyn EventSink> = Arc::new(ChannelEventSink::new(event_tx));
+            let inner_sink: Arc<dyn EventSink> = Arc::new(ChannelEventSink::new(event_tx.clone()));
             let sink = SuspensionAwareSink {
                 inner: inner_sink,
                 suspended,
@@ -641,6 +640,16 @@ impl Mailbox {
                 }
                 MailboxRunOutcome::TransientError(msg) => {
                     tracing::warn!(job_id, error = %msg, "run failed (transient), nacking");
+                    // Emit error event so the SSE stream terminates with a
+                    // proper RUN_ERROR instead of silently closing.
+                    let _ = event_tx.send(AgentEvent::RunFinish {
+                        thread_id: job.mailbox_id.clone(),
+                        run_id: job_id.clone(),
+                        result: None,
+                        termination: awaken_contract::contract::lifecycle::TerminationReason::Error(
+                            msg.clone(),
+                        ),
+                    });
                     let retry_at = now + this.config.default_retry_delay_ms;
                     if let Err(e) = this
                         .store
@@ -652,6 +661,17 @@ impl Mailbox {
                 }
                 MailboxRunOutcome::PermanentError(msg) => {
                     tracing::warn!(job_id, error = %msg, "run failed (permanent), dead-lettering");
+                    // Emit error event so the SSE stream terminates with a
+                    // proper RUN_ERROR. The runtime did not reach the loop,
+                    // so no RunFinish was emitted — we must do it here.
+                    let _ = event_tx.send(AgentEvent::RunFinish {
+                        thread_id: job.mailbox_id.clone(),
+                        run_id: job_id.clone(),
+                        result: None,
+                        termination: awaken_contract::contract::lifecycle::TerminationReason::Error(
+                            msg.clone(),
+                        ),
+                    });
                     if let Err(e) = this
                         .store
                         .dead_letter(&job_id, &claim_token, &msg, now)
@@ -659,9 +679,6 @@ impl Mailbox {
                     {
                         tracing::warn!(job_id, error = %e, "dead_letter failed");
                     }
-                    // The runtime's RunFinish with TerminationReason::Error is the
-                    // authoritative error signal. Do NOT emit a second Error event
-                    // here — AG-UI clients reject duplicate RUN_ERROR events.
                 }
             }
 
