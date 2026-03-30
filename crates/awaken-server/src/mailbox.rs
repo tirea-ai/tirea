@@ -1079,4 +1079,282 @@ mod tests {
         .await;
         assert!(!suspended.load(Ordering::Acquire));
     }
+
+    // ── classify_error tests ──────────────────────────────────────────
+
+    #[test]
+    fn classify_error_ok_is_completed() {
+        use awaken_contract::contract::lifecycle::TerminationReason;
+        let result = Ok(awaken_runtime::loop_runner::AgentRunResult {
+            response: "done".to_string(),
+            termination: TerminationReason::NaturalEnd,
+            steps: 1,
+        });
+        assert!(matches!(
+            classify_error(&result),
+            MailboxRunOutcome::Completed
+        ));
+    }
+
+    #[test]
+    fn classify_error_thread_already_running_is_transient() {
+        use awaken_runtime::RuntimeError;
+        use awaken_runtime::loop_runner::AgentLoopError;
+        let result = Err(AgentLoopError::RuntimeError(
+            RuntimeError::ThreadAlreadyRunning {
+                thread_id: "t1".to_string(),
+            },
+        ));
+        assert!(matches!(
+            classify_error(&result),
+            MailboxRunOutcome::TransientError(_)
+        ));
+    }
+
+    #[test]
+    fn classify_error_agent_not_found_is_permanent() {
+        use awaken_runtime::RuntimeError;
+        use awaken_runtime::loop_runner::AgentLoopError;
+        let result = Err(AgentLoopError::RuntimeError(RuntimeError::AgentNotFound {
+            agent_id: "missing".to_string(),
+        }));
+        assert!(matches!(
+            classify_error(&result),
+            MailboxRunOutcome::PermanentError(_)
+        ));
+    }
+
+    #[test]
+    fn classify_error_resolve_failed_is_permanent() {
+        use awaken_runtime::RuntimeError;
+        use awaken_runtime::loop_runner::AgentLoopError;
+        let result = Err(AgentLoopError::RuntimeError(RuntimeError::ResolveFailed {
+            message: "not found".to_string(),
+        }));
+        assert!(matches!(
+            classify_error(&result),
+            MailboxRunOutcome::PermanentError(_)
+        ));
+    }
+
+    #[test]
+    fn classify_error_storage_error_is_transient() {
+        use awaken_runtime::loop_runner::AgentLoopError;
+        let result = Err(AgentLoopError::StorageError("disk full".to_string()));
+        assert!(matches!(
+            classify_error(&result),
+            MailboxRunOutcome::TransientError(_)
+        ));
+    }
+
+    #[test]
+    fn classify_error_inference_failed_is_transient() {
+        use awaken_runtime::loop_runner::AgentLoopError;
+        let result = Err(AgentLoopError::InferenceFailed("timeout".to_string()));
+        assert!(matches!(
+            classify_error(&result),
+            MailboxRunOutcome::TransientError(_)
+        ));
+    }
+
+    #[test]
+    fn classify_error_phase_error_is_completed() {
+        use awaken_runtime::loop_runner::AgentLoopError;
+        let result = Err(AgentLoopError::PhaseError(
+            awaken_contract::StateError::UnknownKey {
+                key: "bad".to_string(),
+            },
+        ));
+        // Phase errors are not infra failures -> Completed
+        assert!(matches!(
+            classify_error(&result),
+            MailboxRunOutcome::Completed
+        ));
+    }
+
+    #[test]
+    fn classify_error_invalid_resume_is_completed() {
+        use awaken_runtime::loop_runner::AgentLoopError;
+        let result = Err(AgentLoopError::InvalidResume("bad resume".to_string()));
+        assert!(matches!(
+            classify_error(&result),
+            MailboxRunOutcome::Completed
+        ));
+    }
+
+    // ── validate_run_inputs additional tests ──────────────────────────
+
+    #[test]
+    fn validate_run_inputs_preserves_normal_thread_id() {
+        let (thread_id, msgs) =
+            validate_run_inputs("my-thread".into(), vec![Message::user("hi")]).unwrap();
+        assert_eq!(thread_id, "my-thread");
+        assert_eq!(msgs.len(), 1);
+    }
+
+    #[test]
+    fn validate_run_inputs_multiple_messages() {
+        let (_, msgs) = validate_run_inputs(
+            "t".into(),
+            vec![Message::user("a"), Message::user("b"), Message::user("c")],
+        )
+        .unwrap();
+        assert_eq!(msgs.len(), 3);
+    }
+
+    #[test]
+    fn validate_run_inputs_empty_string_generates_uuid() {
+        let (thread_id, _) = validate_run_inputs("".into(), vec![Message::user("hi")]).unwrap();
+        assert!(!thread_id.is_empty());
+        // UUIDv7 is 36 chars with hyphens
+        assert_eq!(thread_id.len(), 36);
+    }
+
+    // ── MailboxConfig custom values ──────────────────────────────────
+
+    #[test]
+    fn mailbox_config_custom_values() {
+        let config = MailboxConfig {
+            lease_ms: 5_000,
+            suspended_lease_ms: 60_000,
+            lease_renewal_interval: Duration::from_secs(2),
+            sweep_interval: Duration::from_secs(5),
+            gc_interval: Duration::from_secs(10),
+            gc_ttl: Duration::from_secs(3600),
+            default_max_attempts: 3,
+            default_retry_delay_ms: 500,
+        };
+        assert_eq!(config.lease_ms, 5_000);
+        assert_eq!(config.default_max_attempts, 3);
+        assert_eq!(config.default_retry_delay_ms, 500);
+    }
+
+    // ── build_job field validation ──────────────────────────────────
+
+    #[tokio::test]
+    async fn build_job_sets_correct_fields() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store);
+
+        let messages = vec![Message::user("test")];
+        let job = mailbox.build_job("thread-42", Some("agent-x"), messages.clone());
+
+        assert_eq!(job.mailbox_id, "thread-42");
+        assert_eq!(job.agent_id, "agent-x");
+        assert_eq!(job.messages.len(), 1);
+        assert_eq!(job.status, MailboxJobStatus::Queued);
+        assert_eq!(job.attempt_count, 0);
+        assert_eq!(job.max_attempts, 5); // default
+        assert_eq!(job.priority, 128);
+        assert_eq!(job.generation, 0);
+        assert!(job.claim_token.is_none());
+        assert!(job.claimed_by.is_none());
+        assert!(job.lease_until.is_none());
+        assert!(job.last_error.is_none());
+        assert!(matches!(job.origin, MailboxJobOrigin::User));
+    }
+
+    #[tokio::test]
+    async fn build_job_without_agent_id_sets_empty() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store);
+
+        let job = mailbox.build_job("thread-1", None, vec![Message::user("hi")]);
+        assert_eq!(job.agent_id, "");
+    }
+
+    // ── MailboxError variants ──────────────────────────────────────
+
+    #[test]
+    fn mailbox_error_store_variant() {
+        use awaken_contract::contract::storage::StorageError;
+        let err: MailboxError = StorageError::NotFound("x".to_string()).into();
+        let msg = err.to_string();
+        assert!(msg.contains("store error"));
+    }
+
+    // ── MailboxRunOutcome debug ──────────────────────────────────────
+
+    #[test]
+    fn mailbox_run_outcome_debug() {
+        let completed = MailboxRunOutcome::Completed;
+        let transient = MailboxRunOutcome::TransientError("oops".to_string());
+        let permanent = MailboxRunOutcome::PermanentError("fatal".to_string());
+        assert!(format!("{:?}", completed).contains("Completed"));
+        assert!(format!("{:?}", transient).contains("oops"));
+        assert!(format!("{:?}", permanent).contains("fatal"));
+    }
+
+    // ── MailboxDispatchStatus ────────────────────────────────────────
+
+    #[test]
+    fn dispatch_status_queued_zero() {
+        let status = MailboxDispatchStatus::Queued { pending_ahead: 0 };
+        assert!(matches!(
+            status,
+            MailboxDispatchStatus::Queued { pending_ahead: 0 }
+        ));
+    }
+
+    // ── Interrupt test ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn interrupt_clears_pending() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store.clone());
+
+        // Submit some jobs
+        let request =
+            RunRequest::new("thread-int", vec![Message::user("a")]).with_agent_id("agent-1");
+        mailbox.submit_background(request).await.unwrap();
+
+        let result = mailbox.interrupt("thread-int").await.unwrap();
+        // After interrupt, the generation should be bumped
+        assert!(result.new_generation > 0);
+    }
+
+    // ── submit streaming returns event channel ──────────────────────
+
+    #[tokio::test]
+    async fn submit_returns_event_channel() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store.clone());
+
+        let request =
+            RunRequest::new("thread-stream", vec![Message::user("hi")]).with_agent_id("agent-1");
+        let (result, _event_rx) = mailbox.submit(request).await.unwrap();
+
+        assert_eq!(result.thread_id, "thread-stream");
+        assert!(!result.job_id.is_empty());
+        assert!(matches!(
+            result.status,
+            MailboxDispatchStatus::Running | MailboxDispatchStatus::Queued { .. }
+        ));
+    }
+
+    // ── send_decision returns false for unknown id ──────────────────
+
+    #[test]
+    fn send_decision_unknown_id_returns_false() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store);
+
+        let result = mailbox.send_decision(
+            "nonexistent",
+            "tc-1".to_string(),
+            ToolCallResume {
+                decision_id: "d1".into(),
+                action: awaken_contract::contract::suspension::ResumeDecisionAction::Resume,
+                result: serde_json::json!({"approved": true}),
+                reason: None,
+                updated_at: 0,
+            },
+        );
+        assert!(!result);
+    }
 }

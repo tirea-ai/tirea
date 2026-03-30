@@ -23,6 +23,7 @@ unicode-normalization = "0.1"
 tokio = { workspace = true }
 tempfile = "3"
 awaken-ext-mcp = { workspace = true }
+awaken-runtime = { workspace = true, features = ["test-utils"] }
 mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"] }
 
 [features]

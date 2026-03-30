@@ -286,3 +286,384 @@ pub struct Specificity {
     /// Sum of per-field precision (exact=3, glob=2, regex=1 per field).
     pub field_precision: u8,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // PathSegment Display
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn path_segment_display_field() {
+        assert_eq!(PathSegment::Field("name".into()).to_string(), "name");
+    }
+
+    #[test]
+    fn path_segment_display_index() {
+        assert_eq!(PathSegment::Index(3).to_string(), "[3]");
+    }
+
+    #[test]
+    fn path_segment_display_any_index() {
+        assert_eq!(PathSegment::AnyIndex.to_string(), "[*]");
+    }
+
+    #[test]
+    fn path_segment_display_wildcard() {
+        assert_eq!(PathSegment::Wildcard.to_string(), "*");
+    }
+
+    // -----------------------------------------------------------------------
+    // MatchOp Display
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn match_op_display() {
+        assert_eq!(MatchOp::Glob.to_string(), "~");
+        assert_eq!(MatchOp::Exact.to_string(), "=");
+        assert_eq!(MatchOp::Regex.to_string(), "=~");
+        assert_eq!(MatchOp::NotGlob.to_string(), "!~");
+        assert_eq!(MatchOp::NotExact.to_string(), "!=");
+        assert_eq!(MatchOp::NotRegex.to_string(), "!=~");
+    }
+
+    // -----------------------------------------------------------------------
+    // FieldCondition Display
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn field_condition_display_simple() {
+        let cond = FieldCondition {
+            path: vec![PathSegment::Field("command".into())],
+            op: MatchOp::Glob,
+            value: "npm *".into(),
+        };
+        assert_eq!(cond.to_string(), "command ~ \"npm *\"");
+    }
+
+    #[test]
+    fn field_condition_display_nested_with_index() {
+        let cond = FieldCondition {
+            path: vec![
+                PathSegment::Field("items".into()),
+                PathSegment::Index(0),
+                PathSegment::Field("name".into()),
+            ],
+            op: MatchOp::Exact,
+            value: "foo".into(),
+        };
+        assert_eq!(cond.to_string(), "items[0].name = \"foo\"");
+    }
+
+    #[test]
+    fn field_condition_display_any_index() {
+        let cond = FieldCondition {
+            path: vec![
+                PathSegment::Field("arr".into()),
+                PathSegment::AnyIndex,
+                PathSegment::Field("val".into()),
+            ],
+            op: MatchOp::Regex,
+            value: ".*test.*".into(),
+        };
+        assert_eq!(cond.to_string(), "arr[*].val =~ \".*test.*\"");
+    }
+
+    #[test]
+    fn field_condition_display_wildcard_path() {
+        let cond = FieldCondition {
+            path: vec![PathSegment::Wildcard, PathSegment::Field("id".into())],
+            op: MatchOp::NotExact,
+            value: "secret".into(),
+        };
+        assert_eq!(cond.to_string(), "*.id != \"secret\"");
+    }
+
+    #[test]
+    fn field_condition_display_not_glob() {
+        let cond = FieldCondition {
+            path: vec![PathSegment::Field("cmd".into())],
+            op: MatchOp::NotGlob,
+            value: "rm *".into(),
+        };
+        assert_eq!(cond.to_string(), "cmd !~ \"rm *\"");
+    }
+
+    #[test]
+    fn field_condition_display_not_regex() {
+        let cond = FieldCondition {
+            path: vec![PathSegment::Field("cmd".into())],
+            op: MatchOp::NotRegex,
+            value: "^evil".into(),
+        };
+        assert_eq!(cond.to_string(), "cmd !=~ \"^evil\"");
+    }
+
+    // -----------------------------------------------------------------------
+    // ToolMatcher Display and PartialEq
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tool_matcher_display_exact() {
+        assert_eq!(ToolMatcher::Exact("Bash".into()).to_string(), "Bash");
+    }
+
+    #[test]
+    fn tool_matcher_display_glob() {
+        assert_eq!(ToolMatcher::Glob("mcp__*".into()).to_string(), "mcp__*");
+    }
+
+    #[test]
+    fn tool_matcher_display_regex() {
+        let re = regex::Regex::new(r"foo|bar").unwrap();
+        assert_eq!(ToolMatcher::Regex(re).to_string(), "/foo|bar/");
+    }
+
+    #[test]
+    fn tool_matcher_eq_exact() {
+        assert_eq!(
+            ToolMatcher::Exact("A".into()),
+            ToolMatcher::Exact("A".into())
+        );
+        assert_ne!(
+            ToolMatcher::Exact("A".into()),
+            ToolMatcher::Exact("B".into())
+        );
+    }
+
+    #[test]
+    fn tool_matcher_eq_glob() {
+        assert_eq!(ToolMatcher::Glob("*".into()), ToolMatcher::Glob("*".into()));
+        assert_ne!(
+            ToolMatcher::Glob("a*".into()),
+            ToolMatcher::Glob("b*".into())
+        );
+    }
+
+    #[test]
+    fn tool_matcher_eq_regex() {
+        let r1 = regex::Regex::new("abc").unwrap();
+        let r2 = regex::Regex::new("abc").unwrap();
+        let r3 = regex::Regex::new("def").unwrap();
+        assert_eq!(ToolMatcher::Regex(r1), ToolMatcher::Regex(r2));
+        assert_ne!(
+            ToolMatcher::Regex(r3),
+            ToolMatcher::Regex(regex::Regex::new("abc").unwrap())
+        );
+    }
+
+    #[test]
+    fn tool_matcher_eq_cross_variant() {
+        assert_ne!(
+            ToolMatcher::Exact("foo".into()),
+            ToolMatcher::Glob("foo".into())
+        );
+        assert_ne!(
+            ToolMatcher::Glob("foo".into()),
+            ToolMatcher::Regex(regex::Regex::new("foo").unwrap())
+        );
+        assert_ne!(
+            ToolMatcher::Exact("foo".into()),
+            ToolMatcher::Regex(regex::Regex::new("foo").unwrap())
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // ArgMatcher Display
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn arg_matcher_display_any() {
+        assert_eq!(ArgMatcher::Any.to_string(), "*");
+    }
+
+    #[test]
+    fn arg_matcher_display_primary_glob() {
+        let m = ArgMatcher::Primary {
+            op: MatchOp::Glob,
+            value: "npm *".into(),
+        };
+        assert_eq!(m.to_string(), "npm *");
+    }
+
+    #[test]
+    fn arg_matcher_display_primary_non_glob() {
+        let m = ArgMatcher::Primary {
+            op: MatchOp::Exact,
+            value: "ls".into(),
+        };
+        assert_eq!(m.to_string(), "= \"ls\"");
+    }
+
+    #[test]
+    fn arg_matcher_display_primary_regex() {
+        let m = ArgMatcher::Primary {
+            op: MatchOp::Regex,
+            value: "^npm".into(),
+        };
+        assert_eq!(m.to_string(), "=~ \"^npm\"");
+    }
+
+    #[test]
+    fn arg_matcher_display_fields_single() {
+        let m = ArgMatcher::Fields(vec![FieldCondition {
+            path: vec![PathSegment::Field("cmd".into())],
+            op: MatchOp::Glob,
+            value: "npm *".into(),
+        }]);
+        assert_eq!(m.to_string(), "cmd ~ \"npm *\"");
+    }
+
+    #[test]
+    fn arg_matcher_display_fields_multiple() {
+        let m = ArgMatcher::Fields(vec![
+            FieldCondition {
+                path: vec![PathSegment::Field("f1".into())],
+                op: MatchOp::Glob,
+                value: "a*".into(),
+            },
+            FieldCondition {
+                path: vec![PathSegment::Field("f2".into())],
+                op: MatchOp::Exact,
+                value: "b".into(),
+            },
+        ]);
+        assert_eq!(m.to_string(), "f1 ~ \"a*\", f2 = \"b\"");
+    }
+
+    // -----------------------------------------------------------------------
+    // ToolCallPattern Display and builders
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pattern_display_no_args() {
+        let p = ToolCallPattern::tool("Bash");
+        assert_eq!(p.to_string(), "Bash");
+    }
+
+    #[test]
+    fn pattern_display_with_primary() {
+        let p = ToolCallPattern::tool_with_primary("Bash", "npm *");
+        assert_eq!(p.to_string(), "Bash(npm *)");
+    }
+
+    #[test]
+    fn pattern_display_with_fields() {
+        let p = ToolCallPattern {
+            tool: ToolMatcher::Exact("Edit".into()),
+            args: ArgMatcher::Fields(vec![FieldCondition {
+                path: vec![PathSegment::Field("file_path".into())],
+                op: MatchOp::Glob,
+                value: "src/**".into(),
+            }]),
+        };
+        assert_eq!(p.to_string(), "Edit(file_path ~ \"src/**\")");
+    }
+
+    #[test]
+    fn pattern_display_regex_tool() {
+        let p = ToolCallPattern {
+            tool: ToolMatcher::Regex(regex::Regex::new(r"mcp__.*").unwrap()),
+            args: ArgMatcher::Any,
+        };
+        assert_eq!(p.to_string(), "/mcp__.*/");
+    }
+
+    #[test]
+    fn tool_glob_builder() {
+        let p = ToolCallPattern::tool_glob("mcp__*");
+        assert_eq!(p.tool, ToolMatcher::Glob("mcp__*".into()));
+        assert_eq!(p.args, ArgMatcher::Any);
+    }
+
+    #[test]
+    fn with_args_builder() {
+        let p = ToolCallPattern::tool("Bash").with_args(ArgMatcher::Primary {
+            op: MatchOp::Glob,
+            value: "npm *".into(),
+        });
+        assert_eq!(
+            p.args,
+            ArgMatcher::Primary {
+                op: MatchOp::Glob,
+                value: "npm *".into()
+            }
+        );
+    }
+
+    #[test]
+    fn with_args_replaces_previous() {
+        let p = ToolCallPattern::tool_with_primary("Bash", "npm *").with_args(ArgMatcher::Any);
+        assert_eq!(p.args, ArgMatcher::Any);
+    }
+
+    // -----------------------------------------------------------------------
+    // MatchResult
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn match_result_no_match() {
+        assert!(!MatchResult::NoMatch.is_match());
+    }
+
+    #[test]
+    fn match_result_match() {
+        let r = MatchResult::Match {
+            specificity: Specificity {
+                tool_kind: 3,
+                has_args: false,
+                field_count: 0,
+                field_precision: 0,
+            },
+        };
+        assert!(r.is_match());
+    }
+
+    // -----------------------------------------------------------------------
+    // Specificity ordering
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn specificity_ordering() {
+        let low = Specificity {
+            tool_kind: 1,
+            has_args: false,
+            field_count: 0,
+            field_precision: 0,
+        };
+        let mid = Specificity {
+            tool_kind: 2,
+            has_args: false,
+            field_count: 0,
+            field_precision: 0,
+        };
+        let high = Specificity {
+            tool_kind: 3,
+            has_args: true,
+            field_count: 2,
+            field_precision: 6,
+        };
+        assert!(low < mid);
+        assert!(mid < high);
+        assert!(low < high);
+    }
+
+    #[test]
+    fn specificity_has_args_higher() {
+        let without = Specificity {
+            tool_kind: 3,
+            has_args: false,
+            field_count: 0,
+            field_precision: 0,
+        };
+        let with = Specificity {
+            tool_kind: 3,
+            has_args: true,
+            field_count: 1,
+            field_precision: 2,
+        };
+        assert!(with > without);
+    }
+}

@@ -186,3 +186,142 @@ impl Plugin for SkillDiscoveryPlugin {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::SkillError;
+    use crate::registry::InMemorySkillRegistry;
+    use crate::skill::{ScriptResult, Skill, SkillMeta, SkillResource, SkillResourceKind};
+    use awaken_contract::state::{Snapshot, StateKey, StateMap};
+
+    #[derive(Debug)]
+    struct MockSkill(SkillMeta);
+
+    #[async_trait]
+    impl Skill for MockSkill {
+        fn meta(&self) -> &SkillMeta {
+            &self.0
+        }
+        async fn read_instructions(&self) -> Result<String, SkillError> {
+            Ok(String::new())
+        }
+        async fn load_resource(
+            &self,
+            _: SkillResourceKind,
+            _: &str,
+        ) -> Result<SkillResource, SkillError> {
+            Err(SkillError::Unsupported("mock".into()))
+        }
+        async fn run_script(&self, _: &str, _: &[String]) -> Result<ScriptResult, SkillError> {
+            Err(SkillError::Unsupported("mock".into()))
+        }
+    }
+
+    fn mock_meta(id: &str) -> SkillMeta {
+        SkillMeta {
+            id: id.into(),
+            name: id.into(),
+            description: format!("{id} desc"),
+            allowed_tools: vec![],
+        }
+    }
+
+    fn make_registry(skills: Vec<Arc<dyn Skill>>) -> Arc<dyn SkillRegistry> {
+        Arc::new(InMemorySkillRegistry::from_skills(skills))
+    }
+
+    fn make_ctx_with_active(active: Vec<String>) -> PhaseContext {
+        let mut state_map = StateMap::default();
+        let mut val = crate::state::SkillStateValue::default();
+        for id in active {
+            crate::state::SkillState::apply(&mut val, crate::state::SkillStateUpdate::Activate(id));
+        }
+        state_map.insert::<crate::state::SkillState>(val);
+        let snapshot = Snapshot::new(0, Arc::new(state_map));
+        PhaseContext::new(Phase::BeforeInference, snapshot)
+    }
+
+    fn make_ctx_no_state() -> PhaseContext {
+        let snapshot = Snapshot::new(0, Arc::new(StateMap::default()));
+        PhaseContext::new(Phase::BeforeInference, snapshot)
+    }
+
+    #[tokio::test]
+    async fn hook_run_schedules_catalog_when_skills_exist() {
+        let skills: Vec<Arc<dyn Skill>> = vec![Arc::new(MockSkill(mock_meta("s1")))];
+        let plugin = SkillDiscoveryPlugin::new(make_registry(skills));
+        let hook = SkillDiscoveryHook { plugin };
+
+        let ctx = make_ctx_no_state();
+        let cmd = PhaseHook::run(&hook, &ctx).await.unwrap();
+        assert!(
+            !cmd.scheduled_actions().is_empty(),
+            "should schedule AddContextMessage with catalog when skills exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn hook_run_returns_empty_when_registry_empty() {
+        let plugin = SkillDiscoveryPlugin::new(make_registry(vec![]));
+        let hook = SkillDiscoveryHook { plugin };
+
+        let ctx = make_ctx_no_state();
+        let cmd = PhaseHook::run(&hook, &ctx).await.unwrap();
+        assert!(cmd.is_empty(), "should be empty when no skills in registry");
+    }
+
+    #[tokio::test]
+    async fn hook_run_with_active_state_still_renders_catalog() {
+        let skills: Vec<Arc<dyn Skill>> = vec![
+            Arc::new(MockSkill(mock_meta("s1"))),
+            Arc::new(MockSkill(mock_meta("s2"))),
+        ];
+        let plugin = SkillDiscoveryPlugin::new(make_registry(skills));
+        let hook = SkillDiscoveryHook { plugin };
+
+        let ctx = make_ctx_with_active(vec!["s1".into()]);
+        let cmd = PhaseHook::run(&hook, &ctx).await.unwrap();
+        assert!(!cmd.scheduled_actions().is_empty());
+    }
+
+    #[test]
+    fn render_catalog_no_description_tag_when_both_name_and_id_match_and_desc_empty() {
+        let skill: Arc<dyn Skill> = Arc::new(MockSkill(SkillMeta {
+            id: "s1".into(),
+            name: "s1".into(),
+            description: "  ".into(),
+            allowed_tools: vec![],
+        }));
+        let plugin = SkillDiscoveryPlugin::new(make_registry(vec![skill]));
+        let active = HashSet::new();
+        let s = plugin.render_catalog(&active);
+        assert!(s.contains("<name>s1</name>"));
+        assert!(!s.contains("<description>"));
+    }
+
+    #[test]
+    fn render_catalog_char_limit_truncates_output() {
+        let mut skills: Vec<Arc<dyn Skill>> = Vec::new();
+        for i in 0..10 {
+            skills.push(Arc::new(MockSkill(mock_meta(&format!("s{i}")))));
+        }
+        let plugin = SkillDiscoveryPlugin::new(make_registry(skills)).with_limits(100, 256);
+        let active = HashSet::new();
+        let s = plugin.render_catalog(&active);
+        assert!(s.len() <= 256);
+    }
+
+    #[test]
+    fn render_catalog_entry_limit_shows_truncation_note() {
+        let mut skills: Vec<Arc<dyn Skill>> = Vec::new();
+        for i in 0..5 {
+            skills.push(Arc::new(MockSkill(mock_meta(&format!("s{i}")))));
+        }
+        let plugin = SkillDiscoveryPlugin::new(make_registry(skills)).with_limits(2, 16 * 1024);
+        let active = HashSet::new();
+        let s = plugin.render_catalog(&active);
+        assert!(s.contains("truncated"));
+        assert_eq!(s.matches("<skill>").count(), 2);
+    }
+}

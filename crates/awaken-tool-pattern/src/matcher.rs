@@ -532,4 +532,331 @@ mod tests {
         let warnings = validate_pattern_fields(&p, &schema);
         assert_eq!(warnings, vec!["command"]);
     }
+
+    // --- value_to_string ---
+
+    #[test]
+    fn value_to_string_variants() {
+        assert_eq!(value_to_string(&json!("hello")), "hello");
+        assert_eq!(value_to_string(&json!(null)), "");
+        assert_eq!(value_to_string(&json!(true)), "true");
+        assert_eq!(value_to_string(&json!(false)), "false");
+        assert_eq!(value_to_string(&json!(42)), "42");
+        assert_eq!(value_to_string(&json!(3.14)), "3.14");
+        // Array / object fall through to serde stringify
+        assert_eq!(value_to_string(&json!([1, 2])), "[1,2]");
+        assert_eq!(value_to_string(&json!({"a": 1})), "{\"a\":1}");
+    }
+
+    // --- evaluate_op edge cases ---
+
+    #[test]
+    fn evaluate_op_not_exact() {
+        assert!(evaluate_op(&MatchOp::NotExact, "a", "b"));
+        assert!(!evaluate_op(&MatchOp::NotExact, "a", "a"));
+    }
+
+    #[test]
+    fn evaluate_op_not_regex() {
+        assert!(evaluate_op(&MatchOp::NotRegex, "^rm", "ls"));
+        assert!(!evaluate_op(&MatchOp::NotRegex, "^rm", "rm -rf"));
+    }
+
+    #[test]
+    fn evaluate_op_invalid_regex_returns_false() {
+        // Invalid regex pattern for positive match returns false
+        assert!(!evaluate_op(&MatchOp::Regex, "[invalid", "anything"));
+    }
+
+    #[test]
+    fn evaluate_op_invalid_not_regex_returns_true() {
+        // Invalid regex for negated match returns true
+        assert!(evaluate_op(&MatchOp::NotRegex, "[invalid", "anything"));
+    }
+
+    // --- resolve_path edge cases ---
+
+    #[test]
+    fn resolve_path_specific_index() {
+        let val = json!({"items": ["a", "b", "c"]});
+        let path = vec![PathSegment::Field("items".into()), PathSegment::Index(1)];
+        let resolved = resolve_path(&val, &path);
+        assert_eq!(resolved, vec![&json!("b")]);
+    }
+
+    #[test]
+    fn resolve_path_index_out_of_bounds() {
+        let val = json!({"items": ["a"]});
+        let path = vec![PathSegment::Field("items".into()), PathSegment::Index(99)];
+        assert!(resolve_path(&val, &path).is_empty());
+    }
+
+    #[test]
+    fn resolve_path_index_on_non_array() {
+        let val = json!({"items": "not_array"});
+        let path = vec![PathSegment::Field("items".into()), PathSegment::Index(0)];
+        assert!(resolve_path(&val, &path).is_empty());
+    }
+
+    #[test]
+    fn resolve_path_any_index_on_non_array() {
+        let val = json!({"items": "not_array"});
+        let path = vec![PathSegment::Field("items".into()), PathSegment::AnyIndex];
+        assert!(resolve_path(&val, &path).is_empty());
+    }
+
+    #[test]
+    fn resolve_path_wildcard() {
+        let val = json!({"a": {"x": 1}, "b": {"x": 2}});
+        let path = vec![PathSegment::Wildcard, PathSegment::Field("x".into())];
+        let resolved = resolve_path(&val, &path);
+        assert_eq!(resolved.len(), 2);
+    }
+
+    #[test]
+    fn resolve_path_wildcard_on_non_object() {
+        let val = json!("string");
+        let path = vec![PathSegment::Wildcard];
+        assert!(resolve_path(&val, &path).is_empty());
+    }
+
+    #[test]
+    fn resolve_path_empty() {
+        let val = json!({"a": 1});
+        let resolved = resolve_path(&val, &[]);
+        assert_eq!(resolved, vec![&json!({"a": 1})]);
+    }
+
+    #[test]
+    fn resolve_path_missing_field() {
+        let val = json!({"a": 1});
+        let path = vec![PathSegment::Field("b".into())];
+        assert!(resolve_path(&val, &path).is_empty());
+    }
+
+    // --- normalize_wildcards edge cases ---
+
+    #[test]
+    fn normalize_single_star_adjacent_to_globstar() {
+        // */** should keep the first * single since it's followed by globstar
+        assert!(wildcard_match("*/**/*.rs", "src/sub/lib.rs"));
+    }
+
+    #[test]
+    fn normalize_preserves_triple_stars() {
+        // *** should be preserved as-is (count >= 2)
+        assert!(wildcard_match("***", "anything"));
+    }
+
+    // --- schema_has_path edge cases ---
+
+    #[test]
+    fn schema_has_path_additional_properties() {
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": {
+                "type": "string"
+            }
+        });
+        assert!(schema_has_path(
+            &schema,
+            &[PathSegment::Field("anything".into())]
+        ));
+    }
+
+    #[test]
+    fn schema_has_path_additional_properties_false() {
+        // additionalProperties: false (not an object) should not match
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false
+        });
+        assert!(!schema_has_path(
+            &schema,
+            &[PathSegment::Field("missing".into())]
+        ));
+    }
+
+    #[test]
+    fn schema_has_path_array_items() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "list": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string" }
+                        }
+                    }
+                }
+            }
+        });
+        assert!(schema_has_path(
+            &schema,
+            &[
+                PathSegment::Field("list".into()),
+                PathSegment::AnyIndex,
+                PathSegment::Field("name".into()),
+            ]
+        ));
+        assert!(schema_has_path(
+            &schema,
+            &[
+                PathSegment::Field("list".into()),
+                PathSegment::Index(0),
+                PathSegment::Field("name".into()),
+            ]
+        ));
+    }
+
+    #[test]
+    fn schema_has_path_no_items() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "list": { "type": "string" }
+            }
+        });
+        assert!(!schema_has_path(
+            &schema,
+            &[PathSegment::Field("list".into()), PathSegment::AnyIndex,]
+        ));
+    }
+
+    #[test]
+    fn schema_has_path_wildcard() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "a": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" }
+                    }
+                },
+                "b": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" }
+                    }
+                }
+            }
+        });
+        assert!(schema_has_path(
+            &schema,
+            &[PathSegment::Wildcard, PathSegment::Field("id".into())]
+        ));
+    }
+
+    #[test]
+    fn schema_has_path_wildcard_no_properties() {
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" }
+                }
+            }
+        });
+        // Wildcard without properties falls back to additionalProperties
+        assert!(schema_has_path(
+            &schema,
+            &[PathSegment::Wildcard, PathSegment::Field("name".into())]
+        ));
+    }
+
+    #[test]
+    fn schema_has_path_wildcard_no_props_no_additional() {
+        let schema = json!({"type": "object"});
+        assert!(!schema_has_path(
+            &schema,
+            &[PathSegment::Wildcard, PathSegment::Field("x".into())]
+        ));
+    }
+
+    // --- validate_pattern_fields edge cases ---
+
+    #[test]
+    fn validate_pattern_fields_any_args() {
+        let schema = json!({"type": "object"});
+        let p = exact("Bash");
+        assert!(validate_pattern_fields(&p, &schema).is_empty());
+    }
+
+    #[test]
+    fn validate_pattern_fields_primary_args() {
+        let schema = json!({"type": "object"});
+        let p = primary("Bash", "npm *");
+        assert!(validate_pattern_fields(&p, &schema).is_empty());
+    }
+
+    // --- op_precision ---
+
+    #[test]
+    fn op_precision_values() {
+        assert_eq!(op_precision(&MatchOp::Exact), 3);
+        assert_eq!(op_precision(&MatchOp::NotExact), 3);
+        assert_eq!(op_precision(&MatchOp::Glob), 2);
+        assert_eq!(op_precision(&MatchOp::NotGlob), 2);
+        assert_eq!(op_precision(&MatchOp::Regex), 1);
+        assert_eq!(op_precision(&MatchOp::NotRegex), 1);
+    }
+
+    // --- Multiple field conditions matching ---
+
+    #[test]
+    fn multiple_field_conditions_all_must_match() {
+        let p = ToolCallPattern {
+            tool: ToolMatcher::Exact("Tool".into()),
+            args: ArgMatcher::Fields(vec![
+                FieldCondition {
+                    path: vec![PathSegment::Field("a".into())],
+                    op: MatchOp::Exact,
+                    value: "1".into(),
+                },
+                FieldCondition {
+                    path: vec![PathSegment::Field("b".into())],
+                    op: MatchOp::Exact,
+                    value: "2".into(),
+                },
+            ]),
+        };
+        assert!(pattern_matches(&p, "Tool", &json!({"a": "1", "b": "2"})).is_match());
+        assert!(!pattern_matches(&p, "Tool", &json!({"a": "1", "b": "3"})).is_match());
+        assert!(!pattern_matches(&p, "Tool", &json!({"a": "1"})).is_match());
+    }
+
+    // --- Named field not_exact and not_regex ---
+
+    #[test]
+    fn named_field_not_exact() {
+        let p = field_rule("Bash", "command", MatchOp::NotExact, "rm");
+        assert!(pattern_matches(&p, "Bash", &json!({"command": "ls"})).is_match());
+        assert!(!pattern_matches(&p, "Bash", &json!({"command": "rm"})).is_match());
+    }
+
+    #[test]
+    fn named_field_not_regex() {
+        let p = field_rule("Bash", "command", MatchOp::NotRegex, "^rm");
+        assert!(pattern_matches(&p, "Bash", &json!({"command": "ls"})).is_match());
+        assert!(!pattern_matches(&p, "Bash", &json!({"command": "rm -rf"})).is_match());
+    }
+
+    // --- infer_primary_value edge cases ---
+
+    #[test]
+    fn infer_primary_from_non_object() {
+        let p = primary("Tool", "*hello*");
+        assert!(pattern_matches(&p, "Tool", &json!("hello world")).is_match());
+    }
+
+    #[test]
+    fn infer_primary_from_multi_key_object() {
+        let p = primary("Tool", "*a*b*");
+        // Multi-key objects get stringified
+        assert!(pattern_matches(&p, "Tool", &json!({"a": 1, "b": 2})).is_match());
+    }
 }

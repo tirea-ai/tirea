@@ -487,6 +487,153 @@ Body
     }
 
     #[test]
+    fn parse_skill_md_unterminated_frontmatter() {
+        let input = "---\nname: good-skill\ndescription: ok\n";
+        let err = parse_skill_md(input).unwrap_err();
+        assert!(matches!(err, SkillParseError::UnterminatedFrontmatter));
+    }
+
+    #[test]
+    fn parse_skill_md_rejects_name_starting_with_dash() {
+        let input = "---\nname: -bad\ndescription: ok\n---\nBody\n";
+        let err = parse_skill_md(input).unwrap_err().to_string();
+        assert!(err.contains("must not start with '-'"));
+    }
+
+    #[test]
+    fn parse_skill_md_rejects_name_ending_with_dash() {
+        let input = "---\nname: bad-\ndescription: ok\n---\nBody\n";
+        let err = parse_skill_md(input).unwrap_err().to_string();
+        assert!(err.contains("must not end with '-'"));
+    }
+
+    #[test]
+    fn parse_skill_md_rejects_name_with_consecutive_dashes() {
+        let input = "---\nname: bad--name\ndescription: ok\n---\nBody\n";
+        let err = parse_skill_md(input).unwrap_err().to_string();
+        assert!(err.contains("consecutive '-'"));
+    }
+
+    #[test]
+    fn parse_skill_md_rejects_overlong_name() {
+        let long_name: String = "a".repeat(65);
+        let input = format!("---\nname: {}\ndescription: ok\n---\nBody\n", long_name);
+        let err = parse_skill_md(&input).unwrap_err().to_string();
+        assert!(err.contains("64 characters"));
+    }
+
+    #[test]
+    fn parse_skill_md_rejects_empty_name() {
+        let input = "---\nname: \"\"\ndescription: ok\n---\nBody\n";
+        let err = parse_skill_md(input).unwrap_err().to_string();
+        assert!(err.contains("name must be non-empty"));
+    }
+
+    #[test]
+    fn parse_skill_md_rejects_overlong_compatibility() {
+        let long_compat: String = "a".repeat(501);
+        let input = format!(
+            "---\nname: good-skill\ndescription: ok\ncompatibility: \"{}\"\n---\nBody\n",
+            long_compat
+        );
+        let err = parse_skill_md(&input).unwrap_err().to_string();
+        assert!(err.contains("compatibility must be <= 500"));
+    }
+
+    #[test]
+    fn parse_skill_md_accepts_valid_compatibility() {
+        let input = "---\nname: good-skill\ndescription: ok\ncompatibility: claude\n---\nBody\n";
+        let doc = parse_skill_md(input).unwrap();
+        assert_eq!(doc.frontmatter.compatibility.as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn parse_skill_md_accepts_license() {
+        let input = "---\nname: good-skill\ndescription: ok\nlicense: MIT\n---\nBody\n";
+        let doc = parse_skill_md(input).unwrap();
+        assert_eq!(doc.frontmatter.license.as_deref(), Some("MIT"));
+    }
+
+    #[test]
+    fn parse_allowed_tools_empty_string() {
+        let result = parse_allowed_tools("").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_allowed_tools_whitespace_only() {
+        let result = parse_allowed_tools("   ").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_allowed_tools_unmatched_close_paren() {
+        let err = parse_allowed_tools("tool)").unwrap_err();
+        assert!(err.to_string().contains("unmatched ')'"));
+    }
+
+    #[test]
+    fn parse_allowed_tools_unterminated_quote() {
+        let err = parse_allowed_tools(r#"Bash("unclosed)"#).unwrap_err();
+        // paren inside quote doesn't count, so quote is unterminated
+        assert!(err.to_string().contains("unterminated quote"));
+    }
+
+    #[test]
+    fn parse_allowed_tools_unbalanced_parens() {
+        let err = parse_allowed_tools("Bash(git status").unwrap_err();
+        assert!(err.to_string().contains("unbalanced parentheses"));
+    }
+
+    #[test]
+    fn parse_allowed_tool_token_rejects_empty_tool_id() {
+        let err = parse_allowed_tool_token("(scope)".to_string()).unwrap_err();
+        assert!(err.to_string().contains("invalid allowed-tools token"));
+    }
+
+    #[test]
+    fn parse_allowed_tool_token_rejects_whitespace_in_id() {
+        let err = parse_allowed_tool_token("ba sh(scope)".to_string());
+        // This actually gets tokenized as two tokens by parse_allowed_tools,
+        // but parse_allowed_tool_token on the raw string checks for whitespace in tool_id.
+        // "ba sh(scope)" has whitespace but also unbalanced parens in the id portion.
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn parse_allowed_tool_token_rejects_unclosed_scope() {
+        let err = parse_allowed_tool_token("Bash(git".to_string()).unwrap_err();
+        assert!(err.to_string().contains("invalid allowed-tools token"));
+    }
+
+    #[test]
+    fn parse_allowed_tools_multiple_tokens_with_nested_parens() {
+        let result = parse_allowed_tools("Read Edit(path(nested))").unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].tool_id, "Read");
+        assert_eq!(result[1].tool_id, "Edit");
+        assert_eq!(result[1].scope.as_deref(), Some("path(nested)"));
+    }
+
+    #[test]
+    fn parse_allowed_tools_escaped_char_in_quote() {
+        let result = parse_allowed_tools(r#"Bash(command: "git \"status\"")"#).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].tool_id, "Bash");
+    }
+
+    #[test]
+    fn skill_parse_error_display() {
+        let err = SkillParseError::MissingFrontmatter;
+        assert_eq!(
+            err.to_string(),
+            "missing YAML frontmatter (expected leading '---' fence)"
+        );
+        let err = SkillParseError::UnterminatedFrontmatter;
+        assert!(err.to_string().contains("unterminated"));
+    }
+
+    #[test]
     fn parse_skill_md_rejects_unbalanced_allowed_tools_parentheses() {
         let input = "---\nname: good-skill\ndescription: ok\nallowed-tools: read_file Bash(git-status\n---\nBody\n";
         let err = parse_skill_md(input).unwrap_err().to_string();

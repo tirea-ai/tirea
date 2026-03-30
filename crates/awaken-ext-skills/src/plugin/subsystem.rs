@@ -35,3 +35,39 @@ impl SkillSubsystem {
         ActiveSkillInstructionsPlugin::new(self.registry.clone())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::registry::InMemorySkillRegistry;
+
+    fn empty_registry() -> Arc<dyn crate::registry::SkillRegistry> {
+        Arc::new(InMemorySkillRegistry::new())
+    }
+
+    #[test]
+    fn subsystem_new_and_registry_accessor() {
+        let reg = empty_registry();
+        let sub = SkillSubsystem::new(reg.clone());
+        assert_eq!(sub.registry().len(), 0);
+    }
+
+    #[test]
+    fn subsystem_discovery_plugin_returns_plugin() {
+        let sub = SkillSubsystem::new(empty_registry());
+        let _plugin = sub.discovery_plugin();
+    }
+
+    #[test]
+    fn subsystem_active_instructions_plugin_returns_plugin() {
+        let sub = SkillSubsystem::new(empty_registry());
+        let _plugin = sub.active_instructions_plugin();
+    }
+
+    #[test]
+    fn subsystem_debug_format() {
+        let sub = SkillSubsystem::new(empty_registry());
+        let debug = format!("{:?}", sub);
+        assert!(debug.contains("SkillSubsystem"));
+    }
+}

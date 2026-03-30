@@ -1251,4 +1251,352 @@ mod tests {
         };
         assert_eq!(tool_result_error_text(&result), "Unknown error");
     }
+
+    // ── ProgressTokenKey conversion tests ──
+
+    #[test]
+    fn progress_token_key_from_string() {
+        let token = ProgressToken::String("abc".to_string());
+        let key = ProgressTokenKey::from(&token);
+        assert_eq!(key, ProgressTokenKey::String("abc".to_string()));
+    }
+
+    #[test]
+    fn progress_token_key_from_number() {
+        let token = ProgressToken::Number(42);
+        let key = ProgressTokenKey::from(&token);
+        assert_eq!(key, ProgressTokenKey::Number(42));
+    }
+
+    #[test]
+    fn progress_token_key_equality() {
+        assert_eq!(
+            ProgressTokenKey::String("x".to_string()),
+            ProgressTokenKey::String("x".to_string())
+        );
+        assert_ne!(
+            ProgressTokenKey::String("x".to_string()),
+            ProgressTokenKey::Number(0)
+        );
+        assert_eq!(ProgressTokenKey::Number(1), ProgressTokenKey::Number(1));
+        assert_ne!(ProgressTokenKey::Number(1), ProgressTokenKey::Number(2));
+    }
+
+    // ── initialize_params tests ──
+
+    #[test]
+    fn initialize_params_structure() {
+        let params = initialize_params(json!({"sampling": {}}), json!({"key": "val"}));
+        assert_eq!(params["protocolVersion"], json!(MCP_PROTOCOL_VERSION));
+        assert!(params["clientInfo"]["name"].as_str().is_some());
+        assert_eq!(params["capabilities"]["sampling"], json!({}));
+        assert_eq!(params["config"]["key"], json!("val"));
+    }
+
+    #[test]
+    fn initialize_params_empty_capabilities() {
+        let params = initialize_params(json!({}), Value::Null);
+        assert_eq!(params["capabilities"], json!({}));
+        assert_eq!(params["config"], Value::Null);
+    }
+
+    // ── map_response_payload tests ──
+
+    #[test]
+    fn map_response_payload_success() {
+        let payload = JsonRpcPayload::Success {
+            result: json!({"tools": []}),
+        };
+        let result = map_response_payload(payload).unwrap();
+        assert_eq!(result, json!({"tools": []}));
+    }
+
+    #[test]
+    fn map_response_payload_error() {
+        let payload = JsonRpcPayload::Error {
+            error: mcp::JsonRpcError {
+                code: -32600,
+                message: "bad request".to_string(),
+                data: None,
+            },
+        };
+        let result = map_response_payload(payload);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, McpTransportError::ServerError(_)));
+    }
+
+    // ── parse_json_rpc_message tests ──
+
+    #[test]
+    fn parse_json_rpc_message_valid_response() {
+        let val = json!({"jsonrpc": "2.0", "id": 1, "result": {"ok": true}});
+        let msg = parse_json_rpc_message(val).unwrap();
+        assert!(matches!(msg, JsonRpcMessage::Response(_)));
+    }
+
+    #[test]
+    fn parse_json_rpc_message_valid_notification() {
+        let val = json!({"jsonrpc": "2.0", "method": "notifications/progress", "params": {}});
+        let msg = parse_json_rpc_message(val).unwrap();
+        assert!(matches!(msg, JsonRpcMessage::Notification(_)));
+    }
+
+    #[test]
+    fn parse_json_rpc_message_invalid_returns_error() {
+        let val = json!({"not_jsonrpc": true});
+        let result = parse_json_rpc_message(val);
+        assert!(result.is_err());
+    }
+
+    // ── decode_progress_notification tests ──
+
+    #[test]
+    fn decode_progress_notification_non_progress_method() {
+        let notification = JsonRpcNotification::new("notifications/other", Some(json!({})));
+        assert!(decode_progress_notification(notification).is_none());
+    }
+
+    #[test]
+    fn decode_progress_notification_missing_params() {
+        let notification = JsonRpcNotification::new("notifications/progress", None);
+        assert!(decode_progress_notification(notification).is_none());
+    }
+
+    #[test]
+    fn decode_progress_notification_valid_string_token() {
+        let notification = JsonRpcNotification::new(
+            "notifications/progress",
+            Some(json!({
+                "progressToken": "tok-1",
+                "progress": 0.5,
+                "total": 1.0,
+                "message": "halfway"
+            })),
+        );
+        let (key, update) = decode_progress_notification(notification).unwrap();
+        assert_eq!(key, ProgressTokenKey::String("tok-1".to_string()));
+        assert!((update.progress - 0.5).abs() < f64::EPSILON);
+        assert_eq!(update.total, Some(1.0));
+        assert_eq!(update.message.as_deref(), Some("halfway"));
+    }
+
+    #[test]
+    fn decode_progress_notification_valid_number_token() {
+        let notification = JsonRpcNotification::new(
+            "notifications/progress",
+            Some(json!({
+                "progressToken": 99,
+                "progress": 3.0,
+            })),
+        );
+        let (key, update) = decode_progress_notification(notification).unwrap();
+        assert_eq!(key, ProgressTokenKey::Number(99));
+        assert!((update.progress - 3.0).abs() < f64::EPSILON);
+        assert!(update.total.is_none());
+        assert!(update.message.is_none());
+    }
+
+    // ── decode_http_response_payload single response ──
+
+    #[test]
+    fn decode_http_response_single_matching_id() {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "result": {"data": "ok"}
+        });
+        let result = decode_http_response_payload(body, 7, None).unwrap();
+        assert_eq!(result["data"], json!("ok"));
+    }
+
+    #[test]
+    fn decode_http_response_single_mismatched_id() {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "result": {"data": "ok"}
+        });
+        let err = decode_http_response_payload(body, 99, None).unwrap_err();
+        assert!(matches!(err, McpTransportError::ProtocolError(_)));
+    }
+
+    #[test]
+    fn decode_http_response_error_payload() {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {"code": -32600, "message": "Invalid request"}
+        });
+        let err = decode_http_response_payload(body, 1, None).unwrap_err();
+        assert!(matches!(err, McpTransportError::ServerError(_)));
+    }
+
+    // ── plain_text_content edge cases ──
+
+    #[test]
+    fn plain_text_content_empty() {
+        let content: Vec<ToolContent> = vec![];
+        assert_eq!(plain_text_content(&content), Some(String::new()));
+    }
+
+    #[test]
+    fn plain_text_content_single_item() {
+        let content = vec![ToolContent::text("only")];
+        assert_eq!(plain_text_content(&content), Some("only".to_string()));
+    }
+
+    #[test]
+    fn plain_text_content_with_annotations_returns_none() {
+        let content = vec![ToolContent::Text {
+            text: "has annotation".to_string(),
+            annotations: Some(mcp::Annotations {
+                audience: None,
+                priority: Some(1.0),
+                last_modified: None,
+            }),
+            meta: None,
+        }];
+        assert!(plain_text_content(&content).is_none());
+    }
+
+    #[test]
+    fn plain_text_content_with_meta_returns_none() {
+        let content = vec![ToolContent::Text {
+            text: "has meta".to_string(),
+            annotations: None,
+            meta: Some(json!({"key": "val"})),
+        }];
+        assert!(plain_text_content(&content).is_none());
+    }
+
+    // ── call_result_to_tool_data edge cases ──
+
+    #[test]
+    fn call_result_to_data_empty_content() {
+        let result = CallToolResult {
+            content: vec![],
+            structured_content: None,
+            is_error: None,
+        };
+        // Empty content with no structured_content -> empty plain text
+        assert_eq!(call_result_to_tool_data(&result), json!(""));
+    }
+
+    #[test]
+    fn call_result_to_data_multiple_text() {
+        let result = CallToolResult {
+            content: vec![ToolContent::text("a"), ToolContent::text("b")],
+            structured_content: None,
+            is_error: None,
+        };
+        assert_eq!(call_result_to_tool_data(&result), json!("a\nb"));
+    }
+
+    // ── Serde roundtrip tests for prompt/resource types ──
+
+    #[test]
+    fn prompt_definition_serde_roundtrip() {
+        let def = McpPromptDefinition {
+            name: "greet".to_string(),
+            title: Some("Greeting prompt".to_string()),
+            description: Some("Says hello".to_string()),
+            arguments: vec![McpPromptArgument {
+                name: "name".to_string(),
+                description: Some("Who to greet".to_string()),
+                required: true,
+            }],
+        };
+        let json = serde_json::to_string(&def).unwrap();
+        let parsed: McpPromptDefinition = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, def);
+    }
+
+    #[test]
+    fn prompt_definition_minimal_serde() {
+        let def = McpPromptDefinition {
+            name: "min".to_string(),
+            title: None,
+            description: None,
+            arguments: vec![],
+        };
+        let json = serde_json::to_string(&def).unwrap();
+        // Optional fields should be skipped
+        assert!(!json.contains("title"));
+        assert!(!json.contains("description"));
+        let parsed: McpPromptDefinition = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, def);
+    }
+
+    #[test]
+    fn resource_definition_serde_roundtrip() {
+        let def = McpResourceDefinition {
+            uri: "file://test.txt".to_string(),
+            name: "test".to_string(),
+            title: Some("Test file".to_string()),
+            description: Some("A test resource".to_string()),
+            mime_type: Some("text/plain".to_string()),
+            size: Some(1024),
+        };
+        let json = serde_json::to_string(&def).unwrap();
+        let parsed: McpResourceDefinition = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, def);
+    }
+
+    #[test]
+    fn resource_definition_minimal_serde() {
+        let def = McpResourceDefinition {
+            uri: "file://x".to_string(),
+            name: "x".to_string(),
+            title: None,
+            description: None,
+            mime_type: None,
+            size: None,
+        };
+        let json = serde_json::to_string(&def).unwrap();
+        assert!(!json.contains("title"));
+        assert!(!json.contains("mimeType"));
+        let parsed: McpResourceDefinition = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, def);
+    }
+
+    #[test]
+    fn prompt_result_serde_roundtrip() {
+        let result = McpPromptResult {
+            description: Some("Test prompt".to_string()),
+            messages: vec![McpPromptMessage {
+                role: "user".to_string(),
+                content: json!([{"type": "text", "text": "Hello"}]),
+            }],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let parsed: McpPromptResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, result);
+    }
+
+    #[test]
+    fn prompt_argument_required_defaults_to_false() {
+        let json = r#"{"name": "arg1"}"#;
+        let arg: McpPromptArgument = serde_json::from_str(json).unwrap();
+        assert_eq!(arg.name, "arg1");
+        assert!(!arg.required);
+        assert!(arg.description.is_none());
+    }
+
+    // ── tool_result_error_text with non-text content ──
+
+    #[test]
+    fn tool_result_error_text_non_text_content_serialized() {
+        let result = CallToolResult {
+            content: vec![ToolContent::Resource {
+                uri: "file://x".to_string(),
+                mime_type: Some("text/plain".to_string()),
+            }],
+            structured_content: None,
+            is_error: Some(true),
+        };
+        // No text content, no structured_content, but content is non-empty -> serialized
+        let text = tool_result_error_text(&result);
+        assert!(text.contains("file://x"));
+    }
 }

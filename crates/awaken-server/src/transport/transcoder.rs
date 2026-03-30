@@ -128,4 +128,142 @@ mod tests {
         let frames = encode_event_to_sse(&mut encoder, &event);
         assert_eq!(frames.len(), 1);
     }
+
+    // ── Edge case tests ──
+
+    #[test]
+    fn encode_step_end_event_identity() {
+        let mut encoder = Identity::<AgentEvent>::default();
+        let event = AgentEvent::StepEnd;
+        let frames = encode_event_to_sse(&mut encoder, &event);
+        assert_eq!(frames.len(), 1);
+        let frame = String::from_utf8(frames[0].to_vec()).unwrap();
+        assert!(frame.contains("step_end"));
+    }
+
+    #[test]
+    fn encode_multiple_events_sequentially() {
+        let mut encoder = Identity::<AgentEvent>::default();
+        let events = vec![
+            AgentEvent::TextDelta {
+                delta: "first".into(),
+            },
+            AgentEvent::TextDelta {
+                delta: "second".into(),
+            },
+            AgentEvent::StepEnd,
+        ];
+        let mut all_frames = Vec::new();
+        for event in &events {
+            all_frames.extend(encode_event_to_sse(&mut encoder, event));
+        }
+        assert_eq!(all_frames.len(), 3);
+        let first = String::from_utf8(all_frames[0].to_vec()).unwrap();
+        assert!(first.contains("first"));
+        let third = String::from_utf8(all_frames[2].to_vec()).unwrap();
+        assert!(third.contains("step_end"));
+    }
+
+    #[test]
+    fn encode_run_start_event_identity() {
+        let mut encoder = Identity::<AgentEvent>::default();
+        let event = AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: None,
+        };
+        let frames = encode_event_to_sse(&mut encoder, &event);
+        assert_eq!(frames.len(), 1);
+        let frame = String::from_utf8(frames[0].to_vec()).unwrap();
+        assert!(frame.contains("run_start"));
+        assert!(frame.contains("t1"));
+    }
+
+    #[test]
+    fn encode_run_finish_event_identity() {
+        use awaken_contract::contract::lifecycle::TerminationReason;
+        let mut encoder = Identity::<AgentEvent>::default();
+        let event = AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: None,
+            termination: TerminationReason::NaturalEnd,
+        };
+        let frames = encode_event_to_sse(&mut encoder, &event);
+        assert_eq!(frames.len(), 1);
+        let frame = String::from_utf8(frames[0].to_vec()).unwrap();
+        assert!(frame.contains("run_finish"));
+    }
+
+    #[test]
+    fn encode_ag_ui_prologue_produces_frames() {
+        use crate::protocols::ag_ui::encoder::AgUiEncoder;
+        let mut encoder = AgUiEncoder::new();
+        encoder.on_agent_event(&AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: None,
+        });
+        let frames = encode_prologue_to_sse(&mut encoder);
+        // AG-UI prologue may produce frames depending on state
+        // At minimum, verify no panic and correct format
+        for frame in &frames {
+            let s = String::from_utf8(frame.to_vec()).unwrap();
+            assert!(s.starts_with("data: "));
+            assert!(s.ends_with("\n\n"));
+        }
+    }
+
+    #[test]
+    fn encode_ai_sdk_prologue_and_epilogue() {
+        use crate::protocols::ai_sdk_v6::encoder::AiSdkEncoder;
+        let mut encoder = AiSdkEncoder::new();
+        let prologue = encode_prologue_to_sse(&mut encoder);
+        // AI SDK may have prologue items
+        for frame in &prologue {
+            let s = String::from_utf8(frame.to_vec()).unwrap();
+            assert!(s.starts_with("data: "));
+        }
+
+        // Feed an event so epilogue has context
+        let _ = encode_event_to_sse(
+            &mut encoder,
+            &AgentEvent::TextDelta {
+                delta: "test".into(),
+            },
+        );
+        let epilogue = encode_epilogue_to_sse(&mut encoder);
+        for frame in &epilogue {
+            let s = String::from_utf8(frame.to_vec()).unwrap();
+            assert!(s.starts_with("data: "));
+        }
+    }
+
+    #[test]
+    fn sse_frame_format_consistency() {
+        // All SSE data frames must follow the pattern: "data: {json}\n\n"
+        let mut encoder = Identity::<AgentEvent>::default();
+        let events = vec![
+            AgentEvent::StepStart {
+                message_id: "m1".into(),
+            },
+            AgentEvent::TextDelta { delta: "x".into() },
+            AgentEvent::StepEnd,
+        ];
+        for event in &events {
+            let frames = encode_event_to_sse(&mut encoder, event);
+            for frame in frames {
+                let s = String::from_utf8(frame.to_vec()).unwrap();
+                assert!(s.starts_with("data: "), "frame must start with 'data: '");
+                assert!(s.ends_with("\n\n"), "frame must end with double newline");
+                // The middle part must be valid JSON
+                let json_part = &s["data: ".len()..s.len() - 2];
+                assert!(
+                    serde_json::from_str::<serde_json::Value>(json_part).is_ok(),
+                    "frame data must be valid JSON, got: {}",
+                    json_part
+                );
+            }
+        }
+    }
 }

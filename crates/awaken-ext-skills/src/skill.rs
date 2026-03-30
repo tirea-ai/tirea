@@ -229,6 +229,117 @@ mod tests {
         assert!(map.contains_key("beta"));
     }
 
+    #[test]
+    fn material_key_format() {
+        assert_eq!(
+            material_key("my-skill", "references/guide.md"),
+            "my-skill:references/guide.md"
+        );
+        assert_eq!(material_key("", "path"), ":path");
+    }
+
+    #[test]
+    fn skill_meta_serde_roundtrip() {
+        let meta = SkillMeta {
+            id: "test".into(),
+            name: "test".into(),
+            description: "A test".into(),
+            allowed_tools: vec!["Bash".into(), "Read".into()],
+        };
+        let json = serde_json::to_value(&meta).unwrap();
+        let parsed: SkillMeta = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, meta);
+    }
+
+    #[test]
+    fn skill_activation_serde_roundtrip() {
+        let activation = SkillActivation {
+            instructions: "Do something.".into(),
+        };
+        let json = serde_json::to_value(&activation).unwrap();
+        let parsed: SkillActivation = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, activation);
+    }
+
+    #[test]
+    fn skill_resource_kind_as_str() {
+        assert_eq!(SkillResourceKind::Reference.as_str(), "reference");
+        assert_eq!(SkillResourceKind::Asset.as_str(), "asset");
+    }
+
+    #[test]
+    fn skill_resource_kind_serde_roundtrip() {
+        let kind = SkillResourceKind::Asset;
+        let json = serde_json::to_value(kind).unwrap();
+        assert_eq!(json.as_str(), Some("asset"));
+        let parsed: SkillResourceKind = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, kind);
+    }
+
+    #[test]
+    fn skill_resource_reference_variant_serde() {
+        let r = SkillResource::Reference(LoadedReference {
+            skill: "s1".into(),
+            path: "references/a.md".into(),
+            sha256: "abc".into(),
+            truncated: false,
+            content: "hello".into(),
+            bytes: 5,
+        });
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(json["kind"], "reference");
+        let parsed: SkillResource = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, r);
+    }
+
+    #[test]
+    fn skill_resource_asset_variant_serde() {
+        let a = SkillResource::Asset(LoadedAsset {
+            skill: "s1".into(),
+            path: "assets/img.png".into(),
+            sha256: "def".into(),
+            truncated: false,
+            bytes: 100,
+            media_type: Some("image/png".into()),
+            encoding: "base64".into(),
+            content: "aGVsbG8=".into(),
+        });
+        let json = serde_json::to_value(&a).unwrap();
+        assert_eq!(json["kind"], "asset");
+        let parsed: SkillResource = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, a);
+    }
+
+    #[test]
+    fn loaded_reference_fields() {
+        let r = LoadedReference {
+            skill: "s".into(),
+            path: "p".into(),
+            sha256: "h".into(),
+            truncated: true,
+            content: "c".into(),
+            bytes: 1,
+        };
+        assert!(r.truncated);
+        assert_eq!(r.bytes, 1);
+    }
+
+    #[test]
+    fn script_result_fields() {
+        let s = ScriptResult {
+            skill: "s".into(),
+            script: "scripts/run.sh".into(),
+            sha256: "abc".into(),
+            truncated_stdout: false,
+            truncated_stderr: true,
+            exit_code: 1,
+            stdout: "out".into(),
+            stderr: "err".into(),
+        };
+        assert_eq!(s.exit_code, 1);
+        assert!(s.truncated_stderr);
+    }
+
     #[tokio::test]
     async fn default_skill_activation_uses_skill_md_body() {
         #[derive(Debug)]

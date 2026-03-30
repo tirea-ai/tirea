@@ -509,4 +509,203 @@ mod tests {
     fn error_unmatched_paren() {
         assert!(parse_pattern("Bash(npm *").is_err());
     }
+
+    #[test]
+    fn parse_regex_tool() {
+        let p = parse_pattern(r"/mcp__(github|gitlab)__.*/").unwrap();
+        assert!(matches!(p.tool, ToolMatcher::Regex(_)));
+        assert_eq!(p.args, ArgMatcher::Any);
+    }
+
+    #[test]
+    fn parse_regex_tool_with_escape() {
+        let p = parse_pattern(r"/foo\/bar/").unwrap();
+        if let ToolMatcher::Regex(re) = &p.tool {
+            assert_eq!(re.as_str(), r"foo\/bar");
+        } else {
+            panic!("expected Regex");
+        }
+    }
+
+    #[test]
+    fn error_empty_regex() {
+        assert!(parse_pattern("//").is_err());
+    }
+
+    #[test]
+    fn error_invalid_regex() {
+        assert!(parse_pattern("/[invalid/").is_err());
+    }
+
+    #[test]
+    fn parse_explicit_any_args() {
+        let p = parse_pattern("Bash(*)").unwrap();
+        assert_eq!(p.args, ArgMatcher::Any);
+    }
+
+    #[test]
+    fn parse_named_field_exact() {
+        let p = parse_pattern(r#"Bash(command = "ls")"#).unwrap();
+        if let ArgMatcher::Fields(conditions) = &p.args {
+            assert_eq!(conditions[0].op, MatchOp::Exact);
+            assert_eq!(conditions[0].value, "ls");
+        } else {
+            panic!("expected Fields");
+        }
+    }
+
+    #[test]
+    fn parse_named_field_regex() {
+        let p = parse_pattern(r#"Bash(command =~ "(?i)rm")"#).unwrap();
+        if let ArgMatcher::Fields(conditions) = &p.args {
+            assert_eq!(conditions[0].op, MatchOp::Regex);
+        } else {
+            panic!("expected Fields");
+        }
+    }
+
+    #[test]
+    fn parse_negated_operators() {
+        let p1 = parse_pattern(r#"T(f !~ "pat")"#).unwrap();
+        let p2 = parse_pattern(r#"T(f != "val")"#).unwrap();
+        let p3 = parse_pattern(r#"T(f !=~ "re")"#).unwrap();
+        if let ArgMatcher::Fields(c) = &p1.args {
+            assert_eq!(c[0].op, MatchOp::NotGlob);
+        }
+        if let ArgMatcher::Fields(c) = &p2.args {
+            assert_eq!(c[0].op, MatchOp::NotExact);
+        }
+        if let ArgMatcher::Fields(c) = &p3.args {
+            assert_eq!(c[0].op, MatchOp::NotRegex);
+        }
+    }
+
+    #[test]
+    fn parse_multi_field_conditions() {
+        let p = parse_pattern(r#"Tool(f1 ~ "a", f2 = "b")"#).unwrap();
+        if let ArgMatcher::Fields(conditions) = &p.args {
+            assert_eq!(conditions.len(), 2);
+            assert_eq!(conditions[0].op, MatchOp::Glob);
+            assert_eq!(conditions[1].op, MatchOp::Exact);
+        } else {
+            panic!("expected Fields");
+        }
+    }
+
+    #[test]
+    fn parse_nested_field_path() {
+        let p = parse_pattern(r#"Tool(a.b[*].c ~ "pat")"#).unwrap();
+        if let ArgMatcher::Fields(conditions) = &p.args {
+            let path = &conditions[0].path;
+            assert_eq!(path.len(), 4);
+            assert_eq!(path[0], PathSegment::Field("a".into()));
+            assert_eq!(path[1], PathSegment::Field("b".into()));
+            assert_eq!(path[2], PathSegment::AnyIndex);
+            assert_eq!(path[3], PathSegment::Field("c".into()));
+        } else {
+            panic!("expected Fields");
+        }
+    }
+
+    #[test]
+    fn parse_specific_index_path() {
+        let p = parse_pattern(r#"Tool(items[0] = "val")"#).unwrap();
+        if let ArgMatcher::Fields(conditions) = &p.args {
+            assert_eq!(conditions[0].path[1], PathSegment::Index(0));
+        } else {
+            panic!("expected Fields");
+        }
+    }
+
+    #[test]
+    fn parse_wildcard_path_segment() {
+        let p = parse_pattern(r#"Tool(*.id = "val")"#).unwrap();
+        if let ArgMatcher::Fields(conditions) = &p.args {
+            assert_eq!(conditions[0].path[0], PathSegment::Wildcard);
+            assert_eq!(conditions[0].path[1], PathSegment::Field("id".into()));
+        } else {
+            panic!("expected Fields");
+        }
+    }
+
+    #[test]
+    fn parse_escaped_quote_in_value() {
+        let p = parse_pattern(r#"T(f = "say \"hello\"")"#).unwrap();
+        if let ArgMatcher::Fields(c) = &p.args {
+            assert_eq!(c[0].value, r#"say "hello""#);
+        } else {
+            panic!("expected Fields");
+        }
+    }
+
+    #[test]
+    fn parse_escaped_backslash_in_value() {
+        let p = parse_pattern(r#"T(f = "path\\file")"#).unwrap();
+        if let ArgMatcher::Fields(c) = &p.args {
+            assert_eq!(c[0].value, r"path\file");
+        } else {
+            panic!("expected Fields");
+        }
+    }
+
+    #[test]
+    fn parse_non_special_escape_in_value() {
+        let p = parse_pattern(r#"T(f = "hello\nworld")"#).unwrap();
+        if let ArgMatcher::Fields(c) = &p.args {
+            // Non-special escapes preserve the backslash
+            assert_eq!(c[0].value, "hello\\nworld");
+        } else {
+            panic!("expected Fields");
+        }
+    }
+
+    #[test]
+    fn error_trailing_chars() {
+        assert!(parse_pattern("Bash extra").is_err());
+    }
+
+    #[test]
+    fn error_unterminated_string() {
+        assert!(parse_pattern(r#"T(f = "unterminated)"#).is_err());
+    }
+
+    #[test]
+    fn error_unterminated_escape() {
+        assert!(parse_pattern(r#"T(f = "end\"#).is_err());
+    }
+
+    #[test]
+    fn error_missing_quote() {
+        assert!(parse_pattern(r#"T(f = noquote)"#).is_err());
+    }
+
+    #[test]
+    fn error_bad_operator() {
+        // f = needs a quoted value; unquoted triggers an error
+        assert!(parse_pattern(r#"T(f = unquoted)"#).is_err());
+    }
+
+    #[test]
+    fn parse_pattern_error_display() {
+        let err = parse_pattern("").unwrap_err();
+        assert!(err.to_string().contains("parse error at"));
+    }
+
+    #[test]
+    fn serde_deserialize_invalid() {
+        let result: Result<ToolCallPattern, _> = serde_json::from_str(r#""""#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_glob_tool_question_mark() {
+        let p = parse_pattern("Bas?").unwrap();
+        assert_eq!(p.tool, ToolMatcher::Glob("Bas?".into()));
+    }
+
+    #[test]
+    fn parse_glob_tool_bracket() {
+        let p = parse_pattern("Bas[hH]").unwrap();
+        assert_eq!(p.tool, ToolMatcher::Glob("Bas[hH]".into()));
+    }
 }

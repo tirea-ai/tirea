@@ -273,6 +273,173 @@ async fn active_instructions_skips_skill_with_empty_body() {
     );
 }
 
+// ── Plugin descriptor and registration tests ────────────────────────
+
+#[test]
+fn discovery_plugin_descriptor_has_correct_name() {
+    use awaken_runtime::plugins::Plugin;
+
+    let (_td, skills) = make_skills();
+    let plugin = SkillDiscoveryPlugin::new(make_registry(skills));
+    assert_eq!(plugin.descriptor().name, crate::SKILLS_DISCOVERY_PLUGIN_ID);
+}
+
+#[test]
+fn discovery_plugin_register_succeeds() {
+    use awaken_runtime::plugins::{Plugin, PluginRegistrar};
+
+    let (_td, skills) = make_skills();
+    let plugin = SkillDiscoveryPlugin::new(make_registry(skills));
+    let mut registrar = PluginRegistrar::new_for_test();
+    plugin.register(&mut registrar).unwrap();
+
+    // Should register three tools
+    let tool_ids = registrar.tool_ids_for_test();
+    assert!(tool_ids.contains(&crate::SKILL_ACTIVATE_TOOL_ID.to_string()));
+    assert!(tool_ids.contains(&crate::SKILL_LOAD_RESOURCE_TOOL_ID.to_string()));
+    assert!(tool_ids.contains(&crate::SKILL_SCRIPT_TOOL_ID.to_string()));
+}
+
+#[test]
+fn active_instructions_plugin_descriptor_has_correct_name() {
+    use awaken_runtime::plugins::Plugin;
+
+    let (_td, skills) = make_skills();
+    let plugin = ActiveSkillInstructionsPlugin::new(make_registry(skills));
+    assert_eq!(
+        plugin.descriptor().name,
+        crate::SKILLS_ACTIVE_INSTRUCTIONS_PLUGIN_ID
+    );
+}
+
+#[test]
+fn active_instructions_plugin_register_succeeds() {
+    use awaken_runtime::plugins::{Plugin, PluginRegistrar};
+
+    let (_td, skills) = make_skills();
+    let plugin = ActiveSkillInstructionsPlugin::new(make_registry(skills));
+    let mut registrar = PluginRegistrar::new_for_test();
+    // SkillState is not registered here (handled by SkillDiscoveryPlugin)
+    // so register should just add the phase hook
+    plugin.register(&mut registrar).unwrap();
+}
+
+// ── Discovery plugin render_catalog edge cases ──────────────────────
+
+#[test]
+fn render_catalog_skill_name_differs_from_id_prepends_name_to_description() {
+    // When name != id and both description and name are non-empty,
+    // the catalog should show "name: description"
+    use crate::error::SkillError;
+    use crate::skill::{ScriptResult, Skill, SkillMeta, SkillResource, SkillResourceKind};
+    use async_trait::async_trait;
+
+    #[derive(Debug)]
+    struct NamedSkill(SkillMeta);
+
+    #[async_trait]
+    impl Skill for NamedSkill {
+        fn meta(&self) -> &SkillMeta {
+            &self.0
+        }
+        async fn read_instructions(&self) -> Result<String, SkillError> {
+            Ok(String::new())
+        }
+        async fn load_resource(
+            &self,
+            _: SkillResourceKind,
+            _: &str,
+        ) -> Result<SkillResource, SkillError> {
+            Err(SkillError::Unsupported("mock".into()))
+        }
+        async fn run_script(&self, _: &str, _: &[String]) -> Result<ScriptResult, SkillError> {
+            Err(SkillError::Unsupported("mock".into()))
+        }
+    }
+
+    let skill: Arc<dyn crate::skill::Skill> = Arc::new(NamedSkill(SkillMeta {
+        id: "my-skill".into(),
+        name: "My Fancy Skill".into(),
+        description: "does stuff".into(),
+        allowed_tools: vec![],
+    }));
+    let reg = make_registry(vec![skill]);
+    let plugin = SkillDiscoveryPlugin::new(reg);
+    let active = HashSet::new();
+    let s = plugin.render_catalog(&active);
+    assert!(s.contains("My Fancy Skill: does stuff"));
+}
+
+#[test]
+fn render_catalog_skill_name_used_as_description_when_description_empty() {
+    use crate::error::SkillError;
+    use crate::skill::{ScriptResult, Skill, SkillMeta, SkillResource, SkillResourceKind};
+    use async_trait::async_trait;
+
+    #[derive(Debug)]
+    struct NamedSkill(SkillMeta);
+
+    #[async_trait]
+    impl Skill for NamedSkill {
+        fn meta(&self) -> &SkillMeta {
+            &self.0
+        }
+        async fn read_instructions(&self) -> Result<String, SkillError> {
+            Ok(String::new())
+        }
+        async fn load_resource(
+            &self,
+            _: SkillResourceKind,
+            _: &str,
+        ) -> Result<SkillResource, SkillError> {
+            Err(SkillError::Unsupported("mock".into()))
+        }
+        async fn run_script(&self, _: &str, _: &[String]) -> Result<ScriptResult, SkillError> {
+            Err(SkillError::Unsupported("mock".into()))
+        }
+    }
+
+    let skill: Arc<dyn crate::skill::Skill> = Arc::new(NamedSkill(SkillMeta {
+        id: "my-skill".into(),
+        name: "My Skill".into(),
+        description: "  ".into(), // whitespace-only
+        allowed_tools: vec![],
+    }));
+    let reg = make_registry(vec![skill]);
+    let plugin = SkillDiscoveryPlugin::new(reg);
+    let active = HashSet::new();
+    let s = plugin.render_catalog(&active);
+    // Should use name as fallback description
+    assert!(s.contains("<description>My Skill</description>"));
+}
+
+#[test]
+fn render_catalog_with_limits_enforces_min_values() {
+    let (_td, skills) = make_skills();
+    // with_limits should clamp to minimum values: max_entries >= 1, max_chars >= 256
+    let p = SkillDiscoveryPlugin::new(make_registry(skills)).with_limits(0, 0);
+    let active = HashSet::new();
+    let s = p.render_catalog(&active);
+    // Should still show at least 1 entry (clamped to min 1)
+    assert!(s.contains("<skill>"));
+}
+
+#[test]
+fn discovery_plugin_debug_format() {
+    let p = SkillDiscoveryPlugin::new(make_registry(vec![]));
+    let debug = format!("{:?}", p);
+    assert!(debug.contains("SkillDiscoveryPlugin"));
+    assert!(debug.contains("max_entries"));
+    assert!(debug.contains("max_chars"));
+}
+
+#[test]
+fn active_instructions_plugin_debug_format() {
+    let p = ActiveSkillInstructionsPlugin::new(make_registry(vec![]));
+    let debug = format!("{:?}", p);
+    assert!(debug.contains("ActiveSkillInstructionsPlugin"));
+}
+
 #[tokio::test]
 async fn active_instructions_mixed_valid_and_unknown() {
     let td = TempDir::new().unwrap();

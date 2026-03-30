@@ -397,6 +397,109 @@ More instructions.
         assert_eq!(skill.meta.id, cloned.meta.id);
     }
 
+    #[test]
+    fn new_with_valid_base64_asset() {
+        let data = EmbeddedSkillData {
+            skill_md: VALID_SKILL_MD,
+            references: &[],
+            assets: &[("assets/image.png", "aGVsbG8=", Some("image/png"))],
+        };
+        let skill = EmbeddedSkill::new(&data).unwrap();
+        assert!(skill.assets.contains_key("assets/image.png"));
+        let asset = &skill.assets["assets/image.png"];
+        assert_eq!(asset.skill, "test-skill");
+        assert_eq!(asset.media_type.as_deref(), Some("image/png"));
+        assert_eq!(asset.encoding, "base64");
+        assert_eq!(asset.content, "aGVsbG8=");
+        assert_eq!(asset.bytes, 5); // "hello" = 5 bytes
+        assert!(!asset.truncated);
+        assert!(!asset.sha256.is_empty());
+    }
+
+    #[test]
+    fn new_rejects_invalid_base64_asset() {
+        let data = EmbeddedSkillData {
+            skill_md: VALID_SKILL_MD,
+            references: &[],
+            assets: &[("assets/bad.png", "not-valid-base64!!!", Some("image/png"))],
+        };
+        let err = EmbeddedSkill::new(&data).unwrap_err();
+        assert!(matches!(err, SkillError::InvalidSkillMd(_)));
+        assert!(err.to_string().contains("invalid base64"));
+    }
+
+    #[test]
+    fn new_with_asset_no_media_type() {
+        let data = EmbeddedSkillData {
+            skill_md: VALID_SKILL_MD,
+            references: &[],
+            assets: &[("assets/data.bin", "AQID", None)],
+        };
+        let skill = EmbeddedSkill::new(&data).unwrap();
+        let asset = &skill.assets["assets/data.bin"];
+        assert!(asset.media_type.is_none());
+    }
+
+    #[tokio::test]
+    async fn load_asset_returns_content() {
+        let data = EmbeddedSkillData {
+            skill_md: VALID_SKILL_MD,
+            references: &[],
+            assets: &[("assets/image.png", "aGVsbG8=", Some("image/png"))],
+        };
+        let skill = EmbeddedSkill::new(&data).unwrap();
+
+        let r = skill
+            .load_resource(SkillResourceKind::Asset, "assets/image.png")
+            .await
+            .unwrap();
+        let SkillResource::Asset(a) = r else {
+            panic!("expected asset resource");
+        };
+        assert_eq!(a.skill, "test-skill");
+        assert_eq!(a.content, "aGVsbG8=");
+        assert_eq!(a.media_type.as_deref(), Some("image/png"));
+    }
+
+    #[tokio::test]
+    async fn load_asset_unknown_returns_error() {
+        let data = EmbeddedSkillData {
+            skill_md: VALID_SKILL_MD,
+            references: &[],
+            assets: &[],
+        };
+        let skill = EmbeddedSkill::new(&data).unwrap();
+
+        let err = skill
+            .load_resource(SkillResourceKind::Asset, "assets/missing.png")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SkillError::Unsupported(_)));
+        assert!(err.to_string().contains("asset not available"));
+    }
+
+    #[test]
+    fn asset_sha256_is_deterministic() {
+        let data = EmbeddedSkillData {
+            skill_md: VALID_SKILL_MD,
+            references: &[],
+            assets: &[("assets/img.png", "aGVsbG8=", Some("image/png"))],
+        };
+        let s1 = EmbeddedSkill::new(&data).unwrap();
+        let s2 = EmbeddedSkill::new(&data).unwrap();
+        let h1 = &s1.assets["assets/img.png"].sha256;
+        let h2 = &s2.assets["assets/img.png"].sha256;
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 64);
+    }
+
+    #[test]
+    fn from_static_slice_empty_succeeds() {
+        let data: &[EmbeddedSkillData] = &[];
+        let skills = EmbeddedSkill::from_static_slice(data).unwrap();
+        assert!(skills.is_empty());
+    }
+
     #[tokio::test]
     async fn load_reference_for_unknown_path_returns_error() {
         let data = EmbeddedSkillData {

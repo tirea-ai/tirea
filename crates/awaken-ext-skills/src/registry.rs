@@ -1378,4 +1378,218 @@ mod tests {
         assert!(validate_dir_name("a/b").is_err());
         assert!(validate_dir_name(&"a".repeat(65)).is_err());
     }
+
+    // ── CompositeSkillRegistry periodic_refresh delegation ──
+
+    #[test]
+    fn composite_registry_periodic_refresh_running_returns_false_for_inmemory() {
+        let reg = InMemorySkillRegistry::new();
+        let composite =
+            CompositeSkillRegistry::try_new(vec![Arc::new(reg) as Arc<dyn SkillRegistry>]).unwrap();
+        assert!(!composite.periodic_refresh_running());
+    }
+
+    #[test]
+    fn composite_registry_stop_periodic_refresh_returns_false_when_nothing_running() {
+        let reg = InMemorySkillRegistry::new();
+        let composite =
+            CompositeSkillRegistry::try_new(vec![Arc::new(reg) as Arc<dyn SkillRegistry>]).unwrap();
+        assert!(!composite.stop_periodic_refresh());
+    }
+
+    #[test]
+    fn composite_registry_start_periodic_refresh_no_op_for_inmemory() {
+        let reg = InMemorySkillRegistry::new();
+        let composite =
+            CompositeSkillRegistry::try_new(vec![Arc::new(reg) as Arc<dyn SkillRegistry>]).unwrap();
+        // InMemorySkillRegistry start_periodic_refresh returns Ok(())
+        composite
+            .start_periodic_refresh(Duration::from_secs(10))
+            .unwrap();
+    }
+
+    #[test]
+    fn composite_registry_empty_registries() {
+        let composite =
+            CompositeSkillRegistry::try_new(Vec::<Arc<dyn SkillRegistry>>::new()).unwrap();
+        assert!(composite.is_empty());
+        assert_eq!(composite.len(), 0);
+        assert!(composite.ids().is_empty());
+    }
+
+    #[test]
+    fn composite_registry_debug_format() {
+        let reg = InMemorySkillRegistry::new();
+        let composite =
+            CompositeSkillRegistry::try_new(vec![Arc::new(reg) as Arc<dyn SkillRegistry>]).unwrap();
+        let debug = format!("{:?}", composite);
+        assert!(debug.contains("CompositeSkillRegistry"));
+        assert!(debug.contains("registries"));
+    }
+
+    // ── FsSkillRegistryManager debug ──
+
+    #[test]
+    fn fs_registry_manager_debug_format() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("skills");
+        fs::create_dir_all(&root).unwrap();
+
+        let manager = FsSkillRegistryManager::discover_roots(vec![root]).unwrap();
+        let debug = format!("{:?}", manager);
+        assert!(debug.contains("FsSkillRegistryManager"));
+        assert!(debug.contains("version"));
+    }
+
+    // ── FsSkillRegistryManager SkillRegistry trait impl ──
+
+    #[test]
+    fn fs_registry_manager_get_returns_skill() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("skills");
+        fs::create_dir_all(root.join("s1")).unwrap();
+        fs::write(
+            root.join("s1").join("SKILL.md"),
+            "---\nname: s1\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
+
+        let manager = FsSkillRegistryManager::discover_roots(vec![root]).unwrap();
+        assert!(manager.get("s1").is_some());
+        assert!(manager.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn fs_registry_manager_ids_sorted() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("skills");
+        for name in &["z-skill", "a-skill", "m-skill"] {
+            fs::create_dir_all(root.join(name)).unwrap();
+            fs::write(
+                root.join(name).join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: ok\n---\nBody\n"),
+            )
+            .unwrap();
+        }
+
+        let manager = FsSkillRegistryManager::discover_roots(vec![root]).unwrap();
+        let ids = manager.ids();
+        assert_eq!(ids, vec!["a-skill", "m-skill", "z-skill"]);
+    }
+
+    #[test]
+    fn fs_registry_manager_snapshot_returns_all_skills() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("skills");
+        fs::create_dir_all(root.join("s1")).unwrap();
+        fs::create_dir_all(root.join("s2")).unwrap();
+        fs::write(
+            root.join("s1").join("SKILL.md"),
+            "---\nname: s1\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("s2").join("SKILL.md"),
+            "---\nname: s2\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
+
+        let manager = FsSkillRegistryManager::discover_roots(vec![root]).unwrap();
+        let snap = manager.snapshot();
+        assert_eq!(snap.len(), 2);
+        assert!(snap.contains_key("s1"));
+        assert!(snap.contains_key("s2"));
+    }
+
+    #[test]
+    fn fs_registry_manager_warnings_reported() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("skills");
+        fs::create_dir_all(root.join("BadName")).unwrap();
+        fs::write(
+            root.join("BadName").join("SKILL.md"),
+            "---\nname: badname\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
+
+        let manager = FsSkillRegistryManager::discover_roots(vec![root]).unwrap();
+        assert!(!manager.warnings().is_empty());
+        assert!(
+            manager
+                .warnings()
+                .iter()
+                .any(|w| w.reason.contains("directory name"))
+        );
+    }
+
+    // ── InMemorySkillRegistry default trait ──
+
+    #[test]
+    fn in_memory_registry_default_is_empty() {
+        let reg = InMemorySkillRegistry::default();
+        assert!(reg.is_empty());
+    }
+
+    // ── FsSkill discover with multiple roots ──
+
+    #[test]
+    fn discover_roots_merges_multiple_roots() {
+        let td = TempDir::new().unwrap();
+        let root1 = td.path().join("skills1");
+        let root2 = td.path().join("skills2");
+        fs::create_dir_all(root1.join("s1")).unwrap();
+        fs::create_dir_all(root2.join("s2")).unwrap();
+        fs::write(
+            root1.join("s1").join("SKILL.md"),
+            "---\nname: s1\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
+        fs::write(
+            root2.join("s2").join("SKILL.md"),
+            "---\nname: s2\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
+
+        let result = FsSkill::discover_roots(vec![root1, root2]).unwrap();
+        assert_eq!(result.skills.len(), 2);
+        // Skills should be sorted by id
+        assert_eq!(result.skills[0].meta.id, "s1");
+        assert_eq!(result.skills[1].meta.id, "s2");
+    }
+
+    // ── FsSkill into_arc_skills ──
+
+    #[test]
+    fn into_arc_skills_empty() {
+        let arcs = FsSkill::into_arc_skills(vec![]);
+        assert!(arcs.is_empty());
+    }
+
+    // ── DiscoveryResult fields ──
+
+    #[test]
+    fn discovery_result_collects_warnings_sorted() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("skills");
+        fs::create_dir_all(root.join("ZBad")).unwrap();
+        fs::create_dir_all(root.join("ABad")).unwrap();
+        fs::write(
+            root.join("ZBad").join("SKILL.md"),
+            "---\nname: zbad\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("ABad").join("SKILL.md"),
+            "---\nname: abad\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
+
+        let result = FsSkill::discover(root).unwrap();
+        assert!(result.skills.is_empty());
+        assert!(result.warnings.len() >= 2);
+        // Warnings should be sorted by path
+        for i in 1..result.warnings.len() {
+            assert!(result.warnings[i - 1].path <= result.warnings[i].path);
+        }
+    }
 }
