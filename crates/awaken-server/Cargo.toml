@@ -22,6 +22,9 @@ tokio-stream = "0.1"
 bytes = "1"
 parking_lot = { workspace = true }
 
+# MCP server
+mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["server", "client"] }
+
 # Optional
 awaken-ext-permission = { workspace = true, optional = true }
 

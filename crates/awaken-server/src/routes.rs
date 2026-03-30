@@ -17,6 +17,7 @@ use crate::mailbox::MailboxDispatchStatus;
 use crate::protocols::a2a::http::a2a_routes;
 use crate::protocols::ag_ui::http::ag_ui_routes;
 use crate::protocols::ai_sdk_v6::http::ai_sdk_routes;
+use crate::protocols::mcp::http::mcp_routes;
 use crate::query::{self, MessageQueryParams};
 use awaken_runtime::RunRequest;
 
@@ -54,6 +55,7 @@ pub fn build_router() -> Router<AppState> {
         .merge(ai_sdk_routes())
         .merge(ag_ui_routes())
         .merge(a2a_routes())
+        .merge(mcp_routes())
 }
 
 fn health_routes() -> Router<AppState> {
