@@ -8,6 +8,7 @@ use crate::loop_runner::{
 use awaken_contract::contract::active_agent::ActiveAgentIdKey;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
+use awaken_contract::contract::message::Message;
 use awaken_contract::state::PersistedState;
 
 use super::AgentRuntime;
@@ -105,6 +106,12 @@ impl AgentRuntime {
         } else {
             vec![]
         };
+        // Clean up unpaired tool calls left by a cancelled run.
+        // If the previous run was cancelled while a tool call was pending,
+        // the history may contain assistant messages with tool_calls that
+        // have no corresponding Tool role response. These confuse the LLM.
+        strip_unpaired_tool_calls(&mut messages);
+
         messages.extend(request_messages);
 
         // Apply resume decisions to state if present.
@@ -209,6 +216,49 @@ fn active_agent_from_state(state: &PersistedState) -> Option<String> {
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .map(ToOwned::to_owned)
+}
+
+/// Remove unpaired tool calls from message history.
+///
+/// When a run is cancelled while tool calls are pending, the history may
+/// contain assistant messages with `tool_calls` that have no matching
+/// `Tool` role response. These "orphaned" calls confuse LLMs on the next
+/// turn. This function strips unanswered calls from all assistant messages.
+fn strip_unpaired_tool_calls(messages: &mut Vec<Message>) {
+    use awaken_contract::contract::message::Role;
+    use std::collections::HashSet;
+
+    // Collect all tool call IDs that have a Tool-role response.
+    let answered: HashSet<String> = messages
+        .iter()
+        .filter(|m| m.role == Role::Tool)
+        .filter_map(|m| m.tool_call_id.clone())
+        .collect();
+
+    // Strip unanswered tool calls from all assistant messages.
+    for msg in messages.iter_mut() {
+        if msg.role != Role::Assistant {
+            continue;
+        }
+        if let Some(ref mut calls) = msg.tool_calls {
+            calls.retain(|c| answered.contains(&c.id));
+            if calls.is_empty() {
+                msg.tool_calls = None;
+            }
+        }
+    }
+
+    // Remove trailing empty assistant messages (no text, no tool calls).
+    while let Some(last) = messages.last() {
+        if last.role == Role::Assistant
+            && last.tool_calls.is_none()
+            && last.text().trim().is_empty()
+        {
+            messages.pop();
+        } else {
+            break;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1111,5 +1161,104 @@ mod tests {
             awaken_contract::contract::lifecycle::TerminationReason::NaturalEnd
         );
         assert_eq!(result.response, "truncated ");
+    }
+
+    // ── strip_unpaired_tool_calls tests ──────────────────────────────
+
+    mod strip_unpaired {
+        use super::super::strip_unpaired_tool_calls;
+        use awaken_contract::contract::message::{Message, Role, ToolCall};
+
+        fn assistant_with_calls(text: &str, call_ids: &[&str]) -> Message {
+            let mut msg = Message::assistant(text);
+            msg.tool_calls = Some(
+                call_ids
+                    .iter()
+                    .map(|id| ToolCall {
+                        id: id.to_string(),
+                        name: "test_tool".into(),
+                        arguments: serde_json::json!({}),
+                    })
+                    .collect(),
+            );
+            msg
+        }
+
+        fn tool_response(call_id: &str) -> Message {
+            Message::tool(call_id, "result")
+        }
+
+        #[test]
+        fn paired_calls_unchanged() {
+            let mut msgs = vec![
+                Message::user("hi"),
+                assistant_with_calls("calling", &["tc1"]),
+                tool_response("tc1"),
+                Message::assistant("done"),
+            ];
+            let original_len = msgs.len();
+            strip_unpaired_tool_calls(&mut msgs);
+            assert_eq!(msgs.len(), original_len);
+            // tc1 should still be present
+            assert!(msgs[1].tool_calls.as_ref().unwrap().len() == 1);
+        }
+
+        #[test]
+        fn trailing_unpaired_calls_stripped() {
+            let mut msgs = vec![
+                Message::user("hi"),
+                assistant_with_calls("calling", &["tc1", "tc2"]),
+                tool_response("tc1"),
+                // tc2 has no tool_response — should be stripped
+            ];
+            strip_unpaired_tool_calls(&mut msgs);
+            let calls = msgs[1].tool_calls.as_ref().unwrap();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].id, "tc1");
+        }
+
+        #[test]
+        fn all_unpaired_removes_tool_calls_field() {
+            let mut msgs = vec![
+                Message::user("hi"),
+                assistant_with_calls("", &["tc1"]),
+                // no tool response at all
+            ];
+            strip_unpaired_tool_calls(&mut msgs);
+            // Assistant message with no text and no tool calls should be removed
+            assert_eq!(msgs.len(), 1);
+            assert_eq!(msgs[0].role, Role::User);
+        }
+
+        #[test]
+        fn middle_paired_not_affected() {
+            let mut msgs = vec![
+                Message::user("first"),
+                assistant_with_calls("first call", &["tc1"]),
+                tool_response("tc1"),
+                Message::user("second"),
+                assistant_with_calls("", &["tc2"]),
+                // tc2 has no response — stripped, then empty msg removed
+            ];
+            strip_unpaired_tool_calls(&mut msgs);
+            // tc1 should still be intact
+            assert_eq!(msgs[1].tool_calls.as_ref().unwrap().len(), 1);
+            // tc2 stripped → empty assistant removed → 4 messages left
+            assert_eq!(msgs.len(), 4); // user, assistant+tc1, tool, user
+        }
+
+        #[test]
+        fn no_tool_calls_is_noop() {
+            let mut msgs = vec![Message::user("hi"), Message::assistant("hello")];
+            strip_unpaired_tool_calls(&mut msgs);
+            assert_eq!(msgs.len(), 2);
+        }
+
+        #[test]
+        fn empty_messages_is_noop() {
+            let mut msgs: Vec<Message> = vec![];
+            strip_unpaired_tool_calls(&mut msgs);
+            assert!(msgs.is_empty());
+        }
     }
 }

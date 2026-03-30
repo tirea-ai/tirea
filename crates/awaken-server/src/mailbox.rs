@@ -211,6 +211,13 @@ impl Mailbox {
         let frontend_tools = request.frontend_tools;
         let (thread_id, messages) = validate_run_inputs(request.thread_id, request.messages)?;
 
+        // Cancel any existing active run on this thread before starting a new one.
+        // This handles the common case where a suspended run (awaiting tool approval)
+        // should be abandoned when the user sends a new message.
+        if self.runtime.cancel_and_wait_by_thread(&thread_id).await {
+            tracing::info!(thread_id = %thread_id, "cancelled existing run for new submission");
+        }
+
         let job = self.build_job(&thread_id, request.agent_id.as_deref(), messages);
         let job_id = job.job_id.clone();
         let mailbox_id = job.mailbox_id.clone();
@@ -842,7 +849,9 @@ fn classify_error(
                     use awaken_runtime::RuntimeError;
                     match re {
                         RuntimeError::ThreadAlreadyRunning { .. } => {
-                            MailboxRunOutcome::TransientError(e.to_string())
+                            // After the cancel-on-submit change, this error
+                            // indicates a race that retrying won't fix.
+                            MailboxRunOutcome::PermanentError(e.to_string())
                         }
                         RuntimeError::AgentNotFound { .. } | RuntimeError::ResolveFailed { .. } => {
                             MailboxRunOutcome::PermanentError(e.to_string())
@@ -1114,7 +1123,7 @@ mod tests {
     }
 
     #[test]
-    fn classify_error_thread_already_running_is_transient() {
+    fn classify_error_thread_already_running_is_permanent() {
         use awaken_runtime::RuntimeError;
         use awaken_runtime::loop_runner::AgentLoopError;
         let result = Err(AgentLoopError::RuntimeError(
@@ -1124,7 +1133,7 @@ mod tests {
         ));
         assert!(matches!(
             classify_error(&result),
-            MailboxRunOutcome::TransientError(_)
+            MailboxRunOutcome::PermanentError(_)
         ));
     }
 

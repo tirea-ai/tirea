@@ -6,6 +6,20 @@ use super::AgentRuntime;
 use super::active_registry::HandleLookup;
 
 impl AgentRuntime {
+    /// Cancel an active run by thread ID and wait for it to finish.
+    ///
+    /// Returns `true` if a run was cancelled, `false` if no active run existed.
+    /// Waits up to 5 seconds for the run to actually unregister.
+    pub async fn cancel_and_wait_by_thread(&self, thread_id: &str) -> bool {
+        let notify = match self.active_runs.cancel_and_get_notify(thread_id) {
+            Some(n) => n,
+            None => return false,
+        };
+        // Wait for the RunSlotGuard to drop (calls unregister, which fires the notify).
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), notify.notified()).await;
+        true
+    }
+
     /// Cancel an active run by thread ID.
     pub fn cancel_by_thread(&self, thread_id: &str) -> bool {
         if let Some(handle) = self.active_runs.get_by_thread_id(thread_id) {
@@ -306,5 +320,35 @@ mod tests {
 
         assert!(!rt.cancel("r1"));
         assert!(!rt.cancel("t1"));
+    }
+
+    // -- cancel_and_wait_by_thread --
+
+    #[tokio::test]
+    async fn cancel_and_wait_returns_false_when_no_run() {
+        let rt = make_runtime();
+        assert!(!rt.cancel_and_wait_by_thread("unknown").await);
+    }
+
+    #[tokio::test]
+    async fn cancel_and_wait_completes_after_unregister() {
+        use std::sync::Arc;
+
+        let rt = Arc::new(make_runtime());
+        let (handle, token, _rx) = rt.create_run_channels("r1".into());
+        rt.register_run("t1", handle).unwrap();
+
+        // Spawn a task that unregisters after a short delay
+        let rt2 = Arc::clone(&rt);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            rt2.unregister_run("r1");
+        });
+
+        // cancel_and_wait should return true and complete once unregister fires
+        assert!(rt.cancel_and_wait_by_thread("t1").await);
+        assert!(token.is_cancelled());
+        // Slot should be free now
+        assert!(!rt.cancel_by_thread("t1"));
     }
 }
